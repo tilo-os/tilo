@@ -398,6 +398,8 @@ enum EditTarget {
     Signer,
     /// A text form field, by fully qualified name.
     FormField(String),
+    /// The text of a free text box, by annotation id.
+    FreeText(String),
 }
 
 /// A form field widget on a displayed page, in card space.
@@ -755,6 +757,15 @@ pub struct PdfApp {
     form_values: std::collections::BTreeMap<String, model::FormEntry>,
     /// Content hash and length of the open document's bytes.
     source_blob: Option<(String, u64)>,
+    /// The record's annotations as stored (user space), for export.
+    stored_annotations: Vec<Annotation>,
+    /// Where the record's taken-over markup came from in the source.
+    adopted: Vec<crate::adopt::AdoptedEntry>,
+    /// The source hash whose existing markup was asked for, so it is
+    /// asked for once.
+    existing_request: Option<String>,
+    /// Whether page images currently leave the document's own markup out.
+    reader_markup_hidden: bool,
     /// The acting user's rights over this document, as the host decided
     /// them for the current frame.
     permissions: PermissionContext,
@@ -1116,6 +1127,10 @@ impl PdfApp {
             form_fields: Vec::new(),
             form_values: std::collections::BTreeMap::new(),
             source_blob: None,
+            stored_annotations: Vec::new(),
+            adopted: Vec::new(),
+            existing_request: None,
+            reader_markup_hidden: false,
             permissions: PermissionContext::permissive(),
             markup_style: model::MarkupStyle::Highlight,
         }
@@ -1348,11 +1363,118 @@ impl PdfApp {
         }
     }
 
+    /// Take over the markup already in the PDF the first time the record
+    /// meets these bytes (see [`crate::adopt`]): ask the PDF owner for it,
+    /// once per source.
+    #[cfg_attr(
+        not(test),
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the synchronous test backend records the import at once"
+        )
+    )]
+    fn adopt_existing(&mut self, state: &mut AutoCommit) {
+        let Some((hash, _)) = self.source_blob.clone() else {
+            return;
+        };
+        if !self.may(ui::permissions::Verb::Write)
+            || PdfDoc::source(state).is_none_or(|(pinned, _, _)| pinned != hash)
+            || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
+            || self.existing_request.as_deref() == Some(hash.as_str())
+        {
+            return;
+        }
+        self.existing_request = Some(hash);
+        #[cfg(test)]
+        if let Some(raster) = self.raster.as_ref() {
+            let hash = self.existing_request.clone().unwrap_or_default();
+            match raster.existing() {
+                Ok(existing) => self.finish_adoption(state, &hash, &existing),
+                Err(error) => {
+                    self.status_note = Some(format!("Could not read the PDF's markup: {error}"));
+                }
+            }
+            return;
+        }
+        let requested = match (self.raster_handle.as_ref(), self.raster_document.as_ref()) {
+            (Some(handle), Some(document)) => handle.read_existing(document.id),
+            _ => Err(crate::source::RasterSubmitError::Stopped),
+        };
+        if let Err(error) = requested {
+            // Try again on a later frame.
+            self.existing_request = None;
+            tracing::debug!(%error, "asking for the PDF's own markup failed");
+        }
+    }
+
+    /// Record the markup `existing` (read from the bytes hashed `hash`).
+    fn finish_adoption(
+        &mut self,
+        state: &mut AutoCommit,
+        hash: &str,
+        existing: &crate::adopt::Existing,
+    ) {
+        if PdfDoc::imported_source(state).as_deref() == Some(hash)
+            || self
+                .source_blob
+                .as_ref()
+                .is_none_or(|(current, _)| current != hash)
+        {
+            return;
+        }
+        let mut known: std::collections::HashSet<String> =
+            PdfDoc::list_annotations_with_hidden(state)
+                .into_iter()
+                .map(|a| a.id)
+                .collect();
+        for comment in PdfDoc::list_comments(state) {
+            known.extend(comment.replies.into_iter().map(|r| r.id));
+            known.insert(comment.id);
+        }
+        let plan = crate::adopt::plan_import(hash, existing, &known);
+        self.perform_action(state, &crate::actions::import_existing_action(hash, &plan));
+        self.reload(state);
+        self.dirty = true;
+    }
+
+    /// Page images leave the document's own markup out exactly when the
+    /// record has taken it over (the reader then draws it from the records).
+    fn sync_reader_markup(&mut self, state: &AutoCommit) {
+        let hide = self
+            .source_blob
+            .as_ref()
+            .is_some_and(|(hash, _)| PdfDoc::imported_source(state).as_deref() == Some(hash));
+        if hide == self.reader_markup_hidden {
+            return;
+        }
+        self.reader_markup_hidden = hide;
+        #[cfg(test)]
+        if let Some(raster) = self.raster.as_mut() {
+            raster.set_reader_markup(!hide);
+        }
+        if let (Some(handle), Some(document)) =
+            (self.raster_handle.as_ref(), self.raster_document.as_ref())
+            && let Err(error) = handle.set_reader_markup(document.id, !hide)
+        {
+            tracing::debug!(%error, "updating the page images' markup failed");
+            self.reader_markup_hidden = !hide;
+            return;
+        }
+        // Images already delivered show the other choice.
+        self.raster_images.clear();
+        self.raster_render_pending.clear();
+        self.raster_tiles.clear();
+        self.raster_tile_batch.clear();
+        self.dirty = true;
+    }
+
     /// The markup to export, in PDF user space.
     fn export_markup(&self) -> crate::source::ExportMarkup {
         crate::source::ExportMarkup {
+            // As stored: taken-over markup keeps its exact user-space
+            // geometry, so an unchanged thread is recognised as unchanged.
             annotations: self
-                .annotations
+                .stored_annotations
                 .iter()
                 .map(|a| self.page_map(a.page).annotation_to_user(a))
                 .collect(),
@@ -1367,6 +1489,8 @@ impl PdfApp {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            page_ids: self.resource_page_ids.clone(),
+            adopted: self.adopted.clone(),
         }
     }
 
@@ -1497,10 +1621,13 @@ impl PdfApp {
         if self.page_maps.len() != self.doc.page_count() {
             self.rebuild_page_maps();
         }
-        self.annotations = PdfDoc::list_annotations(state)
+        self.stored_annotations = PdfDoc::list_annotations(state);
+        self.annotations = self
+            .stored_annotations
             .iter()
             .map(|a| self.page_map(a.page).annotation_to_card(a))
             .collect();
+        self.adopted = PdfDoc::adopted(state);
         self.comments = PdfDoc::list_comments(state);
         self.signatures = PdfDoc::list_signatures(state)
             .iter()
@@ -3003,7 +3130,7 @@ impl PdfApp {
             Tool::Ink if d.points.len() >= 2 => {
                 let a = Annotation::new(
                     d.page,
-                    AnnoKind::Ink { points: d.points },
+                    AnnoKind::ink(d.points),
                     self.swatch,
                     self.author.clone(),
                 );
@@ -3064,9 +3191,19 @@ impl PdfApp {
     fn begin_edit(&mut self, target: EditTarget, initial: &str) {
         // The same type-scale steps the sidebar measures and paints these
         // texts at, so the editor's glyphs are the glyphs it replaces.
-        let size = match target {
+        let size = match &target {
             EditTarget::CommentBody(_) | EditTarget::Reply(_) => self.type_px.sm,
             EditTarget::Signer | EditTarget::FormField(_) => self.type_px.base,
+            // Typed at the size the box shows it at.
+            EditTarget::FreeText(id) => self
+                .annotations
+                .iter()
+                .find(|a| &a.id == id)
+                .and_then(|a| match &a.kind {
+                    AnnoKind::FreeText { size, .. } => Some((*size * self.zoom()) as f32),
+                    _ => None,
+                })
+                .unwrap_or(self.type_px.base),
         };
         let mut input = TextInput::local()
             .multiline(true)
@@ -3128,6 +3265,34 @@ impl PdfApp {
             EditTarget::FormField(name) => {
                 let value = model::FormEntry::Text(text.trim_end().to_string());
                 self.perform_action(state, &crate::actions::set_form_value_action(&name, &value));
+                self.reload(state);
+            }
+            EditTarget::FreeText(id) => {
+                let text = text.trim_end();
+                if text.trim().is_empty() {
+                    // An emptied box is removed rather than left invisible.
+                    self.delete_target(&DeleteTarget::Annotation(id), state);
+                    return;
+                }
+                self.perform_action(state, &crate::actions::set_free_text_action(&id, text));
+                // Grow the box to hold what was typed.
+                let grown = self
+                    .annotations
+                    .iter_mut()
+                    .find(|a| a.id == id)
+                    .is_some_and(|a| {
+                        if let AnnoKind::FreeText { rect, size, .. } = &mut a.kind {
+                            let needed = model::free_text_height(text, *size, rect.w);
+                            if needed > rect.h + 0.5 {
+                                rect.h = needed;
+                                return true;
+                            }
+                        }
+                        false
+                    });
+                if grown {
+                    self.persist_free_text_box(state, &id);
+                }
                 self.reload(state);
             }
         }
@@ -3431,6 +3596,7 @@ impl PdfApp {
                 AnnoKind::Note { x, y } => (pt.0 - x).abs() < 24.0 && (pt.1 - y).abs() < 24.0,
                 kind @ AnnoKind::Markup { .. } => kind.markup_contains(pt.0, pt.1),
                 AnnoKind::Ink { .. } => false,
+                kind @ AnnoKind::FreeText { .. } => kind.free_text_contains(pt.0, pt.1),
             })
             .map(|a| a.id.clone())
     }
@@ -3538,15 +3704,30 @@ impl PdfApp {
     /// there. Same hit radius as [`Self::select_at`] so grabbing a marker to
     /// drag it lines up with clicking it to select.
     fn note_marker_at(&self, page: usize, pt: (f64, f64)) -> Option<(String, f64, f64)> {
-        self.annotations
-            .iter()
-            .filter(|a| a.page == page)
+        let on_page = || self.annotations.iter().filter(|a| a.page == page);
+        on_page()
             .find_map(|a| match &a.kind {
                 AnnoKind::Note { x, y } if (pt.0 - x).abs() < 24.0 && (pt.1 - y).abs() < 24.0 => {
                     Some((a.id.clone(), *x, *y))
                 }
                 _ => None,
             })
+            // A free text box moves like a marker, by its top-left corner.
+            .or_else(|| {
+                on_page().find_map(|a| match &a.kind {
+                    AnnoKind::FreeText { rect, .. } if rect.contains(pt.0, pt.1) => {
+                        Some((a.id.clone(), rect.x, rect.y))
+                    }
+                    _ => None,
+                })
+            })
+    }
+
+    /// Whether annotation `id` is a free text box.
+    fn is_free_text(&self, id: &str) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| a.id == id && matches!(a.kind, AnnoKind::FreeText { .. }))
     }
 
     /// The page an annotation (by id) lives on.
@@ -3561,6 +3742,7 @@ impl PdfApp {
             .find(|a| a.id == id)
             .and_then(|a| match &a.kind {
                 AnnoKind::Note { x, y } => Some((*x, *y)),
+                AnnoKind::FreeText { rect, .. } => Some((rect.x, rect.y)),
                 _ => None,
             })
     }
@@ -3568,12 +3750,92 @@ impl PdfApp {
     /// Move a note's *local* cached anchor for live drag feedback (the CRDT is
     /// only written once, on release, so a drag is a single undo step).
     fn move_note_local(&mut self, id: &str, x: f64, y: f64) {
-        if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id)
-            && let AnnoKind::Note { x: nx, y: ny } = &mut a.kind
-        {
-            *nx = x;
-            *ny = y;
+        if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id) {
+            match &mut a.kind {
+                AnnoKind::Note { x: nx, y: ny } => {
+                    *nx = x;
+                    *ny = y;
+                }
+                AnnoKind::FreeText { rect, .. } => {
+                    rect.x = x;
+                    rect.y = y;
+                }
+                _ => {}
+            }
         }
+        self.dirty = true;
+    }
+
+    /// Record a free text box's current (card-space) box and size in its
+    /// page's user space.
+    fn persist_free_text_box(&mut self, state: &mut AutoCommit, id: &str) {
+        let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+            return;
+        };
+        if let AnnoKind::FreeText { rect, size, .. } =
+            self.page_map(a.page).annotation_to_user(&a).kind
+        {
+            self.perform_action(
+                state,
+                &crate::actions::set_free_text_box_user_action(id, &rect, size),
+            );
+        }
+    }
+
+    /// Place a new free text box with its top-left corner at `pt` (card
+    /// space) and start typing into it.
+    fn create_free_text(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+        const WIDTH: f64 = 180.0; // PDF points on the page, not UI spacing
+        let size = model::FREE_TEXT_SIZE;
+        let height = size * 1.2 * 2.0 + 4.0;
+        let a = Annotation {
+            created_ms: now_ms(),
+            ..Annotation::new(
+                page,
+                AnnoKind::FreeText {
+                    rect: PtRect::new(pt.0, pt.1, WIDTH, height),
+                    text: String::new(),
+                    size,
+                },
+                self.swatch,
+                self.author.clone(),
+            )
+        };
+        let id = a.id.clone();
+        self.author_annotation(state, &a);
+        self.reload(state);
+        self.selected_anno = Some(id.clone());
+        self.selected_sig = None;
+        self.begin_edit(EditTarget::FreeText(id), "");
+        self.dirty = true;
+    }
+
+    /// Start editing the text of free text box `id`.
+    fn edit_free_text(&mut self, id: &str) {
+        let text = self
+            .annotations
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| match &a.kind {
+                AnnoKind::FreeText { text, .. } => Some(text.clone()),
+                _ => None,
+            });
+        if let Some(text) = text {
+            self.begin_edit(EditTarget::FreeText(id.to_string()), &text);
+        }
+    }
+
+    /// Step a free text box's text size by `delta` points.
+    fn resize_free_text(&mut self, state: &mut AutoCommit, id: &str, delta: f64) {
+        if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id)
+            && let AnnoKind::FreeText { size, .. } = &mut a.kind
+        {
+            *size = (*size + delta).clamp(4.0, 144.0);
+        } else {
+            return;
+        }
+        self.persist_free_text_box(state, id);
+        self.reload(state);
         self.dirty = true;
     }
 
@@ -3789,6 +4051,9 @@ impl PdfApp {
                 kind @ AnnoKind::Markup { .. } if kind.markup_contains(pt.0, pt.1) => {
                     return Some(DeleteTarget::Annotation(a.id.clone()));
                 }
+                kind @ AnnoKind::FreeText { .. } if kind.free_text_contains(pt.0, pt.1) => {
+                    return Some(DeleteTarget::Annotation(a.id.clone()));
+                }
                 _ => {}
             }
         }
@@ -3929,6 +4194,13 @@ impl PdfApp {
         match crate::source::open(path) {
             Ok(loaded) => {
                 self.doc = loaded.doc;
+                self.source_blob = Some((
+                    loaded.raster.source_hash().to_string(),
+                    loaded.raster.source_len(),
+                ));
+                self.form_fields = loaded.raster.form_fields();
+                self.existing_request = None;
+                self.reader_markup_hidden = false;
                 self.raster = Some(loaded.raster);
                 self.has_document = true;
                 self.doc_name = loaded.name;
@@ -4026,6 +4298,8 @@ impl PdfApp {
                     }
                     self.form_fields.clone_from(&raster.form_fields);
                     self.source_blob = Some((raster.source_hash.clone(), raster.source_len));
+                    self.existing_request = None;
+                    self.reader_markup_hidden = false;
                     self.form_values.clear();
                     self.resource_page_rotations.clear();
                     self.raster_document = Some(raster);
@@ -4368,6 +4642,27 @@ impl PdfApp {
                     self.dirty = true;
                     self.finish_portal_action(false, Some(error));
                 }
+                RasterEvent::ExistingRead {
+                    document_id,
+                    existing,
+                } if self
+                    .raster_document
+                    .as_ref()
+                    .is_some_and(|document| document.id == document_id) =>
+                {
+                    if let Some(hash) = self.existing_request.clone() {
+                        self.finish_adoption(state, &hash, &existing);
+                    }
+                }
+                RasterEvent::ExistingFailed { document_id, error }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|document| document.id == document_id) =>
+                {
+                    self.status_note = Some(format!("Could not read the PDF's markup: {error}"));
+                    self.dirty = true;
+                }
                 _ => {}
             }
         }
@@ -4699,8 +4994,10 @@ impl Widget for PdfApp {
         if self.has_document {
             self.reconcile_shared_page_plan(state);
             self.pin_source(state);
+            self.adopt_existing(state);
         }
         self.reload(state);
+        self.sync_reader_markup(state);
         self.refresh_search_catalog(state);
 
         // Screenshot hook (never set at runtime): focus the first comment.
@@ -5320,6 +5617,7 @@ impl Widget for PdfApp {
                 "3" => Tool::Ink,
                 "4" => Tool::Note,
                 "5" => Tool::Sign,
+                "6" => Tool::Text,
                 _ => return false,
             };
             self.set_tool(tool);
@@ -5592,6 +5890,9 @@ impl Widget for PdfApp {
 
 #[cfg(test)]
 mod records_tests;
+
+#[cfg(test)]
+mod adopt_tests;
 
 #[cfg(test)]
 mod links_tests;
@@ -7862,8 +8163,8 @@ mod tests {
             .find(|a| matches!(a.kind, AnnoKind::Ink { .. }))
             .expect("an ink stroke was created");
         match &ink.kind {
-            AnnoKind::Ink { points } => {
-                assert!(points.len() >= 2, "the polyline retains its points");
+            AnnoKind::Ink { strokes } => {
+                assert!(strokes[0].len() >= 2, "the polyline retains its points");
             }
             _ => unreachable!(),
         }

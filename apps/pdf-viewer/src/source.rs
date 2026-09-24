@@ -280,6 +280,10 @@ pub struct RasterBackend {
     text_cache: HashMap<(usize, usize), Arc<PageText>>,
     /// Rendered tiles of zoomed pages, per zoom level (see [`crate::tiles`]).
     tiles: crate::tiles::TileCache<TileKey>,
+    /// Whether the original document's own markup is drawn into its page
+    /// images. Off once the record has taken that markup over (see
+    /// [`crate::adopt`]): the reader then draws it from the records.
+    reader_markup: bool,
     /// Per-source-page link areas, filled lazily on first request.
     link_cache: HashMap<(usize, usize), Arc<Vec<PageLink>>>,
     /// Content hash and length of the opened bytes, which are kept in the
@@ -435,6 +439,7 @@ impl RasterBackend {
             cache_bytes: 0,
             text_cache: HashMap::new(),
             tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
+            reader_markup: true,
             link_cache: HashMap::new(),
             source_hash,
             source_len: byte_len,
@@ -457,6 +462,60 @@ impl RasterBackend {
             .first()
             .and_then(|s| s.doc.form_fields().ok())
             .unwrap_or_default()
+    }
+
+    /// Draw (or leave out) the opened document's own markup in its page
+    /// images. Changing it drops every cached image, which showed the other
+    /// choice.
+    pub fn set_reader_markup(&mut self, visible: bool) {
+        if self.reader_markup == visible {
+            return;
+        }
+        self.reader_markup = visible;
+        self.cache.clear();
+        self.cache_sizes.clear();
+        self.cache_lru.clear();
+        self.cache_bytes = 0;
+        self.tiles = crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES);
+    }
+
+    /// Whether page images include the document's own markup.
+    pub fn reader_markup(&self) -> bool {
+        self.reader_markup
+    }
+
+    /// The markup and form values already in the opened document, for the
+    /// record to take over.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the engine cannot read a page's annotations.
+    pub fn existing(&self) -> anyhow::Result<crate::adopt::Existing> {
+        let source = self
+            .sources
+            .first()
+            .ok_or_else(|| anyhow!("no document is open"))?;
+        let mut pages = Vec::new();
+        for page in 0..source.doc.page_count() {
+            let Some(geometry) = source.doc.page(page) else {
+                continue;
+            };
+            let annotations = source
+                .doc
+                .annotations(page)
+                .map_err(|e| anyhow!("reading the annotations of page {}: {e}", page + 1))?;
+            if annotations.iter().any(|a| a.kind.is_reader_markup()) {
+                pages.push(crate::adopt::ExistingPage {
+                    page,
+                    geometry,
+                    annotations,
+                });
+            }
+        }
+        Ok(crate::adopt::Existing {
+            pages,
+            form_fields: source.doc.form_fields().unwrap_or_default(),
+        })
     }
 
     /// Number of displayed pages (the length of the editable page plan).
@@ -918,6 +977,7 @@ impl RasterBackend {
         let extra = tilo_pdf::Rotation::from_degrees(rotation).unwrap_or_default();
         let options = tilo_pdf::RenderOptions {
             rotation: extra,
+            reader_markup: slot.source != 0 || self.reader_markup,
             ..tilo_pdf::RenderOptions::fit_width(
                 extra.apply_size(source.doc.page_size(slot.page)?),
                 bucket,
@@ -986,7 +1046,16 @@ impl RasterBackend {
         let t = Instant::now();
         let bitmap = source
             .doc
-            .render_tile(slot.page, crate::tiles::level_scale(level), extra, &tile)
+            .render(
+                slot.page,
+                &tilo_pdf::RenderOptions {
+                    scale: crate::tiles::level_scale(level),
+                    rotation: extra,
+                    region: Some(tile.region),
+                    reader_markup: slot.source != 0 || self.reader_markup,
+                    ..tilo_pdf::RenderOptions::default()
+                },
+            )
             .ok()?;
         if profiling() {
             eprintln!(
@@ -1135,11 +1204,22 @@ impl RasterBackend {
     }
 
     /// The engine edits for the current plan and markup.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass from the records to the engine's edits, page by page"
+    )]
     fn edits_for(&self, markup: &ExportMarkup) -> anyhow::Result<tilo_pdf::Edits> {
         let mut edits = tilo_pdf::Edits::default();
         for (dest, slot) in self.plan.iter().enumerate() {
             let slot = slot
                 .ok_or_else(|| anyhow!("page {} is still awaiting imported content", dest + 1))?;
+            // The occurrence that keeps an original page's own markup is the
+            // original one; duplicates copy page content only.
+            let primary = slot.source != 0
+                || markup
+                    .page_ids
+                    .get(dest)
+                    .is_none_or(|id| *id == format!("source-{}", slot.page + 1));
             edits.pages.push(tilo_pdf::PageEdit {
                 source: if slot.source == 0 {
                     tilo_pdf::PageSource::Original(slot.page)
@@ -1151,11 +1231,13 @@ impl RasterBackend {
                 },
                 rotation: tilo_pdf::Rotation::from_degrees(self.page_rotation(dest))
                     .unwrap_or_default(),
-                primary: true,
+                primary,
             });
         }
         let identity = edits.pages.iter().enumerate().all(|(i, p)| {
-            p.source == tilo_pdf::PageSource::Original(i) && p.rotation == tilo_pdf::Rotation::None
+            p.source == tilo_pdf::PageSource::Original(i)
+                && p.rotation == tilo_pdf::Rotation::None
+                && p.primary
         }) && self.plan.len()
             == self.sources.first().map_or(0, |s| s.page_sizes.len());
         if identity {
@@ -1165,18 +1247,78 @@ impl RasterBackend {
         let rect = |r: &PtRect| {
             tilo_pdf::Rect::from_corners(point((r.x, r.y)), point((r.x + r.w, r.y + r.h)))
         };
+        // Threads: every comment pinned to an annotation, oldest first. The
+        // first comment's body is the annotation's text; its replies, and
+        // any later comment, are written as replies to it.
+        let mut threads: HashMap<&str, Vec<&Comment>> = HashMap::new();
+        for c in &markup.comments {
+            if let Some(anno) = c.anno_id.as_deref() {
+                threads.entry(anno).or_default().push(c);
+            }
+        }
+        let adopted: HashMap<&str, &crate::adopt::AdoptedEntry> =
+            markup.adopted.iter().map(|e| (e.id.as_str(), e)).collect();
+        // A taken-over thread whose record still says what the original
+        // says keeps its original objects.
+        let unchanged: HashSet<&str> = markup
+            .annotations
+            .iter()
+            .filter(|a| {
+                adopted.get(a.id.as_str()).is_some_and(|entry| {
+                    entry.parent.is_none()
+                        && crate::adopt::thread_print(
+                            a,
+                            threads.get(a.id.as_str()).and_then(|t| t.first().copied()),
+                        ) == entry.print
+                        && threads.get(a.id.as_str()).is_none_or(|t| t.len() <= 1)
+                })
+            })
+            .map(|a| a.id.as_str())
+            .collect();
+        edits.adopted = markup
+            .adopted
+            .iter()
+            .filter_map(|entry| {
+                let owner = entry.parent.as_deref().unwrap_or(&entry.id);
+                Some(tilo_pdf::AdoptedAnnotation {
+                    target: entry.target()?,
+                    unchanged: unchanged.contains(owner),
+                })
+            })
+            .collect();
+        // What the PDF itself should call a record: its original `/NM` when
+        // it was taken over from the file, otherwise the record id.
+        let pdf_name = |id: &str| {
+            adopted
+                .get(id)
+                .map(|e| e.name.as_str())
+                .filter(|n| !n.is_empty())
+                .unwrap_or(id)
+                .to_string()
+        };
         for idx in 0..self.plan.len() {
             let page_no = idx + 1;
             for a in markup.annotations.iter().filter(|a| a.page == page_no) {
+                if unchanged.contains(a.id.as_str()) {
+                    continue;
+                }
                 let (r, g, b) = a.color.rgb();
-                let thread = markup
-                    .comments
-                    .iter()
-                    .find(|c| c.anno_id.as_deref() == Some(a.id.as_str()));
-                let kind = match &a.kind {
+                let thread: &[&Comment] = threads.get(a.id.as_str()).map_or(&[], Vec::as_slice);
+                let reply_at = match &a.kind {
+                    AnnoKind::Markup { quads, .. } => {
+                        quads.first().map_or((0.0, 0.0), |q| (q.x, q.y + q.h))
+                    }
+                    AnnoKind::Ink { strokes } => strokes
+                        .iter()
+                        .find_map(|s| s.first().copied())
+                        .unwrap_or((0.0, 0.0)),
+                    AnnoKind::Note { x, y } => (*x, *y),
+                    AnnoKind::FreeText { rect, .. } => (rect.x, rect.y + rect.h),
+                };
+                let (kind, contents) = match &a.kind {
                     AnnoKind::Markup { style, quads } => {
                         let quads = quads.iter().map(rect).collect();
-                        match style {
+                        let kind = match style {
                             MarkupStyle::Highlight => {
                                 tilo_pdf::NewAnnotationKind::Highlight { quads }
                             }
@@ -1186,38 +1328,114 @@ impl RasterBackend {
                             MarkupStyle::StrikeOut => {
                                 tilo_pdf::NewAnnotationKind::StrikeOut { quads }
                             }
-                        }
+                            MarkupStyle::Squiggly => {
+                                tilo_pdf::NewAnnotationKind::Squiggly { quads }
+                            }
+                        };
+                        (kind, None)
                     }
-                    AnnoKind::Ink { points } if points.len() >= 2 => {
-                        tilo_pdf::NewAnnotationKind::Ink {
-                            strokes: vec![points.iter().copied().map(point).collect()],
-                            width: 2.0,
+                    AnnoKind::Ink { strokes } => {
+                        let strokes: Vec<Vec<tilo_pdf::Point>> = strokes
+                            .iter()
+                            .filter(|s| s.len() >= 2)
+                            .map(|s| s.iter().copied().map(point).collect())
+                            .collect();
+                        if strokes.is_empty() {
+                            continue;
                         }
+                        (
+                            tilo_pdf::NewAnnotationKind::Ink {
+                                strokes,
+                                width: 2.0,
+                            },
+                            None,
+                        )
                     }
-                    AnnoKind::Ink { .. } => continue,
-                    AnnoKind::Note { x, y } => tilo_pdf::NewAnnotationKind::Note {
-                        at: point((*x, *y)),
-                    },
+                    AnnoKind::Note { x, y } => (
+                        tilo_pdf::NewAnnotationKind::Note {
+                            at: point((*x, *y)),
+                        },
+                        None,
+                    ),
+                    AnnoKind::FreeText {
+                        rect: box_rect,
+                        text,
+                        size,
+                    } => (
+                        tilo_pdf::NewAnnotationKind::FreeText {
+                            rect: rect(box_rect),
+                            font_size: *size as f32,
+                        },
+                        Some(text.clone()),
+                    ),
                 };
+                let name = pdf_name(&a.id);
+                let (first, later_comments) = thread
+                    .split_first()
+                    .map_or((None, &[][..]), |(f, r)| (Some(*f), r));
                 edits.annotations.push(tilo_pdf::NewAnnotation {
                     page: idx,
                     kind,
                     color: tilo_pdf::Rgba::new(r, g, b, 255),
                     author: a.author.clone(),
-                    contents: thread.map(thread_text).unwrap_or_default(),
-                    name: a.id.clone(),
+                    contents: contents
+                        .or_else(|| first.map(|c| c.body.clone()))
+                        .unwrap_or_default(),
+                    name: name.clone(),
                     modified: pdf_date(a.created_ms),
                     in_reply_to: None,
                     reply_type: tilo_pdf::ReplyType::Reply,
                 });
+                // Replies, as reply annotations anchored where the thread is.
+                let mut replies: Vec<(String, &str, &str)> = Vec::new();
+                if let Some(first) = first {
+                    replies.extend(
+                        first
+                            .replies
+                            .iter()
+                            .map(|r| (r.id.clone(), r.author.as_str(), r.body.as_str())),
+                    );
+                }
+                for later in later_comments {
+                    replies.push((later.id.clone(), later.author.as_str(), later.body.as_str()));
+                    replies.extend(
+                        later
+                            .replies
+                            .iter()
+                            .map(|r| (r.id.clone(), r.author.as_str(), r.body.as_str())),
+                    );
+                }
+                for (id, author, body) in replies {
+                    edits.annotations.push(tilo_pdf::NewAnnotation {
+                        page: idx,
+                        kind: tilo_pdf::NewAnnotationKind::Note {
+                            at: point(reply_at),
+                        },
+                        color: tilo_pdf::Rgba::new(r, g, b, 255),
+                        author: author.to_string(),
+                        contents: body.to_string(),
+                        name: pdf_name(&id),
+                        modified: String::new(),
+                        in_reply_to: Some(name.clone()),
+                        reply_type: tilo_pdf::ReplyType::Reply,
+                    });
+                }
             }
             for s in markup.signatures.iter().filter(|s| s.page == page_no) {
                 edits.annotations.push(signature_stamp(idx, s));
             }
         }
+        // Values the file already holds are left as they are.
+        let in_file: HashMap<String, FormEntry> = self
+            .sources
+            .first()
+            .and_then(|s| s.doc.form_fields().ok())
+            .map(|fields| crate::adopt::form_values_of(&fields).into_iter().collect())
+            .unwrap_or_default();
         edits.form_values = markup
             .form_values
             .iter()
+            .filter(|(name, value)| in_file.get(name) != Some(value))
             .map(|(name, value)| tilo_pdf::FormValue {
                 name: name.clone(),
                 value: match value {
@@ -1235,13 +1453,18 @@ impl RasterBackend {
 }
 
 /// Everything an export writes on top of the page plan: markup in PDF user
-/// space, the comment threads notes carry, and recorded form values.
+/// space, the comment threads (written as the annotation's text and reply
+/// annotations), recorded form values, and where taken-over markup came
+/// from in the source bytes.
 #[derive(Clone, Debug, Default)]
 pub struct ExportMarkup {
     pub annotations: Vec<Annotation>,
     pub comments: Vec<Comment>,
     pub signatures: Vec<Signature>,
     pub form_values: Vec<(String, FormEntry)>,
+    /// The durable occurrence id of each displayed page, in order.
+    pub page_ids: Vec<String>,
+    pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
 /// A PDF date (`D:YYYYMMDDHHmmSSZ`) for unix milliseconds; empty for 0.
@@ -1268,18 +1491,6 @@ fn pdf_date(ms: i64) -> String {
         (rem % 3600) / 60,
         rem % 60
     )
-}
-
-/// A comment thread as annotation text: the body, then each reply.
-fn thread_text(c: &Comment) -> String {
-    let mut text = c.body.trim().to_string();
-    for r in &c.replies {
-        text.push('\n');
-        text.push_str(&r.author);
-        text.push_str(": ");
-        text.push_str(r.body.trim());
-    }
-    text
 }
 
 /// A signature (its box in PDF user space) as a stamp: its real ink (drawn
@@ -1520,6 +1731,16 @@ pub enum RasterCommand {
     Discard {
         document_id: u64,
     },
+    /// Read the markup and form values already in the document, for the
+    /// record to take over.
+    ReadExisting {
+        document_id: u64,
+    },
+    /// Draw (or leave out) the document's own markup in page images.
+    SetReaderMarkup {
+        document_id: u64,
+        visible: bool,
+    },
     Render(RenderRequest),
     /// Replace the session's queued tiles with this batch.
     Tiles(TileBatch),
@@ -1635,6 +1856,14 @@ pub enum RasterEvent {
     },
     ImportFailed {
         request: ImportRequest,
+        error: String,
+    },
+    ExistingRead {
+        document_id: u64,
+        existing: crate::adopt::Existing,
+    },
+    ExistingFailed {
+        document_id: u64,
         error: String,
     },
     /// The private temporary file is ready. The UI must explicitly commit it
@@ -1828,6 +2057,33 @@ impl RasterHandle {
     /// bounded control queue is full.
     pub fn discard_document(&self, document_id: u64) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Discard { document_id })
+    }
+
+    /// Read the markup already in the document; answered with
+    /// [`RasterEvent::ExistingRead`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::activate_document`].
+    pub fn read_existing(&self, document_id: u64) -> Result<(), RasterSubmitError> {
+        self.enqueue(RasterCommand::ReadExisting { document_id })
+    }
+
+    /// Draw (or leave out) the document's own markup in page images. Images
+    /// already delivered showed the other choice; the caller drops them.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::activate_document`].
+    pub fn set_reader_markup(
+        &self,
+        document_id: u64,
+        visible: bool,
+    ) -> Result<(), RasterSubmitError> {
+        self.enqueue(RasterCommand::SetReaderMarkup {
+            document_id,
+            visible,
+        })
     }
 
     /// Queue a page render, coalescing the same document/page/zoom bucket.
@@ -2030,7 +2286,10 @@ impl RasterHandle {
                     .reconcile_order
                     .retain(|queued| *queued != self.session.id);
             }
-            command @ (RasterCommand::Activate { .. } | RasterCommand::Discard { .. }) => {
+            command @ (RasterCommand::Activate { .. }
+            | RasterCommand::Discard { .. }
+            | RasterCommand::ReadExisting { .. }
+            | RasterCommand::SetReaderMarkup { .. }) => {
                 if state.controls.len() >= MAX_PENDING_PAGE_REQUESTS {
                     return Err(RasterSubmitError::QueueFull);
                 }
@@ -2458,6 +2717,37 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                 }
                 continue;
             }
+            RasterCommand::ReadExisting { document_id } => match active
+                .get(&session_id)
+                .and_then(|documents| documents.get(&document_id))
+            {
+                Some(backend) => match backend.existing() {
+                    Ok(existing) => RasterEvent::ExistingRead {
+                        document_id,
+                        existing,
+                    },
+                    Err(error) => RasterEvent::ExistingFailed {
+                        document_id,
+                        error: error.to_string(),
+                    },
+                },
+                None => RasterEvent::ExistingFailed {
+                    document_id,
+                    error: "the requested raster document is no longer active".to_string(),
+                },
+            },
+            RasterCommand::SetReaderMarkup {
+                document_id,
+                visible,
+            } => {
+                if let Some(backend) = active
+                    .get_mut(&session_id)
+                    .and_then(|documents| documents.get_mut(&document_id))
+                {
+                    backend.set_reader_markup(visible);
+                }
+                continue;
+            }
             RasterCommand::Render(request) => match active
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
@@ -2659,6 +2949,8 @@ fn push_event(queue: &WorkerQueue, session_id: u64, event: RasterEvent) {
             | RasterEvent::ReconcileFailed { .. }
             | RasterEvent::Imported { .. }
             | RasterEvent::ImportFailed { .. }
+            | RasterEvent::ExistingRead { .. }
+            | RasterEvent::ExistingFailed { .. }
             | RasterEvent::SavePrepared { .. }
             | RasterEvent::Saved { .. }
             | RasterEvent::SaveFailed { .. }

@@ -44,6 +44,7 @@
 )]
 
 pub mod actions;
+pub mod adopt;
 pub mod app;
 pub mod chrome;
 pub mod doc;
