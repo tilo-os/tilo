@@ -1009,6 +1009,21 @@ impl RecordRepository {
             .collect()
     }
 
+    /// The current content revision of every record of one workspace that
+    /// has one, in one pass and without cloning envelopes.
+    pub(crate) fn current_content_revisions(
+        &self,
+        workspace_id: Uuid,
+    ) -> Vec<collab_types::ContentRevisionV1> {
+        self.records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(key, _)| key.workspace_id == workspace_id)
+            .filter_map(|(_, record)| record.replica.current_content_revision())
+            .collect()
+    }
+
     /// Clone one record-sized recovery batch without holding the repository
     /// lock across namespace or history I/O.
     pub(crate) fn reconciliation_batch(

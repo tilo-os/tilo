@@ -2394,6 +2394,19 @@ impl Namespace {
         self.doc.get_heads()
     }
 
+    /// Every change this document holds beyond `heads`, as one incremental
+    /// chunk for [`Self::apply_remote_and_resolve`]. Heads this document
+    /// does not know (the asker's own changes) are ignored, so an asker that
+    /// shares no history receives everything.
+    pub fn changes_since(&mut self, heads: &[automerge::ChangeHash]) -> Vec<u8> {
+        let known: Vec<automerge::ChangeHash> = heads
+            .iter()
+            .copied()
+            .filter(|hash| self.doc.get_change_by_hash(hash).is_some())
+            .collect();
+        self.doc.save_after(&known)
+    }
+
     // Fine-grained document edits: the path that merges semantically.
 
     fn with_doc_mut<R>(&mut self, ino: u64, f: impl FnOnce(&mut qdoc::DocMut) -> R) -> Option<R> {
