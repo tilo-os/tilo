@@ -65,6 +65,7 @@ impl SearchProvider for SessionActionsProvider {
         }
         vec![SearchResult {
             kind: ResourceKind::Action,
+            operation_kind: tilo_actions::OperationKind::Effect,
             provider_id: PROVIDER_ID.into(),
             id: LOGOUT_ID.into(),
             title: "Log out of Tilo".into(),
