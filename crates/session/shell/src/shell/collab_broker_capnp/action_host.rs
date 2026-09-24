@@ -131,7 +131,8 @@ impl CapnpBrokerState {
         };
         let actor = BrokerActor::for_caller(caller);
         let tree = membership.read();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .filter(|workspace| {
                 let room = workspace.room.to_string();

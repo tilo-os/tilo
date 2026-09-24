@@ -104,11 +104,11 @@ impl TopBar {
         tree: &'a WorkspaceTree,
         max: usize,
     ) -> Vec<&'a Collaborator> {
-        tree.collaborators.iter().take(max).collect()
+        tree.desktop.collaborators.iter().take(max).collect()
     }
 
     pub fn overflow_count(&self, tree: &WorkspaceTree, max: usize) -> usize {
-        tree.collaborators.len().saturating_sub(max)
+        tree.desktop.collaborators.len().saturating_sub(max)
     }
 
     pub fn click_tray_settings(&mut self) -> TopBarOutput {

@@ -805,7 +805,7 @@ impl WorkspaceSettingsOverlay {
             active_name.as_str(),
             body_y,
         );
-        let can_invite = tree.active_workspace().is_some_and(|workspace| {
+        let can_invite = tree.desktop.active_workspace().is_some_and(|workspace| {
             tree.governs_room(workspace.room) && workspace.may_administer(&state.local_user_id)
         });
         let invite_y = self.draw_ws_settings_invite_link(
@@ -916,7 +916,7 @@ impl WorkspaceSettingsOverlay {
         let (title, description, subject): (&str, String, Option<String>) = match &sheet {
             MemberSheet::Role(user) => {
                 let current = tree
-                    .active_workspace()
+                    .desktop.active_workspace()
                     .and_then(|workspace| workspace.role_of(user))
                     .map_or("Viewer", crate::shell::workspace_settings::role_label);
                 (
@@ -1111,9 +1111,11 @@ impl WorkspaceSettingsOverlay {
             self.draw_ws_settings_identity_card_chrome(scene, transform, theme, rect);
         if theme.text_scale > 1.0 {
             let name = tree
+                .desktop
                 .active_workspace()
                 .map_or("Workspace", |workspace| workspace.name.as_str());
             let role = tree
+                .desktop
                 .active_workspace()
                 .and_then(|workspace| workspace.role_of(&state.local_user_id))
                 .map_or("Guest", crate::shell::workspace_settings::role_label);
@@ -1141,6 +1143,7 @@ impl WorkspaceSettingsOverlay {
                 None,
             );
             return tree
+                .desktop
                 .active_workspace()
                 .map_or_else(|| "Workspace".into(), |workspace| workspace.name.clone());
         }
@@ -1153,6 +1156,7 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let active_name = tree
+            .desktop
             .active_workspace()
             .map_or_else(|| "Workspace".into(), |w| w.name.clone());
         let tsize = tokens.typography.scale.xl;
@@ -1170,6 +1174,7 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let active_role = tree
+            .desktop
             .active_workspace()
             .and_then(|workspace| workspace.role_of(&state.local_user_id))
             .map_or("Guest", crate::shell::workspace_settings::role_label);
@@ -1528,7 +1533,7 @@ impl WorkspaceSettingsOverlay {
         self.agent_control_rects.clear();
         let body_rect = Self::body_rect(rect);
         let is_owner = is_active_workspace_owner(state);
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             let actor = state.active_local_user();
             if !ownership_transfer_resource(ws, &actor).actions.is_empty() {
                 self.ownership_action_rect = ownership_action_rect(body_rect);
@@ -1576,7 +1581,7 @@ impl WorkspaceSettingsOverlay {
         let body_rect = Self::body_rect(rect);
         self.agent_add_rect = agents_add_rect(body_rect);
         let is_owner = is_active_workspace_owner(state);
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             for row in agents_pane_rows(ws, body_rect) {
                 self.agent_control_rects.push((
                     row.agent.clone(),
@@ -1623,7 +1628,7 @@ impl WorkspaceSettingsOverlay {
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             if is_owner {
                 self.permission_profiles_rect = permission_profiles_rect(body_rect);
             }
@@ -1676,7 +1681,7 @@ impl WorkspaceSettingsOverlay {
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
         let candidates = crate::shell::launcher::default_app_candidates();
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             self.default_app_rects.extend(
                 default_app_rows(body_rect, &candidates)
                     .into_iter()
@@ -2078,17 +2083,19 @@ impl WorkspaceSettingsOverlay {
             ),
             None,
         );
-        let (members, grants, app_rules) = tree.active_workspace().map_or((0, 0, 0), |ws| {
-            let members = ws.roster().len();
-            let grants = ws
-                .capabilities
-                .iter()
-                .filter(|cap| {
-                    cap.effect == crate::shell::state::Effect::Grant && !cap.is_room_membership()
-                })
-                .count();
-            (members, grants, ws.default_apps.policy.len())
-        });
+        let (members, grants, app_rules) =
+            tree.desktop.active_workspace().map_or((0, 0, 0), |ws| {
+                let members = ws.roster().len();
+                let grants = ws
+                    .capabilities
+                    .iter()
+                    .filter(|cap| {
+                        cap.effect == crate::shell::state::Effect::Grant
+                            && !cap.is_room_membership()
+                    })
+                    .count();
+                (members, grants, ws.default_apps.policy.len())
+            });
         let stats = [
             (members.to_string(), "members"),
             (grants.to_string(), "specific grants"),

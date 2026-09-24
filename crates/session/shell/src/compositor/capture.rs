@@ -2231,6 +2231,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let (strip_id, target_group, target_tab) = {
             let workspace = tree
+                .desktop
                 .active_workspace_mut()
                 .expect("bootstrap has an active workspace");
             let strip = workspace.strips.first_mut().expect("bootstrap has a strip");
@@ -2263,7 +2264,7 @@ mod tests {
             }
             (strip.id, target_group, target_tab)
         };
-        tree.set_active_group(strip_id, 70_002);
+        tree.desktop.set_active_group(strip_id, 70_002);
 
         let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
         let _ = frame_builder.paint();

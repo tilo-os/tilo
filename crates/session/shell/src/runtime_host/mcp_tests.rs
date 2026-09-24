@@ -14,7 +14,7 @@ fn fixture() -> (
     let room = workspace.room.to_string();
     let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
     workspace.owner = Some(actor.clone());
-    tree.workspaces.push(workspace);
+    tree.desktop.workspaces.push(workspace);
     tree.set_active(WorkspaceId(71));
     (
         local_directory_fixture_with_membership(tree.shared()),
@@ -599,7 +599,7 @@ async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
         let room = workspace.room.to_string();
         let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
         workspace.owner = Some(actor.clone());
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(71));
         let mut fixture = crate::shell::collab_broker_capnp::tests::local_directory_fixture_with_first_allocated_peer(tree.shared());
         let mut server = McpServer::new(fixture.broker.clone(), room, actor.clone());

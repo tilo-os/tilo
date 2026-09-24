@@ -668,7 +668,8 @@ impl ApplicationsProvider {
                             st.strip_viewport(),
                             st.open_target,
                         );
-                        tree.active_workspace()
+                        tree.desktop
+                            .active_workspace()
                             .map(|ws| (ws.room, ws.capabilities.clone()))
                     };
                     let Some((room, capabilities)) = context else {
@@ -752,10 +753,10 @@ pub(crate) const SYSTEM_FILE_MANAGER: &str = "so.tilo.file-explorer";
 fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
     let ws_id = {
         let st = chrome.borrow();
-        if st.tree().active_workspace().is_none() {
+        if st.tree().desktop.active_workspace().is_none() {
             return;
         }
-        st.tree().active
+        st.tree().desktop.active
     };
     let granted = {
         let st = chrome.borrow_mut();
@@ -790,7 +791,12 @@ pub(crate) fn grant_file_manager_home(
     let Some(home) = dirs::home_dir() else {
         return false;
     };
-    let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == workspace) else {
+    let Some(ws) = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == workspace)
+    else {
         return false;
     };
     // Asks the capability model rather than re-deriving prefix logic.
@@ -831,7 +837,7 @@ pub(crate) fn launch_installed_app(
         let st = chrome.borrow();
         let tree = st.tree();
         let salt = tree.local_salt();
-        tree.active_workspace().and_then(|ws| {
+        tree.desktop.active_workspace().and_then(|ws| {
             crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
                 .map(|(strip, group, tab)| (ws.id, strip, group, tab))
         })
@@ -872,7 +878,7 @@ pub(crate) fn launch_installed_app(
             st.strip_viewport(),
             st.open_target,
         );
-        tree.active_workspace().map(|ws| {
+        tree.desktop.active_workspace().map(|ws| {
             launcher::set_workspace_capabilities(ws.capabilities.clone());
             launcher::launch_in_workspace(package_id, ws)
         })
@@ -2143,6 +2149,7 @@ mod native_application_tests {
             chrome
                 .borrow()
                 .tree()
+                .desktop
                 .active_workspace()
                 .unwrap()
                 .strips
@@ -2175,13 +2182,13 @@ mod native_application_tests {
                 crate::shell::tab_binding::Placement::NewGroup,
             );
         }
-        let strip_id = tree.workspaces[0].strips[0].id;
-        let ids = tree.workspaces[0].strips[0]
+        let strip_id = tree.desktop.workspaces[0].strips[0].id;
+        let ids = tree.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .map(|group| group.id)
             .collect::<Vec<_>>();
-        tree.set_active_group(strip_id, ids[0]);
+        tree.desktop.set_active_group(strip_id, ids[0]);
 
         let chrome = ChromeState::new(tree);
         {
@@ -2218,7 +2225,7 @@ mod native_application_tests {
 
         let state = chrome.borrow();
         let tree = state.tree();
-        let groups = &tree.active_workspace().unwrap().strips[0].window_groups;
+        let groups = &tree.desktop.active_workspace().unwrap().strips[0].window_groups;
         let files_group = groups
             .iter()
             .find(|group| !ids.contains(&group.id))

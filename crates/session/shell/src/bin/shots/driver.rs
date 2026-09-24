@@ -149,7 +149,8 @@ impl ShellDriver {
         let strip_id = {
             let state = self.chrome();
             let tree = state.tree();
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .and_then(|workspace| workspace.strips.first())
                 .map(|strip| strip.id)
         };
@@ -178,7 +179,8 @@ impl ShellDriver {
         let strip_id = {
             let state = self.chrome();
             let tree = state.tree();
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .and_then(|workspace| workspace.strips.first())
                 .map(|strip| strip.id)
         };
@@ -617,8 +619,9 @@ impl ShellDriver {
             let handle = self.chrome_handle();
             let st = handle.borrow();
             let tree = st.tree();
-            let active = tree.active_workspace().map(|w| w.room);
-            tree.workspaces
+            let active = tree.desktop.active_workspace().map(|w| w.room);
+            tree.desktop
+                .workspaces
                 .iter()
                 .filter(|w| Some(w.room) != active)
                 .map(|w| w.room)
@@ -653,7 +656,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            let ws_id = tree.active;
+            let ws_id = tree.desktop.active;
             let room = ws_id.raw().to_string();
             for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
                 tree.grant_in_workspace(
@@ -664,7 +667,7 @@ impl ShellDriver {
             }
             // Both members at their desks: a room only carries a display
             // name while a session of theirs is present.
-            if let Some(ws) = tree.active_workspace_mut() {
+            if let Some(ws) = tree.desktop.active_workspace_mut() {
                 ws.collaborators
                     .push(shell::shell::state::Collaborator::new("ada", "Ada"));
                 ws.collaborators
@@ -684,6 +687,7 @@ impl ShellDriver {
             // membership their presence implies, so the row shows the
             // faces of people who can actually reach it.
             let research: Vec<_> = tree
+                .desktop
                 .workspaces
                 .iter()
                 .filter(|w| w.name == "Research")
@@ -722,14 +726,14 @@ impl ShellDriver {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
-            let workspace_id = tree.active;
+            let workspace_id = tree.desktop.active;
             let room = workspace_id.raw().to_string();
             tree.grant_in_workspace(
                 workspace_id,
                 &owner,
                 CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
             );
-            if let Some(workspace) = tree.active_workspace_mut() {
+            if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
                 workspace
                     .collaborators
@@ -806,9 +810,10 @@ impl ShellDriver {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
-            let workspace = tree.active;
+            let workspace = tree.desktop.active;
             let room = workspace.raw().to_string();
             let tab_ids = tree
+                .desktop
                 .active_workspace()
                 .into_iter()
                 .flat_map(|workspace| &workspace.strips)
@@ -842,7 +847,7 @@ impl ShellDriver {
                         },
                     ),
                 );
-                if let Some(active) = tree.active_workspace_mut()
+                if let Some(active) = tree.desktop.active_workspace_mut()
                     && !active.collaborators.iter().any(|person| person.id == id)
                 {
                     let mut collaborator = Collaborator::new(id, name);
@@ -870,7 +875,7 @@ impl ShellDriver {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
-            let workspace = tree.active;
+            let workspace = tree.desktop.active;
             tree.grant_in_workspace(
                 workspace,
                 &owner,
@@ -880,7 +885,7 @@ impl ShellDriver {
                     Verb::Write,
                 ),
             );
-            if let Some(ws) = tree.active_workspace_mut()
+            if let Some(ws) = tree.desktop.active_workspace_mut()
                 && !ws.collaborators.iter().any(|person| person.id == "ada")
             {
                 ws.collaborators
@@ -902,7 +907,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            let notes_tab = tree.active_workspace().and_then(|ws| {
+            let notes_tab = tree.desktop.active_workspace().and_then(|ws| {
                 ws.strips
                     .iter()
                     .flat_map(|strip| &strip.window_groups)
@@ -910,7 +915,7 @@ impl ShellDriver {
                     .find(|tab| tab.title == "Notes")
                     .map(|tab| tab.id)
             });
-            if let (Some(notes_tab), Some(ws)) = (notes_tab, tree.active_workspace_mut())
+            if let (Some(notes_tab), Some(ws)) = (notes_tab, tree.desktop.active_workspace_mut())
                 && let Some(ada) = ws
                     .collaborators
                     .iter_mut()
@@ -939,7 +944,8 @@ impl ShellDriver {
         let room = {
             let state = self.chrome();
             let tree = state.tree();
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .map(|workspace| workspace.room.to_string())
         };
         if let Some(room) = room {
@@ -958,7 +964,8 @@ impl ShellDriver {
         let room = {
             let state = self.chrome();
             let tree = state.tree();
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .map(|workspace| workspace.room.to_string())
         };
         if room.is_some() {
@@ -1086,7 +1093,7 @@ impl ShellDriver {
         let target = {
             let state = self.chrome();
             let tree = state.tree();
-            tree.active_workspace().and_then(|ws| {
+            tree.desktop.active_workspace().and_then(|ws| {
                 ws.strips.iter().find_map(|strip| {
                     strip.window_groups.iter().find_map(|group| {
                         group
@@ -1105,7 +1112,7 @@ impl ShellDriver {
             .focus_window_on_strip(strip, group, files_tab);
         self.with_chrome(|state| {
             let mut tree = state.tree_mut();
-            if let Some(ada) = tree.active_workspace_mut().and_then(|ws| {
+            if let Some(ada) = tree.desktop.active_workspace_mut().and_then(|ws| {
                 ws.collaborators
                     .iter_mut()
                     .find(|person| person.id == "ada")
@@ -1134,7 +1141,7 @@ impl ShellDriver {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
-            let ws_id = tree.active;
+            let ws_id = tree.desktop.active;
             let room = ws_id.raw().to_string();
             for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
                 tree.grant_in_workspace(
@@ -1508,7 +1515,7 @@ impl ShellDriver {
             );
             let owner = hex::encode(owner_public.as_bytes());
             st.local_user_id.clone_from(&owner);
-            if let Some(workspace) = st.tree_mut().active_workspace_mut() {
+            if let Some(workspace) = st.tree_mut().desktop.active_workspace_mut() {
                 workspace.set_owner(owner);
                 workspace.collaborators.push(
                     shell::shell::state::Collaborator::new(
@@ -1564,7 +1571,7 @@ impl ShellDriver {
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
-                if let Some(ws) = tree.active_workspace_mut()
+                if let Some(ws) = tree.desktop.active_workspace_mut()
                     && !ws.collaborators.iter().any(|person| person.id == "cy")
                 {
                     ws.collaborators
@@ -1586,7 +1593,7 @@ impl ShellDriver {
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();
-                if let Some(ws) = tree.active_workspace_mut() {
+                if let Some(ws) = tree.desktop.active_workspace_mut() {
                     for strip in &mut ws.strips {
                         strip.window_groups.clear();
                     }
@@ -1661,7 +1668,7 @@ impl ShellDriver {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
             tree.adopt_ownerless_workspaces(&owner);
-            let ws_id = tree.active;
+            let ws_id = tree.desktop.active;
             tree.grant_in_workspace(
                 ws_id,
                 &owner,
@@ -1689,7 +1696,7 @@ impl ShellDriver {
             if let Some(cap_id) = temp {
                 tree.revoke_in_workspace(ws_id, &owner, &cap_id);
             }
-            if let Some(ws) = tree.active_workspace_mut() {
+            if let Some(ws) = tree.desktop.active_workspace_mut() {
                 ws.name = "Design review".to_string();
             }
             tree.seed_doc_from_cache();
@@ -1838,7 +1845,7 @@ impl ShellDriver {
         {
             let state = handle.borrow();
             let mut tree = state.tree_mut();
-            let workspace = tree.active;
+            let workspace = tree.desktop.active;
             for (actor, group_id, group_label, action) in [
                 (
                     "Xaver",
@@ -2140,7 +2147,7 @@ impl ShellDriver {
         use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
-            if let Some(ws) = tree.active_workspace_mut()
+            if let Some(ws) = tree.desktop.active_workspace_mut()
                 && let Some(strip) = ws.strips.first_mut()
             {
                 // IDs picked far above the bootstrap range so
@@ -2182,6 +2189,7 @@ impl ShellDriver {
             {
                 let mut tree = st.tree_mut();
                 if let Some(strip) = tree
+                    .desktop
                     .active_workspace_mut()
                     .and_then(|ws| ws.strips.first_mut())
                 {
@@ -2224,6 +2232,7 @@ impl ShellDriver {
             let mut sibling = None;
             let mut strip_id = None;
             if let Some(strip) = tree
+                .desktop
                 .active_workspace_mut()
                 .and_then(|ws| ws.strips.first_mut())
             {
@@ -2252,7 +2261,7 @@ impl ShellDriver {
             // Focus the newly-added right-hand window, so the
             // scene shows the signal moving off the default.
             if let (Some(sid), Some(gid)) = (strip_id, sibling) {
-                tree.set_active_group(sid, gid);
+                tree.desktop.set_active_group(sid, gid);
                 placed = Some(sid);
             }
             drop(tree);
@@ -2286,7 +2295,7 @@ impl ShellDriver {
             let mut focus = None;
             {
                 let mut tree = st.tree_mut();
-                if let Some(ws) = tree.active_workspace_mut() {
+                if let Some(ws) = tree.desktop.active_workspace_mut() {
                     for (n, name) in ["Build", "Review"].iter().enumerate() {
                         let n = n as u64;
                         let sid = StripId(9200u64.saturating_add(n));
@@ -2312,7 +2321,7 @@ impl ShellDriver {
                     focus = ws.strips.get(1).map(|s| s.id).map(|sid| (ws.id, sid));
                 }
                 if let Some((ws_id, sid)) = focus {
-                    tree.active_strip.insert(ws_id, sid);
+                    tree.desktop.active_strip.insert(ws_id, sid);
                 }
             }
             st.bump();
@@ -2483,6 +2492,7 @@ mod tests {
         let invited = d
             .chrome()
             .tree()
+            .desktop
             .active_workspace()
             .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
             .cloned()
@@ -2494,12 +2504,13 @@ mod tests {
         let live = d
             .chrome()
             .tree()
+            .desktop
             .active_workspace()
             .and_then(|ws| ws.collaborators.iter().find(|person| person.id == "ada"))
             .cloned()
             .expect("acceptance retains the same identity");
         assert!(!live.invited);
-        let notes = d.chrome().tree().active_workspace().and_then(|ws| {
+        let notes = d.chrome().tree().desktop.active_workspace().and_then(|ws| {
             ws.strips
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
@@ -2577,8 +2588,8 @@ mod tests {
         let strip_id = {
             let st = d.chrome();
             let tree = st.tree();
-            let ws_id = tree.active;
-            *tree.active_strip.get(&ws_id).expect("active strip")
+            let ws_id = tree.desktop.active;
+            *tree.desktop.active_strip.get(&ws_id).expect("active strip")
         };
         let pre = d.host().groups_per_strip();
         let pre_strip = pre
@@ -2738,8 +2749,8 @@ mod tests {
         let strip_id = {
             let st = d.chrome();
             let tree = st.tree();
-            let ws_id = tree.active;
-            *tree.active_strip.get(&ws_id).expect("active strip")
+            let ws_id = tree.desktop.active;
+            *tree.desktop.active_strip.get(&ws_id).expect("active strip")
         };
         let (from, to) = {
             let group = d

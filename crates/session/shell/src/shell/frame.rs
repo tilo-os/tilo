@@ -46,7 +46,9 @@ fn consume_record_requests(
         let room = {
             let state = chrome.borrow();
             let tree = state.tree();
-            tree.active_workspace().map(|workspace| workspace.room)
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.room)
         };
         if let Some(room) = room {
             let mut index = index.borrow_mut();
@@ -67,7 +69,8 @@ fn consume_record_requests(
         let authorized = {
             let state = chrome.borrow();
             let tree = state.tree();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|workspace| {
                     workspace.id == request.workspace_id && workspace.room == request.room
@@ -995,7 +998,7 @@ impl FrameBuilder {
         let epoch = {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
-            tree.room_epoch()
+            tree.desktop.room_epoch()
         };
         // Peer windows are examined on rounds after an arrival too, not just
         // the arrival itself: `peer_windows::examine` starts at most one
@@ -1897,6 +1900,7 @@ impl FrameBuilder {
         let surface_ids: Vec<u64> = {
             let tree = self.chrome.borrow();
             tree.tree()
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|workspace| &workspace.strips)
@@ -2600,34 +2604,38 @@ mod tests {
         let source_id = WorkspaceId::new();
         let destination_id = WorkspaceId::new();
         let mut tree = WorkspaceTree::default();
-        tree.workspaces = vec![
+        tree.desktop.workspaces = vec![
             Workspace::new(source_id, "Source"),
             Workspace::new(destination_id, "Destination"),
         ];
-        tree.active = source_id;
+        tree.desktop.active = source_id;
         let chrome = ChromeState::new(tree);
         let (source_room, destination_room) = {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
             let source_room = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == source_id)
                 .expect("source workspace")
                 .room;
             let destination_room = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == destination_id)
                 .expect("destination workspace")
                 .room;
             let source_user = state.local_user_for_room(&source_room);
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == source_id)
                 .expect("source workspace")
                 .set_owner(source_user);
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == destination_id)
                 .expect("destination workspace")
@@ -2672,7 +2680,7 @@ mod tests {
             InvocationDisposition::Pending(ticket) => ticket,
             InvocationDisposition::Accepted(_) => panic!("record request completed before frame"),
         };
-        chrome.borrow().tree_mut().active = destination_id;
+        chrome.borrow().tree_mut().desktop.active = destination_id;
         let index = std::rc::Rc::new(std::cell::RefCell::new(
             crate::shell::room_records::RoomRecords::in_memory(),
         ));
@@ -2682,7 +2690,7 @@ mod tests {
         assert!(!index.borrow().holds(destination_room, &record));
 
         let denied_record = RecordId::minted();
-        chrome.borrow().tree_mut().active = source_id;
+        chrome.borrow().tree_mut().desktop.active = source_id;
         let denied_args = ActionArgs::bind(
             &result.params,
             [
@@ -2712,13 +2720,14 @@ mod tests {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
             let source = tree
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == source_id)
                 .expect("source workspace");
             source.owner = None;
             source.capabilities.clear();
-            tree.active = destination_id;
+            tree.desktop.active = destination_id;
         }
         consume_record_requests(&chrome, &index);
         assert!(denied().is_err(), "revoked target authority fails closed");
@@ -3429,7 +3438,7 @@ mod tests {
         let joined = {
             let chrome = fb.chrome();
             let mut tree = chrome.tree_mut();
-            let active = tree.active;
+            let active = tree.desktop.active;
             tree.set_room(active, room)
         };
         assert!(joined, "this session joins the peer's room");
@@ -3514,7 +3523,7 @@ mod tests {
             !reg.contains_key("topbar_workspace_up_enabled"),
             "booted on the first workspace: nothing above it, up must read disabled"
         );
-        let booted_with_more_below = fb.chrome().tree().workspaces.len() > 1;
+        let booted_with_more_below = fb.chrome().tree().desktop.workspaces.len() > 1;
         assert_eq!(
             reg.contains_key("topbar_workspace_down_enabled"),
             booted_with_more_below,
@@ -3545,9 +3554,10 @@ mod tests {
         let reg = frame(&mut fb);
         let idx = |fb: &FrameBuilder| {
             let tree = fb.chrome().tree().clone();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
-                .position(|w| w.id == tree.active)
+                .position(|w| w.id == tree.desktop.active)
                 .expect("active workspace is in the tree")
         };
         assert!(
@@ -3614,7 +3624,8 @@ mod tests {
         let gid = {
             let chrome = fb.chrome();
             let tree = chrome.tree();
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .expect("bootstrap tree has an active workspace")
                 .strips[0]
                 .window_groups[0]

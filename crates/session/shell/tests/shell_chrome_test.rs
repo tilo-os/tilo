@@ -41,13 +41,13 @@ fn overview_view_click_activates_workspace() {
         },
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.desktop.active = tree.desktop.workspaces[0].id;
 
     let mut ov = OverviewView::new();
     ov.sync(&tree);
     assert_eq!(ov.card_count(), 2);
     ov.click_card(1, &mut tree);
-    assert_eq!(tree.active, b_id);
+    assert_eq!(tree.desktop.active, b_id);
 }
 
 use shell::shell::global_search::GlobalSearch;
@@ -191,16 +191,16 @@ fn topbar_leftnav_navigates_workspaces() {
         },
         ..Default::default()
     };
-    tree.active = tree.workspaces[1].id;
+    tree.desktop.active = tree.desktop.workspaces[1].id;
     let mut tb = TopBar::new();
     tb.emit(TopBarEvent::WorkspaceUp, &mut tree);
-    assert_eq!(tree.active, tree.workspaces[0].id);
+    assert_eq!(tree.desktop.active, tree.desktop.workspaces[0].id);
     tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
     tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
-    assert_eq!(tree.active, tree.workspaces[2].id);
+    assert_eq!(tree.desktop.active, tree.desktop.workspaces[2].id);
     // clamped at edges
     tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
-    assert_eq!(tree.active, tree.workspaces[2].id);
+    assert_eq!(tree.desktop.active, tree.desktop.workspaces[2].id);
 }
 
 #[test]
@@ -231,7 +231,7 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
         },
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.desktop.active = tree.desktop.workspaces[0].id;
     let mut tb = TopBar::new();
     let avatars = tb.visible_avatars(&tree, 3);
     assert_eq!(avatars.len(), 3);
@@ -258,7 +258,7 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
         },
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.desktop.active = tree.desktop.workspaces[0].id;
     let chrome = TopBarChrome::from_tree(&tree);
     let colors = chrome.collaborator_colors();
     assert_eq!(colors.len(), 2);

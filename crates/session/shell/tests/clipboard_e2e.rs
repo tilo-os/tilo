@@ -175,7 +175,7 @@ impl Compositor {
         // sample data and migrated to a clean first-boot tree on load. This
         // suite requires the hosted Files tab, so mark the persisted
         // tree as test-owned instead of accidentally exercising that cleanup.
-        fixture_tree.workspaces[0].name = "Clipboard test desktop".into();
+        fixture_tree.desktop.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
         let identity_root = Self::seed_identity(&runtime_dir);

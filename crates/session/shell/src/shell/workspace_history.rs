@@ -754,7 +754,8 @@ fn referenced_records(tree: &WorkspaceTree, room: Option<RoomId>) -> Vec<RecordC
     let Some(room) = room else {
         return Vec::new();
     };
-    tree.room_records_held
+    tree.desktop
+        .room_records_held
         .get(&room)
         .into_iter()
         .flat_map(|records| records.iter())
@@ -854,7 +855,8 @@ mod tests {
             RoomId::new(),
             30,
         );
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(kept.id.to_string(), kept.kind.to_string());
@@ -883,7 +885,8 @@ mod tests {
         let first = action_record(&records, RecordId::for_tab(1), room, 20);
         let second = action_record(&records, RecordId::for_tab(2), room, 20);
         for record in [&first, &second] {
-            tree.room_records_held
+            tree.desktop
+                .room_records_held
                 .entry(room)
                 .or_default()
                 .insert(record.id.to_string(), record.kind.to_string());
@@ -913,7 +916,8 @@ mod tests {
         let (mut tree, room) = tree_and_room();
         let records = RecordStore::in_memory();
         let record = action_record(&records, RecordId::for_tab(72), room, 20);
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(record.id.to_string(), record.kind.to_string());
@@ -993,7 +997,8 @@ mod tests {
     fn reports_referenced_documents_that_are_not_local() {
         let (mut tree, room) = tree_and_room();
         let missing = RecordCheckout::new(RecordId::minted(), RecordKind::new("kanban"));
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(missing.id.to_string(), missing.kind.to_string());
@@ -1021,7 +1026,8 @@ mod tests {
             documents: [(checkout.id.clone(), doc.save())].into_iter().collect(),
             loads: Cell::new(0),
         };
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(checkout.id.to_string(), checkout.kind.to_string());
@@ -1054,7 +1060,8 @@ mod tests {
                 .collect(),
             loads: Cell::new(0),
         };
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(checkout.id.to_string(), checkout.kind.to_string());
@@ -1075,7 +1082,8 @@ mod tests {
         let (mut tree, room) = tree_and_room();
         let records = RecordStore::in_memory();
         let record = action_record(&records, RecordId::for_tab(44), room, 20);
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(record.id.to_string(), record.kind.to_string());
@@ -1171,7 +1179,8 @@ mod tests {
         let (mut tree, room) = tree_and_room();
         let records = RecordStore::in_memory();
         let record = action_record(&records, RecordId::for_tab(55), room, 20);
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(record.id.to_string(), record.kind.to_string());
@@ -1203,7 +1212,8 @@ mod tests {
         let records = RecordStore::in_memory();
         for (name, time) in [("older.md", 10), ("newer.md", 20)] {
             let record = action_record(&records, RecordId::for_file(name), room, time);
-            tree.room_records_held
+            tree.desktop
+                .room_records_held
                 .entry(room)
                 .or_default()
                 .insert(record.id.to_string(), record.kind.to_string());
@@ -1240,11 +1250,13 @@ mod tests {
             RoomId::new(),
             40,
         );
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(room)
             .or_default()
             .insert(first.id.to_string(), first.kind.to_string());
-        tree.room_records_held
+        tree.desktop
+            .room_records_held
             .entry(represented)
             .or_default()
             .insert(second.id.to_string(), second.kind.to_string());

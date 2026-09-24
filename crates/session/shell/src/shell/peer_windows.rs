@@ -55,7 +55,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id)) {
             continue;
         }
-        let Some(workspace) = tree.workspaces.get(item.workspace) else {
+        let Some(workspace) = tree.desktop.workspaces.get(item.workspace) else {
             continue;
         };
         // A same-identity continuation can discover the room before its
@@ -97,7 +97,7 @@ pub(crate) fn mark_failed_host_restore(tree: &mut WorkspaceTree, desktop_id: &st
         return false;
     };
     let mut changed = false;
-    for ws in &mut tree.workspaces {
+    for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -124,7 +124,7 @@ pub(crate) fn mark_failed_host_restore(tree: &mut WorkspaceTree, desktop_id: &st
 /// Every peer window with no note on it yet.
 fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     let mut out = Vec::new();
-    for (idx, ws) in tree.workspaces.iter().enumerate() {
+    for (idx, ws) in tree.desktop.workspaces.iter().enumerate() {
         for strip in &ws.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
@@ -161,7 +161,7 @@ enum OpenResult {
 }
 
 fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, String> {
-    let Some(ws) = tree.workspaces.get(item.workspace) else {
+    let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
     let ws_id = ws.id;
@@ -190,7 +190,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
             &item.app_id,
         );
     }
-    let Some(ws) = tree.workspaces.get(item.workspace) else {
+    let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
     // Before the launch, or a note written after races the window's toplevel.
@@ -267,7 +267,7 @@ fn admits(ws: &Workspace, app_id: &str) -> Result<(), String> {
 /// `false` if the tab went away, or stopped being a peer window, while the
 /// decision was being made.
 fn set_note(tree: &mut WorkspaceTree, tab: TabId, note: String) -> bool {
-    for ws in &mut tree.workspaces {
+    for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
                 for t in &mut group.tabs {
@@ -384,7 +384,8 @@ mod tests {
     }
 
     fn local_app_note(tree: &WorkspaceTree, tab_id: TabId) -> &str {
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
             .flat_map(|strip| strip.window_groups.iter())
@@ -458,7 +459,7 @@ mod tests {
         let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("quinten"), FILES);
 
         assert!(
-            !may_read(&tree.workspaces[0], FILES, &home),
+            !may_read(&tree.desktop.workspaces[0], FILES, &home),
             "fixture sanity: the file manager must start with no grant on the home, \
              or this test cannot tell a granted one from a pre-granted one"
         );
@@ -466,7 +467,7 @@ mod tests {
         let _ = examine(&mut tree);
 
         assert!(
-            may_read(&tree.workspaces[0], FILES, &home),
+            may_read(&tree.desktop.workspaces[0], FILES, &home),
             "a file manager started on the room's behalf must be able to read the \
              user's home; without it the window opens on its sandbox directory and \
              says the folder is empty"
@@ -482,7 +483,7 @@ mod tests {
         let _ = examine(&mut tree);
 
         assert!(
-            !may_read(&tree.workspaces[0], APP, &home),
+            !may_read(&tree.desktop.workspaces[0], APP, &home),
             "only the file manager gets the user's home; the word processor must not"
         );
     }
@@ -498,7 +499,7 @@ mod tests {
         let _ = examine(&mut tree);
 
         assert!(
-            !may_read(&tree.workspaces[0], FILES, &home),
+            !may_read(&tree.desktop.workspaces[0], FILES, &home),
             "a room that authorises no launch must not hand out the home either"
         );
     }
@@ -574,7 +575,7 @@ mod tests {
     fn an_unanswered_card_is_not_a_window_to_return_to() {
         let (tree, _tab) = tree_with_peer_window(room_owned_by("quinten"));
         assert!(
-            opened_for_the_room(&tree.workspaces[0], APP, 0).is_none(),
+            opened_for_the_room(&tree.desktop.workspaces[0], APP, 0).is_none(),
             "an unexamined peer window has no instance behind it yet"
         );
     }
@@ -645,7 +646,7 @@ mod tests {
             "missing authority is transient and must not become a permanent refusal"
         );
         assert!(any_pending(&tree), "the next authority sync must retry it");
-        let note = tree.workspaces[0].strips[0].window_groups[0]
+        let note = tree.desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
             .find(|t| t.id == tab)

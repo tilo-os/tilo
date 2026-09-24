@@ -290,12 +290,12 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     // strip A on the next reload.
     let st = chrome.borrow();
     let tree = st.tree();
-    let tree_strip_a = tree.workspaces[0]
+    let tree_strip_a = tree.desktop.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_a)
         .expect("strip A in tree");
-    let tree_strip_b = tree.workspaces[0]
+    let tree_strip_b = tree.desktop.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_b)
