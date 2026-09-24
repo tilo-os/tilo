@@ -11,6 +11,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::overview::OverviewView;

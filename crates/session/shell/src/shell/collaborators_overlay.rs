@@ -1650,6 +1650,7 @@ fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
 
     /// HIG §9.5: the footer separator (derived against the Panel ground) and
     /// the activity row's edge (derived against its lift floor) must both

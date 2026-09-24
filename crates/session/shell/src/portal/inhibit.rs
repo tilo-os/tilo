@@ -299,10 +299,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn context() -> PortalContext {
         let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-            crate::shell::state::Workspace::test_default(
-                crate::shell::state::WorkspaceId(1),
-                "test",
-            ),
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "test"),
         );
         PortalContext::new_with_null_spawners(
             grants,

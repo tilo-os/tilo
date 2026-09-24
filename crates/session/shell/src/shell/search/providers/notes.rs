@@ -86,6 +86,7 @@ impl SearchProvider for NotesProvider {
 mod tests {
     use super::*;
     use crate::shell::notes_app::NotesApp;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,

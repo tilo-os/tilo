@@ -2486,7 +2486,7 @@ mod tests {
         let mut workspace_tree = WorkspaceTree::default();
         workspace_tree
             .workspaces
-            .push(Workspace::test_default(WorkspaceId(1), "Search fixture"));
+            .push(Workspace::new(WorkspaceId(1), "Search fixture"));
         workspace_tree.active = WorkspaceId(1);
         let tree: WorkspaceTreeHandle = Arc::new(RwLock::new(workspace_tree));
         ChromeState::new_with_handle(tree)

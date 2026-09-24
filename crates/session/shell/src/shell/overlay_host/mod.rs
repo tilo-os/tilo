@@ -17980,9 +17980,7 @@ pub(crate) fn fill_scrim(
 fn build_state_group_from_widget(
     widget: &ui::widget::WindowGroup,
 ) -> crate::shell::state::WindowGroup {
-    use crate::shell::state::{
-        AppKind, Tab, TileContent, WindowGroup as StateGroup, WindowWidth as StateWidth,
-    };
+    use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup as StateGroup};
     let tabs: Vec<Tab> = widget
         .tabs()
         .iter()
@@ -18009,7 +18007,7 @@ fn build_state_group_from_widget(
         })
         .collect();
     let active_tab = widget.active_tab_id();
-    let width = StateWidth::from_ui(widget.width());
+    let width = crate::shell::state::window_width_from_ui(widget.width());
     StateGroup {
         id: widget.id,
         tabs,
@@ -23778,6 +23776,7 @@ mod tab_context_menu_tests {
     use super::overlay_event_absorb_tests::lay_out_host_with_theme;
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -24516,6 +24515,7 @@ mod overview_panel_tests {
     //! it, what leaves it, how to get to another. These pin geometry/data,
     //! not pixels — every assertion runs against the same helpers
     //! `draw_overview` itself calls (`overview_row_rect`, `room_cards`).
+    use crate::shell::state::FreshId as _;
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -32887,6 +32887,7 @@ mod maximize_harvest_tests {
     //! leave persisted state alone, and a pending change must write through.
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -33136,6 +33137,7 @@ mod resync_strips_tests {
     //! skips it.
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -34230,6 +34232,7 @@ mod peer_cursor_tests {
     //! a real peer is still drawn.
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, Collaborator, GroupId, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -34265,7 +34268,7 @@ mod peer_cursor_tests {
         };
         // Through the constructor rather than a struct literal: a field
         // added to `Workspace` should not break this fixture.
-        let mut ws = Workspace::test_default(ws_id, "Work");
+        let mut ws = Workspace::new(ws_id, "Work");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
             workspaces: vec![ws],
@@ -34516,7 +34519,7 @@ mod peer_cursor_tests {
         let expected_room = tree.workspaces[0].room;
         let next_workspace = WorkspaceId::new();
         tree.workspaces
-            .push(Workspace::test_default(next_workspace, "Elsewhere"));
+            .push(Workspace::new(next_workspace, "Elsewhere"));
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -34554,6 +34557,7 @@ mod peer_cursor_tests {
 mod roster_rows {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         CapOverride, Collaborator, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
     };
@@ -34564,7 +34568,7 @@ mod roster_rows {
     fn tree_with_room() -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
-        let mut ws = Workspace::test_default(id, "Demo");
+        let mut ws = Workspace::new(id, "Demo");
         ws.set_owner("quinten");
         tree.workspaces.push(ws);
         tree.active = id;

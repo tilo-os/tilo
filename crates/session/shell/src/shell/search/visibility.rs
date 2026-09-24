@@ -132,6 +132,7 @@ impl ActionVisibility for CapabilityVisibility<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{CapOverride, Principal, Scope, Subject, UserId, WorkspaceId};
 
     fn resource(provider: &str, id: &str) -> ResourceRef {

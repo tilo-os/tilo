@@ -4952,6 +4952,7 @@ mod calendar_strip_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         CapOverride, Strip, Subject, Tab, TileContent, Verb, WindowGroup, WindowWidth, Workspace,
         WorkspaceId, WorkspaceTree,

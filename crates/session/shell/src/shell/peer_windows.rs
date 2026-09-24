@@ -339,7 +339,7 @@ mod tests {
     const APP: &str = "so.tilo.word-processor";
 
     fn room_owned_by(owner: &str) -> Workspace {
-        let mut ws = Workspace::test_default(WorkspaceId::from(next_id()), "shared");
+        let mut ws = Workspace::new(WorkspaceId::from(next_id()), "shared");
         ws.owner = Some(owner.to_string());
         ws
     }

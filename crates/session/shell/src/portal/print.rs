@@ -802,7 +802,7 @@ mod tests {
         app: &str,
     ) -> (PortalContext, WorkspaceId) {
         let (store, ws_id) =
-            GrantStoreHandle::test_with_workspace(Workspace::test_default(WorkspaceId(90), "pr"));
+            GrantStoreHandle::test_with_workspace(Workspace::new(WorkspaceId(90), "pr"));
         let map = CallerMap::new();
         map.force_caller_for_tests(PortalCaller::new(ws_id, app));
         let mut ctx =

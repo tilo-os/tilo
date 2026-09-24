@@ -5806,6 +5806,7 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
 
     fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
         crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
@@ -8157,10 +8158,8 @@ mod tests {
         sign_device_cert(&mut cert, &root).expect("certificate");
 
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(17),
-            "Shared",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(17), "Shared");
         workspace.room = room;
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
         let mut tree = WorkspaceTree::default();
@@ -8532,10 +8531,8 @@ mod tests {
         sign_device_cert(&mut cert, &root).expect("certificate");
 
         let room = RoomId::new();
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(81),
-            "Read only",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(81), "Read only");
         workspace.room = room;
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&room));
         let mut tree = WorkspaceTree::default();
@@ -9298,7 +9295,7 @@ mod tests {
         use crate::network::invite::make_invite_token;
         use crate::shell::state::Workspace;
 
-        let host_ws = Workspace::test_default(
+        let host_ws = Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "Design review".to_string(),
         );
@@ -9398,7 +9395,7 @@ mod tests {
         };
         sign_device_cert(&mut owner_cert, &owner_root).expect("owner certificate");
 
-        let host_workspace = crate::shell::state::Workspace::test_default(
+        let host_workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "Alice shared",
         );
@@ -9874,7 +9871,7 @@ mod tests {
         owner: &str,
         member: &str,
     ) -> (crate::shell::state::Workspace, crate::shell::state::RoomId) {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(51),
             "Shared room",
         );
