@@ -1895,14 +1895,17 @@ mod tests {
 
     #[test]
     fn oversized_query_stops_before_index_work_or_materialisation() {
+        // Every record contains the whole query, so any index work would
+        // inspect candidates and find them; `inspected == 0` proves the
+        // rejection came first without a large corpus to make a scan slow.
+        let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
         let catalog = SearchCatalog::new("Documents");
-        for index in 0..100_001 {
+        for index in 0..32 {
             let id = format!("document:{index:06}");
             catalog
-                .upsert(&id, "common searchable document", catalog_hit(&id, &id))
+                .upsert(&id, format!("document {query}"), catalog_hit(&id, &id))
                 .unwrap();
         }
-        let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
 
         let page = catalog.query_page(&query, None, 1, 1);
         assert!(page.results.is_empty());
