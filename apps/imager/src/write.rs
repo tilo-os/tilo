@@ -1874,11 +1874,6 @@ pub fn spawn_job(
 mod tests {
     use super::*;
     use crate::model::{sample_source, sample_targets};
-    use std::sync::Mutex;
-
-    /// Serialises tests which change process environment, since it is shared
-    /// across parallel test threads.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn target_lock_prefers_stable_hardware_identity_then_falls_back_to_path() {
@@ -1931,10 +1926,9 @@ mod tests {
     #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn default_backend_is_disabled_without_gate() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // No opt-in env var set → unavailable, never a fake success.
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
         assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
         assert!(!allow_write());
     }
@@ -1942,33 +1936,30 @@ mod tests {
     #[test]
     #[cfg(feature = "host-media-writer")]
     fn packaged_host_build_enables_the_short_lived_helper_without_an_environment_flag() {
-        let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
     }
 
     #[test]
     fn live_ui_uses_short_lived_privileged_helper() {
-        let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::set_var("IMAGER_LIVE", "1") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_IMAGER_ALLOW_WRITE")
+            .set("IMAGER_LIVE", "1");
         assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
         assert!(write_available());
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
     }
 
     #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
     #[test]
     fn flatpak_selects_udisks_without_enabling_direct_device_writes() {
-        let _g = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
-        unsafe { std::env::set_var("TILO_IMAGER_FLATPAK", "1") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_IMAGER_ALLOW_WRITE")
+            .remove("IMAGER_LIVE")
+            .set("TILO_IMAGER_FLATPAK", "1");
         assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
         assert!(!allow_write(), "the sandbox never gains direct /dev access");
-        unsafe { std::env::remove_var("TILO_IMAGER_FLATPAK") };
     }
 
     #[test]
@@ -1981,14 +1972,14 @@ mod tests {
 
     #[test]
     fn system_backend_selected_only_with_gate_on() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // The real block-device backend is chosen ONLY when the operator opts
         // in explicitly; flipping the gate is the single switch between the
         // disabled path and the real device write.
-        unsafe { std::env::set_var("TILO_IMAGER_ALLOW_WRITE", "1") };
+        env.set("TILO_IMAGER_ALLOW_WRITE", "1");
         assert!(allow_write());
         assert_eq!(WriteBackend::system(), WriteBackend::System);
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
+        env.remove("TILO_IMAGER_ALLOW_WRITE");
         let expected = if cfg!(feature = "host-media-writer") {
             WriteBackend::PrivilegedHelper
         } else {
@@ -2015,11 +2006,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         #[cfg(target_os = "linux")]
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         #[cfg(target_os = "linux")]
-        unsafe {
-            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
-        }
+        env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
         let work = tempfile::Builder::new()
             .prefix("tilo-imager-write-")
             .tempdir()
@@ -2045,9 +2034,7 @@ mod tests {
         ];
         let error = maybe_run_write_helper(&args).unwrap_err();
         #[cfg(target_os = "linux")]
-        unsafe {
-            std::env::remove_var("PKEXEC_UID");
-        }
+        drop(env);
         assert!(error.to_string().contains("changed after authorization"));
         assert!(std::fs::read(progress_path).unwrap().is_empty());
     }
@@ -2057,7 +2044,7 @@ mod tests {
     fn helper_rejects_a_non_private_job_directory() {
         use std::os::unix::fs::PermissionsExt;
 
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let work = tempfile::Builder::new()
             .prefix("tilo-imager-write-")
             .tempdir()
@@ -2065,15 +2052,11 @@ mod tests {
         let request_path = work.path().join("request.json");
         std::fs::write(&request_path, b"{}").unwrap();
         std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        unsafe {
-            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
-        }
+        env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
 
         let error = read_linux_helper_request(&request_path).unwrap_err();
 
-        unsafe {
-            std::env::remove_var("PKEXEC_UID");
-        }
+        drop(env);
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("not private"));
     }
@@ -2084,22 +2067,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use std::os::unix::fs::symlink;
 
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let work = tempfile::tempdir().unwrap();
         let outside = work.path().join("outside");
         let request = work.path().join("request.json");
         std::fs::write(&outside, b"root-only payload").unwrap();
         symlink(&outside, &request).unwrap();
         std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        unsafe {
-            std::env::set_var("PKEXEC_UID", libc::geteuid().to_string());
-        }
+        env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
 
         let error = read_linux_helper_request(&request).unwrap_err();
 
-        unsafe {
-            std::env::remove_var("PKEXEC_UID");
-        }
+        drop(env);
         assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
     }
 
@@ -2389,11 +2368,10 @@ mod tests {
     #[test]
     #[cfg(not(feature = "host-media-writer"))]
     fn spawn_refuses_instead_of_simulating_with_gate_off() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // Validation remains pure, but the live start refuses rather than
         // reporting synthetic progress and success.
-        unsafe { std::env::remove_var("TILO_IMAGER_ALLOW_WRITE") };
-        unsafe { std::env::remove_var("IMAGER_LIVE") };
+        env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
         let r = req();
         assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
         let (start, rx, control) = spawn_job(r, "sdb");

@@ -2673,17 +2673,19 @@ mod tests {
     use super::*;
     use std::env;
 
-    fn clear_tilo_env() {
+    fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
+        let mut scoped = tilo_test_env::ScopedEnv::new();
         for (key, _) in env::vars() {
             if key.starts_with("TILO_") {
-                unsafe { env::remove_var(&key) };
+                scoped.remove(&key);
             }
         }
+        scoped
     }
 
     #[test]
     fn try_connect_without_env_returns_service_fd_missing() {
-        clear_tilo_env();
+        let _env = clear_tilo_env();
         // Not using `expect_err` because `CollabClient` intentionally
         // doesn't implement `Debug` (the underlying capnp client hook
         // isn't `Debug`).
