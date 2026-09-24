@@ -1,45 +1,55 @@
 # Format providers (file-format codecs)
 
-A Tilo format provider is a WASM Component Model binary that implements
-the `tilo:format-provider` interface. The `tilo-format-host` daemon loads
-providers via wasmtime, exposes a Cap'n Proto socket, and the editor / FS
-layer routes `detect / import / export` calls through it.
+A Tilo format provider is a core WebAssembly module that implements the
+format-provider ABI from `crates/doc/format-provider-abi`. The
+`tilo-format-host` daemon runs providers under the wasmi interpreter,
+exposes a Cap'n Proto socket, and the editor / FS layer routes
+`detect / import / export` calls through it.
 
 Same packaging pipeline: your provider is a `.tapp` with
-`kind = "format-provider"` and a WASM binary in the payload.
+`kind = "format-provider"` and a `provider.wasm` in the payload.
 
-## The WIT interface
+## The provider ABI
 
-Straight from `crates/doc/format-provider-wit/wit/format-provider.wit`:
-
-```wit
-package tilo:format-provider@1.0.0;
-
-interface format-provider {
-    record confidence { tier: u32, score: f32 }
-    record detected   { confidence: confidence, mime: option<string> }
-    record codec-error { kind: string, message: string }
-
-    detect: func(head: list<u8>) -> detected;
-    import-doc: func(bytes: list<u8>) -> result<list<u8>, codec-error>;
-    export-doc: func(canonical: list<u8>) -> result<list<u8>, codec-error>;
-}
-
-world provider {
-    export format-provider;
-}
-```
-
-Three functions:
+A provider does three things:
 
 - **`detect`** — given the first N bytes of a file, return a `(tier,
   score)` confidence plus an optional MIME the provider claims. Called on
   disagreement between multiple providers claiming the same extension.
-- **`import-doc`** — given the file bytes, return the **canonical CRDT
+- **`import`** — given the file bytes, return the **canonical CRDT
   bytes** the Tilo document layer speaks. For qdoc that is the
   `automerge::save()` output of a `qdoc::Document`.
-- **`export-doc`** — the inverse: canonical CRDT bytes back to the
+- **`export`** — the inverse: canonical CRDT bytes back to the
   provider's on-disk format.
+
+Rust providers implement the `format_provider_abi::Provider` trait and
+invoke `format_provider_abi::export_provider!`, which emits the module
+exports. Providers in other languages implement the exports directly
+(ABI version 1):
+
+| Export                | Signature           | Meaning                                  |
+| --------------------- | ------------------- | ---------------------------------------- |
+| `memory`              | memory              | The guest's linear memory.               |
+| `tilo_fp_abi_version` | `() -> i32`         | Returns `1`.                             |
+| `tilo_fp_alloc`       | `(len: i32) -> i32` | Reserves `len` bytes for host input.     |
+| `tilo_fp_detect`      | `(ptr, len) -> i64` | Sniffs a file head.                      |
+| `tilo_fp_import`      | `(ptr, len) -> i64` | Native format bytes to canonical bytes.  |
+| `tilo_fp_export`      | `(ptr, len) -> i64` | Canonical bytes to native format bytes.  |
+
+Every call runs in a fresh instance: the host calls `tilo_fp_alloc`,
+writes its input there, then calls an entry point with that region. The
+entry point returns a response region packed as `ptr | len << 32`:
+
+- `detect` responds with `tier: u32 LE | score: f32 LE | mime`, where an
+  empty MIME means none.
+- `import` / `export` respond with `0 | payload` on success, or
+  `1 | kind_len: u32 LE | kind | message` for a codec error.
+
+The instance is discarded after the call, so guests never free memory.
+
+The only import a provider may declare is `tilo_fp.fill_random(ptr: i32,
+len: i32)`, which fills guest memory with host entropy. A provider that
+imports anything else (WASI included) is refused when the host loads it.
 
 ## The host
 
@@ -49,9 +59,10 @@ publisher runs. It:
 - Listens on `$XDG_RUNTIME_DIR/tilo/services/format-router.sock`.
 - Reads `~/.config/tilo/extensions/format-providers.toml` for the
   installed provider list, hot-reloaded via inotify.
-- Loads each provider's `.wasm` via `wasmtime 46`, in the Component
-  Model, with a 256 MiB linear-memory ceiling per call and a 10 s wall-
-  clock deadline (epoch-based).
+- Loads each provider's `.wasm` under wasmi, checks its exports, imports,
+  and ABI version once, and runs every call in a fresh instance with a
+  256 MiB linear-memory ceiling and a fuel budget (see
+  [Resource limits](#resource-limits)).
 - Exposes the Cap'n Proto `FormatRouter` interface:
 
 ```capnp
@@ -75,7 +86,7 @@ The host reads its provider list from
 [[provider]]
 mime     = "text/markdown"
 package  = "so.tilo.qdoc-md"
-wasm     = "/home/user/.local/share/tilo-format-providers/so.tilo.qdoc-md/component.wasm"
+wasm     = "/home/user/.local/share/tilo-format-providers/so.tilo.qdoc-md/provider.wasm"
 version  = "0.1.0"
 priority = "installed"
 trust    = ["tilo-curated/2026.07"]
@@ -87,13 +98,22 @@ Fields:
   MIME providers).
 - `package` — reverse-DNS id; also the `providerId` clients pass to
   `importAs` / `exportAs`.
-- `wasm` — absolute path to the Component Model binary.
+- `wasm` — absolute path to the provider module.
 - `version` — semver-ish; not parsed, shown in diagnostics.
 - `priority` — one of `builtin`, `installed`, `ephemeral`. Priority
   breaks ties when multiple providers claim the same MIME:
   `builtin > installed > ephemeral`.
 - `trust` — the trust roots the host considers when admitting the
   provider. Free-form strings, stored verbatim.
+
+An optional `[limits]` table overrides the per-call budget for every
+provider:
+
+```toml
+[limits]
+fuel           = 500000000000
+max_memory_mib = 256
+```
 
 Installers writing new provider `.tapp`s should append a row here (the
 `tilo-install` integration for provider packages is scoped to future
@@ -129,12 +149,13 @@ ext  = ["md", "markdown"]
 Validation refuses a `kind = "format-provider"` package that:
 
 - has an empty `providers.mime`, or
-- ships no `component.wasm` in the payload.
+- ships no `provider.wasm` in the payload.
 
-The manifest's `[sandbox]` block still applies — providers run in a
-sandbox scoped to the format-host's per-call wasmtime `Store`. Landlock
-does not apply INSIDE the WASM sandbox; the host provides its own
-resource limits (memory, wall-clock) instead.
+The manifest's `[sandbox]` block still applies to the package, but a
+provider never runs as a process: it runs inside the format host's
+interpreter with no imports beyond host entropy, so it has no file,
+network, clock, or environment access. The host enforces its own
+resource limits (memory, fuel) instead of Landlock.
 
 ## Building a provider: Markdown codec walkthrough
 
@@ -146,7 +167,7 @@ path for host and WASM builds.
 ### Cargo.toml
 
 The crate is **excluded from the workspace** because it must be compiled
-for `wasm32-wasip2`, not the host target:
+for `wasm32-unknown-unknown`, not the host target:
 
 ```toml
 # Cargo.toml (workspace root)
@@ -166,34 +187,35 @@ crate-type = ["cdylib"]
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-wit-bindgen = "0.57"
+format-provider-abi = { path = "../format-provider-abi", features = ["entropy"] }
 ```
 
-### src/lib.rs
+Automerge draws actor ids from `getrandom`, which has no entropy source on
+`wasm32-unknown-unknown`. The `entropy` feature plugs in a `getrandom`
+backend that calls the host's `tilo_fp.fill_random`; select it in the
+crate's `.cargo/config.toml`:
 
-The guest binds itself to the WIT world via `wit_bindgen::generate!` and
-delegates to the shared codec:
+```toml
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="custom"']
+```
+
+Providers that need no randomness leave the feature off and need no
+config.
+
+### src/lib.rs
 
 ```rust
 #[cfg(target_arch = "wasm32")]
 mod guest {
+    use format_provider_abi::{CodecError, Confidence, Detected, Provider};
     use qdoc::{Document, FormatProvider, MarkdownCodec};
 
-    wit_bindgen::generate!({
-        path: "../format-provider-wit/wit",
-        world: "provider",
-    });
+    struct Markdown;
 
-    use exports::tilo::format_provider::format_provider::{
-        Confidence, Detected, CodecError, Guest,
-    };
-
-    struct Component;
-
-    impl Guest for Component {
-        fn detect(head: Vec<u8>) -> Detected {
-            let conf = MarkdownCodec.detect(&head);
-            let (tier, score) = match conf {
+    impl Provider for Markdown {
+        fn detect(head: &[u8]) -> Detected {
+            let (tier, score) = match MarkdownCodec.detect(head) {
                 qdoc::Confidence::None => (0, 0.0),
                 qdoc::Confidence::Low => (0, 0.25),
                 qdoc::Confidence::Medium => (1, 0.5),
@@ -201,27 +223,27 @@ mod guest {
             };
             Detected {
                 confidence: Confidence { tier, score },
-                mime: Some("text/markdown".to_string()),
+                mime: Some("text/markdown".to_owned()),
             }
         }
 
-        fn import_doc(bytes: Vec<u8>) -> Result<Vec<u8>, CodecError> {
+        fn import_doc(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
             let mut doc = Document::new();
             MarkdownCodec
-                .import(&bytes, &mut doc.as_mut())
-                .map_err(|e| CodecError { kind: "parse".into(), message: e.to_string() })?;
+                .import(bytes, &mut doc.as_mut())
+                .map_err(|e| CodecError::parse(e.to_string()))?;
             Ok(doc.save())
         }
 
-        fn export_doc(canonical: Vec<u8>) -> Result<Vec<u8>, CodecError> {
-            let doc = Document::load(&canonical)
-                .map_err(|e| CodecError { kind: "parse".into(), message: e.to_string() })?;
-            MarkdownCodec.export(doc.as_ref())
-                .map_err(|e| CodecError { kind: "export".into(), message: e.to_string() })
+        fn export_doc(canonical: &[u8]) -> Result<Vec<u8>, CodecError> {
+            let doc = Document::load(canonical).map_err(|e| CodecError::parse(e.to_string()))?;
+            MarkdownCodec
+                .export(doc.as_ref())
+                .map_err(|e| CodecError::export(e.to_string()))
         }
     }
 
-    export!(Component);
+    format_provider_abi::export_provider!(Markdown);
 }
 ```
 
@@ -230,24 +252,27 @@ target gives an empty lib so `cargo check` on the workspace still passes.
 
 ### Build
 
+Cargo reads `.cargo/config.toml` from the working directory, so build from
+the crate directory:
+
 ```bash
-cargo build \
-  --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml \
-  --target wasm32-wasip2 \
-  --release \
-  --locked
+crates/doc/qdoc-codec-markdown-wasm/build.sh
 ```
 
-Output at `target/wasm32-wasip2/release/qdoc_codec_markdown_wasm.wasm`.
+Output at
+`crates/doc/qdoc-codec-markdown-wasm/target/wasm32-unknown-unknown/release/qdoc_codec_markdown_wasm.wasm`.
+`crates/doc/format-host/tests/run-provider-integration.sh` builds it and
+runs the host's end-to-end tests against it.
 
 ### Package
 
-Same `tilo-app-package pack` flow as any other package. The `component.wasm` file
-must sit at the payload root (a top-level file, not nested).
+Same `tilo-app-package pack` flow as any other package. The
+`provider.wasm` file must sit at the payload root (a top-level file, not
+nested).
 
 ```
 payload/
-  component.wasm      # ← the wasm32-wasip2 output, renamed
+  provider.wasm      # ← the wasm32-unknown-unknown output, renamed
 ```
 
 Then:
@@ -269,7 +294,7 @@ then append the provider row to
 [[provider]]
 mime     = "text/markdown"
 package  = "so.tilo.qdoc-md"
-wasm     = "~/.local/share/tilo-apps/payloads/so.tilo.qdoc-md/component.wasm"
+wasm     = "~/.local/share/tilo-apps/payloads/so.tilo.qdoc-md/provider.wasm"
 version  = "0.1.0"
 priority = "installed"
 trust    = []
@@ -284,19 +309,22 @@ the canonical form is the `automerge::save()` output of a
 `qdoc::Document`. The host round-trips those bytes opaquely; the editor
 and FS reload them via `qdoc::Document::load` to get a live CRDT back.
 Providers for non-qdoc content models will have their own canonical
-form; the interface represents each canonical form as bytes.
+form; the ABI represents each canonical form as bytes.
 
 ## Resource limits
 
-Each provider call runs in its own wasmtime `Store` with:
+Each provider call runs in its own wasmi `Store` with:
 
-- 256 MiB linear-memory ceiling (`ResourceLimiter::memory_growing`).
-- 10 s wall-clock deadline enforced by wasmtime's epoch timer.
+- a 256 MiB linear-memory ceiling; growth past it traps;
+- a fuel budget of 500 billion units. Fuel counts executed instructions,
+  so the cap is deterministic: a runaway guest stops after the same amount
+  of work on every machine. Importing 1 MB of Markdown with the builtin
+  provider uses about 220 billion units.
 
-An infinite-loop guest is trapped and the host returns a
-`CodecError { kind: "resource_limit", message: … }` to the client.
-Trust tier and per-provider limits are governed by the registry — future
-work; today all installed providers get the same limits.
+A guest that exhausts either limit is trapped and the host returns a
+`CodecError { kind: "resource_limit", message: … }` to the client; other
+traps come back as `kind: "trap"`. The `[limits]` registry table adjusts
+both caps; today all providers share the same limits.
 
 Next: [`installation.md`](./installation.md) — `tilo-install` verbs and the
 install tree.
