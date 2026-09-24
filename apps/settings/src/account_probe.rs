@@ -1,9 +1,15 @@
 //! Bounded, injectable account connection probes used by resource actions.
+//!
+//! The probes speak the protocols through the same clients the apps use:
+//! `async-imap` (as Mail does) for IMAP and the shared `tilo-dav` client for
+//! `CalDAV`/`WebDAV`. Both verify servers against Tilo's trust store.
 
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use tilo_dav::{Credentials, DavClient, Depth, StatusCode, props};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 pub trait AccountTester: Send + Sync {
     /// # Errors
@@ -20,105 +26,45 @@ pub trait AccountTester: Send + Sync {
 pub struct LiveAccountTester;
 
 impl LiveAccountTester {
+    /// Deadline for each network step: resolving, connecting, the TLS
+    /// handshake and greeting, and the login round-trip.
     const NETWORK_TIMEOUT: Duration = Duration::from_secs(8);
 
-    fn connect(host: &str, port: u16) -> Result<TcpStream, String> {
-        // The platform resolver is blocking, so isolate it behind a deadline
-        // as well; connect/read/write timeouts alone do not bound DNS stalls.
-        let host_owned = host.to_string();
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        std::thread::spawn(move || {
-            let resolved = (host_owned.as_str(), port)
-                .to_socket_addrs()
-                .map(Iterator::collect::<Vec<_>>)
-                .map_err(|_| "server name could not be resolved".to_string());
-            let _ = sender.send(resolved);
-        });
-        let addresses = receiver
-            .recv_timeout(Self::NETWORK_TIMEOUT)
-            .map_err(|_| "server name resolution timed out".to_string())??;
+    async fn connect(host: &str, port: u16) -> Result<TcpStream, String> {
+        // The resolver is bounded by the same deadline as the connection;
+        // connect timeouts alone do not bound DNS stalls.
+        let addresses: Vec<_> =
+            timeout(Self::NETWORK_TIMEOUT, tokio::net::lookup_host((host, port)))
+                .await
+                .map_err(|_| "server name resolution timed out".to_string())?
+                .map_err(|_| "server name could not be resolved".to_string())?
+                .collect();
         if addresses.is_empty() {
             return Err("server name returned no address".into());
         }
-        let deadline = std::time::Instant::now() + Self::NETWORK_TIMEOUT;
+        let deadline = Instant::now() + Self::NETWORK_TIMEOUT;
         let mut last_error = None;
         for address in addresses {
-            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 break;
             };
-            match TcpStream::connect_timeout(&address, remaining) {
-                Ok(stream) => {
-                    stream
-                        .set_read_timeout(Some(Self::NETWORK_TIMEOUT))
-                        .map_err(|_| "could not configure the connection timeout".to_string())?;
-                    stream
-                        .set_write_timeout(Some(Self::NETWORK_TIMEOUT))
-                        .map_err(|_| "could not configure the connection timeout".to_string())?;
-                    return Ok(stream);
-                }
-                Err(error) => last_error = Some(error),
+            match timeout(remaining, TcpStream::connect(address)).await {
+                Ok(Ok(stream)) => return Ok(stream),
+                Ok(Err(error)) => last_error = Some(error.to_string()),
+                Err(_) => last_error = Some("connection timed out".into()),
             }
         }
         Err(format!(
             "could not reach {host}:{port}: {}",
-            last_error.map_or_else(|| "connection timed out".into(), |error| error.to_string())
+            last_error.unwrap_or_else(|| "connection timed out".into())
         ))
     }
 
-    fn read_imap_response(
-        stream: &mut impl Read,
-        tagged: Option<&str>,
-        deadline: std::time::Instant,
-    ) -> Result<String, String> {
-        const MAX_RESPONSE: usize = 16 * 1024;
-        let mut response = Vec::new();
-        let mut chunk = [0_u8; 1024];
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return Err("IMAP server response timed out".into());
-            }
-            let read = stream
-                .read(&mut chunk)
-                .map_err(|_| "IMAP server did not answer before the timeout".to_string())?;
-            if read == 0 {
-                return Err("IMAP server closed the connection unexpectedly".into());
-            }
-            let Some(bytes) = chunk.get(..read) else {
-                return Err("IMAP server reported an invalid response length".into());
-            };
-            response.extend_from_slice(bytes);
-            if response.len() > MAX_RESPONSE {
-                return Err("IMAP server response exceeded the safety limit".into());
-            }
-            let text = String::from_utf8_lossy(&response);
-            let complete = match tagged {
-                Some(tag) => text.split_inclusive('\n').any(|line| {
-                    line.ends_with('\n')
-                        && line.starts_with(tag)
-                        && line.as_bytes().get(tag.len()) == Some(&b' ')
-                }),
-                None => response.windows(2).any(|window| window == b"\r\n"),
-            };
-            if complete {
-                return Ok(text.into_owned());
-            }
-        }
-    }
-
-    fn imap_quote(value: &str) -> Result<String, String> {
+    fn imap_login_name(value: &str) -> Result<&str, String> {
         if value.chars().any(char::is_control) {
             return Err("login contains unsupported control characters".into());
         }
-        Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
-    }
-
-    fn imap_login_accepted(response: &str, tag: &str) -> bool {
-        response.lines().any(|line| {
-            line.strip_prefix(tag)
-                .and_then(|suffix| suffix.strip_prefix(' '))
-                .and_then(|suffix| suffix.split_ascii_whitespace().next())
-                .is_some_and(|status| status.eq_ignore_ascii_case("OK"))
-        })
+        Ok(value)
     }
 
     /// Complete TLS, read the greeting, authenticate, and log out. A TCP
@@ -160,41 +106,56 @@ impl LiveAccountTester {
         if secret.password.is_empty() {
             return Err("account has no saved password".into());
         }
+        let user = Self::imap_login_name(username.trim())?;
+        let password = Self::imap_login_name(secret.password.trim())?;
 
         let config = tilo_net::client_config_with_roots(roots)
             .map_err(|_| "could not initialize secure protocol versions".to_string())?;
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|_| "invalid IMAP server name".to_string())?;
-        let connection = rustls::ClientConnection::new(Arc::new(config), server_name)
-            .map_err(|_| "could not initialize the secure IMAP connection".to_string())?;
-        let tcp = Self::connect(host, port)?;
-        let mut stream = rustls::StreamOwned::new(connection, tcp);
-
-        let greeting = Self::read_imap_response(
-            &mut stream,
-            None,
-            std::time::Instant::now() + Self::NETWORK_TIMEOUT,
-        )?;
-        if !greeting.to_ascii_uppercase().starts_with("* OK") {
-            return Err("server did not provide a valid IMAP greeting".into());
-        }
-        let user = Self::imap_quote(username.trim())?;
-        let password = Self::imap_quote(secret.password.trim())?;
-        write!(stream, "tilo1 LOGIN \"{user}\" \"{password}\"\r\n")
-            .map_err(|_| "could not send the IMAP login".to_string())?;
-        stream
-            .flush()
-            .map_err(|_| "could not send the IMAP login".to_string())?;
-        let login = Self::read_imap_response(
-            &mut stream,
-            Some("tilo1"),
-            std::time::Instant::now() + Self::NETWORK_TIMEOUT,
-        )?;
-        if !Self::imap_login_accepted(&login, "tilo1") {
-            return Err("IMAP server rejected the saved credential".into());
-        }
-        let _ = stream.write_all(b"tilo2 LOGOUT\r\n");
-        Ok("IMAP sign-in succeeded".into())
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "could not start the IMAP probe".to_string())?;
+        runtime.block_on(async {
+            let tcp = Self::connect(host, port).await?;
+            let tls = timeout(
+                Self::NETWORK_TIMEOUT,
+                tokio_rustls::TlsConnector::from(Arc::new(config)).connect(server_name, tcp),
+            )
+            .await
+            .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
+            .map_err(|_| "could not establish the secure IMAP connection".to_string())?;
+            let mut client = async_imap::Client::new(tls);
+            let greeting = timeout(Self::NETWORK_TIMEOUT, client.read_response())
+                .await
+                .map_err(|_| "IMAP server response timed out".to_string())?
+                .ok_or_else(|| "IMAP server closed the connection unexpectedly".to_string())?
+                .map_err(|_| "server did not provide a valid IMAP greeting".to_string())?;
+            if !matches!(
+                greeting.parsed(),
+                async_imap::imap_proto::Response::Data {
+                    status: async_imap::imap_proto::Status::Ok,
+                    ..
+                }
+            ) {
+                return Err("server did not provide a valid IMAP greeting".into());
+            }
+            let mut session = timeout(Self::NETWORK_TIMEOUT, client.login(user, password))
+                .await
+                .map_err(|_| "IMAP server did not answer before the timeout".to_string())?
+                .map_err(|(error, _)| match error {
+                    async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_) => {
+                        "IMAP server rejected the saved credential".to_string()
+                    }
+                    async_imap::error::Error::Validate(_) => {
+                        "login contains unsupported control characters".to_string()
+                    }
+                    _ => "IMAP server closed the connection unexpectedly".to_string(),
+                })?;
+            let _ = timeout(Self::NETWORK_TIMEOUT, session.logout()).await;
+            Ok("IMAP sign-in succeeded".into())
+        })
     }
 
     fn dav(account: &accounts::Account, secret: &accounts::Secret) -> Result<String, String> {
@@ -207,7 +168,7 @@ impl LiveAccountTester {
             })
             .and_then(|value| value.as_str())
             .ok_or_else(|| "account has no server URL".to_string())?;
-        let parsed = reqwest::Url::parse(url).map_err(|_| "account has an invalid server URL")?;
+        let parsed = tilo_dav::Url::parse(url).map_err(|_| "account has an invalid server URL")?;
         let localhost_http = cfg!(debug_assertions)
             && parsed.scheme() == "http"
             && parsed.host_str() == Some("localhost");
@@ -222,27 +183,23 @@ impl LiveAccountTester {
             .get("username")
             .and_then(|value| value.as_str())
             .ok_or_else(|| "account has no username".to_string())?;
-        let client = tilo_net::http::blocking_client()
-            .connect_timeout(Self::NETWORK_TIMEOUT)
-            .timeout(Self::NETWORK_TIMEOUT)
+        let client = DavClient::new(&tilo_dav::Options {
+            user_agent: None,
+            timeout: Self::NETWORK_TIMEOUT,
+            connect_timeout: Some(Self::NETWORK_TIMEOUT),
             // Never replay Basic credentials to a redirect target. Discovery
             // belongs in setup; a stored endpoint must answer at its exact
             // origin.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| "could not initialize the secure HTTP client".to_string())?;
-        let method = reqwest::Method::from_bytes(b"PROPFIND")
-            .map_err(|_| "could not construct DAV probe".to_string())?;
+            redirects: tilo_dav::Redirects::Refuse,
+        })
+        .map_err(|_| "could not initialize the secure HTTP client".to_string())?
+        .with_credentials(Credentials::new(username, secret.password.clone()));
         let response = client
-            .request(method, parsed)
-            .basic_auth(username, Some(&secret.password))
-            .header("Depth", "0")
-            .body("<?xml version=\"1.0\"?><propfind xmlns=\"DAV:\"><prop><resourcetype/></prop></propfind>")
-            .send()
+            .propfind(parsed, Depth::Zero, &[props::RESOURCETYPE])
             .map_err(|error| format!("connection failed: {error}"))?;
-        if response.status().is_success() || response.status().as_u16() == 207 {
+        if response.status().is_success() {
             Ok("Server accepted the signed-in DAV request".into())
-        } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        } else if response.status() == StatusCode::UNAUTHORIZED {
             Err("server rejected the saved credential".into())
         } else {
             Err(format!(
@@ -270,73 +227,16 @@ impl AccountTester for LiveAccountTester {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    use std::sync::mpsc;
+    use test_http::{Reply, Responder};
 
-    #[test]
-    fn imap_login_accepts_only_the_matching_tag_and_complete_ok_status() {
-        for response in [
-            "tilo1 OK LOGIN completed\r\n",
-            "* CAPABILITY IMAP4rev1\r\ntilo1 ok done\r\n",
-        ] {
-            assert!(LiveAccountTester::imap_login_accepted(response, "tilo1"));
-        }
-        for response in [
-            "tilo1 NO rejected\r\n",
-            "tilo1 BAD invalid\r\n",
-            "tilo1 OKAY invalid\r\n",
-            "tilo10 OK wrong tag\r\n",
-            "other OK wrong tag\r\n",
-            "* OK untagged\r\n",
-            "tilo1\r\n",
-        ] {
-            assert!(
-                !LiveAccountTester::imap_login_accepted(response, "tilo1"),
-                "{response:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn imap_response_requires_the_expected_tag() {
-        let mut response = &b"* CAPABILITY IMAP4rev1\r\ntilo1 OK logged in\r\n"[..];
-        let parsed = LiveAccountTester::read_imap_response(
-            &mut response,
-            Some("tilo1"),
-            std::time::Instant::now() + Duration::from_secs(1),
-        )
-        .expect("tagged completion");
-        assert!(parsed.contains("tilo1 OK"));
-    }
-
-    #[test]
-    fn imap_login_requires_an_exact_matching_success_status() {
-        assert!(LiveAccountTester::imap_login_accepted(
-            "tilo1 OK LOGIN completed\r\n",
-            "tilo1"
-        ));
-        assert!(LiveAccountTester::imap_login_accepted(
-            "tilo1 ok LOGIN completed\r\n",
-            "tilo1"
-        ));
-        for response in [
-            "tilo1 NO credential rejected\r\n",
-            "tilo1 BAD invalid login\r\n",
-            "tilo1 OKAY invalid status\r\n",
-            "tilo2 OK unrelated command\r\n",
-            "* OK untagged response\r\n",
-            "tilo1 NO rejected\r\n* OK server ready\r\n",
-        ] {
-            assert!(
-                !LiveAccountTester::imap_login_accepted(response, "tilo1"),
-                "{response:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn email_probe_completes_tls_and_authenticates() {
+    /// A one-connection TLS IMAP server. `login_reply` answers the LOGIN
+    /// command with the command's own tag substituted for `TAG`.
+    fn imap_server(
+        greeting: &'static str,
+        login_reply: &'static str,
+    ) -> (u16, rustls::RootCertStore, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let port = listener.local_addr().expect("listener address").port();
         let certified =
@@ -359,26 +259,34 @@ mod tests {
             let (tcp, _) = listener.accept().expect("client");
             let connection = rustls::ServerConnection::new(Arc::new(server)).expect("TLS server");
             let mut stream = rustls::StreamOwned::new(connection, tcp);
-            stream
-                .write_all(b"* OK [CAPABILITY IMAP4rev1] ready\r\n")
-                .expect("greeting");
+            stream.write_all(greeting.as_bytes()).expect("greeting");
             stream.flush().expect("greeting flush");
+            let mut reader = BufReader::new(stream);
             let mut login = String::new();
-            {
-                let mut reader = BufReader::new(&mut stream);
-                reader.read_line(&mut login).expect("login command");
+            if reader.read_line(&mut login).unwrap_or(0) == 0 {
+                return login;
             }
-            assert!(login.starts_with("tilo1 LOGIN "));
-            assert!(login.contains("\"ada@example.test\""));
-            assert!(login.contains("\"app-password\""));
+            let tag = login.split(' ').next().unwrap_or_default().to_owned();
+            let stream = reader.get_mut();
             stream
-                .write_all(b"tilo1 OK LOGIN completed\r\n")
+                .write_all(login_reply.replace("TAG", &tag).as_bytes())
                 .expect("login response");
             stream.flush().expect("login flush");
+            let mut logout = String::new();
+            if reader.read_line(&mut logout).unwrap_or(0) > 0 {
+                let tag = logout.split(' ').next().unwrap_or_default().to_owned();
+                let stream = reader.get_mut();
+                let _ = write!(stream, "* BYE logging out\r\n{tag} OK LOGOUT completed\r\n");
+                let _ = stream.flush();
+            }
+            login
         });
-
         let mut roots = rustls::RootCertStore::empty();
         roots.add(cert_der).expect("trust test certificate");
+        (port, roots, worker)
+    }
+
+    fn email_account(port: u16) -> accounts::Account {
         let mut account = accounts::Account::new("mail", "email");
         account.config = serde_json::json!({
             "email": "ada@example.test",
@@ -386,64 +294,134 @@ mod tests {
             "imap_host": "localhost",
             "imap_port": port
         });
+        account
+    }
+
+    #[test]
+    fn email_probe_completes_tls_and_authenticates() {
+        let (port, roots, worker) = imap_server(
+            "* OK [CAPABILITY IMAP4rev1] ready\r\n",
+            "TAG OK LOGIN completed\r\n",
+        );
         assert_eq!(
             LiveAccountTester::email_with_roots(
-                &account,
+                &email_account(port),
                 &accounts::Secret::password("app-password"),
                 roots,
             ),
             Ok("IMAP sign-in succeeded".into())
         );
+        let login = worker.join().expect("server worker");
+        assert!(login.contains(" LOGIN "), "{login}");
+        assert!(login.contains("\"ada@example.test\""), "{login}");
+        assert!(login.contains("\"app-password\""), "{login}");
+    }
+
+    #[test]
+    fn email_probe_reports_a_rejected_credential() {
+        let (port, roots, worker) = imap_server(
+            "* OK ready\r\n",
+            "TAG NO [AUTHENTICATIONFAILED] Invalid credentials\r\n",
+        );
+        assert_eq!(
+            LiveAccountTester::email_with_roots(
+                &email_account(port),
+                &accounts::Secret::password("wrong"),
+                roots,
+            ),
+            Err("IMAP server rejected the saved credential".into())
+        );
         worker.join().expect("server worker");
     }
 
     #[test]
-    fn dav_redirect_never_replays_authorization() {
-        let target = TcpListener::bind("127.0.0.1:0").expect("target listener");
-        let target_url = format!(
-            "http://localhost:{}/stolen",
-            target.local_addr().expect("target addr").port()
+    fn email_probe_refuses_a_non_ok_greeting() {
+        let (port, roots, worker) = imap_server("* BYE too busy\r\n", "");
+        assert_eq!(
+            LiveAccountTester::email_with_roots(
+                &email_account(port),
+                &accounts::Secret::password("app-password"),
+                roots,
+            ),
+            Err("server did not provide a valid IMAP greeting".into())
         );
-        let redirect = TcpListener::bind("127.0.0.1:0").expect("redirect listener");
-        let redirect_url = format!(
-            "http://localhost:{}/dav",
-            redirect.local_addr().expect("redirect addr").port()
-        );
-        let (sent, received) = mpsc::channel();
-        std::thread::spawn(move || {
-            let (mut socket, _) = redirect.accept().expect("redirect request");
-            let mut reader = BufReader::new(socket.try_clone().expect("clone"));
-            let mut request = String::new();
-            while reader.read_line(&mut request).is_ok_and(|count| count > 0)
-                && !request.ends_with("\r\n\r\n")
-            {}
-            write!(
-                socket,
-                "HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\n\r\n"
-            )
-            .expect("redirect response");
-            sent.send(request).expect("request capture");
-        });
+        let login = worker.join().expect("server worker");
+        assert!(login.is_empty(), "no credential after a refused greeting");
+    }
 
-        let mut account = accounts::Account::new("dav", "webdav");
-        account.config = serde_json::json!({"base_url": redirect_url, "username": "ada"});
-        let result = LiveAccountTester::dav(&account, &accounts::Secret::password("secret"));
-        assert!(
-            result.is_err(),
-            "a redirect is not accepted as authenticated DAV"
+    #[test]
+    fn email_probe_refuses_an_untrusted_certificate() {
+        let (port, _roots, _worker) = imap_server("* OK ready\r\n", "");
+        assert_eq!(
+            LiveAccountTester::email_with_roots(
+                &email_account(port),
+                &accounts::Secret::password("app-password"),
+                rustls::RootCertStore::empty(),
+            ),
+            Err("could not establish the secure IMAP connection".into())
         );
-        let first_request = received
-            .recv_timeout(Duration::from_secs(2))
-            .expect("request");
+    }
+
+    #[test]
+    fn email_probe_rejects_control_characters_before_connecting() {
+        let account = email_account(9);
+        assert_eq!(
+            LiveAccountTester::email_with_roots(
+                &account,
+                &accounts::Secret::password("pass\r\nA1 DELETE INBOX"),
+                rustls::RootCertStore::empty(),
+            ),
+            Err("login contains unsupported control characters".into())
+        );
+    }
+
+    fn dav_account(url: &str) -> accounts::Account {
+        let mut account = accounts::Account::new("dav", "webdav");
+        account.config = serde_json::json!({"base_url": url, "username": "ada"});
+        account
+    }
+
+    #[test]
+    fn dav_probe_accepts_a_signed_in_multistatus() {
+        let server = Responder::start(vec![Reply::status(207).body(
+            r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href></d:response></d:multistatus>"#,
+        )]);
+        let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
+        assert_eq!(
+            LiveAccountTester::dav(&account, &accounts::Secret::password("secret")),
+            Ok("Server accepted the signed-in DAV request".into())
+        );
+        let request = server.next_request();
+        assert_eq!(request.method, "PROPFIND");
+        assert_eq!(request.header("depth"), Some("0"));
+        assert!(request.body_text().contains("<D:resourcetype/>"));
+    }
+
+    #[test]
+    fn dav_probe_reports_a_rejected_credential() {
+        let server = Responder::start(vec![Reply::status(401)]);
+        let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
+        assert_eq!(
+            LiveAccountTester::dav(&account, &accounts::Secret::password("wrong")),
+            Err("server rejected the saved credential".into())
+        );
+    }
+
+    #[test]
+    fn dav_redirect_never_replays_authorization() {
+        let target = Responder::silent();
+        let target_url = format!("http://localhost:{}/stolen", target.port());
+        let redirect = Responder::start(vec![Reply::status(302).header("Location", &target_url)]);
+        let account = dav_account(&format!("http://localhost:{}/dav", redirect.port()));
+        let result = LiveAccountTester::dav(&account, &accounts::Secret::password("secret"));
+        assert_eq!(result, Err("server returned HTTP 302".into()));
+        let first_request = redirect.next_request();
         assert!(
             first_request
-                .to_ascii_lowercase()
-                .contains("authorization: basic")
+                .header("authorization")
+                .is_some_and(|value| value.starts_with("Basic ")),
+            "the configured endpoint itself is authenticated"
         );
-        target.set_nonblocking(true).expect("nonblocking target");
-        assert!(
-            target.accept().is_err(),
-            "redirect target must receive no request at all"
-        );
+        target.assert_untouched();
     }
 }

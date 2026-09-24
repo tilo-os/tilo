@@ -20,9 +20,10 @@
 //!   It is the factor no hardware failure can take away, so every other one
 //!   is layered on top of it;
 //! * with `--pin` (a legacy transport flag name), the strong secret on the
-//!   **second stdin line** becomes an ordinary LUKS passphrase keyslot. TPM
-//!   unlock remains disabled until it is bound to signed, measured Tilo boot
-//!   artifacts;
+//!   **second stdin line** is enrolled as a TPM2 + PIN factor when the reviewed
+//!   target has an exact signed generation prediction and TPM2. Otherwise it
+//!   becomes an ordinary strong LUKS passphrase; a reviewed TPM path fails
+//!   closed rather than silently downgrading when those prerequisites change;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
@@ -206,9 +207,10 @@ pub struct InstallOptions {
     /// Optional xkb variant (e.g. `dvorak`, `colemak`). Empty ⇒ no
     /// variant; the flag is then omitted.
     pub keyvariant: String,
-    /// Mandatory unlock secret, sent as the second stdin line rather than on
-    /// argv. Despite the legacy field name, it is always the strong disk boot
-    /// passphrase in this release. The backend rejects an empty value.
+    /// Mandatory startup secret, sent as the second stdin line rather than on
+    /// argv. Despite the legacy field name, it is a short PIN only for the
+    /// verified measured-boot TPM2 path and otherwise a strong disk passphrase.
+    /// The backend independently revalidates the choice and rejects emptiness.
     pub pin: Zeroizing<String>,
     /// Enroll a FIDO2 security key as an extra unlock factor. Only
     /// meaningful alongside mandatory LUKS encryption; maps to `--fido2`. A token must
@@ -558,7 +560,7 @@ pub fn stream_command<F: FnMut(String)>(
 }
 
 /// Run the `tilo-install` backend for `disk` + `user` + `opts`, feeding
-/// `password` (and, when a disk passphrase is set, that secret as a second
+/// `password` (and, when a disk startup secret is set, that secret as a second
 /// stdin line) and relaying every output line to `on_line`.
 ///
 /// # Errors
@@ -574,8 +576,8 @@ pub fn run_install<F: FnMut(String)>(
     opts: &InstallOptions,
     on_line: F,
 ) -> std::io::Result<bool> {
-    // The disk passphrase only travels on stdin; it mirrors the legacy `--pin` flag added by
-    // `install_command`.
+    // The startup secret only travels on stdin; it mirrors the legacy `--pin`
+    // flag added by `install_command`.
     let extra: Vec<&str> = if opts.pin.is_empty() {
         Vec::new()
     } else {

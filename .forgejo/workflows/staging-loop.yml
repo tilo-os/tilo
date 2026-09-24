@@ -20,7 +20,7 @@ on:
       - "os/tests/staging_reclaim_loop.sh"
       - ".forgejo/workflows/staging-loop.yml"
   push:
-    branches: ["main", "codex/usb-free-install"]
+    branches: ["main"]
     paths:
       - "apps/imager/src/setup/staging/**"
       - "apps/imager/src/setup/internal_bundle.rs"
