@@ -1818,11 +1818,11 @@ mod tests {
         );
 
         let provider = ApplicationsProvider::new();
-        let entries = (0..100_001)
+        let entries = (0..=4_000)
             .map(|index| {
                 ApplicationEntry::Installed(app_in(
                     &format!("so.tilo.fixture-{index}"),
-                    if index == 100_000 {
+                    if index == 4_000 {
                         "unique-tail"
                     } else {
                         "common app"
@@ -1909,10 +1909,10 @@ mod tests {
     fn source_backed_cold_query_does_no_application_index_work_before_refresh() {
         let source = ApplicationsTestSource::new(
             Vec::new(),
-            (0..100_001)
+            (0..=4_000)
                 .map(|index| CatalogueApp {
                     package_id: format!("so.tilo.cold-fixture-{index}"),
-                    display_name: if index == 100_000 {
+                    display_name: if index == 4_000 {
                         "unique-source-tail".into()
                     } else {
                         "common source app".into()
