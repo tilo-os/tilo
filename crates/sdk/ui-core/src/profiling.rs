@@ -39,6 +39,7 @@ pub const FRAME_BUDGET_US: u64 = 16_667;
 
 /// Optional logical desktop position for live profiling with several apps.
 /// Kept in the shared host so benchmarks never need per-app windowing code.
+#[cfg(feature = "native")]
 pub(crate) fn profile_window_position(value: &str) -> Option<(i32, i32)> {
     let (x, y) = value.split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))

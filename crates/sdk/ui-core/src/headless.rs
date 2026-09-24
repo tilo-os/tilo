@@ -540,11 +540,13 @@ impl FrameHarness {
         Ok(harness)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn resize_component_capture(&mut self, viewport: (u32, u32)) {
         let _ = self.resize(viewport);
     }
 
     /// Shared final-output boundary for prepared CLI capture and audit.
+    #[cfg(feature = "native")]
     pub(crate) fn prepare_component_output(&mut self) {
         self.pump_component_wakes();
     }
@@ -4371,6 +4373,7 @@ pub(crate) fn build_initialized_driver(
 /// Inspect the same explicit record binding without requiring or flushing a
 /// writer. Legacy automatic headless persistence remains opt-in to headless
 /// execution; an audit must not activate that compatibility behavior.
+#[cfg(feature = "native")]
 pub(crate) fn build_audit_driver(
     inputs: crate::launch::LegacyLaunchInputs,
     viewport: (u32, u32),

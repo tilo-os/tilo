@@ -475,6 +475,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn apply_undo_entry(&mut self, entry: crate::state::UndoEntry) {
         if let Some(idx) = entry.focused_node_idx {
             if let Some(&id) = self.focusable_order.get(idx) {
@@ -611,6 +612,7 @@ impl App {
 
     /// Finalize the document boundary for a handled native event. Shared host
     /// controls only change presentation and must not close pending app typing.
+    #[cfg(feature = "native")]
     fn finalize_handled_native_event(
         &mut self,
         event: &WindowEvent,
@@ -699,6 +701,7 @@ impl App {
     /// The platform IME contract for the focused widget. A field opts in via
     /// [`Widget::ime_purpose`]; buttons and other focusable controls therefore
     /// never activate `text-input-v3` accidentally.
+    #[cfg(feature = "native")]
     fn ime_window_state(&self) -> Option<ImeWindowState> {
         let id = self.focused_node?;
         let purpose = self
@@ -732,6 +735,7 @@ impl App {
         })
     }
 
+    #[cfg(feature = "native")]
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
         self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -744,6 +748,7 @@ impl App {
 
     /// Only fires if focus did NOT move — a move is narrated separately by
     /// [`set_focused_node`].
+    #[cfg(feature = "native")]
     fn announce_state_change(&mut self, pre: Option<(NodeId, String)>) {
         let Some((pre_id, pre_state)) = pre else {
             return;
@@ -770,6 +775,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
         self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
@@ -782,6 +788,7 @@ impl App {
 
     /// Typing is left to the widget's own echo so this never double-speaks
     /// an edit.
+    #[cfg(feature = "native")]
     fn announce_text_review(&mut self, pre: Option<(NodeId, usize, String)>) {
         let Some((pre_id, pre_caret, pre_text)) = pre else {
             return;
@@ -826,6 +833,7 @@ impl App {
 
     /// Announces changed [live regions](crate::a11y::AccessNode::live)
     /// without moving focus.
+    #[cfg(feature = "native")]
     fn scan_live_regions(&mut self) {
         fn visit(w: &dyn Widget, out: &mut Vec<(String, crate::a11y::Politeness, String)>) {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(w) else {
@@ -925,6 +933,7 @@ impl App {
     /// Gated on the focus-trap signal, not `modal_capture`: that governs only
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
+    #[cfg(feature = "native")]
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
         modal_rect.is_none() || self.accessibility.focus_trap_active
     }
@@ -933,6 +942,7 @@ impl App {
     /// widget may explicitly claim it first (for indentation or completion),
     /// without broadening that exception to arbitrary widgets or escaping an
     /// active focus trap.
+    #[cfg(feature = "native")]
     fn focused_widget_wants_tab_input(&self) -> bool {
         self.focused_node.is_some_and(|node| {
             self.inspect_node(node, |widget| widget.wants_tab_input())
@@ -941,6 +951,7 @@ impl App {
     }
 
     /// Shared native Tab admission, preserving text-input and modal capture.
+    #[cfg(feature = "native")]
     fn handle_tab_navigation(
         &mut self,
         event: &WindowEvent,

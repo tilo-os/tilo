@@ -2,6 +2,7 @@
 // behaviour. The native event-loop runner is `app/native_runner.rs`.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "native")]
 struct ImeWindowState {
     purpose: winit::window::ImePurpose,
     x: u32,
@@ -12,6 +13,7 @@ struct ImeWindowState {
 
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
+#[cfg(feature = "native")]
 fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboRect>) {
     widget.collect_damage(regions);
 }
@@ -25,6 +27,7 @@ fn collect_submitted_widget_damage(widget: &dyn Widget, regions: &mut Vec<KurboR
     clippy::too_many_lines,
     reason = "frame drawing is one ordered composition pass whose sequencing must remain explicit"
 )]
+#[cfg(feature = "native")]
 fn draw_frame_content(
     app: &mut App,
     scene: &mut Scene,
@@ -158,6 +161,7 @@ fn draw_frame_content(
     (transform, window_rect, t_draw_us)
 }
 
+#[cfg(feature = "native")]
 fn draw_visible_tooltip(
     app: &mut App,
     scene: &mut Scene,
@@ -200,6 +204,7 @@ fn draw_visible_tooltip(
     clippy::too_many_lines,
     reason = "one bounded solve/recompose/focus/mount lifecycle keeps ownership and final-frame ordering explicit"
 )]
+#[cfg(feature = "native")]
 fn run_layout_pass(
     app: &mut App,
     root_node: NodeId,

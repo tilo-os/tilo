@@ -71,6 +71,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn finish_close_if_ready(&mut self) -> bool {
         if !self.close_admission.ready || !self.request_close() {
             return false;
@@ -411,6 +412,7 @@ impl App {
         true
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn layout_close_dialog(&mut self, logical: (f64, f64)) {
         let Some(root) = self.layout.root_node else {
             return;
