@@ -7,6 +7,9 @@
 //!   attendees/RSVPs, bounded recurrence rules, exclusions and overrides.
 //! - `VTODO`   → `SUMMARY`, `DUE`, `STATUS:COMPLETED`, `PRIORITY`.
 //!
+//! Content lines (folding, parameter quoting, TEXT escaping) go through the
+//! shared `pim-lines` codec that vCard uses too.
+//!
 //! Calendar retains TZIDs explicitly while keeping datetimes as wall time in
 //! that named zone. IANA transition data resolves folds to the earlier instant
 //! and advances gaps to their first valid minute, identically on every peer.
@@ -14,6 +17,7 @@
 use std::fmt::Write as _;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use pim_lines::{ContentLine, escape_text as escape, fold_into, unescape_text as unescape};
 use uuid::Uuid;
 
 use crate::model::{Attendee, Event, Id, InviteStatus, Model, Palette, Priority, Recurrence, Task};
@@ -58,16 +62,8 @@ pub fn export(model: &Model) -> String {
             );
             raw(&mut out, "DTEND", &format!("{}Z", e.end.format(DT_LOCAL)));
         } else if e.timezone != "floating" {
-            raw(
-                &mut out,
-                &format!("DTSTART;TZID={}", e.timezone),
-                &e.start.format(DT_LOCAL).to_string(),
-            );
-            raw(
-                &mut out,
-                &format!("DTEND;TZID={}", e.timezone),
-                &e.end.format(DT_LOCAL).to_string(),
-            );
+            emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
+            emit_datetime(&mut out, "DTEND", e.end, &e.timezone);
         } else {
             raw(&mut out, "DTSTART", &e.start.format(DT_LOCAL).to_string());
             raw(&mut out, "DTEND", &e.end.format(DT_LOCAL).to_string());
@@ -224,16 +220,21 @@ fn recurrence_rule(event: &Event) -> String {
 }
 
 fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
-    let mut key = format!(
-        "{property};X-TILO-ID={};PARTSTAT={}",
-        attendee.id,
-        attendee.status.as_ical()
-    );
+    let id = attendee.id.to_string();
+    let mut params = vec![
+        ("X-TILO-ID", id.as_str()),
+        ("PARTSTAT", attendee.status.as_ical()),
+    ];
     if !attendee.name.is_empty() {
-        key.push_str(";CN=");
-        key.push_str(&escape(&attendee.name));
+        // Parameter values are quoted (RFC 5545 §3.2), not TEXT-escaped.
+        params.push(("CN", attendee.name.as_str()));
     }
-    raw(out, &key, &format!("mailto:{}", attendee.email));
+    pim_lines::write_property(
+        out,
+        property,
+        &params,
+        &format!("mailto:{}", attendee.email),
+    );
 }
 
 /// Parse an iCalendar string into events + tasks. Best-effort: unknown
@@ -243,12 +244,19 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
     let mut overrides = Vec::new();
     let mut tasks = Vec::new();
 
-    let lines = unfold(text);
+    let lines: Vec<Option<ContentLine>> = pim_lines::unfold(text)
+        .iter()
+        .map(|line| ContentLine::parse(line))
+        .collect();
     let mut i = 0;
     while i < lines.len() {
         let Some(cur) = lines.get(i) else { break };
-        match cur.trim() {
-            "BEGIN:VEVENT" => {
+        let component = cur
+            .as_ref()
+            .filter(|line| line.name == "BEGIN")
+            .map(|line| line.value.trim().to_ascii_uppercase());
+        match component.as_deref() {
+            Some("VEVENT") => {
                 let (ev, ni) = parse_vevent(&lines, i + 1);
                 if let Some((ev, recurrence_id, cancelled)) = ev {
                     if let Some((original_date, original_time)) = recurrence_id {
@@ -271,7 +279,7 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
                 }
                 i = ni;
             }
-            "BEGIN:VTODO" => {
+            Some("VTODO") => {
                 let (td, ni) = parse_vtodo(&lines, i + 1);
                 if let Some(td) = td {
                     tasks.push(td);
@@ -293,7 +301,7 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
     clippy::too_many_lines,
     reason = "VEVENT parsing keeps property state and component termination in one auditable pass"
 )]
-fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) {
+fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEvent>, usize) {
     let mut id: Option<Id> = None;
     let mut title = String::new();
     let mut start: Option<NaiveDateTime> = None;
@@ -314,30 +322,35 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
     let mut cancelled = false;
 
     while i < lines.len() {
-        let Some(raw) = lines.get(i) else { break };
-        if raw.trim() == "END:VEVENT" {
+        let Some(slot) = lines.get(i) else { break };
+        if slot.as_ref().is_some_and(|line| line.ends("VEVENT")) {
             i += 1;
             break;
         }
-        if raw.trim() == "BEGIN:VALARM" {
+        if slot.as_ref().is_some_and(|line| line.begins("VALARM")) {
             // Scan the alarm for a TRIGGER:-PTnM.
-            while i < lines.len() && lines.get(i).is_some_and(|l| l.trim() != "END:VALARM") {
-                if let Some((k, v)) = lines.get(i).and_then(|l| split_prop(l))
-                    && k.starts_with("TRIGGER")
-                {
-                    reminder = parse_trigger_minutes(&v);
+            while let Some(slot) = lines.get(i) {
+                let Some(line) = slot else {
+                    i += 1;
+                    continue;
+                };
+                if line.ends("VALARM") {
+                    break;
+                }
+                if line.name == "TRIGGER" {
+                    reminder = parse_trigger_minutes(&line.value);
                 }
                 i += 1;
             }
             i += 1;
             continue;
         }
-        if let Some((key, val)) = split_prop(raw) {
-            let base = key.split(';').next().unwrap_or(&key);
-            match base {
+        if let Some(line) = slot {
+            let val = line.value.clone();
+            match line.name.as_str() {
                 "UID" => id = parse_uid(&val),
                 "RECURRENCE-ID" => {
-                    recurrence_id = parse_recurrence_id(&key, &val);
+                    recurrence_id = parse_recurrence_id(line);
                 }
                 "STATUS" => cancelled = val.eq_ignore_ascii_case("CANCELLED"),
                 "SUMMARY" => title = unescape(&val),
@@ -350,7 +363,7 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
                 }
                 "EXDATE" => recurrence_exdates.extend(val.split(',').filter_map(parse_cal_date)),
                 "ATTENDEE" => {
-                    if let Some(attendee) = parse_participant(&key, &val) {
+                    if let Some(attendee) = parse_participant(line) {
                         if let Some(existing) =
                             attendees.iter_mut().find(|item| item.id == attendee.id)
                         {
@@ -361,7 +374,7 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
                     }
                 }
                 "ORGANIZER" => {
-                    if let Some(attendee) = parse_participant(&key, &val) {
+                    if let Some(attendee) = parse_participant(line) {
                         organizer = Some(attendee.id);
                         if !attendees
                             .iter()
@@ -373,15 +386,15 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
                 }
                 "X-TILO-COLOR" => color = color_from_name(&val),
                 "DTSTART" => {
-                    let Some((dt, ad)) = parse_cal_datetime(&key, &val) else {
+                    let Some((dt, ad)) = parse_cal_datetime(line) else {
                         return (None, i);
                     };
-                    timezone = timezone_from_property(&key, &val);
+                    timezone = timezone_from_property(line);
                     all_day = all_day || ad;
                     start = Some(dt);
                 }
                 "DTEND" => {
-                    let Some((dt, _)) = parse_cal_datetime(&key, &val) else {
+                    let Some((dt, _)) = parse_cal_datetime(line) else {
                         return (None, i);
                     };
                     end = Some(dt);
@@ -445,7 +458,7 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
     )
 }
 
-fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
+fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, usize) {
     // Tilo resource identities are UUIDs. Preserve a UUID-valued RFC UID so a
     // task exported by Tilo can be imported repeatedly without becoming a new
     // task. Non-UUID external UIDs still import safely with an author-minted
@@ -457,17 +470,17 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
     let mut priority = Priority::None;
 
     while i < lines.len() {
-        let Some(raw) = lines.get(i) else { break };
-        if raw.trim() == "END:VTODO" {
+        let Some(slot) = lines.get(i) else { break };
+        if slot.as_ref().is_some_and(|line| line.ends("VTODO")) {
             i += 1;
             break;
         }
-        if let Some((key, val)) = split_prop(raw) {
-            let base = key.split(';').next().unwrap_or(&key);
-            match base {
-                "UID" => id = parse_uid(&val),
-                "SUMMARY" => title = unescape(&val),
-                "DUE" => due = parse_cal_date(&val),
+        if let Some(line) = slot {
+            let val = &line.value;
+            match line.name.as_str() {
+                "UID" => id = parse_uid(val),
+                "SUMMARY" => title = unescape(val),
+                "DUE" => due = parse_cal_date(val),
                 "STATUS" => done = val.eq_ignore_ascii_case("COMPLETED"),
                 "PRIORITY" => {
                     priority = match val.trim().parse::<u8>().unwrap_or(0) {
@@ -508,48 +521,14 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
 /// Emit a TEXT-valued property (SUMMARY, LOCATION, DESCRIPTION) with the
 /// RFC 5545 character escaping applied.
 fn line(out: &mut String, key: &str, val: &str) {
-    let line = format!("{key}:{}", escape(val));
-    folded_line(out, &line);
+    fold_into(out, &format!("{key}:{}", escape(val)));
 }
 
 /// Emit a structured / non-TEXT property (RRULE, DTSTART, TRIGGER, …)
 /// verbatim — these use `;` and `,` as syntax, so they must NOT be
 /// TEXT-escaped.
 fn raw(out: &mut String, key: &str, val: &str) {
-    let line = format!("{key}:{val}");
-    folded_line(out, &line);
-}
-
-/// Write one RFC 5545 content line with physical lines no wider than 75
-/// octets. Continuations reserve their leading folding space, and split only
-/// at UTF-8 character boundaries, so long international event titles remain
-/// standards-compliant and round-trip through parsers that enforce the limit.
-fn folded_line(out: &mut String, line: &str) {
-    let mut rest = line;
-    let mut first = true;
-    while !rest.is_empty() {
-        // The leading space belongs to each continuation's 75-octet budget.
-        let budget = if first { 75 } else { 74 };
-        let mut end = rest.len().min(budget);
-        while end > 0 && !rest.is_char_boundary(end) {
-            end -= 1;
-        }
-        // `budget` is much wider than every UTF-8 scalar, so a non-empty
-        // input always yields a character-boundary chunk.
-        let Some(chunk) = rest.get(..end) else {
-            break;
-        };
-        let Some(tail) = rest.get(end..) else {
-            break;
-        };
-        if !first {
-            out.push(' ');
-        }
-        out.push_str(chunk);
-        out.push_str("\r\n");
-        rest = tail;
-        first = false;
-    }
+    fold_into(out, &format!("{key}:{val}"));
 }
 
 fn emit_datetime(out: &mut String, property: &str, value: NaiveDateTime, timezone: &str) {
@@ -558,66 +537,21 @@ fn emit_datetime(out: &mut String, property: &str, value: NaiveDateTime, timezon
     } else if timezone == "floating" {
         raw(out, property, &value.format(DT_LOCAL).to_string());
     } else {
-        raw(
+        pim_lines::write_property(
             out,
-            &format!("{property};TZID={timezone}"),
+            property,
+            &[("TZID", timezone)],
             &value.format(DT_LOCAL).to_string(),
         );
     }
 }
 
-fn escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\n', "\\n")
-        .replace(',', "\\,")
-        .replace(';', "\\;")
-}
-
-fn unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n' | 'N') => out.push('\n'),
-                Some(other) => out.push(other),
-                None => {}
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// Undo RFC 5545 line folding (continuation lines start with a space or
-/// tab) and split into logical lines.
-fn unfold(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for raw in text.split('\n') {
-        let trimmed = raw.strip_suffix('\r').unwrap_or(raw);
-        if (trimmed.starts_with(' ') || trimmed.starts_with('\t')) && !out.is_empty() {
-            // The fold whitespace is exactly one ASCII byte, so `get(1..)`
-            // never straddles a UTF-8 boundary.
-            if let Some(last) = out.last_mut() {
-                last.push_str(trimmed.get(1..).unwrap_or(""));
-            }
-        } else {
-            out.push(trimmed.to_string());
-        }
-    }
-    out
-}
-
-fn split_prop(line: &str) -> Option<(String, String)> {
-    let idx = line.find(':')?;
-    let key = line.get(..idx)?;
-    let val = line.get(idx + 1..)?;
-    Some((key.to_string(), val.to_string()))
-}
-
-fn parse_cal_datetime(key: &str, val: &str) -> Option<(NaiveDateTime, bool)> {
-    if (key.contains("VALUE=DATE") || val.len() == 8)
+fn parse_cal_datetime(line: &ContentLine) -> Option<(NaiveDateTime, bool)> {
+    let val = line.value.as_str();
+    let date_valued = line
+        .param_value("VALUE")
+        .is_some_and(|value| value.eq_ignore_ascii_case("DATE"));
+    if (date_valued || val.len() == 8)
         && let Some(d) = parse_cal_date(val)
     {
         return Some((d.and_time(NaiveTime::MIN), true));
@@ -633,8 +567,8 @@ fn parse_cal_datetime(key: &str, val: &str) -> Option<(NaiveDateTime, bool)> {
     None
 }
 
-fn parse_recurrence_id(key: &str, value: &str) -> Option<(NaiveDate, Option<NaiveTime>)> {
-    let (datetime, date_only) = parse_cal_datetime(key, value)?;
+fn parse_recurrence_id(line: &ContentLine) -> Option<(NaiveDate, Option<NaiveTime>)> {
+    let (datetime, date_only) = parse_cal_datetime(line)?;
     Some((datetime.date(), (!date_only).then_some(datetime.time())))
 }
 
@@ -642,37 +576,36 @@ fn parse_uid(value: &str) -> Option<Id> {
     value.trim().split('@').next()?.parse().ok()
 }
 
-fn property_parameter<'a>(key: &'a str, name: &str) -> Option<&'a str> {
-    key.split(';').skip(1).find_map(|parameter| {
-        let (candidate, value) = parameter.split_once('=')?;
-        candidate.eq_ignore_ascii_case(name).then_some(value)
-    })
-}
-
-fn timezone_from_property(key: &str, value: &str) -> String {
-    if value.ends_with('Z') {
+fn timezone_from_property(line: &ContentLine) -> String {
+    if line.value.ends_with('Z') {
         "UTC".into()
     } else {
-        property_parameter(key, "TZID")
-            .unwrap_or("floating")
-            .to_string()
+        line.param_value("TZID")
+            .unwrap_or_else(|| "floating".to_string())
     }
 }
 
-fn parse_participant(key: &str, value: &str) -> Option<Attendee> {
+fn parse_participant(line: &ContentLine) -> Option<Attendee> {
+    let value = line.value.trim();
     let email = value
-        .trim()
         .strip_prefix("mailto:")
-        .or_else(|| value.trim().strip_prefix("MAILTO:"))?;
-    let id = property_parameter(key, "X-TILO-ID")
+        .or_else(|| value.strip_prefix("MAILTO:"))?;
+    let id = line
+        .param_value("X-TILO-ID")
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| stable_external_attendee_id(email));
     Some(Attendee {
         id,
-        name: property_parameter(key, "CN").map_or_else(String::new, unescape),
+        // Earlier exports backslash-escaped CN like TEXT (`CN=Doe\, Jane`);
+        // resolving those escapes keeps such files importing as before.
+        name: line
+            .param_value("CN")
+            .map_or_else(String::new, |name| unescape(&name)),
         email: email.to_string(),
         status: InviteStatus::from_ical(
-            property_parameter(key, "PARTSTAT").unwrap_or("NEEDS-ACTION"),
+            line.param_value("PARTSTAT")
+                .as_deref()
+                .unwrap_or("NEEDS-ACTION"),
         ),
     })
 }
@@ -1014,20 +947,88 @@ mod tests {
     }
 
     #[test]
-    fn unfolding_joins_continuation_lines() {
-        // RFC 5545 folds by inserting CRLF + one whitespace at an
-        // arbitrary point; unfolding deletes exactly that CRLF + space.
-        // Here "Hello World" was folded mid-word as "Hello Wo" / "rld".
-        let folded = "SUMMARY:Hello Wo\r\n rld\r\n";
-        let lines = unfold(folded);
-        assert_eq!(lines[0], "SUMMARY:Hello World");
+    fn folded_and_escaped_summaries_import() {
+        // RFC 5545 folds by inserting CRLF + one whitespace at an arbitrary
+        // point; "Hello World" was folded mid-word here.
+        let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:Hello Wo\r\n rld\\, again\\; line1\\nline2\r\nDTSTART:20260615T090000\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let (events, _) = parse(payload);
+        assert_eq!(events[0].title, "Hello World, again; line1\nline2");
     }
 
     #[test]
-    fn escaping_handles_commas_and_newlines() {
-        assert_eq!(escape("a,b;c"), "a\\,b\\;c");
-        assert_eq!(unescape("a\\,b\\;c"), "a,b;c");
-        assert_eq!(unescape("line1\\nline2"), "line1\nline2");
+    fn attendee_names_are_quoted_parameters_and_round_trip() {
+        let mut model =
+            crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+        let event = model.events.first_mut().expect("demo event");
+        let guest = Attendee {
+            id: Uuid::new_v4(),
+            name: "Doe, Jane; PhD: Ops".into(),
+            email: "jane@example.com".into(),
+            status: InviteStatus::Accepted,
+        };
+        event.attendees = vec![guest.clone()];
+        let exported = export(&model);
+        assert!(
+            exported.contains("CN=\"Doe, Jane; PhD: Ops\":mailto:jane@example.com")
+                || pim_lines::unfold(&exported)
+                    .iter()
+                    .any(|line| line.contains("CN=\"Doe, Jane; PhD: Ops\":mailto:jane@example.com")),
+            "{exported}"
+        );
+        let (events, _) = parse(&exported);
+        let attendee = events
+            .iter()
+            .flat_map(|event| event.attendees.iter())
+            .find(|attendee| attendee.id == guest.id)
+            .expect("attendee round trips");
+        assert_eq!(attendee, &guest);
+    }
+
+    #[test]
+    fn quoted_parameters_with_colons_do_not_split_the_value() {
+        let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:33333333-3333-3333-3333-333333333333@example\r\nDTSTART:20261020T090000Z\r\nATTENDEE;DELEGATED-FROM=\"mailto:boss@example.com\";CN=\"Lee: Ops\";PARTSTAT=ACCEPTED:mailto:lee@example.com\r\nORGANIZER;SENT-BY=\"mailto:assistant@example.com\":mailto:boss@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let (events, _) = parse(payload);
+        let event = &events[0];
+        let lee = event
+            .attendees
+            .iter()
+            .find(|attendee| attendee.email == "lee@example.com")
+            .expect("delegated attendee parsed");
+        assert_eq!(lee.name, "Lee: Ops");
+        assert_eq!(lee.status, InviteStatus::Accepted);
+        let organizer = event.organizer.expect("organizer parsed");
+        assert!(
+            event
+                .attendees
+                .iter()
+                .any(|attendee| attendee.id == organizer && attendee.email == "boss@example.com")
+        );
+    }
+
+    #[test]
+    fn carriage_returns_never_reach_a_content_line() {
+        let mut model =
+            crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).expect("valid date"));
+        model.events.first_mut().expect("demo event").title = "Line one\r\nLine two".into();
+        let exported = export(&model);
+        assert!(
+            exported.split("\r\n").all(|line| !line.contains('\r')),
+            "a raw CR would end the content line early"
+        );
+        let (events, _) = parse(&exported);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.title == "Line one\nLine two")
+        );
+    }
+
+    #[test]
+    fn lowercase_property_names_are_accepted() {
+        let payload = "begin:vcalendar\r\nbegin:vevent\r\nsummary:Quiet\r\ndtstart;value=date:20260615\r\nend:vevent\r\nend:vcalendar\r\n";
+        let (events, _) = parse(payload);
+        assert_eq!(events[0].title, "Quiet");
+        assert!(events[0].all_day);
     }
 
     #[test]
