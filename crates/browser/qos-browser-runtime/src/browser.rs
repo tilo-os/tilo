@@ -2081,3 +2081,35 @@ pub fn live_view_apply(id: u64, remotes: &str) -> Result<bool, JsValue> {
         Ok(changed)
     })
 }
+/// LIVE_V1: while other members are live, this peer's publications reach
+/// them on its own ops track at once, so edits publish within `ms` instead
+/// of the configured window; `null` restores the configured window.
+#[wasm_bindgen]
+pub fn live_view_publication_window(id: u64, ms: Option<u32>) -> Result<(), JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
+        let pending = {
+            let mut schedule = m.publication.borrow_mut();
+            schedule.set_live_window(ms.map(|ms| std::time::Duration::from_millis(u64::from(ms))));
+            schedule.due().is_some()
+        };
+        // A pending deadline may have moved earlier than the loop's wake-up.
+        if pending && !m.peer_suspended {
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+/// LIVE_V1: a forwarded or author-published change was installed into the
+/// in-memory view. The next status of each mount of this peer carries the
+/// semantics tree at once instead of waiting out the content-only throttle,
+/// so the accessibility DOM shows a collaborator's text in the same frame
+/// the canvas does. Remote live changes arrive at most once per publication
+/// window of the author, never per local keystroke.
+pub(crate) fn expedite_peer_semantics(peer: u32) {
+    MOUNTS.with_borrow(|mounts| {
+        for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
+            mount.semantics.borrow_mut().request();
+        }
+    });
+}

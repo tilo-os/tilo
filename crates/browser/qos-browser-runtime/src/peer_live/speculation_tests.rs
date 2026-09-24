@@ -472,3 +472,158 @@ fn a_durable_cut_withdraws_expired_changes_and_restore_undoes_a_failed_install()
     assert_eq!(get(&settled.state, "host").as_deref(), Some("h1"));
     assert!(!speculation.is_active());
 }
+
+// ---- Author-published forwards (Writer live typing) -------------------------
+
+/// The Writer's paragraph text object `p` in `state`'s record, if present.
+fn paragraph(state: &StatePeer) -> Option<String> {
+    let doc = automerge::AutoCommit::load(&state.document(APP, RECORD)?).ok()?;
+    let (_, id) = doc.get(automerge::ROOT, "p").ok().flatten()?;
+    doc.text(&id).ok()
+}
+fn splice(doc: &mut automerge::AutoCommit, at: usize, text: &str) {
+    let (_, id) = doc.get(automerge::ROOT, "p").unwrap().unwrap();
+    doc.splice_text(&id, at, 0, text).unwrap();
+}
+impl Room {
+    /// The member types into its own copy (the exact bytes it publishes).
+    fn member_types(&mut self, at: usize, text: &str) -> Vec<u8> {
+        let mut doc =
+            automerge::AutoCommit::load(&self.member.document(APP, RECORD).unwrap()).unwrap();
+        let before = doc.get_heads();
+        splice(&mut doc, at, text);
+        doc.commit();
+        let message = self
+            .member
+            .publish_incremental(
+                APP,
+                RECORD,
+                doc.save_after(&before),
+                &self.member_key,
+                time(),
+            )
+            .unwrap();
+        postcard::to_stdvec(&message).unwrap()
+    }
+    /// A host-authored durable edit of the document (not including member changes).
+    fn host_doc(
+        &mut self,
+        edit: impl FnOnce(&mut automerge::AutoCommit),
+    ) -> Vec<(EventKind, Vec<u8>)> {
+        let mut doc =
+            automerge::AutoCommit::load(&self.host.document(APP, RECORD).unwrap()).unwrap();
+        let before = doc.get_heads();
+        edit(&mut doc);
+        doc.commit();
+        let message = self
+            .host
+            .publish_incremental(APP, RECORD, doc.save_after(&before), &self.host_key, time())
+            .unwrap();
+        events(vec![message])
+    }
+}
+
+#[test]
+fn an_author_published_frame_carries_the_exact_outbox_bytes_and_is_admitted_like_a_host_forward() {
+    let mut room = Room::new();
+    let durable = receiver(&mut room);
+    let change = room.member_edit("live", "typed");
+    let (digest, record, frame) = crate::peer_live::author_signed_change(&change).unwrap();
+    assert_eq!(
+        digest,
+        canonical_item_digest(&change),
+        "de-duplicates with the host forward"
+    );
+    assert_eq!((record.app.as_str(), record.record.as_str()), (APP, RECORD));
+    assert!(frame.len() <= MAX_STREAM_FRAME_BYTES);
+    // The receiver's decoder yields the author's bytes unchanged.
+    let (decoded, route, canonical) = crate::peer_live::signed_change(&frame).unwrap();
+    assert_eq!(
+        (decoded, route, canonical.as_slice()),
+        (digest, record, change.as_slice())
+    );
+    let mut speculation = Speculation::default();
+    let view = speculation
+        .admit(&durable, item(&canonical, T0), live)
+        .unwrap();
+    assert_eq!(get(&view, "live").as_deref(), Some("typed"));
+    // Governance and other non-document items are never author-forwarded.
+    for (kind, bytes) in room.baseline() {
+        if kind == EventKind::Governance {
+            assert!(crate::peer_live::author_signed_change(&bytes).is_none());
+        }
+    }
+    assert!(crate::peer_live::author_signed_change(b"").is_none());
+    assert!(crate::peer_live::author_signed_change(&vec![0; MAX_STREAM_FRAME_BYTES]).is_none());
+}
+
+#[test]
+fn author_forward_records_map_exactly_like_the_host() {
+    use crate::peer_live::durable_live_record;
+    let primary = durable_live_record("so.tilo.chat", "").unwrap();
+    assert_eq!(primary.record, crate::live_view::PACKAGE_PRIMARY_RECORD);
+    assert!(
+        durable_live_record("so.tilo.chat", crate::live_view::PACKAGE_PRIMARY_RECORD).is_none()
+    );
+    assert!(durable_live_record("", "tab:1").is_none());
+    assert!(durable_live_record(&"a".repeat(129), "tab:1").is_none());
+    assert!(durable_live_record("app", &"r".repeat(129)).is_none());
+    assert_eq!(durable_live_record("app", "tab:1").unwrap().record, "tab:1");
+}
+
+#[test]
+fn concurrent_same_paragraph_typing_converges_without_duplicates_through_live_and_durable_paths() {
+    let mut room = Room::new();
+    // A shared paragraph both people have durably.
+    let seed = room.host_doc(|doc| {
+        let p = doc
+            .put_object(automerge::ROOT, "p", automerge::ObjType::Text)
+            .unwrap();
+        doc.splice_text(&p, 0, 0, "Hello world").unwrap();
+    });
+    room.member = cut(&room.member, &seed).unwrap();
+    let durable = cut(&receiver(&mut room), &seed).unwrap();
+    assert_eq!(paragraph(&durable).as_deref(), Some("Hello world"));
+
+    // The member types two keystrokes (two publications) at the same offset
+    // where the host concurrently types.
+    let first = room.member_types(5, "X");
+    let second = room.member_types(6, "Z");
+    let mut speculation = Speculation::default();
+    let view = speculation.admit(&durable, item(&first, T0), live).unwrap();
+    let view = speculation
+        .admit(&view, item(&second, T0 + 16_000_000), live)
+        .unwrap();
+    assert_eq!(
+        paragraph(&view).as_deref(),
+        Some("HelloXZ world"),
+        "shown one hop after typing"
+    );
+
+    // The host's concurrent edit in the same paragraph lands durably first.
+    let basis = speculation.take_basis().unwrap();
+    let concurrent = cut(&basis, &room.host_doc(|doc| splice(doc, 5, "Y"))).unwrap();
+    let rebased = speculation.rebase(&concurrent, T0 + 20_000_000, live);
+    assert!(rebased.withdrawn.is_empty());
+    let view = rebased.state.expect("both typists are shown");
+    let merged = paragraph(&view).unwrap();
+    assert_eq!(
+        merged.matches('X').count() + merged.matches('Y').count() + merged.matches('Z').count(),
+        3
+    );
+    assert!(
+        merged.contains("XZ"),
+        "the member's run stays contiguous: {merged}"
+    );
+
+    // The host then commits the member's changes: promoted, identical to the
+    // host's own converged text, no duplicated characters.
+    let basis = speculation.take_basis().unwrap();
+    let confirmed = cut(&basis, &room.commit(&[&first, &second])).unwrap();
+    let rebased = speculation.rebase(&confirmed, T0 + 30_000_000, live);
+    assert_eq!(rebased.promoted.len(), 2);
+    assert!(rebased.state.is_none() && !speculation.is_active());
+    assert_eq!(paragraph(&confirmed), Some(merged.clone()));
+    assert_eq!(paragraph(&confirmed), paragraph(&room.host));
+    assert_eq!(merged.len(), "Hello world".len() + 3);
+}

@@ -272,16 +272,20 @@ export const TYPING_MAX_CHARS = 64;
  */
 export const TYPING_EXPIRE_MS = 600;
 /**
- * A forwarded signed change from the typist covers what it typed before the
- * change was committed; chunks previewed within this window before it
- * arrived are kept (typed after that commit).
+ * While other members are live, this peer's edits publish within this many
+ * milliseconds (one frame) instead of the runtime's configured publication
+ * window: each publication reaches them at once as a signed change on this
+ * peer's own ops track, so a long window would be visible typing latency.
  */
-export const TYPING_LANDED_MARGIN_MS = 60;
+export const LIVE_PUBLICATION_WINDOW_MS = 16;
 
 /**
  * Remote in-flight typing from `OpsFrame::Preview`, per publisher and
- * record, until the forwarded/durable change lands (de-duplicated by the
- * typist's next signed change for that record) or TYPING_EXPIRE_MS passes.
+ * record, until the typist's signed change lands or TYPING_EXPIRE_MS passes.
+ * The typist publishes its own signed change on the same ordered ops track
+ * right after the previews of the keys it contains, so a change that was
+ * admitted (or was already shown) covers every preview received before it.
+ * A change the receiver deferred is not shown yet: its previews stay.
  */
 export function createTypingTracker() {
   const pending = new Map(); // `${publisher}\0${app}\0${record}` -> [{text, at}]
@@ -306,10 +310,9 @@ export function createTypingTracker() {
       }
       if (chunks.length) pending.set(id, chunks); else pending.delete(id);
     },
-    landed({publisher, record}, at) {
-      const id = key(publisher, record);
-      const chunks = (pending.get(id) ?? []).filter(chunk => at - chunk.at < TYPING_LANDED_MARGIN_MS);
-      if (chunks.length) pending.set(id, chunks); else pending.delete(id);
+    landed({publisher, record, result}) {
+      if (result === 'deferred') return;
+      pending.delete(key(publisher, record));
     },
     /** Text typed by `publisher` into `record` that has not landed, or null. */
     text(publisher, record, at) {
@@ -496,6 +499,7 @@ export function createLiveOverlay({
   live,
   snapshot,
   applyRemote = () => false,
+  setPublicationWindow = () => {},
   members = () => [],
   presented = () => surface?.dataset?.frames,
   document: doc = globalThis.document,
@@ -526,6 +530,7 @@ export function createLiveOverlay({
   let membersAt = -Infinity;
   let membersDirty = true;
   let lastRemoteCount = 0;
+  let publicationWindow = null; // ms applied to the runtime, null = configured
   let canvasRect = null;
   const report = error => { try { onError(error); } catch {} };
 
@@ -570,11 +575,29 @@ export function createLiveOverlay({
     unsubscribe.push(api.onMember(() => { membersDirty = true; membersAt = -Infinity; schedule(); }));
     unsubscribe.push(api.onState(() => { inputDirty = true; stateDirty = true; schedule(); }));
     unsubscribe.push(api.onDurable(() => { ghosts.snap(); schedule(); }));
-    if (typeof api.onPreview === 'function') unsubscribe.push(api.onPreview(value => { typing.preview(value, now()); schedule(); }));
-    if (typeof api.onSignedChange === 'function') unsubscribe.push(api.onSignedChange(value => { typing.landed(value, now()); schedule(); }));
+    // Remote typing reaches the runtime in the same task (not the next
+    // animation frame): the preview label and the landed change that replaces
+    // it are then applied by the same runtime frame.
+    if (typeof api.onPreview === 'function') unsubscribe.push(api.onPreview(value => { typing.preview(value, now()); projectSelections(); schedule(); }));
+    if (typeof api.onSignedChange === 'function') unsubscribe.push(api.onSignedChange(value => { typing.landed(value, now()); projectSelections(); schedule(); }));
     inputDirty = true;
     stateDirty = true;
     schedule();
+  }
+  /** Remote carets/selections (+ in-flight typing) to the runtime, if changed. */
+  function projectSelections(at = now()) {
+    if (!api?.available) return;
+    const rows = selections.rows(api.remoteState(at), identity, remote => typing.text(remote.publisher, remote.focus, at));
+    if (rows) {
+      try { applyRemote(rows); stats.selectionApplies++; } catch (error) { report(error); }
+    }
+  }
+  /** Short publication window while other members are live; configured otherwise. */
+  function syncPublicationWindow() {
+    const next = api?.available && (api.memberCount ?? 0) > 0 ? LIVE_PUBLICATION_WINDOW_MS : null;
+    if (next === publicationWindow) return;
+    publicationWindow = next;
+    try { setPublicationWindow(next); } catch (error) { report(error); }
   }
   function publish() {
     if (!api?.available) return;
@@ -589,6 +612,7 @@ export function createLiveOverlay({
     if (closed) return;
     const started = now();
     attach();
+    syncPublicationWindow();
     const remotes = api?.available ? api.remoteState(started) : [];
     const frameValue = presented();
     const layoutMoved = frameValue !== lastPresented;
@@ -705,6 +729,7 @@ export function createLiveOverlay({
       stopEvery(poll);
       if (frame !== undefined) cancelFrame(frame);
       for (const off of unsubscribe) { try { off(); } catch {} }
+      if (publicationWindow !== null) { try { setPublicationWindow(null); } catch {} }
       try { if (api?.available) api.publishPresence({pointer: null, selection: null, drag: null}); } catch {}
       try { applyRemote([]); } catch {}
       view.close();

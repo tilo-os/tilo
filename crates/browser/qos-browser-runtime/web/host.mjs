@@ -311,6 +311,7 @@ export async function mountDesktop(target,options={}) {
       liveOverlay=createLiveOverlay({surface,canvas,live:options.live,
         snapshot:()=>active()?runtime.live_view_snapshot(id):null,
         applyRemote:rows=>active()?runtime.live_view_apply(id,JSON.stringify(rows)):false,
+        setPublicationWindow:ms=>{if(active()&&typeof runtime.live_view_publication_window==='function')runtime.live_view_publication_window(id,ms??undefined);},
         members:()=>{const raw=options.liveMembers?.();return typeof raw==='string'?JSON.parse(raw):[];},
         presented:()=>lastState?.frames,
         onError:error=>options.onLiveError?.(error)});

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CONTENT_SPACE_X, PEER_PALETTE, commandDrag, createDragTracker, createGhostTracker, createLiveOverlay, createOverlayView,
-  createSelectionProjector, createTypingTracker, TYPING_EXPIRE_MS, labelInk, localPointerPresence, memberColor, memberLabel, rectForRecord, remotePointerPosition,
+  createSelectionProjector, createTypingTracker, LIVE_PUBLICATION_WINDOW_MS, TYPING_EXPIRE_MS, labelInk, localPointerPresence, memberColor, memberLabel, rectForRecord, remotePointerPosition,
 } from './live-overlay.mjs';
 import {createRemotePresence} from './live-presence.mjs';
 
@@ -244,12 +244,23 @@ test('typing tracker keeps in-flight text until the typist\'s signed change land
   assert.equal(typing.text('p1', WRITER, 30), 'helo');
   assert.equal(typing.text('p1', CHAT, 30), null, 'per record');
   assert.equal(typing.text('p2', WRITER, 30), null, 'per publisher');
-  // The forwarded change arrives 150 ms after the first keystroke; a chunk
-  // typed 20 ms before it is still in flight.
-  insert('!', 130);
-  typing.landed({publisher: 'p1', record: WRITER}, 150);
-  assert.equal(typing.text('p1', WRITER, 151), '!');
-  assert.equal(typing.text('p1', WRITER, 130 + TYPING_EXPIRE_MS + 1), null, 'expired');
+  // The typist's own signed change follows the previews of its keys on the
+  // same ordered track: once shown it covers every preview received so far.
+  typing.landed({publisher: 'p1', record: WRITER, result: 'admitted'}, 40);
+  assert.equal(typing.text('p1', WRITER, 41), null, 'no duplicate beside the landed text');
+  insert('!', 50);
+  // A change the receiver deferred is not shown yet: its preview stays.
+  typing.landed({publisher: 'p1', record: WRITER, result: 'deferred'}, 60);
+  assert.equal(typing.text('p1', WRITER, 61), '!');
+  typing.landed({publisher: 'p2', record: WRITER, result: 'admitted'}, 62);
+  assert.equal(typing.text('p1', WRITER, 63), '!', 'another member\'s change');
+  // Already shown (duplicate of a durable delivery) also covers it.
+  typing.landed({publisher: 'p1', record: WRITER, result: 'duplicate'}, 70);
+  assert.equal(typing.text('p1', WRITER, 71), null);
+  // Never landing: withdrawn after the expiry.
+  insert('?', 100);
+  assert.equal(typing.text('p1', WRITER, 100 + TYPING_EXPIRE_MS - 1), '?');
+  assert.equal(typing.text('p1', WRITER, 100 + TYPING_EXPIRE_MS + 1), null, 'expired');
   assert.equal(typing.size, 0);
 });
 
@@ -257,7 +268,7 @@ function fakeLive() {
   const listeners = {presence: new Set(), member: new Set(), state: new Set(), durable: new Set(), preview: new Set(), signedChange: new Set()};
   const on = set => callback => { set.add(callback); return () => set.delete(callback); };
   const live = {
-    available: true, published: [], remotes: [],
+    available: true, published: [], remotes: [], memberCount: 0,
     publishPresence(partial) { this.published.push(structuredClone(partial)); return true; },
     remoteState() { return this.remotes; },
     onRemotePresence: on(listeners.presence), onMember: on(listeners.member), onState: on(listeners.state), onDurable: on(listeners.durable),
@@ -277,6 +288,7 @@ test('overlay glue publishes focus-relative pointers and anchors, draws remotes 
   const live = fakeLive();
   const frames = [];
   const applied = [];
+  const windows = [];
   let frameValue = 1;
   let clockNow = 1000;
   let snapshots = 0;
@@ -284,6 +296,7 @@ test('overlay glue publishes focus-relative pointers and anchors, draws remotes 
     surface, canvas, document: doc, live: () => live,
     snapshot: () => { snapshots++; return JSON.stringify({...snapshotA, selection: {anchor: '0103', head: '0205'}}); },
     applyRemote: rows => { applied.push(rows); return true; },
+    setPublicationWindow: ms => windows.push(ms),
     members: () => [{device: 'p1', user: 'alice', name: 'Ada'}],
     presented: () => frameValue,
     now: () => clockNow,
@@ -304,10 +317,14 @@ test('overlay glue publishes focus-relative pointers and anchors, draws remotes 
   assert.deepEqual(last.pointer, [300, 200], 'canvas-relative, then focused-window-relative');
   assert.deepEqual(last.selection, {anchor: '0103', head: '0205'});
   assert.equal(last.drag, undefined, 'no drag field without a drag');
+  assert.deepEqual(windows, [], 'alone: the configured publication window stays');
   // A remote Writer cursor and caret.
+  live.memberCount = 1;
+  live.emit('member', {publisher: 'p1', active: true});
   live.remotes = [{publisher: 'p1', focus: WRITER, pointer: [5, 6], selection: {anchor: '0101', head: '0201'}, drag: null, endedDrags: [], stale: false, receivedAtMs: 990}];
   live.emit('presence', {});
   run();
+  assert.deepEqual(windows, [LIVE_PUBLICATION_WINDOW_MS], 'a live member: edits publish within one frame');
   const cursor = overlay.view.layer.children[0];
   assert.equal(cursor.style.transform, 'translate3d(105.0px,56.0px,0)');
   assert.equal(cursor.children[1].textContent, 'Ada');
@@ -326,15 +343,16 @@ test('overlay glue publishes focus-relative pointers and anchors, draws remotes 
   assert.deepEqual(live.previews.slice(1).map(p => p.ops[0]), [
     {kind: 'insert', text: 'i', at: '0103'}, {kind: 'insert', text: '\u00e9', at: '0103'}, {kind: 'delete', len: 1, at: '0103'},
   ]);
-  // A remote preview is shown with that member's caret until its change lands.
+  // A remote preview is shown with that member's caret until its change
+  // lands, handed to the runtime in the same task (no frame of delay).
   live.emit('preview', {publisher: 'p1', record: WRITER, seq: 1, ops: [{kind: 'insert', at: '0101', text: 'yo'}]});
-  run();
   assert.equal(applied.at(-1)[0].typing, 'yo');
-  clockNow = 1150;
+  run();
+  clockNow = 1010;
   live.emit('signedChange', {publisher: 'p1', record: WRITER, digest: 'd', result: 'admitted'});
+  assert.equal(applied.at(-1)[0].typing, undefined, 'the landed change replaces the preview at once');
   run();
   clockNow = 1000;
-  assert.equal(applied.at(-1)[0].typing, undefined, 'the landed change replaces the preview');
   const appliedCount = applied.length;
   const snapshotCount = snapshots;
   assert.equal(frames.length, 1, 'a moving remote keeps the frame loop armed');
@@ -365,6 +383,7 @@ test('overlay glue publishes focus-relative pointers and anchors, draws remotes 
   const stats = overlay.stats();
   assert.ok(stats.frames > 0 && stats.attached);
   overlay.close();
+  assert.equal(windows.at(-1), null, 'closing restores the configured window');
   assert.deepEqual(live.published.at(-1), {pointer: null, selection: null, drag: null});
   assert.equal(surface.children.length, 0);
   assert.equal(live.listeners.presence.size, 0);
