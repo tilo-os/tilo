@@ -489,6 +489,65 @@ impl Hydrator {
         Ok(out)
     }
 
+    /// [`read`](Self::read) served only from local content: `None` when the
+    /// manifest or any overlapping chunk would have to be fetched from a
+    /// peer. Never touches the network, so it is safe on a latency-critical
+    /// thread.
+    pub async fn read_local(&self, manifest_hash: Hash, offset: u64, size: u64) -> Option<Vec<u8>> {
+        let manifest = self.local_manifest_index(manifest_hash).await?;
+        let end = offset.saturating_add(size).min(manifest.total_len());
+        let mut out =
+            Vec::with_capacity(usize::try_from(end.saturating_sub(offset)).unwrap_or_default());
+        for (start, chunk) in manifest.overlapping(offset, end) {
+            let bytes = self.store.local(Hash::from(chunk.hash)).await?;
+            copy_chunk_range(&mut out, &bytes, start, offset, end);
+        }
+        Some(out)
+    }
+
+    /// The offset-indexed manifest if it is cached or stored locally; never
+    /// fetched.
+    async fn local_manifest_index(&self, manifest_hash: Hash) -> Option<Arc<ManifestIndex>> {
+        if let Some(index) = self.manifests.get(&manifest_hash) {
+            return Some(index);
+        }
+        let bytes = self.store.local(manifest_hash).await?;
+        let index = Arc::new(ManifestIndex::new(Manifest::decode(&bytes).ok()?));
+        self.manifests.insert(manifest_hash, Arc::clone(&index));
+        Some(index)
+    }
+
+    /// Write the complete local content of `manifest_hash` to `dest` as a
+    /// read-only file, chunk by chunk. `Ok(false)` (and nothing written) when
+    /// any part is not local; this never fetches from a peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be written or moved into place.
+    pub async fn export_local(&self, manifest_hash: Hash, dest: &std::path::Path) -> Result<bool> {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let Some(manifest) = self.local_manifest_index(manifest_hash).await else {
+            return Ok(false);
+        };
+        let dir = dest
+            .parent()
+            .ok_or_else(|| anyhow!("export destination has no parent directory"))?;
+        std::fs::create_dir_all(dir)?;
+        let mut file = tempfile::NamedTempFile::new_in(dir)?;
+        for chunk in manifest.chunks() {
+            let Some(bytes) = self.store.local(Hash::from(chunk.hash)).await else {
+                return Ok(false);
+            };
+            file.write_all(&bytes)?;
+        }
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o400))?;
+        file.persist(dest).map_err(|error| error.error)?;
+        Ok(true)
+    }
+
     /// The decoded, offset-indexed manifest for `manifest_hash`, fetched
     /// once and then served from a bounded cache.
     ///
@@ -685,6 +744,28 @@ mod tests {
                 assert_eq!(got, expected, "offset {offset} size {size}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn local_reads_never_reach_for_peers() {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let data: Vec<u8> = (0..200_000_u32)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let hash = store.write_content(&data).await.unwrap().unwrap();
+        let hydrator = Hydrator::new(endpoint, store);
+        assert_eq!(
+            hydrator.read_local(hash, 70_000, 50_000).await.unwrap(),
+            data[70_000..120_000]
+        );
+        assert!(
+            hydrator
+                .read_local(Hash::from([9; 32]), 0, 10)
+                .await
+                .is_none(),
+            "a manifest that is not local is not read"
+        );
     }
 
     #[tokio::test]
