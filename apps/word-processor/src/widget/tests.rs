@@ -7553,10 +7553,13 @@ fn color_picker_popover_applies_a_colour_to_the_focused_style() {
     );
 
     // Lay the picker out and drive a press into the top-left of its SV square
-    // (high value, some saturation) so it commits a fresh colour.
+    // (high value, some saturation) so it previews a fresh colour.
     wp.color_picker.layout(wp.rect, wp.panel_rect);
-    let pr = wp.color_picker.rect();
-    let sv_pt = Point::new(pr.x0 + 20.0, pr.y0 + 20.0);
+    let sv = wp
+        .color_picker
+        .part("color_picker.sv")
+        .expect("the picker lays out its SV square");
+    let sv_pt = Point::new(sv.x0 + 20.0, sv.y0 + 20.0);
     let style_before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
     // CursorMoved (to set the picker's internal cursor) then press.
     let taffy: TaffyTree<()> = TaffyTree::new();
@@ -7598,6 +7601,79 @@ fn color_picker_popover_applies_a_colour_to_the_focused_style() {
         style_before, style_after,
         "dragging in the ColorPicker changed the focused style's colour"
     );
+}
+
+/// Open the picker on a styled paragraph and preview a colour from its SV
+/// square; returns the style colour before the preview.
+fn preview_custom_colour(wp: &mut WordProcessorWidget, state: &mut ui::State) -> Option<[u8; 3]> {
+    wp.model_mut().insert_str(&mut state.doc, "preview me");
+    wp.view.styles_panel_visible = true;
+    pipeline_draw(wp, state, 1000, 700);
+    wp.open_color_picker();
+    assert!(wp.color_picker.is_open(), "Custom… opens the picker");
+    wp.color_picker.layout(wp.rect, wp.panel_rect);
+    let before = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+    let sv = wp
+        .color_picker
+        .part("color_picker.sv")
+        .expect("the picker lays out its SV square");
+    left_click(wp, state, Point::new(sv.x0 + 20.0, sv.y0 + 20.0));
+    // End the SV drag the press started, as the pointer would.
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    wp.handle_event(
+        &WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        },
+        1.0,
+        &Modifiers::default(),
+        &mut state.doc,
+        &state.root,
+        &mut handled,
+        &mut focus,
+        NodeId::new(0),
+        &TaffyTree::new(),
+    );
+    assert_ne!(
+        wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
+        before,
+        "the pending colour previews on the style"
+    );
+    before
+}
+
+/// Escape cancels the confirm-mode picker and restores the opening colour.
+#[test]
+fn color_picker_cancel_reverts_the_previewed_colour() {
+    let (mut state, mut wp) = bound();
+    let before = preview_custom_colour(&mut wp, &mut state);
+    press_named(&mut wp, &mut state, NamedKey::Escape);
+    assert!(!wp.color_picker.is_open(), "Escape closes the picker");
+    assert_eq!(
+        wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
+        before,
+        "Cancel restores the style's colour"
+    );
+}
+
+/// Done keeps the previewed colour.
+#[test]
+fn color_picker_done_keeps_the_previewed_colour() {
+    let (mut state, mut wp) = bound();
+    let before = preview_custom_colour(&mut wp, &mut state);
+    let previewed = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+    let done = wp
+        .color_picker
+        .part("color_picker.done")
+        .expect("a confirm-mode picker has a Done button");
+    wp.color_picker.layout(wp.rect, wp.panel_rect);
+    left_click(&mut wp, &mut state, done.center());
+    assert!(!wp.color_picker.is_open(), "Done closes the picker");
+    let after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
+    assert_eq!(after, previewed, "Done keeps the preview");
+    assert_ne!(after, before);
 }
 
 /// A click outside the open picker dismisses it.
