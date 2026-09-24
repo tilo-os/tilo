@@ -31,13 +31,6 @@ use store::FlatpakRef;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn main() {
-    // Install the workspace-standard rustls ring provider explicitly. The
-    // dependency was already declared for this — the call was not there, so every
-    // https registry and every Flathub request failed at the TLS
-    // handshake rather than anywhere a reader would look. Same line the
-    // maps app and `app` run.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.store", live_root)
             .max_positionals(1)

@@ -480,7 +480,7 @@ impl Graph3dScreen {
         // background + surfaces
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
         self.draw_surfaces(scene, t, theme, model);
-        draw::stroke_rrect(
+        draw::stroke_round(
             scene,
             t,
             self.canvas,
@@ -612,14 +612,14 @@ impl Graph3dScreen {
             };
             let active = i == model.active_surface;
             if active {
-                draw::fill_rrect(
+                draw::fill_round(
                     scene,
                     t,
                     r,
                     8.0,
                     draw::mix(c.surfaces.raised, c.accent[5], 0.18),
                 );
-                draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+                draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
                 ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
             }
@@ -631,7 +631,7 @@ impl Graph3dScreen {
                 r.center().y + 7.0,
             );
             let col = series_color(theme, i);
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 sw,
@@ -695,10 +695,10 @@ impl Graph3dScreen {
             );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
-            draw::stroke_rrect(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
+            draw::stroke_round(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
                 let inner = Rect::new(vr.x0 + 5.0, vr.y0 + 5.0, vr.x1 - 5.0, vr.y1 - 5.0);
-                draw::fill_rrect(scene, t, inner, inner.height() / 2.0, vis_col);
+                draw::fill_round(scene, t, inner, inner.height() / 2.0, vis_col);
             }
         }
     }
@@ -816,14 +816,14 @@ impl Graph3dScreen {
                 TextWeight::Semibold,
             );
         } else {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 r,
                 8.0,
                 draw::mix(c.surfaces.raised, c.accent[5], 0.20),
             );
-            draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+            draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
             draw::text_in(
                 scene,
                 tr,

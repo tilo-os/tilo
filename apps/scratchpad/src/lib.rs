@@ -34,7 +34,7 @@ fn body(doc: &AutoCommit) -> String {
         .flatten()
         .and_then(|(value, id)| match value {
             Value::Object(ObjType::Text) => doc.text(id).ok(),
-            value => value.to_str().map(str::to_owned),
+            value => value.as_str().map(str::to_owned),
         })
         .unwrap_or_default()
 }
@@ -64,7 +64,7 @@ pub fn open(directory: &Path) -> anyhow::Result<(ui::State, Box<dyn Widget>)> {
     let (store, doc) = storage::NoteStore::open(directory)?;
     if let Some((value, _)) = doc.get(ROOT, "body")? {
         anyhow::ensure!(
-            value.to_str().is_some() || matches!(value, Value::Object(ObjType::Text)),
+            value.as_str().is_some() || matches!(value, Value::Object(ObjType::Text)),
             "saved note body is not text"
         );
     }

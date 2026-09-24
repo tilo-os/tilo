@@ -11,6 +11,18 @@ repo="$(cd -- "$script_dir/../.." && pwd)"
 manifest="$repo/os/external-assets/github-assets.tsv"
 cache_dir="${TILO_GITHUB_ASSET_CACHE:-$repo/os/external-assets/cache}"
 mkdir -p "$cache_dir"
+# Every checkout has its own cache_dir (it is a build context inside the
+# worktree), so without a shared store each new worktree downloaded every asset
+# again. The store is per user and keyed by name; a file is only ever taken from
+# it after its pinned checksum verifies. TILO_ASSET_STORE= (empty) turns it off.
+store="${TILO_ASSET_STORE-${XDG_CACHE_HOME:-${HOME:-/nonexistent}/.cache}/tilo/external-assets}"
+if [ -n "$store" ] && ! mkdir -p "$store" 2>/dev/null; then
+  store=""
+fi
+# Hard link when the store shares the filesystem, else copy (reflink if possible).
+share() {
+  ln -f -- "$1" "$2" 2>/dev/null || cp --reflink=auto -f -- "$1" "$2"
+}
 
 wanted() {
   local candidate="$1" requested
@@ -42,6 +54,11 @@ while IFS=$'\t' read -r expected name url; do
   if verify "$expected" "$target"; then
     [ ! -e "$target.part" ] || unlink -- "$target.part"
     printf '[tilo] cached %s\n' "$name"
+    [ -z "$store" ] || [ -e "$store/$name" ] || share "$target" "$store/$name" || true
+    continue
+  fi
+  if [ -n "$store" ] && verify "$expected" "$store/$name" && share "$store/$name" "$target"; then
+    printf '[tilo] cached %s (shared store %s)\n' "$name" "$store"
     continue
   fi
 
@@ -74,6 +91,7 @@ while IFS=$'\t' read -r expected name url; do
   done
   [ "$verified" = 1 ] || exit 1
   mv -f -- "$part" "$target"
+  [ -z "$store" ] || share "$target" "$store/$name" || true
 done < "$manifest"
 
 # A prefix restore can contain entries removed by a newer manifest. Drop those

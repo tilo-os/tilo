@@ -148,7 +148,7 @@ fn stacked_dispatch_converges(n: usize, iterations: usize) {
                 .unwrap_or_else(|| panic!("iter {iter}: key k{i} missing after stack"))
                 .0;
             assert_eq!(
-                got.to_i64(),
+                got.as_i64(),
                 Some(i64::try_from(i).unwrap_or(i64::MAX)),
                 "iter {iter}: k{i} value"
             );
@@ -233,7 +233,7 @@ fn noop_action_in_a_stack_does_not_corrupt_the_executor() {
 
         for (k, v) in [("a", 1i64), ("b", 2), ("c", 3)] {
             let got = a.get(&ROOT, k).unwrap().unwrap().0;
-            assert_eq!(got.to_i64(), Some(v), "iter {iter}: {k}");
+            assert_eq!(got.as_i64(), Some(v), "iter {iter}: {k}");
         }
         for env in &envelopes {
             replay(&mut b, env, &registry())
@@ -331,7 +331,7 @@ fn empty_mutation_in_a_stack_does_not_corrupt_the_executor() {
         }
         for (k, v) in [("a", 1i64), ("b", 2), ("c", 3)] {
             assert_eq!(
-                a.get(&ROOT, k).unwrap().unwrap().0.to_i64(),
+                a.get(&ROOT, k).unwrap().unwrap().0.as_i64(),
                 Some(v),
                 "iter {iter}: {k}"
             );
@@ -391,12 +391,12 @@ fn erroring_action_rolls_back_without_corrupting_the_executor() {
             .clone();
 
         assert_eq!(
-            a.get(&ROOT, "a").unwrap().unwrap().0.to_i64(),
+            a.get(&ROOT, "a").unwrap().unwrap().0.as_i64(),
             Some(1),
             "iter {iter}: a"
         );
         assert_eq!(
-            a.get(&ROOT, "b").unwrap().unwrap().0.to_i64(),
+            a.get(&ROOT, "b").unwrap().unwrap().0.as_i64(),
             Some(2),
             "iter {iter}: b"
         );

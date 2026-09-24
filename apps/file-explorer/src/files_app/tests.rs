@@ -1981,8 +1981,8 @@ mod command_path_tests {
         // Production discovers this from the mounted workspace root. Mark the
         // isolated fixture as a collaborative root so the listing reads the
         // record/sync xattrs whose refresh behavior this test exercises.
-        let previous_roots = std::env::var_os("TILO_WORKSPACE_ROOTS");
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", dir.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOTS", dir.path());
         let before = dir.path().join("before.txt");
         let after = dir.path().join("after.txt");
         std::fs::write(&before, b"shared").unwrap();
@@ -2007,11 +2007,6 @@ mod command_path_tests {
         assert_eq!(widget.selection.selected(), vec![0]);
         assert_eq!(widget.selection.primary(), Some(0));
         assert_eq!(widget.scroll_offset.get(), (0.0, 137.0));
-        if let Some(previous_roots) = previous_roots {
-            unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", previous_roots) };
-        } else {
-            unsafe { std::env::remove_var("TILO_WORKSPACE_ROOTS") };
-        }
     }
 
     #[test]
@@ -4120,16 +4115,15 @@ mod breadcrumb_home_tests {
         // which is precisely the disagreement under test — the override has
         // to win over whatever `dirs::home_dir()` says, and it does not say
         // this temp dir.
-        // SAFETY: the value is read on the two lines below and by nothing
-        // else in this crate's tests.
-        unsafe { std::env::set_var("TILO_USER_HOME", &granted_path) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_USER_HOME", &granted_path);
 
         let resolved = crate::model::user_home();
         let widget_home = FileExplorerWidget::new()
             .home_path()
             .map(std::path::Path::to_path_buf);
 
-        unsafe { std::env::remove_var("TILO_USER_HOME") };
+        drop(env);
 
         assert_eq!(
             resolved.as_deref(),

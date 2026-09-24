@@ -214,6 +214,7 @@ fn ensure_active_workspace_matches(chrome: &Chrome, request: &ToolRequest) -> Re
     let state = chrome.borrow();
     let active_room = state
         .tree()
+        .desktop
         .active_workspace()
         .map(|workspace| workspace.room.to_string())
         .ok_or_else(|| "there is no active workspace".to_string())?;
@@ -333,6 +334,7 @@ mod tests {
         let room = chrome
             .borrow()
             .tree()
+            .desktop
             .active_workspace()
             .unwrap()
             .room
@@ -379,6 +381,7 @@ mod tests {
         let room = chrome
             .borrow()
             .tree()
+            .desktop
             .active_workspace()
             .unwrap()
             .room

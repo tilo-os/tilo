@@ -1632,7 +1632,7 @@ mod tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str()
+                        .as_str()
                         .unwrap()
                         .to_string();
                     let text = doc.get(&block, "text").unwrap().unwrap().1;
@@ -1712,7 +1712,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("first")
         );
     }
@@ -1947,7 +1947,7 @@ mod tests {
         // Sanity: the doc itself is back at the post-second-mutation
         // state so renderers stay in sync.
         let (val, _) = state.doc.get(&automerge::ROOT, "k").unwrap().unwrap();
-        assert_eq!(val.to_str(), Some("v2"));
+        assert_eq!(val.as_str(), Some("v2"));
     }
 
     use crate::permissions::UserId;
@@ -2050,7 +2050,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_string()
         };

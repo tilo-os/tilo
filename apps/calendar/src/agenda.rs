@@ -20,7 +20,7 @@ use ui::widget::Scrollable;
 
 use crate::app::{center_text, draw_checkbox};
 use crate::date;
-use crate::draw_util::{elide_to_width, fill_rect, fill_round, stroke_line};
+use crate::draw_util::{fill_rect, fill_round, stroke_line};
 use crate::metrics;
 use crate::model::{Id, Model, Priority};
 
@@ -206,7 +206,7 @@ impl AgendaView {
     ) -> Vec<(Rect, AgendaAction)> {
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, transform, colors.surfaces.base, area);
+        fill_rect(scene, transform, area, colors.surfaces.base);
 
         let end = anchor + Duration::days(DAYS_SHOWN);
         let mut m = AgendaMetrics::new(&theme.tokens.spacing, text.text_scale());
@@ -378,12 +378,11 @@ fn draw_event_row(
     let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), row, 6.0);
+            fill_round(scene, transform, row, 6.0, colors.lift(0.35));
         }
         fill_round(
             scene,
             transform,
-            event.color.color(theme),
             Rect::new(
                 row.x0,
                 row.y0 + m.bar_inset,
@@ -391,6 +390,7 @@ fn draw_event_row(
                 row.y1 - m.bar_inset,
             ),
             2.0,
+            event.color.color(theme),
         );
         // Every text run is centred on the row from its own measured line
         // height, so time, title and location share one visual centre.
@@ -416,7 +416,8 @@ fn draw_event_row(
         let mut title_right = row.x1 - m.check_gap;
         if show_location && !event.location.is_empty() {
             let loc_max = (row.width() * LOCATION_MAX_SHARE).max(40.0);
-            let location = elide_to_width(text, &event.location, ROW_META_TEXT, loc_max);
+            let location =
+                text.elide_to_width(&event.location, ROW_META_TEXT, ui::num::f32_of_f64(loc_max));
             let loc_w = f64::from(text.measure(&location, ROW_META_TEXT, None).0);
             let loc_x = row.x1 - m.bar_inset - loc_w;
             text.draw_text(
@@ -430,7 +431,7 @@ fn draw_event_row(
             title_right = loc_x - m.check_gap;
         }
         let title_max = (title_right - title_x).max(40.0);
-        let title = elide_to_width(text, &event.title, ROW_TEXT, title_max);
+        let title = text.elide_to_width(&event.title, ROW_TEXT, ui::num::f32_of_f64(title_max));
         text.draw_text(
             scene,
             &title,
@@ -469,7 +470,7 @@ fn draw_task_row(
     let row = Rect::new(x0, y, area.x1 - m.side_pad, y + m.row_h);
     if row.y1 > area.y0 && row.y0 < area.y1 {
         if row.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), row, 6.0);
+            fill_round(scene, transform, row, 6.0, colors.lift(0.35));
         }
         if let Some(hit) = clamp_hit(row, area) {
             hits.push((hit, AgendaAction::OpenTask(task.id)));
@@ -497,7 +498,7 @@ fn draw_task_row(
         let flag_w = flag.map_or(0.0, |f| f64::from(text.measure(f, ROW_FLAG_TEXT, None).0));
         let flag_x = row.x1 - m.check_gap - flag_w;
         let label_max = (flag_x - m.check_gap - label_x0).max(40.0);
-        let label = elide_to_width(text, &task.title, ROW_TEXT, label_max);
+        let label = text.elide_to_width(&task.title, ROW_TEXT, ui::num::f32_of_f64(label_max));
         text.draw_text(
             scene,
             &label,

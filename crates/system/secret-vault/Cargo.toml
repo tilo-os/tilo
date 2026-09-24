@@ -1,0 +1,32 @@
+[package]
+name = "secret-vault"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Sealed local secret vaults: XChaCha20-Poly1305 files and the custody of their key"
+
+[lib]
+name = "secret_vault"
+path = "src/lib.rs"
+
+[dependencies]
+private-fs = { path = "../private-fs" }
+bounded-command = { path = "../bounded-command" }
+tracing.workspace = true
+# XChaCha20-Poly1305 seals the vault; getrandom's `SysRng` draws keys and
+# per-write nonces from the OS CSPRNG; `zeroize` wipes keys and plaintext.
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+# The Secret Service stores the vault key as lower-case hex.
+hex.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

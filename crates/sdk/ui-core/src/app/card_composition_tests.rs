@@ -303,6 +303,6 @@ fn scrollable_empty_state_action_uses_the_real_tab_and_enter_host_route() {
     assert!(matches!(
         app.state.doc.get(automerge::ROOT, "empty.review"),
         Ok(Some((automerge::Value::Scalar(value), _)))
-            if value.as_ref().to_bool() == Some(true)
+            if value.as_ref().as_bool() == Some(true)
     ));
 }

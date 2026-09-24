@@ -128,7 +128,7 @@ fn preserves_current_noncontent_values_objects_and_conflicts() {
         "editor_disk_base",
     ] {
         assert_eq!(
-            doc.get(ROOT, key).unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, key).unwrap().unwrap().0.as_str(),
             Some("current")
         );
     }
@@ -175,7 +175,7 @@ fn resurrects_nested_maps_lists_references_and_all_scalar_types() {
     assert_eq!(doc.length(&list), 12);
     let map = doc.get(&list, 0).unwrap().unwrap().1;
     assert_eq!(
-        doc.get(map, "uuid").unwrap().unwrap().0.to_str(),
+        doc.get(map, "uuid").unwrap().unwrap().0.as_str(),
         Some("01-ref-page")
     );
     for (i, expected) in values.iter().enumerate() {
@@ -184,7 +184,7 @@ fn resurrects_nested_maps_lists_references_and_all_scalar_types() {
             .unwrap()
             .unwrap()
             .0
-            .to_scalar()
+            .as_scalar()
             .unwrap()
             .clone();
         match (expected, &actual) {
@@ -447,7 +447,7 @@ fn optional_root_creation_deletion_and_unchanged_content_identity() {
     let prepared = prepare_content_restore(&doc, &OPTIONAL, &live, &present).unwrap();
     apply_prepared_content_restore(&mut doc, &prepared).unwrap();
     assert_eq!(
-        doc.get(ROOT, "optional").unwrap().unwrap().0.to_str(),
+        doc.get(ROOT, "optional").unwrap().unwrap().0.as_str(),
         Some("original")
     );
     assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, text);
@@ -494,11 +494,11 @@ fn selected_full_frontier_excludes_unrelated_concurrent_content_and_normalizes_h
     apply_prepared_content_restore(&mut doc, &prepared).unwrap();
     let root = doc.get(ROOT, "content").unwrap().unwrap().1;
     assert_eq!(
-        doc.get(&root, "a").unwrap().unwrap().0.to_str(),
+        doc.get(&root, "a").unwrap().unwrap().0.as_str(),
         Some("selected-a")
     );
     assert_eq!(
-        doc.get(&root, "b").unwrap().unwrap().0.to_str(),
+        doc.get(&root, "b").unwrap().unwrap().0.as_str(),
         Some("base-b")
     );
 }
@@ -648,7 +648,7 @@ fn protected_rich_text_blocks_and_marks_remain_intact() {
     assert_eq!(doc.marks(&text).unwrap(), marks);
     assert_eq!(doc.get(&text, 0).unwrap().unwrap().1, block);
     assert_eq!(
-        doc.get(&block, "kind").unwrap().unwrap().0.to_str(),
+        doc.get(&block, "kind").unwrap().unwrap().0.as_str(),
         Some("paragraph")
     );
 }

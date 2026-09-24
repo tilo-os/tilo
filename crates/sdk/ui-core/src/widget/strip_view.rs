@@ -1,10 +1,10 @@
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
-use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -40,7 +40,7 @@ impl StripView {
             active_index: clamped,
             rect: Rect::ZERO,
             last_paginate_ms: None,
-            start: Instant::now(),
+            start: crate::time::now(),
         }
     }
 
@@ -132,7 +132,7 @@ impl Widget for StripView {
                 MouseScrollDelta::PixelDelta(pp) => wheel_sign(pp.y),
             };
             if sign != 0 {
-                let now = Instant::now().duration_since(self.start);
+                let now = crate::time::now().duration_since(self.start);
                 if self.try_paginate(sign, now) {
                     *handled = true;
                 }

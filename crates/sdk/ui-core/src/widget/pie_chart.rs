@@ -9,9 +9,9 @@
     reason = "chart geometry is bounded floating-point arithmetic"
 )]
 
+use crate::time::{Duration, Instant};
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
-use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -169,7 +169,7 @@ impl PieChart {
             keyboard_inspection: false,
             touch: ChartTouchTracker::default(),
             transition_from: None,
-            transition_started: Instant::now(),
+            transition_started: crate::time::now(),
             reduce_motion: false,
         }
     }
@@ -211,7 +211,7 @@ impl PieChart {
             && !self.style.animation_duration.is_zero()
         {
             self.transition_from = Some(previous);
-            self.transition_started = Instant::now();
+            self.transition_started = crate::time::now();
         } else {
             self.transition_from = None;
         }
@@ -347,7 +347,7 @@ impl PieChart {
         }
         let angle =
             (dy.atan2(dx) - self.style.start_angle).rem_euclid(TAU) + self.style.start_angle;
-        self.sectors_at(Instant::now())
+        self.sectors_at(crate::time::now())
             .into_iter()
             .find(|s| angle >= s.start && angle < s.end)
             .map(|s| s.index)
@@ -387,7 +387,7 @@ impl PieChart {
         };
         let total = self.total();
         let slice_anchor = || {
-            self.sectors_at(Instant::now())
+            self.sectors_at(crate::time::now())
                 .into_iter()
                 .find(|sector| self.hovered == Some(sector.index))
                 .map_or_else(
@@ -525,7 +525,7 @@ impl Widget for PieChart {
         _presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
-        let now = Instant::now();
+        let now = crate::time::now();
         let (base_center, outer, inner) = self.geometry();
         let sectors = self.sectors_at(now);
         if sectors.is_empty() {
@@ -663,7 +663,7 @@ impl Widget for PieChart {
                     return;
                 };
                 let indices = self
-                    .sectors_at(Instant::now())
+                    .sectors_at(crate::time::now())
                     .into_iter()
                     .map(|sector| sector.index)
                     .collect::<Vec<_>>();
@@ -844,7 +844,7 @@ mod tests {
             PieSlice::new("b", "B", 3.0, Color::BLACK),
             PieSlice::new("c", "C", 2.0, Color::from_rgb8(1, 2, 3)),
         ]);
-        let midpoint = Instant::now();
+        let midpoint = crate::time::now();
         chart.transition_started = midpoint.checked_sub(Duration::from_millis(100)).unwrap();
         let progress = chart.animation_progress_at(midpoint);
         assert!(chart.animated_value(0, progress) > 1.0);

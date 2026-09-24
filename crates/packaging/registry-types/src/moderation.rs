@@ -503,11 +503,11 @@ pub fn transparency_event_hash(event: &ModerationEvent) -> Result<String, Modera
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
     fn signature_binds_role_expiry_and_body() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut request = sign_moderation_mutation(
             "request-1".into(),
             10,
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn transparency_chain_detects_edit() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let request = sign_moderation_mutation(
             "r".into(),
             1,

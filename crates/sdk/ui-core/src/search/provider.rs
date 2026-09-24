@@ -1396,29 +1396,75 @@ pub trait SearchProvider {
     }
 }
 
-impl SearchProvider for SearchCatalog {
+/// A [`SearchProvider`] answered entirely from one retained [`SearchCatalog`].
+///
+/// Implementing this instead of [`SearchProvider`] gets the whole budgeted
+/// query surface from one blanket implementation: the action-directory
+/// generation and cursor checks read the catalogue's generation, `search` and
+/// `search_limited` stop at the caller's result limit, and `search_page`
+/// continues through [`SearchCatalog::query_page`] under both hard budgets.
+/// Nothing here scans or materialises past a caller's budget, which is the
+/// invariant every app provider owes the shell's search service.
+pub trait CatalogSearchProvider {
+    /// The largest page `search` and `search_limited` return. Providers whose
+    /// palette section shows fewer rows lower it.
+    const RESULT_LIMIT: usize = DEFAULT_SEARCH_RESULT_LIMIT;
+
+    /// Group label and diagnostic name, as [`SearchProvider::name`].
+    fn provider_name(&self) -> &str;
+
+    /// The catalogue answering queries, or `None` while none is published (a
+    /// provider with no catalogue reports no generation and empty pages).
+    ///
+    /// Cloning a [`SearchCatalog`] is O(1), so providers that keep theirs
+    /// behind a lock return a clone taken under it.
+    fn catalog(&self) -> Option<SearchCatalog>;
+
+    /// Candidate-inspection budget for a one-shot `search_limited(limit)`
+    /// call. The default inspects up to [`DEFAULT_SEARCH_CANDIDATE_LIMIT`]
+    /// candidates to fill `limit` results; a provider may instead spend no
+    /// more inspections than results it asked for. `query_page` caps either
+    /// at the shared ceiling.
+    fn limited_work_budget(&self, _limit: usize) -> usize {
+        DEFAULT_SEARCH_CANDIDATE_LIMIT
+    }
+
+    /// Rewrite the caller's query into the form the catalogue was indexed
+    /// with, for providers that fold their own text before indexing.
+    fn catalog_query<'q>(&self, query: &'q str) -> std::borrow::Cow<'q, str> {
+        std::borrow::Cow::Borrowed(query)
+    }
+
+    /// As [`SearchProvider::resolve_action_resource`].
+    fn resolve_action_address(&self, _address: &ActionAddress) -> Option<tilo_actions::Resource> {
+        None
+    }
+}
+
+impl<T: CatalogSearchProvider> SearchProvider for T {
     fn name(&self) -> &str {
-        &self.name
+        self.provider_name()
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.stats().generation)
+        self.catalog().map(|catalog| catalog.stats().generation)
     }
 
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.cursor_is_current(cursor)
+        self.catalog()
+            .is_some_and(|catalog| catalog.cursor_is_current(cursor))
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+        self.search_limited(query, T::RESULT_LIMIT)
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.query_page(
+        self.search_page(
             query,
             None,
-            DEFAULT_SEARCH_CANDIDATE_LIMIT,
-            limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            self.limited_work_budget(limit),
+            limit.min(T::RESULT_LIMIT),
         )
         .results
     }
@@ -1430,7 +1476,33 @@ impl SearchProvider for SearchCatalog {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.query_page(query, cursor, work_budget, result_limit)
+        match self.catalog() {
+            Some(catalog) => catalog.query_page(
+                &self.catalog_query(query),
+                cursor,
+                work_budget,
+                result_limit,
+            ),
+            None => SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            },
+        }
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
+        self.resolve_action_address(address)
+    }
+}
+
+impl CatalogSearchProvider for SearchCatalog {
+    fn provider_name(&self) -> &str {
+        &self.name
+    }
+
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.clone())
     }
 }
 
@@ -1514,6 +1586,111 @@ pub fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn catalog_rows(count: usize) -> SearchCatalog {
+        let catalog = SearchCatalog::new("Rows");
+        catalog
+            .replace_all((0..count).map(|index| {
+                let id = format!("row:{index}");
+                // Odd rows hold every 4-gram of `abcde` but not the word itself,
+                // so they are candidates for it that fail verification.
+                let text = if index % 2 == 0 {
+                    "xabcdex row"
+                } else {
+                    "abcd bcde row"
+                };
+                let result = SearchResult::new("Rows", text, &id)
+                    .with_action_address(ActionAddress::new(id.as_str(), "open"));
+                (id, text.to_owned(), result)
+            }))
+            .unwrap();
+        catalog
+    }
+
+    struct Retained {
+        catalog: Option<SearchCatalog>,
+        results_as_work: bool,
+    }
+
+    impl CatalogSearchProvider for Retained {
+        const RESULT_LIMIT: usize = 5;
+
+        fn provider_name(&self) -> &str {
+            "Retained"
+        }
+
+        fn catalog(&self) -> Option<SearchCatalog> {
+            self.catalog.clone()
+        }
+
+        fn limited_work_budget(&self, limit: usize) -> usize {
+            if self.results_as_work {
+                limit
+            } else {
+                DEFAULT_SEARCH_CANDIDATE_LIMIT
+            }
+        }
+
+        fn catalog_query<'q>(&self, query: &'q str) -> std::borrow::Cow<'q, str> {
+            std::borrow::Cow::Owned(query.to_lowercase())
+        }
+    }
+
+    #[test]
+    fn catalog_provider_answers_from_the_retained_catalogue_within_budgets() {
+        let catalog = catalog_rows(40);
+        let provider = Retained {
+            catalog: Some(catalog.clone()),
+            results_as_work: false,
+        };
+        assert_eq!(SearchProvider::name(&provider), "Retained");
+        assert_eq!(
+            provider.action_directory_generation(),
+            Some(catalog.stats().generation)
+        );
+
+        // `search` stops at the provider's result limit, and the query is
+        // folded before it reaches the catalogue.
+        assert_eq!(provider.search("ROW").len(), 5);
+        assert_eq!(provider.search_limited("row", 100).len(), 5);
+        assert_eq!(provider.search_limited("row", 3).len(), 3);
+
+        let page = provider.search_page("row", None, 4, 10);
+        assert_eq!(page.inspected, 4);
+        let next = page.next.expect("a broad query continues by cursor");
+        assert!(provider.action_directory_cursor_is_current(&next));
+        catalog.remove("row:0");
+        assert!(!provider.action_directory_cursor_is_current(&next));
+    }
+
+    #[test]
+    fn catalog_provider_can_spend_no_more_inspections_than_results() {
+        let catalog = catalog_rows(40);
+        let generous = Retained {
+            catalog: Some(catalog.clone()),
+            results_as_work: false,
+        };
+        let frugal = Retained {
+            catalog: Some(catalog),
+            results_as_work: true,
+        };
+        // Candidates alternate between matches and near misses, so two
+        // inspections find only one match.
+        assert_eq!(generous.search_limited("abcde", 2).len(), 2);
+        assert_eq!(frugal.search_limited("abcde", 2).len(), 1);
+    }
+
+    #[test]
+    fn catalog_provider_without_a_catalogue_is_empty_and_has_no_generation() {
+        let provider = Retained {
+            catalog: None,
+            results_as_work: false,
+        };
+        assert_eq!(provider.action_directory_generation(), None);
+        assert!(provider.search("row").is_empty());
+        let page = provider.search_page("row", None, 10, 10);
+        assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
+    }
 
     #[test]
     fn open_resource_search_indexes_nested_resources_and_prefers_view_actions() {
@@ -1718,14 +1895,17 @@ mod tests {
 
     #[test]
     fn oversized_query_stops_before_index_work_or_materialisation() {
+        // Every record contains the whole query, so any index work would
+        // inspect candidates and find them; `inspected == 0` proves the
+        // rejection came first without a large corpus to make a scan slow.
+        let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
         let catalog = SearchCatalog::new("Documents");
-        for index in 0..100_001 {
+        for index in 0..32 {
             let id = format!("document:{index:06}");
             catalog
-                .upsert(&id, "common searchable document", catalog_hit(&id, &id))
+                .upsert(&id, format!("document {query}"), catalog_hit(&id, &id))
                 .unwrap();
         }
-        let query = "x".repeat(MAX_SEARCH_QUERY_SCALARS + 1);
 
         let page = catalog.query_page(&query, None, 1, 1);
         assert!(page.results.is_empty());

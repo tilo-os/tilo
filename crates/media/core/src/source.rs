@@ -217,8 +217,8 @@ mod tests {
         // Point the mount at a scratch dir so the test needs no real FUSE.
         let dir = std::env::temp_dir().join(format!("tilo-media-src-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOT", &dir) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOT", &dir);
 
         let rel = Source::Workspace(PathBuf::from("clips/a.mp4"));
         assert_eq!(rel.abs_path().unwrap(), dir.join("clips/a.mp4"));
@@ -233,7 +233,7 @@ mod tests {
         rel.open_reader().unwrap().read_to_end(&mut buf).unwrap();
         assert_eq!(buf, b"hello bytes");
 
-        unsafe { std::env::remove_var("TILO_WORKSPACE_ROOT") };
+        drop(env);
         std::fs::remove_dir_all(&dir).ok();
     }
 

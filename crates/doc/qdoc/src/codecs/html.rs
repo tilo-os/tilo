@@ -1,5 +1,5 @@
 //! Built-in HTML **import** codec — parses `.html`/`.htm` onto the canonical
-//! rich-text model (`qdoc-html` handles export). HTML in the wild isn't strict
+//! rich-text model ([`crate::export_html`] handles export). HTML in the wild isn't strict
 //! XML, so this hand-rolls a tolerant tokenizer: never errors on malformed
 //! markup, degrades unknown tags to text, unescapes entities itself.
 //!
@@ -14,8 +14,8 @@
 //! inline `<code>`→`fontFamily`=mono.
 //!
 //! `<head>`/`<script>`/`<style>` is skipped. `export` is `Unsupported`: HTML
-//! export lives in `qdoc-html` (needs a `DocSnapshot`, not the `DocRef` a
-//! `FormatProvider` gets), and `qdoc` can't depend on it without a cycle.
+//! export is [`crate::export_html::render_html`], which needs a `DocSnapshot`,
+//! not the `DocRef` a `FormatProvider` gets.
 
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
@@ -52,9 +52,9 @@ impl FormatProvider for HtmlCodec {
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        // Reusing `qdoc-html`'s writer here would need `qdoc` to depend on it — a cycle.
+        // The HTML writer renders a materialized `DocSnapshot`, not a `DocRef`.
         Err(CodecError::Unsupported(
-            "HTML export is provided by the `qdoc-html` crate (editor), not the qdoc codec"
+            "HTML export is provided by qdoc::export_html::render_html, not the qdoc codec"
                 .to_string(),
         ))
     }
@@ -892,7 +892,7 @@ fn insert_image(doc: &mut DocMut, st: &mut ImportState, attrs: &str) {
 }
 
 /// Decodes a `data:[mime][;base64],payload` URI into bytes; `None` for a non-data
-/// URI or undecodable payload (base64 only, matching `qdoc-html`).
+/// URI or undecodable payload (base64 only, matching `export_html`).
 fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     let rest = src
         .strip_prefix("data:")
@@ -906,38 +906,35 @@ fn decode_data_uri(src: &str) -> Option<Vec<u8>> {
     base64_decode(payload)
 }
 
-/// Minimal standard-alphabet base64 decoder (no external dep); ignores ASCII whitespace, `None` on an invalid character.
+/// Decodes a standard-alphabet base64 payload as HTML authors write it: ASCII
+/// whitespace is ignored, padding is optional and decoding stops at the first
+/// `=`, and non-zero trailing bits or a dangling final character are dropped.
+/// `None` when any character outside the standard alphabet is present.
 fn base64_decode(s: &str) -> Option<Vec<u8>> {
-    fn val(c: u8) -> Option<u32> {
-        match c {
-            b'A'..=b'Z' => Some(u32::from(c.saturating_sub(b'A'))),
-            b'a'..=b'z' => Some(u32::from(c.saturating_sub(b'a')).saturating_add(26)),
-            b'0'..=b'9' => Some(u32::from(c.saturating_sub(b'0')).saturating_add(52)),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
+    use base64::Engine as _;
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+
+    const LENIENT: GeneralPurpose = GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::RequireNone)
+            .with_decode_allow_trailing_bits(true),
+    );
+
+    let mut compact: Vec<u8> = s
+        .bytes()
+        .take_while(|&b| b != b'=')
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect();
+    // A lone final character carries only six bits -- not a whole byte. It is
+    // still validated, then dropped, rather than failing the whole payload.
+    if compact.len() % 4 == 1 {
+        let last = compact.pop()?;
+        if !(last.is_ascii_alphanumeric() || last == b'+' || last == b'/') {
+            return None;
         }
     }
-    let mut out = Vec::new();
-    let mut acc = 0u32;
-    let mut bits = 0u32;
-    for &b in s.as_bytes() {
-        if b == b'=' {
-            break;
-        }
-        if b.is_ascii_whitespace() {
-            continue;
-        }
-        let v = val(b)?;
-        acc = (acc << 6) | v;
-        bits = bits.saturating_add(6);
-        if bits >= 8 {
-            bits = bits.saturating_sub(8);
-            let byte = (acc >> bits) & 0xFF;
-            out.push(u8::try_from(byte).unwrap_or(0));
-        }
-    }
-    Some(out)
+    LENIENT.decode(&compact).ok()
 }
 
 /// Collapses runs of HTML whitespace to single spaces; only ASCII whitespace collapses — `&nbsp;` (U+00A0) is meaningful and preserved.
@@ -1310,6 +1307,35 @@ mod tests {
             "{:?}",
             p.marks
         );
+    }
+
+    #[test]
+    fn base64_payload_decoding_is_lenient_about_layout_only() {
+        // Padded, unpadded and wrapped payloads decode alike.
+        assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
+        assert_eq!(base64_decode("Zm9vYg").as_deref(), Some(&b"foob"[..]));
+        assert_eq!(
+            base64_decode(" Zm9v\r\n YmFy\t").as_deref(),
+            Some(&b"foobar"[..])
+        );
+        assert_eq!(
+            base64_decode("+/+/").as_deref(),
+            Some(&[0xfb, 0xff, 0xbf][..])
+        );
+        assert_eq!(base64_decode("").as_deref(), Some(&[][..]));
+        assert_eq!(base64_decode(" \n").as_deref(), Some(&[][..]));
+        // Decoding stops at the first `=`; whatever follows is ignored.
+        assert_eq!(base64_decode("QQ==garbage!").as_deref(), Some(&b"A"[..]));
+        assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
+        // Non-zero trailing bits and a dangling final sextet are dropped.
+        assert_eq!(base64_decode("QR==").as_deref(), Some(&b"A"[..]));
+        assert_eq!(base64_decode("Zm9vY").as_deref(), Some(&b"foo"[..]));
+        assert_eq!(base64_decode("Q").as_deref(), Some(&[][..]));
+        // Anything outside the standard alphabet is rejected, even last.
+        assert_eq!(base64_decode("Zm9v-_"), None);
+        assert_eq!(base64_decode("Zm9vY!"), None);
+        assert_eq!(base64_decode("!"), None);
+        assert_eq!(base64_decode("Zm9v\u{a0}"), None);
     }
 
     #[test]

@@ -46,5 +46,8 @@ runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 name = "it"
 path = "tests/it.rs"
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [lints]
 workspace = true

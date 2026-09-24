@@ -5,13 +5,10 @@
 //! lazily re-resolved against the current deck before activation.
 
 use std::collections::BTreeSet;
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use tilo_actions::ActionAddress;
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchResult,
-};
 
 use crate::actions::{self, ElementResource, SlideResource, SlidesResourceCtx};
 use crate::model::{Deck, Element, ElementKind, Slide};
@@ -199,45 +196,16 @@ impl SlideSearchProvider {
     }
 }
 
-impl SearchProvider for SlideSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for SlideSearchProvider {
+    fn provider_name(&self) -> &str {
         SLIDE_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .query_page(
-                query,
-                None,
-                DEFAULT_SEARCH_CANDIDATE_LIMIT,
-                limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-            )
-            .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
         actions::resolve_resource(&self.resource_context(), &address.resource)
     }
 }
@@ -246,6 +214,7 @@ impl SearchProvider for SlideSearchProvider {
 mod tests {
     use super::*;
     use automerge::{AutoCommit, ROOT};
+    use ui::search::SearchProvider;
     use ui::search::SearchRegistry;
     use ui::widget::Widget;
 

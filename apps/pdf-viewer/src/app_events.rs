@@ -2421,9 +2421,8 @@ mod event_tests {
 
     /// The Open affordance goes to the **host portal**, never an in-app
     /// picker. We assert the click resolves to the Open action and that the
-    /// action routes into the portal-request path — pre-arming an in-flight
-    /// request so the test never actually spawns a real host dialog (the
-    /// in-flight guard makes applying the action a no-op).
+    /// action routes into the portal-request path — under a recording host,
+    /// so the test never actually spawns a real host dialog.
     #[test]
     fn open_affordance_routes_to_the_host_portal() {
         let (mut app, mut st) = app();
@@ -2439,20 +2438,23 @@ mod event_tests {
             "the folder button hit-tests to the Open action"
         );
 
-        // Pre-arm a portal request so applying Open can't launch a real host
-        // dialog during the test; the in-flight guard must preserve it.
-        let sentinel = ui::portal::inject_for_test(ui::portal::PortalOutcome::Cancelled);
-        app.portal_rx = Some(sentinel);
-        app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        // The recording host answers the chooser instead of a real dialog.
+        let (services, recorder) = ui::host::HostServices::recording();
+        ui::host::scoped(&services, || {
+            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        });
         assert!(
             app.portal_rx.is_some(),
             "Open routes to the host portal request path (not an in-app dialog)"
         );
+        let requests = recorder.pick_requests();
+        assert_eq!(requests.len(), 1, "exactly one host chooser request");
+        assert_eq!(requests[0].title(), "Open a PDF");
     }
 
     /// A file chosen by the host portal loads through the per-frame drain in
-    /// `sync` — the portal result is injected (no real dialog) and the next
-    /// frame must load the document.
+    /// `sync` — the recording host answers the chooser (no real dialog) and
+    /// the next frame must load the document.
     #[test]
     #[serial(pdfium)]
     fn portal_open_result_loads_document_via_frame_drain() {
@@ -2468,9 +2470,11 @@ mod event_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/sample.pdf"
         ));
-        app.portal_rx = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Opened(path),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
+        ui::host::scoped(&services, || {
+            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        });
 
         // The per-frame sync drains the portal channel and loads the doc.
         app.sync(&mut st.doc, &st.root);
@@ -2494,9 +2498,15 @@ mod event_tests {
         let (mut app, mut st) = app(); // sample document already loaded
         let before = app.has_document;
         let name_before = app.doc_name.clone();
-        app.portal_rx = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Cancelled,
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || {
+            app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
+        });
+        assert!(
+            app.portal_rx.is_some(),
+            "Open issued a host chooser request"
+        );
         app.sync(&mut st.doc, &st.root);
         assert_eq!(
             app.has_document, before,

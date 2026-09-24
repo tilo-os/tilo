@@ -64,6 +64,7 @@ impl Session {
         // capability, task and effect-receipt flushes survive this session.
         tree.persist_path = Some(path.clone());
         let workspace = tree
+            .desktop
             .workspaces
             .first_mut()
             .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;

@@ -1,3 +1,4 @@
+mod advisory_lock;
 pub mod controller;
 pub mod desktop_catalog;
 mod desktop_continuation;
@@ -29,6 +30,8 @@ mod migration_store;
 mod migration_worker;
 pub mod model;
 mod nofollow;
+#[cfg(all(test, target_os = "linux"))]
+mod test_support;
 pub mod view;
 
 pub use view::app_root;

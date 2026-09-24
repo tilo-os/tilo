@@ -120,22 +120,16 @@ impl ThumbCache {
         self.mem.contains_key(key) || self.path_for(key).exists()
     }
 
-    /// Store `png` for `key` in memory and on disk (atomic temp-then-rename so a
-    /// crash mid-write never leaves a partial thumbnail). Prunes the disk cache
+    /// Store `png` for `key` in memory and on disk (durable temp-then-rename so
+    /// a crash mid-write never leaves a partial thumbnail). Prunes the disk cache
     /// back under its bound afterward.
     pub fn put(&self, key: &ThumbKey, png: Vec<u8>) {
         let arc = Arc::new(png);
         self.mem.insert(*key, arc.clone());
-        let final_path = self.path_for(key);
-        // temp path carries the pid+key so concurrent writers don't collide.
-        let tmp = self
-            .dir
-            .join(format!(".{}.{}.tmp", std::process::id(), key.filename()));
-        if std::fs::write(&tmp, arc.as_slice()).is_ok() {
-            let _ = std::fs::rename(&tmp, &final_path);
-        } else {
-            let _ = std::fs::remove_file(&tmp);
-        }
+        // A unique temp name per write, so two threads rendering the same key
+        // never share one, and a synced file before the rename, so a crash
+        // cannot publish a truncated PNG.
+        let _ = atomic_file::write(&self.path_for(key), arc.as_slice());
         self.prune();
     }
 

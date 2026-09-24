@@ -130,6 +130,22 @@ impl RunError {
     }
 }
 
+/// Where a launch finds the identity record it brokers to the app.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum IdentitySource {
+    /// The active identity in the invoking user's store, located through
+    /// `$XDG_CONFIG_HOME`, else `$HOME/.config`.
+    #[default]
+    UserStore,
+    /// The active identity in this identity store directory.
+    Store(PathBuf),
+    /// This exact record, used verbatim with no existence check. It is
+    /// migrated only when it lies in the user's store.
+    Record(PathBuf),
+    /// No identity: the app runs without an identity broker.
+    None,
+}
+
 /// Optional knobs for `run_with`.
 #[derive(Debug, Clone)]
 #[allow(
@@ -179,10 +195,13 @@ pub struct RunOptions {
     /// from the compositor's own `zwp_linux_dmabuf_v1` decision rather than
     /// re-derived. `None` means loaders keep their own defaults.
     pub render_node: Option<PathBuf>,
-    /// Host path to user identity metadata; `None` resolves the
-    /// `$XDG_CONFIG_HOME`/`$HOME` default. It is read only by the launcher to
-    /// create a broker capability and is never bound into the sandbox.
-    pub identity_host_path: Option<PathBuf>,
+    /// Where the identity brokered to the app comes from. It is read only by
+    /// the launcher to create a broker capability and is never bound into
+    /// the sandbox.
+    pub identity: IdentitySource,
+    /// Host data home holding the per-room app directories; `None` resolves
+    /// `$XDG_DATA_HOME`, else `$HOME/.local/share`.
+    pub data_home: Option<PathBuf>,
     /// Host path of the session's bounded, non-secret human identity
     /// projection. Honoured only for Files and mounted read-only over its
     /// otherwise writable app directory.
@@ -222,7 +241,8 @@ impl Default for RunOptions {
             require_runtime_publisher: None,
             wayland_socket: None,
             render_node: None,
-            identity_host_path: None,
+            identity: IdentitySource::UserStore,
+            data_home: None,
             trusted_identities_host_path: None,
             workspace_id: None,
             capabilities_path: None,
@@ -501,7 +521,10 @@ pub fn resolve_runtime_test_helper(
 /// Resolve/create/migrate the one directory this launch may write to,
 /// keyed by `opts.workspace_id` — no list to walk.
 fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<PathBuf, RunError> {
-    let data_home = crate::appdir::host_data_home()
+    let data_home = opts
+        .data_home
+        .clone()
+        .or_else(crate::appdir::host_data_home)
         .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
     crate::appdir::prepare_host_app_dir(
         &data_home,
@@ -519,29 +542,46 @@ fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<Path
     })
 }
 
-/// Priority: explicit override (no existence check) >
-/// the active identity selected in the per-user identity store > `None`.
-pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
-    if let Some(p) = &opts.identity_host_path {
-        return Some(p.clone());
+/// The identity store records are migrated in, if any: the named store, or
+/// the user's store for [`IdentitySource::UserStore`] and
+/// [`IdentitySource::Record`].
+fn identity_store(source: &IdentitySource) -> Option<PathBuf> {
+    match source {
+        IdentitySource::UserStore | IdentitySource::Record(_) => {
+            runtime_identity::identity_dir_from_env().ok()
+        }
+        IdentitySource::Store(dir) => Some(dir.clone()),
+        IdentitySource::None => None,
     }
-    let dir = runtime_identity::identity_dir_from_env().ok()?;
-    runtime_identity::resolve_active_identity(&dir)
+}
+
+/// The identity record this launch brokers: an explicit record verbatim (no
+/// existence check), else the active identity selected in the store, else
+/// `None`.
+pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
+    match &opts.identity {
+        IdentitySource::Record(path) => Some(path.clone()),
+        IdentitySource::None => None,
+        source @ (IdentitySource::UserStore | IdentitySource::Store(_)) => {
+            runtime_identity::resolve_active_identity(&identity_store(source)?)
+        }
+    }
 }
 
 fn start_identity_broker(
     path: &Path,
+    store: Option<&Path>,
 ) -> Result<(UnixStream, UnixStream, std::thread::JoinHandle<()>), RunError> {
     // Standard store records are migrated before loading. Explicit debug
     // paths outside the store still stay host-side, but are not rewritten in
     // an unexpected directory.
-    if let Ok(store) = runtime_identity::identity_dir_from_env()
-        && path.parent() == Some(store.as_path())
+    if let Some(store) = store
+        && path.parent() == Some(store)
         && let Some(id) = path.file_stem().and_then(|value| value.to_str())
         && path.extension().and_then(|value| value.to_str()) == Some("json")
         && path == store.join(format!("{id}.json"))
     {
-        runtime_identity::secure_identity(&store, id)
+        runtime_identity::secure_identity(store, id)
             .map_err(|error| RunError::IdentityBroker(error.to_string()))?;
     }
     let identity = runtime_identity::load_from_path(path.to_path_buf())
@@ -623,11 +663,15 @@ pub fn resolve_runtime(
         .split_once('/')
         .ok_or_else(|| RunError::RuntimeReferenceMalformed(raw.to_string()))?;
     // Look up: the configured/user root first, then the immutable system
-    // fallback. `default_bundle_path` intentionally honours
-    // TILO_RUNTIME_BUNDLE_DIR; developer sessions use it to keep the runtime
-    // matched to an overlaid registry/payload set instead of silently binding
-    // the installed `/usr` runtime.
-    let per_user = runtime_bundle::default_bundle_path(version).ok();
+    // fallback. A developer build honours TILO_RUNTIME_BUNDLE_DIR; developer
+    // sessions use it to keep the runtime matched to an overlaid
+    // registry/payload set instead of silently binding the installed `/usr`
+    // runtime. A release build ignores it (see `crate::dev_env`).
+    let per_user = runtime_bundle::default_bundle_path_from(
+        crate::dev_env::dev_override(runtime_bundle::RUNTIME_DIR_ENV),
+        version,
+    )
+    .ok();
     let system = runtime_bundle::system_bundle_path(version);
     let candidates: Vec<PathBuf> = per_user.iter().cloned().chain([system.clone()]).collect();
     for cand in &candidates {
@@ -655,7 +699,7 @@ pub fn resolve_runtime(
 ///   1. `opts.require_runtime_publisher`, if set, must match.
 ///   2. Else the system trust-list file, if present and non-empty
 ///      (`/etc/tilo/runtime-bundle-trusted-publishers.txt`, or
-///      `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`).
+///      `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE` in a developer build).
 ///   3. Else any signed publisher is accepted.
 ///
 /// Layering lets the OS image bake and pin a fresh key at build time.
@@ -781,12 +825,12 @@ fn trusted_publisher_pin_from_file() -> Option<String> {
 }
 
 /// Read the trusted-publisher list from disk, ignoring blank/`#` lines.
-/// `None` when neither the env override nor the default file exists.
+/// `None` when neither the (developer-build) env override nor the default
+/// file exists.
 fn load_trusted_publisher_list() -> Option<Vec<String>> {
-    let path: PathBuf = match std::env::var_os("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE") {
-        Some(p) => PathBuf::from(p),
-        None => PathBuf::from("/etc/tilo/runtime-bundle-trusted-publishers.txt"),
-    };
+    let path = trusted_publishers_path_from(crate::dev_env::dev_override(
+        crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
+    ));
     let bytes = std::fs::read(&path).ok()?;
     let text = String::from_utf8(bytes).ok()?;
     let list: Vec<String> = text
@@ -796,6 +840,64 @@ fn load_trusted_publisher_list() -> Option<Vec<String>> {
         .map(std::string::ToString::to_string)
         .collect();
     Some(list)
+}
+
+/// The image's runtime trusted-publisher list.
+pub const TRUSTED_PUBLISHERS_FILE: &str = "/etc/tilo/runtime-bundle-trusted-publishers.txt";
+
+/// Where the trusted-publisher list is read from, given the override the
+/// build's gate let through ([`crate::dev_env::dev_override`]).
+fn trusted_publishers_path_from(allowed_override: Option<std::ffi::OsString>) -> PathBuf {
+    allowed_override.map_or_else(|| PathBuf::from(TRUSTED_PUBLISHERS_FILE), PathBuf::from)
+}
+
+#[cfg(test)]
+mod dev_override_tests {
+    use super::*;
+    use crate::dev_env::{TRUSTED_PUBLISHERS_FILE_ENV, dev_override_from};
+
+    #[test]
+    fn a_release_build_reads_the_images_trusted_publisher_list() {
+        let path = trusted_publishers_path_from(dev_override_from(
+            false,
+            TRUSTED_PUBLISHERS_FILE_ENV,
+            Some("/tmp/attacker-publishers.txt".into()),
+        ));
+        assert_eq!(path, Path::new(TRUSTED_PUBLISHERS_FILE));
+    }
+
+    #[test]
+    fn a_developer_build_honours_the_trusted_publisher_override() {
+        let path = trusted_publishers_path_from(dev_override_from(
+            true,
+            TRUSTED_PUBLISHERS_FILE_ENV,
+            Some("/dev/runtime/trusted-publishers.txt".into()),
+        ));
+        assert_eq!(path, Path::new("/dev/runtime/trusted-publishers.txt"));
+    }
+
+    #[test]
+    fn a_release_build_ignores_the_runtime_bundle_root_override() {
+        let gated = dev_override_from(
+            false,
+            runtime_bundle::RUNTIME_DIR_ENV,
+            Some("/tmp/attacker-runtime".into()),
+        );
+        // Resolution may fail on a machine with no data dir; what matters is
+        // that it never lands under the override.
+        if let Ok(path) = runtime_bundle::default_bundle_path_from(gated, "1") {
+            assert!(!path.starts_with("/tmp/attacker-runtime"), "{path:?}");
+        }
+        let honoured = dev_override_from(
+            true,
+            runtime_bundle::RUNTIME_DIR_ENV,
+            Some("/dev/runtime".into()),
+        );
+        assert_eq!(
+            runtime_bundle::default_bundle_path_from(honoured, "1").ok(),
+            Some(PathBuf::from("/dev/runtime/1"))
+        );
+    }
 }
 
 /// Top-level entry: reads the manifest, builds the sandbox, execs.
@@ -849,8 +951,9 @@ pub enum LaunchMode {
 }
 
 /// Env override that turns the egress gate off, downgrading a host-scoped
-/// grant to unrestricted access. Explicit only — never a silent default.
-pub const NET_GATE_ENV: &str = "TILO_LAUNCHER_NET_GATE";
+/// grant to unrestricted access. Explicit only — never a silent default —
+/// and honoured only by developer builds (see [`crate::dev_env`]).
+pub const NET_GATE_ENV: &str = crate::dev_env::NET_GATE_ENV;
 
 /// Start the egress gate if this launch needs one. Returns the bwrap bind
 /// description and the guard keeping the gate alive; both `None` when
@@ -1561,7 +1664,8 @@ fn resolve_identity_broker(
     let (app, control, thread) = if capabilities.participation.carries_identity() {
         match identity_host.as_deref() {
             Some(path) => {
-                let (app, control, thread) = start_identity_broker(path)?;
+                let store = identity_store(&opts.identity);
+                let (app, control, thread) = start_identity_broker(path, store.as_deref())?;
                 (Some(app), Some(control), Some(thread))
             }
             None => (None, None, None),
@@ -2548,18 +2652,13 @@ mod dbus_resolution_tests {
     use super::*;
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_missing_filter_proxy_never_falls_back_to_the_raw_session_bus() {
-        let old_proxy = std::env::var_os(crate::dbus_proxy::PROXY_BIN_ENV);
-        let old_bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
-        // SAFETY: this test is in the process_env serial group.
-        unsafe {
-            std::env::set_var(
-                crate::dbus_proxy::PROXY_BIN_ENV,
-                "/definitely/missing/xdg-dbus-proxy",
-            );
-            std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(
+            crate::dbus_proxy::PROXY_BIN_ENV,
+            "/definitely/missing/xdg-dbus-proxy",
+        )
+        .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
         let portals = std::collections::BTreeMap::from([(
             "notifications".to_string(),
             PortalPolicy::ViaHost,
@@ -2567,17 +2666,6 @@ mod dbus_resolution_tests {
 
         let (plan, guard) = resolve_dbus_bind(&portals);
 
-        // SAFETY: restore the serialised process environment before asserting.
-        unsafe {
-            match old_proxy {
-                Some(value) => std::env::set_var(crate::dbus_proxy::PROXY_BIN_ENV, value),
-                None => std::env::remove_var(crate::dbus_proxy::PROXY_BIN_ENV),
-            }
-            match old_bus {
-                Some(value) => std::env::set_var("DBUS_SESSION_BUS_ADDRESS", value),
-                None => std::env::remove_var("DBUS_SESSION_BUS_ADDRESS"),
-            }
-        }
         assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
         assert!(guard.is_none(), "no proxy process should have started");
     }
@@ -2594,46 +2682,62 @@ fn current_uid() -> u32 {
 mod identity_resolution_tests {
     use super::*;
 
-    fn snapshot_and_clear() -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
-        let x = std::env::var_os("XDG_CONFIG_HOME");
-        let h = std::env::var_os("HOME");
-        // SAFETY: the callers are all in the `process_env` serial group.
-        unsafe {
-            std::env::remove_var("XDG_CONFIG_HOME");
-            std::env::remove_var("HOME");
-        }
-        (x, h)
-    }
-
-    fn restore(x: Option<std::ffi::OsString>, h: Option<std::ffi::OsString>) {
-        // SAFETY: the callers are all in the `process_env` serial group.
-        unsafe {
-            match x {
-                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match h {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
+    /// A store directory holding a `primary` record. The resolver only checks
+    /// that the record is a regular file, so the content is irrelevant here.
+    fn store_with_primary(root: &Path) -> PathBuf {
+        let store = root.join("tilo").join("identity");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("primary.json"), b"{}").unwrap();
+        store
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
-    fn explicit_override_wins_and_skips_existence_check() {
-        let saved = snapshot_and_clear();
+    fn explicit_record_wins_and_skips_existence_check() {
         let opts = RunOptions {
-            identity_host_path: Some(PathBuf::from("/nowhere/does/not/exist.json")),
+            identity: IdentitySource::Record(PathBuf::from("/nowhere/does/not/exist.json")),
             ..RunOptions::default()
         };
-        let resolved = resolve_identity_host_path(&opts);
-        restore(saved.0, saved.1);
         assert_eq!(
-            resolved,
+            resolve_identity_host_path(&opts),
             Some(PathBuf::from("/nowhere/does/not/exist.json")),
             "explicit path is used verbatim, no exists() check"
         );
+    }
+
+    #[test]
+    fn a_named_store_resolves_its_active_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_with_primary(tmp.path());
+        let opts = RunOptions {
+            identity: IdentitySource::Store(store.clone()),
+            ..RunOptions::default()
+        };
+        assert_eq!(
+            resolve_identity_host_path(&opts),
+            Some(store.join("primary.json"))
+        );
+    }
+
+    #[test]
+    fn an_empty_store_resolves_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opts = RunOptions {
+            identity: IdentitySource::Store(tmp.path().to_path_buf()),
+            ..RunOptions::default()
+        };
+        assert_eq!(resolve_identity_host_path(&opts), None);
+    }
+
+    /// `None` means no identity even when the user's store holds one.
+    #[test]
+    fn no_identity_ignores_the_users_store() {
+        let home = tilo_test_env::TestHome::new().unwrap();
+        store_with_primary(home.config());
+        let opts = RunOptions {
+            identity: IdentitySource::None,
+            ..RunOptions::default()
+        };
+        assert_eq!(resolve_identity_host_path(&opts), None);
     }
 
     #[cfg(unix)]
@@ -2643,6 +2747,7 @@ mod identity_resolution_tests {
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let store = tempfile::tempdir().unwrap();
         let path = dir.path().join("custom.json");
         let secret = [31u8; 32];
         let key = ed25519_dalek::SigningKey::from_bytes(&secret);
@@ -2664,7 +2769,7 @@ mod identity_resolution_tests {
         std::fs::write(&path, &original).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        let (app, control, thread) = start_identity_broker(&path).unwrap();
+        let (app, control, thread) = start_identity_broker(&path, Some(store.path())).unwrap();
         drop(app);
         drop(control);
         thread.join().unwrap();
@@ -2677,57 +2782,42 @@ mod identity_resolution_tests {
         );
         assert!(!dir.path().join("secrets").exists());
         assert!(!dir.path().join(".identity.lock").exists());
+        assert!(!store.path().join("secrets").exists());
+    }
+
+    // The user's store is located through the environment; these pin that
+    // resolution itself.
+
+    #[test]
+    fn the_user_store_prefers_xdg_config_home() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        // A record under `$HOME/.config` must lose to `$XDG_CONFIG_HOME`.
+        store_with_primary(&home.home().join(".config"));
+        let xdg = home.root().join("xdg-config");
+        let ident = store_with_primary(&xdg).join("primary.json");
+        home.env().set("XDG_CONFIG_HOME", &xdg);
+        assert_eq!(
+            resolve_identity_host_path(&RunOptions::default()),
+            Some(ident)
+        );
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
-    fn xdg_wins_when_file_exists_there() {
-        let saved = snapshot_and_clear();
-        let tmp = tempfile::tempdir().unwrap();
-        let ident = tmp
-            .path()
-            .join("tilo")
-            .join("identity")
-            .join("primary.json");
-        std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
-        std::fs::write(&ident, b"{}").unwrap();
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", tmp.path()) };
-        let opts = RunOptions::default();
-        let resolved = resolve_identity_host_path(&opts);
-        restore(saved.0, saved.1);
-        assert_eq!(resolved, Some(ident));
+    fn the_user_store_falls_back_to_home_without_xdg() {
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let ident = store_with_primary(&home.home().join(".config")).join("primary.json");
+        home.env().remove("XDG_CONFIG_HOME");
+        assert_eq!(
+            resolve_identity_host_path(&RunOptions::default()),
+            Some(ident)
+        );
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
-    fn home_fallback_used_when_no_xdg() {
-        let saved = snapshot_and_clear();
-        let tmp = tempfile::tempdir().unwrap();
-        let ident = tmp
-            .path()
-            .join(".config")
-            .join("tilo")
-            .join("identity")
-            .join("primary.json");
-        std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
-        std::fs::write(&ident, b"{}").unwrap();
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("HOME", tmp.path()) };
-        let opts = RunOptions::default();
-        let resolved = resolve_identity_host_path(&opts);
-        restore(saved.0, saved.1);
-        assert_eq!(resolved, Some(ident));
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn none_when_nothing_resolves() {
-        let saved = snapshot_and_clear();
-        let opts = RunOptions::default();
-        let resolved = resolve_identity_host_path(&opts);
-        restore(saved.0, saved.1);
-        assert_eq!(resolved, None);
+    fn the_user_store_resolves_nothing_without_a_home() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("XDG_CONFIG_HOME").remove("HOME");
+        assert_eq!(resolve_identity_host_path(&RunOptions::default()), None);
     }
 }
 
@@ -2745,7 +2835,15 @@ mod app_dir_tests {
     fn opts_in(room: Option<&str>) -> RunOptions {
         RunOptions {
             workspace_id: room.map(str::to_string),
+            identity: IdentitySource::None,
             ..RunOptions::default()
+        }
+    }
+
+    fn opts_at(data_home: &Path, room: Option<&str>) -> RunOptions {
+        RunOptions {
+            data_home: Some(data_home.to_path_buf()),
+            ..opts_in(room)
         }
     }
 
@@ -2768,25 +2866,13 @@ mod app_dir_tests {
     /// The launch path resolves the directory rather than the manifest
     /// naming it — the room launched into decides which one.
     #[test]
-    #[serial_test::serial(process_env)]
     fn the_launch_resolves_one_directory_per_room() {
         let data = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
         let m = manifest("so.tilo.fixture");
-        let a = resolve_app_dir(&m, &opts_in(Some("room-a"))).expect("room a");
-        let b = resolve_app_dir(&m, &opts_in(Some("room-b"))).expect("room b");
-        let personal = resolve_app_dir(&m, &opts_in(None)).expect("personal");
-
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
+        let a = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
+        let b = resolve_app_dir(&m, &opts_at(data.path(), Some("room-b"))).expect("room b");
+        let personal = resolve_app_dir(&m, &opts_at(data.path(), None)).expect("personal");
 
         assert!(a.is_dir() && b.is_dir() && personal.is_dir());
         assert_ne!(a, b);
@@ -2806,25 +2892,13 @@ mod app_dir_tests {
     /// A package cannot make the launcher create a directory it named: the
     /// retired `sandbox.fs.write` block is refused before the directory step.
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_declared_write_path_is_never_created() {
         let data = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
         let mut m = manifest("so.tilo.fixture");
         let victim = data.path().join("so.tilo.totp");
         m.sandbox.fs.write.push(victim.display().to_string());
-        let refused = run_with(&m, Path::new("/nonexistent"), &opts_in(None));
-
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
-                None => std::env::remove_var("XDG_DATA_HOME"),
-            }
-        }
+        let refused = run_with(&m, Path::new("/nonexistent"), &opts_at(data.path(), None));
 
         let err = refused.expect_err("a manifest naming a write path must be refused");
         assert!(

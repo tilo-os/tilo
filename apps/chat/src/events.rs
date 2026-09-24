@@ -1012,9 +1012,9 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    /// Toggle this peer's screen share. Starting one asks the portal seam for a
-    /// source (real xdg-desktop-portal picker behind `live-media`, honest `None`
-    /// otherwise) via [`ChatApp::acquire_screen`]; only a granted source flips
+    /// Toggle this peer's screen share. Starting one asks the host for a source
+    /// (natively the xdg-desktop-portal picker) via [`ChatApp::request_screen`];
+    /// only a granted source flips
     /// `call.sharing` and mirrors it into the shared voice membership, so remote
     /// peers reserve the featured tile. Stopping tears the capture down and
     /// clears the shared flag. A relayout follows because the featured stage
@@ -1035,10 +1035,16 @@ impl ChatApp {
             self.release_screen();
             self.sync_local_sharing(doc);
             self.request_relayout();
-        } else if self.acquire_screen() {
-            self.call.sharing = true;
-            self.sync_local_sharing(doc);
-            self.request_relayout();
+        } else if self.request_screen(crate::call::ScreenCapturePurpose::Share) {
+            // A host that answers at once (the picker was already settled, or
+            // a recording host) finishes the share this frame; otherwise the
+            // frame that sees the answer does.
+            self.settle_screen_capture();
+            if self.screen_share_needs_sync {
+                self.sync_local_sharing(doc);
+                self.screen_share_needs_sync = false;
+                self.request_relayout();
+            }
         }
     }
 
@@ -1948,12 +1954,13 @@ mod tests {
         // load can't adopt a real chat store left on the dev machine — the test
         // must exercise the fresh-first-run seed, not whatever is on disk.
         let data = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("TILO_CHAT_DATA", data.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_CHAT_DATA", data.path());
         let mut app = ChatApp::new_ephemeral();
         app.is_live = true; // a live view with no disk behind it
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        unsafe { std::env::remove_var("TILO_CHAT_DATA") };
+        drop(env);
 
         let ws = ChatDoc::list_workspaces(&doc);
         assert!(
@@ -2408,9 +2415,10 @@ mod tests {
         write_real_png(&dir.path().join("shot.png"), 64, 64);
         // Point the workspace picker at the temp dir and open it via the real
         // event path (the composer "+").
-        unsafe { std::env::set_var("TILO_CHAT_ATTACH_DIR", dir.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_CHAT_ATTACH_DIR", dir.path());
         app.on_hit(Hit::Attach, &mut doc);
-        unsafe { std::env::remove_var("TILO_CHAT_ATTACH_DIR") };
+        drop(env);
         assert!(app.attach_open, "the picker opens");
         assert!(
             app.attachment_picker_pending.is_some(),
@@ -3616,17 +3624,28 @@ mod tests {
             .is_some_and(|m| m.sharing)
     }
 
+    /// A host grant of a `PipeWire` stream.
+    fn granted(node_id: u32) -> ui::capture::ScreenCaptureOutcome {
+        ui::capture::ScreenCaptureOutcome::Granted(ui::capture::ScreenCaptureGrant {
+            stream: ui::capture::CaptureStream::PipeWire { node_id },
+            size: Some((1280, 720)),
+        })
+    }
+
     #[test]
     fn share_screen_gates_on_the_portal_and_mirrors_into_voice_membership() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
         assert!(app.call.active);
 
-        // Honest gating: a declined portal grant starts no share and records
-        // nothing. Keep this a fake declining portal: under live-media a test
-        // must not synchronously open the host's real portal UI.
-        app.portal = Box::new(crate::call::FakePortal(None));
+        // Honest gating: a declined grant starts no share and records nothing.
+        // A recording host answers every request, so no test ever opens the
+        // desktop's real picker.
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_screen_capture(ui::capture::ScreenCaptureOutcome::Cancelled);
         app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert_eq!(recorder.screen_capture_requests().len(), 1);
         assert!(
             !app.sharing_screen(),
             "no portal source → no share (honest gating)"
@@ -3636,13 +3655,9 @@ mod tests {
             "nothing is recorded when the portal declines"
         );
 
-        // Inject a portal that grants a source: the whole share flow runs and is
-        // mirrored into the shared voice membership so peers reserve the tile.
-        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
-            node: 42,
-            width: 1280,
-            height: 720,
-        })));
+        // A granted source runs the whole share flow, mirrored into the shared
+        // voice membership so peers reserve the tile.
+        recorder.respond_to_screen_capture(granted(42));
         app.on_hit(Hit::CallShareScreen, &mut doc);
         assert!(
             app.sharing_screen(),
@@ -3669,11 +3684,9 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
         app.on_hit(Hit::CallExpand, &mut doc);
-        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
-            node: 99,
-            width: 1280,
-            height: 720,
-        })));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_screen_capture(granted(99));
 
         // Model a permission downgrade during an already active call. The
         // portal is deliberately ready, so only the workspace permission can
@@ -3696,6 +3709,10 @@ mod tests {
         assert!(
             !app.sharing_screen(),
             "restricted peer cannot start capture"
+        );
+        assert!(
+            recorder.screen_capture_requests().is_empty(),
+            "a restricted peer never asks the host for a source"
         );
         assert!(
             !me_sharing(&doc, "c_huddle"),

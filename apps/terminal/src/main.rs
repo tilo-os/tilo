@@ -39,21 +39,13 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use taffy::prelude::*;
 use terminal::TerminalWidget;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
+use vello::kurbo::Point;
 
 /// Default offscreen viewport for `--shots`. Big enough to show a few
 /// rows of terminal output at the toolkit's default font size; small
@@ -164,12 +156,9 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG.
 ///
-/// Mirrors `ui::App`'s layout/draw cycle for a single redraw:
-/// `sync` → `build_layout` → `compute_layout` → `apply_layout` → `draw`.
-/// Skips the event loop entirely because we render exactly one frame
-/// before exiting. When `scenario` is set, canned VT byte sequences are
-/// fed through the widget *after* layout (so the grid is sized to the
-/// viewport) and then re-synced before the draw.
+/// When `scenario` is set, canned VT byte sequences are fed through the
+/// widget *after* layout (so the grid is sized to the viewport) and then
+/// re-synced before the draw.
 fn render_shot_to_png(
     widget: &mut TerminalWidget,
     viewport: (u32, u32),
@@ -177,60 +166,21 @@ fn render_shot_to_png(
     out: &std::path::Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    // Sync the widget's view-state from its CRDT once.
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    // Build the layout tree, then wrap it in a viewport-sized root so
-    // taffy has a definite extent to size from.
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: the bound nodes come from this exact exclusively owned build.
-    unsafe {
-        bindings.rebuild(widget, &taffy, child, &node_map);
-        ui::widget::compute_widget_layout(
-            &mut taffy,
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            &node_map,
-            &bindings,
-            &mut text_renderer,
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(widget);
+    frame.layout(widget)?;
 
     // Drive the scenario now that the grid is sized to the viewport, then
     // re-sync so the mirrored grid reflects the fed sequences. The `shell`
     // scenario drives the real PTY instead of feeding canned bytes.
     if let Some(name) = scenario {
+        let state = &mut frame.state;
         if name == "shell" || name == "shell-select" {
             drive_live_shell(widget, &mut state.doc, &state.root)?;
         } else {
             run_scenario(widget, &mut state.doc, &state.root, name);
         }
-        widget.sync(&mut state.doc, &state.root);
+        frame.sync(widget);
         // `shell-select` additionally highlights a line of real shell output so
         // the shot demonstrates the selection highlight over a live session.
         if name == "shell-select" {
@@ -238,21 +188,8 @@ fn render_shot_to_png(
         }
     }
 
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let scene = frame.draw(widget);
+    frame.write_png(&scene, out);
     println!("terminal: wrote shot to {}", out.display());
     Ok(())
 }

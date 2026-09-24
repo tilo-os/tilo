@@ -27,8 +27,8 @@ use std::thread;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use runtime_collab::raw::{
-    action_catalogue_stream, action_stream, channel_handle, collab_service, context_stream,
-    presence_event, presence_handle, presence_payload, presence_stream, stream,
+    action_stream, channel_handle, collab_service, context_stream, presence_event, presence_handle,
+    presence_payload, presence_stream, stream,
 };
 use tilo_ui::collaboration::CollaborationManager;
 use tokio::sync::mpsc;
@@ -76,6 +76,8 @@ struct Channel {
     ops: Vec<Subscription<Op>>,
     presence: Vec<Subscription<Presence>>,
     actions: Vec<Subscription<Action>>,
+    /// Directed snapshot requests, one stream per connection.
+    snapshot_requests: Vec<Subscription<()>>,
 }
 
 #[derive(Default)]
@@ -85,6 +87,25 @@ struct Hub {
 }
 
 impl Hub {
+    /// Mirror the production broker: ask exactly one existing holder of the
+    /// route (the lowest other connection) to publish a snapshot.
+    fn request_snapshot(&self, channel: &str, requester: u64) {
+        let mut channels = self.channels.lock().unwrap();
+        let subscribers = &mut channels
+            .entry(channel.to_owned())
+            .or_default()
+            .snapshot_requests;
+        subscribers.retain(|sub| !sub.tx.is_closed());
+        if let Some(holder) = subscribers
+            .iter()
+            .filter(|sub| sub.peer != requester)
+            .min_by_key(|sub| sub.peer)
+        {
+            let _ = holder.tx.send(());
+        }
+        drop(channels);
+    }
+
     fn fanout_op(&self, channel: &str, source: u64, value: &Op) {
         self.channels
             .lock()
@@ -222,6 +243,16 @@ impl collab_service::Server for Service {
     }
 }
 
+fn verify_routed_envelope(channel: &str, bytes: &[u8]) -> Result<(), String> {
+    let envelope: collab_types::SignedOp =
+        postcard::from_bytes(bytes).map_err(|error| format!("not a SignedOp: {error}"))?;
+    collab_types::verify_op(&envelope).map_err(|error| format!("bad signature: {error:?}"))?;
+    let (app_id, cluster_id, record_id) = tilo_ui::collaboration::channel_key::parse(channel);
+    collab_types::validate_document_payload_route(&app_id, &cluster_id, &record_id, &envelope)
+        .map(|_| ())
+        .map_err(|error| format!("envelope does not match its route: {error}"))
+}
+
 struct ChannelHandle {
     hub: Arc<Hub>,
     peer: u64,
@@ -242,6 +273,11 @@ impl channel_handle::Server for ChannelHandle {
             Ok(value) => value.to_vec(),
             Err(error) => return Promise::err(error),
         };
+        // Route only what a production broker would accept: every frame is
+        // an individually signed envelope bound to this exact route.
+        if let Err(error) = verify_routed_envelope(&self.channel, &bytes) {
+            return Promise::err(capnp::Error::failed(error));
+        }
         self.hub.fanout_op(
             &self.channel,
             self.peer,
@@ -313,8 +349,31 @@ impl channel_handle::Server for ChannelHandle {
         _params: channel_handle::SubscribeContextParams,
         mut results: channel_handle::SubscribeContextResults,
     ) -> Promise<(), capnp::Error> {
-        let client: context_stream::Client = capnp_rpc::new_client(EmptyContextStream);
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.hub
+            .channels
+            .lock()
+            .unwrap()
+            .entry(self.channel.clone())
+            .or_default()
+            .snapshot_requests
+            .push(Subscription {
+                peer: self.peer,
+                tx,
+            });
+        let client: context_stream::Client = capnp_rpc::new_client(SnapshotRequestStream {
+            rx: Rc::new(RefCell::new(rx)),
+        });
         results.get().set_stream(client);
+        Promise::ok(())
+    }
+
+    fn request_document_snapshot(
+        self: Rc<Self>,
+        _params: channel_handle::RequestDocumentSnapshotParams,
+        _results: channel_handle::RequestDocumentSnapshotResults,
+    ) -> Promise<(), capnp::Error> {
+        self.hub.request_snapshot(&self.channel, self.peer);
         Promise::ok(())
     }
 
@@ -373,21 +432,6 @@ impl channel_handle::Server for ChannelHandle {
         results.get().set_stream(client);
         Promise::ok(())
     }
-
-    fn subscribe_action_catalogue(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeActionCatalogueParams,
-        mut results: channel_handle::SubscribeActionCatalogueResults,
-    ) -> Promise<(), capnp::Error> {
-        let client: action_catalogue_stream::Client =
-            capnp_rpc::new_client(EmptyActionCatalogueStream {
-                initial: RefCell::new(Some(
-                    serde_json::json!({"version": 1, "surfaces": []}).to_string(),
-                )),
-            });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
 }
 
 struct OpStream {
@@ -422,32 +466,29 @@ impl stream::Server for OpStream {
     }
 }
 
-struct EmptyContextStream;
-impl context_stream::Server for EmptyContextStream {
+/// Context stream carrying only directed snapshot requests; this harness has
+/// no roster or permission snapshots to publish.
+struct SnapshotRequestStream {
+    rx: Rc<RefCell<mpsc::UnboundedReceiver<()>>>,
+}
+impl context_stream::Server for SnapshotRequestStream {
+    #[allow(
+        clippy::await_holding_refcell_ref,
+        reason = "one in-flight `read` per stream, as for the op stream above"
+    )]
     fn read(
         self: Rc<Self>,
         _params: context_stream::ReadParams,
-        _results: context_stream::ReadResults,
+        mut results: context_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        Promise::from_future(std::future::pending())
-    }
-}
-
-struct EmptyActionCatalogueStream {
-    initial: RefCell<Option<String>>,
-}
-
-impl action_catalogue_stream::Server for EmptyActionCatalogueStream {
-    fn read(
-        self: Rc<Self>,
-        _params: action_catalogue_stream::ReadParams,
-        mut results: action_catalogue_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let Some(initial) = self.initial.borrow_mut().take() else {
-            return Promise::from_future(std::future::pending());
-        };
-        results.get().set_catalogue_json(&initial);
-        Promise::ok(())
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            rx.borrow_mut().recv().await.ok_or_else(|| {
+                capnp::Error::disconnected("typed test context stream closed".into())
+            })?;
+            results.get().init_ctx().set_snapshot_requested(true);
+            Ok(())
+        })
     }
 }
 
