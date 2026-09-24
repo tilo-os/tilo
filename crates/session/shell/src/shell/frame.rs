@@ -2613,29 +2613,24 @@ mod tests {
         let (source_room, destination_room) = {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let source_room = tree
-                .desktop
-                .workspaces
+            let workspaces = &mut tree.desktop.workspaces;
+            let source_room = workspaces
                 .iter()
                 .find(|workspace| workspace.id == source_id)
                 .expect("source workspace")
                 .room;
-            let destination_room = tree
-                .desktop
-                .workspaces
+            let destination_room = workspaces
                 .iter()
                 .find(|workspace| workspace.id == destination_id)
                 .expect("destination workspace")
                 .room;
             let source_user = state.local_user_for_room(&source_room);
-            tree.desktop
-                .workspaces
+            workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == source_id)
                 .expect("source workspace")
                 .set_owner(source_user);
-            tree.desktop
-                .workspaces
+            workspaces
                 .iter_mut()
                 .find(|workspace| workspace.id == destination_id)
                 .expect("destination workspace")

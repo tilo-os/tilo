@@ -3440,16 +3440,12 @@ impl WorkspaceTree {
             shared_surfaces: SharedSurfaces::default(),
         };
 
-        let mut active_strip = HashMap::new();
-        active_strip.insert(ws_id, strip_id);
-        let mut active_group = HashMap::new();
-        active_group.insert(strip_id, group_id);
         let mut tree = Self {
             desktop: DesktopTree {
                 workspaces: vec![home],
                 active: ws_id,
-                active_strip,
-                active_group,
+                active_strip: HashMap::from([(ws_id, strip_id)]),
+                active_group: HashMap::from([(strip_id, group_id)]),
                 ..DesktopTree::default()
             },
             ..Default::default()
@@ -3458,12 +3454,8 @@ impl WorkspaceTree {
         // Research and Design add empty strips for the overview's 3-card
         // grid; Research also gets two invented collaborators to render.
         let research_id = tree.append_empty_workspace("Research");
-        if let Some(ws) = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == research_id)
-        {
+        let workspaces = &mut tree.desktop.workspaces;
+        if let Some(ws) = workspaces.iter_mut().find(|w| w.id == research_id) {
             ws.collaborators.push(
                 Collaborator::new("alice", "Alice")
                     .with_cursor_color("#ec4899")
