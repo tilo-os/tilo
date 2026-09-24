@@ -129,11 +129,39 @@ class SelectorTests(unittest.TestCase):
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
         self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
         self.assertFalse(plan["full"])
-        self.assertEqual(set(plan["tested"]), {"base", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
+        # Direct dependants are tested; further reverse dependencies are checked.
+        self.assertEqual(set(plan["tested"]), {"base", "middle", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
+        self.assertEqual(plan["dependants_tested_nightly"], [])
         self.assertEqual(len(plan["matrix"]["include"]), 1)
         row = plan["matrix"]["include"][0]
         self.assertEqual(row["arch"], "x86_64")
         self.assertEqual(set(row["test_packages"].split()[1::2]), set(plan["tested"]))
+
+    def test_direct_dependants_beyond_the_budget_are_left_to_nightly(self) -> None:
+        original = ci_select.REVERSE_TEST_COST_BUDGET
+        try:
+            ci_select.REVERSE_TEST_COST_BUDGET = 0
+            plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+        finally:
+            ci_select.REVERSE_TEST_COST_BUDGET = original
+        self.assertIn("middle", plan["selected"])
+        self.assertNotIn("middle", plan["tested"])
+        self.assertEqual(plan["dependants_tested_nightly"], ["base"])
+
+    def test_cheapest_direct_dependants_are_tested_first(self) -> None:
+        packages, _ = ci_select.package_maps(self.metadata, self.root)
+        reverse = ci_select.reverse_dependencies(packages, self.root)
+        one = ci_select.package_cost(packages["middle"])
+        added, deferred = ci_select.direct_dependants_within_budget(
+            {"base", "middle"}, reverse, packages, {"base", "middle"}, budget=one)
+        # middle's dependant (leaf) and base's (middle, already tested) fit;
+        # nothing is deferred.
+        self.assertEqual(added, {"leaf"})
+        self.assertEqual(deferred, [])
+        added, deferred = ci_select.direct_dependants_within_budget(
+            {"base", "middle"}, reverse, packages, {"base", "middle"}, budget=one - 1)
+        self.assertEqual(added, set())
+        self.assertEqual(deferred, ["middle"])
 
     def test_leaf_change_does_not_select_dependencies(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2)
