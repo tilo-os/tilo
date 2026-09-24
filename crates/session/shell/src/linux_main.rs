@@ -30,21 +30,23 @@ use shell::shell::identity_provisioning;
 use shell::{firstboot, portal};
 
 /// Install a panic hook that writes a crash report to
-/// `~/.cache/tilo/crashes/<timestamp>.log` and echoes the panic message +
+/// `~/.cache/tilo/crashes/<timestamp>-<pid>.log` and echoes the panic message +
 /// log path to stderr — without this, a session launched outside a
 /// terminal (greetd, .desktop double-click) discards stderr, making "the shell just disappeared" unactionable.
 ///
 /// Chains to the default hook AFTER writing the file so a developer running from a terminal still sees the colored panic + backtrace.
+///
+/// Reports carry backtraces and payloads, so they are private (0700 directory,
+/// 0600 file, never following a link). Without a home cache directory only the
+/// stderr copy is made: a shared fallback such as `/tmp` would let another user
+/// plant the path.
 fn install_crash_log_hook() {
     let dir = dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("tilo")
-        .join("crashes");
-    let _ = std::fs::create_dir_all(&dir);
+        .map(|cache| cache.join("tilo").join("crashes"))
+        .filter(|dir| private_fs::directory(dir).is_ok());
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let ts = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
-        let path = dir.join(format!("{ts}.log"));
         let backtrace = std::backtrace::Backtrace::force_capture();
         let payload = info
             .payload()
@@ -64,11 +66,19 @@ fn install_crash_log_hook() {
              message:   {payload}\n\n\
              backtrace:\n{backtrace}\n"
         );
-        let wrote = std::fs::write(&path, &body).is_ok();
-        if wrote {
-            eprintln!("\n[tilo] crash log written to {}", path.display());
+        if let Some(dir) = &dir {
+            use std::io::Write as _;
+            let path = dir.join(format!("{ts}-{}.log", std::process::id()));
+            let wrote = private_fs::create_new(&path)
+                .and_then(|mut file| file.write_all(body.as_bytes()))
+                .is_ok();
+            if wrote {
+                eprintln!("\n[tilo] crash log written to {}", path.display());
+            } else {
+                eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
+            }
         } else {
-            eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
+            eprintln!("\n[tilo] no private cache directory; crash log not written");
         }
         default_hook(info);
     }));
