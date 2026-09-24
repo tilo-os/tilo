@@ -10,7 +10,7 @@
 //! Peer sync keeps a separate runtime (see `ShellNetwork::spawn`), because it
 //! is torn down and rebuilt with the network and its tasks must end with it.
 
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 
 use tokio::runtime::Runtime;
 
@@ -151,10 +151,88 @@ where
     PendingStart { mailbox }
 }
 
+enum Slot<T> {
+    Pending,
+    Registered(T),
+    Released,
+}
+
+/// A session service registering on the bus in the background.
+///
+/// The handle the registration produces (a bus name, an object server) is
+/// kept here once it arrives and released when this is dropped. A
+/// registration that finishes after the drop is released at once, so the
+/// name is never held past the session.
+pub struct Registration<T> {
+    slot: Arc<Mutex<Slot<T>>>,
+}
+
+impl<T: Send + 'static> Registration<T> {
+    /// Start `register` on `runtime` and return at once. `registered` sees
+    /// the handle when it arrives, to report on it. An error is logged under
+    /// `service`; the compositor carries on without that service.
+    pub fn start<E, F, R>(
+        runtime: &tokio::runtime::Handle,
+        service: &'static str,
+        register: F,
+        registered: R,
+    ) -> Self
+    where
+        E: std::fmt::Display,
+        F: Future<Output = Result<T, E>> + Send + 'static,
+        R: FnOnce(&T) + Send + 'static,
+    {
+        let slot = Arc::new(Mutex::new(Slot::Pending));
+        let task_slot = Arc::clone(&slot);
+        drop(runtime.spawn(async move {
+            match register.await {
+                Ok(handle) => {
+                    registered(&handle);
+                    let mut slot = task_slot.lock().unwrap_or_else(PoisonError::into_inner);
+                    if matches!(*slot, Slot::Pending) {
+                        *slot = Slot::Registered(handle);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "{service}: could not register on the bus ({error}); continuing without it"
+                    );
+                }
+            }
+        }));
+        Self { slot }
+    }
+
+    /// Whether the registration has completed and is being held.
+    pub fn is_registered(&self) -> bool {
+        matches!(
+            *self.slot.lock().unwrap_or_else(PoisonError::into_inner),
+            Slot::Registered(_)
+        )
+    }
+}
+
+impl<T> Drop for Registration<T> {
+    fn drop(&mut self) {
+        let released = std::mem::replace(
+            &mut *self.slot.lock().unwrap_or_else(PoisonError::into_inner),
+            Slot::Released,
+        );
+        drop(released);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, PoisonError};
+
+    struct DropSignal(mpsc::Sender<()>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
 
     fn channel_wake() -> (Wake, mpsc::Receiver<()>) {
         let (tx, rx) = mpsc::channel();
@@ -213,5 +291,48 @@ mod tests {
         assert!(pending.poll().is_none());
         drop(delivery);
         assert!(matches!(pending.poll(), Some(Err(_))));
+    }
+
+    #[test]
+    fn a_registration_finishing_after_release_is_not_kept() {
+        let runtime = test_runtime();
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+        let registration = Registration::start(
+            runtime.handle(),
+            "test",
+            async move {
+                let _ = finished.await;
+                Ok::<_, String>(DropSignal(dropped_tx))
+            },
+            |_| {},
+        );
+        assert!(!registration.is_registered());
+        drop(registration);
+        finish.send(()).unwrap();
+        // The late handle is dropped by the task instead of being stored.
+        dropped_rx.recv().unwrap();
+    }
+
+    #[test]
+    fn a_registration_is_held_until_released() {
+        let runtime = test_runtime();
+        let (registered_tx, registered_rx) = mpsc::channel::<()>();
+        let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+        let registration = Registration::start(
+            runtime.handle(),
+            "test",
+            async move {
+                let handle = DropSignal(dropped_tx);
+                let _ = registered_tx.send(());
+                Ok::<_, String>(handle)
+            },
+            |_| {},
+        );
+        registered_rx.recv().unwrap();
+        // Registered, or about to be: a held handle is never dropped.
+        assert!(dropped_rx.try_recv().is_err());
+        drop(registration);
+        dropped_rx.recv().unwrap();
     }
 }
