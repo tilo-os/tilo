@@ -2,18 +2,18 @@
     clippy::arithmetic_side_effects,
     clippy::manual_midpoint,
     clippy::needless_borrows_for_generic_args,
-    reason = "migration stack lint debt is scoped to this target"
+    reason = "pixel geometry over bounded fixture canvases"
 )]
 
-//! F5 (timeline / media / capture widgets) geometry evidence and contracts.
+//! Timeline, media and capture widgets: geometry contracts and evidence.
 //!
 //! Renders the immersive, hand-laid-out widgets through the real
-//! [`FrameHarness`] and offscreen renderer into
-//! `target/ui-review/ui/f5/<tag>/*.png` (`tag` from `F5_SHOT_TAG`, default
-//! `after`) so a reviewer can open them, and asserts the contracts a
-//! screenshot cannot: every video-player control reachable through
-//! accessibility is at least the minimum pointer target, and all of them
-//! sit on one centre line.
+//! [`FrameHarness`] and offscreen renderer, checks each frame painted
+//! something, and asserts the contracts a screenshot cannot: every
+//! video-player control reachable through accessibility is at least the
+//! minimum pointer target, and all of them sit on one centre line. With
+//! `QUICK_UI_SCREENSHOT_DIR` set, the frames are also written under
+//! `immersive_widget_geometry/` there for a reviewer to open.
 
 #![allow(
     clippy::unwrap_used,
@@ -25,7 +25,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use accesskit::Role;
@@ -44,13 +43,19 @@ use tilo_ui::widget::{CaptureMode, CaptureStudio, ScreenshotMarkup, VideoPlayer,
 /// HIG §9.6: minimum pointer target.
 const MIN_TARGET: f64 = 32.0;
 
-fn out_dir() -> PathBuf {
-    let tag = std::env::var("F5_SHOT_TAG").unwrap_or_else(|_| "after".into());
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/ui-review/ui/f5")
-        .join(tag);
-    std::fs::create_dir_all(&dir).expect("evidence directory");
-    dir
+/// Check the frame painted something and keep it as opt-in evidence.
+fn evidence(name: &str, width: u32, height: u32, rgba: &[u8]) {
+    crate::support::evidence::assert_painted(name, rgba);
+    crate::support::evidence::save_png(
+        &format!("immersive_widget_geometry/{name}"),
+        width,
+        height,
+        rgba,
+    );
+}
+
+fn harness_evidence(harness: &FrameHarness, name: &str, viewport: (u32, u32)) {
+    evidence(name, viewport.0, viewport.1, &harness.render_rgba());
 }
 
 /// A 640×400 two-tone gradient so the markup editor has a real capture to
@@ -70,7 +75,6 @@ fn capture_rgba(w: u32, h: u32) -> Arc<[u8]> {
 
 #[test]
 fn video_player_controls_are_reachable_targets_on_their_control_rows() {
-    let dir = out_dir();
     for (theme_name, theme, viewport, min_controls) in [
         ("dark", Theme::dark(), (960_u32, 540_u32), 7_usize),
         ("light", Theme::light(), (960, 540), 7),
@@ -114,7 +118,11 @@ fn video_player_controls_are_reachable_targets_on_their_control_rows() {
         ));
         player.reveal_controls();
         let harness = FrameHarness::new_with_theme(State::new(), Box::new(player), viewport, theme);
-        harness.render_png(&dir.join(format!("video-player-controls-{theme_name}.png")));
+        harness_evidence(
+            &harness,
+            &format!("video-player-controls-{theme_name}"),
+            viewport,
+        );
 
         let controls: Vec<(String, accesskit::Rect)> = harness
             .a11y_nodes()
@@ -169,7 +177,6 @@ fn video_player_controls_are_reachable_targets_on_their_control_rows() {
 fn presence_pills_and_edge_tags_render_at_one_and_two_x() {
     use tilo_ui::presence::{PeerCursor, draw_peer_presence};
     use vello::peniko::Color;
-    let dir = out_dir();
     let theme = Theme::dark();
     let (w, h) = (480_u32, 240_u32);
     let viewport = vello::kurbo::Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
@@ -213,17 +220,13 @@ fn presence_pills_and_edge_tags_render_at_one_and_two_x() {
             &theme,
             &peers,
         );
-        OffscreenRenderer::new(w, h).render_png(
-            &scene,
-            theme.bg_app,
-            &dir.join(format!("presence-pills-{scale}x.png")),
-        );
+        let rgba = OffscreenRenderer::new(w, h).render_resilient(&scene, theme.bg_app);
+        evidence(&format!("presence-pills-{scale}x"), w, h, &rgba);
     }
 }
 
 #[test]
 fn screenshot_markup_renders_wide_and_narrow() {
-    let dir = out_dir();
     for (name, viewport) in [
         ("wide", (1200_u32, 800_u32)),
         ("narrow", (440_u32, 700_u32)),
@@ -235,20 +238,19 @@ fn screenshot_markup_renders_wide_and_narrow() {
             viewport,
             Theme::dark().with_reduce_motion(true),
         );
-        harness.render_png(&dir.join(format!("screenshot-markup-{name}.png")));
+        harness_evidence(&harness, &format!("screenshot-markup-{name}"), viewport);
     }
 }
 
 #[test]
 fn capture_studio_renders_selector_and_docked_recording_pill() {
-    let dir = out_dir();
     let theme = Theme::dark().with_reduce_motion(true);
 
     let mut studio = CaptureStudio::default();
     studio.open();
     let harness =
         FrameHarness::new_with_theme(State::new(), Box::new(studio), (1400, 900), theme.clone());
-    harness.render_png(&dir.join("capture-studio-selector.png"));
+    harness_evidence(&harness, "capture-studio-selector", (1400, 900));
 
     // The docked recording pill is painted by the shell on top of the
     // frame, not by the widget's own `draw`; paint it the way the shell
@@ -276,10 +278,12 @@ fn capture_studio_renders_selector_and_docked_recording_pill() {
         tr.set_text_scale(scale);
         let mut scene = Scene::new();
         s.draw_recording_indicator(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-        OffscreenRenderer::new(1400, 200).render_png(
-            &scene,
-            theme.bg_app,
-            &dir.join(format!("capture-studio-recording-pill-{scale}x.png")),
+        let rgba = OffscreenRenderer::new(1400, 200).render_resilient(&scene, theme.bg_app);
+        evidence(
+            &format!("capture-studio-recording-pill-{scale}x"),
+            1400,
+            200,
+            &rgba,
         );
     }
 }
