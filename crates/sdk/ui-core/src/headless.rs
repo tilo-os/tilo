@@ -1680,8 +1680,9 @@ impl FrameHarness {
     ///
     /// This is the deterministic test seam for worker completions and
     /// asynchronous model notifications. Each attempt runs update, sync,
-    /// layout, and draw; the short sleep avoids a busy-spin while preserving
-    /// millisecond-scale tests.
+    /// layout, and draw. Between attempts the thread parks on the current
+    /// [`crate::background::Background`]: a pumped executor runs its queue and
+    /// advances its virtual clock instead of waiting in real time.
     pub fn wait_until(
         &mut self,
         timeout: crate::time::Duration,
@@ -1693,19 +1694,29 @@ impl FrameHarness {
         if condition(self) {
             return true;
         }
-        let Some(deadline) = crate::time::now().checked_add(timeout) else {
+        let background = crate::background::Background::current();
+        let Some(deadline) = background.now().checked_add(timeout) else {
             return false;
         };
-        while crate::time::now() < deadline {
+        loop {
+            let now = background.now();
+            if now >= deadline {
+                return false;
+            }
+            // Park on the executor so background work completing (or a
+            // pumped clock advancing) ends the wait early. Work that settles
+            // outside the executor's view is still noticed within a slice.
+            let slice = now
+                .checked_add(crate::time::Duration::from_millis(1))
+                .unwrap_or(deadline);
+            background.park(slice.min(deadline));
             self.relayout();
             self.idle_control_tick();
             self.relayout();
             if condition(self) {
                 return true;
             }
-            std::thread::sleep(crate::time::Duration::from_millis(1));
         }
-        false
     }
 
     /// Run the normal frame pipeline until requested visual work completes.

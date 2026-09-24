@@ -1473,6 +1473,10 @@ impl InviteRedemptionAuthority {
         self.root.join(hex::encode(Sha512::digest(capability)))
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a bounded retry on an advisory file lock held by another process; nothing to schedule"
+    )]
     fn issue_lock(&self) -> Result<std::fs::File, IdentityFlowError> {
         let file = private_fs::lock_file(&(self.root.join("issue.lock")))?;
         for _ in 0..250 {

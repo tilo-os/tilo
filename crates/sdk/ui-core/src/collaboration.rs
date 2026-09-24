@@ -14,7 +14,6 @@
 //!
 //! The default transport (feature `broker-transport`) delegates to the
 //! `runtime-collab` Cap'n Proto broker on a worker thread it owns.
-//!
 
 use uuid::Uuid;
 

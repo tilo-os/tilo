@@ -7,6 +7,10 @@
 //! (for example with `pipewiresrc`). The handshake runs on a worker thread with
 //! a short-lived Tokio runtime, bounded so an unresponsive portal or a picker
 //! nobody answers cannot wedge the request forever.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the portal screen-cast handshake runs on its own thread"
+)]
 
 use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRequest};
 

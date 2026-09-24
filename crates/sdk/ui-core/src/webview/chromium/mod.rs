@@ -1,4 +1,8 @@
 //! Chromium helper transport, independent of native CEF build dependencies.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: the Chromium helper process is supervised by threads"
+)]
 mod protocol;
 
 use crate::time::Duration;

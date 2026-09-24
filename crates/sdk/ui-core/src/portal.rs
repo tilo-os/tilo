@@ -39,6 +39,10 @@
 //! channel types compile unconditionally, so the security
 //! rule stays under test in every configuration and `--open PATH` style flags
 //! work without a portal.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: portal and file dialogs block on their own thread"
+)]
 
 use std::fs::File;
 #[cfg(any(feature = "portal", test))]
