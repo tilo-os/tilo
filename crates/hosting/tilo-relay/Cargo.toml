@@ -61,6 +61,9 @@ install = { path = "../../packaging/install" }
 # its workspace tickets rather than asking the operator to duplicate ids.
 fs = { path = "../../system/fs" }
 collab-types = { path = "../../collab/collab-types" }
+# Mesh, configuration, registry and metrics records shared with the relay's
+# clients; re-exported so the daemon's own module paths stay unchanged.
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # Iroh 1.0.x — pinned to the same versions the `crates/system/fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay

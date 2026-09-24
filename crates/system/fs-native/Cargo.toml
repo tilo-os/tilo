@@ -1,0 +1,30 @@
+[package]
+name = "fs-native"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+publish.workspace = true
+license.workspace = true
+description = "Native local data plane: fanotify change journal, Btrfs capture epochs, incremental FastCDC manifests and pre-content placeholder hydration."
+
+[lib]
+name = "fs_native"
+path = "src/lib.rs"
+
+# Capability report and the local benchmark suite. Both run against a real
+# store volume; neither is needed by the library.
+[[bin]]
+name = "tilo-fs-native"
+path = "src/bin/tilo-fs-native/main.rs"
+
+[dependencies]
+blake3.workspace = true
+fastcdc.workspace = true
+libc.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

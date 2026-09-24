@@ -51,7 +51,10 @@ os-actions = { path = "../../system/os-actions" }
 runtime-identity = { path = "../runtime-identity" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-fs = { path = "../runtime-fs" }
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# The collaborative filesystem and content store linked by Files and
+# Scratchpad, stored once here rather than in both tapps.
+fs = { path = "../../system/fs" }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 runtime-portal-xdg = { path = "../runtime-portal-xdg" }
 accounts = { path = "../../system/accounts" }
