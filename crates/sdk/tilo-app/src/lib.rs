@@ -31,9 +31,12 @@ pub mod prelude {
         FloatingSurfaceProvider, FullscreenProvider, NativeViewLifecycle, NumberInput,
         ResourceOperationStart, Slider, Text, TextInput, Widget, labeled_check, labeled_field,
     };
+    // The windowed App runner is native-only; wasm hosts mount components.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use ui_core::App;
     pub use ui_core::{
-        App, LocalState, RevisionHistory, SearchRegistry, State, Theme, collaboration,
-        history_source, presence, search,
+        LocalState, RevisionHistory, SearchRegistry, State, Theme, collaboration, history_source,
+        presence, search,
     };
 }
 
