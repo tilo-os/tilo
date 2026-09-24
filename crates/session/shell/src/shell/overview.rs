@@ -428,6 +428,7 @@ pub fn overview_people_label(card: &RoomCard) -> Option<String> {
 #[cfg(test)]
 mod room_tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, CapOverride, Scope, Strip, Tab, TileContent, Verb, WindowGroup, WindowWidth,
     };

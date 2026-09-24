@@ -25,6 +25,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -75,7 +76,7 @@ fn tree() -> (WorkspaceTree, StripId, StripId) {
     };
     let ws = Workspace {
         strips: vec![strip_a, strip_b],
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();

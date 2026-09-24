@@ -15,6 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -140,7 +141,7 @@ fn minimal_tree() -> WorkspaceTree {
         // Everything else, including the workspace's durable collaboration room,
         // comes from the builder, so a field added to `Workspace` does not break
         // this fixture.
-        ..Workspace::test_default(ws_id, "W")
+        ..Workspace::new(ws_id, "W")
     };
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);

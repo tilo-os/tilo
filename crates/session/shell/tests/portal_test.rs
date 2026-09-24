@@ -38,7 +38,7 @@ use zbus::{Connection, Proxy};
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
 fn empty_workspace(id: u64, name: &str) -> Workspace {
-    Workspace::test_default(WorkspaceId(id), name)
+    Workspace::new(WorkspaceId(id), name)
 }
 
 /// Server + paired client zbus connections, both p2p. The returned ctx

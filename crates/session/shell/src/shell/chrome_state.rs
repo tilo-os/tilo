@@ -2431,6 +2431,7 @@ mod active_tab_tests {
     //! `active_app_title`/`active_tab_id` must return `None`, not
     //! `strips.first()`, when no real focus target is tracked.
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,

@@ -177,6 +177,7 @@ mod tests {
     use crate::shell::chrome_state::Chrome;
     use crate::shell::notes_app::BODY_KEY;
     use crate::shell::search::action_api::ArgValue;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,

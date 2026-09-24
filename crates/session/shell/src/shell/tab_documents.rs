@@ -75,6 +75,7 @@ mod tests {
     use crate::shell::notes_app::{BODY_KEY, NotesApp};
     use crate::shell::search::providers::notes::NotesProvider;
     use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent as StateTile, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,

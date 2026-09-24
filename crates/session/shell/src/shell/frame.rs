@@ -2580,6 +2580,7 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 )]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use automerge::ReadDoc;
     use automerge::transaction::Transactable;
     use winit::event::{ElementState, KeyEvent};

@@ -1260,7 +1260,7 @@ mod tests {
     use super::*;
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "t")
+        Workspace::new(WorkspaceId(id), "t")
     }
 
     #[test]

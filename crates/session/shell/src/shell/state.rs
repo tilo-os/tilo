@@ -3,11 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod fs_authority;
-mod shared_surfaces;
 #[cfg(test)]
 use fs_authority::wait_for_fs_authority_publication_idle;
 use fs_authority::{permission_profile_document_key, schedule_fs_authority_publication};
-pub use shared_surfaces::SharedSurfaces;
 
 fn now_unix_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -24,24 +22,16 @@ pub use collab_types::caps::{
 };
 pub use collab_types::role::Role as CapRole;
 pub use collab_types::{PermissionProfile, PermissionProfileError};
-
-/// Monotonic workspace identifier, newtype-wrapped over `u64`.
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct WorkspaceId(pub u64);
-
-impl WorkspaceId {
-    /// Allocate a fresh, process-wide unique id.
-    pub fn new() -> Self {
-        Self(next_id())
-    }
-
-    pub fn raw(&self) -> u64 {
-        self.0
-    }
-}
+pub use tilo_desktop_model::{
+    APP_ID_PREFIX, AppId, AppKind, Capability, Collaborator, FileId, FsMode, GRANT_ALWAYS,
+    GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, MintIds, PEER_ID_COUNTER_MASK,
+    PEER_ID_SALT_SHIFT, PROFILE_ASSIGN_ACTION_ID, PROFILE_SAVE_ACTION_ID,
+    PermissionProfileMutationError, RoomId, SharedSurfaces, Strip, StripId, Tab, TabId, TabRef,
+    TileContent, UserId, WORKSPACE_GOVERNANCE_APP_ID, WindowGroup, WindowWidth, Workspace,
+    WorkspaceDefaultError, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
+    WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
+    compose_id, counter_of, now_unix, peer_salt_of, role_label,
+};
 
 #[cfg(test)]
 mod identity_fs_tests {
@@ -238,7 +228,7 @@ mod identity_fs_tests {
             .clone();
 
         let mut tree = WorkspaceTree::default();
-        let mut workspace = Workspace::test_default(WorkspaceId(1), "Files");
+        let mut workspace = Workspace::new(WorkspaceId(1), "Files");
         workspace.capabilities.push(CapOverride::grant(
             Subject::person(profile.principal_id()),
             Scope::FsPath("/var/workspace/files".into()),
@@ -298,8 +288,8 @@ mod identity_fs_tests {
         let output = temp.path().join("fs-caps.json");
         let alice = collab_types::Ed25519PublicKey::from_bytes([0xa1; 32]);
         let bob = collab_types::Ed25519PublicKey::from_bytes([0xb2; 32]);
-        let mut room_a = Workspace::test_default(WorkspaceId(1), "A");
-        let mut room_b = Workspace::test_default(WorkspaceId(2), "B");
+        let mut room_a = Workspace::new(WorkspaceId(1), "A");
+        let mut room_b = Workspace::new(WorkspaceId(2), "B");
         let room_a_id = room_a.room;
         let primary_room_scope = room_a.room.to_string();
         let secondary_room_scope = room_b.room.to_string();
@@ -375,58 +365,6 @@ mod identity_fs_tests {
             !(capability.subject == Subject::User(alice)
                 && capability.scope == Scope::Room(primary_relay_scope.clone()))
         }));
-    }
-}
-
-/// Durable, globally-unique identity of a workspace as a collaboration
-/// room. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
-/// random v4 uuid and carried rather than recomputed, so machines that
-/// have never met still agree on it. [`Self::nil`] is the unminted
-/// sentinel a pre-room state file loads as.
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct RoomId(uuid::Uuid);
-
-impl RoomId {
-    /// Mint a fresh room identity, once per workspace at creation.
-    pub fn new() -> Self {
-        Self(uuid::Uuid::new_v4())
-    }
-
-    /// The "no identity yet" sentinel. Distinguishable from every
-    /// minted id because `Uuid::new_v4` never produces the nil uuid.
-    pub const fn nil() -> Self {
-        Self(uuid::Uuid::nil())
-    }
-
-    /// Whether this is the unminted sentinel.
-    pub fn is_nil(&self) -> bool {
-        self.0.is_nil()
-    }
-
-    /// The underlying uuid, for the wire formats that speak `Uuid`.
-    pub fn as_uuid(&self) -> uuid::Uuid {
-        self.0
-    }
-
-    /// Parse a room id off the wire (invite token, automerge doc,
-    /// `TILO_WORKSPACE_ID`). `None` on anything that isn't a valid uuid.
-    pub fn parse(s: &str) -> Option<Self> {
-        uuid::Uuid::parse_str(s).ok().map(Self)
-    }
-}
-
-impl std::fmt::Display for RoomId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<uuid::Uuid> for RoomId {
-    fn from(v: uuid::Uuid) -> Self {
-        Self(v)
     }
 }
 
@@ -550,64 +488,11 @@ pub struct GovernedPeerIdentity {
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
-impl From<u64> for WorkspaceId {
-    fn from(v: u64) -> Self {
-        Self(v)
-    }
-}
-
-impl From<WorkspaceId> for u64 {
-    fn from(v: WorkspaceId) -> Self {
-        v.0
-    }
-}
-
-/// Monotonic strip identifier, newtype-wrapped like [`WorkspaceId`].
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct StripId(pub u64);
-
-impl StripId {
-    /// Allocate a fresh, process-wide unique id.
-    pub fn new() -> Self {
-        Self(next_id())
-    }
-
-    pub fn raw(&self) -> u64 {
-        self.0
-    }
-}
-
-impl From<u64> for StripId {
-    fn from(v: u64) -> Self {
-        Self(v)
-    }
-}
-
-impl From<StripId> for u64 {
-    fn from(v: StripId) -> Self {
-        v.0
-    }
-}
-
-pub type GroupId = u64;
-pub type TabId = u64;
-pub type FileId = u64;
-
-/// Snapshot of the focused tab, cloned out of the [`WorkspaceTree`] read
-/// guard so callers can drop the guard before using the values.
-#[derive(Clone, Debug)]
-pub struct TabRef {
-    pub id: TabId,
-    pub title: String,
-}
-
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
-/// Process-wide monotonic counter behind [`WorkspaceId::new`],
-/// [`StripId::new`] and `next_id()`.
+/// Process-wide counter behind [`FreshId::new`] and [`next_id`] — this
+/// compositor's host-side [`tilo_desktop_model::IdMinter`], kept as two
+/// atomics because every subsystem mints through it concurrently.
 /// [`WorkspaceTree::seed_next_id_from_self`] advances it past the highest
 /// persisted id at load, or a fresh process restarts at `1` and collides
 /// with an already-loaded entry. Only the low 48 bits come from here; the
@@ -622,227 +507,97 @@ pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// once at boot, nothing piggy-backs on visibility.
 pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
 
-/// Mask that selects the low-48-bit counter portion of a salted id.
-pub(crate) const PEER_ID_COUNTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-
-/// Shift amount that lifts the 16-bit peer salt into the high bits.
-pub(crate) const PEER_ID_SALT_SHIFT: u32 = 48;
-
 pub(crate) fn next_id() -> u64 {
     let counter = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
-    let counter = counter & PEER_ID_COUNTER_MASK;
-    let salt = u64::from(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed));
-    (salt << PEER_ID_SALT_SHIFT) | counter
+    compose_id(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed), counter)
 }
 
-/// Extract the 16-bit peer salt encoded in the high bits of a salted id.
-pub(crate) fn peer_salt_of(id: u64) -> u16 {
-    (id >> PEER_ID_SALT_SHIFT) as u16
+/// The process-wide id source as a [`MintIds`], for model operations that
+/// create windows, groups or strips.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProcessIds;
+
+impl MintIds for ProcessIds {
+    fn mint_id(&mut self) -> u64 {
+        next_id()
+    }
 }
 
-/// Extract the low-48-bit counter component of a salted id.
-pub(crate) fn counter_of(id: u64) -> u64 {
-    id & PEER_ID_COUNTER_MASK
+/// Mint a fresh workspace or strip id from the process-wide counter.
+pub trait FreshId: Sized {
+    /// Allocate a fresh, process-wide unique id.
+    fn new() -> Self;
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AppKind {
-    Terminal,
-    FileExplorer,
-    Browser,
-    Settings,
-    Other(String),
+impl FreshId for WorkspaceId {
+    fn new() -> Self {
+        Self(next_id())
+    }
 }
 
-impl AppKind {
-    pub fn as_str(&self) -> &str {
-        match self {
-            AppKind::Terminal => "Terminal",
-            AppKind::FileExplorer => "Files",
-            AppKind::Browser => "Browser",
-            AppKind::Settings => "Settings",
-            AppKind::Other(s) => s,
+impl FreshId for StripId {
+    fn new() -> Self {
+        Self(next_id())
+    }
+}
+
+/// The toolkit width a persisted [`WindowWidth`] lays out as.
+pub fn window_width_to_ui(width: WindowWidth) -> ui::widget::WindowWidth {
+    match width {
+        WindowWidth::Narrow => ui::widget::WindowWidth::Narrow,
+        WindowWidth::Normal => ui::widget::WindowWidth::Normal,
+        WindowWidth::Wide => ui::widget::WindowWidth::Wide,
+        WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
+    }
+}
+
+/// The persisted width for a toolkit width.
+pub fn window_width_from_ui(width: ui::widget::WindowWidth) -> WindowWidth {
+    match width {
+        ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
+        ui::widget::WindowWidth::Normal => WindowWidth::Normal,
+        ui::widget::WindowWidth::Wide => WindowWidth::Wide,
+        ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
+    }
+}
+
+#[cfg(test)]
+mod window_width_parity_tests {
+    use super::*;
+
+    /// The model and the toolkit each carry the width math; a persisted
+    /// tier must lay out at exactly the fraction it names.
+    #[test]
+    fn model_widths_resolve_like_the_toolkit() {
+        use tilo_desktop_model::width as model;
+        assert_eq!(model::WIDTH_MIN_PERMILLE, ui::widget::WIDTH_MIN_PERMILLE);
+        assert_eq!(model::WIDTH_MAX_PERMILLE, ui::widget::WIDTH_MAX_PERMILLE);
+        for width in [
+            WindowWidth::Narrow,
+            WindowWidth::Normal,
+            WindowWidth::Wide,
+            WindowWidth::Fraction(1),
+            WindowWidth::Fraction(420),
+            WindowWidth::Fraction(5000),
+        ] {
+            let ui = window_width_to_ui(width);
+            assert_eq!(width.permille(), ui.permille(), "{width:?}");
+            for strip in [320.0, 800.0, 1280.0, 3840.0] {
+                assert_eq!(
+                    width.resolve(strip),
+                    ui.resolve(strip),
+                    "{width:?} @ {strip}"
+                );
+            }
+            assert_eq!(window_width_from_ui(ui), width);
+        }
+        for (px, strip) in [(0.0, 1200.0), (400.0, 1200.0), (9999.0, 800.0)] {
+            assert_eq!(
+                model::permille_for_px(px, strip),
+                ui::widget::permille_for_px(px, strip)
+            );
         }
     }
-
-    /// The key into the per-workspace [`Workspace::grants`] map — distinct
-    /// from [`Self::as_str`]'s display label. Foreign clients carry their
-    /// real `xdg_toplevel::set_app_id` (`org.gimp.GIMP`, …) straight in;
-    /// built-ins get namespaced under the compositor's reverse-DNS prefix
-    /// so every grant key lives in one namespace.
-    pub fn app_id(&self) -> AppId {
-        match self {
-            AppKind::Terminal => format!("{APP_ID_PREFIX}.Terminal"),
-            AppKind::FileExplorer => format!("{APP_ID_PREFIX}.Files"),
-            AppKind::Browser => format!("{APP_ID_PREFIX}.Browser"),
-            AppKind::Settings => format!("{APP_ID_PREFIX}.Settings"),
-            AppKind::Other(s) if s.contains('.') => s.clone(),
-            AppKind::Other(s) => format!("{APP_ID_PREFIX}.{s}"),
-        }
-    }
-}
-
-/// Reverse-DNS prefix the compositor stamps on built-in apps' ids,
-/// matching its own portal backend name
-/// (`org.freedesktop.impl.portal.desktop.tilo`).
-pub const APP_ID_PREFIX: &str = "org.tilo";
-
-/// Reference width the legacy pixel model was scaled against, so a
-/// migrated `Custom(600)` preserves the *proportion* the user saw rather
-/// than snapping to whichever tier is now "Normal".
-const LEGACY_PIXEL_REFERENCE_WIDTH: u32 = 1200;
-
-/// Persisted width of a [`WindowGroup`], as a fraction of the strip's
-/// usable width — a stored pixel count would mean a different screen
-/// share on every monitor. Kept separate from [`ui::widget::WindowWidth`]
-/// (serde/CRDT shape vs. layout shape).
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-pub enum WindowWidth {
-    Narrow,
-    Normal,
-    Wide,
-    /// An arbitrary fraction of the strip's usable width, in per-mille.
-    /// What a manual resize persists.
-    Fraction(u16),
-}
-
-impl WindowWidth {
-    /// The fraction this width represents, in per-mille of the strip's
-    /// usable width. Delegates to the toolkit so the shell's persisted
-    /// tiers and the laid-out ones cannot drift apart.
-    pub fn permille(&self) -> u16 {
-        self.to_ui().permille()
-    }
-
-    /// Resolve to logical pixels against a strip of `strip_usable_px`.
-    pub fn resolve(&self, strip_usable_px: f64) -> f64 {
-        self.to_ui().resolve(strip_usable_px)
-    }
-
-    /// The toolkit width this persisted width maps to.
-    pub fn to_ui(self) -> ui::widget::WindowWidth {
-        match self {
-            WindowWidth::Narrow => ui::widget::WindowWidth::Narrow,
-            WindowWidth::Normal => ui::widget::WindowWidth::Normal,
-            WindowWidth::Wide => ui::widget::WindowWidth::Wide,
-            WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
-        }
-    }
-
-    /// The persisted width for a toolkit width.
-    pub fn from_ui(w: ui::widget::WindowWidth) -> Self {
-        match w {
-            ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
-            ui::widget::WindowWidth::Normal => WindowWidth::Normal,
-            ui::widget::WindowWidth::Wide => WindowWidth::Wide,
-            ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
-        }
-    }
-
-    /// Migrate a width persisted by the pixel model — see
-    /// [`LEGACY_PIXEL_REFERENCE_WIDTH`].
-    pub fn from_legacy_pixels(px: u32) -> Self {
-        WindowWidth::Fraction(ui::widget::permille_for_px(
-            f64::from(px),
-            f64::from(LEGACY_PIXEL_REFERENCE_WIDTH),
-        ))
-    }
-}
-
-impl<'de> Deserialize<'de> for WindowWidth {
-    /// Accepts both the current shape and the legacy pixel shape, so an
-    /// existing `~/.local/state` workspace still loads.
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        enum Raw {
-            Narrow,
-            Normal,
-            Wide,
-            Fraction(u16),
-            /// Legacy: an absolute pixel count.
-            Custom(u32),
-        }
-        Ok(match Raw::deserialize(d)? {
-            Raw::Narrow => WindowWidth::Narrow,
-            Raw::Normal => WindowWidth::Normal,
-            Raw::Wide => WindowWidth::Wide,
-            Raw::Fraction(p) => WindowWidth::Fraction(p.clamp(
-                ui::widget::WIDTH_MIN_PERMILLE,
-                ui::widget::WIDTH_MAX_PERMILLE,
-            )),
-            Raw::Custom(px) => WindowWidth::from_legacy_pixels(px),
-        })
-    }
-}
-
-/// What a tile holds. Persistence only carries `Stub` and a symbolic
-/// `AppPlaceholder` for native apps, whose concrete widgets are
-/// constructed at shell boot.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum TileContent {
-    /// Device-local workspace history. It is a normal tiled window for this
-    /// compositor, but it is never projected into the room document: the
-    /// departure frontier and what this person has seen are private state.
-    WorkspaceActivity,
-    AppPlaceholder {
-        kind: AppKind,
-        label: String,
-    },
-    Stub {
-        kind: AppKind,
-        label: String,
-    },
-    /// Foreign Wayland client adopted by the compositor. `surface_id` is
-    /// the `wl_surface` protocol id the compositor maps back to a smithay
-    /// `WlSurface`; renders as a Stub until the frame loop blits it.
-    Foreign {
-        app_id: String,
-        surface_id: u64,
-    },
-    /// Durable local application window awaiting a fresh compositor surface.
-    /// Unlike `Foreign`, this stores no process-local Wayland id. At session
-    /// startup the normal launcher opens `app_id` and binds its first
-    /// toplevel back into this exact tab, preserving layout without reviving
-    /// a dead surface handle.
-    LocalApp {
-        app_id: String,
-        label: String,
-        #[serde(default)]
-        note: String,
-    },
-    /// A window a peer has open, before this machine has bound a local
-    /// instance to the tab. The peer's `surface_id` only resolves on
-    /// their compositor so it is dropped, keeping only the app id. A
-    /// waypoint: `shell::peer_windows` binds a local instance and the
-    /// tile becomes `Foreign`. Never projected into a room document,
-    /// since a `PeerWindow` is by construction somebody else's.
-    PeerWindow {
-        /// The wayland app-id the peer's window announces.
-        app_id: String,
-        /// The peer's own resolved tab title.
-        label: String,
-        /// What this machine is doing about it, for the card. Empty means
-        /// nobody has looked yet; writing the note is how
-        /// `shell::peer_windows` records that the decision was made, so a
-        /// refusal or launch only ever starts once.
-        #[serde(default)]
-        note: String,
-    },
-}
-
-impl TileContent {
-    /// Shell-owned personal surfaces participate in local window management
-    /// without becoming windows on collaborators' desktops.
-    pub fn is_device_local(&self) -> bool {
-        matches!(self, Self::WorkspaceActivity)
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Tab {
-    pub id: TabId,
-    pub title: String,
-    pub tile: TileContent,
 }
 
 /// Device-local identity needed to reconstruct a hosted document tab.
@@ -851,37 +606,6 @@ pub struct Tab {
 pub struct NativeDocumentReference {
     pub provider_id: String,
     pub path: std::path::PathBuf,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WindowGroup {
-    pub id: GroupId,
-    pub tabs: Vec<Tab>,
-    pub active_tab: TabId,
-    pub width: WindowWidth,
-    /// Mirrors the widget's maximized flag. This is presentation state for
-    /// this device: it survives a local restart but is never sent to room
-    /// peers. `#[serde(default)]` keeps pre-existing local JSON loading
-    /// un-maximized.
-    #[serde(default)]
-    pub maximized: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Strip {
-    pub id: StripId,
-    pub name: String,
-    pub window_groups: Vec<WindowGroup>,
-}
-
-impl Strip {
-    pub fn new(id: StripId, name: impl Into<String>) -> Self {
-        Self {
-            id,
-            name: name.into(),
-            window_groups: Vec::new(),
-        }
-    }
 }
 
 /// One tab as a room's replication document carries it. Deliberately not
@@ -949,243 +673,6 @@ fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, 
     }
 }
 
-/// [`put_str_if_changed`] for a boolean.
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct Collaborator {
-    pub id: String,
-    pub name: String,
-    /// Tab id the collaborator is focused on, driving per-tab presence
-    /// dots. `None` means present in the workspace but not on content.
-    #[serde(default)]
-    pub active_tab: Option<u64>,
-    /// Optional `#rrggbb`/`#rrggbbaa` override for the palette
-    /// [`ui::presence::user_color`] would otherwise pick.
-    #[serde(default)]
-    pub cursor_color: Option<String>,
-    /// Optional avatar URL or initials fragment; not yet wired to a
-    /// bitmap loader (the runtime renders initials today).
-    #[serde(default)]
-    pub avatar: Option<String>,
-    /// Display-only role chip. Authority comes from
-    /// [`Workspace::role_of`], never from this field.
-    #[serde(default)]
-    pub role_id: Option<String>,
-    /// Named by the room but has not taken part yet.
-    #[serde(default)]
-    pub invited: bool,
-    /// The publishing peer's Iroh handle, so a departure (which names
-    /// only a peer id) finds this row again after it has been renamed
-    /// from the handle to the person. `None` for a persisted row.
-    #[serde(default)]
-    pub session: Option<u64>,
-}
-
-impl Collaborator {
-    /// Build a collaborator with no tab attribution.
-    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            name: name.into(),
-            active_tab: None,
-            cursor_color: None,
-            avatar: None,
-            role_id: None,
-            invited: false,
-            session: None,
-        }
-    }
-
-    /// Record the live session this person is here through.
-    #[must_use]
-    pub fn with_session(mut self, peer: u64) -> Self {
-        self.session = Some(peer);
-        self
-    }
-
-    /// Like [`Collaborator::new`] but attributed to a specific tab.
-    #[must_use]
-    pub fn with_active_tab(id: impl Into<String>, name: impl Into<String>, tab: u64) -> Self {
-        let mut c = Self::new(id, name);
-        c.active_tab = Some(tab);
-        c
-    }
-
-    /// Attach an explicit `#rrggbb` / `#rrggbbaa` override for this peer.
-    #[must_use]
-    pub fn with_cursor_color(mut self, hex: impl Into<String>) -> Self {
-        self.cursor_color = Some(hex.into());
-        self
-    }
-
-    /// Attach an avatar reference (URL or initials fragment).
-    #[must_use]
-    pub fn with_avatar(mut self, avatar: impl Into<String>) -> Self {
-        self.avatar = Some(avatar.into());
-        self
-    }
-
-    /// Attach a role id pointing into the workspace's role table.
-    #[must_use]
-    pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
-        self.role_id = Some(role_id.into());
-        self
-    }
-
-    /// Mark this collaborator as invited rather than arrived.
-    #[must_use]
-    pub fn as_invited(mut self) -> Self {
-        self.invited = true;
-        self
-    }
-}
-
-/// Identifier for an installed app — opaque to the state layer; the
-/// portal layer fills it in with the caller's wayland app-id.
-pub type AppId = String;
-
-/// Filesystem-grant access mode. Mirrors the read / read-write split
-/// the portal D-Bus backend surfaces to apps.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FsMode {
-    Read,
-    ReadWrite,
-}
-
-/// How long a capability grant lives — [`collab_types::caps::Expiry`]
-/// under the prompt UI's name. "Just once / Until I log out / Always"
-/// are `AfterUse` / `EndOfSession` / `Never`, and the same three values
-/// travel to the filesystem, the launcher sandbox and every peer.
-pub type GrantScope = Expiry;
-
-/// "Just once" — the prompt's one-shot button.
-pub const GRANT_ONCE: Expiry = Expiry::AfterUse;
-/// "Until I log out" — held for this shell session, never written to disk.
-pub const GRANT_SESSION: Expiry = Expiry::EndOfSession;
-/// "Always" — survives a restart.
-pub const GRANT_ALWAYS: Expiry = Expiry::Never;
-
-/// Per-app capability grant stored on a [`Workspace`]. Each variant maps
-/// to its own enforcement layer: Bubblewrap allowlist for filesystem,
-/// Pipewire ACL for camera/mic, nftables for network.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Capability {
-    /// Read or read-write access to a specific filesystem path.
-    Filesystem {
-        path: std::path::PathBuf,
-        mode: FsMode,
-        scope: GrantScope,
-    },
-    /// Camera (`/dev/video*`) access.
-    Camera { scope: GrantScope },
-    /// Microphone (Pipewire socket) access.
-    Microphone { scope: GrantScope },
-    /// Screen capture via portal `ScreenCast`.
-    Screencast { scope: GrantScope },
-    /// Remote control of the seat (pointer + keyboard injection) via
-    /// portal `RemoteDesktop`. Separate from [`Capability::Screencast`]
-    /// because it is strictly more invasive: "let them watch" and "let
-    /// them type" stay separate grants.
-    RemoteDesktop { scope: GrantScope },
-    /// Submit a document to a printer via portal `Print`. Its own
-    /// variant because CUPS enumerates destinations and manages other
-    /// users' jobs, so "may print" and "may reach the print system" are
-    /// not the same permission.
-    ///
-    /// Brokered, never bound: the launcher's grant-to-bind mapping
-    /// (`launcher::capabilities`) has no print binding, so
-    /// `/run/cups/cups.sock` never appears inside the sandbox however
-    /// broadly this is granted; printing goes through the `Print` portal.
-    Print { scope: GrantScope },
-    /// Outbound network access. `hosts: None` = any host; `Some(list)` =
-    /// only those.
-    ///
-    /// **Enforcement gap:** only the per-workspace network namespace
-    /// isolation is wired up. The `hosts` allowlist is recorded but not
-    /// enforced — no per-namespace nftables rules yet, so `Some([...])`
-    /// and `None` behave identically.
-    Network {
-        hosts: Option<Vec<String>>,
-        scope: GrantScope,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceTaskStatus {
-    Queued,
-    InProgress,
-    Waiting,
-    Done,
-    Cancelled,
-}
-
-impl WorkspaceTaskStatus {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Queued => "Queued",
-            Self::InProgress => "In progress",
-            Self::Waiting => "Waiting",
-            Self::Done => "Done",
-            Self::Cancelled => "Cancelled",
-        }
-    }
-
-    pub fn is_finished(&self) -> bool {
-        matches!(self, Self::Done | Self::Cancelled)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceTaskRoute {
-    /// A person advances the task from the native task surface. No model is
-    /// contacted, which keeps Task Center useful on an offline desktop.
-    Manual,
-    /// An agent may use exported actions and deterministic matching only.
-    RulesOnly,
-    /// An agent may ask its configured model before dispatching exported
-    /// actions. The resulting action trace remains the source of truth.
-    Model,
-}
-
-impl WorkspaceTaskRoute {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Manual => "Manual · no model",
-            Self::RulesOnly => "Agent · rules only",
-            Self::Model => "Agent · model assisted",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceTaskResource {
-    pub app_id: Option<String>,
-    pub app_label: Option<String>,
-    pub id: String,
-    pub kind: String,
-    pub label: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceTaskAuditEvent {
-    pub at: i64,
-    pub actor: String,
-    pub summary: String,
-}
-
-/// Append-only, broker-authenticated record of an external side effect.
-/// Arguments, output values, produced resource addresses, failure messages,
-/// and failure details are deliberately absent from this durable shape.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceEffectReceipt {
-    pub invocation: tilo_actions::InvocationId,
-    pub actor: String,
-    pub context: tilo_actions::ActionContext,
-    pub status: tilo_actions::EffectReceiptStatus,
-    pub completed_at: i64,
-}
-
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1229,148 +716,6 @@ fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
     for facet in &mut context.facets {
         facet.key = bounded_receipt_text(&facet.key, 96);
         facet.value = bounded_receipt_text(&facet.value, 160);
-    }
-}
-
-/// A durable unit of work in a collaboration room.
-///
-/// Tasks are deliberately shell-owned rather than chat messages: every app
-/// can attach a resource, people can run them without a language model, and
-/// the workspace room CRDT carries the same record to every desktop.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceTask {
-    pub id: String,
-    pub title: String,
-    pub created_by: String,
-    pub assigned_agent: Option<String>,
-    pub route: WorkspaceTaskRoute,
-    pub status: WorkspaceTaskStatus,
-    pub resource: Option<WorkspaceTaskResource>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    #[serde(default)]
-    pub audit: Vec<WorkspaceTaskAuditEvent>,
-}
-
-impl WorkspaceTask {
-    pub fn action_context(&self) -> tilo_actions::ActionContext {
-        let mut context = tilo_actions::ActionContext::default()
-            .with_purpose(self.title.clone())
-            .with_group(self.id.clone(), self.title.clone(), "task");
-        if let Some(resource) = &self.resource {
-            context.resource = Some(tilo_actions::ActionResource {
-                id: resource.id.clone(),
-                kind: resource.kind.clone(),
-                label: resource.label.clone(),
-            });
-            if let (Some(id), Some(label)) = (&resource.app_id, &resource.app_label) {
-                context = context.with_app(id.clone(), label.clone());
-            }
-        }
-        context
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Workspace {
-    pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration room — the
-    /// value two hosts must agree on, unlike the local-only [`Self::id`].
-    /// `#[serde(default)]` yields [`RoomId::nil`] for pre-room state
-    /// files until `adopt_roomless_workspaces` mints a real one at boot.
-    #[serde(default)]
-    pub room: RoomId,
-    pub name: String,
-    pub strips: Vec<Strip>,
-    /// Who is in this workspace *right now*, asserted present by a
-    /// verified invite or presence frame — not durable membership, which
-    /// is [`Workspace::owner`] / [`Workspace::capabilities`].
-    /// `skip_deserializing` rather than `skip`: reading is the direction
-    /// that can fabricate a stale person, but `Serialize` still feeds the
-    /// control socket's state dump.
-    #[serde(skip_deserializing)]
-    pub collaborators: Vec<Collaborator>,
-    /// Who owns this room — the one principal whose authority is not
-    /// itself a capability. `None` means a pre-ownership state file,
-    /// adopted by the local user on first load.
-    #[serde(default)]
-    pub owner: Option<UserId>,
-    /// One exact, owner-signed offer awaiting the named recipient's consent.
-    /// Persisted with the workspace so restart cannot erase, extend, or retarget
-    /// the ceremony.
-    #[serde(default)]
-    pub pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    /// Completed transfers retaining the outgoing owner's signed authorization
-    /// and the exact recipient's signed acceptance. This is append-only audit
-    /// evidence, not a second source of current ownership.
-    #[serde(default)]
-    pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    /// Owner-signed cancellations retained so a cancelled proposal cannot be
-    /// replayed after restart.
-    #[serde(default)]
-    pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
-    /// **Every** permission in this room, as capabilities — one list, one
-    /// vocabulary (room membership, file shares, portal grants), so it
-    /// can't drift the way a second per-app map would.
-    #[serde(default)]
-    pub capabilities: Vec<CapOverride>,
-    /// Reusable least-privilege bundles authored for this workspace. Profiles
-    /// are policy source; assigned authority is still materialized into
-    /// `capabilities`, the sole enforcement and replication vocabulary.
-    #[serde(default)]
-    pub permission_profiles: Vec<PermissionProfile>,
-    /// Default-application policy belongs to the workspace, while each
-    /// person's ordinary defaults remain in their personal settings. All
-    /// mutation goes through the authority-checked methods below.
-    #[serde(default)]
-    pub default_apps: desktop_policy::WorkspaceDefaults,
-    /// Work shared by the room independently of any one chat thread or app.
-    /// Values are projected as a CRDT map keyed by task id.
-    #[serde(default)]
-    pub tasks: Vec<WorkspaceTask>,
-    /// Consequential effects are activity, but never pretend to be edits to
-    /// an app's collaborative document.
-    #[serde(default)]
-    pub effect_receipts: Vec<WorkspaceEffectReceipt>,
-    /// Surfaces from this workspace being streamed to peers. Keys are
-    /// wayland `wl_surface` ids; values are the target Iroh peers
-    /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
-    #[serde(default)]
-    pub shared_surfaces: SharedSurfaces,
-}
-
-/// Stable identifier for a person. The compositor's collaborator table
-/// keys on this; a peer's Ed25519 key hex is a valid value, and so is
-/// the local user's account name.
-pub type UserId = String;
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum PermissionProfileMutationError {
-    #[error("only a workspace administrator can manage permission profiles")]
-    NotAdministrator,
-    #[error("permission profile is invalid: {0}")]
-    Invalid(#[from] PermissionProfileError),
-    #[error("permission profile was not found")]
-    NotFound,
-    #[error("permission profile actor has no assignable identity")]
-    MissingPrincipal,
-}
-
-pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
-pub const PROFILE_SAVE_ACTION_ID: &str = "profile.save";
-pub const PROFILE_ASSIGN_ACTION_ID: &str = "profile.assign";
-
-/// What a role is called on screen. One mapping shared by every surface
-/// that shows a role, so it can't be spelled two different ways.
-pub fn role_label(role: CapRole) -> &'static str {
-    match role {
-        CapRole::Owner => "owner",
-        CapRole::Editor => "editor",
-        CapRole::Commenter => "commenter",
-        CapRole::Viewer => "viewer",
-        // Not "no role" — a blocked member is still in the room's
-        // directory, and a row that said nothing would read as ordinary.
-        CapRole::Denied => "blocked",
     }
 }
 
@@ -1421,26 +766,6 @@ pub fn session_handle(peer: u64) -> String {
     format!("p{peer:016x}")
 }
 
-/// Seconds since the Unix epoch, for capability expiry. An unset clock
-/// reads as 0, making every `AtUnix` capability look live — safe for a
-/// *grant*, unsafe for a *restriction*, so write restrictions without
-/// an expiry.
-pub fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum WorkspaceDefaultError {
-    #[error("only a workspace administrator may change workspace policy")]
-    NotAdministrator,
-    #[error("a person may only change their own workspace default")]
-    WrongIdentity,
-    #[error("invalid default application: {0}")]
-    InvalidSelection(desktop_policy::DefaultAppError),
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OwnershipTransferStateError {
     #[error("workspace ownership transfer is not locally governed")]
@@ -1463,767 +788,6 @@ pub enum OwnershipTransferStateError {
 
 const MAX_OWNERSHIP_TRANSFER_HISTORY: usize = 4_096;
 const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
-
-impl Capability {
-    /// The `(scope, verb)` this request descriptor asks for —
-    /// [`Capability`] is what an app *asks* for, granting one writes
-    /// [`CapOverride`]s. A host allowlist becomes one capability per
-    /// host, so dropping one is a meaningful act.
-    pub fn requested_scopes(&self) -> Vec<(Scope, Verb)> {
-        match self {
-            Capability::Filesystem { path, mode, .. } => {
-                let verb = match mode {
-                    FsMode::Read => Verb::Read,
-                    FsMode::ReadWrite => Verb::Write,
-                };
-                vec![(Scope::FsPath(path.to_string_lossy().into_owned()), verb)]
-            }
-            Capability::Camera { .. } => vec![(Scope::Device("camera".into()), Verb::Read)],
-            Capability::Microphone { .. } => {
-                vec![(Scope::Device("microphone".into()), Verb::Read)]
-            }
-            Capability::Screencast { .. } => {
-                vec![(Scope::Device("screencast".into()), Verb::Read)]
-            }
-            // Remote desktop is screencast plus input injection, so it
-            // gets its own write-verb device scope — revoking one must
-            // not revoke the other.
-            Capability::RemoteDesktop { .. } => {
-                vec![(Scope::Device("remote-desktop".into()), Verb::Write)]
-            }
-            // Printing is an *output* action, producing a physical
-            // artifact, so it asks for the write verb, not the read
-            // one a device probe would use.
-            Capability::Print { .. } => vec![(Scope::Device("printer".into()), Verb::Write)],
-            Capability::Network { hosts, .. } => match hosts {
-                // An allowlist means exactly those hosts; `None` is the
-                // only thing that produces a wildcard scope — behaving
-                // as if an allowlist said `None` is the bug this shape
-                // prevents.
-                Some(list) => list
-                    .iter()
-                    .map(|h| (Scope::NetHost(h.clone()), Verb::Write))
-                    .collect(),
-                None => vec![(Scope::NetHost("*".into()), Verb::Write)],
-            },
-        }
-    }
-
-    pub fn requested_expiry(&self) -> Expiry {
-        match self {
-            Capability::Filesystem { scope, .. }
-            | Capability::Camera { scope }
-            | Capability::Microphone { scope }
-            | Capability::Screencast { scope }
-            | Capability::RemoteDesktop { scope }
-            | Capability::Print { scope }
-            | Capability::Network { scope, .. } => *scope,
-        }
-    }
-
-    /// Rebuild a descriptor from a stored capability, for the
-    /// Permissions tab. `None` when the capability is not an app grant
-    /// this UI knows how to render.
-    pub fn from_capability(cap: &CapOverride) -> Option<Self> {
-        let scope = cap.expiry;
-        match &cap.scope {
-            Scope::FsPath(p) => Some(Capability::Filesystem {
-                path: std::path::PathBuf::from(p),
-                mode: if cap.verb.implies(Verb::Write) {
-                    FsMode::ReadWrite
-                } else {
-                    FsMode::Read
-                },
-                scope,
-            }),
-            Scope::Device(d) if d == "camera" => Some(Capability::Camera { scope }),
-            Scope::Device(d) if d == "microphone" => Some(Capability::Microphone { scope }),
-            Scope::Device(d) if d == "screencast" => Some(Capability::Screencast { scope }),
-            // Without this arm a stored print grant wouldn't read back
-            // as one: `GrantStoreHandle::lookup` would miss it and an
-            // `Always` grant would re-prompt every job despite looking
-            // granted in the Permissions tab.
-            Scope::Device(d) if d == "printer" => Some(Capability::Print { scope }),
-            Scope::NetHost(h) => Some(Capability::Network {
-                hosts: if h == "*" {
-                    None
-                } else {
-                    Some(vec![h.clone()])
-                },
-                scope,
-            }),
-            _ => None,
-        }
-    }
-}
-
-impl Workspace {
-    /// Set the administrator layer of default-app policy. The shell supplies
-    /// the authenticated local identity; a caller cannot widen policy by
-    /// merely painting an enabled control.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceDefaultError::NotAdministrator`] if `actor` does
-    /// not hold administrator authority in this workspace, or
-    /// [`WorkspaceDefaultError::InvalidSelection`] if `policy` names an app
-    /// package the resolver rejects for `resource`.
-    pub fn set_default_app_policy_as(
-        &mut self,
-        actor: &UserId,
-        resource: desktop_policy::ResourceKind,
-        policy: desktop_policy::WorkspaceDefaultPolicy,
-        resolver: &desktop_policy::DefaultAppResolver<'_>,
-    ) -> Result<(), WorkspaceDefaultError> {
-        if !self.may_administer(actor) {
-            return Err(WorkspaceDefaultError::NotAdministrator);
-        }
-        if let desktop_policy::WorkspaceDefaultPolicy::App(package) = &policy {
-            resolver
-                .validate_app(&resource, package)
-                .map_err(WorkspaceDefaultError::InvalidSelection)?;
-        }
-        self.default_apps.policy.insert(resource, policy);
-        Ok(())
-    }
-
-    /// Set a person's own workspace-level choice. Even a workspace owner may
-    /// not silently rewrite another person's preference; administrative
-    /// policy is the separate method above and remains visibly attributable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceDefaultError::WrongIdentity`] if `actor` differs
-    /// from `subject` — a person may only set their own choice — or
-    /// [`WorkspaceDefaultError::InvalidSelection`] if `choice` names an app
-    /// package the resolver rejects for `resource`.
-    pub fn set_default_app_choice_as(
-        &mut self,
-        actor: &UserId,
-        subject: &UserId,
-        resource: desktop_policy::ResourceKind,
-        choice: desktop_policy::UserWorkspaceChoice,
-        resolver: &desktop_policy::DefaultAppResolver<'_>,
-    ) -> Result<(), WorkspaceDefaultError> {
-        if actor != subject {
-            return Err(WorkspaceDefaultError::WrongIdentity);
-        }
-        if let desktop_policy::UserWorkspaceChoice::App(package) = &choice {
-            resolver
-                .validate_app(&resource, package)
-                .map_err(WorkspaceDefaultError::InvalidSelection)?;
-        }
-        self.default_apps
-            .user_choices
-            .entry(subject.clone())
-            .or_default()
-            .insert(resource, choice);
-        Ok(())
-    }
-
-    // App grants — the portal's view of the one capability list. Not a
-    // second store: they read/write `self.capabilities`, filtered to
-    // subjects that are apps.
-
-    /// Record an app's grant. Returns the ids of the capabilities
-    /// written (one per requested scope).
-    pub fn grant_app(&mut self, app_id: &str, cap: &Capability) -> Vec<String> {
-        let expiry = cap.requested_expiry();
-        cap.requested_scopes()
-            .into_iter()
-            .map(|(scope, verb)| {
-                self.grant_capability(
-                    CapOverride::grant(Subject::app(app_id), scope, verb).expiring(expiry),
-                )
-            })
-            .collect()
-    }
-
-    pub fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
-        let want = Subject::app(app_id);
-        let now = Some(now_unix());
-        self.capabilities
-            .iter()
-            .filter(|c| c.subject == want && c.effect == Effect::Grant && c.is_live_at(now))
-            .collect()
-    }
-
-    /// A **snapshot** of app grants in the portal's `Capability` shape.
-    /// Rebuilt from [`Self::capabilities`] on every call — mutating the
-    /// returned map edits a temporary and stores nothing. To grant, use
-    /// [`Self::grant_app`] or [`Self::grant_as`].
-    pub fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
-        let now = Some(now_unix());
-        let mut out: HashMap<AppId, Vec<Capability>> = HashMap::new();
-        for c in &self.capabilities {
-            if c.effect != Effect::Grant || !c.is_live_at(now) {
-                continue;
-            }
-            let Subject::Principal(Principal::App(app)) = &c.subject else {
-                continue;
-            };
-            if let Some(desc) = Capability::from_capability(c) {
-                out.entry(app.clone()).or_default().push(desc);
-            }
-        }
-        out
-    }
-
-    /// Does any app hold a grant in this room? Drives the Permissions
-    /// tab's visibility.
-    pub fn has_app_grants(&self) -> bool {
-        let now = Some(now_unix());
-        self.capabilities.iter().any(|c| {
-            c.effect == Effect::Grant
-                && c.is_live_at(now)
-                && matches!(&c.subject, Subject::Principal(Principal::App(_)))
-                && Capability::from_capability(c).is_some()
-        })
-    }
-
-    /// Ids of the capabilities backing app `app_id`'s grants, in the
-    /// same order [`Self::grants`] renders them, so a Revoke button
-    /// that knows a row index can name the capability it removes.
-    pub fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
-        let now = Some(now_unix());
-        let want = Subject::app(app_id);
-        self.capabilities
-            .iter()
-            .filter(|c| {
-                c.subject == want
-                    && c.effect == Effect::Grant
-                    && c.is_live_at(now)
-                    && Capability::from_capability(c).is_some()
-            })
-            .map(|c| c.id.clone())
-            .collect()
-    }
-
-    // The capability store — every permission question bottoms out in
-    // `decide` / `allows` below.
-
-    /// Decide whether `actor` may apply `verb` to `resource` in this
-    /// room. Fail-closed: denies unless something explicitly permits.
-    pub fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        decide_capability(actor, resource, verb, &self.capabilities, Some(now_unix()))
-    }
-
-    /// [`Self::decide`] reduced to a bool, for call sites that only
-    /// gate an action rather than explaining a denial.
-    pub fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.decide(actor, resource, verb) == CapDecision::Allow
-    }
-
-    /// Record a capability, minting an id if the caller didn't supply
-    /// one. Authority to *make* the grant is checked by the caller
-    /// ([`Self::grant_as`]), not here.
-    pub fn grant_capability(&mut self, mut cap: CapOverride) -> String {
-        if cap.id.is_empty() {
-            cap.id = format!("cap-{}", next_id());
-        }
-        // Merges rather than stacks a re-grant of the same (subject,
-        // scope, effect, verb), keeping the longer-lived expiry — a
-        // grant is monotonic; reducing authority is revoke's job.
-        if let Some(slot) = self.capabilities.iter_mut().find(|c| {
-            c.subject == cap.subject
-                && c.scope == cap.scope
-                && c.effect == cap.effect
-                && c.verb == cap.verb
-        }) {
-            slot.expiry = Expiry::longest(slot.expiry, cap.expiry);
-            if !cap.id.is_empty() {
-                slot.id = cap.id;
-            }
-            if cap.granted_by.is_some() {
-                slot.granted_by = cap.granted_by;
-            }
-            return slot.id.clone();
-        }
-        if cap.id.is_empty() {
-            cap.id = format!("cap-{}", next_id());
-        }
-        let id = cap.id.clone();
-        self.capabilities.push(cap);
-        id
-    }
-
-    /// Grant a capability **on behalf of** `grantor`, enforcing that
-    /// the grantor actually holds authority to delegate it — a peer
-    /// without `Admin` cannot widen anyone's access, including their
-    /// own. `None` when the grantor lacks that authority.
-    pub fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
-        if !self.may_administer(grantor) {
-            return None;
-        }
-        let cap = cap.granted_by(Principal::Person(grantor.clone()));
-        Some(self.grant_capability(cap))
-    }
-
-    /// Create or replace a workspace permission profile. The profile itself
-    /// grants nothing; assignment below materializes ordinary capabilities.
-    pub fn save_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        self.save_permission_profile_as_actor(&self.actor_for_person(actor), profile)
-    }
-
-    /// Actor-general form used by the broker. Agents and apps have no ambient
-    /// role; they can manage profiles only when explicitly granted this exact
-    /// governance action (or the containing governance app/workspace).
-    pub fn save_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile: PermissionProfile,
-    ) -> Result<(), PermissionProfileMutationError> {
-        if !self.allows(
-            actor,
-            &ResourceRef::Action {
-                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
-                action: PROFILE_SAVE_ACTION_ID.into(),
-            },
-            Verb::Admin,
-        ) {
-            return Err(PermissionProfileMutationError::NotAdministrator);
-        }
-        profile.validate()?;
-        if let Some(existing) = self
-            .permission_profiles
-            .iter_mut()
-            .find(|candidate| candidate.name.eq_ignore_ascii_case(profile.name.trim()))
-        {
-            *existing = profile;
-        } else {
-            self.permission_profiles.push(profile);
-            self.permission_profiles
-                .sort_by_key(|candidate| candidate.name.to_lowercase());
-        }
-        Ok(())
-    }
-
-    /// Assign a saved profile to a person, app, or agent in one validated
-    /// mutation. Returned ids are the exact revocation/audit handles written
-    /// to the canonical capability store.
-    pub fn assign_permission_profile_as(
-        &mut self,
-        actor: &UserId,
-        profile_name: &str,
-        subject: Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        self.assign_permission_profile_as_actor(
-            &self.actor_for_person(actor),
-            profile_name,
-            subject,
-            expiry,
-        )
-    }
-
-    pub fn assign_permission_profile_as_actor(
-        &mut self,
-        actor: &Actor,
-        profile_name: &str,
-        subject: Subject,
-        expiry: Expiry,
-    ) -> Result<Vec<String>, PermissionProfileMutationError> {
-        if !self.allows(
-            actor,
-            &ResourceRef::Action {
-                app: WORKSPACE_GOVERNANCE_APP_ID.into(),
-                action: PROFILE_ASSIGN_ACTION_ID.into(),
-            },
-            Verb::Admin,
-        ) {
-            return Err(PermissionProfileMutationError::NotAdministrator);
-        }
-        let profile = self
-            .permission_profiles
-            .iter()
-            .find(|profile| profile.name.eq_ignore_ascii_case(profile_name.trim()))
-            .cloned()
-            .ok_or(PermissionProfileMutationError::NotFound)?;
-        let grantor = actor
-            .principals
-            .iter()
-            .find(|principal| !matches!(principal, Principal::Room(_)))
-            .cloned()
-            .ok_or(PermissionProfileMutationError::MissingPrincipal)?;
-        let capabilities = profile.assign_to(&subject, &grantor, expiry)?;
-        Ok(capabilities
-            .into_iter()
-            .map(|capability| self.grant_capability(capability))
-            .collect())
-    }
-
-    /// Drop the capability with this id. Returns whether anything was
-    /// removed.
-    pub fn revoke_capability(&mut self, id: &str) -> bool {
-        let before = self.capabilities.len();
-        self.capabilities.retain(|c| c.id != id);
-        self.capabilities.len() != before
-    }
-
-    /// Revoke on behalf of `revoker`, enforcing the same authority as
-    /// [`Self::grant_as`].
-    pub fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
-        self.may_administer(revoker) && self.revoke_capability(id)
-    }
-
-    /// Drop every capability matching `pred`. Returns the ids removed,
-    /// so the caller can mirror each removal into the replicated doc.
-    pub fn revoke_matching(&mut self, pred: impl Fn(&CapOverride) -> bool) -> Vec<String> {
-        let mut removed = Vec::new();
-        self.capabilities.retain(|c| {
-            if pred(c) {
-                removed.push(c.id.clone());
-                false
-            } else {
-                true
-            }
-        });
-        removed
-    }
-
-    // Ownership and membership.
-
-    /// Is `user` the owner, or a delegated co-owner (`Admin` over the
-    /// room)? An ownerless workspace has no administrators, not
-    /// everyone-is-an-administrator.
-    pub fn may_administer(&self, user: &UserId) -> bool {
-        if self.owner.as_deref() == Some(user.as_str()) {
-            return true;
-        }
-        self.allows(
-            &self.actor_for_person(user),
-            &ResourceRef::Workspace,
-            Verb::Admin,
-        )
-    }
-
-    /// Install `user` as owner, and record the membership capability
-    /// that makes them `Admin` — `owner` survives an empty capability
-    /// list, and the capability is what replicates and what `decide` reads.
-    pub fn set_owner(&mut self, user: impl Into<UserId>) {
-        let user = user.into();
-        let owner_capability_id = format!("owner-{}", self.id.raw());
-        // The owner capability has a stable id because the replicated map is
-        // keyed by capability id.  Remove its previous in-memory value before
-        // changing the subject: `grant_capability` deliberately merges only
-        // identical subjects, and would otherwise leave the former owner with
-        // a second local Admin grant until the next document rebuild.
-        self.revoke_capability(&owner_capability_id);
-        self.owner = Some(user.clone());
-        self.grant_capability(
-            CapOverride::membership(
-                Subject::Principal(Principal::Person(user)),
-                self.room.to_string(),
-                Verb::Admin,
-            )
-            .with_id(owner_capability_id),
-        );
-    }
-
-    /// Transfer the structural owner role.
-    ///
-    /// This is intentionally stricter than ordinary role administration:
-    /// delegated administrators cannot transfer ownership, and the recipient
-    /// must already be an administrator.  The latter makes transfer an
-    /// explicit two-step ceremony (promote, then transfer) and avoids handing
-    /// the workspace to a mistyped or stale identity.
-    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
-        if current_owner == new_owner
-            || self.owner.as_ref() != Some(current_owner)
-            || self.role_of(new_owner) != Some(CapRole::Owner)
-        {
-            return false;
-        }
-        self.set_owner(new_owner.clone());
-        true
-    }
-
-    /// Give up administration because this workspace joined a room it
-    /// did not mint — drops both the recorded owner and every admin
-    /// capability, or [`Self::may_administer`] would still answer yes
-    /// for a room this machine doesn't own.
-    pub fn surrender_governance(&mut self) -> bool {
-        let had_owner = self.owner.take().is_some();
-        let dropped = self.revoke_matching(|c| {
-            let is_person = matches!(c.subject, Subject::Principal(Principal::Person(_)));
-            // Capability vectors are already owned by one workspace. Accept
-            // legacy local-id and current durable-room spellings alike so a
-            // replicated membership cannot disappear on a peer whose local
-            // workspace handle differs.
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            is_person && covers_room && c.verb.implies(Verb::Admin)
-        });
-        had_owner || !dropped.is_empty()
-    }
-
-    /// The role `user` holds. Not stored separately — it *is* the verb
-    /// on their membership capability, so "in the room" and "allowed
-    /// to do something" can't drift apart. `None` means not a member.
-    pub fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        if self.owner.as_deref() == Some(user.as_str()) {
-            return Some(CapRole::Owner);
-        }
-        let subject_is_user = |c: &CapOverride| match &c.subject {
-            Subject::Principal(Principal::Person(p)) => p == user,
-            _ => false,
-        };
-        let now = Some(now_unix());
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in &self.capabilities {
-            if !subject_is_user(c) || !c.is_live_at(now) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                // A room-wide Restrict below Read is how a member is
-                // blocked without being erased from history.
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
-    }
-
-    /// Build the [`Actor`] for a person acting in this room.
-    pub fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(self.role_of(user), user.clone()).in_room(self.room.to_string())
-    }
-
-    /// Build the [`Actor`] for an app running in this room. Carries the
-    /// room as principal but **no role** — an app has no base authority,
-    /// only what's granted to it by name.
-    pub fn actor_for_app(&self, app_id: &str) -> Actor {
-        Actor::app(app_id).in_room(self.room.to_string())
-    }
-
-    /// Build the [`Actor`] for an agent acting for the user. Same
-    /// authority shape as an app: scoped, revocable, no role.
-    pub fn actor_for_agent(&self, agent_id: &str) -> Actor {
-        Actor::agent(agent_id).in_room(self.room.to_string())
-    }
-
-    /// The room roster: the people who are *members*. Built from
-    /// room-scoped capabilities only — someone with a capability on one
-    /// file and nothing else is **not** here. See [`Self::shares_of`].
-    pub fn roster(&self) -> Vec<(UserId, CapRole)> {
-        let now = Some(now_unix());
-        let mut seen: Vec<UserId> = Vec::new();
-        for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            if let Subject::Principal(Principal::Person(p)) = &c.subject
-                && !seen.contains(p)
-            {
-                seen.push(p.clone());
-            }
-        }
-        if let Some(owner) = &self.owner
-            && !seen.contains(owner)
-        {
-            seen.insert(0, owner.clone());
-        }
-        seen.into_iter()
-            .filter_map(|u| self.role_of(&u).map(|r| (u, r)))
-            .collect()
-    }
-
-    /// The role an *agent* holds — same derivation as [`Self::role_of`]
-    /// minus the owner short-circuit, since an agent is never the owner.
-    pub fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        let now = Some(now_unix());
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in &self.capabilities {
-            let subject_matches = matches!(
-                &c.subject,
-                Subject::Principal(Principal::Agent(a)) if a == agent
-            );
-            if !subject_matches || !c.is_live_at(now) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
-    }
-
-    /// The agents that hold membership in this room — a *second* list
-    /// from [`Self::roster`], since an agent is not a person and
-    /// rendering them undifferentiated would misrepresent who's present.
-    pub fn agent_members(&self) -> Vec<(String, CapRole)> {
-        let now = Some(now_unix());
-        let mut seen: Vec<String> = Vec::new();
-        for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            if let Subject::Principal(Principal::Agent(a)) = &c.subject
-                && !seen.contains(a)
-            {
-                seen.push(a.clone());
-            }
-        }
-        seen.into_iter()
-            .filter_map(|a| self.role_of_agent(&a).map(|r| (a, r)))
-            .collect()
-    }
-
-    /// The share list for one resource. Room-scoped capabilities are
-    /// excluded (those belong in [`Self::roster`]) so the UI can never
-    /// present "shared one file with Bob" as "Bob is a collaborator".
-    pub fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        let now = Some(now_unix());
-        self.capabilities
-            .iter()
-            .filter(|c| {
-                c.is_live_at(now)
-                    && c.effect == Effect::Grant
-                    && c.subject_is_person()
-                    && !c.is_room_membership()
-                    && c.scope.matches_resource(resource)
-            })
-            .collect()
-    }
-
-    pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
-        Self {
-            id,
-            // A workspace that exists is a room that exists: minted
-            // here rather than lazily.
-            room: RoomId::new(),
-            name: name.into(),
-            strips: Vec::new(),
-            collaborators: Vec::new(),
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
-        }
-    }
-
-    /// What fixtures want instead of a hand-written `Workspace { … }`
-    /// literal (which breaks on every new field); each fixture also gets
-    /// its own room rather than sharing the nil one.
-    pub fn test_default(id: WorkspaceId, name: impl Into<String>) -> Self {
-        Self::new(id, name)
-    }
-
-    /// This workspace's collaboration cluster id — [`Self::room`], not
-    /// the local [`Self::id`]. Unminted returns the nil uuid, which
-    /// `CrdtRoute::delivers_to` refuses to deliver to.
-    pub fn collab_cluster_id(&self) -> uuid::Uuid {
-        self.room.as_uuid()
-    }
-
-    /// Mark `surface_id` as being streamed to `peer_id`. Additive — two
-    /// calls record both peers in the per-surface set.
-    pub fn share_surface(&mut self, surface_id: u64, peer_id: u64) {
-        self.shared_surfaces.share(surface_id, peer_id);
-    }
-
-    /// Drop the share entry for `surface_id` (no-op if unshared).
-    /// Returns the peers it was shared with, so callers can fire
-    /// `StopShare` for each without a second lookup.
-    pub fn unshare_surface(&mut self, surface_id: u64) -> Option<std::collections::HashSet<u64>> {
-        self.shared_surfaces.unshare(surface_id)
-    }
-
-    /// Stop streaming `surface_id` to one peer, leaving others intact.
-    /// Drops the surface key entirely once the last peer is removed, so
-    /// [`Self::is_surface_shared`] reports `false` again.
-    pub fn unshare_surface_from_peer(&mut self, surface_id: u64, peer_id: u64) -> bool {
-        self.shared_surfaces.unshare_peer(surface_id, peer_id)
-    }
-
-    /// Whether `surface_id` is currently streamed somewhere. Used by
-    /// the compositor's commit hook to short-circuit the readback for
-    /// unshared surfaces (~all of them in steady state).
-    pub fn is_surface_shared(&self, surface_id: u64) -> bool {
-        self.shared_surfaces.contains(surface_id)
-    }
-}
-
-impl Default for Workspace {
-    /// Room is minted, not left at [`RoomId::nil`] — two workspaces
-    /// built this way must not silently become the same room. Nil is
-    /// reachable only via deserializing a pre-rooms state file.
-    fn default() -> Self {
-        Self {
-            id: WorkspaceId::default(),
-            room: RoomId::new(),
-            name: String::new(),
-            strips: Vec::new(),
-            collaborators: Vec::new(),
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
-        }
-    }
-}
 
 /// The shape of `state.json` this build writes and understands. Bump
 /// only when a change makes a file unreadable to an older build in a way
@@ -7684,7 +6248,7 @@ impl WorkspaceTree {
                 id: live.id,
                 tabs: group_tabs,
                 active_tab: live.active_tab,
-                width: WindowWidth::from_ui(live.width),
+                width: window_width_from_ui(live.width),
                 maximized: old_groups
                     .get(&live.id)
                     .is_some_and(|group| group.maximized),
@@ -10246,90 +8810,6 @@ mod automerge_foundation_tests {
 }
 
 #[cfg(test)]
-mod collaborator_tests {
-    use super::*;
-
-    #[test]
-    fn new_initializes_all_concept_fields_to_none() {
-        let c = Collaborator::new("alice", "Alice");
-        assert_eq!(c.id, "alice");
-        assert_eq!(c.name, "Alice");
-        assert_eq!(c.active_tab, None);
-        assert_eq!(c.cursor_color, None);
-        assert_eq!(c.avatar, None);
-        assert_eq!(c.role_id, None);
-    }
-
-    #[test]
-    fn with_active_tab_delegates_to_new_and_sets_tab() {
-        let c = Collaborator::with_active_tab("bob", "Bob", 42);
-        assert_eq!(c.active_tab, Some(42));
-        // Other concept fields stay at their defaults.
-        assert_eq!(c.cursor_color, None);
-        assert_eq!(c.avatar, None);
-        assert_eq!(c.role_id, None);
-    }
-
-    #[test]
-    fn with_cursor_color_sets_hex_override() {
-        let c = Collaborator::new("alice", "Alice").with_cursor_color("#ff00aa");
-        assert_eq!(c.cursor_color.as_deref(), Some("#ff00aa"));
-    }
-
-    #[test]
-    fn with_avatar_sets_reference() {
-        let c = Collaborator::new("charlie", "Charlie").with_avatar("CC");
-        assert_eq!(c.avatar.as_deref(), Some("CC"));
-    }
-
-    #[test]
-    fn with_role_sets_role_id() {
-        let c = Collaborator::new("bob", "Bob").with_role("editor");
-        assert_eq!(c.role_id.as_deref(), Some("editor"));
-    }
-
-    #[test]
-    fn builder_methods_can_be_chained() {
-        let c = Collaborator::with_active_tab("me", "Me", 7)
-            .with_cursor_color("#112233")
-            .with_avatar("ME")
-            .with_role("owner");
-        assert_eq!(c.active_tab, Some(7));
-        assert_eq!(c.cursor_color.as_deref(), Some("#112233"));
-        assert_eq!(c.avatar.as_deref(), Some("ME"));
-        assert_eq!(c.role_id.as_deref(), Some("owner"));
-    }
-
-    #[test]
-    fn legacy_json_without_concept_fields_still_deserializes() {
-        // Workspaces persisted before the struct grew concept fields
-        // omit them; `#[serde(default)]` keeps those payloads loadable.
-        let legacy = r#"{"id":"alice","name":"Alice","active_tab":null}"#;
-        let c: Collaborator = serde_json::from_str(legacy).unwrap();
-        assert_eq!(c.id, "alice");
-        assert_eq!(c.name, "Alice");
-        assert_eq!(c.active_tab, None);
-        assert_eq!(c.cursor_color, None);
-        assert_eq!(c.avatar, None);
-        assert_eq!(c.role_id, None);
-        // Present, not invited — defaulting the other way would redraw
-        // every already-saved participant as someone who never showed.
-        assert!(!c.invited);
-    }
-
-    #[test]
-    fn fully_populated_round_trip() {
-        let c = Collaborator::with_active_tab("alice", "Alice", 3)
-            .with_cursor_color("#aabbcc")
-            .with_avatar("A")
-            .with_role("editor");
-        let json = serde_json::to_string(&c).unwrap();
-        let back: Collaborator = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, c);
-    }
-}
-
-#[cfg(test)]
 mod active_group_tests {
     //! Coverage for the active-group pointer + close-fade reconciler.
     //! Tests drive it directly with a hand-built tree and the
@@ -11012,203 +9492,6 @@ mod active_workspace_peer_count_tests {
 }
 
 #[cfg(test)]
-mod capability_tests {
-    //! Coverage for [`Capability`] / [`GrantScope`] / [`FsMode`] and the
-    //! [`Workspace::grants`] field. Pure schema tests — no portal
-    //! plumbing is exercised here.
-    use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn a_new_workspace_holds_no_capabilities_and_grants_nothing() {
-        // Both `Workspace::default()` (used by `..Default::default()`
-        // sweeps) and `Workspace::new(...)` must start empty, and an
-        // empty room must deny rather than default-allow.
-        for ws in [
-            Workspace::default(),
-            Workspace::new(WorkspaceId::from(1), "Demo"),
-        ] {
-            assert!(ws.capabilities.is_empty());
-            assert!(ws.app_grants_snapshot().is_empty());
-            assert!(!ws.has_app_grants());
-            assert!(
-                !ws.may_administer(&"anyone".to_string()),
-                "a room with no owner has no administrators"
-            );
-            assert!(
-                !ws.allows(
-                    &ws.actor_for_app("org.gnome.gedit"),
-                    &ResourceRef::FsPath("/home/u/work".into()),
-                    Verb::Read
-                ),
-                "an app with no capability is denied"
-            );
-        }
-    }
-
-    #[test]
-    fn app_kind_app_id_is_a_reverse_dns_id_not_the_display_label() {
-        // The grant key must be a real app-id, in the same namespace as
-        // an adopted client's `set_app_id` — never the display label.
-        assert_eq!(AppKind::FileExplorer.app_id(), "org.tilo.Files");
-        assert_eq!(AppKind::Terminal.app_id(), "org.tilo.Terminal");
-        assert_eq!(AppKind::Browser.app_id(), "org.tilo.Browser");
-        assert_eq!(AppKind::Settings.app_id(), "org.tilo.Settings");
-        // A bare `Other` label is namespaced under the compositor prefix.
-        assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
-        // The app-id is distinct from the display label for every kind.
-        for kind in [
-            AppKind::FileExplorer,
-            AppKind::Terminal,
-            AppKind::Browser,
-            AppKind::Settings,
-            AppKind::Other("Editor".into()),
-        ] {
-            assert_ne!(
-                kind.app_id(),
-                kind.as_str(),
-                "app_id must not collapse to the display label for {kind:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn app_kind_app_id_trusts_reverse_dns_other_labels_verbatim() {
-        // An `Other` value already in reverse-DNS form is used as-is,
-        // not double-prefixed.
-        assert_eq!(
-            AppKind::Other("org.gimp.GIMP".into()).app_id(),
-            "org.gimp.GIMP"
-        );
-    }
-
-    #[test]
-    fn grants_round_trip_via_serde_json() {
-        // Pins the on-disk schema for portal-side consumers.
-        let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
-        ws.grant_app(
-            "org.gnome.gedit",
-            &Capability::Filesystem {
-                path: PathBuf::from("/home/u/work"),
-                mode: FsMode::ReadWrite,
-                scope: GRANT_ALWAYS,
-            },
-        );
-        ws.grant_app(
-            "org.gnome.gedit",
-            &Capability::Network {
-                hosts: Some(vec!["github.com".into()]),
-                scope: GRANT_SESSION,
-            },
-        );
-
-        let json = serde_json::to_string(&ws).expect("serialize");
-        let round: Workspace = serde_json::from_str(&json).expect("deserialize");
-
-        let view = round.app_grants_snapshot();
-        assert_eq!(view.len(), 1);
-        let caps = view.get("org.gnome.gedit").expect("app present");
-        assert_eq!(caps.len(), 2);
-        assert!(caps.contains(&Capability::Filesystem {
-            path: PathBuf::from("/home/u/work"),
-            mode: FsMode::ReadWrite,
-            scope: GRANT_ALWAYS,
-        }));
-        assert!(caps.contains(&Capability::Network {
-            hosts: Some(vec!["github.com".into()]),
-            scope: GRANT_SESSION,
-        }));
-
-        // And the decision function agrees after the round-trip.
-        let app = round.actor_for_app("org.gnome.gedit");
-        assert!(round.allows(
-            &app,
-            &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
-            Verb::Write
-        ));
-        assert!(
-            !round.allows(
-                &app,
-                &ResourceRef::FsPath("/home/u/secrets".into()),
-                Verb::Read
-            ),
-            "a path outside the grant stays denied across serialisation"
-        );
-        assert!(round.allows(
-            &app,
-            &ResourceRef::NetHost("github.com".into()),
-            Verb::Write
-        ));
-        assert!(
-            !round.allows(
-                &app,
-                &ResourceRef::NetHost("evil.example".into()),
-                Verb::Write
-            ),
-            "and a host outside the allowlist stays denied"
-        );
-    }
-
-    #[test]
-    fn legacy_workspace_without_grants_field_deserialises() {
-        // `#[serde(default)]` keeps the upgrade path lossless.
-        let legacy = r#"{
-            "id": 1,
-            "name": "Old",
-            "strips": []
-        }"#;
-        let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
-        assert!(ws.capabilities.is_empty());
-        assert!(ws.app_grants_snapshot().is_empty());
-        assert_eq!(ws.owner, None, "a legacy workspace records no owner");
-        assert_eq!(ws.id, WorkspaceId::from(1));
-        assert_eq!(ws.name, "Old");
-    }
-
-    #[test]
-    fn all_capability_variants_round_trip_through_serde() {
-        // Pin the wire shape of every variant so a downstream change
-        // breaks loudly here rather than silently in the portal backend.
-        let caps = vec![
-            Capability::Filesystem {
-                path: PathBuf::from("/tmp/ws"),
-                mode: FsMode::Read,
-                scope: GRANT_ONCE,
-            },
-            Capability::Camera {
-                scope: GRANT_SESSION,
-            },
-            Capability::Microphone {
-                scope: GRANT_ALWAYS,
-            },
-            Capability::Screencast { scope: GRANT_ONCE },
-            Capability::Network {
-                hosts: None,
-                scope: GRANT_ALWAYS,
-            },
-        ];
-        let json = serde_json::to_string(&caps).expect("serialize caps");
-        let round: Vec<Capability> = serde_json::from_str(&json).expect("deserialize caps");
-        assert_eq!(round, caps);
-    }
-
-    #[test]
-    fn legacy_workspace_without_shared_surfaces_field_deserialises() {
-        // Persisted workspaces before this field existed lack it;
-        // `#[serde(default)]` keeps the upgrade path lossless.
-        let legacy = r#"{
-            "id": 1,
-            "name": "Old",
-            "strips": [],
-            "grants": {}
-        }"#;
-        let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
-        assert!(ws.shared_surfaces.is_empty());
-        assert_eq!(ws.id, WorkspaceId::from(1));
-    }
-}
-
-#[cfg(test)]
 mod next_id_seed_tests {
     //! [`WorkspaceTree::seed_next_id_from_self`] must advance the
     //! counter past a loaded tree's highest id. The counter is
@@ -11403,154 +9686,6 @@ mod next_id_seed_tests {
         );
     }
 }
-
-/// An agent is admitted to a room the same way anybody is — by a
-/// capability naming it. Asserts on the production readers, because the
-/// failure worth catching is a roster showing or hiding the wrong people.
-#[cfg(test)]
-mod agent_membership {
-    use super::*;
-
-    fn room() -> Workspace {
-        let mut ws = Workspace::test_default(WorkspaceId::new(), "Demo");
-        ws.set_owner("ada");
-        ws
-    }
-
-    /// The floor, and the one that matters most: a room nobody has
-    /// admitted an agent to has no agents in it. A default agent, a
-    /// placeholder, or a row that appears because the feature exists
-    /// would all show up here.
-    #[test]
-    fn a_room_with_no_grant_has_no_agents() {
-        assert!(room().agent_members().is_empty());
-    }
-
-    #[test]
-    fn a_room_grant_admits_the_agent_and_a_revoke_removes_it() {
-        let mut ws = room();
-        let id = ws
-            .grant_as(
-                &"ada".to_string(),
-                CapOverride::membership(
-                    Subject::agent("scribe"),
-                    ws.id.raw().to_string(),
-                    Verb::Write,
-                ),
-            )
-            .expect("the owner may administer the room");
-
-        assert_eq!(
-            ws.agent_members(),
-            vec![("scribe".to_string(), CapRole::Editor)],
-            "the verb on the membership capability is the role",
-        );
-        assert_eq!(ws.role_of_agent("scribe"), Some(CapRole::Editor));
-
-        assert!(ws.revoke_as(&"ada".to_string(), &id));
-        assert!(
-            ws.agent_members().is_empty(),
-            "revoking the capability is the whole of taking the agent out",
-        );
-        assert_eq!(ws.role_of_agent("scribe"), None);
-    }
-
-    #[test]
-    fn replicated_membership_does_not_depend_on_the_local_workspace_handle() {
-        let mut ws = room();
-        ws.grant_capability(CapOverride::membership(
-            Subject::person("remote-editor"),
-            "a-different-peers-local-id",
-            Verb::Write,
-        ));
-        assert_eq!(
-            ws.role_of(&"remote-editor".to_string()),
-            Some(CapRole::Editor)
-        );
-        assert!(ws.allows(
-            &ws.actor_for_person(&"remote-editor".to_string()),
-            &ResourceRef::App("so.tilo.notes".into()),
-            Verb::Write,
-        ));
-    }
-
-    /// The two lists are disjoint. A person in the roster must never
-    /// arrive in the agent list, and an agent must never arrive in the
-    /// roster — that second one is the OS claiming a person is present
-    /// when none is.
-    #[test]
-    fn people_and_agents_do_not_leak_into_each_others_lists() {
-        let mut ws = room();
-        ws.grant_as(
-            &"ada".to_string(),
-            CapOverride::membership(
-                Subject::person("bob"),
-                ws.id.raw().to_string(),
-                Verb::Write,
-            ),
-        )
-        .expect("owner grants");
-        ws.grant_as(
-            &"ada".to_string(),
-            CapOverride::membership(
-                Subject::agent("scribe"),
-                ws.id.raw().to_string(),
-                Verb::Write,
-            ),
-        )
-        .expect("owner grants");
-
-        let people: Vec<String> = ws.roster().into_iter().map(|(u, _)| u).collect();
-        assert!(people.contains(&"bob".to_string()));
-        assert!(
-            !people.contains(&"scribe".to_string()),
-            "an agent must not be listed as a person: {people:?}",
-        );
-
-        let agents: Vec<String> = ws.agent_members().into_iter().map(|(a, _)| a).collect();
-        assert_eq!(agents, vec!["scribe".to_string()]);
-    }
-
-    /// An agent that holds a capability on one *app* and nothing else is
-    /// not a member — the same rule that keeps a person who was shared
-    /// one file out of the roster. Without this an agent granted access
-    /// to a single document would be presented as being in the room.
-    #[test]
-    fn a_grant_on_one_app_is_not_membership() {
-        let mut ws = room();
-        ws.grant_as(
-            &"ada".to_string(),
-            CapOverride::grant(
-                Subject::agent("scribe"),
-                Scope::App("so.tilo.word-processor".into()),
-                Verb::Write,
-            ),
-        )
-        .expect("owner grants");
-        assert!(
-            ws.agent_members().is_empty(),
-            "a scope naming one app is a share, not membership",
-        );
-    }
-
-    /// An expired capability is not a quieter membership, it is none.
-    #[test]
-    fn an_expired_grant_admits_nobody() {
-        let mut ws = room();
-        ws.grant_as(
-            &"ada".to_string(),
-            CapOverride::membership(
-                Subject::agent("scribe"),
-                ws.id.raw().to_string(),
-                Verb::Write,
-            )
-            .with_expiry(1),
-        )
-        .expect("owner grants");
-        assert!(ws.agent_members().is_empty());
-    }
-}
-
 #[cfg(test)]
 mod permission_profile_assignment {
     use super::*;
@@ -11575,7 +9710,7 @@ mod permission_profile_assignment {
 
     #[test]
     fn owner_can_save_and_atomically_assign_a_profile() {
-        let mut workspace = Workspace::test_default(WorkspaceId::new(), "Demo");
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
         workspace.set_owner("owner");
         workspace
             .save_permission_profile_as(&"owner".into(), profile())
@@ -11584,7 +9719,7 @@ mod permission_profile_assignment {
             .assign_permission_profile_as(
                 &"owner".into(),
                 "release REVIEWER",
-                Subject::person("ada"),
+                &Subject::person("ada"),
                 Expiry::Never,
             )
             .unwrap();
@@ -11602,7 +9737,7 @@ mod permission_profile_assignment {
 
     #[test]
     fn non_admin_cannot_save_or_assign_profiles() {
-        let mut workspace = Workspace::test_default(WorkspaceId::new(), "Demo");
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
         workspace.set_owner("owner");
         assert_eq!(
             workspace.save_permission_profile_as(&"ada".into(), profile()),
@@ -11616,7 +9751,7 @@ mod permission_profile_assignment {
             workspace.assign_permission_profile_as(
                 &"ada".into(),
                 "Release reviewer",
-                Subject::person("ada"),
+                &Subject::person("ada"),
                 Expiry::Never,
             ),
             Err(PermissionProfileMutationError::NotAdministrator)
@@ -11627,7 +9762,7 @@ mod permission_profile_assignment {
     #[test]
     fn profile_definitions_round_trip_through_the_room_document() {
         let id = WorkspaceId::new();
-        let mut workspace = Workspace::test_default(id, "Demo");
+        let mut workspace = Workspace::new(id, "Demo");
         workspace.set_owner("owner");
         workspace
             .save_permission_profile_as(&"owner".into(), profile())

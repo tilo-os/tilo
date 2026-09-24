@@ -8235,7 +8235,7 @@ mod tests {
 
     fn directory_test_tree() -> crate::shell::state::WorkspaceTreeHandle {
         let mut tree = crate::shell::state::WorkspaceTree::default();
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(71),
             "Directory socket room",
         );

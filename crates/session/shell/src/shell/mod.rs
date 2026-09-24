@@ -899,7 +899,7 @@ fn default_demo_tabs(
 }
 
 fn to_ui_width(w: state::WindowWidth) -> UiWidth {
-    w.to_ui()
+    state::window_width_to_ui(w)
 }
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {

@@ -1092,7 +1092,7 @@ mod tests {
         let mut original = WorkspaceTree::default();
         original
             .workspaces
-            .push(Workspace::test_default(WorkspaceId(7), "Home"));
+            .push(Workspace::new(WorkspaceId(7), "Home"));
         save_tree_to(&original, &path).expect("save");
         let mut raw: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
@@ -1195,7 +1195,7 @@ mod tests {
         let mut original = WorkspaceTree::default();
         original
             .workspaces
-            .push(crate::shell::state::Workspace::test_default(
+            .push(crate::shell::state::Workspace::new(
                 crate::shell::state::WorkspaceId(7),
                 "Home",
             ));
@@ -1282,7 +1282,7 @@ mod tests {
         let mut original = WorkspaceTree::default();
         original
             .workspaces
-            .push(crate::shell::state::Workspace::test_default(
+            .push(crate::shell::state::Workspace::new(
                 crate::shell::state::WorkspaceId(9),
                 "Home",
             ));

@@ -14,6 +14,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use shell::shell::state::{
     AppKind, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceTree,
 };

@@ -10,7 +10,7 @@ fn fixture() -> (
     String,
 ) {
     let mut tree = WorkspaceTree::default();
-    let mut workspace = Workspace::test_default(WorkspaceId(71), "MCP");
+    let mut workspace = Workspace::new(WorkspaceId(71), "MCP");
     let room = workspace.room.to_string();
     let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
     workspace.owner = Some(actor.clone());
@@ -595,7 +595,7 @@ async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
     // Boxed: the query, resolve and invoke turns keep a large future alive.
     tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut tree = WorkspaceTree::default();
-        let mut workspace = Workspace::test_default(WorkspaceId(71), "First connection");
+        let mut workspace = Workspace::new(WorkspaceId(71), "First connection");
         let room = workspace.room.to_string();
         let actor = crate::shell::state::local_user_id_for_room(&workspace.room);
         workspace.owner = Some(actor.clone());

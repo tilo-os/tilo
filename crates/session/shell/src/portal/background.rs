@@ -653,7 +653,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             ctx: {
                 let (grants, _) = crate::portal::GrantStoreHandle::test_with_workspace(
-                    crate::shell::state::Workspace::test_default(
+                    crate::shell::state::Workspace::new(
                         crate::shell::state::WorkspaceId(1),
                         "test",
                     ),
@@ -712,7 +712,7 @@ mod tests {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
         let active = tree.active_workspace().unwrap().id;
         // A second workspace models a restored multi-workspace session.
-        let second = crate::shell::state::Workspace::test_default(
+        let second = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(active.0 + 100),
             "other",
         );

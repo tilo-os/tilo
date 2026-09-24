@@ -19,6 +19,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -125,7 +126,7 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
         strips: vec![strip],
         // Everything else comes from the builder, so a field added to
         // `Workspace` does not break this fixture.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();

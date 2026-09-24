@@ -4344,7 +4344,7 @@ mod members_pane_tests {
         let (_, recipient_public) = collab_types::generate_keypair();
         let owner = hex::encode(owner_public.as_bytes());
         let recipient = hex::encode(recipient_public.as_bytes());
-        let mut ws = Workspace::test_default(WorkspaceId(91), "Research");
+        let mut ws = Workspace::new(WorkspaceId(91), "Research");
         ws.set_owner(owner.clone());
         ws.grant_capability(CapOverride::membership(
             Subject::person(recipient.clone()),
@@ -4394,7 +4394,7 @@ mod members_pane_tests {
 
     #[test]
     fn permission_profiles_publish_typed_admin_actions() {
-        let mut ws = Workspace::test_default(WorkspaceId(92), "Research");
+        let mut ws = Workspace::new(WorkspaceId(92), "Research");
         let owner = "owner".to_string();
         ws.set_owner(owner.clone());
         ws.save_permission_profile_as(

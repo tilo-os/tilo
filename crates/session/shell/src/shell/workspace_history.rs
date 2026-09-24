@@ -782,6 +782,7 @@ fn artifact_kind(kind: &RecordKind) -> ArtifactKind {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::state::FreshId as _;
     use std::cell::Cell;
 
     use automerge::ROOT;

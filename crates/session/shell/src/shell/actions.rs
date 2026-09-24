@@ -161,6 +161,7 @@ pub fn permitted_actions<'r>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{CapOverride, Principal, Scope, Subject, WorkspaceId};
 
     fn room() -> Workspace {

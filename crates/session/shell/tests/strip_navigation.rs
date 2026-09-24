@@ -20,6 +20,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -96,7 +97,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             name: "Main".into(),
             window_groups,
         }],
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -699,7 +700,7 @@ fn conventional_workspace_page_keys_use_the_same_clamped_workspace_axis() {
         .borrow_mut()
         .tree_mut()
         .workspaces
-        .push(Workspace::test_default(second, "Second"));
+        .push(Workspace::new(second, "Second"));
 
     h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
     assert_eq!(h.chrome.borrow().tree().active, second);

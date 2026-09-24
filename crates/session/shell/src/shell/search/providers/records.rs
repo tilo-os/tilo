@@ -395,6 +395,7 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::room_records::ObservedRecord;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     use ui::record::{RecordCheckout, RecordId, RecordKind, RecordSet};
 
