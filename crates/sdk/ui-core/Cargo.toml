@@ -15,6 +15,12 @@ autoexamples = false
 ignored = ["pkg-config", "wgpu-hal"]
 
 [features]
+default = ["broker-transport"]
+# The collaboration manager's built-in transport: the qOS collab broker's
+# Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
+# manager is driven only through `CollaborationManager::with_transport`, and
+# `CollaborationManager::new` starts disabled.
+broker-transport = ["runtime-collab/client", "dep:capnp", "dep:capnp-rpc"]
 test-support = []
 presentation-feedback = ["dep:wgpu-hal"]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
@@ -74,11 +80,12 @@ tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
-# runtime-collab is the qOS collab broker Cap'n Proto SDK.
-# `CollaborationManager` delegates to it via a shovel thread.
-runtime-collab = { path = "../../runtime/runtime-collab" }
-capnp.workspace = true
-capnp-rpc.workspace = true
+# runtime-collab is the qOS collab broker Cap'n Proto SDK. Its vocabulary
+# types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
+# them is only needed by the `broker-transport` feature.
+runtime-collab = { path = "../../runtime/runtime-collab", default-features = false }
+capnp = { workspace = true, optional = true }
+capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 app-state = { path = "../../system/app-state" }
@@ -314,6 +321,8 @@ required-features = ["webview-wpe"]
 [[test]]
 name = "it"
 path = "tests/it.rs"
+# The shared harness stands up in-process Cap'n Proto brokers.
+required-features = ["broker-transport"]
 
 [[test]]
 name = "hosted-platform"

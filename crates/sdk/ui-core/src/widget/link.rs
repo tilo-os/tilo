@@ -2,10 +2,11 @@
 //! URL when clicked, activated by keyboard (Enter / Space), or triggered by
 //! an assistive-technology `Activate`.
 //!
-//! Opening is pluggable. By default activation hands the URL to [`open::that`]
-//! (xdg-open / the desktop portal on Linux); a host that routes external
-//! opens through its own mechanism — or a test that wants to observe the URL
-//! without spawning a browser — overrides it with [`Link::on_open`]. Either
+//! Opening is pluggable. By default activation hands the URL to the current
+//! host's [`crate::host::UriOpener`] (on the native desktop, xdg-open / the
+//! desktop portal on Linux); a host routes external opens through its own
+//! opener, and a single link — or a test that wants to observe the URL
+//! without spawning a browser — can override it with [`Link::on_open`]. Either
 //! way the most-recently-activated URL is recorded on
 //! [`Link::last_activated`] so a parent or test can confirm the link fired.
 
@@ -27,11 +28,12 @@ pub fn os_open(url: &str) {
     }
 }
 
-/// Hand a URL to the desktop's registered handler. On Windows this uses
-/// `ShellExecute` rather than interpreting the URL as a command line.
+/// Hand a URL to the current host's [`crate::host::UriOpener`] — on the
+/// native desktop, its registered handler (`ShellExecute` on Windows rather
+/// than interpreting the URL as a command line).
 ///
 /// # Errors
-/// Returns a launch error when the OS rejects the request, or invalid input
+/// Returns a launch error when the host rejects the request, or invalid input
 /// for an embedded NUL (which native APIs would otherwise silently truncate).
 pub fn try_os_open(url: &str) -> std::io::Result<()> {
     if url.contains('\0') {
@@ -40,7 +42,7 @@ pub fn try_os_open(url: &str) -> std::io::Result<()> {
             "URL contains NUL",
         ));
     }
-    open::that_detached(url)
+    crate::host::current().opener.open(url)
 }
 
 /// Test/host hook overriding [`os_open`] on activation; see `opener` below.
@@ -61,7 +63,7 @@ pub struct Link {
     is_pressed: bool,
     is_focused: bool,
     enabled: bool,
-    /// When set, activation calls this instead of [`open::that`] — tests
+    /// When set, activation calls this instead of the host opener — tests
     /// record the URL, hosts route through a portal.
     opener: Option<Opener>,
     /// Lets a parent or test observe that the link fired without intercepting the opener.

@@ -16,7 +16,7 @@
 //! with none loaded it falls back to English so headless builds narrate
 //! unchanged.
 
-use tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance, default_speaker};
+use tts::{NullSpeaker, Priority, Speaker, SpeechQueue, Utterance};
 
 use crate::a11y::{AccessNode, Role};
 use crate::widget::Widget;
@@ -346,10 +346,11 @@ impl Default for ScreenReader {
 }
 
 impl ScreenReader {
-    /// Never panics: with no TTS installed this is a
+    /// Speaks through the current host's [`crate::host::SpeechFactory`].
+    /// Never panics: with no speech available this is a
     /// [`NullSpeaker`](tts::NullSpeaker) and narration is silently dropped.
     pub fn new() -> Self {
-        Self::with_speaker(default_speaker())
+        Self::with_speaker(crate::host::current().speech.make())
     }
 
     pub fn with_speaker(speaker: Box<dyn Speaker>) -> Self {
