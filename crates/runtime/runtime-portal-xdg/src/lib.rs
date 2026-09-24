@@ -5,6 +5,10 @@
 //! bus is proxied in only when the manifest's `[sandbox.portals]` declares
 //! an intent — this crate is the client surface for those apps.
 //!
+//! File choosing and opening URIs or files are not here: they belong to
+//! `ui::portal`, which is the file-access security boundary (URI-to-path
+//! validation, descriptor-retaining opens) and the one `OpenURI` client.
+//!
 //! Every call returns `Result<T, PortalError>`; if the bus can't be reached
 //! it surfaces [`PortalError::NotAvailable`] and the app is expected to fall
 //! back to a local flow. [`is_portal_available`] probes for a bus cheaply
@@ -26,10 +30,6 @@
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
-
-use std::path::PathBuf;
-
-use url::Url;
 
 /// Reason a portal call failed; every entry point returns this so an app
 /// can match on a single import.
@@ -125,95 +125,6 @@ where
     tilo_rt::try_app()
         .and_then(|runtime| runtime.block_on(fut))
         .map_err(|e| PortalError::Other(e.to_string()))?
-}
-
-/// The Open / Save file dialog portal.
-pub struct FileChooser;
-
-/// One selected file. `path` is set when the portal returned a `file://`
-/// URI (the common case); `uri` always holds the raw string.
-#[derive(Debug, Clone)]
-pub struct SelectedFile {
-    pub uri: String,
-    pub path: Option<PathBuf>,
-}
-
-fn uris_to_selected(uris: &[ashpd::Uri]) -> Vec<SelectedFile> {
-    uris.iter()
-        .map(|u| SelectedFile {
-            uri: u.as_str().to_string(),
-            path: Url::parse(u.as_str())
-                .ok()
-                .and_then(|url| url.to_file_path().ok()),
-        })
-        .collect()
-}
-
-impl FileChooser {
-    /// Show an Open dialog; blocks until the user picks a file or cancels.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PortalError::NotAvailable`] if no D-Bus session bus is
-    /// reachable, [`PortalError::PortalNotFound`] if no file-chooser
-    /// frontend is installed on the host, or another [`PortalError`]
-    /// variant for a portal-side failure.
-    pub fn open(title: &str) -> Result<Vec<SelectedFile>, PortalError> {
-        block_on(Self::open_async(title))
-    }
-
-    /// Async form of [`Self::open`].
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::open`].
-    pub async fn open_async(title: &str) -> Result<Vec<SelectedFile>, PortalError> {
-        use ashpd::desktop::file_chooser::SelectedFiles;
-
-        let request = SelectedFiles::open_file().title(title).modal(true);
-        let response = request.send().await.map_err(PortalError::from)?;
-        let files = response.response().map_err(PortalError::from)?;
-        Ok(uris_to_selected(files.uris()))
-    }
-
-    /// Show a Save dialog with an optional suggested filename; `None` if cancelled.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PortalError::NotAvailable`] if no D-Bus session bus is
-    /// reachable, [`PortalError::PortalNotFound`] if no file-chooser
-    /// frontend is installed on the host, or another [`PortalError`]
-    /// variant for a portal-side failure. A user cancellation is reported
-    /// as `Ok(None)`, not an error.
-    pub fn save(
-        title: &str,
-        current_name: Option<&str>,
-    ) -> Result<Option<SelectedFile>, PortalError> {
-        block_on(Self::save_async(title, current_name))
-    }
-
-    /// Async form of [`Self::save`].
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::save`].
-    pub async fn save_async(
-        title: &str,
-        current_name: Option<&str>,
-    ) -> Result<Option<SelectedFile>, PortalError> {
-        use ashpd::desktop::file_chooser::SelectedFiles;
-
-        let mut request = SelectedFiles::save_file().title(title).modal(true);
-        if let Some(name) = current_name {
-            request = request.current_name(name);
-        }
-        let response = request.send().await.map_err(PortalError::from)?;
-        match response.response() {
-            Ok(files) => Ok(uris_to_selected(files.uris()).into_iter().next()),
-            Err(ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled)) => Ok(None),
-            Err(other) => Err(PortalError::from(other)),
-        }
-    }
 }
 
 /// The screen-capture portal.
@@ -386,40 +297,6 @@ impl Secret {
     }
 }
 
-/// The `org.freedesktop.portal.OpenURI` portal — hands a URL back
-/// to the host to open in the appropriate default application.
-pub struct OpenUri;
-
-impl OpenUri {
-    /// Ask the host to open the given URL; blocks until the portal acknowledges.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PortalError::Other`] if `uri` fails to parse as a URL,
-    /// [`PortalError::NotAvailable`] if no D-Bus session bus is reachable,
-    /// or another [`PortalError`] variant for a portal-side failure.
-    pub fn open(uri: &str) -> Result<(), PortalError> {
-        block_on(Self::open_async(uri))
-    }
-
-    /// Async form of [`Self::open`].
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::open`].
-    pub async fn open_async(uri: &str) -> Result<(), PortalError> {
-        use ashpd::desktop::open_uri::OpenFileRequest;
-
-        let url =
-            ashpd::Uri::parse(uri).map_err(|e| PortalError::Other(format!("bad url: {e}")))?;
-        OpenFileRequest::default()
-            .send_uri(&url)
-            .await
-            .map_err(PortalError::from)?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,10 +365,6 @@ mod tests {
         // Connection attempt will fail. Every portal reports NotAvailable.
         assert!(matches!(
             Notification::send("bogus-bus-test"),
-            Err(PortalError::NotAvailable)
-        ));
-        assert!(matches!(
-            OpenUri::open("https://example.org/"),
             Err(PortalError::NotAvailable)
         ));
         assert!(matches!(Secret::retrieve(), Err(PortalError::NotAvailable)));

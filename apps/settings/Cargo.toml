@@ -40,7 +40,9 @@ collab-types = { path = "../../crates/collab/collab-types" }
 # The Tilo action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# `portal`: the CA-certificate chooser and captive-portal sign-in go through
+# the desktop portals, never a host tool.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # Shared shell-out helpers for the interactive panes (display, audio,
 # network, bluetooth). The crate lives at the workspace root so both
 # `shell` and the Settings app drive the same hardware bindings without
@@ -55,7 +57,6 @@ runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 # the tilo-relay daemon loads; Settings never keeps a shadow sync model.
 tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../crates/system/tilo-bluez" }
-runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.

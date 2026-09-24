@@ -65,7 +65,9 @@ pub trait FilePicker: Send + Sync {
 
 /// Hands a URI to whatever the host registers as its handler.
 pub trait UriOpener: Send + Sync {
-    /// Open `uri` without waiting for the handler to finish.
+    /// Open `uri` without waiting for the handler to finish. May block until
+    /// the handler is launched or the request is refused, so the toolkit
+    /// calls it off the UI thread.
     ///
     /// # Errors
     /// The host refused or cannot open URIs at all.
