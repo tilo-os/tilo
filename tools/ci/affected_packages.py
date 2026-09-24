@@ -538,7 +538,7 @@ def make_plan(
                 if arch == "x86_64" and LARGE_X86_TEST_PACKAGES.intersection(test_names)
                 else runner
             )
-            matrix.append({**shard, "arch": arch, "runner": selected_runner,
+            matrix.append({**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
                            "test_packages": " ".join(f"-p {name}" for name in test_names)})
     return {
         "full": full,
@@ -557,6 +557,9 @@ def make_plan(
         "requested_shards": shard_count,
         "shard_count": effective_shards,
         "matrix": {"include": matrix},
+        # Clippy's lint result is architecture-independent; lint each package
+        # set once, on x86_64.
+        "clippy_matrix": {"include": [row for row in matrix if row["arch"] == "x86_64"]},
     }
 
 
@@ -564,6 +567,8 @@ def emit_github(plan: dict, output: Path) -> None:
     compact_matrix = json.dumps(plan["matrix"], separators=(",", ":"))
     with output.open("a", encoding="utf-8") as handle:
         handle.write(f"matrix={compact_matrix}\n")
+        compact_clippy_matrix = json.dumps(plan["clippy_matrix"], separators=(",", ":"))
+        handle.write(f"clippy_matrix={compact_clippy_matrix}\n")
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
