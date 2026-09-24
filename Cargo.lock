@@ -14016,7 +14016,6 @@ dependencies = [
  "anyhow",
  "automerge",
  "base64",
- "crossbeam-channel",
  "libc",
  "portable-pty",
  "qdoc",
