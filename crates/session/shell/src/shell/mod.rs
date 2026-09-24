@@ -103,6 +103,8 @@ pub mod system_monitor;
 pub mod tab_binding;
 pub mod tab_documents;
 pub mod test_control;
+#[cfg(unix)]
+pub mod test_control_socket;
 pub mod test_support;
 pub mod text_entry;
 pub mod tile;

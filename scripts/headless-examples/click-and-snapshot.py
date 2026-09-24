@@ -2,10 +2,10 @@
 """Click a named widget, then snapshot the post-click state to a PNG.
 
 Usage:
-  ./click-and-snapshot.py [/tmp/tilo.sock] [TARGET_NAME] [/tmp/out.png]
+  ./click-and-snapshot.py [SOCKET] [TARGET_NAME] [/tmp/out.png]
 
 Defaults:
-  socket = /tmp/tilo.sock
+  socket = $TILO_TEST_CONTROL, else $XDG_RUNTIME_DIR/tilo-session/test-control.sock
   target = wheel_disc            (always present; opens the workspace overview)
   output = /tmp/click-result.png
 
