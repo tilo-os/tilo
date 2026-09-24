@@ -43,6 +43,46 @@ pub fn rel_path(components: &[Vec<u8>]) -> PathBuf {
         .collect()
 }
 
+/// `path` with its `from` prefix replaced by `to`, if it lies below `from`.
+pub fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    path.strip_prefix(from).ok().map(|rest| {
+        if rest.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(rest)
+        }
+    })
+}
+
+/// Moves the entries of `from` and everything below it to `to`. Returns
+/// each moved entry's old path, new path and record.
+pub fn rename_entries(
+    map: &mut HashMap<PathBuf, Materialized>,
+    from: &Path,
+    to: &Path,
+) -> Vec<(PathBuf, PathBuf, Materialized)> {
+    let old: Vec<PathBuf> = map
+        .keys()
+        .filter(|p| p.starts_with(from))
+        .cloned()
+        .collect();
+    let mut out = Vec::with_capacity(old.len());
+    for p in old {
+        let (Some(record), Some(new)) = (map.remove(&p), rebase(&p, from, to)) else {
+            continue;
+        };
+        out.push((p, new, record));
+    }
+    for (_, new, record) in &out {
+        map.insert(new.clone(), record.clone());
+    }
+    out
+}
+
+fn record_key(e: &TreeEntry) -> Option<[u8; 16]> {
+    e.record.map(|r| *r.0.as_bytes())
+}
+
 /// What one projection pass did.
 #[derive(Debug, Default)]
 pub struct Projection {
@@ -50,6 +90,8 @@ pub struct Projection {
     pub written: Vec<PathBuf>,
     /// Paths removed from the live tree.
     pub removed: Vec<PathBuf>,
+    /// Local renames that followed a record's move (old path, new path).
+    pub moved: Vec<(PathBuf, PathBuf)>,
     /// Paths left alone because they changed locally since the daemon wrote
     /// them.
     pub skipped_dirty: Vec<PathBuf>,
@@ -129,6 +171,8 @@ impl Projector {
     ) -> Projection {
         let mut out = Projection::default();
         let desired: HashSet<PathBuf> = tree.iter().map(|e| rel_path(&e.path)).collect();
+        let moved = self.project_moves(tree, materialized, &desired, &mut out);
+        let materialized = moved.as_ref().unwrap_or(materialized);
 
         let mut dirs: Vec<&TreeEntry> = tree.iter().filter(|e| e.dir).collect();
         dirs.sort_by_key(|e| e.path.len());
@@ -182,6 +226,96 @@ impl Projector {
         out
     }
 
+    /// Renames local paths whose record the tree now places elsewhere, so
+    /// a moved file keeps its inode, its resident bytes and its open
+    /// readers, and a moved directory takes its subtree along. Returns the
+    /// materialised table as the renames left it, when there were any.
+    ///
+    /// A path changed locally since the daemon wrote it is never moved: it
+    /// is captured as the local change it is, and the moved record arrives
+    /// as a new file.
+    fn project_moves(
+        &self,
+        tree: &[TreeEntry],
+        materialized: &HashMap<PathBuf, Materialized>,
+        desired: &HashSet<PathBuf>,
+        out: &mut Projection,
+    ) -> Option<HashMap<PathBuf, Materialized>> {
+        let mut wanted: Vec<(PathBuf, [u8; 16])> = tree
+            .iter()
+            .filter_map(|e| Some((rel_path(&e.path), record_key(e)?)))
+            .collect();
+        // Outermost first: a directory's move carries its descendants.
+        wanted.sort_by_key(|(p, _)| p.components().count());
+        let mut at: HashMap<[u8; 16], PathBuf> = materialized
+            .iter()
+            .filter_map(|(p, m)| Some((m.record?, p.clone())))
+            .collect();
+        let mut table: Option<HashMap<PathBuf, Materialized>> = None;
+        for (to, record) in wanted {
+            let Some(from) = at
+                .get(&record)
+                .filter(|p| **p != to && !desired.contains(*p))
+            else {
+                continue;
+            };
+            let from = from.clone();
+            let current = table.as_ref().unwrap_or(materialized);
+            let Some(m) = current.get(&from).cloned() else {
+                continue;
+            };
+            let src = self.live.join(&from);
+            let dst = self.live.join(&to);
+            let ours = if m.dir {
+                fs::symlink_metadata(&src).is_ok_and(|meta| meta.is_dir())
+            } else {
+                m.local.is_some() && m.local == LocalStat::of(&src)
+            };
+            if !ours || fs::symlink_metadata(&dst).is_ok() {
+                continue;
+            }
+            if let Some(parent) = dst.parent()
+                && let Err(error) = self.make_dirs(parent)
+            {
+                out.errors.push(format!("{}: {error}", to.display()));
+                continue;
+            }
+            if let Err(error) = fs::rename(&src, &dst) {
+                out.errors.push(format!(
+                    "moving {} to {}: {error}",
+                    from.display(),
+                    to.display()
+                ));
+                continue;
+            }
+            let table = table.get_or_insert_with(|| materialized.clone());
+            for (old, new, record) in rename_entries(table, &from, &to) {
+                if let Some(r) = record.record {
+                    at.insert(r, new.clone());
+                }
+                out.updates.push((old, None));
+                out.updates.push((new, Some(record)));
+            }
+            out.moved.push((from, to));
+        }
+        table
+    }
+
+    /// Creates `abs` and any missing ancestors inside the live tree as the
+    /// daemon creates directories.
+    fn make_dirs(&self, abs: &Path) -> io::Result<()> {
+        if abs.is_dir() {
+            return Ok(());
+        }
+        if let Some(parent) = abs.parent()
+            && parent.starts_with(&self.live)
+            && parent != self.live
+        {
+            self.make_dirs(parent)?;
+        }
+        self.make_dir(abs)
+    }
+
     fn project_dir(
         &self,
         rel: &Path,
@@ -192,15 +326,16 @@ impl Projector {
         let abs = self.live.join(rel);
         let record = Materialized {
             dir: true,
-            hash: None,
-            size: 0,
             mtime_ms: e.mtime_ms,
-            placeholder: false,
-            local: None,
+            record: record_key(e),
+            ..Materialized::default()
         };
         match fs::symlink_metadata(&abs) {
             Ok(meta) if meta.is_dir() => {
-                if !materialized.contains_key(rel) {
+                if materialized
+                    .get(rel)
+                    .is_none_or(|m| m.record != record.record)
+                {
                     out.updates.push((rel.to_path_buf(), Some(record)));
                 }
                 Ok(())
@@ -221,8 +356,14 @@ impl Projector {
                 Ok(())
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if materialized.get(rel).is_some_and(|m| m.dir) {
+                    // The daemon made it and it is gone: removed or renamed
+                    // here, and the next epoch publishes that.
+                    out.skipped_dirty.push(rel.to_path_buf());
+                    return Ok(());
+                }
                 if let Some(parent) = abs.parent() {
-                    fs::create_dir_all(parent)?;
+                    self.make_dirs(parent)?;
                 }
                 self.make_dir(&abs)?;
                 out.written.push(rel.to_path_buf());
@@ -252,7 +393,21 @@ impl Projector {
     ) -> io::Result<bool> {
         let hash = e.hash.map(|h| *h.as_bytes());
         let previous = materialized.get(rel);
-        if previous.is_some_and(|m| !m.dir && m.hash == hash && m.size == e.size) {
+        if let Some(m) = previous
+            && !m.dir
+            && m.hash == hash
+            && m.size == e.size
+        {
+            if m.record != record_key(e) {
+                // Same bytes, and now known as this record.
+                out.updates.push((
+                    rel.to_path_buf(),
+                    Some(Materialized {
+                        record: record_key(e),
+                        ..m.clone()
+                    }),
+                ));
+            }
             return Ok(true);
         }
         let abs = self.live.join(rel);
@@ -269,7 +424,7 @@ impl Projector {
             return Ok(true);
         }
         if let Some(parent) = abs.parent() {
-            fs::create_dir_all(parent)?;
+            self.make_dirs(parent)?;
         }
         let Some(placeholder) = self.materialize(&abs, hash, e, local.is_some())? else {
             return Ok(false);
@@ -289,6 +444,7 @@ impl Projector {
                 mtime_ms: e.mtime_ms,
                 placeholder,
                 local: LocalStat::of(&abs),
+                record: record_key(e),
             }),
         ));
         Ok(true)

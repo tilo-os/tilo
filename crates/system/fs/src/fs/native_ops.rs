@@ -32,6 +32,8 @@ pub struct TreeEntry {
     /// record whose revision has not been verified yet reads as empty; it is
     /// not empty, just not known.
     pub known: bool,
+    /// The stable record this path is. A rename keeps it.
+    pub record: Option<collab_types::FileRecordId>,
 }
 
 /// Splits a root-relative path into its name components. Anything that is
@@ -162,6 +164,37 @@ impl QuickFS {
         }
     }
 
+    /// Applies a locally captured rename of `from` to `to`: the record keeps
+    /// its identity, so its history, access and every reference to it follow
+    /// it, and a directory brings its subtree. A record already at `to` is
+    /// replaced as `rename(2)` replaces it (one signed transaction).
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` when `from` is not a record here, else the errno of the
+    /// signed rename that failed. The caller falls back to a removal and a
+    /// creation, which loses identity but never content.
+    pub fn apply_local_move(&self, from: &Path, to: &Path) -> Result<(), i32> {
+        let source = path_components(from)?;
+        let target = path_components(to)?;
+        let (Some((name, parents)), Some((new_name, new_parents))) =
+            (source.split_last(), target.split_last())
+        else {
+            return Err(libc::EBUSY);
+        };
+        if target.starts_with(&source) {
+            return Err(libc::EINVAL);
+        }
+        let parent = self.ino_at(parents).ok_or(ENOENT)?;
+        if self.lookup_kind(parent, name).is_none() {
+            return Err(ENOENT);
+        }
+        let new_parent = self.ensure_dir_components(new_parents)?;
+        let delta = self.rename_named(parent, name, new_parent, new_name)?;
+        self.publish(delta);
+        Ok(())
+    }
+
     /// Removes a directory and everything below it, deepest first, each as
     /// its own signed delete.
     fn remove_subtree(&self, parent: u64, name: &[u8]) -> Result<(), i32> {
@@ -206,7 +239,7 @@ impl QuickFS {
                 }
                 let mut path = prefix.clone();
                 path.push(name.to_vec());
-                let (hash, size, mtime_ms, known) = {
+                let (hash, size, mtime_ms, known, record) = {
                     let ns = self.ns();
                     let attr = ns.getattr(ino);
                     let mtime_ms = attr
@@ -221,6 +254,7 @@ impl QuickFS {
                         attr.map_or(0, |a| a.size),
                         mtime_ms,
                         known,
+                        ns.record_id_for(ino),
                     )
                 };
                 let dir_entry = kind == FileType::Directory;
@@ -231,6 +265,7 @@ impl QuickFS {
                     size,
                     mtime_ms,
                     known,
+                    record,
                 });
                 if dir_entry {
                     stack.push((ino, path));
@@ -273,6 +308,7 @@ impl QuickFS {
             size: attr.size,
             mtime_ms,
             known,
+            record: ns.record_id_for(ino),
         })
     }
 

@@ -102,7 +102,7 @@ impl LocalStat {
 }
 
 /// The record version a path of the live tree corresponds to.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Materialized {
     pub dir: bool,
     pub hash: Option<[u8; 32]>,
@@ -112,6 +112,36 @@ pub struct Materialized {
     /// Created as a placeholder (it may since have become resident).
     pub placeholder: bool,
     pub local: Option<LocalStat>,
+    /// The record this path is, so a rename moves the local file instead
+    /// of writing it again.
+    pub record: Option<[u8; 16]>,
+}
+
+/// The row format before records, modes and fences were kept.
+#[derive(Deserialize)]
+struct MaterializedV1 {
+    dir: bool,
+    hash: Option<[u8; 32]>,
+    size: u64,
+    mtime_ms: u64,
+    placeholder: bool,
+    local: Option<LocalStat>,
+}
+
+fn decode_materialized(raw: &[u8]) -> Result<Materialized> {
+    if let Ok(m) = postcard::from_bytes::<Materialized>(raw) {
+        return Ok(m);
+    }
+    let old: MaterializedV1 = postcard::from_bytes(raw)?;
+    Ok(Materialized {
+        dir: old.dir,
+        hash: old.hash,
+        size: old.size,
+        mtime_ms: old.mtime_ms,
+        placeholder: old.placeholder,
+        local: old.local,
+        ..Materialized::default()
+    })
 }
 
 /// A write lease this device knows about, local or remote.
@@ -252,7 +282,7 @@ impl NativeState {
         let mut out = HashMap::new();
         for row in table.iter()? {
             let (k, v) = row?;
-            out.insert(path_of(k.value()), postcard::from_bytes(v.value())?);
+            out.insert(path_of(k.value()), decode_materialized(v.value())?);
         }
         Ok(out)
     }
@@ -276,6 +306,31 @@ impl NativeState {
             out.insert(path_of(k.value()), postcard::from_bytes(v.value())?);
         }
         Ok(out)
+    }
+
+    /// Follows a rename: leases of `from` and below are kept under `to`.
+    pub fn move_lease(&self, from: &Path, to: &Path) -> Result<()> {
+        let moved: Vec<(PathBuf, StoredLease)> = self
+            .leases()?
+            .into_iter()
+            .filter(|(p, _)| p.starts_with(from))
+            .collect();
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(LEASES)?;
+            for (old, lease) in moved {
+                let Some(new) = super::project::rebase(&old, from, to) else {
+                    continue;
+                };
+                table.remove(key(&old))?;
+                table.insert(key(&new), postcard::to_allocvec(&lease)?.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     pub fn set_lease(&self, path: &Path, lease: Option<&StoredLease>) -> Result<()> {
@@ -364,6 +419,7 @@ mod tests {
                                 size: 3,
                                 mtime_ns: 8,
                             }),
+                            record: Some([4; 16]),
                         }),
                     )],
                 )
@@ -397,5 +453,36 @@ mod tests {
         state.clear_capture().unwrap();
         assert!(state.capture_state().unwrap().is_none());
         assert_eq!(state.materialized().unwrap().len(), 1);
+        assert_eq!(
+            state.materialized().unwrap()[Path::new("a")].record,
+            Some([4; 16])
+        );
+    }
+
+    #[test]
+    fn rows_written_before_records_were_kept_still_decode() {
+        #[derive(Serialize)]
+        struct Old {
+            dir: bool,
+            hash: Option<[u8; 32]>,
+            size: u64,
+            mtime_ms: u64,
+            placeholder: bool,
+            local: Option<LocalStat>,
+        }
+        let raw = postcard::to_allocvec(&Old {
+            dir: false,
+            hash: Some([1; 32]),
+            size: 5,
+            mtime_ms: 6,
+            placeholder: false,
+            local: None,
+        })
+        .unwrap();
+        let m = decode_materialized(&raw).unwrap();
+        assert_eq!(
+            (m.hash, m.size, m.mtime_ms, m.record),
+            (Some([1; 32]), 5, 6, None)
+        );
     }
 }

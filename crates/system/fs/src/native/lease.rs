@@ -171,6 +171,51 @@ impl LeaseKeeper {
         self.lease_class.insert(rel.to_path_buf())
     }
 
+    /// Follows a rename of `from` (and everything below it) to `to`: the
+    /// file stays lease-class under its new name. Gates stay on the inode.
+    pub fn moved(&mut self, from: &Path, to: &Path) {
+        let rebase = |p: &Path| super::project::rebase(p, from, to);
+        self.lease_class = self
+            .lease_class
+            .drain()
+            .map(|p| rebase(&p).unwrap_or(p))
+            .collect();
+        self.gates = self
+            .gates
+            .drain()
+            .map(|(p, g)| (rebase(&p).unwrap_or(p), g))
+            .collect();
+        self.renewed = self
+            .renewed
+            .drain()
+            .map(|(p, t)| (rebase(&p).unwrap_or(p), t))
+            .collect();
+        if let Ok(mut s) = self.shared.lock() {
+            for p in s.asking.values_mut() {
+                if let Some(new) = rebase(p) {
+                    *p = new;
+                }
+            }
+            s.writes = s
+                .writes
+                .drain()
+                .map(|(p, t)| (rebase(&p).unwrap_or(p), t))
+                .collect();
+        }
+        if let Ok(mut denied) = self.write_denied.lock() {
+            let live = self.live.clone();
+            *denied = denied
+                .drain()
+                .map(|abs| {
+                    abs.strip_prefix(&live)
+                        .ok()
+                        .and_then(rebase)
+                        .map_or(abs.clone(), |rel| live.join(rel))
+                })
+                .collect();
+        }
+    }
+
     /// Notes that a writer of `rel` closed the file (from the journal): the
     /// lease is released at the next tick.
     pub fn note_close(&self, rel: &Path) {
