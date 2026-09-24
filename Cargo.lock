@@ -6439,12 +6439,11 @@ name = "install"
 version = "0.1.0"
 dependencies = [
  "app-registry",
- "atomic-file",
- "blake3",
  "clap",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
+ "package-store",
  "runtime-bundle",
  "semver",
  "serde",

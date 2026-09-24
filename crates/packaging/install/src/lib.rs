@@ -2,14 +2,12 @@
 //!
 //! Everything the CLI in `main.rs` does that is pure logic lives
 //! here so it is unit-testable without spawning a `.tapp`
-//! install. The registry serde types stay in `main.rs` because they
-//! are the shape of the CLI's on-disk contract, not something re-used
-//! elsewhere.
+//! install. The installed-package registry, the content store and
+//! integrity records belong to the `package-store` crate, which the
+//! launcher, the shell and the app host share.
 //!
 //! - [`shim`]      — the PATH shims a `[cli]` package publishes.
 //! - [`isa`]       — host ISA detection, for target selection.
-//! - [`integrity`] — re-verifying an installed payload against the
-//!   signature chain, long after the install that checked it.
 //! - [`state`]     — the user's per-room app data: what uninstalling
 //!   must ask about rather than assume.
 
@@ -26,7 +24,6 @@
     )
 )]
 
-pub mod integrity;
 pub mod isa;
 pub mod shim;
 pub mod state;

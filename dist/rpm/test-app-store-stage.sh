@@ -42,17 +42,20 @@ cat > "$release/bin/tilo-install" <<'EOF'
 set -euo pipefail
 [[ ${1:-} == install && -n ${TILO_APPS_DATA_DIR:-} && -n ${TILO_RUNTIME_BUNDLE_DIR:-} ]]
 root=$TILO_APPS_DATA_DIR
-mkdir -p "$root/payloads/so.tilo.settings/bin" "$root/integrity/so.tilo.settings" "$root/bin"
-printf '#!/bin/true\n' > "$root/payloads/so.tilo.settings/bin/settings"
+tree=$root/pkgs/$(printf 'ab%.0s' {1..32})
+mkdir -p "$tree/bin" "$tree.pkg" "$root/bin" "$root/content/data" "$root/tmp"
+printf '#!/bin/true\n' > "$tree/bin/settings"
+printf 'blob\n' > "$root/content/data/blob.data"
+touch "$root/.lock"
 cp "$TILO_CLI_SHIM_PATH" "$root/bin/settings-cli"
 printf 'so.tilo.settings\n' > "$root/bin/settings-cli.tilo-shim"
 cat > "$root/registry.toml" <<TOML
 [[entry]]
 id = "so.tilo.settings"
-payload_root = "$root/payloads/so.tilo.settings"
-manifest_path = "$root/payloads/so.tilo.settings/manifest.toml"
+payload_root = "$tree"
+manifest_path = "$tree.pkg/manifest.toml"
 TOML
-touch "$root/payloads/so.tilo.settings/manifest.toml"
+touch "$tree.pkg/manifest.toml"
 EOF
 printf '#!/bin/true\n' > "$release/bin/tilo-cli-shim"
 chmod 0755 "$release/bin"/*
@@ -62,11 +65,16 @@ stage=$work/stage
 
 registry=$stage/usr/share/tilo-apps/registry.toml
 grep -Fqx 'id = "so.tilo.settings"' "$registry"
-grep -Fqx 'payload_root = "/usr/lib/tilo-apps/payloads/so.tilo.settings"' "$registry"
-grep -Fqx 'manifest_path = "/usr/lib/tilo-apps/payloads/so.tilo.settings/manifest.toml"' "$registry"
+tree_id=$(printf 'ab%.0s' {1..32})
+grep -Fqx "payload_root = \"/usr/lib/tilo-apps/pkgs/$tree_id\"" "$registry"
+grep -Fqx "manifest_path = \"/usr/lib/tilo-apps/pkgs/$tree_id.pkg/manifest.toml\"" "$registry"
 ! grep -Fq "$stage" "$registry"
-test -x "$stage/usr/lib/tilo-apps/payloads/so.tilo.settings/bin/settings"
-test ! -e "$stage/usr/share/tilo-apps/payloads"
+test -x "$stage/usr/lib/tilo-apps/pkgs/$tree_id/bin/settings"
+test ! -e "$stage/usr/share/tilo-apps/pkgs"
+# The read-only system store ships trees, not the installer's content store.
+test ! -e "$stage/usr/lib/tilo-apps/content"
+test ! -e "$stage/usr/lib/tilo-apps/tmp"
+test ! -e "$stage/usr/lib/tilo-apps/.lock"
 test "$(stat -c %a "$stage/usr/share/tilo-apps/registry.toml")" = 644
 test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/bundle.toml")" = 644
 test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/libfixture.so")" = 755
