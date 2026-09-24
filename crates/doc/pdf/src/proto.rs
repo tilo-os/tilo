@@ -33,7 +33,7 @@ pub const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024);
 
 /// Bumped on any incompatible message change; the helper refuses a client
 /// speaking another version.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 const FD_MARKER: &[u8] = b"F";
 

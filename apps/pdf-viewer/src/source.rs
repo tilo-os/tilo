@@ -1151,6 +1151,7 @@ impl RasterBackend {
                 },
                 rotation: tilo_pdf::Rotation::from_degrees(self.page_rotation(dest))
                     .unwrap_or_default(),
+                primary: true,
             });
         }
         let identity = edits.pages.iter().enumerate().all(|(i, p)| {
@@ -1206,6 +1207,8 @@ impl RasterBackend {
                     contents: thread.map(thread_text).unwrap_or_default(),
                     name: a.id.clone(),
                     modified: pdf_date(a.created_ms),
+                    in_reply_to: None,
+                    reply_type: tilo_pdf::ReplyType::Reply,
                 });
             }
             for s in markup.signatures.iter().filter(|s| s.page == page_no) {
@@ -1343,6 +1346,8 @@ fn signature_stamp(page: usize, s: &Signature) -> tilo_pdf::NewAnnotation {
         contents: format!("Signed by {} on {}", s.signer.trim(), s.date),
         name: s.id.clone(),
         modified: String::new(),
+        in_reply_to: None,
+        reply_type: tilo_pdf::ReplyType::Reply,
     }
 }
 

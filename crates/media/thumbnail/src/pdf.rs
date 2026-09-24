@@ -31,6 +31,7 @@ pub fn pdf_thumb(pdf: &[u8], max_edge: u32) -> Option<RgbaThumb> {
         rotation: Rotation::None,
         region: None,
         annotations: true,
+        reader_markup: true,
     };
     let bitmap = doc.render(0, &options).ok()?;
     rgba_to_thumb(

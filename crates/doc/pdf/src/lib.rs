@@ -45,13 +45,16 @@
     )
 )]
 
+mod appearance;
 mod client;
 pub mod edits;
 mod error;
+mod font;
 pub mod geom;
 #[doc(hidden)]
 pub mod helper;
 pub mod model;
+mod patch;
 mod pdfium;
 mod proto;
 mod shm;
@@ -66,13 +69,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub use edits::{
-    Edits, FieldValue, FormValue, NewAnnotation, NewAnnotationKind, PageEdit, PageSource, StampText,
+    AdoptedAnnotation, AnnotationRef, Edits, FieldValue, FormValue, NewAnnotation,
+    NewAnnotationKind, PageEdit, PageSource, StampText,
 };
 pub use error::{Error, Result};
 pub use geom::{PageGeometry, PageSize, Point, Rect, Rotation};
 pub use model::{
-    AnnotationInfo, AnnotationKind, Destination, DocumentInfo, FieldKind, FieldWidget, FormField,
-    Link, Metadata, OutlineEntry, PixelRect, RenderOptions, Rgba, Tile, TileGrid,
+    ANNOT_FLAG_HIDDEN, ANNOT_FLAG_NOVIEW, ANNOT_FLAG_PRINT, AnnotationInfo, AnnotationKind,
+    Destination, DocumentInfo, FieldKind, FieldWidget, FormField, Link, Metadata, OutlineEntry,
+    PixelRect, RenderOptions, ReplyType, Rgba, Tile, TileGrid,
 };
 pub use proto::ProbeReport;
 pub use text::{SearchOptions, Selection, TextChar, TextLayer, TextMatch};
@@ -599,7 +604,7 @@ impl Document {
                 scale,
                 rotation,
                 region: Some(tile.region),
-                annotations: true,
+                ..RenderOptions::default()
             },
         )
     }

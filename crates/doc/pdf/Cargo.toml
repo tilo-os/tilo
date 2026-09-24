@@ -40,6 +40,15 @@ sandbox-core = { path = "../../system/sandbox-core" }
 # raw C API is used; the high-level wrapper's image support and global lock
 # are not needed.
 pdfium-render = { version = "0.8.37", default-features = false, features = ["pdfium_latest"] }
+# Appearance text: shaping, subset embedding and object writing for the
+# annotations pdfium cannot draw, and reading back its output to finish them
+# — all inside the sandboxed helper.
+harfrust = "0.5.2"
+skrifa = "0.40.0"
+subsetter = "0.2.6"
+pdf-writer = "0.15.0"
+hayro-syntax = { version = "0.7.2", default-features = false, features = ["std"] }
+flate2.workspace = true
 # Decodes images wrapped as pages — inside the sandboxed helper.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
 qdoc = { path = "../qdoc", optional = true }
