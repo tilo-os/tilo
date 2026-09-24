@@ -33,35 +33,7 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
         let request: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
         let invocation = tilo_actions::InvocationId::new();
         manager.send(CollabRequest::RemoteAction {
-            message: RemoteActionMessage::Invoke(InvokeRequest {
-                invocation,
-                target: RemoteActionTarget {
-                    provider: request
-                        .get("peer")
-                        .and_then(serde_json::Value::as_u64)
-                        .ok_or("missing peer")?
-                        .to_string(),
-                    address: tilo_actions::ActionAddress::new(
-                        request
-                            .get("resource")
-                            .and_then(serde_json::Value::as_str)
-                            .ok_or("missing resource")?,
-                        request
-                            .get("action")
-                            .and_then(serde_json::Value::as_str)
-                            .ok_or("missing action")?,
-                    ),
-                },
-                argument: InvokeArgument::Json(
-                    request
-                        .get("arguments")
-                        .and_then(serde_json::Value::as_object)
-                        .ok_or("missing arguments")?
-                        .clone(),
-                ),
-                context: None,
-                confirmation: None,
-            }),
+            message: RemoteActionMessage::Invoke(invoke_request(&request, invocation)?),
         });
         let deadline = Instant::now();
         let result = loop {
@@ -73,37 +45,13 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
                 let CollabEvent::RemoteAction { message } = event else {
                     continue;
                 };
-                let update = match message {
-                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
-                        match receipt.status {
-                            ReceiptStatus::Rejected { error } => {
-                                finished = Some(json!({"error": error.to_string()}));
-                                continue;
-                            }
-                            ReceiptStatus::Accepted => InvocationUpdate::Accepted { invocation },
-                            ReceiptStatus::Completed { output } => {
-                                InvocationUpdate::Succeeded { invocation, output }
-                            }
-                            ReceiptStatus::Failed { error } => {
-                                InvocationUpdate::Failed { invocation, error }
-                            }
-                            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
-                                invocation,
-                                message,
-                            },
-                        }
+                let update = match invocation_update(message, invocation) {
+                    Some(Ok(update)) => update,
+                    Some(Err(error)) => {
+                        finished = Some(json!({"error": error}));
+                        continue;
                     }
-                    RemoteActionMessage::Update {
-                        invocation: observed,
-                        state,
-                    } if observed == invocation => {
-                        let Some(state) = state else {
-                            finished = Some(json!({"error": "unknown invocation"}));
-                            continue;
-                        };
-                        state.update
-                    }
-                    _ => continue,
+                    None => continue,
                 };
                 if update.is_terminal() {
                     finished = Some(json!({"id": invocation.0.to_string(), "update": update}));
@@ -123,6 +71,67 @@ pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
         std::fs::rename(temporary, root.join(format!("response-{sequence}.json")))?;
     }
     Ok(())
+}
+
+/// The typed invocation a helper request file describes.
+fn invoke_request(
+    request: &serde_json::Value,
+    invocation: tilo_actions::InvocationId,
+) -> Result<InvokeRequest> {
+    let field = |name: &'static str| request.get(name).ok_or_else(|| format!("missing {name}"));
+    Ok(InvokeRequest {
+        invocation,
+        target: RemoteActionTarget {
+            provider: field("peer")?.as_u64().ok_or("missing peer")?.to_string(),
+            address: tilo_actions::ActionAddress::new(
+                field("resource")?.as_str().ok_or("missing resource")?,
+                field("action")?.as_str().ok_or("missing action")?,
+            ),
+        },
+        argument: InvokeArgument::Json(
+            field("arguments")?
+                .as_object()
+                .ok_or("missing arguments")?
+                .clone(),
+        ),
+        context: None,
+        confirmation: None,
+    })
+}
+
+/// The invocation state `message` reports for `invocation`: `None` when it
+/// concerns something else, `Err` when the host rejected or forgot it.
+fn invocation_update(
+    message: RemoteActionMessage,
+    invocation: tilo_actions::InvocationId,
+) -> Option<std::result::Result<InvocationUpdate, String>> {
+    match message {
+        RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
+            Some(match receipt.status {
+                ReceiptStatus::Rejected { error } => Err(error.to_string()),
+                ReceiptStatus::Accepted => Ok(InvocationUpdate::Accepted { invocation }),
+                ReceiptStatus::Completed { output } => {
+                    Ok(InvocationUpdate::Succeeded { invocation, output })
+                }
+                ReceiptStatus::Failed { error } => {
+                    Ok(InvocationUpdate::Failed { invocation, error })
+                }
+                ReceiptStatus::Cancelled { message } => Ok(InvocationUpdate::Cancelled {
+                    invocation,
+                    message,
+                }),
+            })
+        }
+        RemoteActionMessage::Update {
+            invocation: observed,
+            state,
+        } if observed == invocation => Some(
+            state
+                .map(|state| state.update)
+                .ok_or_else(|| "unknown invocation".to_string()),
+        ),
+        _ => None,
+    }
 }
 
 struct Caller {
