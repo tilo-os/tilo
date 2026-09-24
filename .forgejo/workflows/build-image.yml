@@ -468,6 +468,21 @@ jobs:
           fi
           (cd "$work" && sha256sum --check --strict SHA256SUMS)
           [[ $(jq -er .architecture "$work/manifest.json") == "$architecture" ]]
+          # The payload is reused only while it is this commit's desktop. A
+          # payload built before any Rust or Cargo input changed would ship an
+          # old compositor (and has failed newer image gates), so build the
+          # desktop from this source instead. Anything that cannot be shown
+          # current is rebuilt.
+          payload_source=$(jq -r '.source // empty' "$work/manifest.json")
+          if [[ $payload_source != "$GITHUB_SHA" ]]; then
+            if [[ ! $payload_source =~ ^[0-9a-f]{40}$ ]] \
+                || ! git fetch --quiet --no-tags --depth=1 origin "$payload_source" \
+                || [[ -n $(git diff --name-only "$payload_source" "$GITHUB_SHA" -- \
+                             Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor) ]]; then
+              echo "::notice::desktop payload from ${payload_source:-an unknown revision} predates this commit's desktop inputs; building the desktop from source"
+              exit 0
+            fi
+          fi
           find os/desktop-artifacts -mindepth 1 ! -name .gitignore -delete
           install -m 0755 "$work/shell" "$work/tilo-launcher" \
             "$work/tilo-unlock-helper" os/desktop-artifacts/
