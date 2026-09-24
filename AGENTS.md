@@ -186,7 +186,11 @@ cargo run -q --bin tilo-control -- snapshot PATH     # PNG of the live scene
 ```
 
 Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
-is worth more than a synthetic click that proves only geometry. Add `fn test_id(&self) ->
+is worth more than a synthetic click that proves only geometry.
+
+The installer and the greeter run before any compositor exists; they answer the same semantic
+ops on their own console socket, so it is still `tilo-control --socket <path> actions list`
+(docs/agent-action-api.md). In a VM that socket is `os/dev/vm.sh console`. Add `fn test_id(&self) ->
 Option<&str>` to a widget to make it addressable by name; `Parent/Child[index]` paths work
 without opting in.
 
@@ -227,7 +231,9 @@ snapshot. `tilo-vm doctor` checks the host and prints each fix. Never deploy int
 image with bootc and reboots it; `tilo-vm vm rollback-image` goes back (`tilo-vm guide images`).
 Kernel changes (`os/kernel/config-fragments/`, `os/kernel/patches/`) go through
 `tilo-vm swap kernel`: it builds incrementally from the release build's inputs, installs the
-kernel VM-wide and reboots (`tilo-vm guide kernel`).
+kernel VM-wide and reboots (`tilo-vm guide kernel`). Installer changes go through
+`tilo-vm scenario install`: a throwaway VM installs from your medium through the installer's
+actions and cold-boots the result (`tilo-vm guide scenarios`).
 
 ## Cargo.lock is committed — do not regenerate it
 
