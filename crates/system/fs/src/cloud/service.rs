@@ -281,9 +281,11 @@ impl CloudService {
     /// Handle events until `account_id` reports `health`, for at most
     /// `timeout`. Returns whether it did.
     pub fn wait_for_health(&mut self, account_id: &str, health: Health, timeout: Duration) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = std::time::Instant::now().checked_add(timeout);
         loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = deadline.map_or(timeout, |deadline| {
+                deadline.saturating_duration_since(std::time::Instant::now())
+            });
             let Ok(signal) = self.inbox.recv_timeout(left) else {
                 return false;
             };

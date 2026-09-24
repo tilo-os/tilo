@@ -423,7 +423,7 @@ mod tests {
         let bytes: Vec<u8> = (0..100_u8).collect();
         assert!(matches!(
             cache.resident(&a, 100, 10..20),
-            Resident::Missing(m) if m == vec![10..20]
+            Resident::Missing(m) if m.len() == 1 && m.first() == Some(&(10..20))
         ));
         cache.fill(&a, 100, 10, &mut &bytes[10..20], 10).unwrap();
         match cache.resident(&a, 100, 0..30) {
@@ -439,7 +439,7 @@ mod tests {
 
         // A second 100-byte revision pushes the first out of a 150-byte budget.
         let b = RevKey("b".into());
-        let other = vec![7_u8; 100];
+        let other = [7_u8; 100];
         cache.fill(&b, 100, 0, &mut &other[..], 100).unwrap();
         assert!(cache.used() <= 150);
         assert!(!cache.is_complete(&a, 100));
