@@ -105,20 +105,29 @@
 //! TLS terminator: it sees the name and the byte stream, and doesn't
 //! inspect it.
 
+use std::future::Future;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Shutdown, TcpStream, ToSocketAddrs};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use collab_types::caps::host_covers;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::UnixStream;
+use tokio::sync::{Semaphore, oneshot};
 
-/// How long a client gets to complete the SOCKS5 handshake, and how
-/// long the gate waits on an upstream `connect`.
+/// How long a client gets for each read and write of the handshake, and
+/// how long the gate waits on an upstream `connect`.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How many connections one gate, or one relay, carries at once. Past
+/// this it stops accepting: further connections wait in the socket's
+/// listen backlog until an open one closes, rather than each costing a
+/// task and two descriptors the moment it arrives.
+pub const MAX_CONNECTIONS: usize = 256;
 
 /// The loopback port the in-sandbox relay listens on. Fixed rather
 /// than negotiated, so `ALL_PROXY`, the relay's argv and the Landlock
@@ -331,14 +340,22 @@ pub enum GateError {
         #[source]
         source: io::Error,
     },
+    #[error("starting the runtime that serves the egress gate: {0}")]
+    Runtime(#[source] io::Error),
 }
 
 /// A running gate. Drop stops it and unlinks the socket.
+///
+/// Every gate in the process serves on one shared, bounded runtime; each
+/// connection is a task on it, and at most [`MAX_CONNECTIONS`] are open
+/// per gate.
 #[derive(Debug)]
 pub struct NetGate {
     socket_path: PathBuf,
     stats: Arc<GateStats>,
-    shutdown: Arc<AtomicBool>,
+    /// Dropping this sender ends the accept loop, which closes the
+    /// listener. Connections already open run to completion.
+    _stop: oneshot::Sender<()>,
 }
 
 impl NetGate {
@@ -348,9 +365,18 @@ impl NetGate {
     /// # Errors
     ///
     /// Returns [`GateError::Mkdir`] if the socket's parent directory can't
-    /// be created, or [`GateError::Bind`] if the socket itself can't be
-    /// bound.
+    /// be created, [`GateError::Bind`] if the socket itself can't be
+    /// bound, or [`GateError::Runtime`] if the runtime that serves it
+    /// can't start.
     pub fn start(socket_path: &Path, policy: EgressPolicy) -> Result<NetGate, GateError> {
+        Self::start_limited(socket_path, policy, MAX_CONNECTIONS)
+    }
+
+    fn start_limited(
+        socket_path: &Path,
+        policy: EgressPolicy,
+        max_connections: usize,
+    ) -> Result<NetGate, GateError> {
         if let Some(parent) = socket_path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| GateError::Mkdir {
                 path: parent.to_path_buf(),
@@ -361,17 +387,24 @@ impl NetGate {
         // fail with EADDRINUSE.
         let _ = std::fs::remove_file(socket_path);
 
-        let listener = UnixListener::bind(socket_path).map_err(|source| GateError::Bind {
+        let bind_error = |source| GateError::Bind {
             path: socket_path.to_path_buf(),
             source,
-        })?;
+        };
+        let listener = std::os::unix::net::UnixListener::bind(socket_path).map_err(bind_error)?;
+        listener.set_nonblocking(true).map_err(bind_error)?;
+        let runtime = egress_runtime().map_err(GateError::Runtime)?;
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::UnixListener::from_std(listener).map_err(bind_error)?
+        };
 
         let stats = Arc::new(GateStats::default());
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let (stop, stopped) = oneshot::channel();
         let gate = NetGate {
             socket_path: socket_path.to_path_buf(),
             stats: Arc::clone(&stats),
-            shutdown: Arc::clone(&shutdown),
+            _stop: stop,
         };
 
         tracing::info!(
@@ -381,21 +414,21 @@ impl NetGate {
              only route out"
         );
 
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                if shutdown.load(Ordering::Relaxed) {
-                    break;
-                }
-                let Ok(stream) = stream else { continue };
-                let policy = policy.clone();
+        let policy = Arc::new(policy);
+        runtime.spawn(accept_bounded(
+            listener,
+            max_connections,
+            stopped,
+            move |client| {
+                let policy = Arc::clone(&policy);
                 let stats = Arc::clone(&stats);
-                std::thread::spawn(move || {
-                    if let Err(e) = serve_connection(stream, &policy, &stats) {
+                async move {
+                    if let Err(e) = serve_connection(client, &policy, &stats).await {
                         tracing::debug!(error = %e, "egress gate connection ended");
                     }
-                });
-            }
-        });
+                }
+            },
+        ));
 
         Ok(gate)
     }
@@ -411,10 +444,92 @@ impl NetGate {
 
 impl Drop for NetGate {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        // Unblock the accept loop with one throwaway connection.
-        let _ = UnixStream::connect(&self.socket_path);
+        // `_stop` is dropped right after this, which ends the accept loop.
         let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+/// The runtime every egress relay in this process serves on — each
+/// [`NetGate`], and other confined transports built on
+/// [`connect_upstream_async`]. Built on first use: two workers, since a
+/// relay only moves bytes and waits on sockets, and the daemon profile's
+/// bounded blocking pool, which is where name resolution runs.
+///
+/// # Errors
+///
+/// Returns the error that kept the runtime from starting.
+pub fn egress_runtime() -> io::Result<&'static tokio::runtime::Handle> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tilo_rt::daemon("netgate")
+                .workers(2)
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map(tokio::runtime::Runtime::handle)
+        .map_err(|e| io::Error::other(e.clone()))
+}
+
+/// A listening socket [`accept_bounded`] can serve.
+trait Acceptor: Send + 'static {
+    type Conn: Send + 'static;
+    fn accept_conn(&self) -> impl Future<Output = io::Result<Self::Conn>> + Send;
+}
+
+impl Acceptor for tokio::net::UnixListener {
+    type Conn = UnixStream;
+    async fn accept_conn(&self) -> io::Result<UnixStream> {
+        self.accept().await.map(|(stream, _)| stream)
+    }
+}
+
+impl Acceptor for tokio::net::TcpListener {
+    type Conn = tokio::net::TcpStream;
+    async fn accept_conn(&self) -> io::Result<tokio::net::TcpStream> {
+        self.accept().await.map(|(stream, _)| stream)
+    }
+}
+
+/// Accept connections and serve each as its own task, at most `limit`
+/// at once. A slot is claimed *before* accepting, so at the limit the
+/// loop stops calling `accept` and new peers queue in the kernel's
+/// listen backlog — backpressure, not unbounded growth. Returns when
+/// `stop` resolves (its sender sent or dropped).
+async fn accept_bounded<L, S, F>(
+    listener: L,
+    limit: usize,
+    mut stop: oneshot::Receiver<()>,
+    mut serve: S,
+) where
+    L: Acceptor,
+    S: FnMut(L::Conn) -> F + Send + 'static,
+    F: Future<Output = ()> + Send + 'static,
+{
+    let slots = Arc::new(Semaphore::new(limit.max(1)));
+    loop {
+        let slot = tokio::select! {
+            _ = &mut stop => return,
+            slot = Arc::clone(&slots).acquire_owned() => match slot {
+                Ok(slot) => slot,
+                Err(_) => return,
+            },
+        };
+        let conn = tokio::select! {
+            _ = &mut stop => return,
+            conn = listener.accept_conn() => conn,
+        };
+        match conn {
+            Ok(conn) => {
+                let task = serve(conn);
+                tokio::spawn(async move {
+                    task.await;
+                    drop(slot);
+                });
+            }
+            Err(e) => tracing::debug!(error = %e, "accepting a connection failed"),
+        }
     }
 }
 
@@ -572,34 +687,185 @@ pub fn detect_protocol(first_byte: u8) -> Protocol {
     }
 }
 
-fn serve_connection(
-    mut client: UnixStream,
-    policy: &EgressPolicy,
-    stats: &GateStats,
-) -> io::Result<()> {
-    client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
-    client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+/// The largest HTTP proxy request head the gate reads before giving up.
+const MAX_HTTP_HEAD: usize = 16 * 1024;
 
-    let mut first = [0u8; 1];
-    client.read_exact(&mut first)?;
-    match detect_protocol(first[0]) {
-        Protocol::Socks5 => serve_socks5(client, policy, stats),
-        Protocol::HttpConnect => serve_http(client, first[0], policy, stats),
+/// Bound one handshake read or write by [`HANDSHAKE_TIMEOUT`].
+async fn within_handshake<T>(io: impl Future<Output = io::Result<T>>) -> io::Result<T> {
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, io)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "proxy handshake timed out"))?
+}
+
+/// The parsers' view of a handshake in progress: the bytes received so
+/// far as input, and a buffer collecting what the parser answers.
+struct Exchange<'a> {
+    input: io::Cursor<&'a [u8]>,
+    output: Vec<u8>,
+}
+
+impl Read for Exchange<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.input.read(buf)
     }
 }
 
-fn serve_socks5(
+impl Write for Exchange<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.output.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A client connection during the proxy handshake, with the bytes it has
+/// sent that no parser has consumed yet.
+///
+/// The SOCKS5 parsers above are written against a blocking `Read + Write`.
+/// The gate runs them unchanged over what has arrived so far: a parser
+/// that runs out of input fails with `UnexpectedEof` and is re-run once
+/// more bytes arrive. They are pure functions of their input, so a re-run
+/// is a replay; what a parser writes is sent once, when it finishes.
+struct Handshake<'c, C> {
+    client: &'c mut C,
+    received: Vec<u8>,
+}
+
+impl<C: AsyncRead + AsyncWrite + Unpin> Handshake<'_, C> {
+    async fn read_more(&mut self) -> io::Result<usize> {
+        let mut chunk = [0u8; 4096];
+        let n =
+            within_handshake(tokio::io::AsyncReadExt::read(&mut *self.client, &mut chunk)).await?;
+        self.received
+            .extend_from_slice(chunk.get(..n).unwrap_or_default());
+        Ok(n)
+    }
+
+    async fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
+        within_handshake(tokio::io::AsyncWriteExt::write_all(
+            &mut *self.client,
+            bytes,
+        ))
+        .await
+    }
+
+    async fn socks5_reply(&mut self, code: u8) -> io::Result<()> {
+        let mut out = Vec::new();
+        write_reply(&mut out, code)?;
+        self.send(&out).await
+    }
+
+    /// Run `parse` over the received bytes, reading more for as long as
+    /// it runs out, then send its answer and drop what it consumed.
+    async fn run<T>(
+        &mut self,
+        parse: impl Fn(&mut Exchange<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        loop {
+            let (result, consumed, output) = {
+                let mut exchange = Exchange {
+                    input: io::Cursor::new(self.received.as_slice()),
+                    output: Vec::new(),
+                };
+                let result = parse(&mut exchange);
+                (result, exchange.input.position(), exchange.output)
+            };
+            match result {
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    if self.read_more().await? == 0 {
+                        return Err(e);
+                    }
+                }
+                result => {
+                    self.send(&output).await?;
+                    let consumed = usize::try_from(consumed)
+                        .unwrap_or(usize::MAX)
+                        .min(self.received.len());
+                    self.received.drain(..consumed);
+                    return result;
+                }
+            }
+        }
+    }
+
+    /// Read an HTTP message head, up to and including the blank line. A
+    /// peer that closes mid-head leaves what it sent as the head.
+    async fn http_head(&mut self) -> io::Result<String> {
+        loop {
+            if let Some(end) = self.received.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head: Vec<u8> = self.received.drain(..end.saturating_add(4)).collect();
+                return head_text(head);
+            }
+            if self.received.len() > MAX_HTTP_HEAD {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP proxy request head too large",
+                ));
+            }
+            if self.read_more().await? == 0 {
+                return head_text(std::mem::take(&mut self.received));
+            }
+        }
+    }
+}
+
+fn head_text(head: Vec<u8>) -> io::Result<String> {
+    String::from_utf8(head).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP proxy request is not UTF-8",
+        )
+    })
+}
+
+async fn serve_connection(
     mut client: UnixStream,
     policy: &EgressPolicy,
     stats: &GateStats,
 ) -> io::Result<()> {
-    // The version byte is already consumed by protocol detection; hand
-    // the greeting parser a stream that replays it.
-    let dest = {
-        let mut replayed = Replay::new(vec![0x05], &mut client);
-        socks5_greet(&mut replayed)?;
-        socks5_request(&mut replayed)?
+    let mut handshake = Handshake {
+        client: &mut client,
+        received: Vec::new(),
     };
+    if handshake.read_more().await? == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "client closed before the handshake",
+        ));
+    }
+    let first = handshake.received.first().copied().unwrap_or_default();
+    let upstream = match detect_protocol(first) {
+        Protocol::Socks5 => open_socks5(&mut handshake, policy, stats).await?,
+        Protocol::HttpConnect => open_http(&mut handshake, policy, stats).await?,
+    };
+    let Some(mut upstream) = upstream else {
+        return Ok(());
+    };
+    // Past the handshake the stream is a bulk pipe, with no timeout that
+    // would kill a long-lived idle connection. Bytes the client sent
+    // ahead of the handshake's answer go first.
+    let Handshake {
+        received: early, ..
+    } = handshake;
+    if !early.is_empty() {
+        tokio::io::AsyncWriteExt::write_all(&mut upstream, &early).await?;
+    }
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+    Ok(())
+}
+
+async fn open_socks5<C: AsyncRead + AsyncWrite + Unpin>(
+    handshake: &mut Handshake<'_, C>,
+    policy: &EgressPolicy,
+    stats: &GateStats,
+) -> io::Result<Option<tokio::net::TcpStream>> {
+    handshake
+        .run(|exchange: &mut Exchange<'_>| socks5_greet(exchange))
+        .await?;
+    let dest = handshake
+        .run(|exchange: &mut Exchange<'_>| socks5_request(exchange))
+        .await?;
     let key = dest.host_key();
 
     // THE decision. Everything before this is parsing and everything
@@ -614,78 +880,26 @@ fn serve_socks5(
         );
         // `HOST_UNREACHABLE`, not `NOT_ALLOWED`: told there's no route (a state
         // it handles) rather than that it lacks a permission.
-        write_reply(&mut client, reply::HOST_UNREACHABLE)?;
-        return Ok(());
+        handshake.socks5_reply(reply::HOST_UNREACHABLE).await?;
+        return Ok(None);
     }
 
     // Resolution happens here, after the policy decision and per
     // connection — never cached, never pinned.
-    let upstream = match connect_upstream(&dest, policy) {
+    let upstream = match connect_upstream_async(&dest, policy).await {
         Ok(s) => s,
         Err(e) => {
             stats.failed.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(host = %key, error = %e, "egress allowed but upstream connect failed");
-            write_reply(&mut client, reply::HOST_UNREACHABLE)?;
-            return Ok(());
+            handshake.socks5_reply(reply::HOST_UNREACHABLE).await?;
+            return Ok(None);
         }
     };
 
     stats.allowed.fetch_add(1, Ordering::Relaxed);
     tracing::info!(host = %key, port = dest.port(), "egress allowed");
-    write_reply(&mut client, reply::SUCCESS)?;
-
-    // Past the handshake the stream is a bulk pipe; the handshake
-    // timeout would kill a long-lived idle connection.
-    client.set_read_timeout(None)?;
-    client.set_write_timeout(None)?;
-    splice(client, upstream);
-    Ok(())
-}
-
-/// A reader that replays already-consumed bytes, since protocol
-/// detection consumes the first byte the parser then expects to see.
-struct Replay<'a, S> {
-    pending: std::collections::VecDeque<u8>,
-    inner: &'a mut S,
-}
-
-impl<'a, S> Replay<'a, S> {
-    fn new(pending: Vec<u8>, inner: &'a mut S) -> Self {
-        Self {
-            pending: pending.into(),
-            inner,
-        }
-    }
-}
-
-impl<S: Read> Read for Replay<'_, S> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let mut n: usize = 0;
-        while n < buf.len() {
-            let Some(b) = self.pending.pop_front() else {
-                break;
-            };
-            let Some(slot) = buf.get_mut(n) else { break };
-            *slot = b;
-            n = n.saturating_add(1);
-        }
-        if n > 0 {
-            return Ok(n);
-        }
-        self.inner.read(buf)
-    }
-}
-
-impl<S: Write> Write for Replay<'_, S> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.write(buf)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
+    handshake.socks5_reply(reply::SUCCESS).await?;
+    Ok(Some(upstream))
 }
 
 /// What an HTTP proxy request asked for.
@@ -761,45 +975,19 @@ fn split_host_port(authority: &str, default_port: u16) -> Option<(String, u16)> 
     }
 }
 
-/// Read an HTTP message head (up to and including the blank line).
-fn read_http_head<S: Read>(stream: &mut S, seed: u8) -> io::Result<String> {
-    let mut buf = vec![seed];
-    let mut byte = [0u8; 1];
-    loop {
-        if buf.len() > 16 * 1024 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "HTTP proxy request head too large",
-            ));
-        }
-        let n = stream.read(&mut byte)?;
-        if n == 0 {
-            break;
-        }
-        buf.push(byte[0]);
-        if buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-    }
-    String::from_utf8(buf).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "HTTP proxy request is not UTF-8",
-        )
-    })
-}
-
-fn serve_http(
-    mut client: UnixStream,
-    first: u8,
+async fn open_http<C: AsyncRead + AsyncWrite + Unpin>(
+    handshake: &mut Handshake<'_, C>,
     policy: &EgressPolicy,
     stats: &GateStats,
-) -> io::Result<()> {
-    let head = read_http_head(&mut client, first)?;
+) -> io::Result<Option<tokio::net::TcpStream>> {
+    const BAD_GATEWAY: &[u8] =
+        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    let head = handshake.http_head().await?;
     let Some(req) = parse_http_proxy_head(&head) else {
         stats.failed.fetch_add(1, Ordering::Relaxed);
-        let _ = client.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
-        return Ok(());
+        let _ = handshake.send(b"HTTP/1.1 400 Bad Request\r\n\r\n").await;
+        return Ok(None);
     };
     let key = req.dest.host_key();
 
@@ -813,21 +1001,17 @@ fn serve_http(
         );
         // `502`, not `403`: same reasoning as the SOCKS5 reply code — makes a
         // refused host indistinguishable from an unreachable one.
-        let _ = client.write_all(
-            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        );
-        return Ok(());
+        let _ = handshake.send(BAD_GATEWAY).await;
+        return Ok(None);
     }
 
-    let mut upstream = match connect_upstream(&req.dest, policy) {
+    let mut upstream = match connect_upstream_async(&req.dest, policy).await {
         Ok(s) => s,
         Err(e) => {
             stats.failed.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(host = %key, error = %e, "egress allowed but upstream connect failed");
-            let _ = client.write_all(
-                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            );
-            return Ok(());
+            let _ = handshake.send(BAD_GATEWAY).await;
+            return Ok(None);
         }
     };
 
@@ -835,15 +1019,13 @@ fn serve_http(
     tracing::info!(host = %key, port = req.dest.port(), tunnel = req.tunnel, "egress allowed");
 
     if req.tunnel {
-        client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+        handshake
+            .send(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await?;
     } else {
-        upstream.write_all(&req.forward)?;
+        tokio::io::AsyncWriteExt::write_all(&mut upstream, &req.forward).await?;
     }
-
-    client.set_read_timeout(None)?;
-    client.set_write_timeout(None)?;
-    splice(client, upstream);
-    Ok(())
+    Ok(Some(upstream))
 }
 
 /// Fold an address to its v4 form for the device-local test, so one
@@ -888,38 +1070,50 @@ fn is_assigned_to_this_host(addr: IpAddr) -> bool {
     std::net::UdpSocket::bind((addr, 0)).is_ok()
 }
 
-/// Resolve and connect, dropping any candidate address that turns out
-/// to be this device unless the policy named the host exactly. Runs on
-/// the **resolved** address, since a name says nothing about where it
+/// Whether a resolved candidate address may be connected to: one that is
+/// this device is dropped unless the policy named the host exactly. Runs
+/// on the **resolved** address, since a name says nothing about where it
 /// points.
+fn admit_resolved(addr: SocketAddr, key: &str, policy: &EgressPolicy) -> io::Result<()> {
+    if policy.permits_device_local(key) || !is_device_local(addr.ip()) {
+        return Ok(());
+    }
+    tracing::warn!(
+        host = %key,
+        addr = %addr.ip(),
+        allow = ?policy.hosts(),
+        "egress DROPPED: the host resolves to this device, and the grant does not name \
+         it exactly. Device-local services are behind the same decision as the rest of \
+         the network."
+    );
+    Err(io::Error::from_raw_os_error(libc::ENETUNREACH))
+}
+
+fn no_addresses() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, "name resolved to no addresses")
+}
+
+/// Resolve and connect, dropping any candidate address that turns out
+/// to be this device unless the policy named the host exactly.
 /// Connect an already parsed destination after applying the exact same
 /// post-DNS device-local protection used by [`NetGate`].  Other confined
-/// transports (such as the Windows guest lease relay) must use this rather
-/// than resolving a permitted name themselves.
+/// transports must use this (or [`connect_upstream_async`]) rather than
+/// resolving a permitted name themselves.
 ///
 /// # Errors
 ///
 /// Returns an error if DNS resolution fails, every resolved address is
 /// rejected by policy, or no permitted address can be connected to.
 pub fn connect_upstream(dest: &Destination, policy: &EgressPolicy) -> io::Result<TcpStream> {
-    let addrs: Vec<std::net::SocketAddr> = match dest {
+    let addrs: Vec<SocketAddr> = match dest {
         Destination::Domain(host, port) => (host.as_str(), *port).to_socket_addrs()?.collect(),
-        Destination::Addr(ip, port) => vec![std::net::SocketAddr::new(*ip, *port)],
+        Destination::Addr(ip, port) => vec![SocketAddr::new(*ip, *port)],
     };
     let key = dest.host_key();
-    let device_local_allowed = policy.permits_device_local(&key);
-    let mut last = io::Error::new(io::ErrorKind::NotFound, "name resolved to no addresses");
+    let mut last = no_addresses();
     for addr in addrs {
-        if !device_local_allowed && is_device_local(addr.ip()) {
-            tracing::warn!(
-                host = %key,
-                addr = %addr.ip(),
-                allow = ?policy.hosts(),
-                "egress DROPPED: the host resolves to this device, and the grant does not name \
-                 it exactly. Device-local services are behind the same decision as the rest of \
-                 the network."
-            );
-            last = io::Error::from_raw_os_error(libc::ENETUNREACH);
+        if let Err(e) = admit_resolved(addr, &key, policy) {
+            last = e;
             continue;
         }
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
@@ -930,22 +1124,37 @@ pub fn connect_upstream(dest: &Destination, policy: &EgressPolicy) -> io::Result
     Err(last)
 }
 
-/// Pump bytes both ways until either side closes.
-fn splice(client: UnixStream, upstream: TcpStream) {
-    let (Ok(client_w), Ok(upstream_w)) = (client.try_clone(), upstream.try_clone()) else {
-        return;
+/// [`connect_upstream`] for async callers: the same resolution after the
+/// policy decision and the same device-local protection, without holding
+/// a thread through the connect.
+///
+/// # Errors
+///
+/// As [`connect_upstream`].
+pub async fn connect_upstream_async(
+    dest: &Destination,
+    policy: &EgressPolicy,
+) -> io::Result<tokio::net::TcpStream> {
+    let addrs: Vec<SocketAddr> = match dest {
+        Destination::Domain(host, port) => tokio::net::lookup_host((host.as_str(), *port))
+            .await?
+            .collect(),
+        Destination::Addr(ip, port) => vec![SocketAddr::new(*ip, *port)],
     };
-    let up = std::thread::spawn(move || {
-        let mut r = client;
-        let mut w = upstream_w;
-        let _ = io::copy(&mut r, &mut w);
-        let _ = w.shutdown(Shutdown::Write);
-    });
-    let mut r = upstream;
-    let mut w = client_w;
-    let _ = io::copy(&mut r, &mut w);
-    let _ = w.shutdown(Shutdown::Write);
-    let _ = up.join();
+    let key = dest.host_key();
+    let mut last = no_addresses();
+    for addr in addrs {
+        if let Err(e) = admit_resolved(addr, &key, policy) {
+            last = e;
+            continue;
+        }
+        match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr)).await {
+            Ok(Ok(s)) => return Ok(s),
+            Ok(Err(e)) => last = e,
+            Err(_) => last = io::Error::new(io::ErrorKind::TimedOut, "upstream connect timed out"),
+        }
+    }
+    Err(last)
 }
 
 /// The in-sandbox relay: accept on loopback, carry each connection to
@@ -960,36 +1169,51 @@ fn splice(client: UnixStream, upstream: TcpStream) {
 ///
 /// Returns an error if the loopback listener on `port` cannot be bound.
 pub fn run_relay(gate_socket: &Path, port: u16) -> io::Result<()> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
-    let gate = gate_socket.to_path_buf();
-    for stream in listener.incoming() {
-        let Ok(tcp) = stream else { continue };
-        let gate = gate.clone();
-        std::thread::spawn(move || {
-            let Ok(unix) = UnixStream::connect(&gate) else {
-                return;
-            };
-            relay_pump(tcp, unix);
-        });
-    }
-    Ok(())
+    serve_relay(
+        std::net::TcpListener::bind(("127.0.0.1", port))?,
+        gate_socket,
+    )
 }
 
-fn relay_pump(tcp: std::net::TcpStream, unix: UnixStream) {
-    let (Ok(tcp_w), Ok(unix_w)) = (tcp.try_clone(), unix.try_clone()) else {
-        return;
-    };
-    let up = std::thread::spawn(move || {
-        let mut r = tcp;
-        let mut w = unix_w;
-        let _ = io::copy(&mut r, &mut w);
-        let _ = w.shutdown(Shutdown::Write);
-    });
-    let mut r = unix;
-    let mut w = tcp_w;
-    let _ = io::copy(&mut r, &mut w);
-    let _ = w.shutdown(Shutdown::Write);
-    let _ = up.join();
+/// Serve the relay on an already bound `listener`, so a caller can
+/// connect as soon as this is called. At most [`MAX_CONNECTIONS`] are
+/// carried at once, each as a task on a one-worker runtime owned by the
+/// calling thread. Returns only on error.
+///
+/// # Errors
+///
+/// Returns an error if the listener can't be registered with the runtime
+/// or the runtime can't start.
+pub fn serve_relay(listener: std::net::TcpListener, gate_socket: &Path) -> io::Result<()> {
+    serve_relay_limited(listener, gate_socket, MAX_CONNECTIONS)
+}
+
+fn serve_relay_limited(
+    listener: std::net::TcpListener,
+    gate_socket: &Path,
+    max_connections: usize,
+) -> io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let gate: Arc<Path> = Arc::from(gate_socket);
+    tilo_rt::daemon("netgate-relay")
+        .workers(1)
+        .run(async move {
+            let listener = tokio::net::TcpListener::from_std(listener)?;
+            // Never sent: the relay serves until the sandbox is torn down.
+            let (_forever, stop) = oneshot::channel();
+            accept_bounded(listener, max_connections, stop, move |mut tcp| {
+                let gate = Arc::clone(&gate);
+                async move {
+                    let Ok(mut unix) = UnixStream::connect(&*gate).await else {
+                        return;
+                    };
+                    let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;
+                }
+            })
+            .await;
+            Ok(())
+        })
+        .map_err(io::Error::other)?
 }
 
 #[cfg(test)]
@@ -1431,5 +1655,138 @@ mod tests {
             "LOCAL-SERVICE",
             "the same service, the same request — only the spelling of the grant differed"
         );
+    }
+
+    /// Long enough that a connection the gate would serve has been
+    /// served; only used to show that one it must not serve wasn't.
+    const NOT_SERVED_WITHIN: Duration = Duration::from_millis(300);
+    /// A bound on a wait that is expected to succeed, so a regression
+    /// fails the test rather than hanging it.
+    const SERVED_WITHIN: Duration = Duration::from_secs(10);
+
+    fn assert_not_answered(stream: &mut impl Read, what: &str) {
+        let mut byte = [0u8; 1];
+        match stream.read(&mut byte) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            other => panic!("{what} was answered past the connection limit: {other:?}"),
+        }
+    }
+
+    /// SOCKS5 CONNECT to `localhost:port` through the gate at `socket`;
+    /// returns the reply code.
+    fn socks_connect_localhost(stream: &mut std::os::unix::net::UnixStream, port: u16) -> u8 {
+        stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
+        let mut greeting = [0u8; 2];
+        stream.read_exact(&mut greeting).unwrap();
+        assert_eq!(greeting, [0x05, 0x00]);
+        let mut request = vec![0x05, 0x01, 0x00, 0x03, 9];
+        request.extend_from_slice(b"localhost");
+        request.extend_from_slice(&port.to_be_bytes());
+        stream.write_all(&request).unwrap();
+        let mut reply = [0u8; 10];
+        stream.read_exact(&mut reply).unwrap();
+        reply[1]
+    }
+
+    #[test]
+    fn the_gate_serves_no_more_than_its_connection_limit_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("gate.sock");
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        let gate =
+            NetGate::start_limited(&socket, EgressPolicy::new(v(&["localhost"])), 1).unwrap();
+
+        // The one slot: a tunnel that stays open.
+        let mut first = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+        assert_eq!(socks_connect_localhost(&mut first, port), reply::SUCCESS);
+        let (held, _) = service.accept().unwrap();
+
+        // The kernel queues a second client, but the gate leaves it there.
+        let mut second = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        second.write_all(&[0x05, 0x01, 0x00]).unwrap();
+        second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
+        assert_not_answered(&mut second, "a second gate client");
+
+        // Closing the tunnel frees the slot, and the waiting client is served.
+        drop(first);
+        drop(held);
+        second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+        let mut greeting = [0u8; 2];
+        second.read_exact(&mut greeting).unwrap();
+        assert_eq!(greeting, [0x05, 0x00]);
+        assert_eq!(gate.stats().allowed(), 1);
+    }
+
+    #[test]
+    fn the_relay_carries_no_more_than_its_connection_limit_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("gate.sock");
+        // A stand-in gate that echoes, one thread per connection.
+        let echo = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            for stream in echo.incoming() {
+                let Ok(stream) = stream else { continue };
+                std::thread::spawn(move || {
+                    let (mut r, mut w) = (&stream, &stream);
+                    let _ = io::copy(&mut r, &mut w);
+                });
+            }
+        });
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = listener.local_addr().unwrap();
+        std::thread::spawn(move || serve_relay_limited(listener, &socket, 1));
+
+        let mut first = TcpStream::connect(relay).unwrap();
+        first.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+        first.write_all(b"a").unwrap();
+        let mut byte = [0u8; 1];
+        first.read_exact(&mut byte).unwrap();
+        assert_eq!(&byte, b"a");
+
+        let mut second = TcpStream::connect(relay).unwrap();
+        second.write_all(b"b").unwrap();
+        second.set_read_timeout(Some(NOT_SERVED_WITHIN)).unwrap();
+        assert_not_answered(&mut second, "a second relay client");
+
+        drop(first);
+        second.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+        second.read_exact(&mut byte).unwrap();
+        assert_eq!(&byte, b"b");
+    }
+
+    #[test]
+    fn bytes_sent_ahead_of_the_socks5_reply_reach_the_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("gate.sock");
+        let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = service.local_addr().unwrap().port();
+        let _gate = NetGate::start(&socket, EgressPolicy::new(v(&["localhost"]))).unwrap();
+
+        // Greeting, request and payload in one write, as an optimistic
+        // client sends them.
+        let mut all = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 9];
+        all.extend_from_slice(b"localhost");
+        all.extend_from_slice(&port.to_be_bytes());
+        all.extend_from_slice(b"PING");
+        let mut client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        client.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+        client.write_all(&all).unwrap();
+
+        let (mut upstream, _) = service.accept().unwrap();
+        upstream.set_read_timeout(Some(SERVED_WITHIN)).unwrap();
+        let mut payload = [0u8; 4];
+        upstream.read_exact(&mut payload).unwrap();
+        assert_eq!(&payload, b"PING");
+
+        let mut replies = [0u8; 12];
+        client.read_exact(&mut replies).unwrap();
+        assert_eq!(&replies[..2], &[0x05, 0x00]);
+        assert_eq!(replies[3], reply::SUCCESS);
     }
 }

@@ -143,18 +143,15 @@ fn netns_probe() {
     );
 
     // The loopback relay — the path an unmodified HTTP client takes via
-    // ALL_PROXY. Uses the production `run_relay`.
+    // ALL_PROXY. Uses the production relay; the listener is bound before
+    // the relay starts, so the first connect is already queued for it.
     if std::env::var(ENV_RELAY).is_ok() {
         let gate = PathBuf::from(&socket);
+        let listener =
+            TcpListener::bind(("127.0.0.1", PROBE_RELAY_PORT)).expect("bind the relay port");
         std::thread::spawn(move || {
-            let _ = launcher::netgate::run_relay(&gate, PROBE_RELAY_PORT);
+            let _ = launcher::netgate::serve_relay(listener, &gate);
         });
-        for _ in 0..100 {
-            if TcpStream::connect(("127.0.0.1", PROBE_RELAY_PORT)).is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
         println!(
             "PROBE relay_by_name={}",
             describe(socks_get_tcp(PROBE_RELAY_PORT, ALLOWED_NAME, allowed_port))
