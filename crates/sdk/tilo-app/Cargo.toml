@@ -6,9 +6,12 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-default = ["native"]
+default = ["native", "broker-transport"]
 # The native desktop runner and host services; see `tilo-ui`'s `native`.
 native = ["ui-core/native"]
+# The collaboration manager's built-in broker transport; see `tilo-ui`'s
+# `broker-transport`.
+broker-transport = ["ui-core/broker-transport"]
 test-support = ["ui-core/test-support"]
 webview-adblock = ["ui-core/webview-adblock"]
 webview-wpe = ["ui-core/webview-wpe"]
