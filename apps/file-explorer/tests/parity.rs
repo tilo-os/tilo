@@ -87,6 +87,7 @@ use file_explorer::breadcrumbs::breadcrumb_components;
 
 #[test]
 fn breadcrumb_component_click_navigates_to_that_component() {
+    crate::common::pin_locale();
     let home = PathBuf::from("/home/quinten");
     let cwd = PathBuf::from("/home/quinten/Documents/Projects");
     let comps = breadcrumb_components(&cwd, Some(&home), &[]);
@@ -157,6 +158,7 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 
 #[test]
 fn file_explorer_widget_implements_app_widget_and_defaults_correctly() {
+    crate::common::pin_locale();
     let w = FileExplorerWidget::new();
     assert_eq!(w.app_kind(), AppKind::Files);
     assert_eq!(w.app_title(), "Files");
@@ -179,6 +181,7 @@ fn file_explorer_widget_constructs_with_sensible_default_path() {
 fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
     use file_explorer::sidebar::build_shortcuts;
     use ui::icons::Icon;
+    crate::common::pin_locale();
     let home = Some(PathBuf::from("/home/test"));
     let shortcuts = build_shortcuts(home.as_deref());
     assert_eq!(shortcuts.len(), 7);
