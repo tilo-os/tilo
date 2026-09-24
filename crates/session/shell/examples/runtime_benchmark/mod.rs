@@ -37,7 +37,7 @@ pub(super) fn run(
         "profile_resources":true,
         "cpu_worker_correlation":true,
         "workload":"Photos rotates right; Word Processor appends the original photo to a growing document",
-        "clock":"std::time::Instant", "latency_boundary":"before broker.start through completion receiver"}));
+        "clock":"std::time::Instant", "latency_boundary":"before the action host's invoke through its terminal update"}));
     for phase in ["warmup", "measure"] {
         std::thread::sleep(Duration::from_millis(500));
         emit(json!({"event":"phase_start", "phase":phase,"boundaries":boundaries(root)?}));
@@ -57,25 +57,28 @@ pub(super) fn run(
                 let (surface, operation) = wait_action(session, children, app, action)?;
                 let discovery_ns = discovery.elapsed().as_nanos();
                 let start = Instant::now();
-                let job = actions.start(
-                    surface.peer_id,
+                let invocation = start_action(
+                    &actions,
+                    &session.actor,
+                    &surface,
                     &operation.resource,
                     action,
                     input,
-                    &session.actor,
                 )?;
                 let accepted_ns = start.elapsed().as_nanos();
-                let completion = job.completion.recv_timeout(Duration::from_secs(30))?;
+                let update = wait_terminal(
+                    &actions,
+                    &session.actor,
+                    &surface,
+                    invocation,
+                    Duration::from_secs(30),
+                )?;
                 let elapsed_ns = start.elapsed().as_nanos();
-                let succeeded = matches!(
-                    actions.status(job.id),
-                    Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-                );
+                let succeeded = matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. });
                 emit(
                     json!({"event":"action_sample","phase":phase,"iteration":iteration,
-                    "app":app,"action":action,"invocation":job.id,"discovery_ns":discovery_ns,
-                    "accepted_ns":accepted_ns,"elapsed_ns":elapsed_ns,"succeeded":succeeded,
-                    "completion_code":completion.code}),
+                    "app":app,"action":action,"invocation":invocation.0.to_string(),"discovery_ns":discovery_ns,
+                    "accepted_ns":accepted_ns,"elapsed_ns":elapsed_ns,"succeeded":succeeded}),
                 );
                 if !succeeded {
                     return Err(format!("benchmark action failed: {app}/{action}").into());

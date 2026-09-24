@@ -121,8 +121,20 @@ pub(super) struct ActionRuntime {
     >,
     pub(super) pending_application_launches:
         std::collections::HashMap<u64, tilo_actions::InvocationId>,
+    /// Requests to the session action host awaiting their answer, keyed by
+    /// the answer they expect, to the local request id they correlate with.
+    pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
     /// `None` means this process exhausted the complete request-id namespace.
     pub(super) next_broker_request_id: Option<u64>,
+}
+
+/// Which answer from the session action host a request is waiting for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum BrokerReply {
+    /// The receipt for an invocation.
+    Receipt(tilo_actions::InvocationId),
+    /// The state of an invocation being observed.
+    Update(tilo_actions::InvocationId),
 }
 
 impl ActionRuntime {
@@ -153,6 +165,7 @@ impl ActionRuntime {
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
+            broker_requests: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
         }
     }

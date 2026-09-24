@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, Catalogue, InvocationLedger, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, RemoteActionTarget,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationLedger,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionFrame, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
@@ -79,6 +79,8 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
         },
         argument: InvokeArgument::None,
         context: None,
+        confirmation: None,
+        revision: None,
     })
 }
 
@@ -196,27 +198,33 @@ struct RecordingHost {
 struct SharedHost(Arc<RecordingHost>);
 
 impl ActionHost for SharedHost {
-    fn catalogue(&self, _caller: &Caller) -> Result<Catalogue, ActionHostError> {
-        Ok(Catalogue::default())
+    fn query(
+        &self,
+        _caller: &Caller,
+        _query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        Pending::ready(Ok(CataloguePage::default()))
     }
 
     fn invoke(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         self.0.callers.lock().unwrap().push(caller.clone());
-        self.0
+        let admitted = self
+            .0
             .ledger
             .lock()
             .unwrap()
-            .admit(caller, &request, || Ok(()))?;
-        Ok(InvocationReceipt {
+            .admit(caller, &request, || Ok(()))
+            .map(|_| ());
+        Pending::ready(admitted.map(|()| InvocationReceipt {
             invocation: request.invocation,
             status: ReceiptStatus::Completed {
                 output: tilo_actions::ActionOutput::default(),
             },
-        })
+        }))
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {

@@ -219,7 +219,6 @@ pub enum WorkspaceControlInput {
 }
 
 #[cfg(feature = "client")]
-pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
 /// Client endpoint for an application-owned paged action directory.  Apps
 /// implement the matching `action_directory::Server` and hand this capability
 /// to [`ChannelHandle::publish_action_directory`]; the broker owns neither the
@@ -1258,69 +1257,6 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// Query the authenticated session-wide resource/action directory.
-    ///
-    /// The broker enforces authority and clamps the supplied limits before
-    /// forwarding them to an application's directory capability. A returned
-    /// stale cursor must be discarded and the query restarted with an empty
-    /// cursor; it is never valid across revisions.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the connection drops or the broker returns
-    /// malformed directory data.
-    pub async fn query_action_directory(
-        &self,
-        query: &ActionDirectoryQuery,
-    ) -> Result<ActionDirectoryPage, NotAvailable> {
-        let mut request = self.inner.query_action_directory_request();
-        {
-            let mut wire = request.get().init_query();
-            wire.set_revision(&query.revision);
-            wire.set_cursor(&query.cursor);
-            wire.set_needle(&query.needle);
-            wire.set_parent_resource(&query.parent_resource);
-            wire.set_max_results(query.max_results);
-            wire.set_max_bytes(query.max_bytes);
-            wire.set_max_work(query.max_work);
-            wire.set_max_depth(query.max_depth);
-            wire.set_peer_id(query.peer_id);
-        }
-        let reply = request.send().promise.await?;
-        Ok(decode_action_directory_page(reply.get()?.get_page()?)?)
-    }
-
-    /// Re-materialize an exact action at the revision that yielded it.
-    ///
-    /// Call this immediately before beginning an invocation. `Found` is the
-    /// only outcome that may be used for execution; stale/disconnected rows
-    /// are not served from a broker cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the connection drops or the broker returns
-    /// a malformed exact-resolution response.
-    pub async fn resolve_published_action(
-        &self,
-        peer_id: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
-    ) -> Result<ActionDirectoryResolution, NotAvailable> {
-        let mut request = self.inner.resolve_published_action_request();
-        {
-            let mut wire = request.get();
-            wire.set_peer_id(peer_id);
-            wire.set_revision(revision);
-            wire.set_resource(resource);
-            wire.set_action(action);
-        }
-        let reply = request.send().promise.await?;
-        Ok(decode_action_directory_resolution(
-            reply.get()?.get_resolution()?,
-        )?)
-    }
-
     /// Open a server-pulled stream of invocations the session has addressed
     /// to *this* application — distinct from [`Self::subscribe_actions`]
     /// (room-wide fan-out): an invocation names one connection, an
@@ -1400,6 +1336,7 @@ impl ChannelHandle {
         action: &str,
         argument: Option<&str>,
         confirmation_json: &str,
+        invocation: &str,
     ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.invoke_task_action_request();
         {
@@ -1412,6 +1349,7 @@ impl ChannelHandle {
             params.set_argument(argument.unwrap_or(""));
             params.set_has_argument(argument.is_some());
             params.set_confirmation_json(confirmation_json);
+            params.set_invocation(invocation);
         }
         let reply = request.send().promise.await?;
         let result = reply.get()?;
@@ -1527,154 +1465,19 @@ impl ChannelHandle {
         Ok(reply.get()?.get_cancelled())
     }
 
-    /// Snapshot the authenticated session action directory.
+    /// Send one `tilo_actions::remote::RemoteActionFrame` request and
+    /// return the answering frame. The broker derives the caller from this
+    /// admitted channel; the frame never names it.
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns malformed catalogue data.
-    pub async fn action_catalogue(&self) -> Result<String, NotAvailable> {
-        let reply = self.inner.action_catalogue_request().send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_catalogue_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
-            .to_owned())
-    }
-
-    /// Subscribe to complete, level-triggered action-directory snapshots.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn subscribe_action_catalogue(&self) -> Result<ActionCatalogueStream, NotAvailable> {
-        let reply = self
-            .inner
-            .subscribe_action_catalogue_request()
-            .send()
-            .promise
-            .await?;
-        Ok(ActionCatalogueStream {
-            inner: Rc::new(reply.get()?.get_stream()?),
-        })
-    }
-
-    /// Invoke one broker-published action. Actor identity and policy are
-    /// resolved by the broker from this certified channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed initial invocation
-    /// update.
-    pub async fn invoke_published_action(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        confirmation_json: &str,
-    ) -> Result<(u64, String), NotAvailable> {
-        let mut request = self.inner.invoke_published_action_request();
-        {
-            let mut params = request.get();
-            params.set_peer_id(peer_id);
-            params.set_resource(resource);
-            params.set_action(action);
-            params.set_argument(argument.unwrap_or(""));
-            params.set_has_argument(argument.is_some());
-            params.set_confirmation_json(confirmation_json);
-        }
+    /// Returns [`NotAvailable`] if the connection drops or the broker
+    /// refuses the frame.
+    pub async fn remote_action(&self, frame: &[u8]) -> Result<Vec<u8>, NotAvailable> {
+        let mut request = self.inner.remote_action_request();
+        request.get().set_frame(frame);
         let reply = request.send().promise.await?;
-        let result = reply.get()?;
-        Ok((
-            result.get_id(),
-            result
-                .get_update_json()?
-                .to_str()
-                .map_err(|error| {
-                    capnp::Error::failed(format!("invalid invocation update: {error}"))
-                })?
-                .to_owned(),
-        ))
-    }
-
-    /// Fetch the latest lifecycle update for a broker-published invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed invocation update.
-    pub async fn published_invocation_status(
-        &self,
-        id: u64,
-    ) -> Result<Option<String>, NotAvailable> {
-        let mut request = self.inner.published_invocation_status_request();
-        request.get().set_id(id);
-        let reply = request.send().promise.await?;
-        let result = reply.get()?;
-        if result.get_found() {
-            Ok(Some(
-                result
-                    .get_update_json()?
-                    .to_str()
-                    .map_err(|error| {
-                        capnp::Error::failed(format!("invalid invocation status: {error}"))
-                    })?
-                    .to_owned(),
-            ))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Request cancellation of a broker-published invocation and return its
-    /// resulting lifecycle update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed cancellation update.
-    pub async fn cancel_published_invocation(&self, id: u64) -> Result<String, NotAvailable> {
-        let mut request = self.inner.cancel_published_invocation_request();
-        request.get().set_id(id);
-        let reply = request.send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_update_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid cancellation update: {error}")))?
-            .to_owned())
-    }
-
-    /// Ask the broker to launch an application from the published catalogue.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed launch update.
-    pub async fn launch_published_application(
-        &self,
-        app_id: &str,
-        content_hash: Option<&str>,
-    ) -> Result<(u64, String), NotAvailable> {
-        let mut request = self.inner.launch_published_application_request();
-        request.get().set_app_id(app_id);
-        request
-            .get()
-            .set_content_hash(content_hash.unwrap_or_default());
-        let reply = request.send().promise.await?;
-        let result = reply.get()?;
-        Ok((
-            result.get_id(),
-            result
-                .get_update_json()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(format!("invalid launch update: {error}")))?
-                .to_owned(),
-        ))
+        Ok(reply.get()?.get_frame()?.to_vec())
     }
 
     /// Ask this session to open the "say something about this" surface,
@@ -1912,31 +1715,6 @@ pub struct ActionEvent {
 #[cfg(feature = "client")]
 pub struct ActionStream {
     inner: Rc<ActionStreamClient>,
-}
-
-#[derive(Clone)]
-#[cfg(feature = "client")]
-pub struct ActionCatalogueStream {
-    inner: Rc<ActionCatalogueStreamClient>,
-}
-
-#[cfg(feature = "client")]
-impl ActionCatalogueStream {
-    /// Pull the next complete action-catalogue snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns malformed catalogue data.
-    pub async fn read(&self) -> Result<String, NotAvailable> {
-        let reply = self.inner.read_request().send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_catalogue_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
-            .to_owned())
-    }
 }
 
 #[cfg(feature = "client")]

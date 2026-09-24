@@ -15,11 +15,10 @@
 )]
 
 use super::{
-    ActionDirectoryRequest, Backend, BrokerActionDescriptor, BrokerActionSurface, CollabEvent,
-    CollabRequest, CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
-    ExportedAction, ExportedInput, PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec,
-    SignedOp, TransportCommand, TransportError, TransportStatus, Uuid, auto_hello_env, channel_key,
-    mpsc, presence_handle_env,
+    ActionDirectoryRequest, Backend, CollabEvent, CollabRequest, CollabTransport,
+    CollaborationManager, Collaborator, DocumentMutation, ExportedAction, ExportedInput,
+    PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
+    TransportError, TransportStatus, Uuid, auto_hello_env, channel_key, mpsc, presence_handle_env,
 };
 
 use crate::time::Duration;
@@ -119,11 +118,6 @@ impl RouteSpec {
             self.record.as_deref().unwrap_or(""),
         )
     }
-}
-
-#[derive(serde::Deserialize)]
-struct BrokerActionCatalogueWire {
-    surfaces: Vec<BrokerActionSurface>,
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
@@ -385,17 +379,6 @@ fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     }
 }
 
-fn launch_published_application_bytes(
-    app_id: &String,
-    content_hash: Option<&String>,
-    meter: &mut ByteMeter,
-) {
-    meter.string_capacity(app_id);
-    if let Some(content_hash) = content_hash {
-        meter.string_capacity(content_hash);
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one exhaustive request meter must account for every bounded queue variant without a permissive fallback"
@@ -430,9 +413,8 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::FetchScrollback { .. }
         | CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
-        | CollabRequest::RequestDocumentSnapshot
-        | CollabRequest::PublishedInvocationStatus { .. }
-        | CollabRequest::CancelPublishedInvocation { .. } => {}
+        | CollabRequest::RequestDocumentSnapshot => {}
+        CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
         CollabRequest::PublishActions { app_id, actions } => {
             meter.string_capacity(app_id);
             meter.add_product(actions.capacity(), std::mem::size_of::<ExportedAction>());
@@ -466,11 +448,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             serialized_bytes(command, &mut meter);
         }
         CollabRequest::ClearContinuation { app_id } => meter.string_capacity(app_id),
-        CollabRequest::LaunchPublishedApplication {
-            app_id,
-            content_hash,
-            ..
-        } => launch_published_application_bytes(app_id, content_hash.as_ref(), &mut meter),
         CollabRequest::WorkspaceControlInput { event, .. } => serialized_bytes(event, &mut meter),
         CollabRequest::CompleteInvocation { code, message, .. } => {
             meter.string_capacity(code);
@@ -481,18 +458,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(&address.resource);
             meter.string_capacity(&address.action);
             serialized_bytes(update, &mut meter);
-        }
-        CollabRequest::InvokePublishedAction {
-            resource,
-            action,
-            arguments,
-            confirmation,
-            ..
-        } => {
-            meter.string_capacity(resource);
-            meter.string_capacity(action);
-            json_map_bytes(arguments, &mut meter);
-            json_bytes(confirmation, &mut meter);
         }
         CollabRequest::ReportTaskRun { lease, update, .. } => {
             meter.string_capacity(lease);
@@ -589,28 +554,6 @@ fn workspace_control_event_bytes(
     }
 }
 
-fn broker_action_bytes(action: &BrokerActionDescriptor, meter: &mut ByteMeter) {
-    meter.string_capacity(&action.resource);
-    meter.string_capacity(&action.action);
-    meter.string_capacity(&action.resource_kind);
-    meter.string_capacity(&action.resource_label);
-    meter.string_capacity(&action.action_label);
-    if let Some(description) = &action.description {
-        meter.string_capacity(description);
-    }
-    meter.add_product(
-        action.params.capacity(),
-        std::mem::size_of::<tilo_actions::ActionParam>(),
-    );
-    for param in &action.params {
-        serialized_bytes(param, meter);
-    }
-    serialized_bytes(&action.contract, meter);
-    meter.string_capacity(&action.input.kind);
-    meter.string_capacity(&action.input.prompt);
-    meter.string_capacity(&action.input.placeholder);
-}
-
 fn context_event_bytes(
     collaborators: &[Collaborator],
     collaborator_capacity: usize,
@@ -629,24 +572,40 @@ fn context_event_bytes(
     }
 }
 
-fn action_catalogue_bytes(
-    surfaces: &[BrokerActionSurface],
-    surface_capacity: usize,
-    meter: &mut ByteMeter,
-) {
-    meter.add_product(surface_capacity, std::mem::size_of::<BrokerActionSurface>());
-    for surface in surfaces {
-        meter.string_capacity(&surface.app_id);
-        meter.string_capacity(&surface.cluster_id);
-        meter.string_capacity(&surface.record_id);
-        meter.add_product(
-            surface.actions.capacity(),
-            std::mem::size_of::<BrokerActionDescriptor>(),
-        );
-        for action in &surface.actions {
-            broker_action_bytes(action, meter);
-        }
+/// Carry one request frame to the session's action host and decode its
+/// answer. Every request is answered — a transport failure becomes the
+/// refusal the request would have received — so a caller waiting on its
+/// invocation id or correlation always hears back.
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn remote_action_round_trip(
+    channel: &runtime_collab::ChannelHandle,
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> tilo_actions::remote::RemoteActionMessage {
+    use tilo_actions::remote::RemoteActionFrame;
+
+    let answer = async {
+        let frame = RemoteActionFrame::new(message.clone())
+            .encode()
+            .map_err(|error| error.to_string())?;
+        let reply = channel
+            .remote_action(&frame)
+            .await
+            .map_err(|error| error.to_string())?;
+        RemoteActionFrame::decode(&reply)
+            .map(|frame| frame.message)
+            .map_err(|error| error.to_string())
     }
+    .await;
+    answer.unwrap_or_else(|reason| {
+        tilo_actions::remote::refuse(
+            &message,
+            tilo_actions::remote::ActionHostError::Unavailable { reason },
+        )
+        .unwrap_or(message)
+    })
 }
 
 fn scrollback_batch_bytes(
@@ -761,11 +720,8 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             }
         }
         CollabEvent::InvocationCancellation { .. } => {}
-        CollabEvent::ActionCatalogue { surfaces } => {
-            action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
-        }
-        CollabEvent::PublishedInvocationResult { result, .. }
-        | CollabEvent::TaskActionInvocationResult { result, .. } => match result {
+        CollabEvent::RemoteAction { message } => serialized_bytes(message, &mut meter),
+        CollabEvent::TaskActionInvocationResult { result, .. } => match result {
             Ok((_, update)) => serialized_bytes(update, &mut meter),
             Err(error) => meter.string_capacity(error),
         },
@@ -2240,11 +2196,6 @@ async fn ensure_sdk_route(
         }
     };
 
-    // The catalogue is level-triggered and its first snapshot is the route's
-    // decision baseline. Enqueue it before subscribing to document traffic,
-    // so a backlogged snapshot cannot make an agent decide against stale
-    // local fallback data immediately after construction.
-    spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
     spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
     spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
@@ -2480,50 +2431,6 @@ fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionC
             None
         }
     }
-}
-
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
-)]
-async fn spawn_action_catalogue_stream(
-    channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &InboundBridge,
-) -> Result<(), String> {
-    let stream = channel
-        .subscribe_action_catalogue()
-        .await
-        .map_err(|error| format!("subscribing to action catalogue failed: {error}"))?;
-    let initial = stream
-        .read()
-        .await
-        .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
-    let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
-        .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
-    if !inbound_tx.send_durable(CollabEvent::ActionCatalogue {
-        surfaces: catalogue.surfaces,
-    }) {
-        return Err("delivering initial action catalogue failed".to_string());
-    }
-
-    let tx = inbound_tx.clone();
-    tokio::task::spawn_local(async move {
-        while let Ok(snapshot) = stream.read().await {
-            match serde_json::from_str::<BrokerActionCatalogueWire>(&snapshot) {
-                Ok(catalogue) => {
-                    if !tx.send_durable(CollabEvent::ActionCatalogue {
-                        surfaces: catalogue.surfaces,
-                    }) {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "collab: invalid broker action catalogue");
-                }
-            }
-        }
-    });
-    Ok(())
 }
 
 /// Bridge broker-addressed task leases only when this connection is an
@@ -3248,85 +3155,9 @@ async fn dispatch_sdk_request(
                 }
             }
         }
-        CollabRequest::InvokePublishedAction {
-            request_id,
-            peer_id,
-            resource,
-            action,
-            arguments,
-            confirmation,
-        } => {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(arguments)
-            );
-            let confirmation = confirmation.to_string();
-            let result = route
-                .channel
-                .invoke_published_action(
-                    peer_id,
-                    &resource,
-                    &action,
-                    Some(&argument),
-                    &confirmation,
-                )
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|(id, update)| {
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
-        }
-        CollabRequest::PublishedInvocationStatus { request_id, id } => {
-            let result = route
-                .channel
-                .published_invocation_status(id)
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|update| {
-                    let update = update.ok_or_else(|| "unknown invocation id".to_string())?;
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
-        }
-        CollabRequest::CancelPublishedInvocation { request_id, id } => {
-            let result = route
-                .channel
-                .cancel_published_invocation(id)
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|update| {
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
-        }
-        CollabRequest::LaunchPublishedApplication {
-            request_id,
-            app_id,
-            content_hash,
-        } => {
-            let result = route
-                .channel
-                .launch_published_application(&app_id, content_hash.as_deref())
-                .await
-                .map_err(|error| error.to_string())
-                .and_then(|(id, update)| {
-                    serde_json::from_str(&update)
-                        .map(|update| (id, update))
-                        .map_err(|error| error.to_string())
-                });
-            let _ = inbound_tx
-                .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
+        CollabRequest::RemoteAction { message } => {
+            let answer = remote_action_round_trip(&route.channel, message).await;
+            let _ = inbound_tx.send_durable(CollabEvent::RemoteAction { message: answer });
         }
         CollabRequest::ReportTaskRun {
             run_id,
@@ -3339,6 +3170,7 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::InvokeTaskAction {
             request_id,
+            invocation,
             run_id,
             lease,
             peer_id,
@@ -3361,6 +3193,7 @@ async fn dispatch_sdk_request(
                     &action,
                     Some(&argument),
                     "",
+                    &invocation.0.to_string(),
                 )
                 .await
                 .map_err(|error| error.to_string())
@@ -3547,9 +3380,8 @@ mod tests {
 
     use runtime_collab::PresencePayload as SdkPayload;
     use runtime_collab::raw::{
-        action_catalogue_stream, channel_context, channel_handle, collab_service, context_stream,
-        presence_event, presence_handle, presence_payload, presence_stream, scrollback_batch,
-        stream,
+        channel_context, channel_handle, collab_service, context_stream, presence_event,
+        presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
     };
 
     #[derive(Default)]
@@ -3860,24 +3692,6 @@ mod tests {
         }
     }
 
-    struct FakeActionCatalogueStream {
-        initial: RefCell<Option<String>>,
-    }
-
-    impl action_catalogue_stream::Server for FakeActionCatalogueStream {
-        fn read(
-            self: Rc<Self>,
-            _params: action_catalogue_stream::ReadParams,
-            mut results: action_catalogue_stream::ReadResults,
-        ) -> Promise<(), capnp::Error> {
-            let Some(initial) = self.initial.borrow_mut().take() else {
-                return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
-            };
-            results.get().set_catalogue_json(&initial);
-            Promise::ok(())
-        }
-    }
-
     struct FakeChannel {
         captures: SharedCaptures,
         op_backlog: OpBacklog,
@@ -3952,21 +3766,6 @@ mod tests {
             let client: context_stream::Client = capnp_rpc::new_client(FakeContextStream {
                 backlog: self.context_backlog.clone(),
             });
-            results.get().set_stream(client);
-            Promise::ok(())
-        }
-
-        fn subscribe_action_catalogue(
-            self: Rc<Self>,
-            _params: channel_handle::SubscribeActionCatalogueParams,
-            mut results: channel_handle::SubscribeActionCatalogueResults,
-        ) -> Promise<(), capnp::Error> {
-            let client: action_catalogue_stream::Client =
-                capnp_rpc::new_client(FakeActionCatalogueStream {
-                    initial: RefCell::new(Some(
-                        serde_json::json!({"version": 1, "surfaces": []}).to_string(),
-                    )),
-                });
             results.get().set_stream(client);
             Promise::ok(())
         }
@@ -4702,8 +4501,11 @@ mod tests {
             tx,
             state: BridgeState::new(),
         };
-        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
-            surfaces: Vec::new()
+        assert!(inbound.send_durable(CollabEvent::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Update {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                state: None,
+            },
         }));
         assert_eq!(
             wakes.load(Ordering::SeqCst),
@@ -4723,8 +4525,11 @@ mod tests {
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_ok());
         inbound.state.begin_poll();
-        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
-            surfaces: Vec::new()
+        assert!(inbound.send_durable(CollabEvent::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Update {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                state: None,
+            },
         }));
         assert_eq!(
             wakes.load(Ordering::SeqCst),
@@ -4734,8 +4539,11 @@ mod tests {
         assert!(rx.try_recv().is_ok());
         scope.close();
         inbound.state.begin_poll();
-        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
-            surfaces: Vec::new()
+        assert!(inbound.send_durable(CollabEvent::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Update {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                state: None,
+            },
         }));
         assert_eq!(
             wakes.load(Ordering::SeqCst),
@@ -4769,13 +4577,20 @@ mod tests {
             })
         ));
 
-        assert!(inbound.send_durable(CollabEvent::ActionCatalogue {
-            surfaces: Vec::new(),
+        assert!(inbound.send_durable(CollabEvent::RemoteAction {
+            message: tilo_actions::remote::RemoteActionMessage::Update {
+                invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                state: None,
+            },
         }));
         assert!(
-            !inbound.send_durable(CollabEvent::PublishedInvocationResult {
-                request_id: 9,
-                result: Err("would have been lost".to_owned()),
+            !inbound.send_durable(CollabEvent::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Receipt(
+                    tilo_actions::remote::InvocationReceipt {
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
+                        status: tilo_actions::remote::ReceiptStatus::Accepted,
+                    }
+                ),
             }),
             "an invocation lifecycle result is never silently discarded"
         );
@@ -4783,9 +4598,11 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(QueuedCollabEvent {
-                event: CollabEvent::ActionCatalogue { surfaces },
+                event: CollabEvent::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Update { .. }
+                },
                 ..
-            }) if surfaces.is_empty()
+            })
         ));
         assert!(rx.try_recv().is_err());
     }
