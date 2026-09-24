@@ -14,6 +14,12 @@
 //! rebuilt `AutoCommit`, so saves stay mergeable with a diverged peer. The
 //! actor id lives in a sidecar for restart continuity; [`DocStore::open`]
 //! takes an exclusive `flock` so two live instances never share one.
+//!
+//! Hosts that own an explicit profile persist records through the
+//! [`durable_store::DurableStore`] seam instead: [`FsStore`] maps its keys
+//! onto the same canonical files, and [`DocOwner`] + [`DocWriter`] give a
+//! document the same validation, repair and append/compact behaviour over
+//! any store.
 
 #![cfg_attr(
     test,
@@ -41,11 +47,15 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
 
 mod autosave;
+mod doc_writer;
+mod fs_store;
 pub use autosave::{Autosave, DEFAULT_DEBOUNCE, DurabilitySnapshot};
+pub use doc_writer::{DocOwner, DocWriter, StoredLoad};
+pub use fs_store::{FsStore, INSTANCE_VIEWS_DIR};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
-const CANONICAL_GATE: &str = "canonical.lock";
+pub const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per record. See [`DocStore::open_record`].
 pub const RECORDS_DIR: &str = "records";
@@ -240,6 +250,17 @@ fn validate_record_key(key: &str) -> Result<(), StoreError> {
         ));
     }
     Ok(())
+}
+
+/// Validate the identifiers of a room-scoped record without resolving any
+/// path, so a caller can refuse a bad namespace before choosing a store.
+///
+/// # Errors
+/// Rejects any identifier that is not a single, non-traversing name.
+pub fn validate_record_identity(package: &str, room: &str, record: &str) -> Result<(), StoreError> {
+    validate_package_id(package)?;
+    validate_record_key(room)?;
+    validate_record_key(record)
 }
 
 /// The persistent store for one package's Automerge document. Construct
@@ -635,48 +656,7 @@ impl DocStore {
     /// Rejects legacy mode, malformed/conflicting schemas and newer schemas.
     pub fn validate_canonical_schema(&self, doc: &AutoCommit) -> Result<(), StoreError> {
         self.canonical_state()?;
-        let invalid = |reason| StoreError::InvalidSchema {
-            path: self.document.clone(),
-            reason,
-        };
-        let mut versions = Vec::new();
-        for key in [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY] {
-            for (value, _) in doc
-                .get_all(ROOT, key)
-                .map_err(|e| self.automerge_error(e))?
-            {
-                let raw = match value {
-                    automerge::Value::Scalar(value) => match value.as_ref() {
-                        automerge::ScalarValue::Uint(v) => *v,
-                        automerge::ScalarValue::Int(v) => {
-                            u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
-                        }
-                        _ => return Err(invalid("schema version must be an integer")),
-                    },
-                    automerge::Value::Object(_) => {
-                        return Err(invalid("schema version must be a scalar"));
-                    }
-                };
-                versions
-                    .push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
-            }
-        }
-        if let Some(found) = versions
-            .iter()
-            .copied()
-            .max()
-            .filter(|v| *v > SCHEMA_VERSION)
-        {
-            return Err(StoreError::NewerSchema {
-                path: self.document.clone(),
-                found,
-                understood: SCHEMA_VERSION,
-            });
-        }
-        if versions.iter().any(|v| Some(v) != versions.first()) {
-            return Err(invalid("conflicting schema versions"));
-        }
-        Ok(())
+        validate_canonical_schema_of(doc, &self.document)
     }
 
     /// Decode an existing file, retaining any repair privately for identity validation.
@@ -706,28 +686,8 @@ impl DocStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io_err("reading canonical document", e)),
         };
-        if source_bytes.is_empty() {
-            return Err(StoreError::EmptyExistingDocument {
-                path: self.document.clone(),
-            });
-        }
-        let (mut doc, repair) = match AutoCommit::load_with_options(
-            &source_bytes,
-            LoadOptions::new().on_partial_load(OnPartialLoad::Error),
-        ) {
-            Ok(doc) => (doc, false),
-            Err(error) if !recover_partial => return Err(self.automerge_error(error)),
-            Err(_) => (
-                AutoCommit::load_with_options(
-                    &source_bytes,
-                    LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
-                )
-                .map_err(|e| self.automerge_error(e))?,
-                true,
-            ),
-        };
-        self.validate_canonical_schema(&doc)?;
-        let repair_bytes = repair.then(|| doc.save());
+        self.canonical_state()?;
+        let (doc, repair_bytes) = decode_canonical(&source_bytes, recover_partial, &self.document)?;
         Ok(Some(CanonicalLoad {
             doc,
             source_bytes,
@@ -789,16 +749,7 @@ impl DocStore {
 
     fn sync_directory_chain(&self) -> Result<(), StoreError> {
         self.check_canonical_source()?;
-        let physical =
-            fs::canonicalize(&self.dir).map_err(|e| io_err("resolving canonical directory", e))?;
-        // Windows owns and provisions the profile root before launching an
-        // app. Our durability obligation includes that root and every child
-        // directory, including ancestors left by an interrupted earlier open.
-        // It does not include creating the OS-owned C:\Users or volume root.
-        // Query the OS known folder, not USERPROFILE supplied by an environment.
-        #[cfg(windows)]
-        let profile_root = dirs::home_dir().and_then(|path| fs::canonicalize(path).ok());
-        for path in physical.ancestors() {
+        sync_directory_ancestors(&self.dir, |path| {
             #[cfg(test)]
             {
                 self.faults
@@ -813,14 +764,9 @@ impl DocStore {
                     ));
                 }
             }
-            open_directory(path, true)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
-            #[cfg(windows)]
-            if profile_root.as_deref() == Some(path) {
-                break;
-            }
-        }
+            let _ = path;
+            Ok(())
+        })?;
         self.check_canonical_source()
     }
 
@@ -1183,6 +1129,127 @@ fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
             "absolute directory without parent traversal required",
             io::Error::from(io::ErrorKind::InvalidInput),
         ));
+    }
+    Ok(())
+}
+
+/// Decode stored canonical bytes without publishing anything. With
+/// `recover_partial`, a torn trailing chunk (a crash mid-append) is dropped
+/// and the complete prefix is returned together with the bytes that would
+/// replace the torn original once the caller accepts it; the original is
+/// never rewritten here. `label` names the source in errors.
+///
+/// # Errors
+/// Refuses empty, undecodable, incomplete (without recovery), malformed or
+/// newer-schema documents.
+pub fn decode_canonical(
+    bytes: &[u8],
+    recover_partial: bool,
+    label: &Path,
+) -> Result<(AutoCommit, Option<Vec<u8>>), StoreError> {
+    if bytes.is_empty() {
+        return Err(StoreError::EmptyExistingDocument {
+            path: label.to_path_buf(),
+        });
+    }
+    let automerge_error = |source| StoreError::Automerge {
+        path: label.to_path_buf(),
+        source: Box::new(source),
+    };
+    let (mut doc, repair) = match AutoCommit::load_with_options(
+        bytes,
+        LoadOptions::new().on_partial_load(OnPartialLoad::Error),
+    ) {
+        Ok(doc) => (doc, false),
+        Err(error) if !recover_partial => return Err(automerge_error(error)),
+        Err(_) => (
+            AutoCommit::load_with_options(
+                bytes,
+                LoadOptions::new().on_partial_load(OnPartialLoad::Ignore),
+            )
+            .map_err(automerge_error)?,
+            true,
+        ),
+    };
+    validate_canonical_schema_of(&doc, label)?;
+    let repair = repair.then(|| doc.save());
+    Ok((doc, repair))
+}
+
+/// Validate every live schema assignment of a canonical document without
+/// coercion or mutation. `label` names the source in errors.
+///
+/// # Errors
+/// Rejects malformed, conflicting and newer schemas.
+pub fn validate_canonical_schema_of(doc: &AutoCommit, label: &Path) -> Result<(), StoreError> {
+    let invalid = |reason| StoreError::InvalidSchema {
+        path: label.to_path_buf(),
+        reason,
+    };
+    let automerge_error = |source| StoreError::Automerge {
+        path: label.to_path_buf(),
+        source: Box::new(source),
+    };
+    let mut versions = Vec::new();
+    for key in [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY] {
+        for (value, _) in doc.get_all(ROOT, key).map_err(automerge_error)? {
+            let raw = match value {
+                automerge::Value::Scalar(value) => match value.as_ref() {
+                    automerge::ScalarValue::Uint(v) => *v,
+                    automerge::ScalarValue::Int(v) => {
+                        u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
+                    }
+                    _ => return Err(invalid("schema version must be an integer")),
+                },
+                automerge::Value::Object(_) => {
+                    return Err(invalid("schema version must be a scalar"));
+                }
+            };
+            versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
+        }
+    }
+    if let Some(found) = versions
+        .iter()
+        .copied()
+        .max()
+        .filter(|v| *v > SCHEMA_VERSION)
+    {
+        return Err(StoreError::NewerSchema {
+            path: label.to_path_buf(),
+            found,
+            understood: SCHEMA_VERSION,
+        });
+    }
+    if versions.iter().any(|v| Some(v) != versions.first()) {
+        return Err(invalid("conflicting schema versions"));
+    }
+    Ok(())
+}
+
+/// `fsync` a directory and every ancestor, so a newly created or renamed
+/// entry survives a crash however deep it was created. `visit` runs before
+/// each directory and may refuse it.
+fn sync_directory_ancestors(
+    dir: &Path,
+    mut visit: impl FnMut(&Path) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let physical = fs::canonicalize(dir).map_err(|e| io_err("resolving canonical directory", e))?;
+    // Windows owns and provisions the profile root before launching an
+    // app. Our durability obligation includes that root and every child
+    // directory, including ancestors left by an interrupted earlier open.
+    // It does not include creating the OS-owned C:\Users or volume root.
+    // Query the OS known folder, not USERPROFILE supplied by an environment.
+    #[cfg(windows)]
+    let profile_root = dirs::home_dir().and_then(|path| fs::canonicalize(path).ok());
+    for path in physical.ancestors() {
+        visit(path)?;
+        open_directory(path, true)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
+        #[cfg(windows)]
+        if profile_root.as_deref() == Some(path) {
+            break;
+        }
     }
     Ok(())
 }
@@ -1905,7 +1972,7 @@ mod tests {
         bytes
     }
 
-    fn assert_malformed_schemas_are_rejected(store: &mut DocStore) {
+    fn assert_malformed_schemas_are_rejected(store: &DocStore) {
         for value in [
             ScalarValue::Int(-1),
             ScalarValue::Int(i64::MAX),
@@ -1949,7 +2016,7 @@ mod tests {
         ));
     }
 
-    fn assert_supported_schemas_are_nonmutating(store: &mut DocStore) {
+    fn assert_supported_schemas_are_nonmutating(store: &DocStore) {
         for value in [
             None,
             Some(ScalarValue::Int(0)),
@@ -2046,8 +2113,8 @@ mod tests {
     fn canonical_schema_checks_all_live_values_without_mutation() {
         let tmp = TempDir::new().unwrap();
         let mut store = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
-        assert_malformed_schemas_are_rejected(&mut store);
-        assert_supported_schemas_are_nonmutating(&mut store);
+        assert_malformed_schemas_are_rejected(&store);
+        assert_supported_schemas_are_nonmutating(&store);
         assert_schema_conflicts_are_checked(&mut store);
     }
 
