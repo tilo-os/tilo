@@ -2826,7 +2826,7 @@ mod tests {
         let old_heads = {
             let mut owner = app_state::DocStore::shared(
                 Rc::clone(&documents),
-                StorageKey::package_record(package, &checkout.id.storage_key()),
+                StorageKey::package_record(package, checkout.id.storage_key()),
             )
             .unwrap();
             let mut doc = owner.new_document();
@@ -2839,7 +2839,7 @@ mod tests {
         let legacy_path = documents
             .local_path(&StorageKey::package_record(
                 package,
-                &checkout.id.storage_key(),
+                checkout.id.storage_key(),
             ))
             .unwrap();
         let original_bytes = std::fs::read(&legacy_path).unwrap();
@@ -2864,7 +2864,7 @@ mod tests {
         assert!(
             !documents
                 .claim(
-                    &StorageKey::package_record(package, &checkout.id.storage_key()),
+                    &StorageKey::package_record(package, checkout.id.storage_key()),
                     "22222222-2222-4222-8222-222222222222"
                 )
                 .unwrap(),
