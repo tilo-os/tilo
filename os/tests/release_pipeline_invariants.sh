@@ -228,6 +228,16 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
+grep -Fq 'cron: "0 2 * * *"' "$os" \
+  && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
+  && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
+  && grep -Fq '$PUBLISHED_REVISION == "$GITHUB_SHA"' "$os" \
+  && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
+  && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
+  && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
+  && ok 'nightly main runs publish through the protected main path and skip an already published revision' \
+  || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
+
 if ! grep -q '^  pull_request:' "$os" \
   && ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$os" | grep -q '^    branches:' \
   && grep -Fq '  schedule:' "$os" \
