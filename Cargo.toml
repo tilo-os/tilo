@@ -116,6 +116,7 @@ members = [
     "crates/dev/collab-probe",
     "crates/dev/frame-link",
     "crates/dev/headless-schema",
+    "crates/dev/test-env",
     "crates/dev/tilo-app-cli",
     "crates/dev/tilo-app-template-smoke",
     "crates/dev/tilo-vm",
