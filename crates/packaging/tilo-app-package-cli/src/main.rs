@@ -506,17 +506,12 @@ fn cmd_publish(
     })?;
     let publisher = load_identity(identity_path)?;
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("build tokio runtime")?;
-
     // HTTPS target: emit the signed entry to the registry endpoint, which
     // ingests the blob out of band via the entry's ticket.
     if registry.starts_with("http://") || registry.starts_with("https://") {
         let (entry, _package_id) = app_registry::build_entry(&tapp_bytes, &publisher, arch, None)
             .map_err(|e| anyhow!("build entry: {e}"))?;
-        rt.block_on(app_registry::publish::emit_entry_https(registry, &entry))
+        tilo_rt::block_on(app_registry::publish::emit_entry_https(registry, &entry))?
             .map_err(|e| anyhow!("emit to registry: {e}"))?;
         eprintln!(
             "emitted signed entry for {}@{} to {registry}",
@@ -532,7 +527,7 @@ fn cmd_publish(
         None => load_identity(identity_path)?,
     };
 
-    rt.block_on(async move {
+    tilo_rt::block_on(async move {
         let node =
             app_registry::BlobNode::persistent(app_registry::registry_dir::blobs_dir(&dir)).await?;
         let receipt = app_registry::publish_to_dir(
@@ -564,7 +559,7 @@ fn cmd_publish(
             );
         }
         anyhow::Ok(())
-    })?;
+    })??;
     Ok(())
 }
 

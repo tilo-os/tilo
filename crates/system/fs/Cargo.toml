@@ -109,6 +109,7 @@ uuid = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["full"] }
+tilo-rt.workspace = true
 hex = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["use-std"] }
