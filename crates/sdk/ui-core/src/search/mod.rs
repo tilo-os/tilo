@@ -27,6 +27,8 @@
 
 mod provider;
 mod registry;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
