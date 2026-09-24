@@ -442,7 +442,7 @@ mod tests {
         document.put(ROOT, "value", "persisted").unwrap();
         document.commit();
         SeedDocument {
-            app_id: "dev.qos.word-processor".into(),
+            app_id: "so.tilo.word-processor".into(),
             record_id: "tab:0000000000000001".into(),
             kind: "word-processor".into(),
             bytes: document.save(),
@@ -459,6 +459,15 @@ mod tests {
         receipts: BTreeMap<String, Vec<u8>>,
         certificates: Vec<DeviceCert>,
         revocations: Vec<RevocationEntry>,
+    }
+
+    /// The current durable envelope: a frozen v3 base plus the pending queue.
+    #[derive(Serialize, Deserialize)]
+    struct DurableV4Fixture {
+        version: u32,
+        base: DurableFixture,
+        pending: std::collections::VecDeque<([u8; 32], qos_peer_state::NeighbourMsg, bool)>,
+        pending_bytes: usize,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -826,8 +835,10 @@ mod tests {
         assert!(!admitted.rows().is_empty());
         assert_eq!(super::admission_phase(&admitted, true, None), "ready");
 
-        let mut durable: DurableFixture =
+        let mut envelope: DurableV4Fixture =
             postcard::from_bytes(&admitted.durable().unwrap()).unwrap();
+        assert_eq!(envelope.version, 4);
+        let durable = &mut envelope.base;
         assert_eq!(durable.version, 3);
         assert!(
             durable
@@ -837,7 +848,7 @@ mod tests {
         );
         durable.room_bytes = None;
         let restored = StatePeer::restore(
-            &postcard::to_allocvec(&durable).unwrap(),
+            &postcard::to_allocvec(&envelope).unwrap(),
             room,
             authority.clone(),
             vec![authority.clone(), member.clone()],

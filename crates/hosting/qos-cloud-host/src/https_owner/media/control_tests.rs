@@ -439,7 +439,12 @@ fn cloud_media_remote_leave_denies_all_scopes_but_keeps_own_publication_current(
         hex::encode(signed.metadata.namespace.publisher)
     );
     assert_eq!(permit.publication(), Some(namespace.as_str()));
-    assert_eq!(permit.subscriptions().len(), 1);
+    // Subscriptions are offered under the call prefix, not a fixed set.
+    assert!(permit.subscriptions().is_empty());
+    assert_eq!(
+        permit.subscription_prefix(),
+        Some(hex::encode(signed.metadata.namespace.call).as_str())
+    );
     let before = f.source.0.turns.load(Ordering::Relaxed);
     assert!(matches!(permit.status_all(), AuthorizationStatus::Current));
     assert_eq!(f.source.0.turns.load(Ordering::Relaxed) - before, 1);
@@ -453,13 +458,27 @@ fn cloud_media_remote_leave_denies_all_scopes_but_keeps_own_publication_current(
         ControlResult::Left
     ));
     assert!(permit.current(Direction::Publish, &namespace));
+    // The departed publisher's offered scope lapses; this session's own
+    // authority and publication stay current in the same observation.
+    let remote_signed = SignedGrant::decode(&remote).unwrap();
+    let remote_namespace = format!(
+        "{}/{}",
+        hex::encode(remote_signed.metadata.namespace.call),
+        hex::encode(remote_signed.metadata.namespace.publisher)
+    );
     let before = f.source.0.turns.load(Ordering::Relaxed);
-    assert!(matches!(permit.status_all(), AuthorizationStatus::Denied));
+    let mut lapsed = Vec::new();
+    assert!(matches!(
+        permit.status_offered(&[remote_namespace.as_str()], &mut lapsed),
+        AuthorizationStatus::Current
+    ));
+    assert_eq!(lapsed, [remote_namespace.clone()]);
     assert_eq!(
         f.source.0.turns.load(Ordering::Relaxed) - before,
         1,
         "all scopes must share one actual Store observation"
     );
+    assert!(!permit.current(Direction::Subscribe, &remote_namespace));
 }
 
 #[test]

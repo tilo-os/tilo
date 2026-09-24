@@ -598,12 +598,18 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
         .await;
     assert_eq!(status, reqwest::StatusCode::OK);
     if canonical == *last {
-        assert!(
-            timeout(Duration::from_millis(300), ops.recv_group())
-                .await
-                .is_err(),
-            "duplicates are not re-forwarded"
-        );
+        // The relay may still close out an empty group; only a frame would be
+        // a re-forward.
+        let reforwarded = timeout(Duration::from_millis(300), async {
+            while let Ok(Some(mut group)) = ops.recv_group().await {
+                if let Ok(Some(frame)) = group.read_frame().await {
+                    return frame.payload.to_vec();
+                }
+            }
+            std::future::pending().await
+        })
+        .await;
+        assert!(reforwarded.is_err(), "duplicates are not re-forwarded");
     }
 
     // Author not live: once the guest's live session is gone, its accepted

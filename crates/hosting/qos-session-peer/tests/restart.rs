@@ -821,9 +821,12 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
                 status["action_error"].is_null(),
                 "remote reconnect must retain committed local worker authority in cycle {cycle}: {status}"
             );
+            // The first cycle commits the initial subscription. A reconnect
+            // with nothing new to commit re-subscribes without a durable write,
+            // so only the subscription generation must advance.
             if status["native_peer"] == "subscribed"
                 && status["actions"] == "ready"
-                && generation > last_generation
+                && (generation > last_generation || (cycle > 0 && generation == last_generation))
                 && subscription > last_subscription
             {
                 last_subscription = subscription;

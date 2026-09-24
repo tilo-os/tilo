@@ -1111,7 +1111,7 @@ mod tests {
         let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, _signatures) = HostSigning::new(handle);
         let (sender, _network) = tokio::sync::mpsc::channel(64);
-        let mut runtime = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        let mut runtime = ActionHost::start(&owner, authority.clone(), signing, sender).unwrap();
         let app = runtime.workers[0].app_id.clone();
         let resource = ResourceRef::App(app.clone());
         assert_eq!(
@@ -1155,8 +1155,14 @@ mod tests {
                 web_time::SystemTime::now(),
             )
             .unwrap();
-        owner
-            .commit_mutation_candidate(candidate, owner.directory().to_vec())
+        // Commit through the committed-authority guard, as the host loop does,
+        // so the worker's policy sampler observes the new generation.
+        authority
+            .committed
+            .with_owner(&mut owner, |owner| {
+                owner.commit_mutation_candidate(candidate, owner.directory().to_vec())
+            })
+            .unwrap()
             .unwrap();
         runtime.pump(&owner).unwrap();
         assert_eq!(
@@ -1481,17 +1487,64 @@ mod tests {
             })
             .unwrap();
         let broker = runtime.broker.app_action_broker().unwrap();
-        let job = broker
-            .start(
-                surface.peer_id,
-                &action.resource,
-                &action.action,
-                None,
-                &runtime.principal,
+        // A required host worker executes only an invocation whose original
+        // certified caller the broker captured, so start it from a genuine
+        // certified connection rather than a local, callerless broker start.
+        let room_id: uuid::Uuid = room.parse().unwrap();
+        let stream = runtime
+            .broker
+            .connect_local_worker(
+                CrdtRoute::record(
+                    "so.tilo.word-processor",
+                    room.clone(),
+                    "tab:0000000000000001",
+                ),
+                &owner.identity.native_cert,
             )
             .unwrap();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: room.clone(),
+            device_certificate: serde_json::to_vec(&owner.identity.native_cert).unwrap(),
+            proof: owner
+                .identity
+                .native
+                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let mut caller = CollaborationManager::for_route_fd_with_identity(
+            stream.into_raw_fd(),
+            "so.tilo.word-processor",
+            room_id,
+            Some("tab:0000000000000001".into()),
+            None,
+            CertifiedEndpointIdentity::new(presentation, owner.identity.native.clone()),
+        )
+        .unwrap();
+        assert!(
+            caller.send(ui::collaboration::CollabRequest::InvokePublishedAction {
+                request_id: 942,
+                peer_id: surface.peer_id,
+                resource: action.resource.clone(),
+                action: action.action.clone(),
+                arguments: serde_json::Map::new(),
+                confirmation: serde_json::json!({}),
+            })
+        );
+        let mut job = None;
         let mut retired = false;
         loop {
+            for event in caller.poll() {
+                if let ui::collaboration::CollabEvent::PublishedInvocationResult {
+                    request_id: 942,
+                    result,
+                } = event
+                {
+                    job = Some(result.expect("genuine certified caller is admitted").0);
+                }
+            }
             let health = runtime.pump(&owner);
             if health.is_err() {
                 assert!(retired);
@@ -1500,10 +1553,16 @@ mod tests {
             tokio::select! {
                 Some(pending) = signatures.recv() => {
                     let guard = authority.committed.begin(&owner).unwrap();
-                    let (complete, result) = pending.apply(&mut owner); result.unwrap();
-                    runtime.committed(&owner).unwrap();
-                    // The exact owner barrier already happened. Retire current
-                    // authority before the SDK can send its broker document RPC.
+                    // Final native publication of original-invocation
+                    // contributors stays closed until its bounded witness
+                    // exists: the owner refuses the precommitted document.
+                    let (complete, result) = pending.apply(&mut owner);
+                    assert_eq!(
+                        result.unwrap_err(),
+                        "startup replay cannot acknowledge invocation contributors"
+                    );
+                    // Retire current authority before the SDK can send its
+                    // broker document RPC.
                     drop(guard); retired = true; complete();
                 },
                 Some(pending) = commits.recv() => {
@@ -1517,21 +1576,27 @@ mod tests {
                 "worker did not retire after lost authority"
             );
         }
-        assert_ne!(
+        assert_eq!(
             owner
                 .peer()
-                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .document("so.tilo.word-processor", "tab:0000000000000001")
                 .unwrap(),
-            before
+            before,
+            "a refused contributor precommit changes no committed document"
         );
-        assert!(!runtime.ready());
+        // Lost committed authority keeps the runtime failed closed.
+        assert!(runtime.pump(&owner).is_err());
+        let job = job.expect("the certified invocation was admitted");
         assert!(!matches!(
-            broker.status(job.id),
+            broker.status(job),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(broker.peer_action_attachment().is_err());
         let committed = owner.status();
-        runtime.close(&owner).unwrap();
+        // The uncertain local effect is never acknowledged: close retains its
+        // dirty recovery custody instead of claiming success.
+        assert!(runtime.close(&owner).is_err());
+        assert!(owner.root().join("actions/recovery.json").is_file());
         drop(runtime);
         drop(owner);
         assert_eq!(
