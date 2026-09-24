@@ -21,6 +21,10 @@ pub struct PersonalAppsPane {
     defaults: PersonalDefaults,
     /// Where choices persist; `None` is the per-user `default-apps.json`.
     defaults_path: Option<std::path::PathBuf>,
+    /// The choice each dropdown last showed, as seeded or read back. The
+    /// resolver's pick seeded into an untouched dropdown is not a choice;
+    /// only a value that moves away from what was shown is.
+    shown: HashMap<String, String>,
     needs_seed: bool,
     commit_context_pending: bool,
     actions: ui::ActionHost,
@@ -42,6 +46,7 @@ impl PersonalAppsPane {
             candidates,
             defaults,
             defaults_path,
+            shown: HashMap::new(),
             needs_seed: true,
             commit_context_pending: false,
             actions: ui::ActionHost::new(),
@@ -236,7 +241,8 @@ impl Widget for PersonalAppsPane {
                 initial_values
             };
             for (key, value) in initial_values {
-                self.dispatch(state, &set_text_action(key, value));
+                self.dispatch(state, &set_text_action(&key, &value));
+                self.shown.insert(key, value);
             }
             self.needs_seed = false;
         }
@@ -271,6 +277,10 @@ impl Widget for PersonalAppsPane {
             {
                 let _ = state.put(root, draft_key, canonical);
             }
+            if self.shown.get(&key) == Some(&option) {
+                continue;
+            }
+            self.shown.insert(key.clone(), option.clone());
             let Some(app) = self
                 .apps_for(&resource)
                 .into_iter()
@@ -479,13 +489,20 @@ mod tests {
             .into(),
         };
         let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("default-apps.json");
         let mut pane = PersonalAppsPane::with_state(
             vec![candidate],
             PersonalDefaults::default(),
-            Some(dir.path().join("default-apps.json")),
+            Some(path.clone()),
         );
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            pane.defaults.handlers.is_empty(),
+            "showing the resolver's pick is not a personal choice"
+        );
+        assert!(!path.exists(), "opening the pane persists nothing");
         assert_eq!(
             read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html").as_deref(),
             Some("Browser — so.tilo.browser")
