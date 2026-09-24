@@ -477,6 +477,7 @@ impl App {
         }
         let (drained, action_surface_may_have_changed) = self.drain_collab_presence_events();
         any |= drained;
+        any |= self.observe_collaboration_state();
         if any {
             self.invalidate_widget_resource_cache();
         }
@@ -492,6 +493,70 @@ impl App {
             self.publish_action_surface();
         }
         any
+    }
+
+    /// Where the app's collaboration connection stands. Managers connect in
+    /// the background, so an app opens [`CollaborationState::Connecting`]
+    /// and later becomes ready or offline; a frame is scheduled at each
+    /// change.
+    ///
+    /// [`CollaborationState::Connecting`]: crate::collaboration::CollaborationState::Connecting
+    pub fn collaboration_state(&self) -> crate::collaboration::CollaborationState {
+        self.collaboration.manager.state()
+    }
+
+    /// React to the managers' connection changes. Work that only runs while
+    /// connected is level-triggered, so a manager that has just become ready
+    /// publishes the current state once instead of waiting for the next
+    /// unrelated change. Returns whether anything changed.
+    fn observe_collaboration_state(&mut self) -> bool {
+        let room_ready = self
+            .collaboration
+            .room_manager
+            .as_mut()
+            .and_then(CollaborationManager::take_state_change)
+            .is_some_and(|state| state.is_ready());
+        if room_ready {
+            self.broadcast_room_index_delta();
+        }
+        let Some(state) = self.collaboration.manager.take_state_change() else {
+            return room_ready;
+        };
+        tracing::debug!(
+            target: "tilo.state",
+            event = "collaboration_state",
+            state = ?state,
+            "collaboration connection changed"
+        );
+        if state.is_ready() {
+            // Announcements made while connecting were refused; repeat the
+            // current one on the acknowledged route.
+            if let Some(scope) = self.presence.broadcast_scope.clone() {
+                self.collaboration.manager.send(CollabRequest::Presence {
+                    key: scope,
+                    payload: crate::collaboration::PresencePayload::Arrived,
+                });
+            }
+            self.request_checkout_snapshot();
+            self.publish_continuation_metadata();
+            self.publish_playback_handoff();
+            self.broadcast_doc_delta();
+            self.publish_action_surface();
+        }
+        true
+    }
+
+    /// Ask a freshly checked-out record route for its document, once the
+    /// route can carry the request.
+    pub(super) fn request_checkout_snapshot(&mut self) {
+        if self.collaboration.snapshot_on_ready
+            && self
+                .collaboration
+                .manager
+                .send(CollabRequest::RequestDocumentSnapshot)
+        {
+            self.collaboration.snapshot_on_ready = false;
+        }
     }
 
     /// Applies every queued collaboration event. Returns whether any event
