@@ -204,6 +204,14 @@ development-only repository: production policy
 `tools/policy/check_dev_image_contract.py` keeps it that way. The push never
 blocks a release.
 
+Publication refuses to start without its protected inputs
+(`TILO_PCR_PREDICTION_SIGNER`, `TILO_EFI_SIGNING_CERT_SHA256` and
+`TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY`). Until all three are configured, the
+nightly run is a `main` integration build instead of a publication, with a
+warning. It still runs every gate and produces the `tilo-ci` image and a dev
+disk, and it skips when this commit's integration image already exists. Once
+the inputs are configured, the nightly run publishes without further changes.
+
 After the build, `dispatch-dev-disk` requests **Release / Dev VM disk** once
 per run:
 

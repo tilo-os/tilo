@@ -69,7 +69,9 @@ jobs:
       # label, and `latest` moves only after a complete publication. Any
       # failure to read it (no image yet, registry trouble) publishes rather
       # than risking a stale channel; a redundant release costs runner time
-      # only.
+      # only. The same holds for this commit's dev-trust integration image,
+      # which is what a nightly run produces while publication is not
+      # configured.
       - name: Read the revision of the latest published image
         id: published
         if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
@@ -95,8 +97,15 @@ jobs:
           else
             echo '::warning::skopeo is unavailable; publishing without a freshness check'
           fi
+          integration=""
+          if command -v skopeo >/dev/null; then
+            integration="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" \
+              "docker://code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64" 2>/dev/null \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || integration=""
+          fi
           echo "revision=$revision" >> "$GITHUB_OUTPUT"
-          echo "::notice::latest published OS revision: ${revision:-unknown}; main: $GITHUB_SHA"
+          echo "integration-revision=$integration" >> "$GITHUB_OUTPUT"
+          echo "::notice::latest published OS revision: ${revision:-unknown}; integration image: ${integration:-none}; main: $GITHUB_SHA"
 
       - name: Select validation or native publication lanes
         id: matrix
@@ -106,6 +115,11 @@ jobs:
           CONTINUOUS_RELEASE: "0"
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
           PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
+          INTEGRATION_REVISION: ${{ steps.published.outputs.integration-revision }}
+          # Publication refuses to start without these protected inputs. Until
+          # they are configured the nightly run is a main integration build, so
+          # dev VMs still get a same-commit image every night.
+          PUBLICATION_CONFIGURED: ${{ vars.TILO_PCR_PREDICTION_SIGNER != '' && vars.TILO_EFI_SIGNING_CERT_SHA256 != '' && vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY != '' }}
         run: |
           set -euo pipefail
           publish=false
@@ -122,8 +136,13 @@ jobs:
             if [[ -n ${PUBLISHED_REVISION:-} && $PUBLISHED_REVISION == "$GITHUB_SHA" ]]; then
               skip=true
               echo "::notice::latest already publishes $GITHUB_SHA; skipping the nightly build"
-            else
+            elif [[ ${PUBLICATION_CONFIGURED:-false} == true ]]; then
               publish=true
+            elif [[ -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then
+              skip=true
+              echo "::notice::the integration image of $GITHUB_SHA already exists and publication is not configured; skipping the nightly build"
+            else
+              echo '::warning::OS publication is not configured (TILO_PCR_PREDICTION_SIGNER, TILO_EFI_SIGNING_CERT_SHA256, TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY); running a main integration build for dev images instead'
             fi
           fi
           if [[ $publish == true ]]; then
