@@ -75,6 +75,7 @@ require_file /usr/lib/systemd/system/tilo-fs-start.timer
 require_file /usr/lib/systemd/system/fs-identity.path
 require_file /usr/lib/systemd/user/tilo-fs-recipient.service
 require_file /usr/lib/systemd/user/tilo-fs-recipient.socket
+require_file /usr/lib/systemd/user/tilo-fs-cloud.service
 require_file /usr/lib/systemd/user/tilo-identity.service
 require_file /usr/lib/systemd/user/tilo-graphical-session.target
 require_file /usr/share/tilo/selinux/tilo-base.cil
@@ -98,6 +99,7 @@ require_link /etc/systemd/system/timers.target.wants/tilo-fs-start.timer
 require_link /etc/systemd/system/timers.target.wants/tilo-growfs-sysroot.timer
 require_link /etc/systemd/system/multi-user.target.wants/fs-identity.path
 require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-recipient.socket
+require_link /etc/systemd/user/graphical-session.target.wants/tilo-fs-cloud.service
 require_link /etc/systemd/user/graphical-session-pre.target.wants/tilo-identity.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.service
 require_file /usr/lib/systemd/system/tilo-growfs-sysroot.timer
