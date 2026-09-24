@@ -91,6 +91,12 @@ pub struct PeerContext {
     pub own_user_public_key: [u8; 32],
     /// Metrics — cheap counters.
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// This relay's own device key: the address remote-action frames use to
+    /// reach the app-serving plane.
+    pub own_device_public_key: [u8; 32],
+    /// Answers remote-action frames addressed to this relay. `None` unless
+    /// the host supplied one and advertises `app_serving`.
+    pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
 }
 
 /// Read-mostly session state [`handle_envelope`] and its per-arm
@@ -105,6 +111,8 @@ struct SessionCtx<'a> {
     metrics: &'a crate::metrics::Metrics,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
+    own_device_public_key: &'a [u8; 32],
+    app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
 }
 
 /// Run one peer connection until the wire closes.
@@ -137,6 +145,8 @@ where
         trust_policy,
         own_user_public_key,
         metrics,
+        own_device_public_key,
+        app_serving,
     } = ctx;
 
     // Outbound channel — every workspace runtime this peer is
@@ -158,6 +168,8 @@ where
         metrics: &metrics,
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
+        own_device_public_key: &own_device_public_key,
+        app_serving: app_serving.as_ref(),
     };
 
     // A clean EOF is only one of the ways this ends: a write to a
@@ -341,12 +353,31 @@ async fn handle_envelope(
             have_heads,
         } => handle_sync_request(peer, session, workspace_id, have_heads).await,
         Envelope::Ping => Ok(Some(Envelope::Pong)),
+        Envelope::RemoteAction {
+            workspace_id,
+            version,
+            to_device_public_key,
+            frame,
+            ..
+        } => Ok(handle_remote_action(
+            peer,
+            session,
+            subscribed,
+            RemoteActionRoute {
+                workspace_id,
+                version,
+                to: to_device_public_key,
+            },
+            frame,
+        )
+        .await),
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::Ready { .. }
         | Envelope::NotAuthorised { .. }
         | Envelope::Pong
-        | Envelope::SyncResponse { .. } => Ok(None),
+        | Envelope::SyncResponse { .. }
+        | Envelope::RemoteActionUndeliverable { .. } => Ok(None),
     }
 }
 
@@ -619,6 +650,105 @@ async fn handle_presence(
             .fanout_presence(&peer.device_public_key, peer.role, &env);
     }
     Ok(None)
+}
+
+/// Where an inbound [`Envelope::RemoteAction`] asked to go.
+struct RemoteActionRoute {
+    workspace_id: u64,
+    version: u16,
+    to: [u8; 32],
+}
+
+/// Handle an inbound `RemoteAction`: stamp the authenticated sender, then
+/// hand it to the addressed device's live connection, or — when addressed to
+/// this relay — to the app-serving plane. Never stored, never executed by the
+/// relay itself; every failure is answered as undeliverable so the sender
+/// need not wait out a timeout.
+async fn handle_remote_action(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    route: RemoteActionRoute,
+    frame: Vec<u8>,
+) -> Option<Envelope> {
+    let RemoteActionRoute {
+        workspace_id,
+        version,
+        to,
+    } = route;
+    let undeliverable = |reason: &str| {
+        Some(Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key: to,
+            reason: reason.to_string(),
+        })
+    };
+    if version != crate::transport::REMOTE_ACTION_ENVELOPE_VERSION {
+        return undeliverable("unsupported remote action envelope version");
+    }
+    if !subscribed.contains(&workspace_id) {
+        return undeliverable("sender is not subscribed to the workspace");
+    }
+    if frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
+        return undeliverable("remote action frame exceeds the limit");
+    }
+    if to == *session.own_device_public_key {
+        let Some(plane) = session.app_serving else {
+            return undeliverable("this host does not serve apps");
+        };
+        return serve_locally(peer, session, plane.as_ref(), workspace_id, &frame)
+            .unwrap_or_else(undeliverable);
+    }
+    let ws = {
+        let map = session.workspaces.lock().await;
+        map.get(&workspace_id).cloned()
+    };
+    let stamped = Envelope::RemoteAction {
+        workspace_id,
+        version,
+        to_device_public_key: to,
+        from_device_public_key: peer.device_public_key,
+        from_user_public_key: peer.user_public_key,
+        frame,
+    };
+    let delivered = match ws {
+        Some(ws) => ws.lock().await.route_directed(&to, stamped),
+        None => false,
+    };
+    if delivered {
+        None
+    } else {
+        undeliverable("addressed device is not connected to the workspace")
+    }
+}
+
+/// Answer a frame addressed to this relay through its app-serving plane,
+/// with the caller the connection authenticated. `Ok(None)` when the plane
+/// has nothing to say; `Err` when the frame cannot be used.
+fn serve_locally(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    plane: &dyn crate::app_serving::AppServingPlane,
+    workspace_id: u64,
+    frame: &[u8],
+) -> Result<Option<Envelope>, &'static str> {
+    use tilo_actions::remote::{Caller, RemoteActionFrame};
+    let request = RemoteActionFrame::decode(frame).map_err(|_| "malformed remote action frame")?;
+    let caller = Caller::authenticated(peer.user_public_key, peer.device_public_key);
+    let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
+        return Ok(None);
+    };
+    let frame = RemoteActionFrame::new(reply)
+        .encode()
+        .map_err(|_| "the reply does not fit in a remote action frame")?;
+    Ok(Some(Envelope::RemoteAction {
+        workspace_id,
+        version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+        to_device_public_key: peer.device_public_key,
+        from_device_public_key: *session.own_device_public_key,
+        from_user_public_key: *session.own_user_public_key,
+        frame,
+    }))
 }
 
 /// Handle `PeerRelayHello`: record the dialer as a federated peer
