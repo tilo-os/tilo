@@ -23,7 +23,8 @@ containerfile="$repo/os/Containerfile"
 # login chain without exposing an unfiltered interface, and
 # the packaged-app external AT-SPI client and installed-app accessibility gate,
 # the build-only residual OpenSSL ABI package gate (removed after it runs),
-# and the xdg-desktop-portal preference that selects the Tilo backend.
+# the xdg-desktop-portal preference that selects the Tilo backend,
+# and the opt-in codec-pack helper overlay (helper, units, keys, polkit rule).
 # The redundant model-storage oneshot is now absent; systemd provisions the
 # model and gateway directories directly without a helper on socket activation.
 # Rustls now compiles the fixed CA-bundle path
@@ -45,7 +46,7 @@ containerfile="$repo/os/Containerfile"
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=f1f99632696fd4cbfdfa469057dca0104a27e5192dd05df74cc210b515d4a7f4
+expected_contract=6ec7b69e7e54d564678d7cea4552e96af13efd7731cdd56d9e55552515265129
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -76,9 +77,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Recording whether the Windows provider is included adds an ARG and a LABEL.
 # Synced-worktree git defaults add two: the snippet and the /etc/gitconfig
 # that includes it.
-# Keep the current 141-instruction bound exact and reviewed.
-[ "$instructions" -le 141 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 141)" >&2
+# The opt-in codec-pack overlay adds one COPY of its scratch stage.
+# Keep the current 142-instruction bound exact and reviewed.
+[ "$instructions" -le 142 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 142)" >&2
   exit 1
 }
 
@@ -90,7 +92,7 @@ if containerfile_instructions "$containerfile" |
   exit 1
 fi
 
-for overlay in desktop-binaries remote-capture-files rollback-files recovery-files; do
+for overlay in desktop-binaries remote-capture-files rollback-files recovery-files codec-pack-files; do
   [ "$(containerfile_copy_contract "$containerfile" rootfs |
        awk -F '\t' -v s="$overlay" '$1==s && $2=="/" && $3=="/"{n++} END{print n+0}')" -eq 1 ] \
     || { echo "$overlay is not applied to rootfs exactly once" >&2; exit 1; }
@@ -116,7 +118,8 @@ for path in \
   os/usr/libexec/tilo-disk-encrypt \
   os/usr/libexec/tilo-store-volume \
   os/usr/libexec/tilo-verified-boot-install-preflight \
-  os/usr/libexec/tilo-security-audit; do
+  os/usr/libexec/tilo-security-audit \
+  os/usr/libexec/tilo-codec-pack; do
   containerfile_instructions "$containerfile" |
     awk -v path="$path" '
       $1 == "COPY" {
