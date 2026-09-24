@@ -4135,8 +4135,6 @@ dependencies = [
  "libc",
  "mime_guess",
  "qdoc",
- "reqwest 0.13.2",
- "roxmltree 0.20.0",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -4148,7 +4146,7 @@ dependencies = [
  "thumbnail",
  "tilo-actions",
  "tilo-app",
- "tilo-net",
+ "tilo-dav",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -4161,7 +4159,6 @@ dependencies = [
  "winit",
  "xattr",
  "xdg-paths",
- "zeroize",
  "zip",
 ]
 
