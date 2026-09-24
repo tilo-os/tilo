@@ -566,13 +566,6 @@ mod tests {
         r
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
@@ -685,19 +678,6 @@ mod tests {
         assert!(flat.contains(&"Delete rule"), "{flat:?}");
         assert!(flat.contains(&"Make active zone"), "{flat:?}");
         assert!(flat.contains(&"Set default policy"), "{flat:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("firewall")
-                || l.contains("Firewall")
-                || l.contains("Stop")
-                || l.contains("Start")),
-            "{labels:?}"
-        );
     }
 
     /// The unavailable firewall publishes only its read-only recovery action;
@@ -713,159 +693,74 @@ mod tests {
         assert_eq!(resources[0].actions[0].id, "retry");
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        // A real document with the demo firewall in it.
-        let mut app = FirewallApp::new_demo();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        let zone = FirewallDoc::load(&state.doc).unwrap().default_zone;
-        let before_cfg = FirewallDoc::load(&state.doc).unwrap();
-        let victim = before_cfg.zone(zone).unwrap().rules[0].id;
-        let before_heads = state.doc.get_heads();
-        let before_len = before_cfg.zone(zone).unwrap().rules.len();
-
-        let action = delete_rule_action(zone, victim);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        let after = FirewallDoc::load(&state.doc).unwrap();
-        assert_eq!(
-            after.zone(zone).unwrap().rules.len(),
-            before_len - 1,
-            "the action deleted a rule"
-        );
-        assert!(
-            !after
-                .zone(zone)
-                .unwrap()
-                .rules
-                .iter()
-                .any(|r| r.id == victim),
-            "the right rule is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        let restored = FirewallDoc::load(&state.doc).unwrap();
-        assert_eq!(
-            restored.zone(zone).unwrap().rules.len(),
-            before_len,
-            "undo reverted the deletion and nothing else"
-        );
-        assert!(
-            restored
-                .zone(zone)
-                .unwrap()
-                .rules
-                .iter()
-                .any(|r| r.id == victim),
-            "the rule is back after undo"
-        );
+    /// The configuration a peer holding `doc` publishes: the provider reads
+    /// the shared document, the source of truth every action reads.
+    fn config(doc: &AutoCommit) -> FirewallConfig {
+        FirewallDoc::load(doc).expect("the seeded firewall configuration")
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Toggle a rule: deterministic against the shared base (each replica
-        // reads the stored value and negates it).
-        let cfg = FirewallDoc::load(&a).unwrap();
+    /// The first rule of the active zone.
+    fn first_rule(doc: &AutoCommit) -> (ZoneKind, Rule) {
+        let cfg = config(doc);
         let zone = cfg.default_zone;
-        let rule_id = cfg.zone(zone).unwrap().rules[0].id;
-        let was = cfg.zone(zone).unwrap().rules[0].enabled;
-        let action = set_rule_enabled_action(zone, rule_id, !was);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        let after_a = FirewallDoc::load(&a).unwrap();
-        let after_b = FirewallDoc::load(&b).unwrap();
-        let enabled_a = after_a
-            .zone(zone)
-            .unwrap()
-            .rules
-            .iter()
-            .find(|r| r.id == rule_id)
-            .unwrap()
-            .enabled;
-        let enabled_b = after_b
-            .zone(zone)
-            .unwrap()
-            .rules
-            .iter()
-            .find(|r| r.id == rule_id)
-            .unwrap()
-            .enabled;
-        assert_eq!(enabled_a, !was, "the toggle landed");
-        assert_eq!(enabled_a, enabled_b, "both replicas agree");
+        let rule = cfg.zone(zone).expect("active zone").rules[0].clone();
+        (zone, rule)
     }
 
-    /// Replaying an `AddRule` (a create) also converges byte-identically — the
-    /// rule's id is carried in the payload, so both replicas write the same row.
-    #[test]
-    fn add_rule_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
+    /// The stable rule id a rule resource's address ends in.
+    fn rule_id(res: &Resource) -> RuleId {
+        res.id
+            .as_str()
+            .trim_start_matches("firewall.rule:")
+            .parse()
+            .expect("rule resource id")
+    }
 
-        let zone = FirewallDoc::load(&a).unwrap().default_zone;
-        let rule = Rule::new(
-            Matcher::Port {
-                port: "9443".into(),
-                proto: Proto::Tcp,
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| provide_resources(&config(doc)),
+        palette: ["Delete rule", "Make active zone", "Set default policy"],
+        replay: [
+            toggle_rule => |doc| {
+                let (zone, rule) = first_rule(doc);
+                encode(&set_rule_enabled_action(zone, rule.id, !rule.enabled))
             },
-            Action::Allow,
-            "10.0.0.0/8",
-        );
-        let rid = rule.id;
-        let action = add_rule_action(zone, rule);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
-        assert!(
-            FirewallDoc::load(&b)
-                .unwrap()
-                .zone(zone)
-                .unwrap()
-                .rules
-                .iter()
-                .any(|r| r.id == rid),
-            "the added rule is present on the peer"
-        );
+            add_rule => |doc| encode(&add_rule_action(
+                config(doc).default_zone,
+                Rule::new(
+                    Matcher::Port {
+                        port: "9443".into(),
+                        proto: Proto::Tcp,
+                    },
+                    Action::Allow,
+                    "10.0.0.0/8",
+                ),
+            )),
+        ],
+        undo: [
+            delete_rule => |doc| {
+                let (zone, rule) = first_rule(doc);
+                encode(&delete_rule_action(zone, rule.id))
+            },
+        ],
+        encodes: [
+            delete_rule => ("firewall.rule", "delete", |_, res| {
+                encode(&delete_rule_action(ZoneKind::Public, rule_id(res)))
+            }),
+            edit_source => ("firewall.rule", "edit", arg: "172.16.0.0/12", |doc, res| {
+                let mut edited = config(doc)
+                    .zone(ZoneKind::Public)
+                    .expect("public zone")
+                    .rules
+                    .iter()
+                    .find(|r| r.id == rule_id(res))
+                    .expect("the published rule")
+                    .clone();
+                edited.source = "172.16.0.0/12".to_string();
+                encode(&edit_rule_action(ZoneKind::Public, edited))
+            }),
+        ],
     }
 
     /// A malformed / out-of-range payload is a no-op, not an error: deleting a
@@ -884,56 +779,6 @@ mod tests {
             doc.get_heads(),
             before,
             "a delete of an absent rule changed nothing"
-        );
-    }
-
-    /// Single source of truth: the palette's per-rule "Delete rule" spec and the
-    /// builder the trash button calls encode byte-identically, and the same holds
-    /// for the prompted "Set source" edit.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let cfg = &resources[0];
-        let public = cfg
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "firewall.zone:public")
-            .unwrap();
-        let rule = &public.children[0];
-        let id: RuleId = rule
-            .id
-            .as_str()
-            .trim_start_matches("firewall.rule:")
-            .parse()
-            .unwrap();
-
-        let delete_spec = rule.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_rule_action(ZoneKind::Public, id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        // The edit spec matches the edit builder for the same new source.
-        let mut edited = FirewallDoc::load(&doc)
-            .unwrap()
-            .zone(ZoneKind::Public)
-            .unwrap()
-            .rules
-            .iter()
-            .find(|r| r.id == id)
-            .unwrap()
-            .clone();
-        let edit_spec = rule.actions.iter().find(|a| a.id == "edit").unwrap();
-        let from_spec = prompted_encode(edit_spec, "172.16.0.0/12");
-        edited.source = "172.16.0.0/12".to_string();
-        let from_builder = encode(&edit_rule_action(ZoneKind::Public, edited));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "edit is one source of truth"
         );
     }
 
