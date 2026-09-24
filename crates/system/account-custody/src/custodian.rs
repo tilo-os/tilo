@@ -1,0 +1,431 @@
+//! The custodian: the one place that turns a sealed long-lived grant into a
+//! short-lived credential for the storage daemon.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use accounts::{Account, AccountId, HandoffCredential, HandoffStore, Secret, SecretVault};
+use serde::{Deserialize, Serialize};
+use tilo_oauth::client::{Authorization, OAuthClient};
+use tilo_oauth::{OAuthError, Provider, TokenSet};
+use zeroize::Zeroizing;
+
+use crate::icloud::{ICloudAuth, ICloudAuthError, ICloudSessionState, UnavailableICloud};
+use crate::providers::{ICLOUD_DRIVE_TYPE, NEXTCLOUD_TYPE, OAuthCloud, WEBDAV_TYPE};
+
+/// How long a browser sign-in may take.
+pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// Why custody could not produce a credential.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CustodyError {
+    /// No client id is configured for this provider in this build.
+    NotConfigured {
+        provider: &'static str,
+        key: &'static str,
+    },
+    /// The account must be signed in again interactively.
+    NeedsAuthentication,
+    /// The provider could not be reached.
+    Offline,
+    /// The account or its credential is missing or of another kind.
+    Account(String),
+    /// The vault or handoff store failed.
+    Storage(String),
+    /// A sign-in step failed.
+    SignIn(String),
+}
+
+impl std::fmt::Display for CustodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotConfigured { provider, key } => write!(
+                f,
+                "{provider} sign-in is not configured in this build (set {key})"
+            ),
+            Self::NeedsAuthentication => f.write_str("sign in again in Settings"),
+            Self::Offline => f.write_str("the provider could not be reached"),
+            Self::Account(message) | Self::Storage(message) | Self::SignIn(message) => {
+                f.write_str(message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for CustodyError {}
+
+impl From<OAuthError> for CustodyError {
+    fn from(error: OAuthError) -> Self {
+        match error {
+            OAuthError::InvalidGrant => Self::NeedsAuthentication,
+            OAuthError::Network(_) => Self::Offline,
+            other => Self::SignIn(other.to_string()),
+        }
+    }
+}
+
+/// The long-lived grant sealed in the vault's `token` field. Never handed
+/// out of this crate except to be sealed.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Grant {
+    Oauth2 { tokens: TokenSet },
+    Icloud { apple_id: String, session: String },
+}
+
+/// Seal an `OAuth` sign-in result into a vault secret.
+pub fn oauth_secret(tokens: &TokenSet) -> Secret {
+    Secret {
+        password: String::new(),
+        token: serde_json::to_string(&Grant::Oauth2 {
+            tokens: tokens.clone(),
+        })
+        .ok(),
+    }
+}
+
+/// Seal an `iCloud` session into a vault secret. The Apple ID password is
+/// not part of it.
+pub fn icloud_secret(apple_id: &str, session: &ICloudSessionState) -> Secret {
+    Secret {
+        password: String::new(),
+        token: serde_json::to_string(&Grant::Icloud {
+            apple_id: apple_id.to_string(),
+            session: session.0.to_string(),
+        })
+        .ok(),
+    }
+}
+
+fn grant_of(secret: &Secret) -> Option<Grant> {
+    serde_json::from_str(secret.token.as_deref()?).ok()
+}
+
+/// The Apple ID of a stored `iCloud` account, for the re-authentication form.
+pub fn icloud_apple_id(secret: &Secret) -> Option<String> {
+    match grant_of(secret)? {
+        Grant::Icloud { apple_id, .. } => Some(apple_id),
+        Grant::Oauth2 { .. } => None,
+    }
+}
+
+/// Whether an account type's credential is held by this custodian (rather
+/// than being a password another app uses directly).
+pub fn is_cloud_type(type_id: &str) -> bool {
+    OAuthCloud::from_type_id(type_id).is_some()
+        || matches!(type_id, ICLOUD_DRIVE_TYPE | NEXTCLOUD_TYPE | WEBDAV_TYPE)
+}
+
+/// See the module docs.
+#[derive(Clone)]
+pub struct Custodian {
+    config_root: Option<PathBuf>,
+    icloud: Arc<dyn ICloudAuth>,
+    overrides: BTreeMap<&'static str, (Provider, String)>,
+}
+
+impl Custodian {
+    /// The signed-in user's stores.
+    pub fn live() -> Self {
+        Self::for_root(None)
+    }
+
+    /// The stores under `config_root` when given, else the user's.
+    pub fn for_root(config_root: Option<PathBuf>) -> Self {
+        Self {
+            config_root,
+            icloud: Arc::new(UnavailableICloud),
+            overrides: BTreeMap::new(),
+        }
+    }
+
+    /// Use `auth` for `iCloud` Drive.
+    #[must_use]
+    pub fn with_icloud(mut self, auth: Arc<dyn ICloudAuth>) -> Self {
+        self.icloud = auth;
+        self
+    }
+
+    /// Replace a provider's descriptor and client id (tests, private
+    /// deployments).
+    #[must_use]
+    pub fn with_provider(mut self, cloud: OAuthCloud, provider: Provider, client_id: &str) -> Self {
+        self.overrides
+            .insert(cloud.type_id(), (provider, client_id.to_string()));
+        self
+    }
+
+    pub fn icloud(&self) -> &Arc<dyn ICloudAuth> {
+        &self.icloud
+    }
+
+    pub fn config_root(&self) -> Option<&Path> {
+        self.config_root.as_deref()
+    }
+
+    fn vault(&self) -> SecretVault {
+        match &self.config_root {
+            Some(root) => SecretVault::open_in(root),
+            None => SecretVault::open(),
+        }
+    }
+
+    fn store(&self) -> accounts::AccountStore {
+        match &self.config_root {
+            Some(root) => accounts::AccountStore::load_in(root),
+            None => accounts::AccountStore::load(),
+        }
+    }
+
+    /// The handoff store the daemon reads.
+    ///
+    /// # Errors
+    /// [`CustodyError::Storage`] when no config directory resolves.
+    pub fn handoff(&self) -> Result<HandoffStore, CustodyError> {
+        match &self.config_root {
+            Some(root) => Ok(HandoffStore::open_in(root)),
+            None => HandoffStore::open()
+                .ok_or_else(|| CustodyError::Storage("no config directory".into())),
+        }
+    }
+
+    fn reporter(&self, id: &AccountId) -> accounts::AccountSyncReporter {
+        match &self.config_root {
+            Some(root) => accounts::AccountSyncReporter::in_root(id.clone(), root.clone()),
+            None => accounts::AccountSyncReporter::new(id.clone()),
+        }
+    }
+
+    /// The descriptor and client id for a provider, or the "not configured"
+    /// state.
+    ///
+    /// # Errors
+    /// [`CustodyError::NotConfigured`].
+    pub fn oauth_config(&self, cloud: OAuthCloud) -> Result<(Provider, String), CustodyError> {
+        if let Some(configured) = self.overrides.get(cloud.type_id()) {
+            return Ok(configured.clone());
+        }
+        let client = cloud.client_id();
+        client
+            .resolve()
+            .map(|id| (cloud.descriptor(), id))
+            .ok_or_else(|| CustodyError::NotConfigured {
+                provider: cloud.label(),
+                key: client.key,
+            })
+    }
+
+    /// Start a browser sign-in. Non-blocking: open
+    /// [`Authorization::url`] with the desktop's URI opener, then pass the
+    /// value to [`Self::finish_sign_in`] on a worker.
+    ///
+    /// # Errors
+    /// [`CustodyError::NotConfigured`] or a loopback failure.
+    pub fn begin_sign_in(
+        &self,
+        cloud: OAuthCloud,
+        login_hint: Option<&str>,
+    ) -> Result<Authorization, CustodyError> {
+        let (provider, client_id) = self.oauth_config(cloud)?;
+        Authorization::begin(&provider, &client_id, login_hint).map_err(CustodyError::from)
+    }
+
+    /// Wait for the browser and redeem the code. Blocking.
+    ///
+    /// # Errors
+    /// See [`OAuthError`], mapped into [`CustodyError`].
+    pub fn finish_sign_in(authorization: Authorization) -> Result<TokenSet, CustodyError> {
+        let client = OAuthClient::new()?;
+        let tokens = authorization.complete(&client, SIGN_IN_TIMEOUT)?;
+        if tokens.refresh_token.is_empty() {
+            return Err(CustodyError::SignIn(
+                "the provider did not grant offline access; try again".into(),
+            ));
+        }
+        Ok(tokens)
+    }
+
+    /// After a sign-in was saved: clear a stale "sign in again" health
+    /// state and publish the first short-lived credential.
+    ///
+    /// # Errors
+    /// See [`Self::publish`].
+    pub fn signed_in(&self, id: &AccountId) -> Result<(), CustodyError> {
+        let _ = self.reporter(id).remove();
+        self.publish(id, false)
+    }
+
+    /// Publish a short-lived credential for one account in the handoff
+    /// store: refresh an `OAuth` access token when it is due (or `force`),
+    /// derive `iCloud` session headers, or pass through the server's own
+    /// Basic credential for `WebDAV` and Nextcloud. A grant the provider
+    /// no longer accepts marks the account as needing sign-in and withdraws
+    /// its handoff entry.
+    ///
+    /// # Errors
+    /// See [`CustodyError`].
+    pub fn publish(&self, id: &AccountId, force: bool) -> Result<(), CustodyError> {
+        let result = self.publish_inner(id, force);
+        if result == Err(CustodyError::NeedsAuthentication) {
+            let _ = self.reporter(id).needs_authentication();
+            if let Ok(handoff) = self.handoff() {
+                let _ = handoff.withdraw(id);
+            }
+        }
+        result
+    }
+
+    fn publish_inner(&self, id: &AccountId, force: bool) -> Result<(), CustodyError> {
+        let account = self
+            .store()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| CustodyError::Account("account no longer exists".into()))?;
+        if !account.enabled {
+            return Err(CustodyError::Account("account is disabled".into()));
+        }
+        let mut vault = self.vault();
+        if let Some(error) = vault.recovery_error() {
+            return Err(CustodyError::Storage(error.to_string()));
+        }
+        let secret = vault.get(id).ok_or(CustodyError::NeedsAuthentication)?;
+        let credential = if let Some(cloud) = OAuthCloud::from_type_id(account.type_id.as_str()) {
+            let Some(Grant::Oauth2 { mut tokens }) = grant_of(&secret) else {
+                return Err(CustodyError::NeedsAuthentication);
+            };
+            if tokens.refresh_token.is_empty() {
+                return Err(CustodyError::NeedsAuthentication);
+            }
+            if force || tokens.needs_refresh() {
+                let (provider, client_id) = self.oauth_config(cloud)?;
+                let renewed =
+                    match OAuthClient::new()?.refresh(&provider, &client_id, &tokens.refresh_token)
+                    {
+                        Ok(renewed) => renewed.stamp_now(),
+                        Err(OAuthError::InvalidGrant) => {
+                            // The provider revoked the grant: its access token
+                            // must not be handed out again either. Keep the
+                            // account, drop the dead grant until the next sign-in.
+                            vault.put(id, &oauth_secret(&TokenSet::default()));
+                            vault.try_save().map_err(CustodyError::Storage)?;
+                            return Err(CustodyError::NeedsAuthentication);
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                tokens = renewed;
+                vault.put(id, &oauth_secret(&tokens));
+                vault.try_save().map_err(CustodyError::Storage)?;
+            }
+            HandoffCredential::Bearer {
+                token: Zeroizing::new(tokens.access_token.clone()),
+                expires_unix: tokens.expires_at(),
+            }
+        } else if account.type_id.as_str() == ICLOUD_DRIVE_TYPE {
+            let Some(Grant::Icloud { apple_id, session }) = grant_of(&secret) else {
+                return Err(CustodyError::NeedsAuthentication);
+            };
+            let (renewed, headers) = self
+                .icloud
+                .resume(&ICloudSessionState(Zeroizing::new(session)))
+                .map_err(|error| match error {
+                    ICloudAuthError::NeedsReauthentication
+                    | ICloudAuthError::InvalidCredentials => CustodyError::NeedsAuthentication,
+                    ICloudAuthError::Offline => CustodyError::Offline,
+                    other => CustodyError::SignIn(other.to_string()),
+                })?;
+            vault.put(id, &icloud_secret(&apple_id, &renewed));
+            vault.try_save().map_err(CustodyError::Storage)?;
+            HandoffCredential::Session {
+                headers: headers.headers,
+                expires_unix: headers.expires_unix,
+            }
+        } else if matches!(account.type_id.as_str(), WEBDAV_TYPE | NEXTCLOUD_TYPE) {
+            if secret.password.is_empty() {
+                return Err(CustodyError::NeedsAuthentication);
+            }
+            let username = account
+                .config
+                .get("username")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            HandoffCredential::Basic {
+                username,
+                password: Zeroizing::new(secret.password),
+            }
+        } else {
+            return Err(CustodyError::Account(
+                "this account type is not a file provider".into(),
+            ));
+        };
+        self.handoff()?
+            .publish(id, &credential)
+            .map_err(CustodyError::Storage)
+    }
+
+    /// Give up an account's grant at its provider, best effort, after the
+    /// account was removed locally. `secret` is the credential the removal
+    /// took out of the vault.
+    pub fn revoke(&self, account: &Account, secret: &Secret) {
+        if let Ok(handoff) = self.handoff() {
+            let _ = handoff.withdraw(&account.id);
+        }
+        let type_id = account.type_id.as_str();
+        if let Some(cloud) = OAuthCloud::from_type_id(type_id) {
+            let (Some(Grant::Oauth2 { tokens }), Ok((provider, client_id))) =
+                (grant_of(secret), self.oauth_config(cloud))
+            else {
+                return;
+            };
+            if tokens.access_token.is_empty() && tokens.refresh_token.is_empty() {
+                return;
+            }
+            let result =
+                OAuthClient::new().and_then(|client| client.revoke(&provider, &client_id, &tokens));
+            if let Err(error) = result {
+                tracing::warn!(provider = cloud.label(), %error, "could not revoke a removed account's grant");
+            }
+        } else if type_id == ICLOUD_DRIVE_TYPE {
+            if let Some(Grant::Icloud { session, .. }) = grant_of(secret) {
+                self.icloud
+                    .sign_out(&ICloudSessionState(Zeroizing::new(session)));
+            }
+        } else if type_id == NEXTCLOUD_TYPE && !secret.password.is_empty() {
+            let text = |key: &str| {
+                account
+                    .config
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            // Only app passwords minted by Login Flow v2 are revoked; an
+            // older account may hold the person's own password.
+            if account
+                .config
+                .get("app_password")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                && let Err(error) = crate::nextcloud::revoke_app_password(
+                    &text("server_url"),
+                    &text("username"),
+                    &secret.password,
+                )
+            {
+                tracing::warn!(%error, "could not revoke a removed Nextcloud app password");
+            }
+        }
+    }
+}
+
+impl accounts::CredentialRefresher for Custodian {
+    fn refresh(&self, id: &AccountId, force: bool) -> Result<(), accounts::RefreshError> {
+        self.publish(id, force).map_err(|error| match error {
+            CustodyError::NeedsAuthentication => accounts::RefreshError::NeedsAuthentication,
+            CustodyError::Offline => accounts::RefreshError::Offline,
+            _ => accounts::RefreshError::Failed,
+        })
+    }
+}

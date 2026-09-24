@@ -37,6 +37,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod handoff;
+pub use handoff::{
+    CommandRefresher, CredentialRefresher, HandoffCredential, HandoffCredentialSource,
+    HandoffStore, RefreshError,
+};
 pub mod vault;
 pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod secrets;

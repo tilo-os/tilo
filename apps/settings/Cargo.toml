@@ -61,6 +61,10 @@ tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
 accounts = { path = "../../crates/system/accounts" }
+# Credential custody for cloud accounts: the shared OAuth client, Nextcloud
+# Login Flow v2, iCloud sessions and the short-lived handoff to the storage
+# daemon.
+account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config" }
@@ -114,6 +118,8 @@ accounts = { path = "../../crates/system/accounts" }
 # account back through Mail's own reader to verify Mail consumes what
 # Settings persisted across the shared store.
 mail = { path = "../mail" }
+# A fake authorization server and browser for the sign-in flow tests.
+tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 
 [[test]]
 name = "it"

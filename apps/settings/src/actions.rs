@@ -1450,6 +1450,10 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
         ("caldav", "Add calendar account"),
         ("webdav", "Add WebDAV account"),
         ("nextcloud", "Add Nextcloud account"),
+        ("google-drive", "Connect Google Drive"),
+        ("onedrive", "Connect OneDrive"),
+        ("dropbox", "Connect Dropbox"),
+        ("icloud-drive", "Connect iCloud Drive"),
     ] {
         if let Some(action) = account_operation_spec(
             &format!("add-{kind}"),

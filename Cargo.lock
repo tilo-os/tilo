@@ -121,12 +121,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "account-custody"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "cloud-source",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-http",
+ "tilo-clock",
+ "tilo-net",
+ "tilo-oauth",
+ "tracing",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "accounts"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "atomic-file",
  "bounded-command",
+ "cloud-source",
  "getrandom 0.4.1",
  "private-fs",
  "secret-vault",
@@ -2108,7 +2128,7 @@ dependencies = [
  "cloud-source",
  "cloud-source-dropbox",
  "hex",
- "reqwest 0.13.2",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2125,7 +2145,7 @@ dependencies = [
  "cloud-source",
  "cloud-source-gdrive",
  "md-5",
- "reqwest 0.13.2",
+ "reqwest",
  "serde",
  "serde_json",
  "sha1 0.11.0",
@@ -2147,7 +2167,7 @@ dependencies = [
  "hex",
  "num-bigint 0.5.1",
  "pbkdf2",
- "reqwest 0.13.2",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2167,7 +2187,7 @@ dependencies = [
  "base64",
  "cloud-source",
  "cloud-source-onedrive",
- "reqwest 0.13.2",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7918,15 +7938,14 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "taffy",
  "tempfile",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
  "tilo-net",
+ "tilo-oauth",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -12534,6 +12553,7 @@ dependencies = [
 name = "settings"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
  "accounts",
  "agent-provider-config",
  "async-imap",
@@ -12568,6 +12588,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-model-gateway",
  "tilo-net",
+ "tilo-oauth",
  "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-user-identity",
@@ -14445,6 +14466,23 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "tilo-oauth"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom 0.4.1",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-clock",
+ "tilo-net",
+ "url",
 ]
 
 [[package]]
