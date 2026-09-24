@@ -46,6 +46,7 @@ TILO_INSTALLER_OUTPUT="$TILO_OUTPUT/installer"
 TILO_INSTALLER_DISK="$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2"
 msg() { printf '%s\\n' "$*" >&2; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
+warn_slow_podman_storage() { :; }
 """)
         # These external checks are unrelated to forwarding inputs. A failing
         # podman stub ensures execution never reaches any disk-image operation.
