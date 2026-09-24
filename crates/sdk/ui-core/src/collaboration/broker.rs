@@ -6,9 +6,10 @@
 //! reaches it over a pair of bounded queues: [`CollabTransport::submit`]
 //! enqueues commands and [`CollabTransport::drain`] empties the event queue.
 //! Durable traffic fails the bridge closed on overload; only transient
-//! presence may be shed. Joining, document signing and envelope
-//! verification all happen on the worker with the certified launcher (or
-//! host-supplied) identity.
+//! presence may be shed. Document mutations have their own budget and are
+//! deferred (`Busy`) or refused (`TooLarge`) without closing it. Joining,
+//! document signing and envelope verification all happen on the worker with
+//! the certified launcher (or host-supplied) identity.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: the shovel thread bridges a blocking socket"
@@ -65,6 +66,19 @@ const SDK_EVENT_QUEUE: usize = 256;
 /// invocation argument may be large.
 const SDK_COMMAND_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 const SDK_EVENT_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+/// Separate retained budgets for document traffic. A document change may be
+/// as large as [`collab_types::MAX_DOCUMENT_TRANSFER_BYTES`]; accounting it
+/// apart from control traffic means one large edit in flight can neither
+/// starve action results nor make them fail the bridge. When the budget is
+/// exhausted, outbound documents report [`TransportError::Busy`] so the
+/// caller retries, and inbound document events wait for the owner to drain
+/// rather than disconnecting.
+const SDK_DOCUMENT_COMMAND_BYTES: usize =
+    collab_types::MAX_DOCUMENT_TRANSFER_BYTES + SDK_COMMAND_QUEUE_BYTES;
+const SDK_DOCUMENT_EVENT_BYTES: usize =
+    collab_types::MAX_DOCUMENT_TRANSFER_BYTES + SDK_EVENT_QUEUE_BYTES;
+/// Re-check interval while an inbound document event waits for budget.
+const SDK_DOCUMENT_EVENT_RETRY: Duration = Duration::from_millis(250);
 const WIFI_CONTINUITY_TIMEOUT: Duration = Duration::from_secs(3);
 
 static WIFI_CONTINUITY_BRIDGE: std::sync::OnceLock<
@@ -122,7 +136,8 @@ impl RouteSpec {
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
 /// bounded. Durable overflow makes the bridge unavailable rather than
-/// silently losing a document, action, or invocation transition.
+/// silently losing an action or invocation transition; a document change
+/// that does not fit is reported to its sender instead, never dropped.
 ///
 /// Dropping the manager drops `outbound_tx`; the shovel thread's
 /// `.recv()` then yields `None` and the thread exits. `_thread` is kept
@@ -146,13 +161,7 @@ pub(super) struct BrokerTransport {
 
 impl BrokerTransport {
     fn enqueue(&self, command: SdkCommand) -> Result<(), TransportError> {
-        if enqueue_sdk_command(&self.outbound_tx, command, &self.state) {
-            Ok(())
-        } else if self.state.is_healthy() {
-            Err(TransportError::Shed)
-        } else {
-            Err(TransportError::Closed)
-        }
+        try_enqueue_sdk_command(&self.outbound_tx, command, &self.state)
     }
 }
 
@@ -262,6 +271,29 @@ enum SdkCommand {
 }
 
 impl SdkCommand {
+    /// Automerge bytes of a document mutation command, if this is one.
+    fn document_len(&self) -> Option<usize> {
+        match self {
+            Self::Primary(CollabRequest::Document { mutation })
+            | Self::ToRoute(_, CollabRequest::Document { mutation }) => Some(mutation.data().len()),
+            _ => None,
+        }
+    }
+
+    /// Release spare capacity so the retained budget charges only the bytes
+    /// that will actually be sent.
+    fn shrink_document(&mut self) {
+        if let Self::Primary(CollabRequest::Document { mutation })
+        | Self::ToRoute(_, CollabRequest::Document { mutation }) = self
+        {
+            match mutation {
+                DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {
+                    data.shrink_to_fit();
+                }
+            }
+        }
+    }
+
     /// Presence is visual, short-lived state. All other frames represent a
     /// durable state change, an ordered request, or a lifecycle result.
     fn is_transient_presence(&self) -> bool {
@@ -754,15 +786,17 @@ struct BridgeState {
     healthy: Arc<AtomicBool>,
     command_bytes: ByteBudget,
     event_bytes: ByteBudget,
+    document_command_bytes: ByteBudget,
+    document_event_bytes: ByteBudget,
     owner_wake: crate::wake::WakeHandle,
     wake_pending: Arc<AtomicBool>,
 }
 
 /// Lock-free aggregate reservation for heap payload retained by one queue.
 /// A reservation moves with its queued value and releases automatically when
-/// the receiver consumes or drops that value.
+/// the receiver consumes or drops that value, waking anyone waiting for room.
 #[derive(Clone)]
-struct ByteBudget(Arc<AtomicUsize>);
+struct ByteBudget(Arc<AtomicUsize>, Arc<tokio::sync::Notify>);
 
 struct ByteReservation {
     budget: ByteBudget,
@@ -771,14 +805,29 @@ struct ByteReservation {
 
 impl ByteBudget {
     fn new() -> Self {
-        Self(Arc::new(AtomicUsize::new(0)))
+        Self(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(tokio::sync::Notify::new()),
+        )
     }
 
     fn reserve(&self, bytes: usize, limit: usize) -> Option<ByteReservation> {
+        self.reserve_with(bytes, limit, false)
+    }
+
+    /// Like [`Self::reserve`], but an otherwise empty budget admits one item
+    /// larger than `limit`. Retained memory stays bounded by
+    /// `max(limit, largest single item)`, and a lone large item can always
+    /// make progress instead of waiting for space that can never appear.
+    fn reserve_sole(&self, bytes: usize, limit: usize) -> Option<ByteReservation> {
+        self.reserve_with(bytes, limit, true)
+    }
+
+    fn reserve_with(&self, bytes: usize, limit: usize, sole: bool) -> Option<ByteReservation> {
         let mut used = self.0.load(Ordering::Acquire);
         loop {
             let next = used.checked_add(bytes)?;
-            if next > limit {
+            if next > limit && !(sole && used == 0) {
                 return None;
             }
             match self
@@ -800,6 +849,7 @@ impl ByteBudget {
 impl Drop for ByteReservation {
     fn drop(&mut self) {
         self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
+        self.budget.1.notify_waiters();
     }
 }
 
@@ -819,6 +869,8 @@ impl BridgeState {
             healthy: Arc::new(AtomicBool::new(true)),
             command_bytes: ByteBudget::new(),
             event_bytes: ByteBudget::new(),
+            document_command_bytes: ByteBudget::new(),
+            document_event_bytes: ByteBudget::new(),
             owner_wake: crate::wake::WakeHandle::new(),
             wake_pending: Arc::new(AtomicBool::new(false)),
         }
@@ -858,28 +910,76 @@ fn enqueue_sdk_command(
     command: SdkCommand,
     state: &BridgeState,
 ) -> bool {
+    try_enqueue_sdk_command(tx, command, state).is_ok()
+}
+
+/// Enqueue with an explicit outcome. Document mutations are checked against
+/// the transport limit here, before anything is queued, and use their own
+/// budget: a full budget is [`TransportError::Busy`] (retry later) and an
+/// over-limit change is [`TransportError::TooLarge`]. Neither disables
+/// collaboration. Other durable commands keep the fail-closed policy.
+fn try_enqueue_sdk_command(
+    tx: &tokio_mpsc::Sender<QueuedSdkCommand>,
+    mut command: SdkCommand,
+    state: &BridgeState,
+) -> Result<(), TransportError> {
     if !state.is_healthy() {
-        return false;
+        return Err(TransportError::Closed);
+    }
+    if let Some(len) = command.document_len() {
+        if let Err(collab_types::DocumentMutationEncodeError::TooLarge { actual, max }) =
+            collab_types::document_transfer::check_transfer_len(len)
+        {
+            tracing::error!(
+                bytes = actual,
+                limit = max,
+                "collab: document change exceeds the transfer limit; not sent"
+            );
+            return Err(TransportError::TooLarge { actual, max });
+        }
+        command.shrink_document();
+        let Some(reservation) = state.document_command_bytes.reserve_sole(
+            command_bytes(&command).unwrap_or(usize::MAX),
+            SDK_DOCUMENT_COMMAND_BYTES,
+        ) else {
+            tracing::debug!(
+                bytes = len,
+                "collab: document budget full; change will be retried"
+            );
+            return Err(TransportError::Busy);
+        };
+        return match tx.try_send(QueuedSdkCommand {
+            command,
+            _reservation: reservation,
+        }) {
+            Ok(()) => Ok(()),
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => Err(TransportError::Busy),
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
+                state.fail_closed("outbound command queue");
+                Err(TransportError::Closed)
+            }
+        };
     }
     let transient = command.is_transient_presence();
     let Some(reservation) = state.command_bytes.reserve(
         command_bytes(&command).unwrap_or(usize::MAX),
         SDK_COMMAND_QUEUE_BYTES,
     ) else {
-        if !transient {
-            state.fail_closed("outbound command byte budget");
+        if transient {
+            return Err(TransportError::Shed);
         }
-        return false;
+        state.fail_closed("outbound command byte budget");
+        return Err(TransportError::Closed);
     };
     match tx.try_send(QueuedSdkCommand {
         command,
         _reservation: reservation,
     }) {
-        Ok(()) => true,
-        Err(tokio_mpsc::error::TrySendError::Full(_)) if transient => false,
+        Ok(()) => Ok(()),
+        Err(tokio_mpsc::error::TrySendError::Full(_)) if transient => Err(TransportError::Shed),
         Err(_) => {
             state.fail_closed("outbound command queue");
-            false
+            Err(TransportError::Closed)
         }
     }
 }
@@ -891,9 +991,127 @@ fn enqueue_sdk_command(
 struct InboundBridge {
     tx: tokio_mpsc::Sender<QueuedCollabEvent>,
     state: BridgeState,
+    reassembly: Arc<DocumentReassembly>,
+}
+
+/// Endpoint reassembly of segmented document mutations, shared by every
+/// route of one manager so the memory bound covers them all. Live traffic
+/// and history pages are tracked separately because history arrives newest
+/// page first.
+#[derive(Default)]
+struct DocumentReassembly {
+    live: std::sync::Mutex<collab_types::DocumentReassembler>,
+    history: std::sync::Mutex<collab_types::DocumentReassembler>,
+}
+
+impl DocumentReassembly {
+    /// Feed one validated document envelope and its endpoint payload (MLS
+    /// plaintext, or `None` for cleartext). A single-frame mutation passes
+    /// through unchanged as `Some(payload)`. A segment is held until its
+    /// transfer completes; the complete typed payload is then returned
+    /// exactly once as `Some(Some(bytes))`. `None` means nothing to deliver.
+    #[allow(
+        clippy::option_option,
+        reason = "nothing to deliver, a pass-through payload, or a completed transfer are distinct outcomes"
+    )]
+    fn complete(
+        reassembler: &std::sync::Mutex<collab_types::DocumentReassembler>,
+        envelope: &SignedOp,
+        payload: Option<Vec<u8>>,
+    ) -> Option<Option<Vec<u8>>> {
+        let frame = match collab_types::DocumentFrame::decode(
+            payload.as_deref().unwrap_or(&envelope.payload),
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(%error, "collab: document frame does not decode; dropping");
+                return None;
+            }
+        };
+        let segment = match frame {
+            collab_types::DocumentFrame::Whole(_) => return Some(payload),
+            collab_types::DocumentFrame::Segment(segment) => segment,
+        };
+        let Ok(mut reassembler) = reassembler.lock() else {
+            tracing::error!("collab: document reassembly state is poisoned; dropping segment");
+            return None;
+        };
+        let result = reassembler.accept(envelope, segment, crate::time::now());
+        for abandoned in reassembler.take_abandoned() {
+            tracing::warn!(
+                artifact = ?abandoned.artifact,
+                bytes = abandoned.total_len,
+                received = abandoned.received_segments,
+                segments = abandoned.segment_count,
+                reason = ?abandoned.reason,
+                "collab: incomplete document transfer abandoned; a fresh snapshot is required"
+            );
+        }
+        drop(reassembler);
+        match result {
+            Ok(Some(done)) => {
+                tracing::debug!(
+                    target: "tilo.state",
+                    event = "document_reassembled",
+                    bytes = done.len,
+                    "reassembled segmented document mutation"
+                );
+                Some(Some(done.payload))
+            }
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(%error, "collab: segmented document transfer rejected");
+                None
+            }
+        }
+    }
 }
 
 impl InboundBridge {
+    fn new(tx: tokio_mpsc::Sender<QueuedCollabEvent>, state: BridgeState) -> Self {
+        Self {
+            tx,
+            state,
+            reassembly: Arc::default(),
+        }
+    }
+
+    /// Deliver a document event without ever disconnecting for size: wait
+    /// for the owner to drain earlier document events when the document
+    /// budget is full. Returns false only when the bridge has failed or the
+    /// owner went away.
+    async fn send_document(&self, event: CollabEvent) -> bool {
+        let bytes = event_bytes(&event).unwrap_or(usize::MAX);
+        let budget = &self.state.document_event_bytes;
+        let reservation = loop {
+            let freed = budget.1.notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            if let Some(reservation) = budget.reserve_sole(bytes, SDK_DOCUMENT_EVENT_BYTES) {
+                break reservation;
+            }
+            if !self.state.is_healthy() {
+                return false;
+            }
+            let _ = tokio::time::timeout(SDK_DOCUMENT_EVENT_RETRY, freed).await;
+        };
+        if self
+            .tx
+            .send(QueuedCollabEvent {
+                event,
+                _reservation: reservation,
+            })
+            .await
+            .is_ok()
+        {
+            self.state.notify_events();
+            true
+        } else {
+            self.state.fail_closed("inbound document queue");
+            false
+        }
+    }
+
     fn send_durable(&self, event: CollabEvent) -> bool {
         let Some(reservation) = self.state.event_bytes.reserve(
             event_bytes(&event).unwrap_or(usize::MAX),
@@ -1708,6 +1926,13 @@ impl CollaborationManager {
         tests::connected_manager()
     }
 
+    /// Real socket-backed SDK transport plus a probe returning every signed
+    /// envelope the broker accepted, in order.
+    #[cfg(all(test, unix))]
+    pub(crate) fn capturing_for_test() -> (Self, Box<dyn Fn() -> Vec<SignedOp>>) {
+        tests::capturing_manager()
+    }
+
     /// Test-only: build a manager talking to an SDK broker on the given
     /// already-connected client fd, bypassing env-var lookup so two
     /// tests in one process don't race on `TILO_SVC_COLLAB_FD`.
@@ -1760,10 +1985,7 @@ impl CollaborationManager {
         let (outbound_tx, outbound_rx) = tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE);
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
-        let inbound = InboundBridge {
-            tx: inbound_tx,
-            state: state.clone(),
-        };
+        let inbound = InboundBridge::new(inbound_tx, state.clone());
         let (action_directory_tx, action_directory_rx) =
             mpsc::sync_channel::<ActionDirectoryRequest>(ACTION_DIRECTORY_REQUEST_QUEUE);
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
@@ -2262,7 +2484,11 @@ async fn spawn_op_stream(
                         continue;
                     }
                 };
-                if !tx.send_durable(translated) {
+                let Some(complete) = complete_document_event(translated, &tx.reassembly.live)
+                else {
+                    continue;
+                };
+                if !tx.send_document(complete).await {
                     break;
                 }
             }
@@ -2516,7 +2742,9 @@ fn next_certified_document_seq(now: crate::time::SystemTime) -> u64 {
 
 /// Sign on the shovel thread through the workspace identity service, then use
 /// the one signed Cap'n Proto verb. Missing or denied certification never
-/// downgrades the document to unsigned traffic.
+/// downgrades the document to unsigned traffic. A mutation larger than one
+/// frame is sent as consecutive segments, each encrypted (on MLS routes),
+/// signed and validated by the broker as its own envelope.
 #[allow(
     clippy::future_not_send,
     reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
@@ -2527,19 +2755,48 @@ async fn send_document_mutation(
     mutation: collab_types::DocumentMutation,
     bridge_state: &BridgeState,
 ) {
-    let workspace_id = route.spec.cluster_id.to_string();
-    let record_id = route.spec.record.as_deref().unwrap_or("");
-    let cleartext = match mutation.encode() {
-        Ok(payload) => payload,
+    let frames = match mutation.encode_frames() {
+        Ok(frames) => frames,
         Err(error) => {
-            tracing::warn!(%error, "collab: typed document mutation would not encode; dropping");
+            // The size was checked before the change was queued, so this
+            // is unreachable for SDK callers; never send a partial change.
+            tracing::error!(%error, "collab: typed document mutation would not encode; dropping");
             return;
         }
     };
+    let count = frames.len();
+    for (index, frame) in frames.into_iter().enumerate() {
+        if !send_document_frame(route, signer, frame, bridge_state).await {
+            if count > 1 {
+                tracing::warn!(
+                    segment = index,
+                    segments = count,
+                    "collab: segmented document transfer stopped; receivers will discard it"
+                );
+            }
+            return;
+        }
+    }
+}
+
+/// Encrypt (on MLS routes), sign and send one typed document frame.
+/// Returns whether the broker accepted it.
+#[allow(
+    clippy::future_not_send,
+    reason = "the route contains a capnp-rpc handle and runs only on the shovel LocalSet"
+)]
+async fn send_document_frame(
+    route: &SdkRoute,
+    signer: &mut LocalSdkDocumentSigner,
+    cleartext: Vec<u8>,
+    bridge_state: &BridgeState,
+) -> bool {
+    let workspace_id = route.spec.cluster_id.to_string();
+    let record_id = route.spec.record.as_deref().unwrap_or("");
     let Some((payload, encryption_metadata)) =
         prepare_document_payload(&route.encryption, cleartext)
     else {
-        return;
+        return false;
     };
     let now = crate::time::wall();
     let author = match signer {
@@ -2581,7 +2838,7 @@ async fn send_document_mutation(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
-            return;
+            return false;
         }
     };
     let signature = match signer {
@@ -2594,7 +2851,7 @@ async fn send_document_mutation(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
-                return;
+                return false;
             }
         },
         LocalSdkDocumentSigner::Host(identity) => match identity
@@ -2610,7 +2867,7 @@ async fn send_document_mutation(
                     ?error,
                     "collab: host identity service denied document operation; dropping"
                 );
-                return;
+                return false;
             }
         },
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Harness(key)) => {
@@ -2619,7 +2876,7 @@ async fn send_document_mutation(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
-                    return;
+                    return false;
                 }
             };
             key.sign(&signing_bytes).to_bytes()
@@ -2627,11 +2884,16 @@ async fn send_document_mutation(
     };
     op.signature = collab_types::Signature::from_bytes(signature);
     match postcard::to_stdvec(&op) {
-        Ok(bytes) => {
-            let _ = route.channel.send(&bytes).await;
-        }
+        Ok(bytes) => match route.channel.send(&bytes).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "collab: broker refused document operation");
+                false
+            }
+        },
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
+            false
         }
     }
 }
@@ -2961,10 +3223,18 @@ async fn dispatch_sdk_request(
                         .into_iter()
                         .filter_map(|bytes| postcard::from_bytes::<SignedOp>(&bytes).ok())
                         .filter_map(|op| match decrypt_document_payload(&op, &route.encryption) {
-                            Ok(payload) => {
+                            // History pages arrive newest first, so a
+                            // transfer split across pages completes when its
+                            // oldest segment arrives.
+                            Ok(payload) => DocumentReassembly::complete(
+                                &inbound_tx.reassembly.history,
+                                &op,
+                                payload,
+                            )
+                            .map(|payload| {
                                 payloads.push(payload);
-                                Some(Box::new(op))
-                            }
+                                Box::new(op)
+                            }),
                             Err(error) => {
                                 tracing::warn!(%error, "collab: dropping undecryptable scrollback envelope");
                                 None
@@ -2975,12 +3245,14 @@ async fn dispatch_sdk_request(
                 }
                 Err(_) => (Vec::new(), Vec::new(), true),
             };
-            let _ = inbound_tx.send_durable(CollabEvent::ScrollbackBatch {
-                artifact,
-                ops,
-                decrypted_payloads,
-                exhausted,
-            });
+            let _ = inbound_tx
+                .send_document(CollabEvent::ScrollbackBatch {
+                    artifact,
+                    ops,
+                    decrypted_payloads,
+                    exhausted,
+                })
+                .await;
         }
         CollabRequest::PublishActions { app_id, actions } => {
             let actions = actions
@@ -3220,6 +3492,29 @@ async fn dispatch_sdk_request(
         }
     }
 }
+/// Pass a single-frame document event through, or hold a segment until its
+/// transfer completes and return the complete mutation exactly once.
+fn complete_document_event(
+    event: CollabEvent,
+    reassembler: &std::sync::Mutex<collab_types::DocumentReassembler>,
+) -> Option<CollabEvent> {
+    let CollabEvent::Document {
+        envelope,
+        from_user_id,
+        decrypted_payload,
+    } = event
+    else {
+        return Some(event);
+    };
+    let decrypted_payload =
+        DocumentReassembly::complete(reassembler, &envelope, decrypted_payload)?;
+    Some(CollabEvent::Document {
+        envelope,
+        from_user_id,
+        decrypted_payload,
+    })
+}
+
 fn signed_document_event(
     envelope: SignedOp,
     from_user_id: String,
@@ -3251,7 +3546,7 @@ fn decrypt_document_payload(
             .decrypt(&envelope.payload)
             .map_err(|_| collab_types::DocumentMutationError::RouteMismatch)?;
         drop(guard);
-        let _mutation = collab_types::DocumentMutation::decode(&plaintext)?;
+        let _frame = collab_types::DocumentFrame::decode(&plaintext)?;
         Ok(Some(plaintext))
     } else {
         if encryption
@@ -3263,7 +3558,7 @@ fn decrypt_document_payload(
             // active downgrade. There is no opportunistic fallback.
             return Err(collab_types::DocumentMutationError::RouteMismatch);
         }
-        let _mutation = collab_types::DocumentMutation::decode(&envelope.payload)?;
+        let _frame = collab_types::DocumentFrame::decode(&envelope.payload)?;
         Ok(None)
     }
 }
@@ -4401,6 +4696,31 @@ mod tests {
     }
 
     #[cfg(unix)]
+    pub(super) fn capturing_manager() -> (CollaborationManager, Box<dyn Fn() -> Vec<SignedOp>>) {
+        let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+        let broker = FakeBroker {
+            captures: captures.clone(),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, _, _thread) = stand_up_fake_broker(broker);
+        let manager =
+            CollaborationManager::from_sdk_fd_for_test(fd, "capture-test", Uuid::new_v4());
+        let probe = Box::new(move || {
+            captures
+                .lock()
+                .unwrap()
+                .signed_ops
+                .iter()
+                .map(|bytes| postcard::from_bytes::<SignedOp>(bytes).unwrap())
+                .collect()
+        });
+        (manager, probe)
+    }
+
+    #[cfg(unix)]
     pub(super) fn connected_manager() -> CollaborationManager {
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(Captures::default())),
@@ -4474,9 +4794,22 @@ mod tests {
         ));
 
         assert!(enqueue_sdk_command(&tx, document(), &state));
+        assert_eq!(
+            try_enqueue_sdk_command(&tx, document(), &state),
+            Err(TransportError::Busy),
+            "a full queue defers a document change so its sender retries it"
+        );
         assert!(
-            !enqueue_sdk_command(&tx, document(), &state),
-            "a durable overflow must be observable as a disconnected bridge"
+            state.is_healthy(),
+            "deferring a document change never disconnects"
+        );
+        assert!(
+            !enqueue_sdk_command(
+                &tx,
+                SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
+                &state
+            ),
+            "a durable control overflow must be observable as a disconnected bridge"
         );
         assert!(!state.is_healthy());
         assert!(
@@ -4497,10 +4830,7 @@ mod tests {
             .unwrap();
         let _entry = scope.enter();
         let (tx, mut rx) = tokio_mpsc::channel(4);
-        let inbound = InboundBridge {
-            tx,
-            state: BridgeState::new(),
-        };
+        let inbound = InboundBridge::new(tx, BridgeState::new());
         assert!(inbound.send_durable(CollabEvent::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Update {
                 invocation: tilo_actions::InvocationId(uuid::Uuid::nil()),
@@ -4556,10 +4886,7 @@ mod tests {
     fn saturated_inbound_bridge_preserves_presence_policy_and_fails_for_results() {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
-        let inbound = InboundBridge {
-            tx,
-            state: state.clone(),
-        };
+        let inbound = InboundBridge::new(tx, state.clone());
 
         for _ in 0..10_000 {
             assert!(inbound.send_presence(CollabEvent::RemoteCursorMoved {
@@ -4608,39 +4935,87 @@ mod tests {
     }
 
     #[test]
-    fn oversized_durable_payload_fails_the_byte_budget_before_queueing() {
+    fn over_limit_document_is_refused_explicitly_without_disconnecting() {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
-        let mut data = Vec::with_capacity(5 * 1024 * 1024);
-        data.push(0);
-        let oversized = SdkCommand::Primary(CollabRequest::Document {
-            // Capacity, not just logical length, is charged: a caller must
-            // not park a mostly-empty giant allocation on the UI bridge.
-            mutation: collab_types::DocumentMutation::Snapshot(data),
-        });
+        let limit = collab_types::MAX_DOCUMENT_TRANSFER_BYTES;
+        let oversized =
+            SdkCommand::Primary(CollabRequest::document_incremental(vec![0; limit + 1]));
 
-        assert!(!enqueue_sdk_command(&tx, oversized, &state));
-        assert!(!state.is_healthy());
-        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            try_enqueue_sdk_command(&tx, oversized, &state),
+            Err(TransportError::TooLarge {
+                actual: limit + 1,
+                max: limit,
+            })
+        );
+        assert!(state.is_healthy(), "one oversized change keeps the bridge");
+        assert!(rx.try_recv().is_err(), "nothing of it was queued");
+        assert!(enqueue_sdk_command(
+            &tx,
+            SdkCommand::Primary(CollabRequest::document_incremental(vec![1; 8])),
+            &state
+        ));
     }
 
     #[test]
-    fn byte_budget_rejects_aggregate_documents_before_count_capacity() {
+    fn document_budget_is_charged_for_bytes_sent_not_spare_capacity() {
+        let (tx, mut rx) = tokio_mpsc::channel(1);
+        let state = BridgeState::new();
+        let mut data = Vec::with_capacity(SDK_DOCUMENT_COMMAND_BYTES * 2);
+        data.push(0);
+        let command = SdkCommand::Primary(CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Snapshot(data),
+        });
+
+        assert!(enqueue_sdk_command(&tx, command, &state));
+        assert!(
+            state.document_command_bytes.0.load(Ordering::Acquire) < 1024 * 1024,
+            "a mostly-empty allocation is shrunk before it is parked on the bridge"
+        );
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn document_budget_defers_aggregate_documents_without_disconnecting() {
         let (tx, rx) = tokio_mpsc::channel(SDK_COMMAND_QUEUE);
         let state = BridgeState::new();
         let mut admitted = 0;
-        loop {
+        let refusal = loop {
             let command =
-                SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 64 * 1024]));
-            if !enqueue_sdk_command(&tx, command, &state) {
-                break;
+                SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 1024 * 1024]));
+            match try_enqueue_sdk_command(&tx, command, &state) {
+                Ok(()) => admitted += 1,
+                Err(error) => break error,
             }
-            admitted += 1;
-        }
+        };
 
-        assert!(admitted < SDK_COMMAND_QUEUE);
-        assert!(!state.is_healthy());
+        assert_eq!(refusal, TransportError::Busy);
+        assert!(admitted < SDK_COMMAND_QUEUE, "bytes, not count, bound it");
+        assert!(state.is_healthy());
         assert_eq!(rx.len(), admitted);
+        assert!(
+            enqueue_sdk_command(
+                &tx,
+                SdkCommand::Primary(CollabRequest::RequestDocumentSnapshot),
+                &state
+            ),
+            "queued document bytes never starve control traffic"
+        );
+    }
+
+    #[test]
+    fn a_lone_document_larger_than_the_budget_still_makes_progress() {
+        let budget = ByteBudget::new();
+        let big = budget
+            .reserve_sole(SDK_DOCUMENT_EVENT_BYTES + 1, SDK_DOCUMENT_EVENT_BYTES)
+            .expect("an empty budget admits one oversized item");
+        assert!(
+            budget.reserve_sole(1, SDK_DOCUMENT_EVENT_BYTES).is_none(),
+            "nothing queues beside it"
+        );
+        drop(big);
+        assert!(budget.reserve_sole(1, SDK_DOCUMENT_EVENT_BYTES).is_some());
     }
 
     #[test]
@@ -4666,10 +5041,7 @@ mod tests {
     fn oversized_inbound_action_fails_before_queueing() {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
-        let inbound = InboundBridge {
-            tx,
-            state: state.clone(),
-        };
+        let inbound = InboundBridge::new(tx, state.clone());
         let mut payload = Vec::with_capacity(5 * 1024 * 1024);
         payload.push(1);
 

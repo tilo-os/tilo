@@ -163,7 +163,26 @@ impl App {
         true
     }
 
+    /// Record what a document hand-off means for the user-visible sync
+    /// status. Returns whether the transport accepted the change, which is
+    /// the only condition under which a sender may advance its frontier.
+    fn note_document_send(
+        &mut self,
+        result: &Result<(), crate::collaboration::CollabSendError>,
+    ) -> bool {
+        if let Some(status) = document_routes::outbound_failure(result)
+            && self.document_routes.outbound != status
+        {
+            self.document_routes.outbound = status;
+            self.layout.layout_dirty = true;
+        }
+        result.is_ok()
+    }
+
     /// Live-edit path (the late-join handshake still ships a full snapshot).
+    /// The frontier moves only once the transport has accepted the delta; a
+    /// busy transport leaves it for the next wakeup and an over-limit delta
+    /// is reported through [`Self::document_sync_status`].
     fn broadcast_doc_delta(&mut self) {
         if self.collaboration.manager.is_connected() {
             match self.pending_primary_document_delta() {
@@ -176,9 +195,10 @@ impl App {
                         heads = heads.len(),
                         "queueing document mutation"
                     );
-                    if self.collaboration.manager.send(
+                    let result = self.collaboration.manager.try_send(
                         crate::collaboration::CollabRequest::document_incremental(delta),
-                    ) {
+                    );
+                    if self.note_document_send(&result) {
                         self.advance_primary_document(heads);
                     }
                 }
@@ -209,24 +229,24 @@ impl App {
         if delta.is_empty() {
             return;
         }
-        if let Some(manager) = self.collaboration.room_manager.as_mut() {
-            if manager.is_connected()
-                && manager.send(crate::collaboration::CollabRequest::document_incremental(
-                    delta,
-                ))
-            {
-                room.advance_outbound(heads);
+        let request = crate::collaboration::CollabRequest::document_incremental(delta);
+        let result = if let Some(manager) = self.collaboration.room_manager.as_mut() {
+            if !manager.is_connected() {
+                return;
             }
+            manager.try_send(request)
         } else if self.persistence.records.is_some() && self.collaboration.manager.is_connected() {
             // Before the first record checkout the primary manager is the
             // room route. It becomes `collaboration.room_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
-            if self.collaboration.manager.send(
-                crate::collaboration::CollabRequest::document_incremental(delta),
-            ) {
-                room.advance_outbound(heads);
-            }
+            self.collaboration.manager.try_send(request)
+        } else {
+            return;
+        };
+        if result.is_ok() {
+            room.advance_outbound(heads);
         }
+        self.note_document_send(&result);
     }
 
     #[cfg(feature = "native")]
@@ -426,9 +446,11 @@ impl App {
                         self.persistence.room_index.as_mut(),
                     ) {
                         let snapshot = room.document_mut().save();
-                        let _ = manager.send(
+                        if let Err(error) = manager.try_send(
                             crate::collaboration::CollabRequest::document_snapshot(snapshot),
-                        );
+                        ) {
+                            tracing::warn!(%error, "collab: room-index snapshot not sent");
+                        }
                     }
                 }
                 _ => {}
@@ -595,10 +617,16 @@ impl App {
     fn respond_primary_document_snapshot(&mut self) {
         match self.primary_document_snapshot() {
             Ok(data) => {
-                let _ = self
+                let result = self
                     .collaboration
                     .manager
-                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                    .try_send(crate::collaboration::CollabRequest::document_snapshot(data));
+                if let Err(error) = &result {
+                    // The requester keeps asking while no holder answers, so
+                    // a busy transport delays onboarding rather than losing it.
+                    tracing::warn!(%error, "collab: primary snapshot not sent");
+                }
+                self.note_document_send(&result);
             }
             Err(error) => {
                 tracing::warn!(%error, "collab: primary snapshot refused");
