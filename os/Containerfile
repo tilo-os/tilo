@@ -1139,6 +1139,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # The frozen snapshot already resolves these development specs and their exact
 # runtime library closure. Erase the header/pkg-config payloads in the same
 # layer; their runtime dependencies remain for the copied compositor binaries.
+# The base already ships pkgconf, so the snapshot would not carry it; a later
+# stage (Wine's mingw64-libxslt) needs it again after this erase.
+# tilo-rpm-snapshot-package: pkgconf
+# tilo-rpm-snapshot-package: pkgconf-m4
+# tilo-rpm-snapshot-package: libpkgconf
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wayland-devel \
     libxkbcommon-devel \
