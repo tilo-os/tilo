@@ -294,6 +294,36 @@ pub fn find_spec<'a>(
     (owner, spec)
 }
 
+/// The argument the palette binds when a prompted `spec` collects `text`:
+/// the first required parameter (else the first), parsed into its declared
+/// type. `None` when the text does not parse, as the palette binds nothing.
+fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)> {
+    let Some(primary) = spec
+        .params()
+        .iter()
+        .find(|p| p.required)
+        .or_else(|| spec.params().first())
+    else {
+        return Some((PROMPTED_PARAM.to_string(), ArgValue::Text(text.to_string())));
+    };
+    let value = match primary.ty {
+        ParamType::Text => Some(ArgValue::Text(text.to_string())),
+        ParamType::Integer => text.trim().parse().ok().map(ArgValue::Integer),
+        ParamType::Number => text.trim().parse().ok().map(ArgValue::Number),
+        ParamType::Boolean => match text.trim() {
+            "true" | "yes" | "on" => Some(ArgValue::Boolean(true)),
+            "false" | "no" | "off" => Some(ArgValue::Boolean(false)),
+            _ => None,
+        },
+        ParamType::Object => serde_json::from_str(text).ok().map(ArgValue::Object),
+        ParamType::Array => serde_json::from_str(text).ok().map(ArgValue::Array),
+        ParamType::Resource => Some(ArgValue::Resource(text.to_string())),
+        ParamType::DateTime => Some(ArgValue::DateTime(text.to_string())),
+        ParamType::Secret => Some(ArgValue::Secret(text.to_string())),
+    };
+    value.map(|value| (primary.name.to_string(), value))
+}
+
 /// What choosing `spec` in the palette dispatches: the pre-encoded action of
 /// an immediate spec, or a prompted spec's build of `arg`. The external
 /// invocation path (binding arguments against the spec's parameters) must
@@ -306,14 +336,10 @@ pub fn find_spec<'a>(
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     let (palette, supplied) = match (&spec.input, arg) {
         (ActionInput::Immediate(encoded), None) => (encoded.clone(), Vec::new()),
-        (ActionInput::Prompted { build, .. }, Some(arg)) => {
-            let name = spec
-                .params()
-                .iter()
-                .find(|p| p.required && p.ty == ParamType::Text)
-                .map_or_else(|| PROMPTED_PARAM.to_string(), |p| p.name.to_string());
-            (build(arg), vec![(name, ArgValue::Text(arg.to_string()))])
-        }
+        (ActionInput::Prompted { build, .. }, Some(arg)) => (
+            build(arg),
+            prompted_argument(spec, arg).into_iter().collect(),
+        ),
         (ActionInput::Immediate(_), Some(_)) => {
             panic!("`{}` is immediate; it takes no argument", spec.id)
         }
@@ -321,7 +347,7 @@ pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
             panic!("`{}` is prompted; pass the argument to build it", spec.id)
         }
     };
-    if spec.params().len() == supplied.len() {
+    if spec.params().iter().filter(|p| p.required).count() <= supplied.len() {
         let external = spec
             .build_args(supplied)
             .unwrap_or_else(|e| panic!("`{}` binds its own arguments: {e}", spec.id));
