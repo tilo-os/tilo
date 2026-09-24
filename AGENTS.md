@@ -209,6 +209,26 @@ rather than rewrite; `full-loop.py` goes from nothing to a PNG in about five sec
 **Never** run `scripts/screenshot-app.py`, and never screenshot the user's real desktop.
 Debug overlays need `QUICK_UI_DEBUG` **and** `debug_assertions`.
 
+## Dev VMs
+
+To run your build in the real Tilo OS image (a headful session, real DRM and input, VM-wide
+services), use the one tool, `tilo-vm`. Start here:
+
+```bash
+cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart
+```
+
+You get a **slot** in a shared dev VM: your own user, session and layer stack, swapped with
+`tilo-vm swap <component>` and undone with `tilo-vm rollback`. Driving stays the one story above:
+`tilo-vm control …` runs the VM's `tilo-control` against your slot, and `tilo-vm shot` is its
+snapshot. `tilo-vm doctor` checks the host and prints each fix. Never deploy into a VM with raw
+`ssh`/`scp`. Image-level changes (Containerfiles, units, `/etc`, packages) go through
+`tilo-vm vm upgrade --from local`: it rebuilds only what changed, moves the running VM onto the new
+image with bootc and reboots it; `tilo-vm vm rollback-image` goes back (`tilo-vm guide images`).
+Kernel changes (`os/kernel/config-fragments/`, `os/kernel/patches/`) go through
+`tilo-vm swap kernel`: it builds incrementally from the release build's inputs, installs the
+kernel VM-wide and reboots (`tilo-vm guide kernel`).
+
 ## Cargo.lock is committed — do not regenerate it
 
 Move one crate at a time with `cargo update -p <crate> --precise <version>`. A fresh resolve

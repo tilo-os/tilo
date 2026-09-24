@@ -793,7 +793,12 @@ mod tests {
         );
         let blob = hex::decode(KAT_BACKUP_V1).unwrap();
         let record = open_record(&blob, passphrase).unwrap();
-        assert_eq!(record.as_slice(), record_bytes("Ada", 71).as_slice());
+        // Compare as JSON values: the fixture's key order is fixed, but the
+        // expected record's order follows whether serde_json's
+        // `preserve_order` is unified into this build.
+        let opened: serde_json::Value = serde_json::from_slice(&record).unwrap();
+        let expected: serde_json::Value = serde_json::from_slice(&record_bytes("Ada", 71)).unwrap();
+        assert_eq!(opened, expected);
         assert!(open_record(&blob, b"wrong horse battery staple").is_err());
     }
 
