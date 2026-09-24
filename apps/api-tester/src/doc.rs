@@ -215,14 +215,7 @@ impl ApiDoc {
 
     /// Read a top-level `Text` object's contents (empty if absent).
     pub fn read_text(doc: &AutoCommit, root: &ObjId, key: &str) -> String {
-        match doc.get(root, key) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).unwrap_or_default(),
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => s.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        }
+        ui::doc::read_str_or_text(doc, root, key).unwrap_or_default()
     }
 
     /// Splice `value` into the `Text` object at `key`, but only when it

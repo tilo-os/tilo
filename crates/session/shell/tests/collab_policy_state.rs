@@ -26,8 +26,8 @@ use collab_types::{
     hash_op_prefix, hash_target_op, parse_compaction_payload, validate_inbound_op,
 };
 use ed25519_dalek::SigningKey;
-use rand_08::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 use shell::shell::collab_broker::{CrdtRoute, LocalIdentity, PeerLabels};
 use shell::shell::collab_core::{BrokerChannels, apply_redaction_from_envelope};
 use threshold_identity::{

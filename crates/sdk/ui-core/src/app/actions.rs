@@ -44,6 +44,7 @@ impl<'a> ResourceInvocation<'a> {
         self
     }
 
+    #[cfg(feature = "native")]
     fn evidence(mut self, evidence: Option<&'a serde_json::Value>) -> Self {
         self.confirmation_evidence = evidence;
         self
@@ -2598,6 +2599,7 @@ impl App {
         self.actions.action_palette.as_ref()
     }
 
+    #[cfg(feature = "native")]
     fn refresh_action_palette_resources(&mut self) {
         // A palette can stay open while document state or the local actor's
         // permissions change. Refresh its authority snapshot immediately
@@ -2669,6 +2671,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
         if self.actions.action_palette.is_none() {
             return false;

@@ -359,10 +359,7 @@ impl PersonalDefaults {
 }
 
 fn personal_path() -> Option<PathBuf> {
-    let root = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && !p.as_os_str().is_empty())
-        .or_else(|| dirs::home_dir().map(|p| p.join(".config")))?;
+    let root = xdg_paths::xdg::config_home()?;
     Some(root.join("tilo/default-apps.json"))
 }
 

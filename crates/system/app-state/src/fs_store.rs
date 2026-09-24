@@ -23,13 +23,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use durable_store::{
-    Durability, DurableStore, Lease, Revision, StorageKey, StoreError as SeamError, Stored, WriteOp,
+    Durability, DurableStore, Lease, Revision, SharedLease, StorageKey, StoreError as SeamError,
+    Stored, WriteOp,
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, DocStore, StoreError,
-    acquire_gate, io_err, open_directory, same_file, sync_directory_ancestors,
-    validate_absolute_directory,
+    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LEGACY_PACKAGE_ROOM_CLAIM,
+    LEGACY_RECORD_ROOM_CLAIM, LOCK_FILE, RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate,
+    acquire_writer_lock, claim_legacy_room_migration, ensure_state_dir, io_err, open_directory,
+    same_file, sync_directory_ancestors, validate_absolute_directory, validate_package_id,
+    validate_record_key,
 };
 
 /// Directory below the profile root holding every instance's local view.
@@ -66,7 +69,7 @@ struct State {
     queue: BTreeMap<StorageKey, Batch>,
     writing: BTreeMap<StorageKey, (u64, u64)>,
     keys: BTreeMap<StorageKey, KeyStatus>,
-    owners: BTreeMap<StorageKey, Arc<Owner>>,
+    owners: BTreeMap<StorageKey, Vec<Arc<Owner>>>,
     view_leases: BTreeSet<StorageKey>,
     running: bool,
     stopping: bool,
@@ -101,11 +104,15 @@ struct KeyStatus {
     synced: bool,
 }
 
-/// Live handles proving a leased record directory is still the one leased.
+/// Live handles proving a leased document directory is still the one leased.
 struct Owner {
     directory: PathBuf,
     handle: File,
     gate: File,
+    exclusive: bool,
+    /// Held by the primary shared writer: the actor sidecar is its alone.
+    /// Kept open, never read, for the lock it holds.
+    writer_lock: Option<File>,
 }
 
 impl Owner {
@@ -136,12 +143,11 @@ impl Drop for FsLease {
         let mut state = lock(&shared.state);
         match &self.owner {
             Some(owner) => {
-                if state
-                    .owners
-                    .get(&self.key)
-                    .is_some_and(|live| Arc::ptr_eq(live, owner))
-                {
-                    state.owners.remove(&self.key);
+                if let Some(live) = state.owners.get_mut(&self.key) {
+                    live.retain(|candidate| !Arc::ptr_eq(candidate, owner));
+                    if live.is_empty() {
+                        state.owners.remove(&self.key);
+                    }
                 }
             }
             None => {
@@ -152,7 +158,8 @@ impl Drop for FsLease {
 }
 
 enum Target {
-    Record(PathBuf),
+    /// A directory holding `state.automerge`, its actor sidecar and gates.
+    Document(PathBuf),
     View(PathBuf),
 }
 
@@ -234,15 +241,54 @@ impl FsStore {
         &self.root
     }
 
+    /// A package's directory. A package renamed from `dev.qos.*` keeps
+    /// using the directory its earlier releases wrote until a directory under
+    /// the new name exists.
+    fn package_dir(&self, package: &str) -> Result<PathBuf, StoreError> {
+        validate_package_id(package)?;
+        validate_absolute_directory(&self.root)?;
+        let current = self.root.join(package);
+        if matches!(current.try_exists(), Ok(false))
+            && let Some(suffix) = package.strip_prefix("dev.tilo.")
+        {
+            let legacy = self.root.join(format!("dev.qos.{suffix}"));
+            if legacy.is_dir() {
+                return Ok(legacy);
+            }
+        }
+        Ok(current)
+    }
+
     fn target(&self, key: &StorageKey) -> Result<Target, SeamError> {
         match key {
             StorageKey::Record {
                 package,
                 workspace,
                 record,
-            } => Ok(Target::Record(DocStore::room_record_dir_at(
-                &self.root, package, workspace, record,
-            )?)),
+            } => {
+                validate_record_key(workspace)?;
+                validate_record_key(record)?;
+                Ok(Target::Document(
+                    self.package_dir(package)?
+                        .join(ROOMS_DIR)
+                        .join(workspace)
+                        .join(RECORDS_DIR)
+                        .join(record),
+                ))
+            }
+            StorageKey::Package { package } => Ok(Target::Document(self.package_dir(package)?)),
+            StorageKey::RoomIndex { package, workspace } => {
+                validate_record_key(workspace)?;
+                Ok(Target::Document(
+                    self.package_dir(package)?.join(ROOMS_DIR).join(workspace),
+                ))
+            }
+            StorageKey::PackageRecord { package, record } => {
+                validate_record_key(record)?;
+                Ok(Target::Document(
+                    self.package_dir(package)?.join(RECORDS_DIR).join(record),
+                ))
+            }
             StorageKey::View {
                 device,
                 workspace,
@@ -303,7 +349,7 @@ impl FsStore {
     /// Make bytes that were read, rather than written by this store, durable.
     fn sync_existing(&self, key: &StorageKey) -> Result<(), StoreError> {
         let (file, directory) = match self.target(key).map_err(seam_to_store)? {
-            Target::Record(directory) => (directory.join(DOCUMENT_FILE), directory),
+            Target::Document(directory) => (directory.join(DOCUMENT_FILE), directory),
             Target::View(path) => {
                 let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
                 (path, parent)
@@ -347,7 +393,7 @@ impl DurableStore for FsStore {
             let _ = self.flush(Some(key));
         }
         let (path, writer) = match target {
-            Target::Record(directory) => (
+            Target::Document(directory) => (
                 directory.join(DOCUMENT_FILE),
                 Some(directory.join(ACTOR_FILE)),
             ),
@@ -372,7 +418,7 @@ impl DurableStore for FsStore {
         writer: Option<&[u8]>,
     ) -> Result<Revision, SeamError> {
         let view = match self.target(key)? {
-            Target::Record(_) => {
+            Target::Document(_) => {
                 if !lock(&self.shared.state).owners.contains_key(key) {
                     return Err(SeamError::NotLeased(key.to_string()));
                 }
@@ -494,25 +540,12 @@ impl DurableStore for FsStore {
 
     fn lease(&self, key: &StorageKey) -> Result<Lease, SeamError> {
         match self.target(key)? {
-            Target::Record(directory) => {
-                let owner = Arc::new(open_owner(&self.shared, &directory)?);
-                let mut state = lock(&self.shared.state);
-                if state.owners.contains_key(key) {
+            Target::Document(directory) => {
+                if lock(&self.shared.state).owners.contains_key(key) {
                     return Err(SeamError::Busy(key.to_string()));
                 }
-                state.owners.insert(key.clone(), Arc::clone(&owner));
-                // A new owner starts from bytes it verifies itself, not from
-                // an earlier owner's failures.
-                let status = state.keys.entry(key.clone()).or_default();
-                status.failed.clear();
-                status.poisoned = false;
-                status.synced = false;
-                drop(state);
-                Ok(Box::new(FsLease {
-                    key: key.clone(),
-                    owner: Some(owner),
-                    shared: Arc::downgrade(&self.shared),
-                }))
+                let owner = Arc::new(open_owner(&self.shared, &directory)?);
+                Ok(Box::new(self.register(key, owner)?))
             }
             Target::View(_) => {
                 if !lock(&self.shared.state).view_leases.insert(key.clone()) {
@@ -525,6 +558,90 @@ impl DurableStore for FsStore {
                 }))
             }
         }
+    }
+
+    fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, SeamError> {
+        match self.target(key)? {
+            Target::Document(directory) => {
+                if lock(&self.shared.state)
+                    .owners
+                    .get(key)
+                    .is_some_and(|live| live.iter().any(|owner| owner.exclusive))
+                {
+                    return Err(SeamError::Busy(key.to_string()));
+                }
+                let owner = Arc::new(open_shared_owner(&directory)?);
+                let primary = owner.writer_lock.is_some();
+                Ok(SharedLease {
+                    lease: Box::new(self.register(key, owner)?),
+                    primary,
+                })
+            }
+            Target::View(_) => Err(SeamError::InvalidKey {
+                key: key.to_string(),
+                reason: "a view has exactly one writer".into(),
+            }),
+        }
+    }
+
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
+        validate_record_key(claimant)?;
+        let marker = match key {
+            StorageKey::Package { package } => {
+                self.package_dir(package)?.join(LEGACY_PACKAGE_ROOM_CLAIM)
+            }
+            StorageKey::PackageRecord { package, record } => {
+                validate_record_key(record)?;
+                self.package_dir(package)?
+                    .join(RECORDS_DIR)
+                    .join(record)
+                    .join(LEGACY_RECORD_ROOM_CLAIM)
+            }
+            _ => {
+                return Err(SeamError::InvalidKey {
+                    key: key.to_string(),
+                    reason: "only retained package documents are claimed".into(),
+                });
+            }
+        };
+        if let Some(parent) = marker.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
+        }
+        Ok(claim_legacy_room_migration(&marker, claimant)?)
+    }
+
+    fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {
+        match self.target(key).ok()? {
+            Target::Document(directory) => Some(directory.join(DOCUMENT_FILE)),
+            Target::View(path) => Some(path),
+        }
+    }
+}
+
+impl FsStore {
+    fn register(&self, key: &StorageKey, owner: Arc<Owner>) -> Result<FsLease, SeamError> {
+        let mut state = lock(&self.shared.state);
+        let live = state.owners.entry(key.clone()).or_default();
+        if live.iter().any(|other| other.exclusive || owner.exclusive) {
+            return Err(SeamError::Busy(key.to_string()));
+        }
+        let first = live.is_empty();
+        live.push(Arc::clone(&owner));
+        if first {
+            // A new owner starts from bytes it verifies itself, not from an
+            // earlier owner's failures.
+            let status = state.keys.entry(key.clone()).or_default();
+            status.failed.clear();
+            status.poisoned = false;
+            status.synced = false;
+        }
+        drop(state);
+        Ok(FsLease {
+            key: key.clone(),
+            owner: Some(owner),
+            shared: Arc::downgrade(&self.shared),
+        })
     }
 }
 
@@ -600,9 +717,37 @@ fn open_owner(shared: &Shared, directory: &Path) -> Result<Owner, StoreError> {
         directory: directory.to_path_buf(),
         handle,
         gate,
+        exclusive: true,
+        writer_lock: None,
     };
     owner.check()?;
     sync_ancestors(shared, directory)?;
+    owner.check()?;
+    Ok(owner)
+}
+
+/// Join a document's shared writers: the shared gate keeps exclusive owners
+/// out, and whoever wins the writer lock is primary. A path an older layout
+/// left as a file is recovered first (see [`ensure_state_dir`]).
+fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
+    ensure_state_dir(directory)?;
+    let handle =
+        open_directory(directory, false).map_err(|e| io_err("opening state directory", e))?;
+    let gate = acquire_gate(&directory.join(CANONICAL_GATE), false)?;
+    let writer_lock = acquire_writer_lock(&directory.join(LOCK_FILE));
+    if writer_lock.is_none() {
+        tracing::warn!(
+            directory = %directory.display(),
+            "another instance holds the state lock; running on a fresh automerge actor"
+        );
+    }
+    let owner = Owner {
+        directory: directory.to_path_buf(),
+        handle,
+        gate,
+        exclusive: false,
+        writer_lock,
+    };
     owner.check()?;
     Ok(owner)
 }
@@ -695,7 +840,11 @@ fn next_batch(shared: &Shared) -> Option<Taken> {
             && let Some(batch) = state.queue.remove(&key)
         {
             state.writing.insert(key.clone(), (batch.first, batch.last));
-            let owner = state.owners.get(&key).cloned();
+            let owner = state
+                .owners
+                .get(&key)
+                .and_then(|live| live.first())
+                .cloned();
             let poisoned = state.keys.get(&key).is_some_and(|status| status.poisoned);
             return Some(Taken {
                 key,
@@ -853,6 +1002,7 @@ fn append_synced(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DocStore;
     use tempfile::TempDir;
 
     fn record(name: &str) -> StorageKey {
@@ -1040,6 +1190,65 @@ mod tests {
         assert_eq!(
             FsStore::new(tmp.path()).read(&key).unwrap().unwrap().bytes,
             b"kept"
+        );
+    }
+
+    #[test]
+    fn package_scoped_keys_map_onto_the_launch_environment_layout() {
+        let tmp = TempDir::new().unwrap();
+        let store = FsStore::with_debounce(tmp.path(), Duration::ZERO);
+        let package = tmp.path().join("so.tilo.test");
+        for (key, directory) in [
+            (StorageKey::package("so.tilo.test"), package.clone()),
+            (
+                StorageKey::room_index("so.tilo.test", "room-a"),
+                package.join(ROOMS_DIR).join("room-a"),
+            ),
+            (
+                StorageKey::package_record("so.tilo.test", "rec"),
+                package.join(RECORDS_DIR).join("rec"),
+            ),
+        ] {
+            let shared = store.lease_shared(&key).unwrap();
+            assert!(shared.primary);
+            store
+                .write(&key, WriteOp::Replace(b"doc".to_vec()), None)
+                .unwrap();
+            store.flush(Some(&key)).unwrap();
+            assert_eq!(fs::read(directory.join(DOCUMENT_FILE)).unwrap(), b"doc");
+            assert!(directory.join(LOCK_FILE).is_file());
+            assert_eq!(store.local_path(&key), Some(directory.join(DOCUMENT_FILE)));
+        }
+    }
+
+    #[test]
+    fn a_renamed_package_keeps_its_earlier_directory_until_the_new_one_exists() {
+        let tmp = TempDir::new().unwrap();
+        let earlier = tmp.path().join("dev.qos.notes");
+        fs::create_dir(&earlier).unwrap();
+        let store = FsStore::new(tmp.path());
+        let key = StorageKey::package("dev.tilo.notes");
+        assert_eq!(store.local_path(&key), Some(earlier.join(DOCUMENT_FILE)));
+        fs::create_dir(tmp.path().join("dev.tilo.notes")).unwrap();
+        assert_eq!(
+            store.local_path(&key),
+            Some(tmp.path().join("dev.tilo.notes").join(DOCUMENT_FILE))
+        );
+    }
+
+    #[test]
+    fn a_stale_state_file_is_moved_aside_for_shared_writers_only() {
+        let tmp = TempDir::new().unwrap();
+        let store = FsStore::new(tmp.path());
+        let path = tmp.path().join("so.tilo.test");
+        fs::write(&path, b"old layout").unwrap();
+        let key = StorageKey::package("so.tilo.test");
+        assert!(store.lease(&key).is_err(), "exclusive owners never adopt");
+        let _shared = store.lease_shared(&key).unwrap();
+        assert!(path.is_dir());
+        assert_eq!(
+            fs::read(tmp.path().join("so.tilo.test.stale")).unwrap(),
+            b"old layout"
         );
     }
 

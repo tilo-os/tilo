@@ -154,10 +154,10 @@ mod tests {
     use crate::change::sign_change_request;
     use crate::entry::{RegistryVersion, sign_entry};
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn key_and_entry() -> (SigningKey, RegistryEntry) {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let pk_hex = hex::encode(key.verifying_key().to_bytes());
         let entry = RegistryEntry {
             package_id: "so.tilo.editor".into(),

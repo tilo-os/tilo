@@ -58,8 +58,8 @@ use crate::model::{
     Address, Birthday, Contact, ContactId, ContactStore, GroupEntry, Labeled, SortKey,
     group_names_equal, normalize_text, sample_contacts,
 };
-use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
+use ui::widget::{PushNav, PushPane};
 
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
@@ -1560,7 +1560,7 @@ impl ContactsApp {
     /// slide animation so a headless frame captures the settled pushed
     /// detail rather than one mid-transition.
     pub fn shots_show_detail(&mut self) {
-        self.push.snap(Pane::Detail);
+        self.push.snap(PushPane::Detail);
     }
 
     /// Snap into the New Contact form for `--shots` (placeholders + the
@@ -1571,7 +1571,7 @@ impl ContactsApp {
     /// form rather than the list.
     pub fn shots_new_contact(&mut self) {
         self.begin_new_contact();
-        self.push.snap(Pane::Detail);
+        self.push.snap(PushPane::Detail);
     }
 
     /// Snap the EDIT form open on the selected contact for `--shots`, so a
@@ -1580,7 +1580,7 @@ impl ContactsApp {
     pub fn shots_edit_contact(&mut self) {
         if let Some(c) = self.selected.and_then(|id| self.store.get(id)).cloned() {
             self.begin_edit(c, false);
-            self.push.snap(Pane::Detail);
+            self.push.snap(PushPane::Detail);
         }
     }
 
@@ -1593,7 +1593,7 @@ impl ContactsApp {
             // The form opens unfocused; land the keyboard on the first field so
             // the shot captures the focus ring where Tab-navigation begins.
             self.focus_form_slot(Slot::First);
-            self.push.snap(Pane::Detail);
+            self.push.snap(PushPane::Detail);
         }
     }
 
@@ -2436,7 +2436,7 @@ impl ContactsApp {
         self.search.set_text("");
         self.set_group_filter(Some(group));
         if self.narrow {
-            self.push.show_list();
+            self.push.show_master();
         }
         self.dirty = true;
         Ok(())
@@ -2506,7 +2506,7 @@ impl ContactsApp {
             return false;
         };
 
-        let anchor = if !self.narrow || self.push.pane() == Pane::List {
+        let anchor = if !self.narrow || self.push.pane() == PushPane::Master {
             let ids = self.visible_ids();
             let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
                 return false;
@@ -3089,7 +3089,7 @@ impl ContactsApp {
         // narrow. The choice is driven purely from the allocated width.
         let scale = self.layout_scale();
         let avail_w = content.width();
-        self.narrow = PushNav::is_narrow_at(avail_w, self.text_scale);
+        self.narrow = crate::responsive::is_narrow_at(avail_w, self.text_scale);
         if self.narrow {
             // Single-pane push: the list and detail each fill the whole
             // content width and slide horizontally as one swaps for the
@@ -7763,8 +7763,8 @@ impl Widget for ContactsApp {
                     ),
             ]);
 
-        let list_is_visible = !self.narrow || self.push.pane() == Pane::List;
-        let detail_is_visible = !self.narrow || self.push.pane() == Pane::Detail;
+        let list_is_visible = !self.narrow || self.push.pane() == PushPane::Master;
+        let detail_is_visible = !self.narrow || self.push.pane() == PushPane::Detail;
         let mut children = vec![toolbar];
         if list_is_visible {
             children.extend([search, list_controls, list]);
@@ -8287,7 +8287,7 @@ impl Widget for ContactsApp {
                 true
             }
             ("contacts.back", Action::Activate) if self.narrow => {
-                self.push.show_list();
+                self.push.show_master();
                 self.relayout = true;
                 self.dirty = true;
                 true
@@ -8951,11 +8951,11 @@ impl ContactsApp {
         // Narrow single-pane push: the Back affordance returns to the list.
         // Only hittable while the detail pane is the visible (pushed) slab.
         if self.narrow
-            && self.push.pane() == Pane::Detail
+            && self.push.pane() == PushPane::Detail
             && self.hit.back.width() > 0.0
             && self.hit.back.contains(p)
         {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             self.relayout = true;
             return true;
@@ -10051,12 +10051,12 @@ impl ContactsApp {
             // On a narrow window, leaving the edit form returns to the
             // list (the form lived in the pushed detail pane).
             if self.narrow {
-                self.push.show_list();
+                self.push.show_master();
                 self.relayout = true;
             }
-        } else if self.narrow && self.push.pane() == Pane::Detail {
+        } else if self.narrow && self.push.pane() == PushPane::Detail {
             // Back out of the pushed detail pane to the list.
-            self.push.show_list();
+            self.push.show_master();
             self.relayout = true;
         } else {
             self.search.set_focus(false);
@@ -10941,7 +10941,7 @@ mod local_layout_tests {
         assert!(app.narrow, "a narrow viewport resolves to single-pane push");
         assert_eq!(
             app.push.pane(),
-            Pane::List,
+            PushPane::Master,
             "a fresh narrow frame opens to the list"
         );
     }
@@ -10956,7 +10956,7 @@ mod local_layout_tests {
         // Snap the push to the detail pane (as a row selection would) and
         // confirm the pushed-detail frame renders without panicking.
         app.shots_show_detail();
-        assert_eq!(app.push.pane(), Pane::Detail);
+        assert_eq!(app.push.pane(), PushPane::Detail);
         drive_frame(&mut app, 480, 860);
         // The Back affordance must be laid out (hittable) in the pushed pane.
         assert!(
@@ -11443,13 +11443,13 @@ mod local_layout_tests {
     fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
         let mut h = Harness::new(460, 880);
         assert!(h.app.narrow);
-        assert_eq!(h.app.push.pane(), Pane::List);
+        assert_eq!(h.app.push.pane(), PushPane::Master);
         // Press a list row → the detail pane is pushed in.
         let row = h.row_center(1);
         assert!(h.press_left(row));
         assert_eq!(
             h.app.push.pane(),
-            Pane::Detail,
+            PushPane::Detail,
             "selecting pushes the detail in"
         );
         h.relayout();
@@ -11462,7 +11462,7 @@ mod local_layout_tests {
         assert!(h.press_left(back));
         assert_eq!(
             h.app.push.pane(),
-            Pane::List,
+            PushPane::Master,
             "Back returns to the full-width list"
         );
     }
@@ -11722,22 +11722,16 @@ mod local_layout_tests {
     #[test]
     fn clicking_the_website_opens_it_through_the_link_widget() {
         // Drive the whole click path (press → hit-test → Link::activate) and
-        // confirm the contact's URL is what gets opened. The Link's `on_open`
-        // sink records the URL instead of spawning the OS browser (its
-        // documented test hook), so this exercises the production click path
-        // hermetically — no xdg-open side effect.
+        // confirm the contact's URL is what gets opened. A recording host
+        // captures the URL instead of spawning the OS browser, so this exercises
+        // the production click path hermetically — no xdg-open side effect.
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
         let mut h = Harness::new(1280, 800);
         let id = h.app.selected.unwrap();
         let url = h.app.store.get(id).unwrap().website.clone();
         assert!(!url.is_empty(), "the selected seed has a website");
 
-        let recorded = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
-        let sink = recorded.clone();
-        // Same URL as the contact, so the detail draw preserves this instance
-        // (it only rebuilds the link when the URL changes) and lays it out.
-        h.app.website_link = Some(Link::new(&url).with_font_size(14.0).on_open(move |u| {
-            *sink.borrow_mut() = Some(u.to_string());
-        }));
         h.relayout();
         let rect = h.app.website_link.as_ref().unwrap().get_rect();
         assert!(
@@ -11750,8 +11744,8 @@ mod local_layout_tests {
             "clicking the website link is handled"
         );
         assert_eq!(
-            recorded.borrow().as_deref(),
-            Some(url.as_str()),
+            recorder.opened_uris(),
+            [url],
             "the click opened the contact's website via the Link widget",
         );
         assert_eq!(
@@ -12865,6 +12859,11 @@ mod local_layout_tests {
 
         // Export 3.0 → closes the dialog and parks the selection for the Save
         // dialog. It must NOT write anything before the user chooses a path.
+        // A recording host stands in for the desktop and will answer the Save
+        // dialog with `vcf`.
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ExportOutcome::Opened(vcf.clone()));
+        let _host = ui::host::enter(&services);
         let g = h
             .app
             .export_dialog
@@ -12885,11 +12884,12 @@ mod local_layout_tests {
             "nothing is written until a destination is chosen"
         );
 
-        // Deliver the destination the Save portal would return, then drain it
-        // through one real frame's sync — which writes the file.
-        h.app.export_rx = Some(ui::portal::inject_for_test(ExportOutcome::Opened(
-            vcf.clone(),
-        )));
+        let picks = recorder.pick_requests();
+        assert_eq!(picks.len(), 1, "exactly one Save dialog was requested");
+        assert_eq!(picks[0].title(), "Export contacts");
+
+        // Drain the destination the Save dialog returned through one real
+        // frame's sync — which writes the file.
         h.app.sync(&mut h.doc, &ROOT);
         assert!(
             h.app.pending_export.is_none(),
@@ -13122,6 +13122,18 @@ mod local_layout_tests {
         ));
         let path = dir.join("addressbook.automerge");
         (dir, path)
+    }
+
+    /// Run the live Import action under a recording host whose multi-select
+    /// chooser answers `outcome`, and check the app asked for that chooser.
+    fn import_with(app: &mut ContactsApp, outcome: ImportOutcome) {
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick_multiple(outcome);
+        ui::host::scoped(&services, || app.request_import());
+        let picks = recorder.pick_requests();
+        assert_eq!(picks.len(), 1, "one file chooser was requested");
+        assert_eq!(picks[0].title(), "Import contacts");
+        assert!(picks[0].is_multiple(), "Import picks several files at once");
     }
 
     #[test]
@@ -13449,7 +13461,8 @@ mod local_layout_tests {
         // The live plumbing end to end: an ImportOutcome::Selected on the
         // channel is drained by `sync` (the per-frame drain) and merged into
         // the book — exactly what the portal worker feeds after the user picks
-        // files. Only the picker is bypassed; the drain + parse + merge is real.
+        // files. Only the host dialog is stood in for by a recording host; the
+        // request, drain, parse and merge are real.
         let (dir, path) = scratch_book();
         std::fs::create_dir_all(&dir).unwrap();
         let vcf = dir.join("incoming.vcf");
@@ -13465,11 +13478,9 @@ mod local_layout_tests {
         app.sync(&mut doc, &ROOT);
         assert!(app.store.is_empty());
 
-        // Install the outcome the portal worker would deliver, then run one
-        // real frame's sync — which drains it.
-        app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
-            vec![vcf],
-        )));
+        // Run the live Import action with the host's chooser picking `vcf`,
+        // then run one real frame's sync — which drains it.
+        import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
         assert!(
             app.portal_in_flight(),
             "a request is in flight until drained"
@@ -13625,9 +13636,7 @@ mod local_layout_tests {
         let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.import_generation = u64::MAX;
-        app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
-            vec![vcf],
-        )));
+        import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
 
         app.sync(&mut doc, &ROOT);
         assert!(
@@ -13709,7 +13718,7 @@ mod local_layout_tests {
         // Empty selection.
         assert!(!app.import_paths(&mut doc, &[]).completed());
         // A cancelled picker drained through the real path.
-        app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Cancelled));
+        import_with(&mut app, ImportOutcome::Cancelled);
         app.sync(&mut doc, &ROOT);
 
         assert!(app.store.is_empty(), "import of nothing adds nothing");

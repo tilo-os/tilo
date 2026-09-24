@@ -16,10 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use sha2::{Digest as _, Sha256};
 
-use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 use ui::tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 
 #[cfg(test)]
@@ -201,43 +198,16 @@ impl PlacesSearchProvider {
     }
 }
 
-impl SearchProvider for PlacesSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for PlacesSearchProvider {
+    fn provider_name(&self) -> &str {
         &self.kind
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog.query_page(
-            query,
-            cursor,
-            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
-            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         (address.action == OPEN_ACTION)
             .then(|| self.resource(&address.resource))
             .flatten()
@@ -362,43 +332,16 @@ impl CollaborativeRecordSearchProvider {
     }
 }
 
-impl SearchProvider for CollaborativeRecordSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for CollaborativeRecordSearchProvider {
+    fn provider_name(&self) -> &str {
         &self.kind
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog.query_page(
-            query,
-            cursor,
-            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
-            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         (address.action == REVEAL_ACTION)
             .then(|| self.resource(&address.resource))
             .flatten()
@@ -510,43 +453,16 @@ impl RemoteAccountSearchProvider {
     }
 }
 
-impl SearchProvider for RemoteAccountSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for RemoteAccountSearchProvider {
+    fn provider_name(&self) -> &str {
         &self.kind
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog.query_page(
-            query,
-            cursor,
-            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
-            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         (address.action == REMOTE_ACCOUNT_OPEN_ACTION)
             .then(|| self.resource(&address.resource))
             .flatten()
@@ -559,6 +475,7 @@ mod tests {
     use crate::favorites::{FavKind, Favorite};
     use std::path::PathBuf;
     use ui::search::SearchRegistry;
+    use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, SearchProvider};
 
     fn places() -> Vec<Favorite> {
         vec![

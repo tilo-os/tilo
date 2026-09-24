@@ -139,11 +139,13 @@ pub struct SelectedFile {
     pub path: Option<PathBuf>,
 }
 
-fn uris_to_selected(uris: &[Url]) -> Vec<SelectedFile> {
+fn uris_to_selected(uris: &[ashpd::Uri]) -> Vec<SelectedFile> {
     uris.iter()
         .map(|u| SelectedFile {
             uri: u.as_str().to_string(),
-            path: u.to_file_path().ok(),
+            path: Url::parse(u.as_str())
+                .ok()
+                .and_then(|url| url.to_file_path().ok()),
         })
         .collect()
 }
@@ -250,26 +252,30 @@ impl ScreenCast {
     ///
     /// Same conditions as [`Self::start`].
     pub async fn start_async() -> Result<Vec<ScreenCastStream>, PortalError> {
-        use ashpd::WindowIdentifier;
-        use ashpd::desktop::PersistMode;
-        use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
+        use ashpd::desktop::screencast::{
+            CursorMode, Screencast, SelectSourcesOptions, SourceType, StartCastOptions,
+        };
+        use ashpd::desktop::{CreateSessionOptions, PersistMode};
         use ashpd::enumflags2::BitFlags;
 
         let proxy = Screencast::new().await.map_err(PortalError::from)?;
-        let session = proxy.create_session().await.map_err(PortalError::from)?;
+        let session = proxy
+            .create_session(CreateSessionOptions::default())
+            .await
+            .map_err(PortalError::from)?;
         proxy
             .select_sources(
                 &session,
-                CursorMode::Hidden,
-                BitFlags::from(SourceType::Monitor) | SourceType::Window,
-                false,
-                None,
-                PersistMode::DoNot,
+                SelectSourcesOptions::default()
+                    .set_cursor_mode(CursorMode::Hidden)
+                    .set_sources(BitFlags::from(SourceType::Monitor) | SourceType::Window)
+                    .set_multiple(false)
+                    .set_persist_mode(PersistMode::DoNot),
             )
             .await
             .map_err(PortalError::from)?;
         let streams = proxy
-            .start(&session, &WindowIdentifier::default())
+            .start(&session, None, StartCastOptions::default())
             .await
             .map_err(PortalError::from)?
             .response()
@@ -405,7 +411,8 @@ impl OpenUri {
     pub async fn open_async(uri: &str) -> Result<(), PortalError> {
         use ashpd::desktop::open_uri::OpenFileRequest;
 
-        let url = Url::parse(uri).map_err(|e| PortalError::Other(format!("bad url: {e}")))?;
+        let url =
+            ashpd::Uri::parse(uri).map_err(|e| PortalError::Other(format!("bad url: {e}")))?;
         OpenFileRequest::default()
             .send_uri(&url)
             .await

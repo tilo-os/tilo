@@ -37,10 +37,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use ui::doc::{read_bool, read_text};
 
-use automerge::{
-    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
-};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::style_helpers::{length, percent};
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
@@ -1671,21 +1670,6 @@ impl InstallerApp {
         }
     }
 
-    fn read_text(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
-        match state.get(root, path) {
-            Ok(Some((Value::Object(ObjType::Text), obj_id))) => state.text(&obj_id).ok(),
-            _ => None,
-        }
-    }
-
-    fn read_flag(state: &AutoCommit, root: &ObjId, path: &str) -> bool {
-        matches!(
-            state.get(root, path),
-            Ok(Some((Value::Scalar(s), _)))
-                if matches!(s.as_ref(), ScalarValue::Boolean(true))
-        )
-    }
-
     fn clear_text(state: &mut AutoCommit, root: &ObjId, path: &str) {
         if let Ok(Some((Value::Object(ObjType::Text), object))) = state.get(root, path) {
             let delete = isize::try_from(state.length(&object)).unwrap_or(isize::MAX);
@@ -1938,7 +1922,7 @@ impl InstallerApp {
             self.set_status(message);
             return;
         }
-        let user = Self::read_text(state, root, USERNAME_PATH).unwrap_or_default();
+        let user = read_text(state, root, USERNAME_PATH).unwrap_or_default();
         let password = secret_copy(&self.password);
         let confirmation = secret_copy(&self.password_confirmation);
         if let Err(message) = validate_passwords(&password, &confirmation) {
@@ -3168,25 +3152,25 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
 impl InstallerApp {
     /// Cache the editable text fields for display / backend argv.
     fn sync_cached_fields(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Some(u) = Self::read_text(state, root, USERNAME_PATH) {
+        if let Some(u) = read_text(state, root, USERNAME_PATH) {
             self.username = u;
         }
-        if let Some(name) = Self::read_text(state, root, FULL_NAME_PATH) {
+        if let Some(name) = read_text(state, root, FULL_NAME_PATH) {
             self.full_name = name;
         }
-        if let Some(h) = Self::read_text(state, root, HOSTNAME_PATH) {
+        if let Some(h) = read_text(state, root, HOSTNAME_PATH) {
             self.hostname = h;
         }
-        if let Some(t) = Self::read_text(state, root, TIMEZONE_PATH) {
+        if let Some(t) = read_text(state, root, TIMEZONE_PATH) {
             self.timezone = t;
         }
-        if let Some(locale) = Self::read_text(state, root, LOCALE_PATH) {
+        if let Some(locale) = read_text(state, root, LOCALE_PATH) {
             self.locale = locale;
         }
-        if let Some(k) = Self::read_text(state, root, KEYMAP_PATH) {
+        if let Some(k) = read_text(state, root, KEYMAP_PATH) {
             self.keymap = k;
         }
-        if let Some(confirmation) = Self::read_text(state, root, ERASE_CONFIRM_PATH)
+        if let Some(confirmation) = read_text(state, root, ERASE_CONFIRM_PATH)
             && self.erase_confirmation != confirmation
         {
             self.erase_confirmation = confirmation;
@@ -3258,7 +3242,7 @@ impl InstallerApp {
 
         for i in 0..self.network.snapshot.networks.len() {
             let path = network_path(i);
-            if Self::read_flag(state, root, path.as_str()) {
+            if read_bool(state, root, path.as_str()).unwrap_or(false) {
                 let _ = state.put(root, path.as_str(), false);
                 let Some(ssid) = self
                     .network
@@ -3278,7 +3262,7 @@ impl InstallerApp {
             }
         }
 
-        if Self::read_flag(state, root, NETWORK_REFRESH_PATH) {
+        if read_bool(state, root, NETWORK_REFRESH_PATH).unwrap_or(false) {
             let _ = state.put(root, NETWORK_REFRESH_PATH, false);
             if let Some(proxy) = proxy.clone() {
                 self.network.start_scan(proxy);
@@ -3288,7 +3272,7 @@ impl InstallerApp {
             self.dirty_structure = true;
         }
 
-        if Self::read_flag(state, root, NETWORK_CONNECT_PATH) {
+        if read_bool(state, root, NETWORK_CONNECT_PATH).unwrap_or(false) {
             let _ = state.put(root, NETWORK_CONNECT_PATH, false);
             let password = take_secret(&self.wifi_password);
             if let Some(proxy) = proxy {
@@ -3307,7 +3291,7 @@ impl InstallerApp {
     /// which this drains and resolves into the corresponding index/state.
     fn sync_selection_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.ensure_disk_paths(state, root);
-        if Self::read_flag(state, root, DISK_REFRESH_PATH) {
+        if read_bool(state, root, DISK_REFRESH_PATH).unwrap_or(false) {
             let _ = state.put(root, DISK_REFRESH_PATH, false);
             for i in 0..self.disks.len() {
                 let _ = state.put(root, disk_path(i).as_str(), false);
@@ -3330,7 +3314,7 @@ impl InstallerApp {
         // Disk-selection rising edges (only meaningful on the Disk step).
         for i in 0..self.disks.len() {
             let p = disk_path(i);
-            if Self::read_flag(state, root, p.as_str()) {
+            if read_bool(state, root, p.as_str()).unwrap_or(false) {
                 let _ = state.put(root, p.as_str(), false);
                 if self
                     .disks
@@ -3353,7 +3337,7 @@ impl InstallerApp {
 
         for i in 0..INSTALL_METHOD_LABELS.len() {
             let p = install_method_path(i);
-            if Self::read_flag(state, root, p.as_str()) {
+            if read_bool(state, root, p.as_str()).unwrap_or(false) {
                 let _ = state.put(root, p.as_str(), false);
                 let method = if i == 1 {
                     InstallMethod::Alongside
@@ -3376,7 +3360,7 @@ impl InstallerApp {
         let guided_plan_count = self.guided_alongside_plans().len();
         for i in 0..guided_plan_count {
             let p = guided_extent_path(i);
-            if Self::read_flag(state, root, p.as_str()) {
+            if read_bool(state, root, p.as_str()).unwrap_or(false) {
                 let _ = state.put(root, p.as_str(), false);
                 if guided_plan_count > 1 && self.selected_guided_extent != Some(i) {
                     Self::clear_text(state, root, ERASE_CONFIRM_PATH);
@@ -3391,7 +3375,7 @@ impl InstallerApp {
         // Filesystem-selection rising edges (Options step).
         for i in 0..FILESYSTEMS.len() {
             let p = fs_path(i);
-            if Self::read_flag(state, root, p.as_str()) {
+            if read_bool(state, root, p.as_str()).unwrap_or(false) {
                 let _ = state.put(root, p.as_str(), false);
                 self.selected_fs = i;
                 self.dirty_structure = true;
@@ -3401,7 +3385,7 @@ impl InstallerApp {
         // FIDO2-choice rising edges (Options step).
         for i in 0..FIDO2_LABELS.len() {
             let p = fido2_path(i);
-            if Self::read_flag(state, root, p.as_str()) {
+            if read_bool(state, root, p.as_str()).unwrap_or(false) {
                 let _ = state.put(root, p.as_str(), false);
                 self.fido2 = i == 1;
                 self.dirty_structure = true;
@@ -3413,14 +3397,14 @@ impl InstallerApp {
     /// and Finish-screen (Reboot/Power-off) rising edges.
     fn sync_navigation_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // Recovery-key acknowledgement toggle (Review step, when encrypting).
-        if Self::read_flag(state, root, RECOVERY_ACK_PATH) {
+        if read_bool(state, root, RECOVERY_ACK_PATH).unwrap_or(false) {
             let _ = state.put(root, RECOVERY_ACK_PATH, false);
             self.recovery_ack = !self.recovery_ack;
             self.status.clear();
             self.dirty_structure = true;
         }
 
-        if Self::read_flag(state, root, RECOVERY_COPY_PATH) {
+        if read_bool(state, root, RECOVERY_COPY_PATH).unwrap_or(false) {
             let _ = state.put(root, RECOVERY_COPY_PATH, false);
             if let Some(key) = &self.recovery_key {
                 ui::clipboard_copy(key);
@@ -3429,7 +3413,7 @@ impl InstallerApp {
             }
         }
 
-        if Self::read_flag(state, root, RECOVERY_SAVED_PATH) {
+        if read_bool(state, root, RECOVERY_SAVED_PATH).unwrap_or(false) {
             let _ = state.put(root, RECOVERY_SAVED_PATH, false);
             if self.recovery_key.is_some() {
                 self.recovery_key_saved = !self.recovery_key_saved;
@@ -3439,19 +3423,19 @@ impl InstallerApp {
         }
 
         // Back rising edge.
-        if Self::read_flag(state, root, BACK_PATH) {
+        if read_bool(state, root, BACK_PATH).unwrap_or(false) {
             let _ = state.put(root, BACK_PATH, false);
             self.go_back();
         }
 
         // Next rising edge.
-        if Self::read_flag(state, root, NEXT_PATH) {
+        if read_bool(state, root, NEXT_PATH).unwrap_or(false) {
             let _ = state.put(root, NEXT_PATH, false);
             self.go_next();
         }
 
         // Begin rising edge — only valid on the Review step.
-        if Self::read_flag(state, root, BEGIN_PATH) {
+        if read_bool(state, root, BEGIN_PATH).unwrap_or(false) {
             let _ = state.put(root, BEGIN_PATH, false);
             if self.step == Step::Review {
                 self.begin_install(state, root);
@@ -3459,7 +3443,7 @@ impl InstallerApp {
         }
 
         // Reboot / Power-off rising edges — only on the Finish screen.
-        if Self::read_flag(state, root, REBOOT_PATH) {
+        if read_bool(state, root, REBOOT_PATH).unwrap_or(false) {
             let _ = state.put(root, REBOOT_PATH, false);
             if self.step == Step::Install && self.install_state == InstallState::Done {
                 if self.recovery_key_saved {
@@ -3471,7 +3455,7 @@ impl InstallerApp {
                 }
             }
         }
-        if Self::read_flag(state, root, POWEROFF_PATH) {
+        if read_bool(state, root, POWEROFF_PATH).unwrap_or(false) {
             let _ = state.put(root, POWEROFF_PATH, false);
             if self.step == Step::Install && self.install_state == InstallState::Done {
                 if self.recovery_key_saved {
@@ -4039,7 +4023,7 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.step, Step::Disk, "must not advance without a disk");
         assert_eq!(app.status, "Select a disk to continue");
-        assert!(!InstallerApp::read_flag(&doc, &root, NEXT_PATH));
+        assert!(!read_bool(&doc, &root, NEXT_PATH).unwrap_or(false));
     }
 
     #[test]
@@ -4054,7 +4038,7 @@ mod tests {
         let _ = doc.put(&root, disk_path(1).as_str(), true);
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_disk, Some(1));
-        assert!(!InstallerApp::read_flag(&doc, &root, disk_path(1).as_str()));
+        assert!(!read_bool(&doc, &root, disk_path(1).as_str()).unwrap_or(false));
 
         // Now Next advances and requests a focus reset for the new step.
         let _ = doc.put(&root, NEXT_PATH, true);
@@ -4147,7 +4131,7 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.selected_fs, 2);
         assert_eq!(app.filesystem(), "xfs");
-        assert!(!InstallerApp::read_flag(&doc, &root, fs_path(2).as_str()));
+        assert!(!read_bool(&doc, &root, fs_path(2).as_str()).unwrap_or(false));
     }
 
     #[test]
@@ -4202,7 +4186,7 @@ mod tests {
         let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
         app.sync(&mut doc, &root);
         assert!(app.recovery_ack, "ack flips on");
-        assert!(!InstallerApp::read_flag(&doc, &root, RECOVERY_ACK_PATH));
+        assert!(!read_bool(&doc, &root, RECOVERY_ACK_PATH).unwrap_or(false));
 
         // Toggle off again (it's a checkbox-style flip).
         let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
@@ -4843,7 +4827,7 @@ mod tests {
         app.sync(&mut doc, &root);
         assert_eq!(app.step, Step::Disk);
         assert_eq!(app.install_state, InstallState::Idle);
-        assert!(!InstallerApp::read_flag(&doc, &root, BEGIN_PATH));
+        assert!(!read_bool(&doc, &root, BEGIN_PATH).unwrap_or(false));
     }
 
     #[test]
@@ -4960,7 +4944,7 @@ mod tests {
         let _ = doc.put(&root, RECOVERY_COPY_PATH, true);
         app.sync(&mut doc, &root);
         assert!(app.recovery_key_copied);
-        assert!(!InstallerApp::read_flag(&doc, &root, RECOVERY_COPY_PATH));
+        assert!(!read_bool(&doc, &root, RECOVERY_COPY_PATH).unwrap_or(false));
         assert_eq!(ui::clipboard_paste().as_deref(), Some(key));
         assert!(
             !String::from_utf8_lossy(&doc.save()).contains(key),

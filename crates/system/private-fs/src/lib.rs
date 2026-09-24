@@ -136,63 +136,24 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> io::Result<bool> {
 }
 
 fn publish(path: &Path, bytes: &[u8], replace: bool) -> io::Result<bool> {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let filename = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "private file has no filename")
-    })?;
+    if path.file_name().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private file has no filename",
+        ));
+    }
+    // The temp file is opened through [`create_new`], so it is validated as
+    // private and user-owned before any secret byte is written to it.
     if replace {
         match read(path) {
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+        atomic_file::write_with_temp_opener(path, bytes, create_new).map(|()| true)
+    } else {
+        atomic_file::create_with_temp_opener(path, bytes, create_new)
     }
-    for _ in 0..32 {
-        let mut name = std::ffi::OsString::from(".");
-        name.push(filename);
-        name.push(format!(
-            ".private-{}-{}.tmp",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let temporary = parent.join(name);
-        let mut file = match create_new(&temporary) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        };
-        let written = file.write_all(bytes).and_then(|()| file.sync_all());
-        drop(file);
-        let published = written.and_then(|()| {
-            if replace {
-                std::fs::rename(&temporary, path)
-            } else {
-                std::fs::hard_link(&temporary, path)
-            }
-        });
-        if !replace {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        if let Err(error) = published {
-            let _ = std::fs::remove_file(&temporary);
-            if !replace && error.kind() == io::ErrorKind::AlreadyExists {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        sync_directory(parent)?;
-        return Ok(true);
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "private temporary names are occupied",
-    ))
 }
 
 #[cfg(test)]
@@ -318,6 +279,19 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read(&path).is_err());
         assert!(rewrite(&path).is_err());
+        assert!(write_atomic(&path, b"replacement").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"must survive");
+    }
+
+    #[test]
+    fn atomic_creation_never_replaces_an_existing_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("broker-identity");
+        assert!(create_atomic(&path, b"first").unwrap());
+        assert!(!create_atomic(&path, b"second").unwrap());
+        let mut bytes = Vec::new();
+        read(&path).unwrap().read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"first");
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
     }
 }

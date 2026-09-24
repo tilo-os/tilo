@@ -1,6 +1,6 @@
 //! Unix descriptor transport shared by service clients and the Linux supervisor.
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 /// Send a payload with one borrowed descriptor.
 ///
@@ -133,10 +133,7 @@ fn recv_into(sock: RawFd, buf: &mut [u8]) -> io::Result<(Vec<u8>, Option<OwnedFd
         ));
     }
     for fd in &descriptors {
-        // SAFETY: the newly owned descriptor remains live until this function returns.
-        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
     }
     let length =
         usize::try_from(received).map_err(|_| io::Error::other("invalid receive length"))?;

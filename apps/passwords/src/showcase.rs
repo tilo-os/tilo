@@ -5899,9 +5899,9 @@ mod tests {
         assert!(json.contains("Reveal for ten seconds"));
     }
 
-    // Clipboard transport is injected at the existing host boundary. Keep
-    // these unit tests independent of the desktop and serialize their shared
-    // backend; native integration checks still exercise the Windows clipboard.
+    // Clipboard transport is injected at the host boundary, scoped to the
+    // test's thread. Keep these unit tests independent of the desktop; native
+    // integration checks still exercise the Windows clipboard.
     struct TestClipboard {
         accepts: bool,
         text: std::sync::Mutex<Option<String>>,
@@ -5923,14 +5923,13 @@ mod tests {
         }
     }
 
-    fn clipboard_fixture(accepts: bool) -> std::sync::MutexGuard<'static, ()> {
-        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let guard = SERIAL.lock().unwrap();
-        ui::clipboard::install_clipboard_backend(std::sync::Arc::new(TestClipboard {
-            accepts,
-            text: std::sync::Mutex::new(Some("existing clipboard".into())),
-        }));
-        guard
+    fn clipboard_fixture(accepts: bool) -> ui::host::HostScope {
+        let services =
+            ui::host::HostServices::null().with_clipboard(std::sync::Arc::new(TestClipboard {
+                accepts,
+                text: std::sync::Mutex::new(Some("existing clipboard".into())),
+            }));
+        ui::host::enter(&services)
     }
 
     #[test]
@@ -6406,10 +6405,12 @@ mod tests {
         let selected = std::fs::File::open(&csv_path).unwrap();
         let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
         app.model = Some(crate::PasswordsModel::open_in(&root));
-        app.import_portal = Some(ui::portal::inject_open_file_for_test(
-            selected,
-            "passwords.csv",
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+            ui::portal::OpenedFile::new(selected, "passwords.csv"),
         ));
+        ui::host::scoped(&services, || app.request_import());
+        assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
         for _ in 0..100 {
             app.poll_transfers();
             if app.transfer_dialog.is_some() {
@@ -6424,10 +6425,10 @@ mod tests {
         assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
 
         let selected = std::fs::File::open(&csv_path).unwrap();
-        app.import_portal = Some(ui::portal::inject_open_file_for_test(
-            selected,
-            "passwords.csv",
+        recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+            ui::portal::OpenedFile::new(selected, "passwords.csv"),
         ));
+        ui::host::scoped(&services, || app.request_import());
         for _ in 0..100 {
             app.poll_transfers();
             if app.transfer_dialog.is_some() {
@@ -6471,9 +6472,13 @@ mod tests {
         if let Some(TransferDialog::ExportPlaintext { acknowledged }) = &mut app.transfer_dialog {
             *acknowledged = true;
         }
-        app.export_portal = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Opened(out.clone()),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(out.clone()));
+        ui::host::scoped(&services, || app.begin_plaintext_export());
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Export passwords as CSV"
+        );
         app.poll_transfers();
         let written = out.with_extension("csv");
         let rows =
@@ -6508,9 +6513,13 @@ mod tests {
         app.backup_confirmation
             .set_text("a memorable backup password");
         assert!(app.backup_form_error(true).is_none());
-        app.backup_portal = Some(ui::portal::inject_for_test(
-            ui::portal::PortalOutcome::Opened(destination.clone()),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
+        ui::host::scoped(&services, || app.begin_encrypted_backup());
+        assert_eq!(
+            recorder.pick_requests()[0].title(),
+            "Back up password vault"
+        );
         app.poll_transfers();
         let backup_path = destination.with_extension("tilopw");
         assert!(std::fs::metadata(&backup_path).unwrap().len() > 32);
@@ -6530,10 +6539,17 @@ mod tests {
 
         let mut restored = PasswordsSurface::demo(ShowcaseMode::Vault);
         restored.model = Some(crate::PasswordsModel::open_in(&restored_root));
-        restored.restore_portal = Some(ui::portal::inject_open_file_for_test(
-            std::fs::File::open(&backup_path).unwrap(),
-            "portable-vault.tilopw",
+        recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
+            ui::portal::OpenedFile::new(
+                std::fs::File::open(&backup_path).unwrap(),
+                "portable-vault.tilopw",
+            ),
         ));
+        ui::host::scoped(&services, || restored.request_restore());
+        assert_eq!(
+            recorder.pick_requests()[1].title(),
+            "Restore password vault"
+        );
         restored.poll_transfers();
         assert!(matches!(
             restored.transfer_dialog,

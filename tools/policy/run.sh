@@ -40,5 +40,7 @@ run 'Dev image stays out of production' python3 tools/policy/check_dev_image_con
 run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
 run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
+run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
+run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
 
 printf '\nRepository policy suite OK\n'

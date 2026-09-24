@@ -6,21 +6,11 @@
 //! [`ui::theme::Theme`] token at the call site — nothing here invents a
 //! colour.
 
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::text_render::{TextRenderer, TextWeight};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
-
-/// Fill a rounded rectangle.
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
-}
-
-/// Fill a plain rectangle.
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::peniko::Color;
 
 /// A crisp 1 px edge on `rect`'s outermost pixel row: strokes
 /// [`ui::surface::edge_outline`] (half a pixel *inside* the rect — kurbo's
@@ -36,20 +26,6 @@ pub fn stroke_edge(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color:
         None,
         &ui::surface::edge_outline(rect, radius),
     );
-}
-
-/// Stroke a rounded-rect border (focus rings and the selected row's accent
-/// outline; rest edges come from [`ui::surface::card`] / [`stroke_edge`]).
-pub fn stroke_round(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    radius: f64,
-    width: f64,
-    color: Color,
-) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &shape);
 }
 
 /// Stroke a straight line between two points (toggle glyphs: hamburger,

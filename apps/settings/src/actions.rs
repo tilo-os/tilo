@@ -45,6 +45,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
+use ui::doc::{read_bool, read_str_or_text};
 
 use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
@@ -943,27 +944,6 @@ pub fn set_text_action(key: impl Into<String>, value: impl Into<String>) -> Sett
 // flip targets; never part of `apply`).
 // ===========================================================================
 
-fn doc_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
-    match doc.get(&ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn doc_str(doc: &AutoCommit, key: &str) -> Option<String> {
-    match doc.get(&ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(t) => Some(t.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => doc.text(&obj).ok(),
-        _ => None,
-    }
-}
-
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -1340,7 +1320,7 @@ fn default_apps_section_with_candidates(
             continue;
         };
         let setting_key = key(&kind);
-        let fallback = doc_str(doc, &setting_key).unwrap_or(first_choice);
+        let fallback = read_str_or_text(doc, &ROOT, &setting_key).unwrap_or(first_choice);
         let action_key = setting_key.clone();
         let spec = ActionSpec::typed(
             "set-handler",
@@ -1508,7 +1488,7 @@ fn accounts_section(account_inventory: &[accounts::Account]) -> Resource {
 )]
 fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
+    let b = |key: &str, default: bool| read_bool(doc, &ROOT, key).unwrap_or(default);
     let mut sec = Resource::new(
         "settings.section:notifications",
         "settings.section",
@@ -1610,7 +1590,7 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             key,
             "Choose a focus schedule value",
             options,
-            doc_str(doc, key).unwrap_or_else(|| fallback.into()),
+            read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| fallback.into()),
         ));
     }
     for (app_id, app_name) in
@@ -1652,7 +1632,7 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             key,
             "Not muted, For 1 hour, For 8 hours, For 24 hours",
             &["Not muted", "For 1 hour", "For 8 hours", "For 24 hours"],
-            doc_str(doc, &format!("notifications.app.{app_id}.mute"))
+            read_str_or_text(doc, &ROOT, format!("notifications.app.{app_id}.mute"))
                 .unwrap_or_else(|| "Not muted".into()),
         ));
         sec = sec.with_child(resource);
@@ -1662,8 +1642,10 @@ fn notifications_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
 
 fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
-    let s = |key: &str, default: &str| doc_str(doc, key).unwrap_or_else(|| default.to_string());
+    let b = |key: &str, default: bool| read_bool(doc, &ROOT, key).unwrap_or(default);
+    let s = |key: &str, default: &str| {
+        read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| default.to_string())
+    };
     let mut sec = Resource::new(
         "settings.section:appearance",
         "settings.section",
@@ -3089,7 +3071,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         sec = sec.with_action(bool_flip_spec(
             id,
             key,
-            doc_bool(doc, key).unwrap_or(true),
+            read_bool(doc, &ROOT, key).unwrap_or(true),
             label,
         ));
     }
@@ -3410,7 +3392,9 @@ pub fn power_charge_binding(
 )]
 fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
-    let s = |key: &str, default: &str| doc_str(doc, key).unwrap_or_else(|| default.to_string());
+    let s = |key: &str, default: &str| {
+        read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| default.to_string())
+    };
     let mut sec = Resource::new(
         "settings.section:accessibility",
         "settings.section",
@@ -4490,7 +4474,9 @@ fn region_section(doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     const MEASUREMENT_OPTIONS: &[&str] = &["Metric (°C, km, kg)", "Imperial (°F, mi, lb)"];
     const NUMBER_OPTIONS: &[&str] = &["1,234,567.89", "1.234.567,89"];
     const FIRST_DAY_OPTIONS: &[&str] = &["Monday", "Sunday", "Saturday"];
-    let current = |key: &str, fallback: &str| doc_str(doc, key).unwrap_or_else(|| fallback.into());
+    let current = |key: &str, fallback: &str| {
+        read_str_or_text(doc, &ROOT, key).unwrap_or_else(|| fallback.into())
+    };
     let mut section = Resource::new(
         pane_resource_id(Category::RegionFormats),
         "settings.section",
@@ -4698,7 +4684,7 @@ pub fn time_date_text_binding(action_id: &str) -> Option<tilo_actions::ActionBin
 }
 
 fn shortcuts_section(doc: &AutoCommit) -> Resource {
-    let b = |key: &str, fallback| doc_bool(doc, key).unwrap_or(fallback);
+    let b = |key: &str, fallback| read_bool(doc, &ROOT, key).unwrap_or(fallback);
     let mut section = Resource::new(
         pane_resource_id(Category::KeyboardShortcuts),
         "settings.section",
@@ -5654,7 +5640,7 @@ mod tests {
             .apply(&mut doc)
             .expect("the setting target is accepted");
         assert_eq!(
-            doc_bool(&doc, panes::accessibility::HIGH_CONTRAST_KEY),
+            read_bool(&doc, &ROOT, panes::accessibility::HIGH_CONTRAST_KEY),
             Some(true)
         );
 
@@ -5685,7 +5671,7 @@ mod tests {
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
-            doc_bool(&state.doc, panes::notifications::DND_KEY),
+            read_bool(&state.doc, &ROOT, panes::notifications::DND_KEY),
             Some(true),
             "the action set DND on"
         );
@@ -5696,7 +5682,7 @@ mod tests {
 
         state.undo(None, None).expect("an undo entry to pop");
         assert_eq!(
-            doc_bool(&state.doc, panes::notifications::DND_KEY),
+            read_bool(&state.doc, &ROOT, panes::notifications::DND_KEY),
             Some(false),
             "undo reverted the setting and nothing else"
         );
@@ -5734,12 +5720,12 @@ mod tests {
             "replay reproduced the identical change"
         );
         assert_eq!(
-            doc_str(&a, panes::appearance::THEME_KEY).as_deref(),
+            read_str_or_text(&a, &ROOT, panes::appearance::THEME_KEY).as_deref(),
             Some("Nord")
         );
         assert_eq!(
-            doc_str(&b, panes::appearance::THEME_KEY),
-            doc_str(&a, panes::appearance::THEME_KEY)
+            read_str_or_text(&b, &ROOT, panes::appearance::THEME_KEY),
+            read_str_or_text(&a, &ROOT, panes::appearance::THEME_KEY)
         );
     }
 
@@ -5856,7 +5842,11 @@ mod tests {
         assert!(action.apply(&mut a).is_err());
 
         assert_eq!(
-            doc_bool(&a, panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY),
+            read_bool(
+                &a,
+                &ROOT,
+                panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY
+            ),
             Some(false),
             "the prior document value is not overwritten by a local hardware action"
         );
@@ -5992,7 +5982,7 @@ mod tests {
             .apply(&mut doc)
             .expect("handler selection is a valid setting target");
         assert_eq!(
-            doc_str(&doc, "default_apps.ext.pdf").as_deref(),
+            read_str_or_text(&doc, &ROOT, "default_apps.ext.pdf").as_deref(),
             Some("Reader — org.tilo.Reader")
         );
         let invalid = serde_json::Map::from_iter([(

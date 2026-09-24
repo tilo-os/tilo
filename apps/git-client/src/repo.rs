@@ -475,39 +475,9 @@ fn short_id(full: &str) -> String {
     full.chars().take(7).collect()
 }
 
-/// Coarse relative time string (e.g. "3 hours ago"). Uses `chrono` for
-/// the "now" reference; falls back to absolute seconds on overflow.
+/// Coarse relative time string (e.g. "3 hr ago") against the current clock.
 fn relative_time(seconds: i64) -> String {
-    let now = chrono::Utc::now().timestamp();
-    let delta = now.saturating_sub(seconds);
-    if delta < 0 {
-        return "just now".into();
-    }
-    let mins = delta / 60;
-    let hours = delta / 3600;
-    let days = delta / 86_400;
-    if delta < 60 {
-        "just now".into()
-    } else if mins < 60 {
-        format!("{mins} minute{} ago", plural(mins))
-    } else if hours < 24 {
-        format!("{hours} hour{} ago", plural(hours))
-    } else if days < 7 {
-        format!("{days} day{} ago", plural(days))
-    } else if days < 30 {
-        let weeks = days / 7;
-        format!("{weeks} week{} ago", plural(weeks))
-    } else if days < 365 {
-        let months = days / 30;
-        format!("{months} month{} ago", plural(months))
-    } else {
-        let years = days / 365;
-        format!("{years} year{} ago", plural(years))
-    }
-}
-
-fn plural(n: i64) -> &'static str {
-    if n == 1 { "" } else { "s" }
+    ui::format::relative(chrono::Utc::now().timestamp().saturating_sub(seconds))
 }
 
 // =====================================================================

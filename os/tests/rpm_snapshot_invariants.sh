@@ -209,6 +209,10 @@ first_instruction="$(grep -m1 -E '^(ARG|FROM) ' "$snapshot")"
 [ "$first_instruction" = 'ARG BASE_REF' ] \
   && ok 'BASE_REF is globally declared before the first snapshot stage' \
   || bad 'BASE_REF must be declared before the first FROM'
+# --downloadonly skips RPMs the base already has; an image that erases one of
+# them (pkgconf) and later needs it again would fail offline without this.
+has "$snapshot" 'dnf download -y --destdir=/repo --exclude='"'"'qemu-user-static*'"'"' ${PACKAGES}' \
+  'snapshot keeps direct specs the base already has installed'
 has "$snapshot" '/repo/tilo-direct-package-specs.txt' \
   'snapshot publishes its direct package manifest'
 has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \

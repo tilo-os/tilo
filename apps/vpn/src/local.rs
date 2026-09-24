@@ -9,26 +9,19 @@
 //! profile provisioning again.
 
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
-
-use uuid::Uuid;
 
 use crate::model::{ConnId, LocalProfileDetails};
 
-fn state_path(
-    state_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-) -> Option<PathBuf> {
-    let root = state_home
-        .map(PathBuf::from)
-        .or_else(|| home.map(|home| PathBuf::from(home).join(".local/state")))?;
-    Some(root.join("tilo").join("vpn-local-profiles.json"))
-}
-
+/// `$XDG_STATE_HOME/tilo/vpn-local-profiles.json`, else under
+/// `$HOME/.local/state`; an empty or relative `XDG_STATE_HOME` is ignored.
 fn path() -> Option<PathBuf> {
-    state_path(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+    Some(
+        xdg_paths::xdg::state_home()?
+            .join("tilo")
+            .join("vpn-local-profiles.json"),
+    )
 }
 
 pub fn load() -> HashMap<ConnId, LocalProfileDetails> {
@@ -56,45 +49,51 @@ pub fn save<S: std::hash::BuildHasher>(
             "no local state directory is available; local VPN association cannot be saved".into(),
         );
     };
-    let parent = path
-        .parent()
-        .ok_or_else(|| "invalid local VPN state path".to_string())?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-        .map_err(|error| error.to_string())?;
-    let tmp = parent.join(format!(".vpn-local-profiles-{}.tmp", Uuid::new_v4()));
     let bytes = serde_json::to_vec(entries).map_err(|error| error.to_string())?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&tmp)
-        .map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
-        .map_err(|error| error.to_string())?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| error.to_string())?;
-    fs::rename(&tmp, &path).map_err(|error| error.to_string())
+    atomic_file::write_private(&path, &bytes).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn with_env<T>(state_home: Option<&str>, home: &str, check: impl FnOnce() -> T) -> T {
+        let saved = (std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"));
+        // SAFETY: serialised with every other environment-touching test in
+        // this crate through `serial_test`, and restored before returning.
+        unsafe {
+            match state_home {
+                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+            std::env::set_var("HOME", home);
+        }
+        let result = check();
+        unsafe {
+            for (name, value) in [("XDG_STATE_HOME", saved.0), ("HOME", saved.1)] {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        result
+    }
+
     #[test]
+    #[serial_test::serial(vpn_env)]
     fn state_path_prefers_xdg_state_home() {
-        let path = state_path(Some("/state".into()), Some("/home/user".into())).unwrap();
+        let path = with_env(Some("/state"), "/home/user", path).unwrap();
         assert_eq!(path, PathBuf::from("/state/tilo/vpn-local-profiles.json"));
     }
 
     #[test]
+    #[serial_test::serial(vpn_env)]
     fn state_path_uses_freedesktop_home_fallback() {
-        let path = state_path(None, Some("/home/user".into())).unwrap();
-        assert_eq!(
-            path,
-            PathBuf::from("/home/user/.local/state/tilo/vpn-local-profiles.json")
-        );
+        let expected = PathBuf::from("/home/user/.local/state/tilo/vpn-local-profiles.json");
+        for state_home in [None, Some(""), Some("relative/state")] {
+            let path = with_env(state_home, "/home/user", path).unwrap();
+            assert_eq!(path, expected, "XDG_STATE_HOME={state_home:?}");
+        }
     }
 }

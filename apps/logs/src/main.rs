@@ -108,10 +108,10 @@ mod launch_tests {
         Box::new(logs::LogsApp::new(logs::journal::sample_entries(), false))
     }
 
-    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
         (
             ui::State::new(),
-            ui::persist::Autosave::disabled("controlled Logs launch"),
+            ui::persist::DocWriter::disabled("controlled Logs launch"),
         )
     }
 

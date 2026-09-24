@@ -1224,6 +1224,12 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
       /usr/share/licenses/tilo-doubletake/LICENSE \
     && install -D -m 0644 /tilo-assets/fluxcast-a74f39f-LICENSE \
       /usr/share/licenses/tilo-fluxcast/LICENSE
+# PDF rendering and text extraction. Sandboxed apps read /usr/lib64 through
+# the launcher's system read profile, so the viewer finds it without a grant.
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    --mount=type=bind,source=tools/ci/install-pdfium.sh,target=/tmp/install-pdfium.sh,ro \
+    --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
+    bash /tmp/install-pdfium.sh /tilo-assets /usr /tmp/tilo-assets.tsv
 COPY os/usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf \
      /usr/share/dbus-1/system.d/zz-tilo-projector-wifi-direct.conf
 COPY \

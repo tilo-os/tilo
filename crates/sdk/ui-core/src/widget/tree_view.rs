@@ -6,9 +6,9 @@
 //! Expand/select/focus state lives on the widget; `on_select` is how the
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
+use crate::time::{Duration, Instant};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
-use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -1294,7 +1294,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.transitions.reconcile(
             &old_snapshot,
             &new_snapshot,
-            Instant::now(),
+            crate::time::now(),
             self.transition_duration,
             crate::animation::Curve::EaseInOut,
             self.reduce_motion,
@@ -1699,7 +1699,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 -position.y
             }
         };
-        self.last_tick = Some(Instant::now());
+        self.last_tick = Some(crate::time::now());
         let before = self.viewport.offset();
         self.set_scroll_offset(before + dy);
         let moved = self.viewport.offset().to_bits() != before.to_bits();
@@ -2065,7 +2065,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         if received_changes {
             self.notify_model_changes(&model_changes);
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let elapsed = self
             .last_tick
             .replace(now)
@@ -2208,7 +2208,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         // this theme at layout.
         let indent_px = self.indent_px;
         let accent = tokens.colors.accent[ACCENT_PRIMARY_IDX];
-        let now = Instant::now();
+        let now = crate::time::now();
 
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2466,7 +2466,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         match event {
             WindowEvent::CursorMoved { .. } if self.reorder.is_tracking() => {
                 if let Some(cursor) = self.last_cursor {
-                    let now = Instant::now();
+                    let now = crate::time::now();
                     self.update_reorder_pointer(cursor, now);
                     self.last_tick = Some(now);
                     *handled = self.reorder.is_active();
@@ -2474,7 +2474,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             }
             WindowEvent::CursorMoved { .. } if self.drag_scroll.is_tracking() => {
                 if let Some(cursor) = self.last_cursor {
-                    let now = Instant::now();
+                    let now = crate::time::now();
                     if let Some(update) = self.drag_scroll.update(cursor.y, now) {
                         self.momentum.stop();
                         self.set_scroll_offset(update.target_offset);
@@ -2497,13 +2497,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
                     *handled = self.on_left_press(node_id, focus_target, toggle, extend);
                     self.reorder.begin(source, cursor);
-                    self.last_tick = Some(Instant::now());
+                    self.last_tick = Some(crate::time::now());
                     *handled = true;
                 } else if let Some(cursor) = self.last_cursor
                     && self.rect.contains(cursor)
                 {
                     self.drag_scroll
-                        .begin(cursor.y, self.scroll_offset(), Instant::now());
+                        .begin(cursor.y, self.scroll_offset(), crate::time::now());
                     *focus_target = Some(node_id);
                     *handled = true;
                 }
@@ -2523,13 +2523,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 button: MouseButton::Left,
                 ..
             } if self.drag_scroll.is_tracking() => {
-                if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
+                if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
                     if drag.dragged {
                         if self.reduce_motion {
                             self.momentum.stop();
                         } else {
                             self.momentum.fling(drag.velocity);
-                            self.last_tick = Some(Instant::now());
+                            self.last_tick = Some(crate::time::now());
                         }
                     } else {
                         let toggle =
@@ -2614,7 +2614,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.momentum.is_active()
             || self.model.needs_poll()
             || self.reorder.is_active()
-            || self.transitions.is_active(Instant::now())
+            || self.transitions.is_active(crate::time::now())
             || self
                 .mounted_rows
                 .iter()
@@ -3969,7 +3969,7 @@ mod tests {
         assert_eq!(immediate, 60.0);
         assert!(view.needs_animation_frame());
         view.last_tick = Some(
-            Instant::now()
+            crate::time::now()
                 .checked_sub(Duration::from_millis(16))
                 .expect("a 16 ms earlier instant is representable"),
         );
@@ -4625,7 +4625,7 @@ mod tests {
         view.refresh_transition_snapshot();
 
         assert!(view.set_expanded(2, true));
-        let now = Instant::now();
+        let now = crate::time::now();
         let anchor_index = view.visible_index_of(3).unwrap();
         let settled = RowGeometry::new(
             view.viewport.item_view_top(anchor_index).unwrap(),
@@ -4650,7 +4650,7 @@ mod tests {
         assert!(view.set_expanded(2, false));
         assert!(
             view.transitions
-                .exiting(Instant::now())
+                .exiting(crate::time::now())
                 .any(|(key, payload, visual)| {
                     *key == TreeRowKey::Node(20)
                         && payload.label == "hidden child"
@@ -4668,7 +4668,7 @@ mod tests {
         view.refresh_transition_snapshot();
 
         assert!(view.set_expanded(2, true));
-        let now = Instant::now();
+        let now = crate::time::now();
         assert!(!view.transitions.is_active(now));
         assert_eq!(view.transitions.exiting(now).count(), 0);
         let child = view.visible_index_of(20).unwrap();
@@ -4698,7 +4698,7 @@ mod tests {
         assert_eq!(view.scroll_y(), 60.0_f32);
         assert!(!view.momentum.is_active());
 
-        let now = Instant::now();
+        let now = crate::time::now();
         let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
         let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
         view.drag_scroll

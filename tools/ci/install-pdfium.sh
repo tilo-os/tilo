@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Stage the native test renderer from the existing checksum-verified asset cache.
-# The caller owns fetching and chooses a CI-only prefix; no OS package changes.
+# Install the PDFium renderer from the existing checksum-verified asset cache.
+# The caller owns fetching and chooses the prefix: the OS image and the CI
+# builder both install to /usr.
 set -euo pipefail
 
 version=8057 # Same upstream Chromium release as tools/windows/install-pdfium.ps1.

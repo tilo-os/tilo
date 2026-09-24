@@ -1612,10 +1612,12 @@ impl EditorView {
                     // Byte offsets → char offset for x positioning.
                     let prefix = line
                         .as_bytes()
-                        .get(..span.start.min(line.len()))
+                        .get(..span.range.start.min(line.len()))
                         .unwrap_or(&[]);
                     let char_col = std::str::from_utf8(prefix).map_or(0, |s| s.chars().count());
-                    let seg = line.get(span.start..span.end.min(line.len())).unwrap_or("");
+                    let seg = line
+                        .get(span.range.start..span.range.end.min(line.len()))
+                        .unwrap_or("");
                     if seg.is_empty() {
                         continue;
                     }
@@ -1624,8 +1626,8 @@ impl EditorView {
                     if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + gutter_w {
                         continue;
                     }
-                    let color = span.role.color(theme);
-                    let weight = if matches!(span.role, crate::highlight::TokenRole::Keyword) {
+                    let color = crate::highlight::token_color(span.kind, theme);
+                    let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
                         TextWeight::Semibold
                     } else {
                         TextWeight::Regular

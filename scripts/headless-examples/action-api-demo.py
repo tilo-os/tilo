@@ -7,7 +7,7 @@ Unit tests cover dispatcher contracts against a fixture; this checks the
 live action surface and state changes.
 
 Usage:
-  ./action-api-demo.py [/tmp/tilo-action-api.sock]
+  ./action-api-demo.py [SOCKET]   (default $XDG_RUNTIME_DIR/tilo-session/action-api.sock)
 
 What it proves, in order:
 
@@ -32,9 +32,9 @@ import sys
 import tempfile
 import time
 
-from _control import call
+from _control import call, runtime_socket_path
 
-SOCKET = sys.argv[1] if len(sys.argv) > 1 else "/tmp/tilo-action-api.sock"
+SOCKET = sys.argv[1] if len(sys.argv) > 1 else runtime_socket_path("action-api.sock")
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 BINARY = (SCRIPT_DIR / ".." / ".." / "target" / "debug" / "shell").resolve()
 

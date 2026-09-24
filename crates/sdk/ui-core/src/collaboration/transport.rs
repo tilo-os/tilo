@@ -28,8 +28,8 @@
 //!   end decided about the latest primary `Hello`; it is never an optimistic
 //!   local echo.
 
+use crate::time::{Duration, Instant};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 use super::{ActionDirectoryRequest, CollabEvent, CollabRequest, RouteSpec};
 
@@ -239,7 +239,7 @@ impl DocumentPublicationReceipt {
             Some(deadline) => {
                 match self
                     .receiver
-                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .recv_timeout(deadline.saturating_duration_since(crate::time::now()))
                 {
                     Ok(result) => result,
                     Err(mpsc::RecvTimeoutError::Timeout) => {

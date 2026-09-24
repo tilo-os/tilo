@@ -5,7 +5,7 @@
 //! the real `State::restore_to_heads`. Nothing is stubbed — a bug in any of
 //! those links fails a test here.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
@@ -558,7 +558,7 @@ fn state_commit_action_stamps_the_change() {
 
     let entries = HistorySource::new().entries(&mut state.doc);
     assert_eq!(entries.len(), 1);
-    let age = SystemTime::now()
+    let age = crate::time::wall()
         .duration_since(entries[0].timestamp)
         .expect("timestamp is in the past, not 1970-adjacent nonsense");
     assert!(

@@ -1,8 +1,6 @@
-//! Tiny proleptic-Gregorian date helpers for the birthday calendar.
-//!
-//! Dependency-free so the app doesn't pull `chrono` just to render a
-//! month grid and pretty-print an ISO date. The civil/day-count
-//! conversions are Howard Hinnant's well-known algorithms.
+//! Date helpers for the birthday calendar, over the calendar arithmetic in
+//! `ui::date` so the app doesn't pull `chrono` just to render a month grid and
+//! pretty-print an ISO date.
 
 /// `(year, month, day)` of the current local-ish day, derived from the
 /// system clock as UTC. Good enough to seed the calendar's default
@@ -17,50 +15,20 @@ pub fn today() -> (i32, u32, u32) {
 
 /// Number of days in `month` of `year` (1..=12).
 pub fn days_in_month(year: i32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        2 => {
-            if is_leap(year) {
-                29
-            } else {
-                28
-            }
-        }
-        // 4, 6, 9, 11 (and any out-of-range month) all land on 30.
-        _ => 30,
-    }
-}
-
-fn is_leap(y: i32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+    ui::date::days_in_month(i64::from(year), month)
 }
 
 /// Day of week for a date, `0 = Sunday … 6 = Saturday`.
 pub fn weekday(year: i32, month: u32, day: u32) -> u32 {
-    let z = days_from_civil(year, month, day);
-    (((z + 4) % 7 + 7) % 7) as u32
+    ui::date::weekday(ui::date::days_from_civil(i64::from(year), month, day))
 }
 
-/// Full English month name.
+/// Full English month name; empty past December.
 pub fn month_name(month: u32) -> &'static str {
-    const NAMES: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    NAMES
-        .get((month.max(1) - 1) as usize)
-        .copied()
-        .unwrap_or("")
+    if month > 12 {
+        return "";
+    }
+    ui::format::month_name(usize::try_from(month.saturating_sub(1)).unwrap_or(0))
 }
 
 /// `(year, month)` one month earlier, wrapping across the year boundary.
@@ -104,27 +72,9 @@ pub fn pretty(iso: &str) -> String {
     }
 }
 
-fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
-    let y = i64::from(if m <= 2 { y - 1 } else { y });
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let mp = i64::from(if m > 2 { m - 3 } else { m + 9 }); // [0, 11]
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146_097 + doe - 719_468
-}
-
 fn civil_from_days(z: i64) -> (i32, u32, u32) {
-    let z = z + 719_468;
-    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    ((if m <= 2 { y + 1 } else { y }) as i32, m, d)
+    let (year, month, day) = ui::date::civil_from_days(z);
+    (i32::try_from(year).unwrap_or(i32::MAX), month, day)
 }
 
 #[cfg(test)]
@@ -164,13 +114,5 @@ mod tests {
         assert_eq!(parse_ymd("not-a-date"), None);
         assert_eq!(pretty("1815-12-10"), "December 10, 1815");
         assert_eq!(pretty(""), "");
-    }
-
-    #[test]
-    fn civil_round_trips() {
-        for &(y, m, d) in &[(1970, 1, 1), (2000, 2, 29), (1815, 12, 10), (2024, 6, 30)] {
-            let days = days_from_civil(y, m, d);
-            assert_eq!(civil_from_days(days), (y, m, d));
-        }
     }
 }

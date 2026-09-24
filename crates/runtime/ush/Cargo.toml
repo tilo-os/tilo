@@ -18,6 +18,10 @@ path = "src/main.rs"
 runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 bounded-command = { path = "../../system/bounded-command" }
+# Landlock ruleset installation and seccomp deny-list compilation, shared
+# with the application launcher.
+sandbox-core = { path = "../../system/sandbox-core" }
+atomic-file = { path = "../../system/atomic-file" }
 
 anyhow.workspace = true
 dirs.workspace = true

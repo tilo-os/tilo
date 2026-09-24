@@ -979,7 +979,7 @@ impl SetupApp {
         let details = format!(
             "{} files · {} · source: {source}",
             folder.scan.file_count,
-            format_bytes(folder.scan.bytes)
+            ui::format::bytes_si(folder.scan.bytes)
         );
         let destination = match &folder.destination {
             FolderDestination::Resolved(path) => path.display().to_string(),
@@ -1349,7 +1349,7 @@ impl SetupApp {
                         folder.scan.source.display(),
                         destination,
                         mode_label(folder.mode),
-                        format_bytes(folder.scan.bytes)
+                        ui::format::bytes_si(folder.scan.bytes)
                     );
                     scan_warning(&folder.scan).map_or_else(
                         || summary.clone(),
@@ -1369,12 +1369,12 @@ impl SetupApp {
                 if skipped_count == 0 {
                     format!(
                         "Estimated Tilo space for selected files: {}",
-                        format_bytes(bytes)
+                        ui::format::bytes_si(bytes)
                     )
                 } else {
                     format!(
                         "Estimated Tilo space for counted files: {}. This total is incomplete because {} skipped.",
-                        format_bytes(bytes),
+                        ui::format::bytes_si(bytes),
                         skipped_count_phrase(skipped_count)
                     )
                 }
@@ -1670,18 +1670,6 @@ fn mode_label(mode: FolderMode) -> &'static str {
         FolderMode::Copy => "Copy",
         FolderMode::Connected => "Connected",
         FolderMode::Later => "Decide later",
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GIB: f64 = 1_073_741_824.0;
-    const MIB: f64 = 1_048_576.0;
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GiB", bytes as f64 / GIB)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MiB", bytes as f64 / MIB)
-    } else {
-        format!("{bytes} bytes")
     }
 }
 

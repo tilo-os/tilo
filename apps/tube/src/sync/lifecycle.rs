@@ -7,9 +7,8 @@
 //! bounded by the transport's socket deadlines.
 
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::fs::OpenOptions;
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -144,35 +143,13 @@ impl PeerStore {
     }
 
     fn save(&self, peers: &[PeerRecord]) -> SyncResult<()> {
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| SyncError::Persistence("peer store has no parent".into()))?;
-        fs::create_dir_all(parent).map_err(|error| SyncError::Persistence(error.to_string()))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|error| SyncError::Persistence(error.to_string()))?;
         let bytes = serde_json::to_vec_pretty(&PeerFile {
             version: STORE_VERSION,
             peers: peers.to_vec(),
         })
         .map_err(|error| SyncError::Persistence(error.to_string()))?;
-        let temp = parent.join(format!(".peers-{}.tmp", uuid::Uuid::new_v4()));
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)
-            .map_err(|error| SyncError::Persistence(error.to_string()))?;
-        let result = (|| {
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temp, &self.path)?;
-            OpenOptions::new().read(true).open(parent)?.sync_all()
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temp);
-        }
-        result.map_err(|error: io::Error| SyncError::Persistence(error.to_string()))
+        atomic_file::write_private(&self.path, &bytes)
+            .map_err(|error| SyncError::Persistence(error.to_string()))
     }
 }
 
@@ -422,9 +399,8 @@ fn production_parts(device_name: &str) -> SyncResult<(GrayjaySyncTransport, Peer
     let key = DeviceKey::from_private(private.as_slice())?;
     let public_key = key.public_base64();
     let transport = GrayjaySyncTransport::with_device(key, device_name);
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(dirs::state_dir)
+    let base = xdg_paths::env_dir("XDG_STATE_HOME")
+        .or_else(xdg_paths::state_dir)
         .ok_or_else(|| SyncError::Persistence("no private state directory is available".into()))?;
     Ok((
         transport,
@@ -804,6 +780,7 @@ pub fn merge_remote_state(model: &mut TubeModel, remote: &SyncState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn descriptor(id: &str) -> PeerDescriptor {
         PeerDescriptor {

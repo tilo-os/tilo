@@ -29,7 +29,7 @@ pub fn encode_profile_block(profile: &InstallProfile) -> io::Result<Vec<u8>> {
     let payload = profile
         .to_media_profile_json()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let digest = format!("{:x}", Sha256::digest(&payload));
+    let digest = hex::encode(Sha256::digest(&payload));
     let header = format!("{PROFILE_MAGIC}\n{digest}\n{}\n", payload.len());
     if header.len() + payload.len() > PROFILE_BLOCK_SIZE {
         return Err(io::Error::new(

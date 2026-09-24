@@ -41,46 +41,17 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result; those runs are keyed
 to the exact event and commit and are not cancelled when a newer commit arrives.
 
-Once the required checks pass and the head is stable, the controller posts a PR
-comment explaining the next step. Keep iterating until ready, then the PR author
-comments `/merge <full-head-sha>` to request integration of that exact revision.
-A new push requires fresh checks and a fresh merge request. The controller also
-checks that the branch is up to date and the change is eligible for routine
-integration; a green check alone does not merge a PR.
+A PR merges once its required status checks pass for the current head and the
+branch is up to date with `main`. The required checks are
+`CI / affected packages / checks (pull_request)` and
+`CI / fast quality / quality (pull_request)`. Branch protection enforces both
+conditions; there is no merge controller, `/merge` comment or operator step. A new
+push requires fresh checks. When `main` moves, rebase the branch onto it and let
+the checks rerun. Fast-forward merges keep a stacked series of PRs up to date as
+each lower PR lands.
 
 Review is optional and informational for every change. Review requests,
-approvals and change requests never affect merge admission; exact-head CI and
-author intent are authoritative. Automatic review-agent launches are currently
-disabled, so a native request alone does not start an agent.
-
-CI policy, publication, signing and named security-boundary paths use the
-protected-path operator flow. Changes crossing into those paths or changing an
-existing file's executable mode may require additional CI or provenance checks,
-but never review. After checks pass, post the author's `/merge <full-head-sha>`
-intent. An authorized operator then runs this command from the `PodestaAI/infra`
-checkout:
-
-```sh
-python scripts/run-tilo-reviewed-merge.py PR FULL_HEAD_SHA --execute
-```
-
-It runs the deployed merge worker, which rechecks scope, current main, CI and
-author intent before integration. This command accepts only changes classified
-into the protected scope. Review state does not change a PR's scope or queue
-priority.
-Direct merges do not bypass that worker.
-The [deployed admission policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/policy.json)
-defines the protected paths and bounded dependency exceptions. The OpenH264
-source-order exception additionally requires its pinned provenance and native
-dependency check; it is not ordinary vendored-source admission. Symlinks,
-submodules and malformed changes are rejected rather than treated as routine.
-
-A bounded queue pilot on 2026-09-20 created [integration PR 169](https://code.sandbox.example/qos/qos/pulls/169)
-for [author PR 162](https://code.sandbox.example/qos/qos/pulls/162), tested the generated
-candidate and landed exact commit `12fbe8301ddc9b3d410cefe49d79630b334034d3`
-without changing the author's branch. This verifies one integration through the
-pilot; it does not establish general queue availability or sustained reliability.
-Continue using the controller's current eligibility instructions.
+approvals and change requests never affect whether a PR can merge.
 
 The CI scheduler assigns runners and queue order. Submit normally; do not reserve
 build slots or negotiate them with other agents. The repository's Codex hook sends

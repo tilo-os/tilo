@@ -5,7 +5,8 @@ use super::{
 use crate::headless::{Driver, InspectionNode};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::Path, time::Instant};
+use std::{collections::BTreeMap, path::Path};
+
 use winit::{
     dpi::PhysicalPosition,
     event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent},
@@ -563,14 +564,14 @@ pub fn run_with_state(
         &mut state,
     )?;
     for (index, step) in scenario.steps.iter().enumerate() {
-        let start = Instant::now();
+        let start = crate::time::now();
         let result = match step {
             Step::WaitState {
                 pointer,
                 equals,
                 timeout_ms,
             } => {
-                if driver.wait_until(std::time::Duration::from_millis(*timeout_ms), |_| {
+                if driver.wait_until(crate::time::Duration::from_millis(*timeout_ms), |_| {
                     state().pointer(pointer) == Some(equals)
                 }) {
                     Ok(())

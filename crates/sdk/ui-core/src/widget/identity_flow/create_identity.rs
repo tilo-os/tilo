@@ -37,10 +37,9 @@
 //! the accessibility tree and the headless driver all reach it by name.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use rand_core::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use threshold_identity::ThresholdIdentity;
 use vello::Scene;
@@ -237,13 +236,13 @@ impl CreateIdentityScreen {
                 "display name must not be empty".to_string(),
             ));
         }
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng)?;
         let record = IdentityRecord::from_threshold_identity(
             &id,
             self.name.value().trim(),
             self.selected_accent_color(),
-            SystemTime::now(),
+            crate::time::wall(),
         )?;
         store.save(&record)?;
         self.last_record = Some(record.clone());

@@ -79,9 +79,6 @@ impl Policy {
     /// Returns an error if `path`'s parent can't be created, or the
     /// temporary file can't be written or renamed into place.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let durable = Policy {
             capabilities: self
                 .capabilities
@@ -90,9 +87,7 @@ impl Policy {
                 .cloned()
                 .collect(),
         };
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&durable)?)?;
-        std::fs::rename(&tmp, path)
+        atomic_file::write_creating_parent(path, &serde_json::to_vec_pretty(&durable)?)
     }
 
     /// The actor every question is asked about. `role: None` is load-bearing:

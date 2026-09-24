@@ -9,6 +9,8 @@ note() { printf '  %s\n' "$*" >&2; }
 "$root/scripts/check-workspace-complete.sh"
 python3 "$root/tools/policy/check_app_text_contract.py"
 python3 "$root/tools/policy/check_shell_copy_contract.py"
+python3 "$root/tools/policy/check_ui_host_inputs_contract.py"
+python3 "$root/tools/policy/check_ui_clock_contract.py"
 
 staged_rs=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -v '^vendor/' || true)
 

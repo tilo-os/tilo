@@ -3,10 +3,11 @@
 //! `Theme`), so nothing here hard-codes a palette.
 
 use ui::ColorCompat;
+pub use ui::paint::{fill_rect, fill_round, stroke_round, with_alpha};
 use ui::text_render::{TextRenderer, TextWeight};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::peniko::Color;
 
 std::thread_local! {
     /// Calculator is custom-painted, so its literal type ramp does not pass
@@ -54,27 +55,6 @@ pub enum Align {
     Left,
     Center,
     Right,
-}
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
-}
-
-pub fn stroke_rrect(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    radius: f64,
-    color: Color,
-    width: f64,
-) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &shape);
 }
 
 /// `base` washed `t` of the way toward whichever extreme moves it more —
@@ -179,9 +159,4 @@ pub fn mix(a: Color, b: Color, t: f64) -> Color {
         lerp(a.b(), b.b()),
         lerp(a.a(), b.a()),
     )
-}
-
-/// Apply an alpha to a colour.
-pub fn with_alpha(c: Color, alpha: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), alpha)
 }

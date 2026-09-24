@@ -11,7 +11,8 @@
 //! ignored; `dirs::config_dir()` implements that, the hand-rolled resolvers did not (they
 //! joined a relative value against the process's working directory). So under a relative
 //! `XDG_CONFIG_HOME`, the compositor and power policy read one file while other apps read
-//! another, silently. [`settings_path`] now resolves it once, following the spec.
+//! another, silently. [`settings_path`] now resolves it once, following the spec, through
+//! the workspace's shared resolver (`xdg-paths`).
 //!
 //! # The shape on disk
 //!
@@ -58,11 +59,7 @@ const FILE: &str = "settings.json";
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
 /// crate necessary.
 pub fn config_root() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty() && p.is_absolute())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("tilo"))
+    Some(xdg_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// Resolve one settings file, reusing an existing qOS file in place.
@@ -295,7 +292,7 @@ mod tests {
             !root.starts_with("relative"),
             "a relative XDG_CONFIG_HOME must be ignored, got {root:?}"
         );
-        let home = dirs::home_dir().expect("test needs a home dir");
+        let home = xdg_paths::home().expect("test needs a home dir");
         assert_eq!(root, home.join(".config").join("tilo"));
 
         match prev {
@@ -310,7 +307,10 @@ mod tests {
         let prev = std::env::var_os("XDG_CONFIG_HOME");
         unsafe { std::env::set_var("XDG_CONFIG_HOME", "") };
         let root = config_root().expect("falls back to $HOME/.config");
-        assert_eq!(root, dirs::home_dir().unwrap().join(".config").join("tilo"));
+        assert_eq!(
+            root,
+            xdg_paths::home().unwrap().join(".config").join("tilo")
+        );
         match prev {
             Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
             None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },

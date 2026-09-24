@@ -15,8 +15,8 @@
 //! history, so toggling a chip narrows the list without re-chunking it under
 //! the reader.
 
+use crate::time::SystemTime;
 use std::collections::{HashMap, HashSet};
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1266,7 +1266,7 @@ impl ActivityTimeline {
     }
 
     fn now(&self) -> SystemTime {
-        self.now_override.unwrap_or_else(SystemTime::now)
+        self.now_override.unwrap_or_else(crate::time::wall)
     }
 
     fn passes(&self, e: &HistoryEntry, chip_ops: &[OpClass], needle: &str) -> bool {
@@ -3713,11 +3713,11 @@ impl ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
@@ -4538,12 +4538,12 @@ mod tests {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
 
     const NOW: u64 = 2_000_000;

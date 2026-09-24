@@ -6,33 +6,11 @@
 //! here hard-codes a palette.
 
 use ui::ColorCompat;
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::text_render::{TextRenderer, TextWeight};
 use vello::Scene;
-use vello::kurbo::{
-    Affine, Arc, BezPath, Cap, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2,
-};
+use vello::kurbo::{Affine, Arc, BezPath, Cap, Circle, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
-}
-
-pub fn stroke_rrect(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    radius: f64,
-    color: Color,
-    width: f64,
-) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &shape);
-}
 
 /// Filled rounded rect with its derived 1px rest edge — the canonical
 /// "card" treatment, routed through `ui::surface::card` so the edge comes
@@ -276,12 +254,12 @@ pub fn tag_pill(
 /// Horizontal capacity bar: a rounded track with a proportional fill.
 pub fn bar(scene: &mut Scene, t: Affine, rect: Rect, frac: f64, fill: Color, track: Color) {
     let r = rect.height() / 2.0;
-    fill_rrect(scene, t, rect, r, track);
+    fill_round(scene, t, rect, r, track);
     let frac = frac.clamp(0.0, 1.0);
     if frac > 0.001 {
         let w = (rect.width() * frac).max(rect.height());
         let fr = Rect::new(rect.x0, rect.y0, rect.x0 + w, rect.y1);
-        fill_rrect(scene, t, fr, r, fill);
+        fill_round(scene, t, fr, r, fill);
     }
 }
 
