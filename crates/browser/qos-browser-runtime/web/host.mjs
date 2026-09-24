@@ -2,14 +2,16 @@ import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createNavigationFocus} from './desktop-navigation-focus.mjs';
 import {bindActionPalette} from './action-palette-bridge.mjs';
 import {bindDesktopCommands} from './desktop-command-bridge.mjs';
+import {createDesktopSpeculation} from './desktop-speculation.mjs';
 import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
-import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
+import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
+import {createLiveOverlay} from './live-overlay.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
 let registry=new MountRegistry();
 const closures=new Set();
@@ -41,9 +43,10 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus=createNavigationFocus({document,surface,canvas,active});
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
-  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;
+  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;
   let unsubscribeDesktopCommits;
-  let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
+  let liveOverlay;
+  let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
     replaceEditor();
@@ -104,7 +107,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -147,6 +150,12 @@ export async function mountDesktop(target,options={}) {
       const waiter={after,resolve:()=>{clearTimeout(timeout);resolve();},reject:error=>{clearTimeout(timeout);reject(error);}};presentationWaiters.add(waiter);
     });
   }
+  let busyRetryMs=0,busyRetry=null;
+  function retryBusyPersist(){
+    if(busyRetry!==null||!active())return;
+    busyRetryMs=Math.min(1000,Math.max(25,busyRetryMs*2));
+    busyRetry=setTimeout(()=>{busyRetry=null;void persist().catch(()=>{});},busyRetryMs);
+  }
   async function persist(){
     if(!active()||!storage||persistenceFailed)return;
     const current=id;
@@ -156,7 +165,10 @@ export async function mountDesktop(target,options={}) {
       if(!writes.length)return;
       try{
         if(config.peer!==undefined&&(runtime.peer_pending_batch_bytes||runtime.peer_pending_batch)){
-          await commitPeerBatches({pending:()=>readPeerBatch(runtime,config.peer),commit:batch=>storage.commit(batch),acknowledge:result=>runtime.acknowledge_peer_storage_batch(config.peer,JSON.stringify(result)),epoch:storage.epoch,publish:()=>{}});
+          const result=await commitPeerBatches({pending:()=>readPeerBatch(runtime,config.peer),commit:batch=>storage.commit(batch),acknowledge:result=>runtime.acknowledge_peer_storage_batch(config.peer,JSON.stringify(result)),epoch:storage.epoch,publish:()=>{}});
+          // The peer session's delivery transaction holds the capture; retry once it settles.
+          if(result.busy){retryBusyPersist();return;}
+          busyRetryMs=0;
         }else{
           await storage.commit(writes);
           for(const w of writes)runtime.acknowledge_storage(config.profile,config.device,BigInt(w.revision),undefined);
@@ -172,7 +184,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      if(busyRetry!==null){clearTimeout(busyRetry);busyRetry=null;}liveOverlay?.close();liveOverlay=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       surface.remove();
     },
@@ -232,7 +244,8 @@ export async function mountDesktop(target,options={}) {
       for(const kind of ['paste','copy','cut'])bind(kind,event=>{
         const scope=inputScope.capture();
         if(!scope||!event.clipboardData||composing||!inputScope.valid(scope))return;
-        try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();report({clipboard:'empty or unsupported clipboard payload'});return;}const completed=runtime.clipboard_event(id,kind,event.clipboardData,pasteShift);event.preventDefault();report({lastInput:kind,clipboard:completed?'completed in trusted DOM event':'unavailable or no selection'});}
+        try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();report({clipboard:'empty or unsupported clipboard payload'});return;}
+          if(kind==='paste'&&oversizedInsert(event.clipboardData.getData('text/plain'))){event.preventDefault();report({clipboard:'refused',error:`Paste is too large (more than ${MAX_TEXT_INSERT.toLocaleString()} characters); nothing was inserted.`});return;}const completed=runtime.clipboard_event(id,kind,event.clipboardData,pasteShift);event.preventDefault();report({lastInput:kind,clipboard:completed?'completed in trusted DOM event':'unavailable or no selection'});}
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
@@ -264,7 +277,8 @@ export async function mountDesktop(target,options={}) {
       if(!scope||composition.blocks(event)){event.preventDefault();return;}
       const route=beforeInputRoute(event,composing);if(route.kind==='ignore')return;event.preventDefault();
       if(!inputScope.valid(scope))return;
-      if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}
+      if(route.kind==='refuse'){editor.value='';report({lastInput:'beforeinput',input:'refused',error:`Text insert is too large (${route.length.toLocaleString()} characters, limit ${MAX_TEXT_INSERT.toLocaleString()}); nothing was inserted.`});}
+      else if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}
       else if(route.kind==='key'){dispatchCanvasKey(route.key);report({lastInput:'beforeinput-key'});}
     });
     onEditor('input',()=>{if(!composition.composing)editor.value='';});
@@ -289,8 +303,19 @@ export async function mountDesktop(target,options={}) {
     on(document,'visibilitychange',()=>{if(active())runtime.visible(id,document.visibilityState==='visible');});
     await presented;
     if(!active())throw Error('mount disposed');
-    if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
-    if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,onPending:pending=>navigation?.commandPending(pending),onUpdate:row=>navigation?.commandUpdated(row),peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
+    // LIVE_V1: remote cursors/drag ghosts on a DOM layer, remote carets through
+    // the runtime's presence. Optional: absent live client or runtime export
+    // leaves the desktop exactly as before.
+    if(typeof options.live==='function'&&typeof runtime.live_view_snapshot==='function'){
+      liveOverlay=createLiveOverlay({surface,canvas,live:options.live,
+        snapshot:()=>active()?runtime.live_view_snapshot(id):null,
+        applyRemote:rows=>active()?runtime.live_view_apply(id,JSON.stringify(rows)):false,
+        members:()=>{const raw=options.liveMembers?.();return typeof raw==='string'?JSON.parse(raw):[];},
+        presented:()=>lastState?.frames,
+        onError:error=>options.onLiveError?.(error)});
+    }
+    if(options.actionsV2||options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV2??options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
+    if(options.actionsV2||options.actionsV1){desktopSpeculation=createDesktopSpeculation({runtime,id,active});desktopCommands=bindDesktopCommands({actions:options.actionsV2??options.actionsV1,onPending:pending=>{desktopSpeculation.pending(pending);navigation?.commandPending(pending);liveOverlay?.commandPending(pending);},onUpdate:row=>navigation?.commandUpdated(row),peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report:data=>{desktopSpeculation.report(data);report(data);}});}
     if(runtime.desktop_navigation_snapshot && runtime.desktop_navigation_snapshot(id)) {
       navigation=createDesktopNavigation({active,captureLaunchFocus:()=>({activation:inputScope.capture()?.activation,epoch:externalFocusEpoch}),snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>{
         const request=navigationFocus.begin(JSON.parse(command),navigation.controller.getSnapshot());
@@ -312,7 +337,9 @@ export async function mountDesktop(target,options={}) {
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
 
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
-      semantic:(...args)=>runtime.semantic(id,...args)};
+      semantic:(...args)=>runtime.semantic(id,...args),
+      liveSnapshot:()=>typeof runtime.live_view_snapshot==='function'&&active()?JSON.parse(runtime.live_view_snapshot(id)):null,
+      liveOverlay:()=>liveOverlay?.stats()??null};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
 export function pendingComponentCloseCount(){return runtime.component_close_count();}

@@ -142,3 +142,46 @@ test('older server catalogue is used without an unsupported direct-delivery argu
  try { await f.bridge.pump();assert.equal(f.sent.find(m=>m.type==='invoke_bound').argument.committed_desktop_v2,undefined); }
  finally { f.bridge.close(); }
 });
+test('v2 desktop maps presentation parent to an internally allocated ticket before queue acknowledgement',async()=>{
+ let disk,pending={invocation,command},acknowledged=false;const calls=[],updates=[];const offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async m=>{calls.push(m);if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};return{type:'observation',host,invocation:m.invocation,update:m.type==='invoke_bound'?{state:'succeeded',invocation:m.invocation,output:{resources:[]}}:null,uncertain:false,cancellation_requested:false};}});
+ const bridge=bindDesktopCommands({actions:client.actionsV2,peek:()=>pending,ack:id=>{assert.equal(id,invocation);assert.equal(disk.entries[0].ticket.consumer.parent,invocation);assert.equal(calls.filter(m=>m.type==='invoke_bound').length,0);pending=undefined;acknowledged=true;},onUpdate:row=>updates.push(row)});
+ await bridge.pump();assert.equal(acknowledged,true);assert.equal(calls.filter(m=>m.type==='invoke_bound').length,1);assert.notEqual(calls.find(m=>m.type==='invoke_bound').invocation,invocation);assert.ok(updates.some(row=>row.invocation===invocation&&row.terminal));
+ await bridge.waitForTerminal(invocation);await drain();assert.equal(disk.entries.length,0,'presented terminal is explicitly acknowledged then consumed');bridge.close();await client.close();
+});
+test('v2 queue supersession during strict admission retains original ticket and sends no effect',async()=>{
+ let disk,pending={invocation,command},release,entered,blocked=false;const held=new Promise(r=>entered=r),calls=[],offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async value=>{if(value.entries.length&&!blocked){blocked=true;entered();await new Promise(r=>release=r);}disk=structuredClone(value);},request:async m=>{calls.push(m);return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue:offered}:{type:'observation',host,invocation:m.invocation,update:null,uncertain:false,cancellation_requested:false};}});
+ const bridge=bindDesktopCommands({actions:client.actionsV2,peek:()=>pending,ack:()=>{pending=undefined;}}),pump=bridge.pump();await held;pending={invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff',command:'replacement'};release();await pump;assert.equal(disk.entries.length,1);assert.equal(calls.filter(m=>m.type==='invoke_bound').length,0);bridge.close();await client.close();
+});
+test('v2 unrelated desktop mount cannot acknowledge another presentation parent terminal',async()=>{
+ let disk;const offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async v=>{disk=structuredClone(v);},request:async m=>m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue:offered}:{type:'observation',host,invocation:m.invocation,update:{state:'succeeded',invocation:m.invocation,output:{resources:[]}},uncertain:false,cancellation_requested:false}});
+ const ticket=await client.actionsV2.beginNew({app_peer:'9007199254740993',app_id:'dev.qos.desktop',record_id:'',resource:'desktop:session',action:'command',revision:'exact',argument:{command}},{consumer:{kind:'interactive',parent:invocation,slot:'desktop-command'}});
+ const unrelated=bindDesktopCommands({actions:client.actionsV2,peek:()=>undefined,ack:()=>{},onUpdate:()=>{}});await client.actionsV2.observe(ticket);await drain();assert.equal(disk.entries.length,1);assert.equal(disk.entries[0].consumerAcknowledgement,null);unrelated.close();await client.close();
+});
+test('v2 frame pump after queue acknowledgement does not cancel the ticket drive before its original dispatch',async()=>{
+ // host.mjs pumps on every frame; ack() removes the queue head and requests a
+ // redraw while drive() still awaits status. That pump must not abort the drive.
+ let disk,pending={invocation,command},bridge,statusEntered,releaseStatus;const calls=[],updates=[],entered=new Promise(r=>statusEntered=r),offered=structuredClone(catalogue);
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async m=>{calls.push(m);
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};
+  if(m.type==='status'&&!releaseStatus){statusEntered();await new Promise(r=>releaseStatus=r);}
+  return{type:'observation',host,invocation:m.invocation,update:m.type==='invoke_bound'?{state:'succeeded',invocation:m.invocation,output:{resources:[]}}:null,uncertain:false,cancellation_requested:false};}});
+ bridge=bindDesktopCommands({actions:client.actionsV2,peek:()=>pending,ack:()=>{pending=undefined;},onUpdate:row=>updates.push(row)});
+ const terminal=bridge.waitForTerminal(invocation),first=bridge.pump();await entered;
+ await bridge.pump();releaseStatus();await first;
+ assert.equal(calls.filter(m=>m.type==='invoke_bound').length,1,'the admitted ticket reaches its single original dispatch');
+ await terminal;assert.ok(updates.some(row=>row.invocation===invocation&&row.terminal&&row.state==='succeeded'));
+ bridge.close();await client.close();
+});
+test('v2 supersession before queue acknowledgement still cancels the unadmitted attempt',async()=>{
+ let disk,pending={invocation,command},releaseCatalogue,entered;const held=new Promise(r=>entered=r),calls=[],offered=structuredClone(catalogue);
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async m=>{calls.push(m);
+  if(m.type==='catalogue_refresh'&&!releaseCatalogue){entered();await new Promise(r=>releaseCatalogue=r);}
+  return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue:offered}:{type:'observation',host,invocation:m.invocation,update:null,uncertain:false,cancellation_requested:false};}});
+ const bridge=bindDesktopCommands({actions:client.actionsV2,peek:()=>pending,ack:()=>{pending=undefined;}}),first=bridge.pump();await held;
+ pending={invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff',command:'replacement'};await bridge.pump();releaseCatalogue();await first;
+ assert.equal(disk?.entries.length??0,0,'no ticket is admitted for the superseded command');assert.equal(calls.filter(m=>m.type==='invoke_bound').length,0);
+ bridge.close();await client.close();
+});

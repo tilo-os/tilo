@@ -91,9 +91,16 @@ export function createKeyboardForwarder({route,dispatch,publishModifiers=()=>{},
     invalidate(){forwarded.clear();currentOwner=undefined;},
   };
 }
+/** Largest single text insertion (paste or programmatic insertText) the runtime
+ * accepts, in UTF-16 units. Larger inserts are refused with a visible status
+ * instead of stalling or exhausting the page (layout, scene and publication
+ * all scale with it). */
+export const MAX_TEXT_INSERT=1_000_000;
+export function oversizedInsert(text){return typeof text==='string'&&text.length>MAX_TEXT_INSERT;}
 export function beforeInputRoute(event,composing) {
   if(composing||event.isComposing)return {kind:'ignore'};
   if(['insertFromPaste','insertCompositionText'].includes(event.inputType))return {kind:'handled-elsewhere'};
+  if(event.inputType==='insertText'&&event.data&&oversizedInsert(event.data))return {kind:'refuse',length:event.data.length};
   if(event.inputType==='insertText'&&event.data)return {kind:'commit',text:event.data};
   if(['insertLineBreak','insertParagraph'].includes(event.inputType))return {kind:'key',key:'Enter'};
   if(event.inputType==='deleteContentBackward')return {kind:'key',key:'Backspace'};

@@ -29,3 +29,17 @@ test('twenty open/close cycles preserve identity, while separate profile stores 
  const f=fixture(),session=f.session();let original;for(let i=0;i<20;i++){const lease=await f.open('/enrollment',session);original??=lease.publicKey;assert.equal(lease.publicKey,original);await lease.release();assert.equal(f.held.size,0);}assert.equal(f.counts().next,1);
  const other=await f.open('/enrollment',f.session());assert.notEqual(other.publicKey,original);await other.release();
 });
+
+test('restarted browser (fresh session hint) adopts its unlocked stored identity; a live tab keeps exclusive custody',async()=>{
+ const f=fixture(),index=new Map();
+ const open=createIdentityCustodian({runtime:{create_identity:(()=>{let n=0;return()=>({key:`adopt-${++n}`,scope:null});})(),identity_request:m=>JSON.stringify({device_public_key:m.key,request_id:m.key})},
+  locks:{async request(name,_o,fn){if(f.held.has(name))return fn(null);f.held.add(name);try{return await fn({});}finally{f.held.delete(name);}}},
+  store:{load:async key=>f.rows.get(key),save:async(key,value)=>{f.rows.set(key,value);},candidates:async locator=>[...(index.get(locator)??[])].reverse(),remember:async(locator,key)=>{const list=(index.get(locator)??[]).filter(k=>k!==key);list.push(key);index.set(locator,list);}}});
+ const first=await open('/enrollment',f.session());const key=first.publicKey;
+ const concurrent=await open('/enrollment',f.session());assert.notEqual(concurrent.publicKey,key,'a held identity is never shared');
+ await first.release();await concurrent.release();
+ const restarted=await open('/enrollment',f.session());assert.equal(restarted.publicKey,concurrent.publicKey,'most recently used unlocked identity is adopted');
+ const second=await open('/enrollment',f.session());assert.equal(second.publicKey,key,'next unlocked identity is adopted');
+ await restarted.release();await second.release();
+ f.rows.delete(key);const third=await open('/enrollment',f.session());assert.equal(third.publicKey,concurrent.publicKey);await third.release();
+});

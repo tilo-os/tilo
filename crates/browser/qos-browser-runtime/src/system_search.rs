@@ -25,7 +25,6 @@ struct AdmittedTab {
 pub(crate) struct SearchState {
     pub data: GlobalSearchSourceData,
     generation: String,
-    source_heads: Vec<[u8; 32]>,
     admitted: Vec<AdmittedTab>,
     targets: BTreeMap<String, Route>,
     installed_revision: String,
@@ -35,7 +34,7 @@ impl SearchState {
     pub fn refresh(
         &mut self,
         generation: &str,
-        heads: &[[u8; 32]],
+        _heads: &[[u8; 32]],
         tree: &qos_desktop::WorkspaceTree,
         routes: &BTreeMap<u64, String>,
         active: Option<&Route>,
@@ -73,8 +72,12 @@ impl SearchState {
             }
         }
         let active_instance_id = active.and_then(|r| r.ids().ok()).map(|(_, _, _, tab)| tab);
+        // Room heads move with every admitted publication (including this
+        // peer's own echoed edits) while the searchable tabs stay identical.
+        // Targets resolve by route under `generation`, not heads, so a
+        // heads-only change keeps the installed data (and its revision): a
+        // new revision replaces the search data and relayouts the desktop.
         if self.generation == generation
-            && self.source_heads == heads
             && self.admitted == admitted
             && self.data.active_instance_id == active_instance_id
         {
@@ -82,7 +85,6 @@ impl SearchState {
         }
         self.serial = self.serial.wrapping_add(1);
         self.generation = generation.into();
-        self.source_heads = heads.to_vec();
         self.admitted = admitted;
         self.targets.clear();
         self.data = GlobalSearchSourceData {

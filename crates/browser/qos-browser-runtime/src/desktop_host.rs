@@ -1,4 +1,5 @@
 //! Portable retained host around the actual canonical DesktopSurface.
+mod speculation;
 use crate::desktop::{self, Admission};
 use automerge::{AutoCommit, ObjId};
 use qos_desktop::{
@@ -74,6 +75,12 @@ pub(crate) struct DesktopHandle {
     pub(crate) generation: String,
     pub search: Rc<RefCell<crate::system_search::SearchState>>,
     history_available: Rc<std::cell::Cell<bool>>,
+    /// LIVE_V1: window geometry captured after each draw and input dispatch.
+    pub live: Rc<RefCell<crate::live_view::LiveLayout>>,
+    /// LIVE_V1: tab id -> durable `(app, record)` of the component it hosts.
+    pub tab_records: Rc<RefCell<BTreeMap<u64, (String, String)>>>,
+    /// Optimistic local reorders awaiting durable confirmation.
+    pub(crate) speculation: Rc<RefCell<speculation::Speculations>>,
 }
 impl DesktopHandle {
     pub(crate) fn check_local_activation(
@@ -326,6 +333,10 @@ impl ComponentContextSource for Contexts {
             tilo_actions::ActionContext::default(),
             target,
         )?;
+        self.handle.tab_records.borrow_mut().insert(
+            request.tab.id,
+            (durable_app_id.into(), checkout.id.as_str().into()),
+        );
         self.handle.records.borrow_mut().insert(
             (durable_app_id.into(), checkout.id.as_str().into()),
             OwnedRecord {
@@ -475,8 +486,83 @@ pub(crate) struct DesktopRoot {
     failures: Vec<ui::launch::LaunchError>,
     dirty: bool,
     view_changed: bool,
+    /// Exactly the admitted topology (no local view, no speculation): the
+    /// basis the rendered tree is rebuilt from when a speculation retires.
+    admitted_tree: WorkspaceTree,
 }
 impl DesktopRoot {
+    /// LIVE_V1: record the laid-out window groups, the focused group and any
+    /// window drag for the live overlay (rectangles only; no document reads).
+    fn capture_live(&self) {
+        let mut layout = crate::live_view::LiveLayout {
+            covered: self.activity.is_some(),
+            ..Default::default()
+        };
+        for strip in self.surface.strip_ids() {
+            let Some(row) = self.surface.row(strip) else {
+                continue;
+            };
+            for group in &row.groups {
+                // The shell marks the active group of the active strip.
+                if group.focused {
+                    layout.focused_group = Some(group.id);
+                }
+                layout.groups.push(crate::live_view::LiveGroup {
+                    id: group.id,
+                    rect: group.get_rect(),
+                    tab: group.active_tab_id(),
+                    scroll: ui::Widget::primary_vertical_scroll(group)
+                        .map(|region| region.metrics.offset),
+                });
+            }
+            if layout.drag.is_none() {
+                let resize = row
+                    .dragging_handle()
+                    .and_then(|index| row.groups.get(index))
+                    .or_else(|| {
+                        row.groups
+                            .iter()
+                            .find(|group| group.edge_resize_in_flight())
+                    })
+                    .map(|group| group.id);
+                layout.drag =
+                    crate::live_view::LiveLayout::drag_from_row(row.group_drag_preview(), resize);
+            }
+        }
+        if layout.focused_group.is_none() {
+            // External navigation: the canonical active route (active group of
+            // the active strip, else its first group) owns keyboard focus.
+            if let Ok(tree) = self.handle.tree.try_borrow() {
+                layout.focused_group = tree
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == tree.active)
+                    .and_then(|workspace| {
+                        let strip = tree
+                            .active_strip
+                            .get(&workspace.id)
+                            .and_then(|id| workspace.strips.iter().find(|s| s.id == *id))
+                            .or_else(|| workspace.strips.first())?;
+                        tree.active_group
+                            .get(&strip.id)
+                            .copied()
+                            .filter(|id| strip.window_groups.iter().any(|g| g.id == *id))
+                            .or_else(|| strip.window_groups.first().map(|g| g.id))
+                    });
+            }
+        }
+        if let Some(focused) = layout.focused_group {
+            layout.focused_tab = layout
+                .groups
+                .iter()
+                .find(|group| group.id == focused)
+                .map(|group| group.tab);
+        }
+        let mut live = self.handle.live.borrow_mut();
+        if *live != layout {
+            *live = layout;
+        }
+    }
     fn queue_activation_after_route_change(
         handle: &DesktopHandle,
         tree: &WorkspaceTree,
@@ -520,6 +606,7 @@ impl DesktopRoot {
             return Err("required desktop records are not admitted".into());
         }
         let mut tree = admission.tree;
+        let admitted_tree = tree.clone();
         let view_key = StorageKey::View {
             workspace: format!("desktop:{room}"),
             instance,
@@ -546,6 +633,9 @@ impl DesktopRoot {
             generation: uuid::Uuid::new_v4().to_string(),
             search: Rc::default(),
             history_available: Rc::new(std::cell::Cell::new(true)),
+            live: Rc::default(),
+            tab_records: Rc::default(),
+            speculation: Rc::default(),
         };
         let chrome_intents: Rc<RefCell<Vec<qos_desktop::chrome::ChromeIntent>>> = Rc::default();
         let chrome = Rc::new(ChromeSource {
@@ -611,6 +701,7 @@ impl DesktopRoot {
             failures: vec![],
             dirty: true,
             view_changed: false,
+            admitted_tree,
         };
         root.collect_failures();
         root.refresh_navigation(true);
@@ -1264,6 +1355,46 @@ impl DesktopRoot {
         }
         Ok((true, None))
     }
+    /// Record a queued pure reorder for optimistic rendering (applied by the
+    /// next reconcile). The overlay ghost for remote members is derived from
+    /// the layout drawn before the reorder.
+    fn speculate(
+        handle: &DesktopHandle,
+        tree: &WorkspaceTree,
+        invocation: uuid::Uuid,
+        command: &qos_desktop::session_commands::BoundCommand,
+    ) -> bool {
+        let Ok(mut speculation) = handle.speculation.try_borrow_mut() else {
+            return false;
+        };
+        if !speculation.enabled || !speculation::eligible(&command.command) {
+            return false;
+        }
+        let preview = handle
+            .live
+            .try_borrow()
+            .ok()
+            .and_then(|layout| speculation::preview(tree, &layout, &command.command));
+        speculation.push(invocation, command, preview, web_time::Instant::now())
+    }
+    /// Retire settled speculation and (re)apply the outstanding entries: all
+    /// of them on a new admission or after a retirement (from the durable
+    /// basis), else only newly queued ones. Returns whether the tree changed.
+    fn rebase_speculation(&self, tree: &mut WorkspaceTree, admitted: bool) -> bool {
+        let Ok(mut speculation) = self.handle.speculation.try_borrow_mut() else {
+            return false;
+        };
+        if speculation.idle() {
+            return false;
+        }
+        let retired = speculation.retire(&self.admitted_tree, web_time::Instant::now());
+        if retired && !admitted {
+            let local = LocalView::from_tree(tree);
+            *tree = self.admitted_tree.clone();
+            local.apply(tree);
+        }
+        speculation.apply(tree, retired || admitted) || retired
+    }
     fn reconcile(&mut self) -> bool {
         let intents = self.surface.take_intents();
         let chrome = std::mem::take(&mut *self.chrome_intents.borrow_mut());
@@ -1302,7 +1433,9 @@ impl DesktopRoot {
                     Ok(command) => {
                         let mut queue = self.handle.session_requests.borrow_mut();
                         if queue.len() < 32 {
-                            queue.push((uuid::Uuid::new_v4(), command));
+                            let invocation = uuid::Uuid::new_v4();
+                            Self::speculate(&self.handle, &tree, invocation, &command);
+                            queue.push((invocation, command));
                         } else {
                             self.handle
                                 .errors
@@ -1321,11 +1454,13 @@ impl DesktopRoot {
             self.required_records = admission.required;
             self.unsupported_apps = admission.unsupported;
             let local = LocalView::from_tree(&tree);
+            self.admitted_tree = admission.tree.clone();
             *tree = admission.tree;
             local.apply(&mut tree);
             self.resolver.host.routes = admission.routes;
             *self.resolver.host.permissions.borrow_mut() = permissions;
         }
+        changed |= self.rebase_speculation(&mut tree, admission_changed);
         drop(tree);
         // Pane resource navigation must select its destination before mounting
         // and restoring focus, so the outgoing editor is no longer eligible.
@@ -1710,6 +1845,11 @@ impl Widget for DesktopRoot {
             return Err("desktop request queue is full".into());
         }
         let invocation = uuid::Uuid::new_v4();
+        if let Ok(tree) = self.handle.tree.try_borrow() {
+            // Render the reorder on the next frame; the durable command
+            // confirms (or snaps back) in the background.
+            self.view_changed |= Self::speculate(&self.handle, &tree, invocation, &command);
+        }
         queue.push((invocation, command));
         self.dirty = true;
         (self.notify)();
@@ -1815,6 +1955,7 @@ impl Widget for DesktopRoot {
             activity.draw(scene, transform, text, theme, presence);
         }
         self.refresh_navigation(false);
+        self.capture_live();
     }
     fn handle_event(
         &mut self,
@@ -1845,6 +1986,14 @@ impl Widget for DesktopRoot {
         self.surface.handle_event(
             event, scale, modifiers, doc, path, handled, focus, node, tree,
         );
+        if matches!(
+            event,
+            winit::event::WindowEvent::CursorMoved { .. }
+                | winit::event::WindowEvent::MouseInput { .. }
+                | winit::event::WindowEvent::Touch(_)
+        ) {
+            self.capture_live();
+        }
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(activity) = &self.activity {
@@ -5761,6 +5910,104 @@ mod tests {
         (frame, handle)
     }
 
+    /// LIVE_V1 lane E: the real desktop publishes the focused Writer's live
+    /// record, window rectangle and caret anchor, and a remote caret on that
+    /// anchor is drawn by the Writer on the next frame without a synchronous
+    /// relayout.
+    #[test]
+    fn live_view_publishes_writer_focus_and_draws_a_remote_caret_without_relayout() {
+        let (mut frame, handle) = settled_writer_frame();
+        let layout = handle.live.borrow().clone();
+        assert!(
+            !layout.groups.is_empty() && layout.focused_group.is_some(),
+            "{layout:?}"
+        );
+        assert!(layout.groups.iter().all(|g| g.rect.width() > 0.0));
+        let snapshot = crate::live_view::snapshot_json(
+            &layout,
+            &handle.tab_records.borrow(),
+            frame.focus_presence_payload(),
+        );
+        assert_eq!(
+            snapshot["focus"]["app"], "dev.qos.word-processor",
+            "{snapshot}"
+        );
+        assert_eq!(snapshot["focus"]["record"], "tab:0000000000000001");
+        let rect = snapshot["focusRect"]
+            .as_array()
+            .expect("focused window rect");
+        assert!(rect[2].as_f64().unwrap() > 100.0 && rect[3].as_f64().unwrap() > 100.0);
+        let anchor =
+            crate::live_view::unhex(snapshot["selection"]["anchor"].as_str().unwrap()).unwrap();
+        let head =
+            crate::live_view::unhex(snapshot["selection"]["head"].as_str().unwrap()).unwrap();
+        let (key, start, end) = crate::live_view::decode_selection(&anchor, &head).unwrap();
+        assert_eq!((start, end), (1, 1), "caret after the typed character");
+        assert!(matches!(&key, ui::presence::PresenceKey::Widget { path } if path.len() == 2));
+
+        let paths_before = frame.frame_render_input().scene.encoding().path_tags.len();
+        let relayouts = frame.relayout_frames();
+        let mut projection = crate::live_view::RemoteProjection::default();
+        let changed = frame.update_presence(|presence| {
+            projection.apply(
+                presence,
+                vec![crate::live_view::RemoteInput {
+                    publisher: "ab12".into(),
+                    name: Some("Ada".into()),
+                    color: Some("#ec4899".into()),
+                    selection: Some(crate::live_view::RemoteSelectionInput {
+                        anchor: crate::live_view::hex(&anchor),
+                        head: crate::live_view::hex(&head),
+                    }),
+                    typing: None,
+                }],
+            )
+        });
+        assert!(changed);
+        assert_eq!(
+            frame.relayout_frames(),
+            relayouts,
+            "no synchronous relayout"
+        );
+        assert!(
+            frame.frame_schedule().needs_redraw,
+            "the next frame redraws"
+        );
+        assert!(frame.poll_frame().unwrap());
+        let user = ui::permissions::UserId("ab12".into());
+        assert_eq!(frame.presence().caret_for(&key, &user), Some(1));
+        let paths_after = frame.frame_render_input().scene.encoding().path_tags.len();
+        assert!(
+            paths_after > paths_before,
+            "the Writer painted the remote caret and label ({paths_before} -> {paths_after})"
+        );
+        // Same input again: nothing to redraw.
+        let unchanged = frame.update_presence(|presence| {
+            projection.apply(
+                presence,
+                vec![crate::live_view::RemoteInput {
+                    publisher: "ab12".into(),
+                    name: Some("Ada".into()),
+                    color: Some("#ec4899".into()),
+                    selection: Some(crate::live_view::RemoteSelectionInput {
+                        anchor: crate::live_view::hex(&anchor),
+                        head: crate::live_view::hex(&head),
+                    }),
+                    typing: None,
+                }],
+            )
+        });
+        assert!(!unchanged);
+        // Leaving clears the caret on the next frame.
+        assert!(frame.update_presence(|presence| projection.apply(presence, vec![])));
+        frame.poll_frame().unwrap();
+        assert_eq!(frame.presence().caret_for(&key, &user), None);
+        assert_eq!(
+            frame.frame_render_input().scene.encoding().path_tags.len(),
+            paths_before
+        );
+    }
+
     #[test]
     fn writer_typing_retains_the_desktop_layout_tree() {
         let (mut frame, handle) = settled_writer_frame();
@@ -6282,6 +6529,22 @@ mod tests {
         assert!(frame.take_global_search_intent().is_none());
     }
 
+    #[test]
+    fn global_search_keeps_its_revision_when_only_room_heads_move() {
+        // Every admitted publication (including this peer's own echoed edits)
+        // moves the room heads. Unchanged tabs must not reinstall the search
+        // data, which relayouts the whole desktop.
+        let (_, handle, _) = fixture();
+        let tree = handle.tree.borrow().clone();
+        let routes = BTreeMap::new();
+        let mut search = crate::system_search::SearchState::default();
+        search.refresh("g1", &[[1; 32]], &tree, &routes, None);
+        let first = search.data.revision.clone();
+        search.refresh("g1", &[[2; 32]], &tree, &routes, None);
+        assert_eq!(search.data.revision, first);
+        search.refresh("g2", &[[2; 32]], &tree, &routes, None);
+        assert_ne!(search.data.revision, first);
+    }
     #[test]
     fn global_search_refresh_revokes_exact_routes_and_stale_semantics() {
         let (root, handle, _) = fixture();
@@ -7747,6 +8010,212 @@ mod tests {
             } else {
                 "release"
             }
+        );
+    }
+
+    fn split_groups(tree: &mut WorkspaceTree) {
+        let strip = &mut tree.workspaces[0].strips[0];
+        let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+        strip.window_groups = tabs
+            .into_iter()
+            .enumerate()
+            .map(|(index, tab)| WindowGroup {
+                id: 3 + index as u64,
+                active_tab: tab.id,
+                tabs: vec![tab],
+                width: WindowWidth::Normal,
+                maximized: false,
+            })
+            .collect();
+        tree.active_strip.insert(WorkspaceId(1), StripId(2));
+        tree.active_group.insert(StripId(2), 3);
+    }
+    fn group_order(tree: &WorkspaceTree) -> Vec<u64> {
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect()
+    }
+    fn navigation_groups(handle: &DesktopHandle) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for entry in handle.navigation.borrow()["entries"].as_array().unwrap() {
+            let group = entry["route"]["group"].as_str().unwrap().to_string();
+            if !out.contains(&group) {
+                out.push(group);
+            }
+        }
+        out
+    }
+    fn readmit(root: &DesktopRoot, handle: &DesktopHandle, tree: WorkspaceTree) {
+        let admission = Admission {
+            admitted_room: history_document(&tree),
+            source_heads: vec![[8; 32]],
+            tree,
+            routes: root.resolver.host.routes.clone(),
+            required: vec![],
+            missing: vec![],
+            unsupported: vec![],
+            pending: 0,
+        };
+        *handle.inbox.borrow_mut() = Some((admission, handle.permissions.borrow().clone()));
+    }
+
+    #[test]
+    fn palette_group_move_renders_next_frame_and_reconciles_with_durable_state() {
+        let (root, handle, _) = fixture_with_topology(split_groups);
+        let admitted = handle.tree.borrow().clone();
+        let base = group_order(&admitted);
+        assert!(base.len() >= 3);
+        handle.speculation.borrow_mut().enabled = true;
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::state::State::new(),
+            root,
+            (1400, 768),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        frame.set_platform_conventions(ui::platform::PlatformConventions::new(
+            ui::platform::Platform::Linux,
+        ));
+        frame.relayout();
+        frame.set_modifiers(&["ctrl".into()]);
+        frame.key("k");
+        frame.set_modifiers(&[]);
+        frame.type_text("Move group right");
+        frame.key("Enter");
+        frame.relayout();
+        let invocation = {
+            let requests = handle.session_requests.borrow();
+            assert_eq!(requests.len(), 1, "the palette queues one durable command");
+            assert!(matches!(
+                requests[0].1.command,
+                qos_desktop::session_commands::DesktopCommand::ReorderGroup { group: 3, .. }
+            ));
+            requests[0].0
+        };
+        let mut moved = base.clone();
+        moved.swap(0, 1);
+        assert_eq!(
+            group_order(&handle.tree.borrow()),
+            moved,
+            "local order is optimistic"
+        );
+        assert_eq!(
+            navigation_groups(&handle),
+            moved.iter().map(u64::to_string).collect::<Vec<_>>(),
+            "public navigation shows the move without waiting for the host"
+        );
+        // The overlay ghost for remote members was measured before the move.
+        let preview = handle.speculation.borrow().preview(invocation).cloned();
+        assert!(preview.is_some_and(|preview| preview.group == 3 && preview.dx > 0.0));
+        // SAFETY: the harness owns the root for the whole test; no frame is
+        // being driven while these direct calls run.
+        let root = unsafe { &mut *root_ptr };
+        // An unrelated admission (durable order unchanged) keeps the move.
+        readmit(root, &handle, admitted.clone());
+        root.reconcile();
+        assert_eq!(group_order(&handle.tree.borrow()), moved);
+        // The owner refuses: snap back to the durable order.
+        assert!(handle.speculation.borrow_mut().settle(
+            invocation,
+            false,
+            web_time::Instant::now()
+        ));
+        assert!(root.reconcile());
+        assert_eq!(
+            group_order(&handle.tree.borrow()),
+            base,
+            "refusal snaps back"
+        );
+        assert_eq!(
+            navigation_groups(&handle),
+            base.iter().map(u64::to_string).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn group_move_echo_is_not_applied_twice_and_speculation_is_opt_in() {
+        let (mut root, handle, _) = fixture_with_topology(split_groups);
+        let admitted = handle.tree.borrow().clone();
+        let base = group_order(&admitted);
+        let room = admitted.workspaces[0].room.to_string();
+        let request = |group: u64, before: Option<u64>| {
+            serde_json::to_vec(&qos_desktop::session_commands::BoundCommand {
+                source: qos_desktop::session_commands::CommandSource {
+                    room: room.clone(),
+                    heads: vec![[7; 32]],
+                },
+                command: qos_desktop::session_commands::DesktopCommand::ReorderGroup {
+                    strip: 2,
+                    group,
+                    before,
+                },
+            })
+            .unwrap()
+        };
+        let invoke = |root: &mut DesktopRoot, payload: &[u8]| {
+            let output = root
+                .invoke_resource_operation_v2(
+                    tilo_actions::OperationKind::View,
+                    "qos.desktop.request",
+                    payload,
+                    &AutoCommit::new(),
+                    &automerge::ROOT,
+                )
+                .unwrap()
+                .unwrap();
+            output
+                .value
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        };
+        // Disabled (no command bridge reports outcomes): durable-only.
+        invoke(&mut root, &request(3, None));
+        root.reconcile();
+        assert_eq!(group_order(&handle.tree.borrow()), base);
+        handle.session_requests.borrow_mut().clear();
+
+        handle.speculation.borrow_mut().enabled = true;
+        let invocation = invoke(&mut root, &request(3, None));
+        root.reconcile();
+        let mut moved = base.clone();
+        let first = moved.remove(0);
+        moved.push(first);
+        assert_eq!(group_order(&handle.tree.borrow()), moved);
+        // The committed echo lands, then the success: no double apply, no
+        // flicker, and the entry retires.
+        let mut echoed = admitted.clone();
+        qos_desktop::session_commands::apply_command(
+            &mut echoed.workspaces[0],
+            &qos_desktop::session_commands::DesktopCommand::ReorderGroup {
+                strip: 2,
+                group: 3,
+                before: None,
+            },
+            &mut || Err("no mint".into()),
+            &mut |_, _| Err("no create".into()),
+        )
+        .unwrap();
+        readmit(&root, &handle, echoed);
+        root.reconcile();
+        assert_eq!(group_order(&handle.tree.borrow()), moved);
+        handle
+            .speculation
+            .borrow_mut()
+            .settle(invocation, true, web_time::Instant::now());
+        root.reconcile();
+        assert!(handle.speculation.borrow().is_empty());
+        assert_eq!(group_order(&handle.tree.borrow()), moved);
+        assert_eq!(
+            navigation_groups(&handle),
+            moved.iter().map(u64::to_string).collect::<Vec<_>>()
         );
     }
 }

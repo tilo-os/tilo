@@ -11,6 +11,9 @@ export interface PeerSnapshot {
 }
 export interface CertifiedPeer {
  readonly actionsV1?:CertifiedActionsV1;
+ readonly actionsV2?:CertifiedActionsV2;
+ /** Installed signed service and actual browser codec/capture support only. */
+ readonly mediaV1?:CertifiedMediaV1;
  getSnapshot():PeerSnapshot;
  subscribe(listener:(snapshot:PeerSnapshot)=>void):()=>void;
  mountDesktop(target:HTMLElement,options:Pick<MountOptions,'app'|'instance'|'signal'|'onStatus'|'onNavigation'>&{onSurface?:(surfaceId:string)=>void;onMount?:(mount:DesktopMount)=>void}):Promise<DesktopMount>;
@@ -20,7 +23,14 @@ export interface CertifiedPeer {
  dispose():Promise<void>;
 }
 /** Resolves after authenticated join; observe ready for admitted durable records. */
-export function connectPeer(options?:{enrollmentBaseUrl?:string;signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
+/** Injected Cloud Store enrollment (portal API or local stand-in). JSON stays opaque. */
+export interface CloudEnrollmentAdapter{
+ inspect(options:{signal:AbortSignal}):Promise<string>;
+ apply(payload:string,options:{operationKey:string;signal:AbortSignal}):Promise<string>;
+}
+/** Browser-held Tilo owner identity for one Cloud machine; membership refresh uses the page origin. */
+export interface CloudOwnerOptions{accountId:string;machineId:string;label?:string;enrollment:CloudEnrollmentAdapter}
+export function connectPeer(options?:{enrollmentBaseUrl?:string;invitation?:{text:string;identity:'new-person';label:string};cloud?:CloudOwnerOptions;signal?:AbortSignal;onStatus?:(snapshot:PeerSnapshot)=>void}):Promise<CertifiedPeer>;
 
 export function pendingPeerRecoveryCount():number;
 export function retryPendingPeerRecovery():Promise<void>;
@@ -175,8 +185,44 @@ export interface CertifiedActionsV1 {
  catalogue():Promise<Extract<BrokerCapability,{state:'ready'}>>;
  /** Commit full intent before send. Reusing an ID observes status; never reruns. */
  invoke(intent:ActionIntent):Promise<PrivateInvocation>;
+ /** Drive only an existing original row. Reopened rows remain observation-only. */
+ driveRetained?(invocation:string):Promise<PrivateInvocation>;
  status(invocation:string):Promise<PrivateInvocation>;
  /** Cooperative acknowledgement; only a durable cancelled update is terminal. */
  cancel(invocation:string):Promise<PrivateInvocation>;
  recover():Promise<ActionSnapshot>;
+}
+
+export type MediaState = "idle" | "preparing" | "joining" | "live" | "reconnecting" | "leaving" | "ended" | "unavailable";
+export type MediaReason = "connection" | "renewal-expired" | "presence-expired" | "recovery-timeout" | "permission" | "unsupported" | "capability" | "join-failed" | "left" | "input" | "disposed";
+export interface MediaSnapshot { state: MediaState; muted: boolean; callId: string | null; reason: MediaReason | null }
+export interface CertifiedMediaV1 {
+  readonly version: 1;
+  getSnapshot(): MediaSnapshot;
+  subscribe(listener: (snapshot: MediaSnapshot) => void): () => void;
+  join(options: { callId: string }): Promise<void>;
+  leave(): Promise<void>;
+  setMuted(muted: boolean): Promise<void>;
+  selectInput(id: string): Promise<void>;
+  dispose(): Promise<void>;
+}
+
+/** Fresh-only private actions. Ticket bytes locate retained work; they confer no authority. */
+export interface ActionConsumer {kind:'interactive';parent:string;slot:string}
+export interface ActionTicket {version:2;namespace:string;operation:string;binding:ActionBinding;consumer:ActionConsumer}
+export interface TicketInvocation extends PrivateInvocation {ticket:ActionTicket;businessCancellationRequested:boolean;knownRecorded:boolean;consumerAcknowledgement:{consumer:ActionConsumer;update:PrivateInvocationUpdate;continuation:unknown}|null}
+export interface ActionSnapshotV2 {version:2;capability:BrokerCapability;entries:TicketInvocation[]}
+export interface CertifiedActionsV2 {
+ readonly version:2;
+ getSnapshot():ActionSnapshotV2;
+ subscribe(listener:(snapshot:ActionSnapshotV2)=>void):()=>void;
+ catalogue():Promise<Extract<BrokerCapability,{state:'ready'}>>;
+ /** Strictly commits intent and parent mapping; sends no mutation. */
+ beginNew(intent:Omit<ActionIntent,'invocation'>,options:{consumer:ActionConsumer}):Promise<ActionTicket>;
+ drive(ticket:ActionTicket):Promise<TicketInvocation>;
+ observe(ticket:ActionTicket):Promise<TicketInvocation>;
+ requestCancellation(ticket:ActionTicket):Promise<TicketInvocation>;
+ /** Explicit interactive result acceptance, never an automated parent commit proof. */
+ acknowledgeTerminal(ticket:ActionTicket,acknowledgement:{consumer:ActionConsumer;update:PrivateInvocationUpdate;continuation:unknown}):Promise<void>;
+ consumeTerminal(ticket:ActionTicket):Promise<void>;
 }

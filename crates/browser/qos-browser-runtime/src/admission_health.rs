@@ -43,15 +43,62 @@ pub(crate) fn outgoing_projection(
     }
 }
 
+const MISSING_GOVERNED_DEVICE: &str = "device is absent from governed roster";
+
+/// A fresh enrolled viewer may receive the pre-enrollment checkpoint before its
+/// membership checkpoint in the same authenticated replay. Absence is not yet a
+/// denial until that replay ends. This never grants permissions, and a hydrated
+/// governed owner or a viewer whose membership was observed gets no exemption.
+#[derive(Clone)]
+pub(crate) struct InitialAdmissionReplay {
+    pending: bool,
+}
+impl InitialAdmissionReplay {
+    pub(crate) fn new(state: &StatePeer) -> Self {
+        Self {
+            pending: !state.has_governance(),
+        }
+    }
+    pub(crate) fn finish(&mut self) {
+        self.pending = false;
+    }
+    pub(crate) fn waiting(&mut self, state: &StatePeer, device: [u8; 32], now: SystemTime) -> bool {
+        if self.pending {
+            match state.permissions(device, now) {
+                Err(error)
+                    if error == "room governance missing" || error == MISSING_GOVERNED_DEVICE =>
+                {
+                    return true;
+                }
+                _ => self.finish(),
+            }
+        }
+        false
+    }
+}
+
+/// Only roster absence has this initial replay prerequisite. Explicit room or
+/// record denial, invalid certificates, revocations and installation failures
+/// must retain their usual terminal meaning.
+pub(crate) fn permission_failure(
+    failure: Option<String>,
+    awaiting_governance: bool,
+) -> Option<String> {
+    failure.filter(|failure| !(awaiting_governance && failure == MISSING_GOVERNED_DEVICE))
+}
+
 pub(crate) fn runtime_phase(
     requested: &str,
     complete: bool,
     persistence_needed: bool,
     was_ready: bool,
     admission_incomplete: bool,
+    awaiting_governance: bool,
 ) -> &str {
     if admission_incomplete && !matches!(requested, "closed" | "failed") {
         "incomplete"
+    } else if awaiting_governance && matches!(requested, "admitting" | "ready") {
+        "admitting"
     } else if requested == "admitting" && complete && (!persistence_needed || was_ready) {
         "ready"
     } else {
@@ -64,12 +111,16 @@ pub(crate) fn durable_admission_failure(
     device: [u8; 32],
     now: SystemTime,
     admission_failure: Option<String>,
+    awaiting_governance: bool,
 ) -> Option<String> {
     state.incomplete_reason().or(admission_failure).or_else(|| {
-        state
-            .has_governance()
-            .then(|| state.permissions(device, now).err())
-            .flatten()
+        permission_failure(
+            state
+                .has_governance()
+                .then(|| state.permissions(device, now).err())
+                .flatten(),
+            awaiting_governance,
+        )
     })
 }
 
@@ -436,6 +487,230 @@ mod tests {
     }
 
     #[test]
+    fn initial_replay_preserves_explicit_permission_and_identity_failures() {
+        for failure in [
+            "person has no room membership",
+            "document read forbidden",
+            "governed certificate mismatch",
+            "device cert has expired",
+            "device revoked",
+            "signature rejected",
+        ] {
+            assert_eq!(
+                super::permission_failure(Some(failure.into()), true),
+                Some(failure.into())
+            );
+        }
+        assert_eq!(
+            super::runtime_phase("admitting", true, false, false, true, true),
+            "incomplete"
+        );
+        assert_eq!(
+            super::runtime_phase("failed", true, false, false, false, true),
+            "failed"
+        );
+    }
+
+    #[test]
+    fn fresh_empty_workspace_waits_for_enrollment_governance_within_initial_replay() {
+        use qos_peer_state::{NeighbourMsg, TransportOrigin};
+        let root = SigningKey::from_bytes(&[31; 32]);
+        let authority_key = SigningKey::from_bytes(&[32; 32]);
+        let member_key = SigningKey::from_bytes(&[33; 32]);
+        let authority = certificate(&root, &authority_key, "authority");
+        let member = certificate(&root, &member_key, "new viewer");
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2_000);
+        let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let mut native = StatePeer::new(
+            room,
+            authority.clone(),
+            vec![authority.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        native
+            .install_seed(
+                SeedState {
+                    room_changes: seed_room(room, &authority, &[authority.clone()]).unwrap(),
+                    documents: vec![],
+                },
+                &authority_key,
+                now,
+            )
+            .unwrap();
+        let mut empty = native.admitted_room().unwrap().clone();
+        RoomProjection::project_owned_contents(&mut empty, &[], 5, None);
+        native
+            .install_seed(
+                SeedState {
+                    room_changes: empty
+                        .get_changes(&[])
+                        .iter()
+                        .map(|change| change.raw_bytes().to_vec())
+                        .collect(),
+                    documents: vec![],
+                },
+                &authority_key,
+                now,
+            )
+            .unwrap();
+        let old = native
+            .durable_bootstrap_messages(&authority_key, now, 1)
+            .unwrap();
+        native
+            .admit_certificate(member.clone(), &authority_key, now)
+            .unwrap();
+        let enrolled = native
+            .durable_bootstrap_messages(&authority_key, now, 2)
+            .unwrap();
+        let mut browser = StatePeer::new(
+            room,
+            authority.clone(),
+            vec![authority.clone(), member.clone()],
+            RevocationList::new(),
+            now,
+        )
+        .unwrap();
+        let mut replay = super::InitialAdmissionReplay::new(&browser);
+        for message in old {
+            browser
+                .receive_from(
+                    TransportOrigin::RetainedRelayDelta(authority.device_public_key),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        assert!(crate::desktop::admission(&browser).unwrap().complete());
+        assert!(browser.rows().is_empty());
+        assert_eq!(
+            browser
+                .permissions(member.device_public_key, now)
+                .unwrap_err(),
+            "device is absent from governed roster"
+        );
+        let waiting = replay.waiting(&browser, member.device_public_key, now);
+        assert!(waiting);
+        assert_eq!(
+            super::durable_admission_failure(
+                &browser,
+                member.device_public_key,
+                now,
+                None,
+                waiting
+            ),
+            None
+        );
+        assert_eq!(
+            super::runtime_phase("admitting", true, false, false, false, waiting),
+            "admitting"
+        );
+        assert_eq!(
+            super::runtime_phase("ready", true, false, false, false, waiting),
+            "admitting"
+        );
+        assert_eq!(super::admission_phase(&browser, false, None), "syncing");
+        assert_eq!(
+            super::durable_admission_failure(
+                &browser,
+                member.device_public_key,
+                now,
+                Some("record installation failed".into()),
+                waiting
+            ),
+            Some("record installation failed".into())
+        );
+
+        // Reaching Ready without the promised membership exposes the real denial.
+        let mut finished = replay.clone();
+        finished.finish();
+        assert!(!finished.waiting(&browser, member.device_public_key, now));
+        assert!(
+            super::durable_admission_failure(&browser, member.device_public_key, now, None, false)
+                .is_some()
+        );
+        // A hydrated governed owner never receives an initial replay exemption.
+        assert!(!super::InitialAdmissionReplay::new(&browser).waiting(
+            &browser,
+            member.device_public_key,
+            now
+        ));
+
+        let missing_membership = browser.clone();
+        let mut initially_revoked = browser.clone();
+        let mut revoked_replay = replay.clone();
+        let mut revocation = RevocationEntry {
+            user_public_key: member.user_public_key,
+            revoked_device_public_key: member.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Compromised,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+        initially_revoked
+            .receive_from(
+                TransportOrigin::UntrustedPresence(authority.device_public_key),
+                NeighbourMsg::IdentityHello {
+                    cert: Box::new(authority.clone()),
+                    revocations: vec![revocation.clone()],
+                },
+                now,
+            )
+            .unwrap();
+        assert!(!revoked_replay.waiting(&initially_revoked, member.device_public_key, now));
+        assert!(
+            super::durable_admission_failure(
+                &initially_revoked,
+                member.device_public_key,
+                now,
+                None,
+                true
+            )
+            .unwrap()
+            .contains("revoked")
+        );
+
+        for message in enrolled {
+            browser
+                .receive_from(
+                    TransportOrigin::RetainedRelayDelta(authority.device_public_key),
+                    message,
+                    now,
+                )
+                .unwrap();
+        }
+        assert!(browser.permissions(member.device_public_key, now).is_ok());
+        assert!(!replay.waiting(&browser, member.device_public_key, now));
+        assert!(
+            !replay.waiting(&missing_membership, member.device_public_key, now),
+            "observed membership permanently ends the initial replay exemption"
+        );
+        assert_eq!(
+            super::durable_admission_failure(&browser, member.device_public_key, now, None, false),
+            None
+        );
+        assert_eq!(super::admission_phase(&browser, true, None), "ready");
+
+        browser
+            .receive_from(
+                TransportOrigin::UntrustedPresence(authority.device_public_key),
+                NeighbourMsg::IdentityHello {
+                    cert: Box::new(authority),
+                    revocations: vec![revocation],
+                },
+                now,
+            )
+            .unwrap();
+        assert!(!replay.waiting(&browser, member.device_public_key, now));
+        assert!(
+            super::durable_admission_failure(&browser, member.device_public_key, now, None, true)
+                .unwrap()
+                .contains("revoked")
+        );
+    }
+
+    #[test]
     fn permission_health_waits_for_governance_but_preserves_real_denial() {
         let root = SigningKey::from_bytes(&[1; 32]);
         let authority_key = SigningKey::from_bytes(&[2; 32]);
@@ -457,7 +732,7 @@ mod tests {
         assert!(!state.has_governance());
         assert!(state.permissions(member.device_public_key, now).is_err());
         assert_eq!(
-            super::durable_admission_failure(&state, member.device_public_key, now, None),
+            super::durable_admission_failure(&state, member.device_public_key, now, None, false),
             None,
             "missing governance is a bootstrap prerequisite, not a permission failure"
         );
@@ -467,6 +742,7 @@ mod tests {
                 member.device_public_key,
                 now,
                 Some("persisted admission failed".into()),
+                false,
             ),
             Some("persisted admission failed".into()),
             "an actual admission failure remains terminal before governance arrives"
@@ -485,7 +761,7 @@ mod tests {
             .unwrap();
         assert!(state.has_governance());
         assert_eq!(
-            super::durable_admission_failure(&state, member.device_public_key, now, None),
+            super::durable_admission_failure(&state, member.device_public_key, now, None, false),
             None,
             "an admitted certificate remains healthy"
         );
@@ -509,7 +785,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            super::durable_admission_failure(&denied, member.device_public_key, now, None,),
+            super::durable_admission_failure(&denied, member.device_public_key, now, None, false),
             Some("device is absent from governed roster".into()),
             "governance denial must remain terminal"
         );
@@ -592,7 +868,7 @@ mod tests {
             )
             .unwrap();
         let failure =
-            super::durable_admission_failure(&denied, member.device_public_key, now, None);
+            super::durable_admission_failure(&denied, member.device_public_key, now, None, false);
         assert!(!denied.rows().is_empty());
         assert_eq!(
             super::admission_phase(&denied, true, failure.as_deref()),
@@ -810,17 +1086,17 @@ mod tests {
         assert_eq!(blocked.blocked_expired, 1);
         assert_eq!(blocked.expiry_at_ms, None);
         assert_eq!(
-            super::runtime_phase("admitting", true, false, false, false),
+            super::runtime_phase("admitting", true, false, false, false, false),
             "ready",
             "outgoing expiry is not an admission failure"
         );
         assert_eq!(
-            super::runtime_phase("admitting", true, true, false, false),
+            super::runtime_phase("admitting", true, true, false, false, false),
             "admitting",
             "a never-ready owner cannot bypass its initial persistence barrier"
         );
         assert_eq!(
-            super::runtime_phase("admitting", true, true, true, false),
+            super::runtime_phase("admitting", true, true, true, false, false),
             "ready",
             "an established ready owner remains ready while committing later writes"
         );

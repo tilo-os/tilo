@@ -6,6 +6,39 @@ import {createStorageAccess} from './storage.mjs';
 import {createInlineStorage} from './storage-inline.mjs';
 import {fakeIndexedDB,fakeLocks,fakeWorkers} from './testing/fake-storage.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
+test('local onboarding uses exact closed context and keeps identity until cancelled connect settles',async()=>{
+ const f=fixture(),entered=deferred(),gate=deferred(),cancelled=[];let received;
+ f.runtime.bind_identity_for_peer=(_material,_challenge,_raw,owner)=>{assert.equal(owner,undefined);return JSON.stringify({material:[1,2,3],context:7});};
+ f.runtime.cancel_local_onboarding=id=>cancelled.push(id);
+ f.runtime.connect_peer=async(_raw,_material,_hydrated,_status,context)=>{received=context;entered.resolve();await gate.promise;throw Error('cancelled native onboarding');};
+ const controller=new AbortController(),pending=f.connect({signal:controller.signal}),failed=assert.rejects(pending,/cancelled|abort/i);
+ await entered.promise;assert.equal(received,7);controller.abort();await drain();assert.deepEqual(cancelled,[7]);assert.equal(f.counts().held,1);
+ gate.resolve();await failed;assert.equal(f.counts().held,0);
+});
+test('local context cannot connect before durable material acknowledgement and closes while save is pending',async()=>{
+ const entered=deferred(),gate=deferred(),cancelled=[];let connected=0;
+ const f=fixture({saveIdentity:async bytes=>{assert.deepEqual([...bytes],[1,2,3]);entered.resolve();await gate.promise;}});
+ f.runtime.bind_identity_for_peer=()=>JSON.stringify({material:[1,2,3],context:8});
+ f.runtime.cancel_local_onboarding=id=>cancelled.push(id);f.runtime.connect_peer=async()=>{connected++;throw Error('must not connect');};
+ const controller=new AbortController(),pending=f.connect({signal:controller.signal}),failed=assert.rejects(pending,/disposed|closed|abort/i);
+ await entered.promise;assert.equal(connected,0);controller.abort();await drain();assert.deepEqual(cancelled,[8]);assert.equal(f.counts().held,1);
+ gate.resolve();await failed;assert.equal(connected,0);assert.equal(f.counts().held,0);
+});
+test('agent reads use disposable Rust correlation and close releases it without private writes',async()=>{
+ const f=fixture({initialStatus:progressing('0',true)}),host='11111111-1111-4111-8111-111111111111',invocation='22222222-2222-4222-8222-222222222222';
+ const action={room:host,sender:'ab'.repeat(32),senderRoot:'cd'.repeat(32),target:'ef'.repeat(32),targetRoot:'01'.repeat(32),certificate:'exact'};
+ const binding={actionHost:host,agent:{machine:'machine',room:host,device:action.sender,host},spawn:null,message:null};
+ const responses=new Map(),forgot=[],sent=[];let writes=0;f.storage.commit=async()=>{writes++;};
+ Object.assign(f.runtime,{peer_action_context:()=>JSON.stringify(action),peer_action_request:()=> 'catalogue',peer_action_response:()=>JSON.stringify({type:'broker_catalogue',host,catalogue:{version:1,surfaces:[],agentReadsV1:binding}}),peer_action_forget:()=>{},peer_agent_reads_supported:()=>true,
+  peer_agent_read_request:(_id,raw)=>{sent.push(JSON.parse(raw));return String(sent.length);},peer_agent_read_response:(_id,id)=>responses.has(id)?JSON.stringify(responses.get(id)):null,peer_agent_read_forget:(_id,id)=>forgot.push(id)});
+ const peer=await f.connect();try {
+  await peer.actionsV1.catalogue();assert.equal(peer.agentReadsV1.version,1);assert.equal(peer.agentReadsV1.getBinding().agent.machine,'machine');
+  const before=writes,pending=peer.agentReadsV1.request({invocationId:invocation,request:{version:1,kind:'agent_list',cursor:null}});await drain();
+  responses.set('1',{type:'agent_read_result_v1',host,invocation,binding,response:{kind:'agent_list',version:1,invocationId:invocation,binding:binding.agent,agents:[],nextCursor:null,revision:'1'}});f.status({actionResponseReady:true});
+  assert.equal((await pending).kind,'agent_list');assert.deepEqual(forgot,['1']);assert.equal(writes,before);assert.equal(peer.actionsV1.getSnapshot().entries.length,0);
+  const waiting=peer.agentReadsV1.request({invocationId:invocation,request:{version:1,kind:'agent_list',cursor:null}}),rejected=assert.rejects(waiting);await drain();await peer.dispose();await rejected;assert.deepEqual(forgot,['1','2']);
+ } finally {await peer.dispose();}
+});
 test('presentation bursts coalesce queued persistence behind an in-flight commit',async t=>{
  const f=fixture();let publications=0,commits=0;
  f.runtime.peer_committed=()=>{publications++;};
@@ -50,6 +83,14 @@ test('a write arriving during publication gets a following persistence barrier',
  revision=1;const first=peer.retryPersistence();await second.promise;await first;
  assert.deepEqual(committed,[1,2]);assert.equal(durable,revision);
 });
+test('storage lease is bound before capturing a batch and retained through reconnect',async()=>{
+ const f=fixture();const bindings=[];let bound=false;
+ f.storage.epoch='held-storage-lease';
+ f.runtime.peer_bind_storage_epoch=(id,epoch)=>{assert.equal(id,1);assert.equal(epoch,'held-storage-lease');bindings.push(epoch);bound=true;};
+ f.runtime.peer_pending_batch_bytes=()=>{assert(bound,'batch capture preceded current lease binding');return{id:'0',writes:[],records:[]};};
+ const peer=await f.connect();await peer.reconnect();await peer.dispose();
+ assert.deepEqual(bindings,['held-storage-lease']);
+});
 test('typed persistence batches keep binary bytes and exact revisions through commit before acknowledgement',async()=>{
  const f=fixture();let pending=true,committed=false,acknowledged=false;
  const write={key:'{"type":"admission","workspace":"room"}',bytes:new Uint8Array([0,128,255]),actor:new Uint8Array([2,4]),revision:'9007199254740993'};
@@ -66,12 +107,12 @@ test('typed persistence batches keep binary bytes and exact revisions through co
  f.runtime.peer_committed=()=>{assert(acknowledged);};
  const peer=await f.connect();assert(acknowledged);await peer.dispose();
 });
-function fixture({enroll,recoveryClock,initialStatus,acquireStorage}={}){
+function fixture({enroll,recoveryClock,initialStatus,acquireStorage,createMedia,createDelivery,identityMaterial='opaque-key',saveIdentity=async()=>{}}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
  const mountGates=[],mountSignals=[],mountOptionsSeen=[];
  const syncs=[];const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,commitStatus,refreshStatus,reconnectStatus,publishFailure=false,failMount=false;
  const locks={request:async(_name,_opts,fn)=>{held++;try{return await fn({});}finally{held--;}}};
- const runtime={identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> 'opaque-key',peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:"ready"}),peer_delivery_next:()=>JSON.stringify({kind:"idle"}),peer_delivery_stop(){},identity_request:()=>'{public}',identity_complete:()=>'{proof}',bind_identity:()=> identityMaterial,peer_enrollment:()=>JSON.stringify({profile:'p',device:'d',room:'r'}),refresh_storage_lease(){},
   async connect_peer(_raw,_identity,_bytes,status){statusCallback=status;attempts++;if(gate)await gate.promise;if(failConnect)throw Error('dial failed');const id=++next;peers.add(id);status(JSON.stringify(initialStatus??{phase:'ready',records:[{app_id:'dev.qos.word-processor',record_id:'tab:1',heads:['h']}],health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0,progressRevision:'0'}}}));return id;},
   async reconnect_peer(id){attempts++;assert(peers.has(id));if(gate)await gate.promise;if(failConnect)throw Error('dial failed');if(reconnectStatus)statusCallback(JSON.stringify(reconnectStatus()));return id;},
   peer_request_sync(id,generation){assert(peers.has(id));syncs.push([id,generation]);},
@@ -82,7 +123,7 @@ function fixture({enroll,recoveryClock,initialStatus,acquireStorage}={}){
   rebind_peer(old,id){rebound.push([old,id]);for(const mount of mounts)mount.id=id;suspended.delete(old);},
  };
  const storage={fresh:true,hydrate:async()=>[],commit:async()=>{if(failCommit)throw Error('durable write failed');},release:async()=>{storageRefs--;}};
- const connect=createConnectPeer({init:async()=>{},runtime,recoveryClock,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:acquireStorage??(async()=>{storageRefs++;return storage;}),mountDesktop:async(_target,options)=>{
+ const connect=createConnectPeer({init:async()=>{},runtime,recoveryClock,createMedia,createDelivery,acquireIdentity:async()=>{held++;return{material:identityMaterial,save:saveIdentity,release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>new Response('{raw}')),acquireStorage:acquireStorage??(async()=>{storageRefs++;return storage;}),mountDesktop:async(_target,options)=>{
   mountOptionsSeen.push(options);mountSignals.push(options.signal);const mountGate=mountGates.shift();if(mountGate){try{await mountGate.promise;}catch(error){options.onStatus({phase:'failed',error:error.message});if(mountGate.cleanup)await mountGate.cleanup.promise;options.onStatus({phase:'closed',persistence:'committed',pendingWrites:0,error:null});throw error;}}
   if(failMount)throw Error('initial fonts unavailable');
   const mount={id:next,cleanupCalls:0,flushCalls:0,async flush(){mount.flushCalls++;},state:()=>({phase:'presented',gpuGeneration:1}),recover(){options.onStatus({phase:'gpu-pending',gpuGeneration:2});},status(value){options.onStatus(value);},present(gpuGeneration){options.onStatus({phase:'presented',gpuGeneration});},failRenderer(){options.onStatus({phase:'failed',gpuGeneration:1,error:'GPU device lost'});},input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
@@ -93,7 +134,7 @@ function fixture({enroll,recoveryClock,initialStatus,acquireStorage}={}){
   }});
   mounts.add(mount);return mount;
  }});
- return{runtime,storage,connect,syncs,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},setCommitStatus:v=>commitStatus=v,setRefreshStatus:v=>refreshStatus=v,setReconnectStatus:v=>reconnectStatus=v,status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
+ return{runtime,storage,connect:options=>connect({actionsVersion:1,...options}),syncs,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},setCommitStatus:v=>commitStatus=v,setRefreshStatus:v=>refreshStatus=v,setReconnectStatus:v=>reconnectStatus=v,status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
 test('committed desktop notices reach live mount subscriptions without entering snapshots or replaying',async t=>{
  const f=fixture(),peer=await f.connect();t.after(()=>peer.dispose());
@@ -149,17 +190,25 @@ test('setup failure with retained bytes has reachable recovery and releases only
 
 test('each retry refreshes bootstrap with same client key via POST proof; setup errors release ownership',async()=>{
  let held=0,calls=[],attempt=0;
- const runtime={identity_request:()=>'{"device_public_key":"client","request_id":"stable"}',identity_complete:(_key,response)=>{assert.equal(response,'challenge');return 'proof';},bind_identity:()=> 'same-key',peer_enrollment:()=>'{"profile":"p","device":"client","room":"r"}',refresh_storage_lease(){},async connect_peer(raw,key,_rows,status){assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);status('{"phase":"ready","records":[]}');return attempt;},async reconnect_peer(id,raw,key){assert.equal(id,1);assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);return id;},peer_pending_writes:()=> '[]',peer_committed(){},disconnect_peer(){},close_peer(){},suspend_peer(){},rebind_peer(){}};
- const connect=createConnectPeer({init:async()=>{},runtime,mountDesktop(){},acquireStorage:async()=>({hydrate:async()=>[],release:async()=>{}}),acquireIdentity:async()=>{held++;return{material:'same-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:async(url,options)=>{calls.push([url,options.method,options.body]);return{ok:true,text:async()=>url.endsWith('/challenge')?'challenge':`bootstrap-${attempt+1}`};}});
+ const runtime={peer_delivery_begin:()=>JSON.stringify({kind:"ready"}),peer_delivery_next:()=>JSON.stringify({kind:"idle"}),peer_delivery_stop(){},identity_request:()=>'{"device_public_key":"client","request_id":"stable"}',identity_complete:(_key,response)=>{assert.equal(response,'challenge');return 'proof';},bind_identity:()=> 'same-key',peer_enrollment:()=>'{"profile":"p","device":"client","room":"r"}',refresh_storage_lease(){},async connect_peer(raw,key,_rows,status){assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);status('{"phase":"ready","records":[]}');return attempt;},async reconnect_peer(id,raw,key){assert.equal(id,1);assert.equal(key,'same-key');assert.equal(raw,`bootstrap-${++attempt}`);return id;},peer_pending_writes:()=> '[]',peer_committed(){},disconnect_peer(){},close_peer(){},suspend_peer(){},rebind_peer(){}};
+ const connect=createConnectPeer({init:async()=>{},runtime,mountDesktop(){},acquireStorage:async()=>({hydrate:async()=>[],release:async()=>{}}),acquireIdentity:async()=>{held++;return{material:'same-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:async(url,options)=>{calls.push([url,options.method,options.body]);return new Response(url.endsWith('/challenge')?'challenge':`bootstrap-${attempt+1}`);}});
  const peer=await connect();await peer.reconnect();assert.equal(calls.length,4);assert(calls.every(call=>call[1]==='POST'));assert.deepEqual(calls[0],calls[2]);assert.deepEqual(calls[1],calls[3]);await peer.dispose();assert.equal(held,0);
 });
 
 test('enrollment policy failure is explicit and releases key without trying another identity',async()=>{
- let calls=0;const f=fixture({enroll:async()=>{calls++;return{ok:false,status:403,text:async()=>'{"error":"device revoked"}'}}});
+ let calls=0;const f=fixture({enroll:async()=>{calls++;return new Response('{"error":"device revoked"}',{status:403})}});
  await assert.rejects(f.connect(),/Enrollment HTTP 403: device revoked/);assert.equal(calls,1);assert.equal(f.counts().held,0);assert.equal(f.counts().attempts,0);
 });
+test('signed in-band membership refusal is terminal instead of an endless reconnect loop',async()=>{
+ let calls=0;const f=fixture({enroll:async()=>{calls++;throw Error('Workspace join rejected (403)');}});
+ await assert.rejects(f.connect(),/Workspace join rejected/);assert.equal(calls,1);assert.equal(f.counts().held,0);
+});
+test('host 503 while reconnecting its native subscription is retried with the same identity, then connects',async()=>{
+ let calls=0;const f=fixture({enroll:async url=>{calls++;if(calls<=3)return new Response('{"error":"native peer is reconnecting; retry enrollment with the same identity"}',{status:503});return new Response(url.endsWith('/challenge')?'challenge':'bootstrap');}});
+ const peer=await f.connect();assert.ok(calls>=5,'503 challenge attempts are retried before completing');await peer.dispose();assert.equal(f.counts().held,0);
+});
 test('abort during enrollment settles constructor and releases custody before a new owner can load',async()=>{
- const gate=deferred(),entered=deferred();const f=fixture({enroll:async(_url,{signal})=>{entered.resolve();await gate.promise;if(signal.aborted)throw signal.reason;return{ok:true,text:async()=>'{raw}'};}});
+ const gate=deferred(),entered=deferred();const f=fixture({enroll:async(_url,{signal})=>{entered.resolve();await gate.promise;if(signal.aborted)throw signal.reason;return new Response('{raw}');}});
  const abort=new AbortController();const pending=f.connect({signal:abort.signal});await entered.promise;abort.abort();assert.equal(f.counts().held,1);gate.resolve();await assert.rejects(pending);assert.equal(f.counts().held,0);assert.equal(f.counts().attempts,0);
 });
 
@@ -506,7 +555,7 @@ test('active initial admission beyond ten seconds stays syncing and becomes read
  await time.tick(7999);f.status(progressing('2'));await time.tick(600);f.status(progressing('3',true));await drain();assert.equal(peer.getSnapshot().health.admission.phase,'ready');assert.equal(f.syncs.length,0);assert.equal(f.counts().attempts,1);assert.equal(f.mounts.size,0);await peer.dispose();
 });
 test('enrollment delay does not spend authenticated admission recovery budget',async()=>{
- const time=clock(),gate=deferred(),entered=deferred(),states=[];const f=fixture({recoveryClock:time,initialStatus:progressing(),enroll:async()=>{entered.resolve();await gate.promise;return{ok:true,text:async()=>'{raw}'};}});
+ const time=clock(),gate=deferred(),entered=deferred(),states=[];const f=fixture({recoveryClock:time,initialStatus:progressing(),enroll:async()=>{entered.resolve();await gate.promise;return new Response('{raw}');}});
  const connecting=f.connect({onStatus:s=>states.push(s)});await entered.promise;await time.tick(12000);assert(!states.some(s=>s.health?.failures.some(f=>f.code==='admission-timeout')));gate.resolve();const peer=await connecting;await time.tick(9999);assert.equal(f.syncs.length,0);await time.tick(1);assert.equal(f.syncs.length,1);await peer.dispose();
 });
 test('missing checkpoint coalesces same-session recovery and fresh record predicates',async()=>{
@@ -729,4 +778,160 @@ test('private replies wake their waiter immediately without polling or entering 
  assert.equal(outcome,'ready','a delivered reply must not wait for the next 25ms timer');
  assert.equal(peer.getSnapshot().actionResponseReady,undefined);assert.equal(transport.forgot.length,1);
  await request;const completedReads=reads;await time.tick(10000);assert.equal(reads,completedReads);
+});
+
+
+test('media remains owned across data reconnect and local cleanup precedes Peer and identity release',async t=>{
+ const gate=deferred();let stops=0,created=0;const media={version:1};
+ const f=fixture({createMedia:()=>{created++;return{mediaV1:media,initialize:async()=>true,supported:()=>true,dispose(){stops++;return gate.promise;}};}});
+ f.runtime.peer_media_bootstrap=()=>{};
+ const peer=await f.connect();t.after(async()=>{gate.resolve();await peer.dispose();});
+ assert.equal(peer.mediaV1,media);await peer.reconnect();assert.equal(created,1);assert.equal(stops,0);
+ const closing=peer.dispose();await drain();assert.equal(stops,1);assert.equal(f.counts().held,1);assert.equal(f.peers.size,1);
+ gate.resolve();await closing;assert.equal(f.counts().held,0);assert.equal(f.peers.size,0);
+});
+
+test('close fences a late media refresh and retains identity until the raw exchange settles',async t=>{
+ let refresh,mediaFetch=0,proofs=0,updates=0;const gate=deferred();
+ const f=fixture({identityMaterial:Uint8Array.of(1,2),enroll:async(_url,options)=>{if(options.signal){mediaFetch++;await gate.promise;}return new Response('{raw}');},createMedia:options=>{refresh=options.refreshHint;return{mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose:async()=>{}};}});
+ f.runtime.peer_media_bootstrap=()=>{};f.runtime.peer_media_update_hint=()=>updates++;f.runtime.identity_complete=()=>{proofs++;return '{proof}';};
+ const peer=await f.connect();t.after(async()=>{gate.resolve();await peer.dispose();});const attempts=f.counts().attempts;
+ const pending=refresh(new AbortController().signal),rejection=assert.rejects(pending,/closed|custody changed/);await drain();assert.equal(mediaFetch,1);
+ const closing=peer.dispose();await drain();assert.equal(f.counts().held,1,'a cancelled raw fetch still owns identity custody');
+ const expectedProofs=proofs;gate.resolve();await rejection;await closing;
+ assert.equal(updates,0);assert.equal(proofs,expectedProofs);assert.equal(f.counts().attempts,attempts);assert.equal(f.counts().held,0);
+});
+test('media-only enrollment refresh retains key and data carrier and accepts only unchanged material',async t=>{
+ let refresh,updates=0;const material=Uint8Array.of(1,2);
+ const f=fixture({identityMaterial:material,enroll:async()=>new Response('{raw}'),createMedia:options=>{refresh=options.refreshHint;return{mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose:async()=>{}};}});
+ f.runtime.peer_media_bootstrap=()=>{};f.runtime.peer_media_update_hint=()=>updates++;
+ const peer=await f.connect();t.after(()=>peer.dispose());await refresh(new AbortController().signal);
+ assert.equal(updates,1);assert.equal(f.counts().attempts,1);assert.equal(f.counts().held,1);
+ f.runtime.bind_identity=()=>Uint8Array.of(1,3);await assert.rejects(refresh(new AbortController().signal),/identity changed/);assert.equal(updates,1);
+});
+
+test('renewal asks the host to omit governance history; connect and reconnect enrollment never do',async t=>{
+ let refresh;const seen=[];
+ const f=fixture({identityMaterial:Uint8Array.of(1,2),enroll:async(url,options)=>{seen.push({route:String(url).split('/').pop(),governance:options.headers?.['X-Tilo-Enrollment-Governance']});return new Response('{raw}');},createMedia:options=>{refresh=options.refreshHint;return{mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose:async()=>{}};}});
+ f.runtime.peer_media_bootstrap=()=>{};f.runtime.peer_media_update_hint=()=>{};
+ const peer=await f.connect();t.after(()=>peer.dispose());
+ assert.ok(seen.length>=2&&seen.every(entry=>entry.governance===undefined),'the connecting owner receives its full history');
+ seen.length=0;await refresh(new AbortController().signal);
+ assert.deepEqual(seen,[{route:'challenge',governance:undefined},{route:'complete',governance:'omit'}]);
+});
+
+test('HTTPS delivery starts after the storage lease and teardown retains custody through raw carrier settlement',async()=>{
+ const order=[],closed=deferred();let closedStarted=false;
+ const f=fixture({createDelivery:()=>({async start(){order.push('delivery-start');},wake(){},close(){closedStarted=true;return closed.promise;}})});
+ f.runtime.peer_bind_storage_epoch=()=>order.push('lease-bound');
+ const peer=await f.connect();assert.deepEqual(order,['lease-bound','delivery-start']);
+ const closing=peer.dispose();await drain();assert.equal(closedStarted,true);assert.equal(f.counts().held,1);
+ closed.resolve();await closing;assert.equal(f.counts().held,0);
+});
+test('initial enrollment bounds streamed bytes before Rust binding and forbids redirect following',async()=>{
+ let cancelled=false,bound=false,redirect;const f=fixture({enroll:async(_url,options)=>{redirect=options.redirect;return new Response(new ReadableStream({start(controller){controller.enqueue(new Uint8Array(1048577));controller.close();},cancel(){cancelled=true;}}));}});
+ f.runtime.bind_identity=()=>{bound=true;throw Error('oversized reply reached Rust');};
+ await assert.rejects(f.connect({enrollmentBaseUrl:'https://host.test/qos-peer/enrollment'}),/Enrollment response exceeds bounds/);assert.equal(bound,false);assert.equal(redirect,'error');
+});
+
+test('only the Rust shared-authorization event fences media and remains transient',async t=>{
+ let expired=0;
+ const f=fixture({createMedia:()=>({mediaV1:{version:1},initialize:async()=>true,supported:()=>true,expireAuthorization(){expired++;return Promise.resolve();},dispose:async()=>{}})});
+ f.runtime.peer_media_bootstrap=()=>{};
+ const peer=await f.connect();t.after(()=>peer.dispose());
+ f.status({deliveryReady:true});await drain();assert.equal(expired,0);
+ await peer.reconnect();assert.equal(expired,0,'ordinary data reconnect preserves valid media');
+ f.status({mediaAuthorizationExpired:true});await drain();assert.equal(expired,1);
+ assert.equal(peer.getSnapshot().mediaAuthorizationExpired,undefined);
+});
+
+test('shared authorization refresh coalesces callers on one retained Peer and joins close custody',async t=>{
+ let refresh,requests=0,refreshed=0;const gate=deferred(),material=Uint8Array.of(1,2);
+ const f=fixture({identityMaterial:material,enroll:async(_url,options)=>{if(options.signal){requests++;if(requests===1)await gate.promise;}return new Response('{raw}');},
+ createDelivery:()=>({start:async()=>{},wake(){},close:async()=>{},refreshAuthorization:async()=>{refreshed++;}}),
+ createMedia:options=>{refresh=options.refreshHint;return{mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose:async()=>{}};}});
+ f.runtime.peer_media_bootstrap=()=>{};f.runtime.peer_media_update_hint=()=>{};
+ const peer=await f.connect();t.after(async()=>{gate.resolve();await peer.dispose();});
+ const first=refresh(new AbortController().signal),second=refresh(new AbortController().signal),reconnected=peer.reconnect();
+ await drain();assert.equal(requests,1,'one current owner must share the enrollment exchange');
+ gate.resolve();await Promise.all([first,second,reconnected]);
+ assert.equal(requests,2);assert.equal(refreshed,1);assert.equal(f.counts().attempts,1);
+});
+test('a completed shared authorization refresh clears the connection failure its expiry reported',async t=>{
+ let refresh,deliveryOptions;
+ const f=fixture({identityMaterial:Uint8Array.of(1,2),enroll:async()=>new Response('{raw}'),
+ createDelivery:options=>{deliveryOptions=options;return{start:async()=>{},wake(){},close:async()=>{},refreshAuthorization:async()=>{}};},
+ createMedia:options=>{refresh=options.refreshHint;return{mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose:async()=>{}};}});
+ f.runtime.peer_media_bootstrap=()=>{};f.runtime.peer_media_update_hint=()=>{};
+ const peer=await f.connect();t.after(()=>peer.dispose());
+ deliveryOptions.onError(Error('session refused after descriptor expiry'));await drain();
+ assert.ok(peer.getSnapshot().health.failures.some(failure=>failure.id==='session:connection'));
+ await refresh(new AbortController().signal);await drain();
+ assert.equal(peer.getSnapshot().health.failures.some(failure=>failure.id==='session:connection'),false);
+});
+test('final session detach follows media custody and is absent from ordinary reconnect',async()=>{
+ const gate=deferred();let detaches=0,mediaStops=0;
+ const f=fixture({createMedia:()=>({mediaV1:{version:1},initialize:async()=>true,supported:()=>true,dispose(){mediaStops++;return gate.promise;}}),createDelivery:()=>({start:async()=>true,wake(){},close:async()=>{},detach:async()=>{assert.equal(mediaStops,1);detaches++;}})});
+ f.runtime.peer_media_bootstrap=()=>{};
+ const peer=await f.connect();await peer.reconnect();assert.equal(detaches,0);assert.equal(mediaStops,0);
+ const closing=peer.dispose();await drain();assert.equal(detaches,0);assert.equal(f.counts().held,1);
+ gate.resolve();await closing;assert.equal(detaches,1);assert.equal(f.counts().held,0);
+});
+test('selected session v2 exposes fresh tickets to mounted desktop without a raw-ID admission escape',async()=>{
+ const f=fixture({initialStatus:progressing('0',true)});privateTransport(f);const peer=await f.connect({actionsVersion:2});try{assert.equal(peer.actionsV2?.version,2);await assert.rejects(peer.actionsV1.invoke({invocation:'22222222-2222-4222-8222-222222222222'}),/fresh|ticket|legacy/);await peer.mountDesktop({});assert.equal(f.mountOptionsSeen.at(-1).actionsV2,peer.actionsV2);}finally{await peer.dispose();}
+});
+test('an offline report during a slow first handshake does not close the initial delivery',async()=>{
+ // High-latency link: the runtime reports its transport offline before the
+ // first handshake completes, and the backoff timer fires while the initial
+ // delivery is still starting. The recovery attempt must wait, not reconnect.
+ const time=clock(),started=deferred();let starts=0,closes=0;
+ const offline={phase:'incomplete',records:[],health:{transport:{phase:'offline',authenticated:false,generation:'0'},admission:{phase:'syncing',requiredRecords:[],pendingPrerequisites:1,progressRevision:'0'}}};
+ const f=fixture({recoveryClock:time,initialStatus:offline,createDelivery:()=>({async start(){starts++;await started.promise;},wake(){},close:async()=>{closes++;}})});
+ const connecting=f.connect();
+ await time.tick(20000);
+ assert.equal(starts,1);assert.equal(closes,0,'no recovery attempt closed the handshake in progress');
+ f.status({phase:'ready',records:[],health:{transport:{phase:'connected',authenticated:true,generation:'1'},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0,progressRevision:'1'}}});
+ started.resolve();
+ const peer=await connecting;await time.tick(20000);
+ assert.equal(starts,1,'the waiting attempt became a no-op after the initial connect succeeded');assert.equal(f.counts().attempts,1);
+ await peer.dispose();
+});
+test('a local save failure retries on bounded backoff, pauses delivery reconnects, and resumes once saving succeeds',async()=>{
+ const time=clock();let delivery,starts=0,closes=0,commits=0;
+ const f=fixture({recoveryClock:time,createDelivery:options=>{delivery=options;return{async start(){starts++;},wake(){},close:async()=>{closes++;}};}});
+ const commit=f.storage.commit;f.storage.commit=async(...args)=>{commits++;return commit(...args);};
+ const peer=await f.connect();assert.equal(starts,1);
+ f.setFailCommit(true);f.status({phase:'ready',persistenceNeeded:true});await drain();
+ let snapshot=peer.getSnapshot();assert.equal(snapshot.persistence,'failed');
+ assert(snapshot.health.failures.some(failure=>failure.scope.kind==='storage'&&failure.code==='storage-transaction-failed'));
+ // The delivery client stops on the unacknowledged cut and the runtime reports offline.
+ delivery.onError(Error('delivery cut lacks exact atomic storage acknowledgement'));
+ f.status({phase:'incomplete',health:{transport:{phase:'offline',authenticated:false,generation:'1'}}});await drain();
+ snapshot=peer.getSnapshot();
+ assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='connection'),'storage stays the surfaced cause');
+ assert.equal(snapshot.health.transport.authenticated,false);
+ const before=commits;await time.tick(61000);
+ assert.equal(f.counts().attempts,1,'no delivery reconnect while this device cannot save');assert.equal(starts,1);assert.equal(closes,0);
+ assert(commits-before>=4&&commits-before<=6,`bounded exponential retries (${commits-before})`);
+ const capped=commits;await time.tick(120000);assert(commits-capped>=3&&commits-capped<=5,`retry interval is capped (${commits-capped})`);
+ await assert.rejects(peer.reconnect(),/storage is unavailable/i);assert.equal(f.counts().attempts,1);
+ f.setFailCommit(false);await time.tick(30000);
+ snapshot=peer.getSnapshot();
+ assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='storage'),'first successful save clears the failure');
+ assert.equal(snapshot.persistence,'committed');assert.equal(snapshot.error,null);
+ assert.equal(f.counts().attempts,2,'delivery resumes exactly once after storage recovers');assert.equal(starts,2);assert.equal(closes,1);
+ const settled=commits;await time.tick(120000);assert.equal(f.counts().attempts,2);assert.equal(commits,settled,'no retry after recovery');
+ await peer.dispose();
+});
+test('a non-storage persistence error retries quietly without the storage banner',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();
+ const acknowledge=f.runtime.acknowledge_storage;let refusals=0;
+ f.setFailCommit(false);f.runtime.acknowledge_storage=()=>{refusals++;throw Error('runtime ack refused');};
+ await assert.rejects(peer.retryPersistence(),/runtime ack refused/);
+ let snapshot=peer.getSnapshot();
+ assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='storage'));assert.notEqual(snapshot.persistence,'failed');
+ f.runtime.acknowledge_storage=acknowledge;await time.tick(1000);
+ assert.equal(refusals,1);await assert.doesNotReject(peer.retryPersistence());
+ snapshot=peer.getSnapshot();assert(!snapshot.health.failures.some(failure=>failure.scope.kind==='storage'));
+ await peer.dispose();
 });

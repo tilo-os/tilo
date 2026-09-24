@@ -3,6 +3,7 @@ const DESKTOP_SCOPE={app_id:'dev.qos.desktop',record_id:'',resource:'desktop:ses
 // Shared-widget requests enter the existing certified, durable action client.
 // A response updates lifecycle only; admitted signed room state owns rendering.
 export function bindDesktopCommands({actions,peek,ack,report=()=>{},onPending=()=>{},onUpdate=()=>{},clock={}}){
+  if(actions.version===2)return bindTicketDesktopCommands({actions,peek,ack,report,onPending,onUpdate,clock});
   let closed=false,attempt,current=actions.getSnapshot().entries.filter(row=>row.intent?.app_id==='dev.qos.desktop').at(-1)?.invocation;
   const waiters=new Map(),now=clock.now??Date.now,set=clock.setTimeout??globalThis.setTimeout,clear=clock.clearTimeout??globalThis.clearTimeout;
   const samePending=value=>{const head=peek();return head?.invocation===value.invocation&&head.command===value.command;};
@@ -89,5 +90,74 @@ export function bindDesktopCommands({actions,peek,ack,report=()=>{},onPending=()
       let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});waiters.set(invocation,{promise,resolve,reject});return promise;
     },
     close(){closed=true;if(attempt){attempt.controller.abort();retire(attempt);}unsubscribe();for(const waiter of waiters.values())waiter.reject(Error('Desktop command bridge closed'));waiters.clear();},
+  };
+}
+
+// The Rust queue ID is a presentation parent, never a caller-supplied operation ID.
+function bindTicketDesktopCommands({actions,peek,ack,report,onPending,onUpdate,clock}){
+  let closed=false,attempt,previous;const now=clock.now??Date.now;
+  const waiters=new Map(),completed=new Map(),finishing=new Map(),ownedParents=new Set();
+  const consumer=parent=>({kind:'interactive',parent,slot:'desktop-command'});
+  const retained=parent=>actions.getSnapshot().entries.find(row=>row.ticket.consumer.parent===parent&&row.ticket.consumer.slot==='desktop-command');
+  const terminalError=row=>Error(row.update?.error?.message??row.reason??`Desktop command ${row.state}`);
+  const present=row=>{
+    if(closed)return;
+    const parent=row.ticket.consumer.parent;if(!ownedParents.has(parent))return;const presentation={...row,invocation:parent};
+    onUpdate(presentation);report({desktopCommand:{invocation:parent,operation:row.invocation,state:row.state,terminal:row.terminal,error:row.update?.error?.message??row.reason??null}});
+    if(!row.terminal)return;
+    completed.set(parent,row);while(completed.size>32)completed.delete(completed.keys().next().value);
+    const waiter=waiters.get(parent);if(waiter){waiters.delete(parent);row.state==='succeeded'?waiter.resolve():waiter.reject(terminalError(row));}
+    if(finishing.has(parent)||!['succeeded','failed'].includes(row.state)||row.businessCancellationRequested||row.cancellationRequested)return;
+    // Synchronous live presentation has accepted this interactive result. Its
+    // explicit receipt is durable before removal. No automated parent uses this.
+    const task=(async()=>{await actions.acknowledgeTerminal(row.ticket,{consumer:row.ticket.consumer,update:row.update,continuation:{kind:'desktop-result-presented',parent}});if(!closed)await actions.consumeTerminal(row.ticket);})().catch(()=>{});
+    finishing.set(parent,task);void task.finally(()=>{finishing.delete(parent);if(!retained(parent))ownedParents.delete(parent);});
+  };
+  const unsubscribe=actions.subscribe(snapshot=>{if(!closed)for(const row of snapshot.entries)if(row.ticket.consumer.slot==='desktop-command')present(row);});
+  return {
+    async pump(){
+      if(closed)return;
+      const pending=peek();
+      // Supersession only cancels an attempt still owned by the Rust queue. Once
+      // acknowledged, the persisted ticket owns the command and its drive must
+      // reach the original dispatch; the queue head is then legitimately gone.
+      if(attempt){if(!attempt.acknowledged&&(pending?.invocation!==attempt.pending.invocation||pending?.command!==attempt.pending.command))attempt.controller.abort();return;}
+      if(!pending)return;
+      const value=previous?.pending.invocation===pending.invocation?previous:{pending:{...pending},controller:new AbortController(),deadline:now()+30000,retries:0,retryAfter:0,admissionStarted:false,binding:actions.getBinding?.()};
+      previous=value;if(now()<value.retryAfter)return;
+      if(now()>=value.deadline&&!retained(pending.invocation)){report({desktopCommand:{invocation:pending.invocation,state:value.admissionStarted?'unknown':'rejected',terminal:!value.admissionStarted,error:value.admissionStarted?'Original admission is unconfirmed':'Desktop service unavailable; command was not sent'}});if(!value.admissionStarted&&peek()?.invocation===pending.invocation)ack(pending.invocation);return;}
+      const options={signal:value.controller.signal,deadlineAtMs:value.deadline,isCurrent:()=>!closed&&peek()?.invocation===pending.invocation&&peek()?.command===pending.command};
+      attempt=value;ownedParents.add(pending.invocation);onPending(value.pending);
+      try{
+        let row=retained(pending.invocation),ticket=row?.ticket;
+        if(row&&row.intent.argument?.command!==pending.command)throw Error('Original desktop parent intent changed');
+        if(!ticket){
+          const capability=await actions.catalogue(options);
+          if(value.binding&&JSON.stringify(value.binding)!==JSON.stringify(capability.binding))throw Error('Action identity changed during discovery');
+          if(value.admissionStarted){row=retained(pending.invocation);if(!row)throw Error('Original admission is unconfirmed; no replacement was created');ticket=row.ticket;}
+          if(!ticket){
+          if(closed||value.controller.signal.aborted||peek()?.invocation!==pending.invocation)throw Error('Desktop command attempt cancelled');
+          const matches=capability.catalogue.surfaces.filter(s=>s.live!==false&&s.cluster_id===capability.binding.room&&s.app_id==='dev.qos.desktop'&&s.record_id==='').flatMap(surface=>(surface.actions??[]).filter(a=>a.resource==='desktop:session'&&a.action==='command').map(action=>({surface,action})));
+          if(matches.length!==1)throw Error('Native desktop command service is unavailable');
+          const {surface,action}=matches[0];
+          value.admissionStarted=true;ticket=await actions.beginNew({app_peer:String(surface.peer_id),app_id:surface.app_id,record_id:surface.record_id,resource:action.resource,action:action.action,revision:action.revision??null,argument:{command:pending.command,...(action.params?.some(p=>p.name==='committed_desktop_v2'&&p.ty==='boolean')?{committed_desktop_v2:true}:{})},expected:{host:capability.host,binding:capability.binding,descriptor:action}},{...options,consumer:consumer(pending.invocation)});
+          }
+        }
+        if(closed||value.controller.signal.aborted||peek()?.invocation!==pending.invocation||peek()?.command!==pending.command)return;
+        // The persisted mapping owns recovery before presentation leaves Rust.
+        value.acknowledged=true;if(peek()?.invocation===pending.invocation)ack(pending.invocation);
+        row=await actions.drive(ticket,{signal:value.controller.signal,deadlineAtMs:value.deadline});present(row);
+      }catch(error){
+        if(!closed){const row=retained(pending.invocation);if(row){if(peek()?.invocation===pending.invocation)ack(pending.invocation);present(row);}else {value.retryAfter=now()+[250,1000,30000][Math.min(value.retries++,2)];report({desktopCommand:{invocation:pending.invocation,state:'unknown',terminal:false,error:String(error.message??error)}});}}
+      }finally{if(attempt===value)attempt=undefined;}
+    },
+    cancel(parent){if(closed)return false;const row=retained(parent);if(row){void actions.requestCancellation(row.ticket).catch(()=>{});return true;}if(attempt?.pending.invocation!==parent)return false;attempt.controller.abort();return true;},
+    waitForTerminal(parent){
+      if(closed)return Promise.reject(Error('Desktop command bridge closed'));
+      ownedParents.add(parent);const row=retained(parent)??completed.get(parent);if(row?.ticket)present(row);if(row?.terminal)return row.state==='succeeded'?Promise.resolve():Promise.reject(terminalError(row));
+      if(waiters.has(parent))return waiters.get(parent).promise;
+      let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});waiters.set(parent,{promise,resolve,reject});return promise;
+    },
+    close(){closed=true;attempt?.controller.abort();unsubscribe();for(const waiter of waiters.values())waiter.reject(Error('Desktop command bridge closed'));waiters.clear();completed.clear();ownedParents.clear();},
   };
 }

@@ -87,6 +87,21 @@ pub(crate) fn install(
     Ok(())
 }
 
+/// Initial projection for a fresh owner. Complete state (restored journal or
+/// governance handoff) may already satisfy desktop admission before any
+/// delivery cut installs through the ordinary candidate path; incomplete state
+/// installs nothing, exactly as that path does.
+pub(crate) fn install_initial(
+    cache: &PortableStorage,
+    state: &StatePeer,
+    actor: [u8; 32],
+) -> Result<(), String> {
+    if state.incomplete_reason().is_some() {
+        return Ok(());
+    }
+    install(cache, state, actor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +129,37 @@ mod tests {
             StatePeer::new(room, cert.clone(), vec![cert], RevocationList::new(), now).unwrap();
         state.install_seed(seed, &key, now).unwrap();
         (state, key, now)
+    }
+    #[test]
+    fn fresh_owner_initial_state_is_openable_before_any_delivery_cut() {
+        // A fresh browser owner can reach complete desktop admission from its
+        // restored/handoff state alone. The desktop's record owners read the
+        // same portable cache, so every admitted row must already be there.
+        let (state, _, _) = state();
+        assert!(state.incomplete_reason().is_none());
+        let app = word_processor::definition();
+        let checkout = RecordCheckout::new(RecordId::for_tab(1), app.record_kind.clone());
+        let cache = PortableStorage::new("certified:test", "fresh").unwrap();
+        let before = RecordOwners::portable(cache.clone())
+            .open(app.app_id, state.room())
+            .unwrap();
+        assert!(matches!(
+            before.try_open_record(&checkout),
+            Err(ui::record::RecordOpenError::MissingRecord)
+        ));
+        install_initial(&cache, &state, [13; 32]).unwrap();
+        let after = RecordOwners::portable(cache.clone())
+            .open(app.app_id, state.room())
+            .unwrap();
+        after.try_open_record(&checkout).unwrap();
+        assert_eq!(
+            after
+                .read(&checkout.id, |doc| doc.get_actor().to_bytes().to_vec())
+                .unwrap(),
+            vec![13; 32]
+        );
+        // Re-projection of the same state is an idempotent merge.
+        install_initial(&cache, &state, [13; 32]).unwrap();
     }
     #[test]
     fn concurrent_writer_snapshots_preserve_distinct_local_actor_custody() {
@@ -430,6 +476,9 @@ pub(crate) fn prepare_remote_owned(
 /// publishes every changed frame.
 pub(crate) struct PublicationSchedule {
     window: std::time::Duration,
+    /// Configured window; `window` is shorter while [`Self::set_live_window`]
+    /// applies (live collaborators receive each publication at once).
+    configured: std::time::Duration,
     last: Option<ui::clock::Instant>,
     due: Option<ui::clock::Instant>,
 }
@@ -442,8 +491,22 @@ impl PublicationSchedule {
     pub(crate) fn new(window: std::time::Duration) -> Self {
         Self {
             window,
+            configured: window,
             last: None,
             due: None,
+        }
+    }
+    /// LIVE_V1: while other members are present, publications forward to them
+    /// immediately (the author's own ops track), so a long window would be
+    /// visible typing latency. `Some(window)` shortens the configured window
+    /// (never lengthens it); `None` restores it. A pending deadline moves with
+    /// the window.
+    pub(crate) fn set_live_window(&mut self, window: Option<std::time::Duration>) {
+        self.window = window.map_or(self.configured, |window| window.min(self.configured));
+        if self.due.is_some()
+            && let Some(last) = self.last
+        {
+            self.due = last.checked_add(self.window);
         }
     }
     /// Called when at least one owned record has unpublished changes.
@@ -688,6 +751,41 @@ mod schedule_tests {
         assert_eq!(schedule.due(), None);
         schedule.reset();
         assert_eq!(schedule.decide(ms(201)), PublicationDecision::Now);
+    }
+    #[test]
+    fn live_collaboration_shortens_the_window_and_moves_the_pending_deadline() {
+        let t0 = ui::clock::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut schedule = PublicationSchedule::new(Duration::from_millis(100));
+        assert_eq!(schedule.decide(ms(0)), PublicationDecision::Now);
+        assert_eq!(
+            schedule.decide(ms(5)),
+            PublicationDecision::Deferred(ms(100))
+        );
+        // A collaborator arrives: the pending edit is due one live window after
+        // the last publication instead of the configured window.
+        schedule.set_live_window(Some(Duration::from_millis(16)));
+        assert_eq!(schedule.due(), Some(ms(16)));
+        assert_eq!(schedule.decide(ms(16)), PublicationDecision::Now);
+        assert_eq!(
+            schedule.decide(ms(20)),
+            PublicationDecision::Deferred(ms(32))
+        );
+        // Never longer than configured.
+        schedule.set_live_window(Some(Duration::from_secs(5)));
+        assert_eq!(schedule.due(), Some(ms(116)));
+        // Alone again: the configured window applies.
+        schedule.set_live_window(Some(Duration::from_millis(16)));
+        schedule.set_live_window(None);
+        assert_eq!(schedule.due(), Some(ms(116)));
+        assert_eq!(
+            schedule.decide(ms(40)),
+            PublicationDecision::Deferred(ms(116))
+        );
+        // Nothing pending: no deadline is invented.
+        schedule.clear_due();
+        schedule.set_live_window(Some(Duration::from_millis(16)));
+        assert_eq!(schedule.due(), None);
     }
     #[test]
     fn a_zero_window_publishes_every_changed_frame() {

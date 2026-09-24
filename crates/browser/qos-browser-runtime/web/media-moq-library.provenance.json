@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "upstream": {
+    "repository": "https://github.com/moq-dev/moq",
+    "commit": "3aedaf3503146c664479f6fc53a50b36bb5e816d",
+    "rustPackage": "moq-net@0.2.22",
+    "browserSourcePackage": "@moq/net@0.3.5-source-tree-only",
+    "registryPackageAccepted": false
+  },
+  "protocol": {
+    "version": "draft-ietf-moq-transport-21",
+    "alpn": "moqt-21",
+    "authorizationSetupOption": "0x03",
+    "authorizationApplicationBytesMaximum": 8192
+  },
+  "build": {
+    "command": "cd scripts/moq-browser && npm ci && npm run build",
+    "node": ">=22",
+    "lockSha256": "33b5fa946ea81a4da6f957530e35a63f029f3703fc9e14fdddf755763814288b",
+    "scriptSha256": "b8fe457a737abdc28de8aab7f66f402444380cc54ac72edbeaa031d0d1dab834",
+    "dependencies": {
+      "@moq/qmux": {
+        "version": "0.3.3",
+        "integrity": "sha512-Ez1GCVwpyNGB0eWvhKIXOjXrfRlMdmO0lpJ7gqInZFzsOsYTyML0WRgh24Itczp9Kev0CXsUA/K+XrGs1dRKUA=="
+      },
+      "@moq/signals": {
+        "version": "file:../../vendor/moq/js/signals",
+        "integrity": null
+      },
+      "@zod/mini": {
+        "version": "4.5.0",
+        "integrity": "sha512-YlCEbTUb92qd061WXRPUuLILSf48HYFkRZe1+0sNtCkmZIUYPctK0Uscq2Lq3u+XWke0ei/fyDOjmhUC2koBOg=="
+      },
+      "async-mutex": {
+        "version": "0.5.0",
+        "integrity": "sha512-1A94B18jkJ3DYq284ohPxoXbfTA5HsQ7/Mf4DEhcyLx3Bz27Rh59iScbB6EPiP+B+joue6YCxcMXSbFC1tZKwA=="
+      },
+      "bowser": {
+        "version": "2.14.1",
+        "integrity": "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg=="
+      },
+      "@types/bun": {
+        "version": "1.4.1",
+        "integrity": "sha512-0AVGiTXGajf1rgKom3N+c5L7CBxuoyyv1i44M0nX4UDK0G/fnRAMiri93nHuVPIb429KKtAgj7HatVmmOjeQLA=="
+      },
+      "es-module-lexer": {
+        "version": "3.0.2",
+        "integrity": "sha512-BuIB67FngDSyQ/dpQNOZybwdEBDUGJQvOqwWr4ha/ufYiqzuEwPkKO2zLhRAgay28tStRIHUeWmszZAJo3GCOg=="
+      },
+      "esbuild": {
+        "version": "0.28.2",
+        "integrity": "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA=="
+      },
+      "typescript": {
+        "version": "7.0.2",
+        "integrity": "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="
+      }
+    }
+  },
+  "source": {
+    "directory": "vendor/moq/js",
+    "treeSha256": "2c73427471feeb65101786fc5f054b01a2d5c1b10fd08d7471bf7760d97a6166",
+    "patches": [
+      "net/src/broadcast.ts",
+      "net/src/connection/connect.ts",
+      "net/src/connection/handshake.ts",
+      "net/src/group.ts",
+      "net/src/ietf/aliases.ts",
+      "net/src/ietf/connection.ts",
+      "net/src/ietf/datagram.ts",
+      "net/src/ietf/parameters.ts",
+      "net/src/ietf/publisher.ts",
+      "net/src/ietf/subscriber.ts",
+      "net/src/stream.ts",
+      "net/src/track.ts"
+    ],
+    "licenses": [
+      "vendor/moq/js/LICENSE-MIT",
+      "vendor/moq/js/LICENSE-APACHE"
+    ]
+  },
+  "artifact": {
+    "path": "crates/browser/qos-browser-runtime/web/media-moq-library.mjs",
+    "sha256": "28006e817f908d82714ddd155ac111f222bc2395cdb686d3265562081e644215",
+    "bytes": 600652,
+    "externalImports": [],
+    "licensePath": "crates/browser/qos-browser-runtime/web/media-moq-library.LICENSE.txt",
+    "licenseSha256": "d95b047e70d6a99d9fd6fabcfd175531f21facc45376fd015cfdb1aedb175b8e",
+    "licenseNoticesEmbedded": true
+  }
+}
