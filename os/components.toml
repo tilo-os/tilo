@@ -344,6 +344,21 @@ files = [
   { from = "fs", to = "/usr/bin/fs", mode = "0755" },
 ]
 
+# Settings' credential helper. The cloud account service runs it (through
+# bounded-command) when an account's short-lived handoff credential is
+# missing, expired or rejected; it alone opens the account vault, for that
+# one call.
+[[component]]
+name = "account-credential"
+kind = "userspace"
+scope = "session"
+packages = ["account-custody"]
+bins = ["tilo-account-credential"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-account-credential", to = "/usr/libexec/tilo-account-credential", mode = "0755" },
+]
+
 [[component]]
 name = "greeter"
 kind = "userspace"
