@@ -100,21 +100,7 @@ enum LaunchKind {
 /// a string path, preserving the same capability boundary as file choosing.
 #[derive(Debug, Clone)]
 pub struct LaunchRequest {
-    #[cfg_attr(
-        not(feature = "portal"),
-        allow(
-            dead_code,
-            reason = "the featureless fallback keeps request construction available but cannot consume portal-only path state"
-        )
-    )]
     path: PathBuf,
-    #[cfg_attr(
-        not(feature = "portal"),
-        allow(
-            dead_code,
-            reason = "the featureless fallback keeps request construction available but cannot consume portal-only launch mode"
-        )
-    )]
     kind: LaunchKind,
     thread_name: String,
 }
@@ -142,16 +128,23 @@ impl LaunchRequest {
         self
     }
 
+    /// Hand the request to the current host's [`crate::host::FilePicker`].
     pub fn send(self) -> LaunchChannel {
         if suppressed() {
             return inject_launch_for_test(LaunchOutcome::Opened);
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let name = self.thread_name.clone();
-        spawn_worker(&name, move || {
-            let _ = tx.send(launch(self));
-        });
-        rx
+        crate::host::current().files.launch(self)
+    }
+
+    /// The path to open, or whose containing folder to reveal.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether this reveals the containing folder rather than opening the
+    /// path itself.
+    pub fn is_reveal(&self) -> bool {
+        self.kind == LaunchKind::Reveal
     }
 }
 
@@ -250,6 +243,12 @@ impl FileFilter {
         Self::new("All files").glob("*")
     }
 
+    /// The MIME types this filter offers.
+    #[must_use]
+    pub fn mimetypes(&self) -> &[String] {
+        &self.mimetypes
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -272,14 +271,6 @@ enum PickKind {
 #[derive(Debug, Clone)]
 pub struct PickRequest {
     title: String,
-    #[cfg_attr(
-        not(feature = "portal"),
-        allow(
-            dead_code,
-            reason = "the featureless fallback keeps chooser construction available but cannot send the portal-only accept label"
-        )
-    )]
-    // read by the ashpd request in `run`, gated behind the `portal` feature
     accept_label: String,
     thread_name: String,
     filters: Vec<FileFilter>,
@@ -370,20 +361,36 @@ impl PickRequest {
         }
     }
 
-    /// The UI thread is never blocked: the D-Bus round-trip and the host
-    /// dialog live entirely on the worker. A multi-select request should go
-    /// through [`send_multiple`](Self::send_multiple) instead, so every pick
-    /// is delivered.
+    /// The chooser's accept-button label.
+    pub fn accept_label(&self) -> &str {
+        &self.accept_label
+    }
+
+    /// The file-type filters, in dropdown order.
+    pub fn filters(&self) -> &[FileFilter] {
+        &self.filters
+    }
+
+    /// Whether this chooses a folder rather than files.
+    pub fn is_directory(&self) -> bool {
+        matches!(self.kind, PickKind::Directory)
+    }
+
+    /// The name of the worker thread a native picker runs on.
+    pub fn worker_name(&self) -> &str {
+        &self.thread_name
+    }
+
+    /// Hand the request to the current host's [`crate::host::FilePicker`].
+    /// The UI thread is never blocked: the native picker runs the D-Bus
+    /// round-trip and the host dialog entirely on a worker. A multi-select
+    /// request should go through [`send_multiple`](Self::send_multiple)
+    /// instead, so every pick is delivered.
     pub fn send(self) -> PortalChannel {
         if suppressed() {
             return inject_for_test(PortalOutcome::Cancelled);
         }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let name = self.thread_name.clone();
-        spawn_worker(&name, move || {
-            let _ = tx.send(single(self));
-        });
-        rx
+        crate::host::current().files.pick(self)
     }
 
     /// Open one selected regular file on the portal worker and deliver its
@@ -393,16 +400,12 @@ impl PickRequest {
     /// This is valid only for a single-file Open request. Calling it for Save
     /// or multi-select requests reports a normal failed outcome.
     pub fn send_open_file(self) -> OpenFileChannel {
-        let (tx, rx) = std::sync::mpsc::channel();
         if suppressed() {
+            let (tx, rx) = std::sync::mpsc::channel();
             let _ = tx.send(OpenFileOutcome::Cancelled);
             return rx;
         }
-        let name = self.thread_name.clone();
-        spawn_worker(&name, move || {
-            let _ = tx.send(single_open_file(self));
-        });
-        rx
+        crate::host::current().files.open_file(self)
     }
 
     /// Multi-select counterpart of [`send`](Self::send).
@@ -410,10 +413,48 @@ impl PickRequest {
         if suppressed() {
             return inject_multi_for_test(MultiOutcome::Cancelled);
         }
+        crate::host::current().files.pick_multiple(self)
+    }
+}
+
+/// The native [`crate::host::FilePicker`]: the XDG Desktop Portal on Unix and
+/// the Common Item Dialogs on Windows, each on its own worker thread. Without
+/// the `portal` feature every request fails cleanly.
+pub(crate) struct DesktopFilePicker;
+
+impl crate::host::FilePicker for DesktopFilePicker {
+    fn pick(&self, request: PickRequest) -> PortalChannel {
         let (tx, rx) = std::sync::mpsc::channel();
-        let name = self.thread_name.clone();
+        let name = request.thread_name.clone();
         spawn_worker(&name, move || {
-            let _ = tx.send(multiple(self));
+            let _ = tx.send(single(request));
+        });
+        rx
+    }
+
+    fn pick_multiple(&self, request: PickRequest) -> MultiChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = request.thread_name.clone();
+        spawn_worker(&name, move || {
+            let _ = tx.send(multiple(request));
+        });
+        rx
+    }
+
+    fn open_file(&self, request: PickRequest) -> OpenFileChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = request.thread_name.clone();
+        spawn_worker(&name, move || {
+            let _ = tx.send(single_open_file(request));
+        });
+        rx
+    }
+
+    fn launch(&self, request: LaunchRequest) -> LaunchChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = request.thread_name.clone();
+        spawn_worker(&name, move || {
+            let _ = tx.send(launch(request));
         });
         rx
     }
