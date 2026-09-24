@@ -684,6 +684,8 @@ pub enum HistoryError {
     InvalidProjection,
     #[error("signed record publication failed: {0}")]
     Publication(String),
+    #[error("record cannot take another signed version: {0}")]
+    CapacityExhausted(String),
     #[error("history state lock is poisoned")]
     StatePoisoned,
 }
