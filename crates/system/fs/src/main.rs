@@ -310,6 +310,57 @@ struct AclArgs {
     acl_reload_secs: u64,
 }
 
+/// Which local data plane serves the workspace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum DataPlaneChoice {
+    /// The native tree (Tier 1) when the store volume and kernel support
+    /// it, else FUSE.
+    #[default]
+    Auto,
+    /// Always FUSE (Tier 2/3).
+    Fuse,
+    /// The native tree or fail.
+    Native,
+}
+
+/// Where and how the Tier 1 data plane runs.
+#[derive(Args, Debug, Clone)]
+struct DataPlaneArgs {
+    /// Local data plane: `auto` serves the native tree when the store volume and kernel support it.
+    #[arg(long, value_enum, default_value_t = DataPlaneChoice::Auto)]
+    data_plane: DataPlaneChoice,
+    /// Root of the dedicated Btrfs store volume holding the native room trees.
+    #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo/store")]
+    store: PathBuf,
+    /// Owner (`UID:GID`) of files the native data plane materialises; defaults to the room directory's owner.
+    #[arg(long, value_name = "UID:GID")]
+    native_owner: Option<String>,
+    /// Remote files up to this many bytes are fetched before they appear; larger ones start as placeholders.
+    #[arg(long, value_name = "BYTES", default_value_t = 1024 * 1024)]
+    native_eager_bytes: u64,
+}
+
+impl Default for DataPlaneArgs {
+    fn default() -> Self {
+        Self {
+            data_plane: DataPlaneChoice::Fuse,
+            store: PathBuf::from("/var/lib/tilo/store"),
+            native_owner: None,
+            native_eager_bytes: 1024 * 1024,
+        }
+    }
+}
+
+fn parse_owner(spec: &str) -> Result<(u32, u32)> {
+    let (uid, gid) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("--native-owner must be UID:GID, got {spec:?}"))?;
+    Ok((
+        uid.parse().context("--native-owner UID")?,
+        gid.parse().context("--native-owner GID")?,
+    ))
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Host a collaborative workspace and mount it locally.
@@ -334,6 +385,8 @@ enum Command {
         blob_sock: Option<PathBuf>,
         #[command(flatten)]
         acl: AclArgs,
+        #[command(flatten)]
+        data_plane: DataPlaneArgs,
     },
     /// Join a workspace shared by a peer (via its ticket) and mount it.
     Mount {
@@ -357,6 +410,8 @@ enum Command {
         blob_sock: Option<PathBuf>,
         #[command(flatten)]
         acl: AclArgs,
+        #[command(flatten)]
+        data_plane: DataPlaneArgs,
     },
     /// Mount the single exact record addressed by an endpoint-bound share link.
     MountShare {
@@ -483,6 +538,7 @@ async fn run_command() -> Result<()> {
             storage_sock,
             blob_sock,
             acl,
+            data_plane,
         } => {
             serve(
                 mount_point,
@@ -492,6 +548,7 @@ async fn run_command() -> Result<()> {
                 storage_sock,
                 blob_sock,
                 acl,
+                data_plane,
             )
             .await
         }
@@ -503,6 +560,7 @@ async fn run_command() -> Result<()> {
             storage_sock,
             blob_sock,
             acl,
+            data_plane,
         } => {
             mount(
                 mount_point,
@@ -512,6 +570,7 @@ async fn run_command() -> Result<()> {
                 storage_sock,
                 blob_sock,
                 acl,
+                data_plane,
             )
             .await
         }
@@ -1347,6 +1406,10 @@ fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] 
     clippy::too_many_lines,
     reason = "Serving assembles certified transport, ACLs, durable record services, namespace recovery, and mount task lifetimes in one ordered lifecycle."
 )] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one independent command-line option of `fs serve`"
+)]
 async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
@@ -1355,6 +1418,7 @@ async fn serve(
     storage_sock: Option<PathBuf>,
     blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
+    data_plane: DataPlaneArgs,
 ) -> Result<()> {
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let np = namespace_path(cache_dir.as_deref());
@@ -1786,6 +1850,7 @@ async fn serve(
         false,
         false,
         managed_service.then_some(rebind_rx),
+        Some((data_plane, *history_actor.device.as_bytes())),
     )
     .await?;
     if let Some(p) = &np {
@@ -1846,6 +1911,10 @@ fn initialize_owner_record_authority(
     clippy::too_many_lines,
     reason = "Joining a workspace keeps ticket validation, certified transport, record recovery, synchronization, mounting, and final persistence in order."
 )] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one independent command-line option of `fs mount`"
+)]
 async fn mount(
     mount_point: PathBuf,
     ticket: String,
@@ -1854,6 +1923,7 @@ async fn mount(
     storage_sock: Option<PathBuf>,
     blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
+    data_plane: DataPlaneArgs,
 ) -> Result<()> {
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
@@ -2022,6 +2092,7 @@ async fn mount(
         false,
         false,
         None,
+        Some((data_plane, *history_actor.device.as_bytes())),
     )
     .await?;
     if let Some(p) = &np {
@@ -2303,6 +2374,7 @@ async fn mount_share(
         None,
         false,
         true,
+        None,
         None,
     )
     .await?;
@@ -3007,6 +3079,7 @@ async fn run_mount(
     read_only: bool,
     signal_recipient_ready: bool,
     mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    data_plane: Option<(DataPlaneArgs, [u8; 32])>,
 ) -> Result<MountOutcome> {
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
@@ -3027,6 +3100,7 @@ async fn run_mount(
     } else {
         fs.without_legacy_record_migration()
     };
+    let native_sync = sync.clone();
     let fs = match sync {
         Some(sync) => fs.with_sync(sync),
         None => fs,
@@ -3144,6 +3218,26 @@ async fn run_mount(
             }
         });
 
+    #[cfg(target_os = "linux")]
+    if let Some((args, device)) = data_plane.as_ref()
+        && let Some(cfg) = native_config(
+            args,
+            *device,
+            checked_history_workspace,
+            &mount_point,
+            predictive_cache_root.as_deref(),
+            read_only,
+        )?
+    {
+        let outcome = run_native(fs, cfg, native_sync, rebind).await;
+        if let Some(task) = predictive_policy_task {
+            task.abort();
+        }
+        return outcome;
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (&data_plane, &native_sync);
+
     // Kernel passthrough for fully local read-only opens is opt-in while the
     // backing files are a per-open materialisation of the chunk store.
     let fs = match predictive_cache_root
@@ -3233,6 +3327,118 @@ async fn run_mount(
     if let Some(task) = predictive_policy_task {
         task.abort();
     }
+    Ok(outcome)
+}
+
+/// Chooses the data plane and, for Tier 1, its configuration. `None` means
+/// the FUSE data plane serves the workspace.
+#[cfg(target_os = "linux")]
+fn native_config(
+    args: &DataPlaneArgs,
+    device: [u8; 32],
+    workspace: uuid::Uuid,
+    mount_point: &Path,
+    cache_dir: Option<&Path>,
+    read_only: bool,
+) -> Result<Option<fs::native::NativeConfig>> {
+    use fs::native::DataPlane;
+    let choice = match args.data_plane {
+        DataPlaneChoice::Auto => DataPlane::Auto,
+        DataPlaneChoice::Fuse => DataPlane::Fuse,
+        DataPlaneChoice::Native => DataPlane::Native,
+    };
+    let selection = match (cache_dir, read_only) {
+        (_, true) => fs::native::TierSelection {
+            native: false,
+            store: args.store.clone(),
+            reasons: vec!["read-only mounts are served by FUSE".into()],
+            report: None,
+            probe_time: Duration::ZERO,
+        },
+        (None, _) => fs::native::TierSelection {
+            native: false,
+            store: args.store.clone(),
+            reasons: vec!["no cache directory to keep the native plane's state in".into()],
+            report: None,
+            probe_time: Duration::ZERO,
+        },
+        (Some(_), false) => fs::native::tier::select(choice, &args.store),
+    };
+    println!("{}", selection.summary());
+    if let Some(report) = &selection.report {
+        eprint!("{report}");
+    }
+    if !selection.native {
+        if choice == DataPlane::Native {
+            bail!(
+                "the native data plane was requested but is unavailable: {}",
+                selection.reasons.join("; ")
+            );
+        }
+        return Ok(None);
+    }
+    let Some(cache_dir) = cache_dir else {
+        return Ok(None);
+    };
+    let mut cfg = fs::native::NativeConfig::new(
+        args.store.clone(),
+        workspace.to_string(),
+        mount_point.to_path_buf(),
+        cache_dir.join("native"),
+        device,
+    );
+    cfg.owner = args.native_owner.as_deref().map(parse_owner).transpose()?;
+    cfg.eager_bytes = args.native_eager_bytes;
+    Ok(Some(cfg))
+}
+
+/// Serves the workspace from the native tree until interrupted, terminated
+/// or asked to rebind. The bind mount lives exactly as long as this call.
+#[cfg(target_os = "linux")]
+async fn run_native(
+    fs: QuickFS,
+    cfg: fs::native::NativeConfig,
+    sync: Option<Arc<SyncHandle>>,
+    mut rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+) -> Result<MountOutcome> {
+    let fs = Arc::new(fs);
+    let content = Arc::clone(&fs.hydrator);
+    let runtime = tokio::runtime::Handle::current();
+    let plane = tokio::task::spawn_blocking(move || {
+        fs::native::NativePlane::start(cfg, fs, content, sync, runtime)
+    })
+    .await??;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut health = tokio::time::interval(Duration::from_secs(1));
+    let outcome = loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("Interrupted, exiting...");
+                break MountOutcome::Unmounted;
+            }
+            _ = terminate.recv() => {
+                println!("Terminated, exiting...");
+                break MountOutcome::Unmounted;
+            }
+            () = async {
+                match rebind.as_mut() {
+                    Some(receiver) => { let _ = receiver.recv().await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                println!("Content peer registration requested a clean workspace rebind.");
+                break MountOutcome::RebindRequested;
+            }
+            _ = health.tick() => {
+                if plane.is_finished() {
+                    eprintln!("the native data plane stopped");
+                    break MountOutcome::Unmounted;
+                }
+            }
+        }
+    };
+    tokio::task::spawn_blocking(move || plane.stop()).await??;
+    println!("Workspace unmounted.");
     Ok(outcome)
 }
 
