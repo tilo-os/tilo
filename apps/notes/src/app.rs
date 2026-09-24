@@ -1,5 +1,5 @@
 //! Root widget for the notes binary. Owns the in-memory [`Workspace`],
-//! the storage layer, and the two pane widgets ([`NoteTreeView`] +
+//! the storage layer, and the two panes (the [`PageSidebar`] page tree +
 //! [`MainPanel`]). Coordinates the data flow:
 //!
 //! - sidebar emits [`OutEvent`]s when the user clicks / renames /
@@ -40,7 +40,7 @@ use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagAssignment, TagId, Workspace};
 use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
-use crate::sidebar::{NoteTreeView, OutEvent, SidebarTransfer};
+use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
 use crate::status_bar::{StatusBarState, StatusModel, count_words};
 use crate::storage::{self, PageSaver, SaveStatus, Saver};
 
@@ -409,7 +409,7 @@ fn read_bounded_markdown(path: &std::path::Path) -> Result<String, String> {
 )]
 pub struct NotesApp {
     workspace: Workspace,
-    sidebar: NoteTreeView,
+    sidebar: PageSidebar,
     note_menu: ContextMenu,
     note_menu_target: Option<PageId>,
     note_menu_editor: bool,
@@ -642,7 +642,7 @@ impl NotesApp {
             storage::save_workspace(&root, &workspace).map_err(|e| e.to_string())?;
         }
 
-        let mut sidebar = NoteTreeView::new();
+        let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
         main.set_image_store(Some(workspace_image_store(&root)));
@@ -701,7 +701,7 @@ impl NotesApp {
         author: &ui::permissions::UserId,
     ) -> Result<Self, String> {
         let workspace = Self::project_workspace(doc, None)?;
-        let mut sidebar = NoteTreeView::new();
+        let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
         main.set_local_author(Some(author.0.clone()));
@@ -747,7 +747,7 @@ impl NotesApp {
 
     fn build_widget(
         workspace: Workspace,
-        sidebar: NoteTreeView,
+        sidebar: PageSidebar,
         main: MainPanel,
         legacy_fixture_storage: Option<LegacyFixtureStorage>,
     ) -> Self {
@@ -2008,7 +2008,7 @@ impl NotesApp {
         self.drain_canonical_editor(doc);
         self.reconcile_canonical(doc)?;
         let before = self.meta_map();
-        let tree_move = matches!(event, OutEvent::Move { .. } | OutEvent::Reparent { .. });
+        let tree_move = matches!(event, OutEvent::Reparent { .. });
         match event {
             OutEvent::Select(id) => {
                 if self.workspace.get(id).is_none() {
@@ -2038,12 +2038,6 @@ impl NotesApp {
                 self.reconcile_canonical(doc)?;
                 self.record_current_route();
                 return Ok(());
-            }
-            OutEvent::Move { id, delta } => {
-                if self.workspace.get(id).is_none() {
-                    return Err("page no longer exists".into());
-                }
-                self.workspace.move_sibling(id, delta);
             }
             OutEvent::Reparent {
                 id,
@@ -2230,12 +2224,6 @@ impl NotesApp {
                     tracing::error!(error = %e, page = %id, "notes: write empty page failed");
                 }
                 self.main.load_page(id, "Untitled", "");
-            }
-            OutEvent::Move { id, delta } => {
-                // Reorder among siblings. The new `order` propagates to
-                // the shared doc on the next `sync` (which upserts every
-                // local page's meta) and to disk via `persist()` below.
-                self.workspace.move_sibling(id, delta);
             }
             OutEvent::Reparent {
                 id,
@@ -3290,6 +3278,14 @@ impl NotesApp {
         }
     }
 
+    /// A press the page tree claimed focus for gives it keyboard focus at
+    /// once, so a key that follows in the same frame reaches its commands.
+    fn claim_sidebar_focus(&mut self, focus_target: Option<NodeId>) {
+        if focus_target.is_some() && focus_target == self.sidebar_node {
+            self.sidebar.set_focus(true);
+        }
+    }
+
     /// Drain the sidebar's outbound event queue and apply each, dispatching the
     /// matching page-tree action against the shared document. Called after every
     /// `handle_event` call.
@@ -3308,14 +3304,7 @@ impl NotesApp {
             }
         }
         let events = self.sidebar.take_events();
-        // An expand/collapse toggle mutates the sidebar's `expanded` set
-        // without emitting an event; it still needs a re-flatten so the
-        // affected children appear / disappear.
-        let rows_dirty = self.sidebar.take_rows_dirty();
         if events.is_empty() {
-            if rows_dirty {
-                self.sidebar.sync_from_workspace(&self.workspace);
-            }
             return;
         }
         for ev in events {
@@ -3492,11 +3481,12 @@ impl NotesApp {
         self.sidebar.drag_active_for_test()
     }
 
-    /// Test hook: the live reflow shift for sidebar row `idx` (non-zero
-    /// while the list reflows to open the drop gap).
+    /// Test hook: the drop indicator the page tree paints for the drag in
+    /// flight — an insertion line, or the outline of the page it would nest
+    /// into.
     #[doc(hidden)]
-    pub fn sidebar_row_shift_for_test(&self, idx: usize) -> f64 {
-        self.sidebar.row_shift_for_test(idx)
+    pub fn sidebar_drop_indicator_for_test(&self) -> Option<Rect> {
+        self.sidebar.drop_indicator_for_test()
     }
 
     /// Whether a menu on the open note currently captures input.
@@ -3724,7 +3714,7 @@ impl ui::widget::AppWidget for NotesApp {
             .map_err(ui::view::ThawError::State)?;
         let focus = PreparedFocus::resolve(&local, main.editor());
         main.restore_scroll(local.editor_scroll);
-        let mut sidebar = NoteTreeView::new();
+        let mut sidebar = PageSidebar::new();
         sidebar.sync_from_workspace(&workspace);
         sidebar.restore_expanded_pages(&local.expanded_pages, &workspace);
         let active_tag = local
@@ -4578,7 +4568,7 @@ impl Widget for NotesApp {
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(4);
         if !self.built_narrow || self.drawer.is_open() {
-            children.push(&self.sidebar);
+            children.push(self.sidebar.tree());
         }
         if self.note_menu.is_open() {
             children.push(&self.note_menu);
@@ -4593,7 +4583,7 @@ impl Widget for NotesApp {
         let show_sidebar = !self.built_narrow || self.drawer.is_open();
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(4);
         if show_sidebar {
-            children.push(&mut self.sidebar);
+            children.push(self.sidebar.tree_mut());
         }
         if self.note_menu.is_open() {
             children.push(&mut self.note_menu);
@@ -4911,6 +4901,7 @@ impl NotesApp {
                     n,
                     taffy,
                 );
+                self.claim_sidebar_focus(*focus_target);
             }
             self.drain_sidebar_events(state);
             if self.workspace.selected() != selected && !self.sidebar.menu_is_open() {
@@ -4975,6 +4966,7 @@ impl NotesApp {
                 n,
                 taffy,
             );
+            self.claim_sidebar_focus(*focus_target);
         }
         self.drain_sidebar_events(state);
         if self.workspace.selected() != sel_before && !self.sidebar.menu_is_open() {
@@ -5306,6 +5298,7 @@ impl NotesApp {
                     n,
                     taffy,
                 );
+                self.claim_sidebar_focus(*focus_target);
             }
             // Drain any commands the sidebar produced.
             self.drain_sidebar_events(state);
