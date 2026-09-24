@@ -2722,7 +2722,11 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
             eprintln!("thumbnail metadata prefetch failed: {error}");
         }
 
-        if !may_write {
+        // Conflicts come from what peers sent: a pass that only announced
+        // this device's own changes and received nothing has none to find,
+        // and a burst of local changes must not rescan every record per
+        // change. Timer passes still look.
+        if !may_write || (local_change && !namespace_changed) {
             continue;
         }
         if let Some(records) = &records {
