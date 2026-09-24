@@ -186,6 +186,8 @@ pub enum UpdateOperation {
     Rollback,
     RefreshFirmware,
     InstallFirmware,
+    InstallCodecs,
+    RemoveCodecs,
     SetAutomatic { enabled: bool },
     SetSchedule { schedule: String },
     SetMetered { allowed: bool },
@@ -3642,6 +3644,16 @@ fn updates_section() -> Resource {
             "Install firmware updates",
             UpdateOperation::InstallFirmware,
         ),
+        (
+            "install-codecs",
+            "Install additional codecs from RPM Fusion and Cisco",
+            UpdateOperation::InstallCodecs,
+        ),
+        (
+            "remove-codecs",
+            "Remove additional codecs",
+            UpdateOperation::RemoveCodecs,
+        ),
     ] {
         if let Some(mut action) = local_operation_spec(
             id,
@@ -3662,6 +3674,9 @@ fn updates_section() -> Resource {
                 UpdateOperation::Restart
                     | UpdateOperation::Rollback
                     | UpdateOperation::InstallFirmware
+                    // Downloads third-party software under its publishers'
+                    // licences: never without the owner's explicit consent.
+                    | UpdateOperation::InstallCodecs
             ) {
                 action = action.destructive();
             }
@@ -5298,6 +5313,8 @@ mod tests {
             "rollback",
             "refresh-firmware",
             "install-firmware",
+            "install-codecs",
+            "remove-codecs",
             "automatic",
             "schedule",
             "metered",
@@ -5315,7 +5332,7 @@ mod tests {
             );
             assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
         }
-        for id in ["restart", "rollback", "install-firmware"] {
+        for id in ["restart", "rollback", "install-firmware", "install-codecs"] {
             assert!(
                 updates
                     .actions
