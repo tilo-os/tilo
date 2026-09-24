@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if actual != EXPECTED_SCHEMA_FNV1A {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("{SCHEMA} changed without regenerating {GENERATED}"),
+            format!("{SCHEMA} changed without regenerating {GENERATED}; run regenerate.sh"),
         )
         .into());
     }
