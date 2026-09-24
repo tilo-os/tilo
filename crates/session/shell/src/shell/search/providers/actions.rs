@@ -339,15 +339,10 @@ fn apply_permission_profile_action(
 ) -> Result<(), ActionError> {
     let actor = state.active_local_user();
     let mut tree = state.tree_mut();
-    let workspace_id = tree
+    let (workspace_id, room) = tree
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.id)
-        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
-    let room = tree
-        .desktop
-        .active_workspace()
-        .map(|workspace| workspace.room)
+        .map(|workspace| (workspace.id, workspace.room))
         .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
     if !tree.governs_room(room) {
         return Err(ActionError::Refused(
@@ -1832,10 +1827,9 @@ impl SearchProvider for ActionsProvider {
                             let (workspace_id, room, actor) = {
                                 let state = chrome.borrow();
                                 let tree = state.tree();
-                                let workspace =
-                                    tree.desktop.active_workspace().ok_or_else(|| {
-                                        ActionError::Refused("no active workspace".into())
-                                    })?;
+                                let Some(workspace) = tree.desktop.active_workspace() else {
+                                    return Err(ActionError::Refused("no active workspace".into()));
+                                };
                                 let user = state.local_user_for_room(&workspace.room);
                                 let actor = workspace.actor_for_person(&user);
                                 if !shell_action_authorized_for(workspace, &actor, "record.bring") {
