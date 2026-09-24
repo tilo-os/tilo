@@ -2273,7 +2273,7 @@ mod tests {
     /// last-checked time — proving the button acts, not no-ops.
     #[test]
     fn check_requeries_and_stamps_last_checked() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_check");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let reb = Arc::new(RecordingRebooter::default());
         let mut pane = pane_with(None, reb);
         let mut doc = AutoCommit::new();
@@ -2562,7 +2562,7 @@ mod tests {
 
     #[test]
     fn replicated_update_latches_never_call_system_controls() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates-replay-safety");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), Some("Tilo previous")));
         let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
         let commands = ui::LocalState::new(None);
@@ -2589,7 +2589,7 @@ mod tests {
     /// disagree.
     #[test]
     fn the_switch_opens_showing_what_the_timer_actually_is() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_reads");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         // A preferences file that says "off" and a timer that is on.
         let control = Arc::new(FakeControl::new(Some(true), None));
         let pane = UpdatesPane::with_parts_and_control(
@@ -2620,7 +2620,7 @@ mod tests {
     /// Turning the switch off turns the timer off.
     #[test]
     fn turning_automatic_updates_off_disables_the_timer() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_off");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), None));
         let mut pane = pane_with_control(control.clone());
         let mut doc = AutoCommit::new();
@@ -2652,7 +2652,7 @@ mod tests {
     /// failing silently.
     #[test]
     fn a_refused_switch_snaps_back_and_is_reported_in_the_pane() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_refused");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
         let mut pane = pane_with_control(control.clone());
         let mut doc = AutoCommit::new();
@@ -2686,7 +2686,7 @@ mod tests {
     /// for a timer that could not be read is the same class of lie.
     #[test]
     fn an_unreadable_timer_is_not_rendered_as_off() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_auto_unknown");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let pane = pane_with_control(Arc::new(FakeControl::new(None, None)));
         assert_eq!(pane.timer_enabled(), None);
         // And the stub used by the older constructor answers the same way, so
@@ -2700,7 +2700,7 @@ mod tests {
     /// rollback does not undo.
     #[test]
     fn rolling_back_needs_a_confirmation_and_then_acts() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_rollback");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
         let mut pane = pane_with_control(control.clone());
         let mut doc = AutoCommit::new();
@@ -2747,7 +2747,7 @@ mod tests {
     /// A failed rollback says so where the person is looking.
     #[test]
     fn a_failed_rollback_is_reported_in_the_pane() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_rollback_fail");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
         let mut pane = pane_with_control(control);
         let mut doc = AutoCommit::new();
@@ -2770,7 +2770,7 @@ mod tests {
     /// — assert on what the pane renders, not on a comment.
     #[test]
     fn the_help_text_does_not_promise_what_is_not_offered() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_help_text");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), Some("tilo:gen41"))));
         let help = pane.help_lines().join("\n");
         assert!(
@@ -2795,7 +2795,7 @@ mod tests {
     /// button that would fail.
     #[test]
     fn no_previous_image_is_stated_rather_than_offered() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("updates_no_rollback");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let pane = pane_with_control(Arc::new(FakeControl::new(Some(true), None)));
         let shown = pane.rollback_card_lines().join("\n");
         assert!(

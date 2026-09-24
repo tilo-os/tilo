@@ -2409,7 +2409,7 @@ mod tests {
 
     #[test]
     fn settings_switches_usb_c_display_between_mirror_and_extend() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("display-mirror-extend");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let full_hd_60 = OutputMode {
             width: 1920,
             height: 1080,
@@ -2572,7 +2572,7 @@ mod tests {
     /// and lands a fractional factor in the shared settings store.
     #[test]
     fn changing_scale_persists_fractional_factor_to_disk() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("display-scale");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut doc = AutoCommit::new();
@@ -2590,7 +2590,7 @@ mod tests {
 
     #[test]
     fn display_plan_stages_confirms_and_reseeds_after_revert() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("display-transaction");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
         let mut committed = DisplayConfig::default();

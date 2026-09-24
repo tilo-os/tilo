@@ -885,6 +885,8 @@ mod tests {
 
     #[test]
     fn hydration_never_overwrites_a_value_already_received_from_a_peer() {
+        // The pane persists through the per-user settings file.
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         doc.put(
@@ -911,7 +913,7 @@ mod tests {
 
     #[test]
     fn vision_edit_folds_into_shared_appearance_and_persists() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("a11y_vision");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AccessibilityPane::with_prefs(
             AppearancePrefs::default(),
             AccessibilityPrefs::default(),
@@ -941,7 +943,7 @@ mod tests {
 
     #[test]
     fn pointer_and_typing_edits_persist_to_accessibility_section() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("a11y_pointer");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = AccessibilityPane::with_prefs(
             AppearancePrefs::default(),
             AccessibilityPrefs::default(),

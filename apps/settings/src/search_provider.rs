@@ -152,8 +152,9 @@ mod tests {
     fn broker_resolves_every_search_address_and_navigates_to_the_exact_pane() {
         use automerge::{AutoCommit, ROOT};
         use ui::widget::Widget;
+        let config = crate::prefs::test_env::ScratchConfig::new();
 
-        let mut app = crate::settings_app::SettingsApp::new();
+        let mut app = config.app();
         let providers = app.search_providers();
         assert!(
             !providers.is_empty(),
@@ -224,8 +225,9 @@ mod tests {
     fn runtime_lazy_resolution_only_accepts_current_canonical_open_addresses() {
         use automerge::AutoCommit;
         use ui::widget::Widget;
+        let config = crate::prefs::test_env::ScratchConfig::new();
 
-        let app = crate::settings_app::SettingsApp::new();
+        let app = config.app();
         let doc = AutoCommit::new();
         let address = crate::actions::open_pane_address(Category::Accessibility);
         let resource = Widget::resource(&app, &doc, &address.resource)

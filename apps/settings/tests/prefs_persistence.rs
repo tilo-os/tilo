@@ -2,10 +2,12 @@
 //! path, driven through each pane's production `sync` and read back from
 //! disk.
 //!
-//! These run in this dedicated test binary (a separate process) so pointing
-//! `XDG_CONFIG_HOME` at a throwaway directory fully isolates the shared
-//! `~/.config/tilo/settings.json` the panes write. A process-wide lock
-//! serialises the env mutation so the tests don't race each other.
+//! The panes resolve the shared `settings.json` from `XDG_CONFIG_HOME`, so the
+//! environment is the interface here: each test points it at a fresh tree
+//! through `tilo_test_env::TestHome`, which serialises the tests on one lock
+//! and restores the prior environment afterwards, also when an assertion
+//! fails. The accounts test needs no environment at all; it hands the pane an
+//! explicit config root.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,17 +19,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::path::PathBuf;
-use std::sync::Mutex;
-
 use automerge::AutoCommit;
 use automerge::transaction::Transactable;
-use settings::accounts::{AccountDirectory, AccountKind};
+use settings::accounts::{AccountDirectory, AccountKind, AccountRoot};
 use settings::prefs::SystemPrefs;
 use settings::region::{RegionSettings, TimeStyle};
 use ui::widget::Widget;
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct AcceptAccount;
 
@@ -41,24 +38,6 @@ impl settings::account_probe::AccountTester for AcceptAccount {
     }
 }
 
-/// Create a fresh, empty config root for a test and point the process at it.
-/// Returns the directory (kept alive for the test's duration).
-fn temp_home(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "tilo-settings-persist-{}-{}",
-        std::process::id(),
-        name
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // SAFETY: guarded by ENV_LOCK so no other test reads/writes the env
-    // concurrently; this binary is a separate process from the other tests.
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
-    }
-    dir
-}
-
 fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
@@ -69,8 +48,7 @@ fn seed_then_set_bool(pane: &mut dyn Widget, key: &str, value: bool) {
 
 #[test]
 fn display_night_light_toggle_persists_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("display");
+    let _home = tilo_test_env::TestHome::new().unwrap();
 
     let mut pane = settings::panes::display::build();
     seed_then_set_bool(
@@ -87,8 +65,7 @@ fn display_night_light_toggle_persists_to_disk() {
 
 #[test]
 fn replicated_input_device_speeds_do_not_persist_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("input");
+    let _home = tilo_test_env::TestHome::new().unwrap();
 
     let mut pane = settings::panes::mouse_keyboard::build();
     let mut doc = AutoCommit::new();
@@ -116,8 +93,7 @@ fn replicated_input_device_speeds_do_not_persist_to_disk() {
 /// restart. Driving the pane's real `sync` must write `locale.time_format`.
 #[test]
 fn replicated_time_date_clock_format_does_not_reach_local_locale() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("timedate");
+    let _home = tilo_test_env::TestHome::new().unwrap();
 
     // Fresh install defaults to 24-hour.
     assert_eq!(RegionSettings::load().locale.time_format, TimeStyle::H24);
@@ -145,8 +121,7 @@ fn replicated_time_date_clock_format_does_not_reach_local_locale() {
 /// through to the shared store the compositor's power layer reads.
 #[test]
 fn power_idle_prefs_persist_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("power");
+    let _home = tilo_test_env::TestHome::new().unwrap();
 
     // Fresh install defaults: auto-suspend on, blank at 10 minutes.
     let base = SystemPrefs::load();
@@ -176,8 +151,7 @@ fn power_idle_prefs_persist_to_disk() {
 
 #[test]
 fn display_scale_persists_fractional_factor_to_disk() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("display-scale");
+    let _home = tilo_test_env::TestHome::new().unwrap();
 
     let mut pane = settings::panes::display::build();
     let mut doc = AutoCommit::new();
@@ -200,13 +174,14 @@ fn display_scale_persists_fractional_factor_to_disk() {
 /// test.
 #[test]
 fn accounts_add_and_remove_round_trip_through_the_pane() {
-    let _g = ENV_LOCK.lock().unwrap();
-    let _home = temp_home("accounts");
+    let config = tempfile::tempdir().unwrap();
+    let config_root = config.path().join("tilo");
+    let account_root = AccountRoot::at(&config_root);
 
     // Fresh install → empty stores.
-    assert!(AccountDirectory::load().is_empty());
+    assert!(AccountDirectory::load_in(&account_root).is_empty());
 
-    let mut pane = settings::panes::accounts::AccountsPane::new()
+    let mut pane = settings::panes::accounts::AccountsPane::in_root(account_root.clone())
         .with_account_tester(std::sync::Arc::new(AcceptAccount));
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
@@ -224,7 +199,7 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     );
 
     // The account is now in the shared on-disk store Mail loads, auto-configured.
-    let dir = AccountDirectory::load();
+    let dir = AccountDirectory::load_in(&account_root);
     let views = dir.views_of(AccountKind::Mail);
     assert_eq!(
         views.len(),
@@ -242,22 +217,19 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     // The password persisted to the encrypted vault (not the plaintext store)…
     let account_id = accounts::AccountId::from(id.clone());
     assert_eq!(
-        accounts::SecretVault::open()
-            .get(&account_id)
-            .map(|s| s.password),
+        account_root.vault().get(&account_id).map(|s| s.password),
         Some("s3cret-pw".to_string()),
         "the password was sealed in the vault, keyed by account id"
     );
     // …and never leaked into the plaintext account store on disk.
-    let store_json = std::fs::read_to_string(
-        accounts::store_path().expect("a config root under the temp XDG_CONFIG_HOME"),
-    )
-    .expect("the shared store was written");
+    let store_json = std::fs::read_to_string(accounts::store_path_in(&config_root))
+        .expect("the shared store was written");
     assert!(
         !store_json.contains("s3cret-pw"),
         "the password must not appear in the plaintext store JSON"
     );
-    accounts::AccountSyncReporter::new(account_id.clone())
+    account_root
+        .sync_reporter(account_id.clone())
         .succeeded()
         .expect("seed sync health");
 
@@ -268,7 +240,7 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     let _ = doc.put(&root, remove_key.as_str(), true);
     pane.sync(&mut doc, &root);
     assert!(
-        !AccountDirectory::load()
+        !AccountDirectory::load_in(&account_root)
             .views_of(AccountKind::Mail)
             .is_empty(),
         "the first action only opens the removal confirmation"
@@ -279,20 +251,18 @@ fn accounts_add_and_remove_round_trip_through_the_pane() {
     // The directory now reports empty for the Email kind — the account is gone
     // from the shared store on disk.
     assert!(
-        AccountDirectory::load()
+        AccountDirectory::load_in(&account_root)
             .views_of(AccountKind::Mail)
             .is_empty(),
         "Remove deleted the account from the shared store on disk"
     );
     // …and its sealed credential was dropped from the vault too.
     assert!(
-        accounts::SecretVault::open().get(&account_id).is_none(),
+        account_root.vault().get(&account_id).is_none(),
         "Remove also purged the account's vault secret"
     );
     assert!(
-        accounts::AccountSyncStatusStore::load()
-            .get(&account_id)
-            .is_none(),
+        account_root.statuses().get(&account_id).is_none(),
         "Remove also purged the account's local sync-health record"
     );
 }
