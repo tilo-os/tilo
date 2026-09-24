@@ -26,7 +26,10 @@ fn proof(
 fn owner_with_twenty_four_records(path: &std::path::Path) -> SessionOwner {
     let mut owner = SessionOwner::initialize(path).unwrap();
     let key = tilo_user_identity::persist::read_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(path.join("identity")).device_privkey,
+        &tilo_user_identity::persist::IdentityPaths::under(
+            owner.root().canonicalize().unwrap().join("identity"),
+        )
+        .device_privkey,
     )
     .unwrap();
     let mut candidate = owner.peer().clone();
@@ -46,7 +49,7 @@ fn owner_with_twenty_four_records(path: &std::path::Path) -> SessionOwner {
         .unwrap();
     owner.refresh_checkpoint().unwrap();
     assert_eq!(owner.status().records.len(), 24);
-    assert_eq!(owner.outgoing().len(), 25);
+    assert_eq!(outgoing_bytes(&owner).len(), 25);
     assert_eq!(owner.publication_baseline().1, 25);
     owner
 }
@@ -62,8 +65,8 @@ fn verified_same_device_new_request_preserves_the_exact_publication_basis() {
     let first = proof(&mut service, &owner, &key, 1, now);
     let certificate = service.complete(&mut owner, first, now).unwrap();
     let baseline = owner.publication_baseline();
-    let outgoing = owner.outgoing().to_vec();
-    let kinds = owner.outgoing_kinds().to_vec();
+    let outgoing = outgoing_bytes(&owner).to_vec();
+    let kinds = outgoing_kinds(&owner).to_vec();
     assert_eq!(outgoing.len(), 25);
 
     let second = proof(&mut service, &owner, &key, 2, now);
@@ -75,8 +78,8 @@ fn verified_same_device_new_request_preserves_the_exact_publication_basis() {
     assert_eq!(owner.enrollment_count(), 1);
     assert_eq!(owner.peer().certificates().len(), 2);
     assert_eq!(owner.publication_baseline(), baseline);
-    assert_eq!(owner.outgoing(), outgoing);
-    assert_eq!(owner.outgoing_kinds(), kinds);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
+    assert_eq!(outgoing_kinds(&owner), kinds);
 
     let generation = owner.status().generation;
     drop(owner);
@@ -89,7 +92,7 @@ fn verified_same_device_new_request_preserves_the_exact_publication_basis() {
     );
     assert_eq!(owner.status().generation, generation);
     assert_eq!(owner.publication_baseline(), baseline);
-    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
 }
 
 #[test]
@@ -296,7 +299,7 @@ fn failed_same_device_audit_commit_cannot_return_enrollment_success() {
     service.complete(&mut owner, first, now).unwrap();
     let before = owner.status();
     let baseline = owner.publication_baseline();
-    let outgoing = owner.outgoing().to_vec();
+    let outgoing = outgoing_bytes(&owner).to_vec();
     let second = proof(&mut service, &owner, &key, 2, now);
 
     std::fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
@@ -311,7 +314,7 @@ fn failed_same_device_audit_commit_cannot_return_enrollment_success() {
     assert_eq!(owner.status(), before);
     assert_eq!(owner.enrollment_count(), 1);
     assert_eq!(owner.publication_baseline(), baseline);
-    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
     assert!(!owner.permits_publication());
 }
 
@@ -331,8 +334,10 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     let complete = proof(&mut service, &owner, &key, 24, now);
     service.complete(&mut owner, complete, now).unwrap();
     let pending = proof(&mut service, &owner, &key, 24, now);
-    let root = persist::read_signing_key(&IdentityPaths::under(path.join("identity")).user_privkey)
-        .unwrap();
+    let root = persist::read_signing_key(
+        &IdentityPaths::under(owner.root().canonicalize().unwrap().join("identity")).user_privkey,
+    )
+    .unwrap();
     let mut revoked = RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: key.verifying_key().to_bytes(),
@@ -438,4 +443,72 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
             .is_err()
     );
     assert_eq!(restored.rows(), owner.peer().rows());
+}
+
+fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+
+#[test]
+fn local_bootstrap_admits_real_governance_without_transport_sync() {
+    use qos_peer_state::{StatePeer, TransportOrigin, transport::Retention};
+    let temp = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+    let now = tilo_relay::clock::now_ns();
+    let key = SigningKey::from_bytes(&[73; 32]);
+    let mut enrollment = EnrollmentAuthority::default();
+    let complete = proof(&mut enrollment, &owner, &key, 73, now);
+    let certificate = enrollment.complete(&mut owner, complete, now).unwrap();
+    let reply = public_bootstrap(
+        &owner,
+        &certificate,
+        serde_json::json!({"id":"unused-transport"}),
+        "http://127.0.0.1:1",
+        now,
+    )
+    .unwrap();
+    let bootstrap = &reply["bootstrap"];
+    let messages: Vec<Vec<u8>> = serde_json::from_value(bootstrap["governance_messages"].clone())
+        .expect("fresh local enrollment includes actual signed governance");
+    let kinds: Vec<Retention> =
+        serde_json::from_value(bootstrap["governance_retention"].clone()).unwrap();
+    assert_eq!(messages, outgoing_bytes(&owner));
+    assert_eq!(kinds, outgoing_kinds(&owner));
+    assert_eq!(
+        bootstrap["governance_generation"],
+        owner.status().generation.to_string()
+    );
+    let roster = serde_json::from_value(bootstrap["certified_roster"].clone()).unwrap();
+    let mut fresh = StatePeer::new(
+        owner.peer().room(),
+        owner.peer().authority().clone(),
+        roster,
+        tilo_user_identity::RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    assert!(fresh.admitted_room().is_none());
+    for bytes in &messages {
+        let origin = TransportOrigin::RelayDelta(owner.peer().authority().device_public_key);
+        let outcome = fresh
+            .receive_from(
+                origin,
+                postcard::from_bytes(bytes).unwrap(),
+                SystemTime::now(),
+            )
+            .unwrap();
+        assert_eq!(outcome.rejected, 0);
+    }
+    assert!(fresh.admitted_room().is_some());
+    assert_eq!(fresh.rows(), owner.peer().rows());
+    assert!(
+        fresh
+            .permissions(certificate.device_public_key, SystemTime::now())
+            .is_ok()
+    );
+}
+fn outgoing_kinds(
+    owner: &qos_session_peer::SessionOwner,
+) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
 }

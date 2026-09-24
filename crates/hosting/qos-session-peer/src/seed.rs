@@ -6,6 +6,87 @@ use ui::{
     record::{RecordCheckout, RecordId, RecordOwners},
 };
 
+/// A new workspace has governance and topology custody, but no app records.
+pub(crate) fn empty_workspace(
+    room: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    name: &str,
+) -> Result<SeedState, String> {
+    use ui::automerge::{AutoCommit, Change, ObjType, ROOT, transaction::Transactable};
+
+    let mut doc = AutoCommit::new().with_actor(ui::automerge::ActorId::from(
+        authority.device_public_key.to_vec(),
+    ));
+    let changes = qos_peer_state::seed_room(room, authority, roster)?
+        .into_iter()
+        .map(Change::from_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    doc.apply_changes(changes).map_err(|e| e.to_string())?;
+    doc.put(ROOT, "name", name).map_err(|e| e.to_string())?;
+    doc.put_object(ROOT, "contents", ObjType::Map)
+        .map_err(|e| e.to_string())?;
+    let owners = doc
+        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+        .map_err(|e| e.to_string())?;
+    let salt = rand::random::<u16>().max(1);
+    doc.put(
+        owners,
+        format!("{salt:04x}"),
+        hex::encode(authority.device_public_key),
+    )
+    .map_err(|e| e.to_string())?;
+    doc.put(ROOT, "desktop_counter_v1", 1_u64)
+        .map_err(|e| e.to_string())?;
+    // This is current topology, so legacy app migrations must never seed it.
+    doc.put(ROOT, "writer_notes_split_v1", 1_u64)
+        .map_err(|e| e.to_string())?;
+    doc.commit();
+    Ok(SeedState {
+        room_changes: doc
+            .get_changes(&[])
+            .iter()
+            .map(|c| c.raw_bytes().to_vec())
+            .collect(),
+        documents: vec![],
+    })
+}
+
+/// Recordless sessions are complete only with initialized native custody and
+/// no app tabs that would require missing records. Empty named strips are valid.
+pub(crate) fn recordless_desktop_is_initialized(peer: &qos_peer_state::StatePeer) -> bool {
+    use qos_desktop::projection::RoomProjection;
+    use ui::automerge::{ObjType, ROOT, ReadDoc, Value};
+
+    let Some(doc) = peer.admitted_room() else {
+        return false;
+    };
+    if !matches!(
+        doc.get(ROOT, "contents"),
+        Ok(Some((Value::Object(ObjType::Map), _)))
+    ) {
+        return false;
+    }
+    let Ok(Some((Value::Object(ObjType::Map), owners))) = doc.get(ROOT, "contents_owners_v1")
+    else {
+        return false;
+    };
+    let authority = hex::encode(peer.authority().device_public_key);
+    let owns_namespace = doc.keys(&owners).any(|key| {
+        u16::from_str_radix(&key, 16).is_ok_and(|salt| salt != 0)
+            && doc
+                .get(&owners, key)
+                .ok()
+                .flatten()
+                .is_some_and(|(value, _)| value.to_str() == Some(authority.as_str()))
+    });
+    owns_namespace
+        && RoomProjection::contents_of(doc)
+            .iter()
+            .all(|strip| strip.groups.iter().all(|group| group.tabs.is_empty()))
+}
+
 struct LegacyWriterNotesSplit {
     strips: Vec<qos_desktop::Strip>,
     salt: u16,

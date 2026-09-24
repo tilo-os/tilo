@@ -55,6 +55,25 @@ impl Authorization {
             capability,
         })
     }
+    /// Dedicated local HTTPS credential check. The private capability is never
+    /// returned to browser script or inferred from Origin/loopback reachability.
+    pub(crate) fn authorizes_local_cookie(&self, value: &str) -> bool {
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
+        {
+            return false;
+        }
+        let Ok(bytes) = hex::decode(value) else {
+            return false;
+        };
+        bytes
+            .iter()
+            .zip(self.capability)
+            .fold(0u8, |difference, (a, b)| difference | (*a ^ b))
+            == 0
+    }
     fn authorize(
         &self,
         headers: &HashMap<String, String>,
@@ -104,6 +123,61 @@ pub enum EnrollmentRequest {
 pub struct EnrollmentCommand {
     pub request: EnrollmentRequest,
     pub reply: oneshot::Sender<Result<Vec<u8>, EnrollmentError>>,
+    // Declared last so owned decoded input drops before its original charge.
+    // Partial moves of request/reply leave custody alive through the owner turn.
+    custody: Option<HttpsCustody>,
+}
+struct HttpsCustody {
+    _lease: Arc<crate::https::Lease>,
+    deadline: tokio::time::Instant,
+    omit_governance: bool,
+}
+/// Request header by which a renewing local-owner browser, which already
+/// holds the workspace history, asks for the enrollment reply without it.
+pub(crate) const GOVERNANCE_HEADER: &str = "x-tilo-enrollment-governance";
+impl EnrollmentCommand {
+    pub(crate) fn from_https(
+        request: EnrollmentRequest,
+        reply: oneshot::Sender<Result<Vec<u8>, EnrollmentError>>,
+        lease: Arc<crate::https::Lease>,
+        deadline: tokio::time::Instant,
+    ) -> Self {
+        Self {
+            request,
+            reply,
+            custody: Some(HttpsCustody {
+                _lease: lease,
+                deadline,
+                omit_governance: false,
+            }),
+        }
+    }
+    /// Renewal only: the reply carries certificate, roster and delivery
+    /// discovery but no governance history. Only reduces what is returned to
+    /// the already authorized owner; HTTPS-only.
+    pub(crate) fn omitting_governance(mut self, omit: bool) -> Self {
+        if let Some(custody) = self.custody.as_mut() {
+            custody.omit_governance = omit;
+        }
+        self
+    }
+    pub(crate) fn omits_governance(&self) -> bool {
+        self.custody
+            .as_ref()
+            .is_some_and(|custody| custody.omit_governance)
+    }
+    /// Arrived through the installed HTTPS local-owner gateway, whose browser
+    /// can fetch a governance handoff from the same origin.
+    pub(crate) fn is_https(&self) -> bool {
+        self.custody.is_some()
+    }
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.reply.is_closed()
+            || self
+                .custody
+                .as_ref()
+                .is_some_and(|custody| tokio::time::Instant::now() >= custody.deadline)
+    }
 }
 async fn read_request(
     socket: &mut TcpStream,
@@ -232,7 +306,11 @@ pub async fn serve(
         Ok(Ok(Some(request))) => {
             let (reply, result) = oneshot::channel();
             if commands
-                .send(EnrollmentCommand { request, reply })
+                .send(EnrollmentCommand {
+                    request,
+                    reply,
+                    custody: None,
+                })
                 .await
                 .is_err()
             {

@@ -64,8 +64,9 @@ fn check_device(owner: &SessionOwner, device: &[u8; 32]) -> Result<(), Enrollmen
         return Err(EnrollmentError::new(
             503,
             owner
-                .peer()
-                .incomplete_reason()
+                .schema_read_only_reason()
+                .map(str::to_owned)
+                .or_else(|| owner.peer().incomplete_reason())
                 .unwrap_or_else(|| "native durability unavailable; restore required".into()),
         ));
     }
@@ -228,8 +229,61 @@ impl EnrollmentAuthority {
         Ok(certificate)
     }
 }
+/// Minted only after the existing challenge was consumed and its exact issuance
+/// crossed the real owner barrier. Wire facts cannot construct this receipt.
+pub(crate) struct LocalOnboardingProof {
+    challenge: qos_peer_state::enrollment::EnrollmentChallenge,
+    request_digest: [u8; 32],
+}
+impl LocalOnboardingProof {
+    pub(crate) fn challenge(&self) -> &qos_peer_state::enrollment::EnrollmentChallenge {
+        &self.challenge
+    }
+    pub(crate) fn request_digest(&self) -> [u8; 32] {
+        self.request_digest
+    }
+}
+impl EnrollmentAuthority {
+    pub(crate) fn complete_for_https(
+        &mut self,
+        owner: &mut SessionOwner,
+        request: CompleteRequest,
+        now: u64,
+    ) -> Result<(DeviceCert, LocalOnboardingProof), EnrollmentError> {
+        if request.challenge.len() > 2048 || request.signature.len() != 128 {
+            return Err(EnrollmentError::new(403, "local proof exceeds bound"));
+        }
+        let challenge = qos_peer_state::enrollment::decode(&request.challenge)
+            .map_err(|error| EnrollmentError::new(403, error))?;
+        let bytes = postcard::to_stdvec(&request).map_err(EnrollmentError::unavailable)?;
+        let request_digest = *blake3::hash(&bytes).as_bytes();
+        drop(bytes);
+        let certificate = self.complete(owner, request, now)?;
+        Ok((
+            certificate,
+            LocalOnboardingProof {
+                challenge,
+                request_digest,
+            },
+        ))
+    }
+}
 /// Rust serializes timestamp-bearing fields directly into the final raw HTTP body.
 pub fn public_bootstrap(
+    owner: &SessionOwner,
+    certificate: &DeviceCert,
+    relay_address: serde_json::Value,
+    packet_relay: &str,
+    now: u64,
+) -> Result<serde_json::Value, EnrollmentError> {
+    let mut value = bootstrap_metadata(owner, certificate, relay_address, packet_relay, now)?;
+    append_inline_governance(&mut value, owner)?;
+    Ok(value)
+}
+
+/// Metadata remains separate so installed HTTPS can select a pinned handoff
+/// before allocating the JSON representation of a large canonical publication.
+pub(crate) fn bootstrap_metadata(
     owner: &SessionOwner,
     certificate: &DeviceCert,
     relay_address: serde_json::Value,
@@ -272,4 +326,66 @@ pub fn public_bootstrap(
     Ok(
         serde_json::json!({"version":2,"certificate":certificate,"root_public_key":certificate.user_public_key,"host_certificate":owner.host_certificate(),"relay_address":relay_address,"packet_relay":packet_relay,"revocations":revocations,"bootstrap":{"directory_update":update,"directory_author":owner.peer().authority(),"certified_roster":roster,"room":owner.peer().room(),"workspace_id":owner.workspace_id().to_string(),"writer_tab_id":1,"chat_package_primary":true,"records":owner.peer().rows()}}),
     )
+}
+
+mod governance;
+pub(crate) use governance::{
+    append_inline_governance, encode_handoff_bootstrap, encode_inline_bootstrap,
+};
+
+/// Optional discovery only: the concrete installed ingress must still match the
+/// exact current stored descriptor. Independent governor bootstrap verification
+/// and floor acknowledgement remain mandatory in the browser.
+#[cfg(feature = "media")]
+pub(crate) fn append_delivery_hint(
+    value: &mut serde_json::Value,
+    owner: &SessionOwner,
+    installed: &crate::media_ingress::InstalledIngress,
+) -> Result<(), EnrollmentError> {
+    let hint = installed
+        .discovery_hint(owner)
+        .map_err(EnrollmentError::unavailable)?;
+    append_delivery_hint_value(value, hint)
+}
+#[cfg(all(test, feature = "media"))]
+pub(crate) fn append_delivery_hint_at(
+    value: &mut serde_json::Value,
+    owner: &SessionOwner,
+    installed: &crate::media_ingress::InstalledIngress,
+    now: u64,
+) -> Result<(), EnrollmentError> {
+    let hint = installed
+        .discovery_hint_at(owner, now)
+        .map_err(EnrollmentError::unavailable)?;
+    append_delivery_hint_value(value, hint)
+}
+#[cfg(feature = "media")]
+fn append_delivery_hint_value(
+    value: &mut serde_json::Value,
+    hint: qos_peer_state::join::TransportHint,
+) -> Result<(), EnrollmentError> {
+    let bytes = postcard::to_stdvec(&hint).map_err(EnrollmentError::unavailable)?;
+    if bytes.len() > tilo_relay::delivery_v3::descriptor::MAX_HINT_BYTES {
+        return Err(EnrollmentError::new(
+            503,
+            "delivery discovery exceeds bound",
+        ));
+    }
+    let hint = serde_json::to_value(hint).map_err(EnrollmentError::unavailable)?;
+    if serde_json::to_vec(&hint)
+        .map_err(EnrollmentError::unavailable)?
+        .len()
+        > 128 * 1024
+    {
+        return Err(EnrollmentError::new(
+            503,
+            "delivery discovery JSON exceeds bound",
+        ));
+    }
+    let bootstrap = value
+        .get_mut("bootstrap")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| EnrollmentError::new(503, "native bootstrap missing"))?;
+    bootstrap.insert("delivery_hint".into(), hint);
+    Ok(())
 }

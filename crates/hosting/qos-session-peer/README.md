@@ -10,6 +10,19 @@ cargo run -p qos-session-peer -- init /absolute/private/new-session
 cargo run -p qos-session-peer -- run /absolute/private/new-session /absolute/private/ready.json
 ```
 
+For a named workspace with no open apps or app records:
+
+```sh
+cargo run --locked -p qos-session-peer -- init-workspace /absolute/private/new-workspace "Research"
+```
+
+`init-workspace STATE NAME` trims the name and requires 1–80 Unicode characters,
+with no control characters. It persists the name in the room and workspace
+directory, initializes native topology custody, and creates app records only
+when an app is first opened. Both initialization commands return status JSON.
+An existing directory is always rejected; use `status STATE` to verify a prior
+initialization before `run`.
+
 `init` requires a new directory and explicitly creates a NEW room and root,
 native and relay identities. `run` only restores an existing aggregate. Corrupt,
 incomplete or missing identity files never cause reinitialization. The aggregate

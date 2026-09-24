@@ -6,8 +6,10 @@ use web_time::SystemTime;
 
 fn owner_key(owner: &SessionOwner) -> ed25519_dalek::SigningKey {
     tilo_user_identity::persist::read_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
-            .device_privkey,
+        &tilo_user_identity::persist::IdentityPaths::under(
+            owner.root().canonicalize().unwrap().join("identity"),
+        )
+        .device_privkey,
     )
     .unwrap()
 }
@@ -70,7 +72,10 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = owner_key(&owner);
     let root = tilo_user_identity::persist::read_signing_key(
-        &tilo_user_identity::persist::IdentityPaths::under(path.join("identity")).user_privkey,
+        &tilo_user_identity::persist::IdentityPaths::under(
+            owner.root().canonicalize().unwrap().join("identity"),
+        )
+        .user_privkey,
     )
     .unwrap();
     let foreign_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
@@ -91,8 +96,8 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
     owner
         .commit_admission(candidate, owner.directory().to_vec())
         .unwrap();
-    let baseline = owner.outgoing().to_vec();
-    let baseline_kinds = owner.outgoing_kinds().to_vec();
+    let baseline = outgoing_bytes(&owner).to_vec();
+    let baseline_kinds = outgoing_kinds(&owner).to_vec();
     let baseline_state = owner.peer().durable().unwrap();
     let authority = owner.peer().authority().device_public_key;
     let mut offline = owner.peer().clone();
@@ -125,10 +130,10 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         )
         .unwrap()
         .unwrap();
-    assert!(owner.outgoing().starts_with(&baseline));
-    assert_eq!(owner.outgoing().len(), baseline.len() + 2);
+    assert!(outgoing_bytes(&owner).starts_with(&baseline));
+    assert_eq!(outgoing_bytes(&owner).len(), baseline.len() + 2);
     assert_eq!(
-        &owner.outgoing_kinds()[baseline.len()..],
+        &outgoing_kinds(&owner)[baseline.len()..],
         &[Retention::Delta, Retention::Checkpoint]
     );
     assert_eq!(
@@ -137,7 +142,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
     );
     assert!(owner.peer().covers(&original));
     let committed = owner.status();
-    let outgoing = owner.outgoing().to_vec();
+    let outgoing = outgoing_bytes(&owner).to_vec();
     assert!(
         owner
             .receive(
@@ -148,9 +153,9 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
             .is_none()
     );
     assert_eq!(owner.status(), committed);
-    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
     assert_eq!(postcard::to_stdvec(&original).unwrap(), exact_original);
-    let before_room = owner.outgoing().len();
+    let before_room = outgoing_bytes(&owner).len();
     let receipts =
         qos_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
     let mut room = owner.peer().admitted_room().unwrap().clone();
@@ -172,22 +177,22 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         )
         .unwrap()
         .unwrap();
-    assert_eq!(owner.outgoing().len(), before_room + 1);
-    assert_eq!(owner.outgoing_kinds().last(), Some(&Retention::Delta));
+    assert_eq!(outgoing_bytes(&owner).len(), before_room + 1);
+    assert_eq!(outgoing_kinds(&owner).last(), Some(&Retention::Delta));
     assert_eq!(
         qos_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap(),
         receipts
     );
-    let tail = owner.outgoing()[baseline.len()..].to_vec();
-    let tail_kinds = owner.outgoing_kinds()[baseline.len()..].to_vec();
-    let committed_bytes = owner.outgoing().to_vec();
-    let committed_kinds = owner.outgoing_kinds().to_vec();
+    let tail = outgoing_bytes(&owner)[baseline.len()..].to_vec();
+    let tail_kinds = outgoing_kinds(&owner)[baseline.len()..].to_vec();
+    let committed_bytes = outgoing_bytes(&owner).to_vec();
+    let committed_kinds = outgoing_kinds(&owner).to_vec();
     let rows = owner.peer().rows();
     // No send has happened. Reopening must preserve the exact committed recovery set.
     drop(owner);
     let mut owner = SessionOwner::open(&path).unwrap();
-    assert_eq!(owner.outgoing(), committed_bytes);
-    assert_eq!(owner.outgoing_kinds(), committed_kinds);
+    assert_eq!(outgoing_bytes(&owner), committed_bytes);
+    assert_eq!(outgoing_kinds(&owner), committed_kinds);
     let now = SystemTime::now();
     let mut fresh = StatePeer::new(
         owner.peer().room(),
@@ -197,7 +202,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         now,
     )
     .unwrap();
-    replay(&mut fresh, authority, owner.outgoing(), now);
+    replay(&mut fresh, authority, &outgoing_bytes(&owner), now);
     replay(&mut offline, authority, &tail, now);
     replay(&mut sender, authority, &tail, now);
     replay(&mut offline, authority, &tail, now);
@@ -219,7 +224,12 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         now,
     )
     .unwrap();
-    replay(&mut checkpoint_peer, authority, owner.outgoing(), now);
+    replay(
+        &mut checkpoint_peer,
+        authority,
+        &outgoing_bytes(&owner),
+        now,
+    );
     assert_eq!(checkpoint_peer.rows(), rows);
     assert!(checkpoint_peer.covers(&original));
     // Optional test-only evidence export for Task 3b's native storage fixtures.
@@ -231,7 +241,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
             "now_ns":tilo_relay::clock::now_ns(), "rows":rows,
             "baseline":fixture_batch(&dir,"baseline",&baseline,&baseline_kinds),
             "tail":fixture_batch(&dir,"tail",&tail,&tail_kinds),
-            "checkpoint2":fixture_batch(&dir,"checkpoint2",owner.outgoing(),owner.outgoing_kinds())
+            "checkpoint2":fixture_batch(&dir,"checkpoint2",&outgoing_bytes(&owner),&outgoing_kinds(&owner))
         });
         std::fs::write(
             dir.join("manifest.json"),
@@ -308,14 +318,13 @@ fn multiple_bounded_records_compact_by_aggregate_bytes_and_reconstruct_exactly()
         owner.publication_baseline().0 > baseline.0,
         "bounded causal mutations must trigger aggregate byte compaction"
     );
-    assert_eq!(owner.publication_baseline().1, owner.outgoing().len());
+    assert_eq!(owner.publication_baseline().1, outgoing_bytes(&owner).len());
     assert!(
-        owner.outgoing().iter().map(Vec::len).sum::<usize>() > 4 * 1024 * 1024,
+        outgoing_bytes(&owner).iter().map(Vec::len).sum::<usize>() > 4 * 1024 * 1024,
         "canonical baseline may exceed the redundant-tail byte bound"
     );
     assert!(
-        owner
-            .outgoing_kinds()
+        outgoing_kinds(&owner)
             .iter()
             .all(|kind| *kind == Retention::Checkpoint)
     );
@@ -331,7 +340,7 @@ fn multiple_bounded_records_compact_by_aggregate_bytes_and_reconstruct_exactly()
     replay(
         &mut fresh,
         owner.peer().authority().device_public_key,
-        owner.outgoing(),
+        &outgoing_bytes(&owner),
         now,
     );
     assert_eq!(fresh.rows(), owner.peer().rows());
@@ -359,4 +368,63 @@ fn multiple_bounded_records_compact_by_aggregate_bytes_and_reconstruct_exactly()
             row.record_id
         );
     }
+}
+
+fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+fn outgoing_kinds(
+    owner: &qos_session_peer::SessionOwner,
+) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
+}
+
+#[test]
+fn delivery_selected_publication_replays_native_checkpoint_after_local_edit_and_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("delivery-owner");
+    let mut owner = SessionOwner::initialize(&path).unwrap();
+    owner.activate_delivery().unwrap();
+    let mut offline = owner.peer().clone();
+    let mut candidate = owner.peer().clone();
+    let key = owner_key(&owner);
+    let mut document = AutoCommit::load(&candidate.document("dev.qos.chat", "").unwrap()).unwrap();
+    document
+        .put(ROOT, "delivery-local", "persisted once")
+        .unwrap();
+    document.commit();
+    candidate
+        .publish_document("dev.qos.chat", "", document.save(), &key, SystemTime::now())
+        .unwrap();
+    let before_len = owner.outgoing().len();
+    let receipt = owner
+        .commit_mutation_candidate(candidate, owner.directory().to_vec())
+        .unwrap();
+    let tail = owner
+        .outgoing()
+        .iter()
+        .skip(before_len)
+        .map(|publication| publication.bytes.to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(tail.len(), 2);
+    replay(
+        &mut offline,
+        key.verifying_key().to_bytes(),
+        &tail,
+        SystemTime::now(),
+    );
+    assert_eq!(offline.rows(), owner.peer().rows());
+    assert_eq!(
+        offline
+            .durable_coverage("dev.qos.chat", "")
+            .unwrap()
+            .unwrap()
+            .generation,
+        receipt.generation
+    );
+    let outgoing = outgoing_bytes(&owner);
+    drop(owner);
+    let owner = SessionOwner::open(&path).unwrap();
+    assert_eq!(outgoing_bytes(&owner), outgoing);
+    assert!(owner.peer().admission_v5_selected());
 }

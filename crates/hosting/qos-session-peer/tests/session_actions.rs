@@ -711,7 +711,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
     let ready = temp.path().join("ready.json");
     let mut owner = SessionOwner::initialize(&state).unwrap();
     let state = state.canonicalize().unwrap();
-    let identity = persist::IdentityPaths::under(state.join("identity"));
+    let identity = persist::IdentityPaths::under(state.canonicalize().unwrap().join("identity"));
     let native_key = persist::read_device_key(&identity.device_privkey).unwrap();
     let root_key = persist::read_signing_key(&identity.user_privkey).unwrap();
     let observer_key = SigningKey::from_bytes(&[73; 32]);
@@ -756,10 +756,9 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         )
         .unwrap();
     let mut checkpoints = 0;
-    for (index, (bytes, kind)) in owner
-        .outgoing()
+    for (index, (bytes, kind)) in outgoing_bytes(&owner)
         .iter()
-        .zip(owner.outgoing_kinds())
+        .zip(&outgoing_kinds(&owner))
         .enumerate()
     {
         let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
@@ -840,7 +839,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         web_time::SystemTime::now(),
     )
     .unwrap();
-    for expected_bytes in owner.outgoing() {
+    for expected_bytes in &outgoing_bytes(&owner) {
         let index = retained
             .iter()
             .position(|(_, body)| body == expected_bytes)
@@ -1092,7 +1091,10 @@ async fn checked_application_catalogue(
     // Persist a floor far ahead of any SDK wall-clock allocator, then reopen
     // through the ordinary executable before its actual checked workers sign.
     let key = tilo_user_identity::persist::read_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(state.join("identity")).device_privkey,
+        &tilo_user_identity::persist::IdentityPaths::under(
+            state.canonicalize().unwrap().join("identity"),
+        )
+        .device_privkey,
     )
     .unwrap();
     let mut candidate = owner.peer().clone();
@@ -1915,15 +1917,16 @@ fn active_replacement_state_delta_is_a_provable_retained_tail() {
     let temp = tempfile::tempdir().unwrap();
     let owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let key = tilo_user_identity::persist::read_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
-            .device_privkey,
+        &tilo_user_identity::persist::IdentityPaths::under(
+            owner.root().canonicalize().unwrap().join("identity"),
+        )
+        .device_privkey,
     )
     .unwrap();
     let source = key.verifying_key().to_bytes();
     let authority =
         RetentionAuthority::new(owner.peer().room(), owner.peer().authority().clone()).unwrap();
-    let messages = owner
-        .outgoing()
+    let messages = outgoing_bytes(&owner)
         .iter()
         .map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).unwrap())
         .collect::<Vec<_>>();
@@ -2111,7 +2114,8 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
 
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
-    let paths = persist::IdentityPaths::under(owner.root().join("identity"));
+    let paths =
+        persist::IdentityPaths::under(owner.root().canonicalize().unwrap().join("identity"));
     let native_key = persist::read_device_key(&paths.device_privkey).unwrap();
     let root_key = persist::read_signing_key(&paths.user_privkey).unwrap();
     let key = SigningKey::from_bytes(&[92; 32]);
@@ -2189,7 +2193,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         // Leave one actual checkpoint unadmitted so recovery must do more than
         // count replay frames: it must fill the missing document in this peer.
         let mut omitted_chat = false;
-        for _ in 0..owner.outgoing().len() {
+        for _ in 0..outgoing_bytes(&owner).len() {
             let event = client.recv().await.unwrap();
             let tilo_relay::transport::Envelope::Delta { delta, .. } = &event else {
                 panic!("expected the owner's retained publication");
@@ -3167,4 +3171,15 @@ async fn desktop_close_through_broker(
         "Confirmed desktop removal in {} ms",
         started.elapsed().as_millis()
     );
+}
+
+#[cfg(feature = "test-support")]
+fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+#[cfg(feature = "test-support")]
+fn outgoing_kinds(
+    owner: &qos_session_peer::SessionOwner,
+) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
 }

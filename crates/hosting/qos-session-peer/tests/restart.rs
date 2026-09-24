@@ -739,7 +739,7 @@ fn authenticated_encryption_obligation_is_committed_even_without_plaintext_check
             .is_some()
     );
     assert!(!owner.permits_publication());
-    assert!(owner.outgoing().is_empty());
+    assert!(outgoing_bytes(&owner).is_empty());
     drop(owner);
     let mut restored = SessionOwner::open(&path).unwrap();
     assert!(!restored.permits_publication());
@@ -817,7 +817,12 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
             let status: serde_json::Value = serde_json::from_str(body).unwrap();
             let generation = status["generation"].as_u64().unwrap();
             let subscription = status["native_subscription_generation"].as_u64().unwrap();
+            assert!(
+                status["action_error"].is_null(),
+                "remote reconnect must retain committed local worker authority in cycle {cycle}: {status}"
+            );
             if status["native_peer"] == "subscribed"
+                && status["actions"] == "ready"
                 && generation > last_generation
                 && subscription > last_subscription
             {
@@ -1004,19 +1009,19 @@ fn published_durability_receipts_bind_committed_generation_and_survive_failed_ba
         assert_eq!(proof.generation, receipt.generation);
         assert_eq!(proof.coverage.heads, row.heads);
     }
-    let outgoing = owner.outgoing().to_vec();
+    let outgoing = outgoing_bytes(&owner).to_vec();
     let before = owner.status();
     fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
     fs::create_dir(path.join("session.bin")).unwrap();
     assert!(owner.refresh_checkpoint().is_err());
     assert!(!owner.permits_publication());
-    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
     assert_eq!(owner.status(), before);
     fs::remove_dir(path.join("session.bin")).unwrap();
     fs::rename(path.join("saved.bin"), path.join("session.bin")).unwrap();
     drop(owner);
     let owner = SessionOwner::open(&path).unwrap();
-    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
     for row in receipt.records {
         assert_eq!(
             owner
@@ -1090,4 +1095,8 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
         .unwrap();
         assert_eq!(doc.get_heads(), heads);
     }
+}
+
+fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }

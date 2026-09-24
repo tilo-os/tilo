@@ -13,6 +13,32 @@ use ui::automerge::{AutoCommit, transaction::Transactable};
 
 type Route = (String, String);
 
+#[cfg(test)]
+thread_local! {
+    static TEST_DELIVERY_TIME: std::cell::RefCell<Option<web_time::SystemTime>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+fn delivery_time() -> web_time::SystemTime {
+    #[cfg(test)]
+    return TEST_DELIVERY_TIME
+        .with(|time| *time.borrow())
+        .unwrap_or_else(web_time::SystemTime::now);
+    #[cfg(not(test))]
+    web_time::SystemTime::now()
+}
+
+#[cfg(test)]
+fn with_test_delivery_time<T>(time: web_time::SystemTime, operation: impl FnOnce() -> T) -> T {
+    TEST_DELIVERY_TIME.with(|current| {
+        let previous = current.replace(Some(time));
+        let result = operation();
+        current.replace(previous);
+        result
+    })
+}
+
 fn visible_requirements(state: &qos_peer_state::StatePeer) -> Vec<Route> {
     let Some(room) = qos_desktop::RoomId::parse(state.room()) else {
         return vec![];
@@ -168,11 +194,30 @@ impl SessionOwner {
         &mut self,
         request: &OwnerCommitRequest,
     ) -> Result<(OwnerCommitReceipt, Option<DirectedAction>), DesktopCommandError> {
+        self.commit_desktop_command_with_delivery_current(request, None)
+    }
+    pub(crate) fn commit_desktop_command_with_delivery_policy_time(
+        &mut self,
+        request: &OwnerCommitRequest,
+        time: &qos_action_broker::peer_actions::PolicyTime,
+    ) -> Result<(OwnerCommitReceipt, Option<DirectedAction>), DesktopCommandError> {
+        self.commit_desktop_command_with_delivery_current(request, Some(time))
+    }
+    fn commit_desktop_command_with_delivery_current(
+        &mut self,
+        request: &OwnerCommitRequest,
+        time: Option<&qos_action_broker::peer_actions::PolicyTime>,
+    ) -> Result<(OwnerCommitReceipt, Option<DirectedAction>), DesktopCommandError> {
+        self.require_owner_resource_scope()
+            .map_err(|e| DesktopCommandError::Rejected(e.to_string()))?;
         let previous_tabs = tab_locations(self.peer());
         let previous_rows = self.peer().rows();
         let baseline = self.publication_baseline().0;
         let start = self.outgoing().len();
-        let receipt = self.commit_desktop_command(request)?;
+        let receipt = match time {
+            Some(time) => self.commit_desktop_command_with_policy_time(request, time)?,
+            None => self.commit_desktop_command(request)?,
+        };
         // Construction/delivery failure cannot turn a durable success into a
         // rejection. The ordinary publication is still retained and retried.
         let delivery = (|| -> Option<DirectedAction> {
@@ -223,7 +268,8 @@ impl SessionOwner {
                 0
             };
             let mut mandatory = BTreeSet::new();
-            for bytes in &self.outgoing()[start..] {
+            for publication in self.outgoing().iter().skip(start) {
+                let bytes = publication.bytes;
                 if let NeighbourMsg::AppDocument {
                     app_id, record_id, ..
                 } = postcard::from_bytes::<NeighbourMsg>(bytes).ok()?
@@ -247,19 +293,18 @@ impl SessionOwner {
                 .cloned()
                 .collect::<BTreeSet<_>>();
             let mut snapshots = BTreeMap::new();
-            let now = web_time::SystemTime::now();
+            let now = match time {
+                Some(time) => crate::owner::policy_fence::sample(Some(time)).ok()?,
+                None => delivery_time(),
+            };
             let baseline_len = self.publication_baseline().1;
-            for (index, (bytes, kind)) in self
-                .outgoing()
-                .iter()
-                .zip(self.outgoing_kinds())
-                .enumerate()
-                .rev()
-            {
+            for (index, publication) in self.outgoing().iter().enumerate().rev() {
+                let bytes = publication.bytes;
+                let kind = publication.kind;
                 if snapshots.len() == missing.len() {
                     break;
                 }
-                if *kind != Retention::Checkpoint || (index == 0 && baseline_len != 0) {
+                if kind != Retention::Checkpoint || (index == 0 && baseline_len != 0) {
                     continue;
                 }
                 let Ok(message) = postcard::from_bytes::<NeighbourMsg>(bytes) else {
@@ -385,7 +430,7 @@ mod tests {
         include_documents: bool,
     ) {
         let source = owner.peer().authority().device_public_key;
-        for bytes in &owner.outgoing()[start..] {
+        for bytes in &outgoing_bytes(&owner)[start..] {
             let message = postcard::from_bytes(bytes).unwrap();
             if !include_documents && matches!(message, NeighbourMsg::AppDocument { .. }) {
                 continue;
@@ -418,14 +463,12 @@ mod tests {
                 },
             },
         );
-        let start = owner.outgoing().len();
-        let stale = web_time::SystemTime::now()
-            .checked_sub(Duration::from_secs(301))
+        let start = outgoing_bytes(&owner).len();
+        let stale_check = web_time::SystemTime::now()
+            .checked_add(Duration::from_secs(301))
             .unwrap();
-        crate::owner::with_test_publication_time(stale, || {
-            owner.commit_desktop_command(&first).unwrap();
-        });
-        let stale_route = owner.outgoing()[start..]
+        owner.commit_desktop_command(&first).unwrap();
+        let stale_route = outgoing_bytes(&owner)[start..]
             .iter()
             .find_map(|bytes| match postcard::from_bytes(bytes).unwrap() {
                 NeighbourMsg::AppDocument {
@@ -447,7 +490,9 @@ mod tests {
                 },
             },
         );
-        let (_, delivery) = owner.commit_desktop_command_with_delivery(&second).unwrap();
+        let (_, delivery) = with_test_delivery_time(stale_check, || {
+            owner.commit_desktop_command_with_delivery(&second).unwrap()
+        });
         let delivery = delivery.expect("fresh mandatory calculator launch stays direct");
         let target = delivery.target;
         let ActionMessage::CommittedDesktop { packets, .. } = &delivery.message else {
@@ -506,13 +551,12 @@ mod tests {
                 },
             },
         );
-        let start = owner.outgoing().len();
+        let start = outgoing_bytes(&owner).len();
         owner.commit_desktop_command(&first).unwrap();
         apply_first_publication(&owner, &mut browser, start, false);
 
         owner.refresh_checkpoint().unwrap();
-        let notes_checkpoint = owner
-            .outgoing()
+        let notes_checkpoint = outgoing_bytes(&owner)
             .iter()
             .find(|bytes| {
                 matches!(
@@ -582,9 +626,9 @@ mod tests {
                 },
             },
         );
-        let first_start = owner.outgoing().len();
+        let first_start = outgoing_bytes(&owner).len();
         owner.commit_desktop_command(&first).unwrap();
-        let notes_route = owner.outgoing()[first_start..]
+        let notes_route = outgoing_bytes(&owner)[first_start..]
             .iter()
             .find_map(|bytes| match postcard::from_bytes(bytes).unwrap() {
                 NeighbourMsg::AppDocument {
@@ -603,7 +647,7 @@ mod tests {
                 (state >> 24) as u8
             })
             .collect::<Vec<_>>();
-        let mutation_start = owner.outgoing().len();
+        let mutation_start = outgoing_bytes(&owner).len();
         crate::owner::mutate_owned_record_for_test(
             &mut owner,
             &notes_route.0,
@@ -619,7 +663,8 @@ mod tests {
             },
         )
         .unwrap();
-        let oversized_checkpoint = owner.outgoing()[mutation_start..]
+        let outgoing = outgoing_bytes(&owner);
+        let oversized_checkpoint = outgoing[mutation_start..]
             .iter()
             .find(|bytes| {
                 matches!(
@@ -693,4 +738,9 @@ mod tests {
             qos_browser_runtime::committed_desktop::Admission::AwaitingRetainedState(_)
         ));
     }
+}
+
+#[cfg(test)]
+fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
