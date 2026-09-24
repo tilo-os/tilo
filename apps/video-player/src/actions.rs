@@ -1478,6 +1478,139 @@ mod tests {
         }
     }
 
+    fn registry() -> ActionRegistry {
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+    }
+
+    /// A shared library holding one playlist with one item and one review
+    /// marker on the open clip, authored through the shared actions.
+    fn shared_seed() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        for action in [
+            SharedAction::CreatePlaylist {
+                id: "p".into(),
+                name: "Watch later".into(),
+            },
+            SharedAction::AddPlaylistItem {
+                id: "i".into(),
+                playlist_id: "p".into(),
+                media_ref: "fixture-media://clip".into(),
+                title: "Clip".into(),
+                position: 10,
+            },
+            SharedAction::CreateAnnotation {
+                id: "a".into(),
+                media_ref: "fixture-media://clip".into(),
+                time_ms: 1000,
+                text: "Check the cut".into(),
+            },
+        ] {
+            tilo_actions::apply_local(&mut doc, &action, encode_shared(&action)).unwrap();
+        }
+        doc
+    }
+
+    ui::action_contract_tests! {
+        seed: shared_seed(),
+        registry: registry(),
+        resources: |doc| resources(&ctx(true), doc),
+        palette: [
+            "Open video",
+            "Play or pause",
+            "Create shared playlist",
+            "Rename playlist",
+            "Delete playlist",
+            "Remove from playlist",
+            "Add timestamp annotation",
+            "Jump to timestamp",
+            "Delete annotation",
+        ],
+        replay: [
+            create_playlist => |_| encode_shared(&SharedAction::CreatePlaylist {
+                id: "p2".into(),
+                name: "Road trip".into(),
+            }),
+            rename_playlist => |_| encode_shared(&SharedAction::RenamePlaylist {
+                id: "p".into(),
+                before: "Watch later".into(),
+                after: "Tonight".into(),
+            }),
+            add_item => |_| encode_shared(&SharedAction::AddPlaylistItem {
+                id: "i2".into(),
+                playlist_id: "p".into(),
+                media_ref: "fixture-media://other".into(),
+                title: "Other".into(),
+                position: 20,
+            }),
+            move_item => |_| encode_shared(&SharedAction::MovePlaylistItem {
+                id: "i".into(),
+                before: 10,
+                after: 30,
+            }),
+            create_annotation => |_| encode_shared(&SharedAction::CreateAnnotation {
+                id: "a2".into(),
+                media_ref: "fixture-media://clip".into(),
+                time_ms: 2500,
+                text: String::new(),
+            }),
+            edit_annotation => |_| encode_shared(&SharedAction::EditAnnotation {
+                id: "a".into(),
+                before: "Check the cut".into(),
+                after: "Cut is fine".into(),
+            }),
+            move_annotation => |_| encode_shared(&SharedAction::MoveAnnotation {
+                id: "a".into(),
+                before_ms: 1000,
+                after_ms: 1250,
+            }),
+        ],
+        undo: [
+            create_playlist => |_| encode_shared(&SharedAction::CreatePlaylist {
+                id: "p2".into(),
+                name: "Road trip".into(),
+            }),
+            delete_playlist => |_| encode_shared(&SharedAction::DeletePlaylist {
+                id: "p".into(),
+                observed_item_ids: vec!["i".into()],
+            }),
+            edit_annotation => |_| encode_shared(&SharedAction::EditAnnotation {
+                id: "a".into(),
+                before: "Check the cut".into(),
+                after: "Cut is fine".into(),
+            }),
+        ],
+        encodes: [
+            delete_playlist => (&playlist_resource_id("p"), "delete", |_, _| {
+                encode_shared(&SharedAction::DeletePlaylist {
+                    id: "p".into(),
+                    observed_item_ids: vec!["i".into()],
+                })
+            }),
+            rename_playlist => (&playlist_resource_id("p"), "rename", arg: "Tonight", |_, _| {
+                encode_shared(&SharedAction::RenamePlaylist {
+                    id: "p".into(),
+                    before: "Watch later".into(),
+                    after: "Tonight".into(),
+                })
+            }),
+            remove_item => (&playlist_item_resource_id("i"), "remove", |_, _| {
+                encode_shared(&SharedAction::RemovePlaylistItem { id: "i".into() })
+            }),
+            edit_annotation => (&annotation_resource_id("a"), "edit", arg: "Cut is fine", |_, _| {
+                encode_shared(&SharedAction::EditAnnotation {
+                    id: "a".into(),
+                    before: "Check the cut".into(),
+                    after: "Cut is fine".into(),
+                })
+            }),
+            delete_annotation => (&annotation_resource_id("a"), "delete", |_, _| {
+                encode_shared(&SharedAction::DeleteAnnotation { id: "a".into() })
+            }),
+        ],
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
