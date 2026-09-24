@@ -22,7 +22,9 @@
 )]
 
 pub mod btrfs;
+pub mod chunking;
 pub mod extents;
 pub mod fanotify;
+pub mod ranges;
 pub mod store;
 pub mod sys;

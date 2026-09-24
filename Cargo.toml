@@ -375,6 +375,8 @@ iroh-base = "1.0.3"
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 iroh-gossip = "0.101.0"
 iroh-mdns-address-lookup = "0.5.0"
+# Content-defined chunking for the native data plane (normalised FastCDC).
+fastcdc = { version = "3.2", default-features = false }
 # ---------------------------------------------------------------------------
 # Media: images, codecs, capture and playback
 #

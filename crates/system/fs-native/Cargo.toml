@@ -12,6 +12,8 @@ name = "fs_native"
 path = "src/lib.rs"
 
 [dependencies]
+blake3.workspace = true
+fastcdc.workspace = true
 libc.workspace = true
 
 [lints]
