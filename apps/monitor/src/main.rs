@@ -490,10 +490,10 @@ mod launch_tests {
         Box::new(monitor::MonitorApp::new())
     }
 
-    fn memory_state(_: &'static str) -> (ui::State, ui::persist::Autosave) {
+    fn memory_state(_: &'static str) -> (ui::State, ui::persist::DocWriter) {
         (
             ui::State::new(),
-            ui::persist::Autosave::disabled("controlled Monitor launch"),
+            ui::persist::DocWriter::disabled("controlled Monitor launch"),
         )
     }
 

@@ -53,7 +53,7 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
     // An older release kept the workspace in its own file. Hand that path to
     // `open_migrating` so existing history is merged into the shared store on
     // first launch rather than orphaned; the merge is idempotent.

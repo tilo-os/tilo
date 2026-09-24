@@ -1,19 +1,20 @@
-//! Canonical Automerge documents persisted through a [`DurableStore`].
+//! Automerge documents persisted through a [`DurableStore`].
 //!
-//! [`DocOwner`] is a key's single owner: it leases the key, decodes and
-//! validates what is stored without publishing anything, and accepts a
-//! candidate only once its exact source bytes are still current. [`DocWriter`]
-//! then persists the live document the way [`crate::Autosave`] does —
+//! [`DocOwner`] owns one key, exclusively or as one of its shared writers:
+//! it leases the key, decodes and validates what is stored without
+//! publishing anything, and accepts a candidate only once its exact source
+//! bytes are still current. [`DocWriter`] then persists the live document:
 //! `save_after(sent_heads)` appends until the appended volume outgrows the
-//! compacted base, then one full save — but it never blocks and owns no
-//! thread: the store accepts each write at once, and the writer maps store
-//! revisions back to document heads to report what is actually durable.
+//! compacted base, then one full save. It never blocks and owns no thread:
+//! the store accepts each write at once, and the writer maps store revisions
+//! back to document heads to report what is actually durable.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, ROOT};
@@ -21,11 +22,26 @@ use durable_store::{
     Durability, DurableStore, Lease, Revision, StorageKey, StoreError as SeamError, WriteOp,
 };
 
-use crate::autosave::MIN_COMPACT_BYTES;
 use crate::{
-    DurabilitySnapshot, SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical,
-    validate_canonical_schema_of,
+    SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical, validate_canonical_schema_of,
 };
+
+/// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
+/// enough to swallow a burst of keystrokes, short enough that a `kill` a
+/// moment later still finds the edit stored.
+pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// Below this, compaction isn't worth it — a small document rewrites in
+/// microseconds and the append bookkeeping would dominate.
+const MIN_COMPACT_BYTES: usize = 64 * 1024;
+
+/// What a writer knows is durable, and any outstanding failure. Reading it
+/// never commits document operations.
+#[derive(Clone, Debug, Default)]
+pub struct DurabilitySnapshot {
+    pub durable_heads: Option<Vec<ChangeHash>>,
+    pub error: Option<String>,
+}
 
 impl From<SeamError> for StoreError {
     fn from(error: SeamError) -> Self {
@@ -69,6 +85,7 @@ pub struct DocOwner {
     accepted: RefCell<Option<Accepted>>,
     identity: Rc<()>,
     writer_claimed: Cell<bool>,
+    primary: bool,
     _lease: Lease,
 }
 
@@ -144,6 +161,7 @@ impl DocOwner {
             accepted: RefCell::new(None),
             identity: Rc::new(()),
             writer_claimed: Cell::new(false),
+            primary,
             _lease: lease,
         })
     }
@@ -160,6 +178,22 @@ impl DocOwner {
     /// store keeps one, else the store namespace and key.
     pub fn label(&self) -> &Path {
         &self.label
+    }
+
+    /// Whether this owner continues the stored writer identity: always for
+    /// an exclusive owner, for one shared writer at a time.
+    pub fn is_primary(&self) -> bool {
+        self.primary
+    }
+
+    /// The actor bytes to store with the next write, until one carrying them
+    /// has committed.
+    pub(crate) fn unstored_writer(&self) -> Option<Vec<u8>> {
+        (!self.actor_stored.get()).then(|| self.actor.to_bytes().to_vec())
+    }
+
+    pub(crate) fn note_writer_stored(&self) {
+        self.actor_stored.set(true);
     }
 
     /// The package owning this document, when its key names one.

@@ -230,19 +230,19 @@ fn browser_workspace(args: &LaunchArgs) -> Result<BrowserTabs, LaunchError> {
     tabs.with_session(store).map_err(LaunchError::Operation)
 }
 
-fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
     let policy = match prepare_launch(args) {
         Ok(policy) => policy,
-        Err(error) => return (ui::State::new(), ui::persist::Autosave::disabled(error)),
+        Err(error) => return (ui::State::new(), ui::persist::DocWriter::disabled(error)),
     };
     if policy.mode.is_private() {
         return (
             ui::State::new(),
-            ui::persist::Autosave::disabled("Private window state is memory-only"),
+            ui::persist::DocWriter::disabled("Private window state is memory-only"),
         );
     }
     if let Err(error) = prepare_session(args) {
-        return (ui::State::new(), ui::persist::Autosave::disabled(error));
+        return (ui::State::new(), ui::persist::DocWriter::disabled(error));
     }
     if let Some(root) = browser::storage::explicit_root() {
         let opened = ui::persist::DocStore::open_canonical_at(id, &root.join("document"));
@@ -252,17 +252,16 @@ fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::pe
                 if let Some(error) = store.refusal() {
                     return (
                         ui::State::from_doc(doc),
-                        ui::persist::Autosave::disabled(error.to_string()),
+                        ui::persist::DocWriter::disabled(error.to_string()),
                     );
                 }
-                let mut autosave =
-                    ui::persist::Autosave::spawn(store, ui::persist::DEFAULT_DEBOUNCE);
+                let mut autosave = store.writer();
                 autosave.seed(&mut doc);
                 (ui::State::from_doc(doc), autosave)
             }
             Err(error) => (
                 ui::State::new(),
-                ui::persist::Autosave::disabled(error.to_string()),
+                ui::persist::DocWriter::disabled(error.to_string()),
             ),
         };
     }

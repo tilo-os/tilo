@@ -2764,7 +2764,7 @@ mod legacy_owner_routing_tests {
         let inputs = crate::launch::LegacyLaunchInputs::new(
             State::new(),
             Box::new(probe),
-            crate::persist::Autosave::disabled("fixture owns storage"),
+            crate::persist::DocWriter::disabled("fixture owns storage"),
         )
         .with_widget_owned_persistence();
         assert_eq!(

@@ -152,7 +152,7 @@ fn shot_theme(args: &LaunchArgs) -> Theme {
         .with_text_scale(args.text_scale.unwrap_or(1.0))
         .with_reduce_motion(reduce_motion)
 }
-fn open_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+fn open_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
     let (mut state, save) = ui::persist::open(id);
     image_editor::doc::ProjectDoc::seed(&mut state.doc);
     if let Some(path) = args

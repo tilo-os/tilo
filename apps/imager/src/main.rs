@@ -225,13 +225,13 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 /// load. The launcher hands the headless drive through this opener (with
 /// `args.scenario` set) since `ux1x/integration`; an older launcher drives the
 /// fixture over an unposed `State::new()` document.
-fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
     if let Some(scenario) = args.scenario.as_deref() {
         let mut state = ui::State::new();
         imager::seed_scenario(&mut state.doc, scenario);
         return (
             state,
-            ui::persist::Autosave::disabled("screenshot fixture; nothing to persist"),
+            ui::persist::DocWriter::disabled("screenshot fixture; nothing to persist"),
         );
     }
     let (mut state, autosave) = ui::persist::open(app_id);
