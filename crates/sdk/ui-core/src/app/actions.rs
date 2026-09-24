@@ -1660,6 +1660,7 @@ impl App {
                 argument: tilo_actions::remote::InvokeArgument::Json(arguments),
                 context: None,
                 confirmation: Self::broker_confirmation(confirmation_evidence),
+                revision: None,
             },
         );
         Ok(crate::widget::ResourceOperationStart::Accepted)
@@ -2079,6 +2080,7 @@ impl App {
                 argument: tilo_actions::remote::InvokeArgument::Text(launch.content_hash),
                 context: None,
                 confirmation: None,
+                revision: None,
             };
             self.actions
                 .broker_requests

@@ -238,6 +238,11 @@ pub struct InvokeRequest {
     /// evidence, not authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmation: Option<Confirmation>,
+    /// The catalogue revision the caller chose the target from, for a
+    /// provider whose actions are resolved live at that revision. A host
+    /// refuses a target that no longer exists at it rather than guessing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 /// Explicit confirmation carried with an invocation.
@@ -667,7 +672,9 @@ pub fn refuse(
 struct LedgerEntry<T> {
     caller: Caller,
     request: InvokeRequest,
-    handle: T,
+    /// `None` while a start begun with [`InvocationLedger::reserve`] is in
+    /// flight.
+    handle: Option<T>,
 }
 
 /// The idempotency ledger behind [`ActionHost::invoke`].
@@ -688,6 +695,15 @@ impl<T> Default for InvocationLedger<T> {
     fn default() -> Self {
         Self::with_capacity(DEFAULT_LEDGER_CAPACITY)
     }
+}
+
+/// What [`InvocationLedger::reserve`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reservation {
+    /// The id is newly claimed; the caller must now start the job.
+    Reserved,
+    /// The same caller and request were already admitted.
+    Admitted,
 }
 
 /// Whether [`InvocationLedger::admit`] started a job or found one.
@@ -721,36 +737,89 @@ impl<T> InvocationLedger<T> {
         start: impl FnOnce() -> Result<T, ActionHostError>,
     ) -> Result<(&T, Admission), ActionHostError> {
         let id = request.invocation;
+        let admission = match self.reserve(caller, request)? {
+            Reservation::Admitted => Admission::Retried,
+            Reservation::Reserved => match start() {
+                Ok(handle) => {
+                    self.complete(&id, handle);
+                    Admission::Started
+                }
+                Err(error) => {
+                    self.abandon(&id);
+                    return Err(error);
+                }
+            },
+        };
+        self.entries
+            .get(&id)
+            .and_then(|entry| entry.handle.as_ref())
+            .map(|handle| (handle, admission))
+            .ok_or(ActionHostError::UnknownInvocation)
+    }
+
+    /// First half of an admission whose start completes later (for example
+    /// across an asynchronous resolution): claim the id for `caller` and
+    /// `request`, then [`complete`](Self::complete) or
+    /// [`abandon`](Self::abandon) it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionHostError::InvocationConflict`] when the id belongs to
+    /// another caller or request, and [`ActionHostError::Unavailable`] while
+    /// an earlier start of the same invocation is still in flight.
+    pub fn reserve(
+        &mut self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Reservation, ActionHostError> {
+        let id = request.invocation;
         if let Some(entry) = self.entries.get(&id) {
             if entry.caller != *caller || entry.request != *request {
                 return Err(ActionHostError::InvocationConflict);
             }
-        } else {
-            let handle = start()?;
-            while self.order.len() >= self.capacity {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.entries.remove(&oldest);
-                }
-            }
-            self.order.push_back(id);
-            self.entries.insert(
-                id,
-                LedgerEntry {
-                    caller: caller.clone(),
-                    request: request.clone(),
-                    handle,
-                },
-            );
-            return self
-                .entries
-                .get(&id)
-                .map(|entry| (&entry.handle, Admission::Started))
-                .ok_or(ActionHostError::UnknownInvocation);
+            return if entry.handle.is_some() {
+                Ok(Reservation::Admitted)
+            } else {
+                Err(ActionHostError::Unavailable {
+                    reason: "the invocation is still being admitted; retry".into(),
+                })
+            };
         }
-        self.entries
-            .get(&id)
-            .map(|entry| (&entry.handle, Admission::Retried))
-            .ok_or(ActionHostError::UnknownInvocation)
+        while self.order.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.order.push_back(id);
+        self.entries.insert(
+            id,
+            LedgerEntry {
+                caller: caller.clone(),
+                request: request.clone(),
+                handle: None,
+            },
+        );
+        Ok(Reservation::Reserved)
+    }
+
+    /// Record the host's handle for a reserved invocation.
+    pub fn complete(&mut self, id: &InvocationId, handle: T) {
+        if let Some(entry) = self.entries.get_mut(id) {
+            entry.handle = Some(handle);
+        }
+    }
+
+    /// Release a reservation whose start failed: nothing ran, so the id may
+    /// be admitted later.
+    pub fn abandon(&mut self, id: &InvocationId) {
+        if self
+            .entries
+            .get(id)
+            .is_some_and(|entry| entry.handle.is_none())
+        {
+            self.entries.remove(id);
+            self.order.retain(|candidate| candidate != id);
+        }
     }
 
     /// The handle for an invocation `caller` admitted.
@@ -759,7 +828,7 @@ impl<T> InvocationLedger<T> {
         self.entries
             .get(id)
             .filter(|entry| entry.caller == *caller)
-            .map(|entry| &entry.handle)
+            .and_then(|entry| entry.handle.as_ref())
     }
 
     /// Mutable access to the handle for an invocation `caller` admitted.
@@ -767,7 +836,7 @@ impl<T> InvocationLedger<T> {
         self.entries
             .get_mut(id)
             .filter(|entry| entry.caller == *caller)
-            .map(|entry| &mut entry.handle)
+            .and_then(|entry| entry.handle.as_mut())
     }
 }
 
@@ -891,6 +960,7 @@ mod tests {
             argument: InvokeArgument::None,
             context: None,
             confirmation: None,
+            revision: None,
         }
     }
 
@@ -1227,5 +1297,38 @@ mod tests {
 
     fn invoke_message(id: InvocationId) -> RemoteActionMessage {
         RemoteActionMessage::Invoke(archive(id))
+    }
+
+    #[test]
+    fn a_reservation_holds_the_id_until_the_start_completes() {
+        let mut ledger = InvocationLedger::<u32>::default();
+        let request = archive(InvocationId::new());
+        assert_eq!(
+            ledger.reserve(&alice(), &request),
+            Ok(Reservation::Reserved)
+        );
+        assert!(
+            matches!(
+                ledger.reserve(&alice(), &request),
+                Err(ActionHostError::Unavailable { .. })
+            ),
+            "a retry during the start neither runs twice nor pretends to be admitted"
+        );
+        assert_eq!(ledger.get(&alice(), &request.invocation), None);
+        ledger.complete(&request.invocation, 9);
+        assert_eq!(
+            ledger.reserve(&alice(), &request),
+            Ok(Reservation::Admitted)
+        );
+        assert_eq!(ledger.get(&alice(), &request.invocation), Some(&9));
+
+        let failed = archive(InvocationId::new());
+        assert_eq!(ledger.reserve(&alice(), &failed), Ok(Reservation::Reserved));
+        ledger.abandon(&failed.invocation);
+        assert_eq!(
+            ledger.reserve(&alice(), &failed),
+            Ok(Reservation::Reserved),
+            "an abandoned start ran nothing and may be admitted again"
+        );
     }
 }

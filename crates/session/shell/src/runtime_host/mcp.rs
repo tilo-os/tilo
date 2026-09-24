@@ -1,4 +1,5 @@
 //! Transport-independent MCP projection of the production action broker.
+use crate::shell::remote_actions::BrokerActionHost;
 use crate::shell::{
     collab_broker::AppActionBroker,
     collab_broker_capnp::{
@@ -7,6 +8,9 @@ use crate::shell::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tilo_actions::remote::{
+    ActionHost as _, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
+};
 
 pub struct McpServer {
     broker: AppActionBroker,
@@ -53,11 +57,19 @@ struct InvokeArgs {
     resource: String,
     action: String,
     arguments: serde_json::Map<String, Value>,
+    /// Caller-chosen id; retrying with the same id never starts twice.
+    #[serde(default)]
+    invocation_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StatusArgs {
-    invocation_id: u64,
+    invocation_id: String,
+}
+fn invocation_id(value: &str) -> Result<tilo_actions::InvocationId, String> {
+    uuid::Uuid::parse_str(value)
+        .map(tilo_actions::InvocationId)
+        .map_err(|_| "invocation_id must be a UUID".to_string())
 }
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| e.to_string())
@@ -247,44 +259,54 @@ impl McpServer {
                 if !self.live_peer(a.peer_id) {
                     return Err("Unavailable live application instance".into());
                 }
-                let rx = self
-                    .broker
-                    .action_directory_request_queue()
-                    .try_start_resolved(
-                        BrokerActor::person(&self.actor),
-                        &self.room,
-                        a.peer_id,
-                        a.revision,
-                        a.resource,
-                        a.action,
-                        Some(format!(
-                            "{}{}",
-                            tilo_actions::ARGUMENTS_JSON_PREFIX,
-                            Value::Object(a.arguments)
-                        )),
-                        None,
-                    )
-                    .map_err(|e| format!("{e:?}"))?;
-                bridge_reply(rx).await
+                let invocation = a
+                    .invocation_id
+                    .as_deref()
+                    .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
+                let request = InvokeRequest {
+                    invocation,
+                    target: RemoteActionTarget {
+                        provider: a.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new(a.resource, a.action),
+                    },
+                    argument: InvokeArgument::Json(a.arguments),
+                    context: None,
+                    confirmation: None,
+                    revision: Some(a.revision),
+                };
+                self.host()
+                    .invoke_resolved(&self.caller(), &request)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                self.status(invocation)
             }
             "qos_status" => {
                 let a: StatusArgs = parse(args)?;
-                self.status(a.invocation_id)
+                self.status(invocation_id(&a.invocation_id)?)
             }
             "qos_cancel" => {
                 let a: StatusArgs = parse(args)?;
-                self.broker.cancel(a.invocation_id, &self.actor)?;
-                self.status(a.invocation_id)
+                let invocation = invocation_id(&a.invocation_id)?;
+                self.host()
+                    .cancel(&self.caller(), &invocation)
+                    .map_err(|error| error.to_string())?;
+                self.status(invocation)
             }
             _ => Err("Unknown tool".into()),
         }
     }
-    fn status(&self, id: u64) -> Result<Value, String> {
-        self.broker
-            .statuses(&self.actor)
-            .into_iter()
-            .find(|(candidate, _)| *candidate == id)
-            .map(|(_, update)| json!({"invocation_id":id,"update":update}))
+    /// The action host every caller shares; this bridge is one more caller.
+    fn host(&self) -> BrokerActionHost {
+        BrokerActionHost::new(self.broker.clone())
+    }
+    /// The fixed profile actor, confined to the profile's workspace.
+    fn caller(&self) -> Caller {
+        Caller::local_person(self.actor.clone()).in_room(self.room.clone())
+    }
+    fn status(&self, id: tilo_actions::InvocationId) -> Result<Value, String> {
+        self.host()
+            .observe(&self.caller(), &id)
+            .map(|state| json!({"invocation_id":id.0.to_string(),"update":state.update}))
             .ok_or_else(|| "Unknown or unowned invocation".into())
     }
     fn resources(&self, params: Value) -> Result<Value, String> {
@@ -352,9 +374,8 @@ async fn bridge_reply(
             Ok(json!({"row":row_json(&row)?}))
         }
         Reply::Resolution(other) => Err(format!("{other:?}")),
-        Reply::StartedDirectoryAction(start) => {
-            Ok(json!({"invocation_id":start.invocation_id,"update":start.initial_update}))
-        }
+        // Invocations go through the action host, never the browse bridge.
+        Reply::StartedDirectoryAction(_) => Err("unexpected directory reply".into()),
     }
 }
 fn row_json(row: &runtime_collab::ActionDirectoryRow) -> Result<Value, String> {
@@ -373,14 +394,20 @@ fn tool_definitions() -> Vec<Value> {
     let string = json!({"type":"string"});
     let target = json!({"peer_id":integer,"revision":string,"resource":string,"action":string});
     let mut invoke = target.clone();
-    invoke["arguments"] = json!({"type":"object"});
+    if let Some(properties) = invoke.as_object_mut() {
+        properties.insert("arguments".into(), json!({"type":"object"}));
+        properties.insert(
+            "invocation_id".into(),
+            json!({"type":"string","format":"uuid"}),
+        );
+    }
     [
         ("qos_list_apps","List a bounded page of live application instances",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([])),
         ("qos_query","Browse a bounded live directory page; preserve revision and cursor",json!({"peer_id":integer,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!(["peer_id"])),
         ("qos_resolve","Resolve an exact current action contract",target,json!(["peer_id","revision","resource","action"])),
-        ("qos_invoke","Atomically resolve and start an action; accepted is not succeeded",invoke,json!(["peer_id","revision","resource","action","arguments"])),
-        ("qos_status","Read an owned invocation's canonical update",json!({"invocation_id":integer}),json!(["invocation_id"])),
-        ("qos_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":integer}),json!(["invocation_id"])),
+        ("qos_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice",invoke,json!(["peer_id","revision","resource","action","arguments"])),
+        ("qos_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"])),
+        ("qos_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"])),
     ].into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
 }
 #[cfg(test)]

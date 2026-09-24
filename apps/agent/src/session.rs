@@ -1286,6 +1286,7 @@ impl Session {
                         Some(tilo_actions::remote::Confirmation::Phrase(phrase.clone()))
                     }
                 },
+                revision: None,
             }),
         })?;
         let Some(RemoteActionMessage::Receipt(receipt)) =
