@@ -11625,7 +11625,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "des",
- "iroh",
+ "iroh-base",
  "runtime-collab",
  "runtime-dylib",
  "russh",
