@@ -89,6 +89,7 @@ capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 app-state = { path = "../../system/app-state" }
+durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
 spellcheck = { path = "../../text/spellcheck" }
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
