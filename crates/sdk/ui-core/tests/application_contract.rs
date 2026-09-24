@@ -995,7 +995,7 @@ fn prepared_runner_mount_failure_retains_close_recovery() {
         };
         let (records, mut reports) = recovery.into_parts().unwrap();
         let records = records.unwrap();
-        assert_eq!(record, checkout);
+        assert_eq!(*record, checkout);
         assert_eq!(reports.len(), 1);
         assert!(reports[0].view_error.is_some());
         assert_eq!(body(&records, &record), "initialized");

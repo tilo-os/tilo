@@ -737,7 +737,7 @@ impl PdfApp {
                 app.has_document = true;
                 app.doc_name = loaded.name;
                 app.source_path = Some(path.to_path_buf());
-                app.markup_record = Some(Self::markup_record_for(path));
+                app.markup_record = Some(Self::markup_record_for(&loaded.file, path));
                 app
             }
             Err(e) => {
@@ -3648,23 +3648,31 @@ impl PdfApp {
         }
     }
 
-    /// The record holding the markup for the document at `path`.
+    /// The record holding the markup for the document identified as `file`
+    /// (its durable identity, [`ui::RecordId::identify_file`]) and found at
+    /// `path`.
     ///
     /// Two records and one reference: the file is a record whose identity is
-    /// its path, and its markup is a record derived from it that references
-    /// it. Derived rather than minted so reopening the file next month finds
-    /// the same annotations; separate from the file so "share the document"
-    /// and "share my notes on it" are different acts.
-    fn markup_record_for(path: &std::path::Path) -> ui::RecordCheckout {
-        let file = ui::RecordId::for_file(path);
-        ui::RecordCheckout::new(
-            ui::RecordId::derived("annotations", &file),
+    /// its file record — kept through renames and moves, new for a copy —
+    /// and its markup is a record derived from it that references it.
+    /// Derived rather than minted so reopening the file next month, wherever
+    /// it now lives, finds the same annotations; separate from the file so
+    /// "share the document" and "share my notes on it" are different acts.
+    /// Both name their path-derived predecessors, so markup made before files
+    /// had durable identities is adopted by the first file-record identity
+    /// that reopens it.
+    fn markup_record_for(file: &ui::RecordId, path: &std::path::Path) -> ui::RecordCheckout {
+        let by_path = ui::RecordId::for_file(path);
+        let mut file_record = ui::RecordCheckout::new(file.clone(), ui::RecordKind::new("file"));
+        let mut markup = ui::RecordCheckout::new(
+            ui::RecordId::derived("annotations", file),
             ui::RecordKind::new("annotation-set"),
-        )
-        .referencing(
-            ui::RecordCheckout::new(file, ui::RecordKind::new("file")),
-            "marks-up",
-        )
+        );
+        if *file != by_path {
+            file_record = file_record.formerly(by_path.clone());
+            markup = markup.formerly(ui::RecordId::derived("annotations", &by_path));
+        }
+        markup.referencing(file_record, "marks-up")
     }
 
     /// Load a real PDF from `path` into the running reader, replacing whatever
@@ -3727,7 +3735,7 @@ impl PdfApp {
                 // here rather than the previous document's markup being
                 // deleted — which is what this used to do, and it was the
                 // one copy of the user's annotations.
-                self.markup_record = Some(Self::markup_record_for(path));
+                self.markup_record = Some(Self::markup_record_for(&loaded.file, path));
                 self.annotations.clear();
                 self.comments.clear();
                 self.signatures.clear();
@@ -3797,6 +3805,7 @@ impl PdfApp {
                     document,
                     name,
                     raster,
+                    file,
                 } if self
                     .pending_open
                     .as_ref()
@@ -3824,7 +3833,7 @@ impl PdfApp {
                     self.source_path = Some(request.path.clone());
                     self.load_error = None;
                     self.status_note = None;
-                    self.markup_record = Some(Self::markup_record_for(&request.path));
+                    self.markup_record = Some(Self::markup_record_for(&file, &request.path));
                     self.awaiting_markup_record = true;
                     self.annotations.clear();
                     self.comments.clear();
@@ -5334,6 +5343,11 @@ mod tests {
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
     /// markup reaching another, and the same path twice is one record.
+    /// The markup record the reader opens for the file at `path`.
+    fn markup_for(path: &std::path::Path) -> ui::RecordCheckout {
+        PdfApp::markup_record_for(&ui::RecordId::identify_file(path), path)
+    }
+
     fn two_documents() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
         let a = dir.path().join("a.pdf");
@@ -5460,7 +5474,7 @@ mod tests {
         let mut st = ui::State::new();
         let mut set = ui::RecordSet::in_memory();
         let mut room = AutoCommit::new();
-        let a_record = PdfApp::markup_record_for(&a);
+        let a_record = markup_for(&a);
         app.markup_record = Some(a_record.clone());
         set.checkout(&mut st, Some(&mut room), &a_record);
         PdfDoc::ensure_page_plan(&mut st.doc, 1);
@@ -5481,10 +5495,7 @@ mod tests {
         }
         assert!(app.pending_open.is_none(), "worker open must settle");
         assert!(app.has_document, "fixture must open: {:?}", app.load_error);
-        assert_eq!(
-            app.markup_record.as_ref().unwrap().id,
-            PdfApp::markup_record_for(&b).id
-        );
+        assert_eq!(app.markup_record.as_ref().unwrap().id, markup_for(&b).id);
         assert_eq!(ui::record::identity(&st.doc).unwrap().id, a_record.id);
         assert_eq!(st.doc.get_heads(), original, "opening b must not edit a");
         assert!(
@@ -5618,7 +5629,11 @@ mod tests {
         let mut room = AutoCommit::new();
         record_frame(&mut app, &mut st, &mut set, &mut room);
 
-        let file = ui::RecordId::for_file(&a);
+        let file = ui::RecordId::identify_file(&a);
+        assert!(
+            file.file_record().is_some(),
+            "a local file gets a durable identity"
+        );
         assert!(
             ui::record::room::holds(&room, &file),
             "the room references the file record it opened"
@@ -5631,6 +5646,66 @@ mod tests {
         );
     }
 
+    /// Markup follows the file, not its path or its bytes: renaming and
+    /// moving the PDF reopens the same annotations; a copy starts clean.
+    #[test]
+    #[serial(pdfium)]
+    fn markup_follows_the_file_through_rename_and_move_but_not_a_copy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let original = dir.path().join("paper.pdf");
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/doc/pdf/tests/fixtures/latin.pdf"
+        );
+        std::fs::copy(fixture, &original).expect("copy the Typst fixture");
+
+        let mut app = PdfApp::open(&original);
+        let mut st = ui::State::new();
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        annotate(&mut app, &mut st);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        let markup = app.markup_record.clone().expect("a markup record");
+        let annotated = PdfDoc::list_annotations(&st.doc);
+        assert_eq!(annotated.len(), 1, "the highlight is recorded");
+        assert!(
+            markup.formerly.contains(&ui::RecordId::derived(
+                "annotations",
+                &ui::RecordId::for_file(&original)
+            )),
+            "markup made under the path identity is adopted: {markup:?}"
+        );
+
+        let moved_dir = dir.path().join("reviewed");
+        std::fs::create_dir(&moved_dir).unwrap();
+        let moved = moved_dir.join("paper (final).pdf");
+        std::fs::rename(&original, &moved).unwrap();
+        let mut reopened = PdfApp::open(&moved);
+        assert_eq!(reopened.markup_record.as_ref().unwrap().id, markup.id);
+        record_frame(&mut reopened, &mut st, &mut set, &mut room);
+        assert_eq!(ui::record::identity(&st.doc).unwrap().id, markup.id);
+        assert_eq!(
+            reopened
+                .annotations
+                .iter()
+                .map(|a| &a.id)
+                .collect::<Vec<_>>(),
+            annotated.iter().map(|a| &a.id).collect::<Vec<_>>(),
+            "the renamed file shows its annotations"
+        );
+
+        let copy = dir.path().join("paper copy.pdf");
+        std::fs::copy(&moved, &copy).unwrap();
+        let mut copied = PdfApp::open(&copy);
+        assert_ne!(copied.markup_record.as_ref().unwrap().id, markup.id);
+        record_frame(&mut copied, &mut st, &mut set, &mut room);
+        assert!(
+            copied.annotations.is_empty(),
+            "a copy of the file starts with no markup"
+        );
+    }
+
     /// A collaborator can publish the annotation-set name before this device
     /// has ever opened its local replica.  On launch, the durable room index
     /// must make that exact deterministic PDF record discoverable without
@@ -5640,7 +5715,7 @@ mod tests {
     #[serial(pdfium)]
     fn imported_room_index_discovers_pdf_markup_before_checkout() {
         let (_dir, a, _b) = two_documents();
-        let markup = PdfApp::markup_record_for(&a);
+        let markup = markup_for(&a);
         let mut collaborator_room = AutoCommit::new();
         assert!(ui::record::room::reference(
             &mut collaborator_room,
