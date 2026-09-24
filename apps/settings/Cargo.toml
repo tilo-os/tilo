@@ -50,7 +50,7 @@ tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 # Device role, workspace residency and server relay policy use the same types
 # the tilo-relay daemon loads; Settings never keeps a shadow sync model.
-tilo-relay = { path = "../../crates/hosting/tilo-relay" }
+tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
