@@ -140,12 +140,32 @@ pub enum ProxyError {
 ///
 /// Returns [`ProxyError::Mkdir`] if the socket's parent directory can't be
 /// created, [`ProxyError::Spawn`] if `binary` can't be spawned, or
-/// [`ProxyError::NotReady`] if its listener socket doesn't appear within the
-/// timeout.
+/// [`ProxyError::NotReady`] if its listener socket doesn't appear within
+/// [`PROXY_READY_TIMEOUT`].
 pub fn spawn_dbus_proxy(
     binary: &Path,
     bus_addr: &str,
     socket_path: &Path,
+) -> Result<DBusProxyGuard, ProxyError> {
+    spawn_dbus_proxy_within(binary, bus_addr, socket_path, PROXY_READY_TIMEOUT)
+}
+
+/// How long a launch waits for the proxy's listener socket. The real proxy
+/// is ready in ~10ms; a launch does not stall on one that never comes up.
+pub const PROXY_READY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// [`spawn_dbus_proxy`], waiting up to `ready_within` for the listener
+/// socket.
+///
+/// # Errors
+///
+/// As [`spawn_dbus_proxy`], with [`ProxyError::NotReady`] after
+/// `ready_within`.
+pub fn spawn_dbus_proxy_within(
+    binary: &Path,
+    bus_addr: &str,
+    socket_path: &Path,
+    ready_within: Duration,
 ) -> Result<DBusProxyGuard, ProxyError> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| ProxyError::Mkdir {
@@ -168,13 +188,12 @@ pub fn spawn_dbus_proxy(
         socket_path: socket_path.to_path_buf(),
     };
 
-    // The socket appears asynchronously; poll with a bounded 2s timeout —
-    // the real proxy is ready in ~10ms.
-    match wait_for_socket(socket_path, Duration::from_secs(2)) {
+    // The socket appears asynchronously; poll with a bounded timeout.
+    match wait_for_socket(socket_path, ready_within) {
         Ok(()) => Ok(guard),
         Err(_) => Err(ProxyError::NotReady {
             path: socket_path.to_path_buf(),
-            timeout: Duration::from_secs(2),
+            timeout: ready_within,
         }),
     }
 }
