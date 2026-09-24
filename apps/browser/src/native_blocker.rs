@@ -282,9 +282,8 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/filters", listener.local_addr().unwrap());
-        // SAFETY: this ignored child sets its private test environment before
-        // creating either the server thread or the refresh worker.
-        unsafe { std::env::set_var("QOS_BROWSER_FILTER_ENDPOINT", endpoint) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("QOS_BROWSER_FILTER_ENDPOINT", endpoint);
         let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {

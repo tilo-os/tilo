@@ -37,6 +37,10 @@ fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     gate.read_exact(&mut release)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
+)]
 fn wait_for_shell_registration() -> Result<(), String> {
     let Ok(raw_fd) = std::env::var(LAUNCH_REGISTRATION_FD_ENV) else {
         return Ok(());

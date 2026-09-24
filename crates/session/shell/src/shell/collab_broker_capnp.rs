@@ -9142,9 +9142,8 @@ pub(crate) mod tests {
     #[serial_test::serial(process_env)]
     fn launch_content_refuses_corrupt_or_symlinked_staging_targets() {
         let runtime = tempfile::tempdir().expect("runtime directory");
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: this serial test restores the process setting before exit.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
         let hash = qdoc::blobstore::put(b"verified launch fixture").expect("store fixture");
         let staged = runtime
             .path()
@@ -9162,14 +9161,6 @@ pub(crate) mod tests {
         std::fs::write(&target, b"outside").expect("outside fixture");
         std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
         assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
-        // SAFETY: paired with the guarded process-wide override above.
-        unsafe {
-            if let Some(previous) = previous {
-                std::env::set_var("XDG_RUNTIME_DIR", previous);
-            } else {
-                std::env::remove_var("XDG_RUNTIME_DIR");
-            }
-        }
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -7840,9 +7840,6 @@ mod tests {
     use super::*;
     use crate::grid::GridCmd;
 
-    /// Serializes the tests that mutate the process-global `XDG_DATA_HOME`.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Serializes tests that round-trip through the process-global system
     /// clipboard, so a parallel test's copy can't land between another's
     /// copy and paste (the app itself is single-instance, so this only
@@ -8935,12 +8932,12 @@ mod tests {
 
     #[test]
     fn blank_launch_opens_a_single_empty_sheet() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // A real launch (persist on, but pointed at an empty temp data dir)
         // must NOT fabricate the sample workbook.
         let tmp = std::env::temp_dir().join(format!("tilo-sheets-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
 
         let mut app = SheetsApp::new(); // RunMode::Live: blank, persisted
         let mut doc = AutoCommit::new();
@@ -8998,10 +8995,10 @@ mod tests {
 
     #[test]
     fn workbook_persists_and_reloads() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let tmp = std::env::temp_dir().join(format!("tilo-sheets-persist-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
 
         // Session one: blank launch, edit a cell, persist.
         let mut app = SheetsApp::new();
@@ -9067,13 +9064,13 @@ mod tests {
 
     #[test]
     fn persistence_coalesces_edits_that_arrive_during_a_save() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let tmp = std::env::temp_dir().join(format!(
             "tilo-sheets-persist-coalesce-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
         let mut app = SheetsApp::new();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
@@ -9111,11 +9108,11 @@ mod tests {
 
     #[test]
     fn incoming_change_during_load_is_saved_after_the_disk_workbook_merges() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let tmp =
             std::env::temp_dir().join(format!("tilo-sheets-load-race-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
         let mut on_disk = AutoCommit::new();
         SheetsDoc::add_sheet(&mut on_disk, "Disk");
         SheetsDoc::set_cell_raw(&mut on_disk, 0, (0, 0), "saved");

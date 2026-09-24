@@ -243,12 +243,7 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                             %error,
                             "existing Tilo identity needs recovery; opening trusted recovery"
                         );
-                        // SAFETY: startup is single-threaded until native
-                        // compositor initialization, and this marker only
-                        // selects a stricter recovery surface.
-                        unsafe {
-                            std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1");
-                        }
+                        mark_identity_recovery();
                     }
                     ExistingIdentityFailureAction::FailClosed => {
                         if provision_requested {
@@ -278,6 +273,18 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
         }
     }
     None
+}
+
+/// Select the trusted identity-recovery surface for the compositor, which
+/// reads the marker from its own environment.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "set before compositor startup; the only thread running then (font warm-up) never reads it"
+)]
+fn mark_identity_recovery() {
+    // SAFETY: only the font warm-up thread may run yet; it never reads this
+    // variable, and the marker only selects a stricter recovery surface.
+    unsafe { std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1") };
 }
 
 #[cfg(test)]

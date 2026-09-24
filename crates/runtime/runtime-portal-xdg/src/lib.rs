@@ -425,90 +425,67 @@ impl OpenUri {
 mod tests {
     use super::*;
 
-    /// Save and restore the DBUS env var — several tests toggle it
-    /// and we must not leak state across tests.
-    struct BusGuard(Option<std::ffi::OsString>);
-    impl BusGuard {
-        fn take() -> Self {
-            let prev = std::env::var_os("DBUS_SESSION_BUS_ADDRESS");
-            // SAFETY: setter on env vars; tests within this module
-            // run sequentially per default cargo test scheduling, and
-            // we always drop-restore the previous value.
-            unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") };
-            Self(prev)
-        }
-    }
-    impl Drop for BusGuard {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(v) => unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", v) },
-                None => unsafe { std::env::remove_var("DBUS_SESSION_BUS_ADDRESS") },
-            }
-        }
+    /// Start from an unset session bus address; the returned scope restores
+    /// the caller's value when the test ends so no state leaks across tests.
+    fn without_bus() -> tilo_test_env::ScopedEnv {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("DBUS_SESSION_BUS_ADDRESS");
+        env
     }
 
     #[test]
     fn is_portal_available_false_when_env_missing() {
-        let _g = BusGuard::take();
+        let _env = without_bus();
         assert!(!is_portal_available());
     }
 
     #[test]
     fn is_portal_available_false_when_env_empty() {
-        let _g = BusGuard::take();
-        // SAFETY: single-thread env mutation for test setup.
-        unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "") };
+        let mut env = without_bus();
+        env.set("DBUS_SESSION_BUS_ADDRESS", "");
         assert!(!is_portal_available());
     }
 
     #[test]
     fn is_portal_available_false_when_unix_path_missing() {
-        let _g = BusGuard::take();
-        unsafe {
-            std::env::set_var(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/definitely/does/not/exist/tilo-portal-test",
-            );
-        }
+        let mut env = without_bus();
+        env.set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/definitely/does/not/exist/tilo-portal-test",
+        );
         assert!(!is_portal_available());
     }
 
     #[test]
     fn is_portal_available_true_for_existing_unix_path() {
-        let _g = BusGuard::take();
+        let mut env = without_bus();
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("fake.sock");
         std::fs::write(&sock, b"").unwrap();
-        unsafe {
-            std::env::set_var(
-                "DBUS_SESSION_BUS_ADDRESS",
-                format!("unix:path={}", sock.display()),
-            );
-        }
+        env.set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", sock.display()),
+        );
         assert!(is_portal_available());
     }
 
     #[test]
     fn is_portal_available_true_for_abstract_namespace() {
-        let _g = BusGuard::take();
-        unsafe {
-            std::env::set_var(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:abstract=/tmp/dbus-abstract-XXXXXX,guid=deadbeef",
-            );
-        }
+        let mut env = without_bus();
+        env.set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:abstract=/tmp/dbus-abstract-XXXXXX,guid=deadbeef",
+        );
         assert!(is_portal_available());
     }
 
     #[test]
     fn portal_calls_report_notavailable_with_bogus_bus() {
-        let _g = BusGuard::take();
-        unsafe {
-            std::env::set_var(
-                "DBUS_SESSION_BUS_ADDRESS",
-                "unix:path=/definitely/does/not/exist/tilo-portal-test-bogus",
-            );
-        }
+        let mut env = without_bus();
+        env.set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/definitely/does/not/exist/tilo-portal-test-bogus",
+        );
         // Connection attempt will fail. Every portal reports NotAvailable.
         assert!(matches!(
             Notification::send("bogus-bus-test"),

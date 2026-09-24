@@ -105,6 +105,10 @@ fn main() -> anyhow::Result<()> {
 /// rather than falling back to a second socket. The bound pathname is checked
 /// before the descriptor becomes Tokio-owned so an unrelated inherited fd can
 /// never become the privileged app-store endpoint.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to app-launch children; cleared in main right after the descriptor is taken, before the Tokio runtime or any other thread starts"
+)]
 fn systemd_listener(
     expected: &std::path::Path,
 ) -> anyhow::Result<Option<std::os::unix::net::UnixListener>> {

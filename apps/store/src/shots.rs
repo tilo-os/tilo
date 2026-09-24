@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(not(test))]
 use std::sync::Once;
 
 use taffy::prelude::*;
@@ -48,12 +49,18 @@ const SETTLED_CAPTURE_WARMUP_PASSES: usize = 3;
 /// for a fresh offscreen Vulkan scene. Pin Store's hermetic capture path to
 /// Vello's deterministic CPU renderer; the interactive desktop keeps using
 /// its normal GPU renderer.
+#[cfg(not(test))]
 static SHOTS_CPU_RENDERER: Once = Once::new();
 
+#[cfg(not(test))]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "outside tests `render_widget` is only reached from the --shots handler on \
+              the main thread, before the renderer is constructed and before any \
+              application thread exists, so nothing reads the environment concurrently"
+)]
 fn configure_settled_capture_renderer() {
     SHOTS_CPU_RENDERER.call_once(|| {
-        // `render_widget` runs only in headless shots/tests, before the
-        // renderer is constructed. No application threads are started here.
         #[allow(
             unsafe_code,
             reason = "Rust 2024 marks process-environment mutation unsafe; this one-shot headless renderer preference is installed before constructing any Store shot renderer"
@@ -62,6 +69,15 @@ fn configure_settled_capture_renderer() {
             std::env::set_var("QUICK_UI_VELLO_CPU", "1");
         }
     });
+}
+
+/// Unit tests render on one of many test threads, so the CPU renderer
+/// preference is scoped to each render instead of installed for the process.
+#[cfg(test)]
+fn settled_capture_renderer_scope() -> tilo_test_env::ScopedEnv {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("QUICK_UI_VELLO_CPU", "1");
+    env
 }
 
 /// A hand-rolled fixture of items that shows every card variant:
@@ -362,7 +378,10 @@ pub fn render_widget(
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }
+    #[cfg(not(test))]
     configure_settled_capture_renderer();
+    #[cfg(test)]
+    let _cpu_renderer = settled_capture_renderer_scope();
     let mut renderer = OffscreenRenderer::new(w, h);
     for _ in 0..SETTLED_CAPTURE_WARMUP_PASSES {
         let _ = renderer.render_rgba_resilient(&scene);

@@ -125,6 +125,8 @@ struct Harness {
     modifiers: Modifiers,
     focus: Option<NodeId>,
     chrome: shell::shell::chrome_state::Chrome,
+    // Pins the top-bar clock for as long as the harness renders frames.
+    _clock: tilo_test_env::ScopedEnv,
 }
 
 impl Harness {
@@ -135,8 +137,8 @@ impl Harness {
     fn new_at(tree: &WorkspaceTree, width: f32, height: f32) -> Self {
         // Pin the top-bar clock before the first sync — frames here are compared
         // pixel-for-pixel and a live clock would fail once a minute.
-        // SAFETY: single-threaded test setup, under `TEST_LOCK`.
-        unsafe { std::env::set_var("TILO_CLOCK", "09:41") };
+        let mut clock = tilo_test_env::ScopedEnv::new();
+        clock.set("TILO_CLOCK", "09:41");
         let mut owned = tree.clone();
         // Rooms need recorded access, or access-reporting surfaces assert against
         // a state no user has ever been in.
@@ -206,6 +208,7 @@ impl Harness {
             modifiers: Modifiers::default(),
             focus: None,
             chrome,
+            _clock: clock,
         }
     }
 
