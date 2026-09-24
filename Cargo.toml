@@ -152,7 +152,6 @@ members = [
 
     # Packaging
     "crates/packaging/app-cli",
-    "crates/packaging/app-fs",
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",

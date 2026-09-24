@@ -523,21 +523,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "app-fs"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "clap",
- "fuser",
- "hex",
- "libc",
- "moka",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "app-host"
 version = "0.1.0"
 dependencies = [
