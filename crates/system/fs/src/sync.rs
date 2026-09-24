@@ -2416,38 +2416,55 @@ impl PeerPass<'_> {
 
     /// The pass over the peer's session: every exchange on its one
     /// connection. Returns whether namespace or records changed.
-    async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> Result<bool> {
+    async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> bool {
+        // Each exchange stands on its own, as with the per-request
+        // protocols: one the peer refuses does not hold back the others.
+        let report = |what: &str, error: &anyhow::Error| {
+            if !self.identity.partitioned() {
+                eprintln!("{what} with {} failed: {error:#}", peer.addr.id);
+            }
+        };
         let mut changed = false;
         if self.exchange_namespace {
             // Automerge sync is symmetric; only between two writers, which
             // the serving side checks independently.
-            changed |= session::sync_namespace(sessions, peer, self.namespace).await?;
-            let resolution = self
-                .namespace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .post_sync_resolve();
-            self.broadcast(resolution).await;
+            match session::sync_namespace(sessions, peer, self.namespace).await {
+                Ok(received) => {
+                    changed |= received;
+                    let resolution = self
+                        .namespace
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .post_sync_resolve();
+                    self.broadcast(resolution).await;
+                }
+                Err(error) => report("namespace sync", &error),
+            }
         } else if self.read_only {
-            let (received, resolution) =
-                session::pull_namespace(sessions, peer, self.namespace).await?;
-            changed |= received;
-            self.broadcast(resolution).await;
+            match session::pull_namespace(sessions, peer, self.namespace).await {
+                Ok((received, resolution)) => {
+                    changed |= received;
+                    self.broadcast(resolution).await;
+                }
+                Err(error) => report("namespace pull", &error),
+            }
         }
         if let Some(records) = self.records {
-            if let Some(authority) = &records.workspace_authority {
-                session::exchange_authority(
+            if let Some(authority) = &records.workspace_authority
+                && let Err(error) = session::exchange_authority(
                     sessions,
                     peer,
                     self.identity,
                     authority,
                     records.workspace_id,
                 )
-                .await?;
+                .await
+            {
+                report("workspace authority reconciliation", &error);
             }
             // A namespace change may place records that arrived earlier.
             let heal = self.heal || changed;
-            changed |= session::pull_records(
+            match session::pull_records(
                 sessions,
                 peer,
                 self.identity,
@@ -2456,10 +2473,18 @@ impl PeerPass<'_> {
                 self.hydrator,
                 heal,
             )
-            .await?;
-            session::collect_replica_acks(sessions, peer, self.identity, records).await?;
+            .await
+            {
+                Ok(pulled) => changed |= pulled,
+                Err(error) => report("record reconciliation", &error),
+            }
+            if let Err(error) =
+                session::collect_replica_acks(sessions, peer, self.identity, records).await
+            {
+                report("replica receipts", &error);
+            }
         }
-        Ok(changed)
+        changed
     }
 
     /// The pass through the per-request protocols, for a peer without the
@@ -2655,15 +2680,13 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 heal: first_pass,
             };
             match sessions.get(&peer).await {
-                Ok(Some(session)) => match context.over_session(&sessions, &session).await {
-                    Ok(changed) => namespace_changed |= changed,
-                    Err(error) => {
+                Ok(Some(session)) => {
+                    namespace_changed |= context.over_session(&sessions, &session).await;
+                    if session.is_closed() {
+                        // The next pass connects afresh.
                         sessions.forget(&session).await;
-                        if !identity.partitioned() {
-                            eprintln!("session reconciliation with {} failed: {error:#}", peer.id);
-                        }
                     }
-                },
+                }
                 // The peer speaks only the per-request protocols.
                 Ok(None) => namespace_changed |= context.per_request(peer).await,
                 Err(error) if !identity.partitioned() => {
