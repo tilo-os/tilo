@@ -6121,18 +6121,7 @@ impl WorkspaceTree {
         strip_id: StripId,
         topology: &[ui::widget::GroupTopology],
     ) -> bool {
-        let Some((ws_idx, strip_idx)) =
-            self.desktop
-                .workspaces
-                .iter()
-                .enumerate()
-                .find_map(|(wi, ws)| {
-                    ws.strips
-                        .iter()
-                        .position(|strip| strip.id == strip_id)
-                        .map(|si| (wi, si))
-                })
-        else {
+        let Some((ws_idx, strip_idx)) = self.desktop.strip_position(strip_id) else {
             return false;
         };
         let Some(strip) = self
