@@ -1,0 +1,60 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "package-store"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The device's installed packages: one registry of installed and preinstalled packages, and installs whose payload bytes live in the fs content store and are materialised once by reflink."
+
+[features]
+# Readers (the launcher, the shell, settings) need only the registry and the
+# catalogue. Installing, removing and collecting garbage additionally needs
+# the content store.
+default = []
+# Honour `TILO_APPS_SYSTEM_DIR` / `TILO_APPS_SYSTEM_PAYLOAD_DIR` in a release
+# build (see `layout::DEV_ENV_OVERRIDES`). Debug builds always honour them;
+# shipped images never enable this.
+dev-overrides = []
+store = [
+    "dep:advisory-lock",
+    "dep:atomic-file",
+    "dep:bytes",
+    "dep:fs",
+    "dep:iroh-blobs",
+    "dep:tempfile",
+    "dep:tokio",
+]
+
+[dependencies]
+tilo-app-package = { path = "../tilo-app-package" }
+ed25519-dalek.workspace = true
+hex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+# The store's exclusive lock across processes.
+advisory-lock = { path = "../../system/advisory-lock", optional = true }
+atomic-file = { path = "../../system/atomic-file", optional = true }
+bytes = { workspace = true, optional = true }
+# The content store. Only its portable content plane is used here; the
+# filesystem daemon stays out of the dependency graph.
+fs = { path = "../../system/fs", default-features = false, optional = true }
+iroh-blobs = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt"], optional = true }
+
+[dev-dependencies]
+libc.workspace = true
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+required-features = ["store"]
+
+[lints]
+workspace = true
