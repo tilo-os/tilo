@@ -173,6 +173,7 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
 
 /// Whether `locale` names a language this module can load — not empty,
 /// `C` or `POSIX`.
+#[cfg(feature = "native")]
 pub(crate) fn is_usable_locale(locale: &str) -> bool {
     parse_locale(locale).is_ok()
 }

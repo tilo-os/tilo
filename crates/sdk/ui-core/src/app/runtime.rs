@@ -48,6 +48,13 @@ impl LayoutRuntime {
 }
 
 /// Input modality, gesture, cursor, and tooltip state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
     pub(super) interaction: crate::interaction::InteractionEnvironment,
@@ -246,6 +253,13 @@ impl CollaborationRuntime {
 }
 
 /// Presence publication, follow, and frame-pump state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
     pub(super) pointer_space: Option<crate::presence::PointerSpace>,
@@ -290,6 +304,13 @@ impl HistoryRuntime {
 }
 
 /// Host window identity and fullscreen reconciliation state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct WindowRuntime {
     pub(super) fullscreen_requested: bool,
     pub(super) fullscreen_active: bool,

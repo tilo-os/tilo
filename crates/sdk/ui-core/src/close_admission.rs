@@ -215,6 +215,7 @@ pub(crate) fn retry_reports(
     errors
 }
 
+#[cfg(feature = "native")]
 pub(crate) fn wake_deadline(
     scheduled: Option<std::time::Instant>,
     waiting: bool,

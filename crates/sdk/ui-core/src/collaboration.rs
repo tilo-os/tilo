@@ -88,6 +88,7 @@ pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
 
 /// Decode a hex resume payload and its schema version. Invalid input is
 /// ignored so an app outside Tilo or an older sender opens normally.
+#[cfg(feature = "native")]
 pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<ContinuationMetadata> {
     let bytes = hex::decode(hex).ok()?;
     let schema_version = schema.parse().ok()?;

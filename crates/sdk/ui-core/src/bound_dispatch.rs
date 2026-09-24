@@ -540,6 +540,7 @@ pub(crate) fn publication_visibility(
 }
 
 /// Opaque legacy navigation remains scoped to the provider that produced it.
+#[cfg(feature = "native")]
 pub(crate) fn activate_bound_search(
     root: &mut dyn Widget,
     doc: &mut AutoCommit,

@@ -1,15 +1,27 @@
 //! Per-surface retry admission. Explicit interaction survives queued outcomes.
+#[cfg(feature = "native")]
 use super::FrameOutcome;
-use std::time::{Duration, Instant};
+#[cfg(feature = "native")]
+use std::time::Duration;
+use std::time::Instant;
 
+#[cfg(feature = "native")]
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 #[derive(Default)]
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(crate) struct RenderRetryState {
     deadline: Option<Instant>,
     occlusions: u8,
     probe: bool,
 }
 impl RenderRetryState {
+    #[cfg(feature = "native")]
     pub(crate) fn observe(&mut self, outcome: FrameOutcome, now: Instant) {
         self.occlusions = if outcome == FrameOutcome::Occluded {
             self.occlusions.saturating_add(1)
@@ -30,17 +42,20 @@ impl RenderRetryState {
             }
         };
     }
+    #[cfg(feature = "native")]
     pub(crate) fn known_occluded(&self) -> bool {
         self.occlusions > 0 && !self.probe
     }
     /// A visible auxiliary surface draws this primary's retained root. Preserve
     /// its update/sync cadence without forgetting persistent primary occlusion.
+    #[cfg(feature = "native")]
     pub(crate) fn keep_shared_cadence(&mut self, now: Instant) {
         if self.known_occluded() {
             let soon = now.checked_add(FRAME_INTERVAL).unwrap_or(now);
             self.deadline = self.deadline.map(|deadline| deadline.min(soon));
         }
     }
+    #[cfg(feature = "native")]
     pub(crate) fn observe_for_shared_root(
         &mut self,
         outcome: FrameOutcome,
@@ -52,14 +67,17 @@ impl RenderRetryState {
             self.keep_shared_cadence(now);
         }
     }
+    #[cfg(feature = "native")]
     pub(crate) fn request_probe(&mut self) -> bool {
         let recovering = self.deadline.is_some() || self.occlusions > 0;
         self.probe = true;
         recovering
     }
+    #[cfg(feature = "native")]
     pub(crate) fn allows(&self, now: Instant) -> bool {
         self.probe || self.deadline.is_none_or(|deadline| deadline <= now)
     }
+    #[cfg(feature = "native")]
     pub(crate) fn admitted(&mut self) {
         if self.probe {
             self.occlusions = 0;
@@ -67,19 +85,23 @@ impl RenderRetryState {
         self.probe = false;
         self.deadline = None;
     }
+    #[cfg(feature = "native")]
     pub(crate) fn deadline(&self) -> Option<Instant> {
         if self.probe { None } else { self.deadline }
     }
+    #[cfg(feature = "native")]
     pub(crate) fn occlusion_blocked(&self, now: Instant) -> bool {
         self.occlusions > 0 && !self.allows(now)
     }
 }
 /// Whether paint-only work warrants the fast pump for this surface.
+#[cfg(feature = "native")]
 pub(crate) fn presentation_demand(blocked: bool, demand: bool) -> bool {
     demand && !blocked
 }
 
 /// Defer a widget's draw-serviced timer while its surface cannot draw.
+#[cfg(feature = "native")]
 pub(crate) fn widget_deadline(
     deadline: Option<Instant>,
     blocked_until: Option<Instant>,
@@ -92,6 +114,7 @@ pub(crate) fn widget_deadline(
     clippy::struct_excessive_bools,
     reason = "independent concurrent wake sources may be active together; an exclusive enum would lose demand"
 )]
+#[cfg(feature = "native")]
 pub(crate) struct WakeDemand {
     pub model: bool,
     pub primary_startup: bool,
@@ -105,6 +128,7 @@ pub(crate) struct WakeDemand {
 
 /// Select the actual event-loop deadline. Model services remain independent;
 /// widget deadlines request sync/redraw and remain pending until paint admission.
+#[cfg(feature = "native")]
 pub(crate) fn next_wake(
     now: Instant,
     blocked_until: Option<Instant>,
