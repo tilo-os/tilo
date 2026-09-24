@@ -34,8 +34,9 @@ Apps register; `shell` serves the result into search, the palette and the contro
 - **Search is a system service.** Apps register a search provider and a renderer per
   resource type, so a hit opens the app at that position. See `search.md`.
 - **Undo, history, device sync and theming are system services.** One implementation, not
-  forty. Undo works from an action log that is per-app and per-user, so you can see what
-  changed and revert selectively.
+  forty. Undo works from the document's Automerge history: each action records the heads
+  before and after it and who made it, and undo writes the inverse as a new change, so one
+  person's undo reverts their own action and keeps everyone else's concurrent edits.
 - **Collaboration reduces to transport.** See `collaboration.md` and `rooms.md`.
 - **Anything reusable belongs in `ui`.** Tabs, presence, text handling. The toolkit sets
   presentation defaults and the user overrides them; the app does not.
