@@ -496,4 +496,81 @@ mod tests {
             Err(ActionError::Refused(_))
         ));
     }
+
+    fn registry() -> ActionRegistry {
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+    }
+
+    fn encode(action: &BrowserAction) -> tilo_actions::EncodedAction {
+        tilo_actions::EncodedAction::encode(BROWSER_ACTION_TYPE, action).unwrap()
+    }
+
+    const RUST: &str = "https://rust-lang.org/";
+
+    /// A library with two bookmarks, written through the same action the
+    /// page's bookmark control dispatches.
+    fn seeded_library() -> Doc {
+        let mut doc = Doc::new();
+        for (url, tag) in [
+            (RUST, "bookmark:rust"),
+            ("https://docs.rs/", "bookmark:docs"),
+        ] {
+            let action = add(url, tag);
+            tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        }
+        doc
+    }
+
+    /// The resource tree a headless browser window publishes once it has
+    /// synced `doc`.
+    fn published(doc: &Doc) -> Vec<tilo_actions::Resource> {
+        use ui::widget::Widget;
+        let mut widget = crate::browser_widget::BrowserWidget::new_headless();
+        widget.sync(&mut doc.clone(), &ROOT);
+        widget.resources(doc)
+    }
+
+    fn removal(doc: &Doc, url: &str) -> BrowserAction {
+        BrowserAction::RemoveBookmark {
+            url: url.into(),
+            observed_tags: observed_bookmark_tags(doc, url),
+        }
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_library(),
+        registry: registry(),
+        resources: |doc| published(doc),
+        palette: ["Remove bookmark", "Set homepage", "Show history", "Bookmark this page"],
+        replay: [
+            remove_bookmark => |doc| encode(&removal(doc, RUST)),
+            set_homepage => |_| encode(&BrowserAction::SetHomepage {
+                url: "https://home.test/".into(),
+            }),
+        ],
+        undo: [
+            add_bookmark => |_| encode(&add("https://crates.io/", "bookmark:crates")),
+            remove_bookmark => |doc| encode(&removal(doc, RUST)),
+            set_adblock => |_| encode(&BrowserAction::SetAdblock { enabled: false }),
+        ],
+        encodes: [
+            remove_bookmark => ("browser.bookmark", "remove", |doc, res| {
+                let url = bookmarks_from_doc(doc)
+                    .unwrap()
+                    .entries()
+                    .iter()
+                    .map(|bookmark| bookmark.url.clone())
+                    .find(|url| bookmark_resource_id(url) == res.id.as_str())
+                    .unwrap();
+                encode(&removal(doc, &url))
+            }),
+            set_homepage => ("browser.settings", "set-homepage", arg: "https://home.test/", |_, _| {
+                encode(&BrowserAction::SetHomepage {
+                    url: "https://home.test/".into(),
+                })
+            }),
+        ],
+    }
 }

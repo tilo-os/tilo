@@ -196,7 +196,8 @@ fn calendar_operation(
         }
         CalendarOperation::Sync => spec
             .retry_policy(RetryPolicy::Idempotent)
-            .execution(tilo_actions::ExecutionMode::Background { cancellable: false }),
+            .execution(tilo_actions::ExecutionMode::Background { cancellable: false })
+            .returns(ResultSpec::Job),
         CalendarOperation::ExportIcs
         | CalendarOperation::ImportIcs
         | CalendarOperation::FinalizeLaunchImport => spec.retry_policy(RetryPolicy::AtMostOnce),
@@ -3240,13 +3241,6 @@ mod tests {
         None
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
@@ -3321,21 +3315,6 @@ mod tests {
             flat.iter()
                 .any(|l| *l == "Mark done" || *l == "Mark not done"),
             "a task toggle is exported: {flat:?}"
-        );
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New event")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("New task")), "{labels:?}");
-        // The neutral action list is deliberately display-capped. Filtering
-        // must still bring every deeper event action into the same palette.
-        palette.set_query("set reminder");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Set reminder")),
-            "{labels:?}"
         );
     }
 
@@ -3638,211 +3617,95 @@ mod tests {
         );
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        // A real document with the demo calendar in it.
+    /// A demo calendar app that has adopted `doc` as its authoritative state.
+    fn synced_app(doc: &AutoCommit) -> CalendarApp {
         let mut app = CalendarApp::new_demo();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        let victim = CalDoc::read_model(&state.doc).events[0].id;
-        let before_heads = state.doc.get_heads();
-        let before = CalDoc::read_model(&state.doc).events.len();
-
-        let action = delete_event_action(victim.to_string(), None);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            CalDoc::read_model(&state.doc).events.len(),
-            before - 1,
-            "the action deleted an event"
-        );
-        assert!(
-            !CalDoc::read_model(&state.doc)
-                .events
-                .iter()
-                .any(|e| e.id == victim),
-            "the right event is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            CalDoc::read_model(&state.doc).events.len(),
-            before,
-            "undo reverted the deletion and nothing else"
-        );
-        assert!(
-            CalDoc::read_model(&state.doc)
-                .events
-                .iter()
-                .any(|e| e.id == victim),
-            "the event is back after undo"
-        );
+        app.sync(&mut doc.clone(), &ROOT);
+        app
     }
 
-    #[test]
-    fn note_ops_replay_identically_through_the_action_executor() {
-        let (_app, seeded_doc) = seeded();
-        let mut author = seeded_doc;
-        author.commit();
-        let bytes = author.save();
-        let mut peer = AutoCommit::load(&bytes).expect("same base document");
-        let event = CalDoc::read_model(&author).events[0].id;
-        let action = CalendarAction::ApplyNoteOps {
-            owner: NoteOwner::Event {
-                id: event.to_string(),
+    fn first_event(doc: &AutoCommit) -> crate::model::Event {
+        CalDoc::read_model(doc).events[0].clone()
+    }
+
+    fn event_id_of(res: &Resource) -> &str {
+        res.id.as_str().trim_start_matches("calendar.event:")
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| Widget::resources(&synced_app(doc), doc),
+        // The neutral action list is deliberately display-capped; filtering
+        // must still bring every deeper event action into the same palette.
+        palette: ["New event", "New task", "Set reminder", "Delete event"],
+        replay: [
+            // Completion is an absolute value, so replay does not depend on the
+            // receiving replica's current task state.
+            set_task_done => |doc| {
+                let task = CalDoc::read_model(doc)
+                    .tasks
+                    .into_iter()
+                    .find(|t| !t.done)
+                    .unwrap();
+                encode(&set_task_done_action(task.id.to_string(), true))
             },
-            ops: vec![BlockEditOp::Insert {
-                block_id: Uuid::new_v4().to_string(),
-                after: None,
-                kind: "paragraph".to_string(),
-                text: "Résumé ✓".to_string(),
-            }],
-        };
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).expect("calendar note action");
-        let mut transport = LocalTransport::new();
-        let envelope =
-            tilo_actions::dispatch(&mut author, decoded.as_ref(), encoded, &mut transport)
-                .expect("note action dispatches");
-        tilo_actions::replay(&mut peer, envelope.envelope(), &registry())
-            .expect("note action replays");
-
-        assert_eq!(
-            author.get_heads(),
-            peer.get_heads(),
-            "note edits converge exactly"
-        );
-        assert_eq!(
-            CalDoc::note_text(&author, true, event),
-            "Résumé ✓",
-            "the action, rather than the widget, persisted the note"
-        );
+            // The create/edit/move path, not just the toggle.
+            upsert_event => |doc| {
+                let mut event = first_event(doc);
+                event.title = "Renamed via action".into();
+                encode(&upsert_event_action(&event))
+            },
+            note_ops => |doc| encode(&CalendarAction::ApplyNoteOps {
+                owner: NoteOwner::Event {
+                    id: first_event(doc).id.to_string(),
+                },
+                ops: vec![BlockEditOp::Insert {
+                    block_id: Uuid::from_u128(0x5eed).to_string(),
+                    after: None,
+                    kind: "paragraph".to_string(),
+                    text: "Résumé ✓".to_string(),
+                }],
+            }),
+        ],
+        undo: [
+            delete_event => |doc| encode(&delete_event_action(first_event(doc).id.to_string(), None)),
+        ],
+        encodes: [
+            // The ctx resolves the same remote-delete the trash-button handler
+            // does, so a synced event's delete carries it too.
+            delete_event => ("calendar.event", "delete", |doc, res| {
+                let id = event_id_of(res);
+                let remote = synced_app(doc)
+                    .calendar_resource_ctx()
+                    .events
+                    .iter()
+                    .find(|e| e.data.id == id)
+                    .and_then(|e| e.remote_delete.clone());
+                encode(&delete_event_action(id.to_string(), remote))
+            }),
+            // A field-level patch, not a stale whole-event snapshot that could
+            // overwrite another collaborator's edit.
+            rename_event => ("calendar.event", "edit", arg: "New title", |_, res| {
+                encode(&patch_event_action(
+                    event_id_of(res).parse().unwrap(),
+                    EventPatch {
+                        title: Some("New title".into()),
+                        ..EventPatch::default()
+                    },
+                ))
+            }),
+        ],
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
     #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Completion is an absolute value, so replay does not depend on the
-        // receiving replica's current task state.
-        let task = CalDoc::read_model(&a)
-            .tasks
-            .into_iter()
-            .find(|t| !t.done)
-            .unwrap();
-        let action = set_task_done_action(task.id.to_string(), true);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            CalDoc::read_model(&a).task(task.id).unwrap().done,
-            "the toggle landed on both replicas"
-        );
-        assert!(CalDoc::read_model(&b).task(task.id).unwrap().done);
-    }
-
-    /// Replaying an `UpsertEvent` (an edit) also converges byte-identically —
-    /// the create/edit/move path, not just the toggle.
-    #[test]
-    fn upsert_event_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let mut ev = CalDoc::read_model(&a).events[0].clone();
-        ev.title = "Renamed via action".into();
-        let action = upsert_event_action(&ev);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "edit replayed identically");
-        assert_eq!(
-            CalDoc::read_model(&b).event(ev.id).unwrap().title,
-            "Renamed via action"
-        );
-    }
-
-    /// Single source of truth: the palette's "Delete event" spec and the builder
-    /// the trash button calls encode byte-identically — including the resolved
-    /// remote-delete of a synced event.
-    #[test]
-    fn palette_and_builder_encode_identically() {
+    fn rename_event_refuses_a_blank_title() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let cal = &resources[0];
-        let event = find_kind(&cal.children, "calendar.event").expect("seeded event resource");
-        let id = event.id.as_str().trim_start_matches("calendar.event:");
-
-        let delete_spec = event.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        // The ctx resolves the same remote-delete the trash-button handler does.
-        let ctx = app.calendar_resource_ctx();
-        let remote = ctx
-            .events
-            .iter()
-            .find(|e| e.data.id == id)
-            .and_then(|e| e.remote_delete.clone());
-        let from_builder = encode(&delete_event_action(id.to_string(), remote));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        // And the rename spec produces a field-level patch, not a stale whole
-        // event snapshot that could overwrite another collaborator's edit.
-        let event_id = id.parse().unwrap();
+        let event = find_kind(&resources[0].children, "calendar.event").expect("an event");
         let edit_spec = event.actions.iter().find(|a| a.id == "edit").unwrap();
-        let from_spec = prompted_encode(edit_spec, "New title");
-        let from_builder = encode(&patch_event_action(
-            event_id,
-            EventPatch {
-                title: Some("New title".into()),
-                ..EventPatch::default()
-            },
-        ));
         assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
-        let blank = prompted_encode(edit_spec, "   ");
-        assert_eq!(
-            blank.type_id,
+            prompted_encode(edit_spec, "   ").type_id,
             tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "rename refuses a whitespace-only title"
         );

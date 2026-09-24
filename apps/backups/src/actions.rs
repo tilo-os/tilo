@@ -581,27 +581,13 @@ mod tests {
     use super::*;
     use crate::app::BackupsApp;
     use crate::model::Catalog;
-    use tilo_actions::{ActionInput, Availability, LocalTransport};
+    use tilo_actions::{Availability, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
     }
 
     /// `sync` seeds the default retention policy, so this is ready for actions
@@ -652,18 +638,6 @@ mod tests {
             .collect();
         assert!(flat.contains(&"Increase by one"), "{flat:?}");
         assert!(flat.iter().any(|l| l.starts_with("Set daily")), "{flat:?}");
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels
-                .iter()
-                .any(|l| l.contains("retention") || l.contains("keep") || l.contains("Set")),
-            "{labels:?}"
-        );
 
         let catalog_resources =
             provide_resources(&BackupsDoc::policy(&doc, &ROOT), &Catalog::sample(), false);
@@ -827,79 +801,6 @@ mod tests {
     }
 
     #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut app = BackupsApp::new();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-
-        let before = BackupsDoc::retention(&state.doc, &ROOT, PolicyField::Daily);
-        let target = before + 3;
-        let before_heads = state.doc.get_heads();
-
-        let action = set_retention_action(PolicyField::Daily, target);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            BackupsDoc::retention(&state.doc, &ROOT, PolicyField::Daily),
-            target,
-            "the action set the daily retention"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            BackupsDoc::retention(&state.doc, &ROOT, PolicyField::Daily),
-            before,
-            "undo reverted the retention change and nothing else"
-        );
-    }
-
-    /// Same head hashes on replay, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let was = BackupsDoc::retention(&a, &ROOT, PolicyField::Monthly);
-        let action = set_retention_action(PolicyField::Monthly, was + 6);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            BackupsDoc::retention(&a, &ROOT, PolicyField::Monthly),
-            was + 6,
-            "the set landed"
-        );
-        assert_eq!(
-            BackupsDoc::retention(&a, &ROOT, PolicyField::Monthly),
-            BackupsDoc::retention(&b, &ROOT, PolicyField::Monthly),
-            "both replicas agree"
-        );
-    }
-
-    #[test]
     fn redundant_action_is_a_no_op() {
         let (_app, mut doc) = seeded();
         doc.commit();
@@ -915,38 +816,35 @@ mod tests {
         assert_eq!(doc.get_heads(), before, "a no-change set changed nothing");
     }
 
-    #[test]
-    fn palette_specs_match_builders() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let root = &resources[0];
-        let daily = field_resource(root, PolicyField::Daily);
-        let cur = BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily);
+    fn daily(doc: &AutoCommit) -> u32 {
+        BackupsDoc::retention(doc, &ROOT, PolicyField::Daily)
+    }
 
-        let inc_spec = daily.actions.iter().find(|a| a.id == "increment").unwrap();
-        let from_spec = immediate_encode(inc_spec);
-        let from_builder = encode(&bump_retention_action(PolicyField::Daily, cur, 1));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for increment"
-        );
-
-        let dec_spec = daily.actions.iter().find(|a| a.id == "decrement").unwrap();
-        let from_spec = immediate_encode(dec_spec);
-        let from_builder = encode(&bump_retention_action(PolicyField::Daily, cur, -1));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for decrement"
-        );
-
-        let set_spec = daily.actions.iter().find(|a| a.id == "set").unwrap();
-        let from_spec = prompted_encode(set_spec, "42");
-        let from_builder = encode(&set_retention_action(PolicyField::Daily, 42));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "set is one source of truth"
-        );
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| Widget::resources(&BackupsApp::new(), doc),
+        palette: ["Set daily retention", "Increase by one", "Decrease by one", "Set up backups"],
+        replay: [
+            set_monthly => |doc| encode(&set_retention_action(
+                PolicyField::Monthly,
+                BackupsDoc::retention(doc, &ROOT, PolicyField::Monthly) + 6,
+            )),
+        ],
+        undo: [
+            set_daily => |doc| encode(&set_retention_action(PolicyField::Daily, daily(doc) + 3)),
+        ],
+        encodes: [
+            increment => ("backups.retention:ret_daily", "increment", |doc, _| {
+                encode(&bump_retention_action(PolicyField::Daily, daily(doc), 1))
+            }),
+            decrement => ("backups.retention:ret_daily", "decrement", |doc, _| {
+                encode(&bump_retention_action(PolicyField::Daily, daily(doc), -1))
+            }),
+            set => ("backups.retention:ret_daily", "set", arg: "42", |_, _| {
+                encode(&set_retention_action(PolicyField::Daily, 42))
+            }),
+        ],
     }
 
     /// `bump_retention` is what both the mouse hit and the keyboard arrow/`+`/`-`
@@ -962,7 +860,7 @@ mod tests {
             let spec = daily.actions.iter().find(|a| a.id == "increment").unwrap();
             (
                 BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily),
-                immediate_encode(spec),
+                ui::testing::action_contract::spec_encoding(spec, None),
             )
         };
 
