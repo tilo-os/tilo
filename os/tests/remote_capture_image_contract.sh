@@ -67,7 +67,7 @@ else
 fi
 
 if grep -Fq 'v4l2loopback-0.15.3-a7e4a4d.tar.gz' "$kernel_containerfile" \
-    && grep -Fq 'extra/v4l2loopback.ko' "$kernel_containerfile" \
+    && grep -Fq 'extra/v4l2loopback.ko' "$repo/os/kernel/build-support.sh" \
     && grep -Fq "modinfo -F signer" "$kernel_acceptance"; then
   ok 'the exact-kernel signed loopback module is packaged and release-tested'
 else

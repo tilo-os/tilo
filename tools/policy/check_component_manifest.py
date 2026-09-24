@@ -183,6 +183,11 @@ def check_manifest_against_workspace(report: Report, manifest, packages: dict[st
             report.error(where, f"boot component {component.name!r} names scenario {component.scenario!r}, "
                          "which does not exist",
                          "point `scenario` at the os/dev/ driver script that cold-boots this component.")
+        if component.dev_build and not (report.repo / component.dev_build).is_file():
+            report.error(where, f"boot component {component.name!r} names dev_build {component.dev_build!r}, "
+                         "which does not exist",
+                         "point `dev_build` at the os/ script that builds this component for a dev VM "
+                         "(tilo-vm swap runs it).")
         component_packages = list(component.packages)
         for package in component.packages:
             if package not in packages:

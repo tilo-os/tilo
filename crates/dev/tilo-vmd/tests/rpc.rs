@@ -132,10 +132,7 @@ fn full_slot_lifecycle_over_stdio() {
     let v2 = import(client, "shell", &tarball("usr/bin/shell", b"v2"));
     assert_eq!(client.call(LayerList {}).unwrap().len(), 2);
 
-    let session = ComponentInfo {
-        scope: Scope::Session,
-        units: vec![],
-    };
+    let session = ComponentInfo::new(Scope::Session, vec![]);
     let swap = |layer: &str| Swap {
         slot: "agent-a".into(),
         component: "shell".into(),
@@ -178,10 +175,7 @@ fn full_slot_lifecycle_over_stdio() {
         slot: "agent-a".into(),
         component: "fs".into(),
         layer: fs_layer.clone(),
-        info: Some(ComponentInfo {
-            scope: Scope::Vm,
-            units: vec!["fs.service".into()],
-        }),
+        info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
     }));
     assert_eq!(error.code, code::SCOPE);
     assert!(
@@ -196,10 +190,7 @@ fn full_slot_lifecycle_over_stdio() {
             slot: "vm".into(),
             component: "fs".into(),
             layer: fs_layer,
-            info: Some(ComponentInfo {
-                scope: Scope::Vm,
-                units: vec!["fs.service".into()],
-            }),
+            info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
         })
         .unwrap();
     assert_eq!(vm.policy, Policy::VmRefresh);
@@ -328,6 +319,83 @@ fn full_slot_lifecycle_over_stdio() {
         2,
         "agent-b and vm remain"
     );
+}
+
+#[test]
+fn a_kernel_swap_prepares_the_next_boot_and_rollback_undoes_it() {
+    use tilo_vm_protocol::BootConfirm;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    let client = &mut daemon.client;
+    client.hello("test").unwrap();
+
+    let kernel = ComponentInfo {
+        reboot: true,
+        ..ComponentInfo::new(Scope::Vm, vec![])
+    };
+    let layer = import(
+        client,
+        "kernel",
+        &tarball(
+            "usr/lib/modules/7.2.5-200.fc44.x86_64+dev/vmlinuz",
+            b"kernel",
+        ),
+    );
+    let swapped = client
+        .call(Swap {
+            slot: "vm".into(),
+            component: "kernel".into(),
+            layer: layer.clone(),
+            info: Some(kernel.clone()),
+        })
+        .unwrap();
+    assert!(swapped.changed);
+    assert_eq!(swapped.policy, Policy::Reboot);
+    let boot = swapped
+        .boot
+        .clone()
+        .expect("a kernel swap reports its boot entry");
+    assert!(boot.kver.is_some());
+    let entry = boot.entry.unwrap();
+    assert!(entry.contains(&layer), "{entry}");
+    assert!(swapped.actions.contains(&Action::SetNextBoot { entry }));
+    // Nothing restarts before the reboot the client runs.
+    assert!(
+        !swapped
+            .actions
+            .iter()
+            .any(|a| matches!(a, Action::RestartUnit { .. })),
+        "{:?}",
+        swapped.actions
+    );
+
+    let confirmed = client.call(BootConfirm::default()).unwrap();
+    assert!(confirmed.confirmed);
+
+    // The same layer again: nothing to boot.
+    let again = client
+        .call(Swap {
+            slot: "vm".into(),
+            component: "kernel".into(),
+            layer,
+            info: Some(kernel),
+        })
+        .unwrap();
+    assert!(!again.changed && again.boot.is_none());
+
+    // Back to the base generation: the image's kernel is the next boot.
+    let back = client
+        .call(Rollback {
+            slot: "vm".into(),
+            to: None,
+        })
+        .unwrap();
+    assert_eq!(back.policy, Policy::Reboot);
+    let boot = back
+        .boot
+        .expect("rolling a kernel back reports the boot entry");
+    assert_eq!(boot.kver, None);
 }
 
 #[test]

@@ -80,6 +80,12 @@ pub enum DaemonError {
     MissingInImage { image: String, path: String },
     #[error("slot '{0}' is headless: it has no seat, so no input devices")]
     HeadlessInput(String),
+    #[error("not a kernel layer: {0}")]
+    KernelLayer(String),
+    #[error("cannot set the VM's boot entry: {detail}")]
+    BootLoader { detail: String },
+    #[error("dracut could not build the initramfs for {kver}: {detail}")]
+    Initramfs { kver: String, detail: String },
     #[error("{context}: {source}")]
     Io {
         context: String,
@@ -114,11 +120,14 @@ impl DaemonError {
             | Self::InvalidLayer(_)
             | Self::NoEarlierGeneration(_)
             | Self::NoSession(_)
-            | Self::HeadlessInput(_) => code::INVALID,
+            | Self::HeadlessInput(_)
+            | Self::KernelLayer(_) => code::INVALID,
             Self::ScopeMismatch { .. } => code::SCOPE,
-            Self::Apply { .. } | Self::SessionParity { .. } | Self::SessionFailed { .. } => {
-                code::APPLY
-            }
+            Self::Apply { .. }
+            | Self::SessionParity { .. }
+            | Self::SessionFailed { .. }
+            | Self::BootLoader { .. }
+            | Self::Initramfs { .. } => code::APPLY,
             Self::Io { .. } => code::IO,
             Self::Job { .. } => code::JOB,
             Self::ToolMissing { .. } => code::TOOL,
@@ -229,6 +238,15 @@ impl DaemonError {
             Self::HeadlessInput(slot) => format!(
                 "drive headless slots through the compositor: tilo-vm control --slot {slot} key|type|click ...   (or create a headful slot: tilo-vm slot create <name> --headful)"
             ),
+            Self::KernelLayer(_) => {
+                "build and swap it with tilo-vm swap kernel: os/kernel/dev-build.sh stages usr/lib/modules/<release>/ with vmlinuz and the signed modules".into()
+            }
+            Self::BootLoader { .. } => {
+                "kernel swaps need systemd-boot (the Tilo dev image) or GRUB with BLS entries in /boot/loader/entries; check with tilo-vm vm ssh -- bootctl status, then rerun the swap".into()
+            }
+            Self::Initramfs { kver, .. } => format!(
+                "reproduce it in the VM: tilo-vm vm ssh -- dracut --force --kver {kver} /var/tmp/initramfs.img   (the vm slot already carries the modules; tilo-vm rollback --slot vm drops them)"
+            ),
             Self::Io { .. } => "tilo-vm doctor   (checks the VM's disk and daemon state)".into(),
         }
     }
@@ -256,6 +274,9 @@ impl DaemonError {
             | Self::MissingInImage { .. } => Some("tilo-vm guide swapping"),
             Self::SeatBusy { .. } | Self::ControlMissing(_) | Self::HeadlessInput(_) => {
                 Some("tilo-vm guide driving")
+            }
+            Self::KernelLayer(_) | Self::BootLoader { .. } | Self::Initramfs { .. } => {
+                Some("tilo-vm guide kernel")
             }
             Self::VersionMismatch { .. }
             | Self::HelloRequired
@@ -395,6 +416,14 @@ mod tests {
                 path: "/usr/bin/browser".into(),
             },
             DaemonError::HeadlessInput("a".into()),
+            DaemonError::KernelLayer("no vmlinuz".into()),
+            DaemonError::BootLoader {
+                detail: "no grub2-editenv".into(),
+            },
+            DaemonError::Initramfs {
+                kver: "7.2.5+dev".into(),
+                detail: "exit status: 1".into(),
+            },
             DaemonError::Io {
                 context: "c".into(),
                 source: std::io::Error::other("e"),
@@ -432,6 +461,9 @@ mod tests {
                 | DaemonError::ImageNotFound { .. }
                 | DaemonError::MissingInImage { .. }
                 | DaemonError::HeadlessInput(_)
+                | DaemonError::KernelLayer(_)
+                | DaemonError::BootLoader { .. }
+                | DaemonError::Initramfs { .. }
                 | DaemonError::Io { .. } => {}
             }
         }

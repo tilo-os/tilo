@@ -28,8 +28,13 @@ DEFAULT_MANIFEST = Path(__file__).resolve().parent.parent / "components.toml"
 
 SCOPES = ("session", "vm")
 # `boot` components only take effect on a cold boot (kernel, UKI, bootloader,
-# initramfs, installer media); a dev swap is redirected to their `scenario`.
+# initramfs, installer media); a dev swap is redirected to their `scenario`,
+# unless the component declares `dev_swap`.
 KINDS = ("userspace", "boot")
+# How `tilo-vm swap` handles a boot component that it can swap: "reboot" builds
+# it with `dev_build`, installs it VM-wide as the next boot entry and reboots.
+DEV_SWAPS = ("reboot",)
+DEV_BUILD_RE = re.compile(r"^os/[A-Za-z0-9._/-]+$")
 PROFILES = ("release", "thin-app")
 # The Containerfile copies `direct` files itself, straight from the builder
 # stage, because the build writes them at their final path.
@@ -65,8 +70,9 @@ examples:
   install-components.py --from /out --from /out/optional \\
       --dest /image --by-layer --all
 
-  # List components, and what a swap needs: the systemd units to restart, or
-  # for boot components the os/dev/ scenario that cold-boots them
+  # List components, and what a swap needs: the systemd units to restart, a
+  # reboot onto a new boot entry (the kernel), or for the other boot
+  # components the os/dev/ scenario that cold-boots them
   install-components.py --list
 """
 
@@ -116,6 +122,9 @@ class Component:
     files: tuple[FileEntry, ...] = field(default_factory=tuple)
     # Cargo features the dev image (and dev layers) enable on top of `features`.
     dev_features: tuple[str, ...] = ()
+    # Boot components tilo-vm can swap: how, and the script that builds them.
+    dev_swap: str | None = None
+    dev_build: str | None = None
 
     @property
     def dev_only(self) -> bool:
@@ -227,7 +236,8 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
     names: set[str] = set()
     destinations: dict[str, str] = {}
     allowed = {"name", "kind", "scope", "scenario", "profile", "packages", "bins", "features",
-               "dev_features", "units", "user_units", "app_manifests", "optional", "layer", "files"}
+               "dev_features", "units", "user_units", "app_manifests", "optional", "layer", "files",
+               "dev_swap", "dev_build"}
     for raw in raw_components:
         name = raw.get("name")
         if not isinstance(name, str) or not NAME_RE.match(name):
@@ -254,6 +264,18 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
                                     "script that exercises it on a cold boot")
         elif scenario is not None:
             raise ManifestError(f"{where}: `scenario` is only for kind = \"boot\" components")
+        dev_swap, dev_build = raw.get("dev_swap"), raw.get("dev_build")
+        if dev_swap is not None:
+            if kind != "boot":
+                raise ManifestError(f"{where}: `dev_swap` is only for kind = \"boot\" components; "
+                                    "userspace components are always swappable")
+            if dev_swap not in DEV_SWAPS:
+                raise ManifestError(f"{where}: `dev_swap` must be one of {', '.join(DEV_SWAPS)}")
+            if not isinstance(dev_build, str) or not DEV_BUILD_RE.match(dev_build) or ".." in dev_build:
+                raise ManifestError(f"{where}: a `dev_swap` component needs `dev_build`, the os/ script "
+                                    "that builds it for a dev VM")
+        elif dev_build is not None:
+            raise ManifestError(f"{where}: `dev_build` goes with `dev_swap`")
         profile = raw.get("profile", "release")
         if profile not in PROFILES:
             raise ManifestError(f"{where}: `profile` must be one of {', '.join(PROFILES)}")
@@ -296,6 +318,7 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
             features=_strings(raw.get("features"), where, "features"),
             units=units, user_units=user_units, app_manifests=app_manifests,
             optional=optional, files=files, dev_features=dev_features,
+            dev_swap=dev_swap, dev_build=dev_build,
         ))
     return Manifest(path=path, components=tuple(components), external_units=external_units)
 
@@ -482,13 +505,16 @@ def print_components(manifest: Manifest, fmt: str) -> None:
         "bins": list(c.bins), "features": list(c.features), "units": list(c.units),
         "user_units": list(c.user_units), "optional": c.optional,
         "dev_features": list(c.dev_features), "dev_only": c.dev_only,
+        "dev_swap": c.dev_swap, "dev_build": c.dev_build,
     } for c in manifest.components]
     if fmt == "json":
         json.dump(rows, sys.stdout, indent=2)
         sys.stdout.write("\n")
         return
     for row in rows:
-        if row["kind"] == "boot":
+        if row["kind"] == "boot" and row["dev_swap"] == "reboot":
+            action = f"swap: build {row['dev_build']}, next boot entry, reboot"
+        elif row["kind"] == "boot":
             action = f"cold boot: {row['scenario']}"
         else:
             units = [*row["units"], *(f"--user:{u}" for u in row["user_units"])]

@@ -224,6 +224,9 @@ snapshot. `tilo-vm doctor` checks the host and prints each fix. Never deploy int
 `ssh`/`scp`. Image-level changes (Containerfiles, units, `/etc`, packages) go through
 `tilo-vm vm upgrade --from local`: it rebuilds only what changed, moves the running VM onto the new
 image with bootc and reboots it; `tilo-vm vm rollback-image` goes back (`tilo-vm guide images`).
+Kernel changes (`os/kernel/config-fragments/`, `os/kernel/patches/`) go through
+`tilo-vm swap kernel`: it builds incrementally from the release build's inputs, installs the
+kernel VM-wide and reboots (`tilo-vm guide kernel`).
 
 ## Cargo.lock is committed — do not regenerate it
 

@@ -36,6 +36,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         (root / "os/scripts").mkdir(parents=True)
         (root / "os/usr").symlink_to(REPO / "os/usr")
         (root / "os/dev").symlink_to(REPO / "os/dev")
+        (root / "os/kernel").symlink_to(REPO / "os/kernel")
         for name in ("os/Containerfile", "os/components.toml", "os/scripts/install-components.py",
                      "os/scripts/build-thin-apps.sh"):
             shutil.copy(REPO / name, root / name)
@@ -83,6 +84,17 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         self.assertIn("names scenario 'os/dev/missing.sh'", "\n".join(check.audit(root)))
         self.edit(manifest, 'scenario = "os/dev/missing.sh"\n', "")
         self.assertIn("needs `scenario`", "\n".join(check.audit(root)))
+
+    def test_swappable_boot_component_needs_its_build_script(self):
+        root = self.fixture()
+        manifest = root / "os/components.toml"
+        self.edit(manifest, 'dev_build = "os/kernel/dev-build.sh"',
+                  'dev_build = "os/kernel/missing.sh"')
+        self.assertIn("names dev_build 'os/kernel/missing.sh'", "\n".join(check.audit(root)))
+        self.edit(manifest, 'dev_build = "os/kernel/missing.sh"\n', "")
+        self.assertIn("needs `dev_build`", "\n".join(check.audit(root)))
+        self.edit(manifest, 'dev_swap = "reboot"\n', 'dev_swap = "hot"\n')
+        self.assertIn("`dev_swap` must be one of reboot", "\n".join(check.audit(root)))
 
     def test_unapplied_layer_fails(self):
         root = self.fixture()

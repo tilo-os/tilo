@@ -29,7 +29,7 @@ pub use input::{Button, InputAction};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -137,6 +137,8 @@ pub enum Request {
     Input(Input),
     #[serde(rename = "app.install")]
     AppInstall(AppInstall),
+    #[serde(rename = "boot.confirm")]
+    BootConfirm(BootConfirm),
 }
 
 impl Request {
@@ -162,6 +164,7 @@ impl Request {
             Self::Gc(_) => "gc",
             Self::Input(_) => "input",
             Self::AppInstall(_) => "app.install",
+            Self::BootConfirm(_) => "boot.confirm",
         }
     }
 }
@@ -205,6 +208,7 @@ call! {
     Gc => GcResult,
     Input => InputResult,
     AppInstall => AppInstallResult,
+    BootConfirm => BootConfirmResult,
 }
 
 // ---- requests ---------------------------------------------------------------
@@ -357,6 +361,19 @@ pub struct AppInstall {
     pub source: LayerSource,
 }
 
+/// After a reboot onto a newly installed kernel: report the running kernel
+/// and, when it is the one the last swap or rollback installed, make its boot
+/// entry the default. Until then that entry is booted once only, so a kernel
+/// that never comes up falls back to the previous default on the next boot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootConfirm {
+    /// `uname -v` the new kernel reports (its build number and timestamp).
+    /// Rebuilds keep the kernel release, so only this tells two builds of
+    /// one release apart. When absent, the release alone is compared.
+    #[serde(default)]
+    pub expect_version: Option<String>,
+}
+
 // ---- shared vocabulary ------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,6 +515,10 @@ pub enum Policy {
     SessionRestart,
     /// `systemd-sysext refresh`, then the affected system units restart.
     VmRefresh,
+    /// A kernel changed: VM `/usr` refreshed, the new kernel installed as
+    /// the next boot entry ([`ApplyResult::boot`]); the client reboots the VM
+    /// and confirms the boot ([`BootConfirm`]).
+    Reboot,
 }
 
 /// One observable step the daemon took, reported back so the CLI can say
@@ -537,6 +558,22 @@ pub enum Action {
     /// Recorded but not activated; takes effect at the next session restart.
     Deferred {
         reason: String,
+    },
+    /// A kernel's vmlinuz and initramfs copied to `/boot` with a boot loader
+    /// entry of its own.
+    InstallBootEntry {
+        entry: String,
+        kver: String,
+    },
+    RemoveBootEntry {
+        entry: String,
+    },
+    /// The entry the next boot (only) starts.
+    SetNextBoot {
+        entry: String,
+    },
+    SetDefaultBoot {
+        entry: String,
     },
 }
 
@@ -684,7 +721,7 @@ pub struct LayerInfo {
     pub provenance: Provenance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApplyResult {
     pub slot: String,
     pub generation: u64,
@@ -695,6 +732,45 @@ pub struct ApplyResult {
     /// Non-fatal findings, e.g. a layer built against a different base image.
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// With [`Policy::Reboot`]: what the next boot starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot: Option<BootChange>,
+}
+
+/// The boot entry a kernel swap or rollback prepared.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BootChange {
+    /// Kernel release the next boot runs; `None` for the image's own kernel.
+    pub kver: Option<String>,
+    /// Boot loader entry the next boot starts (only once for a new kernel,
+    /// until [`BootConfirm`]).
+    pub entry: Option<String>,
+    /// The default entry, which a failed boot falls back to.
+    pub fallback: Option<String>,
+    /// `systemd-boot` or `grub`.
+    pub loader: String,
+    /// How the initramfs was made (the image's dracut arguments, or the
+    /// distribution's defaults), `None` when an existing one was reused.
+    #[serde(default)]
+    pub initramfs: Option<String>,
+    #[serde(default)]
+    pub initramfs_seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootConfirmResult {
+    /// `uname -r` of the running kernel.
+    pub running: String,
+    /// `uname -v` of the running kernel.
+    pub version: String,
+    /// The kernel release the last swap or rollback installed; `None` when
+    /// it put the image's kernel back.
+    pub expected: Option<String>,
+    /// True when the running kernel is the expected one; its entry is now
+    /// the default.
+    pub confirmed: bool,
+    /// The default boot entry after this call.
+    pub default_entry: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
