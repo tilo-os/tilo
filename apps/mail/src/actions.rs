@@ -238,13 +238,73 @@ impl DraftData {
     }
 }
 
+/// Whether `value` is a bounded iTIP `REQUEST` Mail may attach: one CRLF
+/// `VCALENDAR` whose components nest correctly, with `METHOD:REQUEST` on the
+/// calendar and at least one `VEVENT`, every one carrying the same `UID` (a
+/// recurring event's overridden occurrences are further `VEVENT`s of it).
+///
+/// The document is parsed as content lines, so text that merely looks like
+/// structure (`SUMMARY:BEGIN:VEVENT`, a folded `METHOD:REQUEST` inside an
+/// event) cannot pass or fail the check.
 pub fn valid_calendar_invitation(value: &str) -> bool {
-    value.len() <= MAX_CALENDAR_ICS_BYTES
-        && !value.contains('\0')
-        && value.starts_with("BEGIN:VCALENDAR\r\n")
-        && value.contains("\r\nMETHOD:REQUEST\r\n")
-        && value.matches("BEGIN:VEVENT").count() == 1
-        && value.ends_with("END:VCALENDAR\r\n")
+    if value.len() > MAX_CALENDAR_ICS_BYTES || value.contains('\0') {
+        return false;
+    }
+    let Some(lines) = pim_lines::parse_strict(value) else {
+        return false;
+    };
+    let mut stack: Vec<String> = Vec::new();
+    let mut calendars = 0_usize;
+    let mut method_request = false;
+    let mut events = 0_usize;
+    let mut event_uid: Option<String> = None;
+    let mut shared_uid: Option<String> = None;
+    for line in &lines {
+        let component = line.value.trim().to_ascii_uppercase();
+        match line.name.as_str() {
+            "BEGIN" => {
+                if component.is_empty() {
+                    return false;
+                }
+                match (stack.len(), component.as_str()) {
+                    (0, "VCALENDAR") => calendars += 1,
+                    (0, _) => return false,
+                    (1, "VEVENT") => {
+                        events += 1;
+                        event_uid = None;
+                    }
+                    _ => {}
+                }
+                stack.push(component);
+            }
+            "END" => {
+                if stack.pop().as_deref() != Some(component.as_str()) {
+                    return false;
+                }
+                if stack.len() == 1 && component == "VEVENT" {
+                    let Some(uid) = event_uid.take() else {
+                        return false;
+                    };
+                    if shared_uid.get_or_insert_with(|| uid.clone()) != &uid {
+                        return false;
+                    }
+                }
+            }
+            "METHOD" if stack.len() == 1 => {
+                method_request = component == "REQUEST";
+            }
+            "UID" if stack.len() == 2 && stack.last().is_some_and(|top| top == "VEVENT") => {
+                let uid = line.value.trim();
+                if uid.is_empty() {
+                    return false;
+                }
+                event_uid = Some(uid.to_owned());
+            }
+            _ if stack.is_empty() => return false,
+            _ => {}
+        }
+    }
+    stack.is_empty() && calendars == 1 && method_request && events >= 1
 }
 
 /// Every collaborative operation Mail exports on its shared mailbox state.
@@ -1202,6 +1262,56 @@ mod tests {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
+    }
+
+    fn invitation(events: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Tilo//Calendar//EN\r\nMETHOD:REQUEST\r\n{events}END:VCALENDAR\r\n"
+        )
+    }
+
+    const EVENT: &str = "BEGIN:VEVENT\r\nUID:a@tilo\r\nSUMMARY:Review\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\nEND:VEVENT\r\n";
+
+    #[test]
+    fn calendar_invitation_accepts_a_request_and_its_overrides() {
+        assert!(valid_calendar_invitation(&invitation(EVENT)));
+        let override_event = "BEGIN:VEVENT\r\nUID:a@tilo\r\nRECURRENCE-ID;VALUE=DATE:20260619\r\nSTATUS:CANCELLED\r\nEND:VEVENT\r\n";
+        assert!(
+            valid_calendar_invitation(&invitation(&format!("{EVENT}{override_event}"))),
+            "an overridden occurrence of the same event is part of one invitation"
+        );
+        let folded = invitation(EVENT).replace("SUMMARY:Review", "SUMMARY:Rev\r\n iew");
+        assert!(valid_calendar_invitation(&folded));
+    }
+
+    #[test]
+    fn calendar_invitation_is_checked_structurally_not_textually() {
+        let lookalike = EVENT.replace("SUMMARY:Review", "SUMMARY:BEGIN:VEVENT");
+        assert!(
+            valid_calendar_invitation(&invitation(&lookalike)),
+            "event text that looks like a component is just text"
+        );
+        let two_events = format!("{EVENT}{}", EVENT.replace("UID:a@tilo", "UID:b@tilo"));
+        assert!(!valid_calendar_invitation(&invitation(&two_events)));
+        let method_in_event = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nMETHOD:REQUEST\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert!(!valid_calendar_invitation(method_in_event));
+        let publish = invitation(EVENT).replace("METHOD:REQUEST", "METHOD:PUBLISH");
+        assert!(!valid_calendar_invitation(&publish));
+        let no_uid = invitation(&EVENT.replace("UID:a@tilo\r\n", ""));
+        assert!(!valid_calendar_invitation(&no_uid));
+        let misnested = invitation(&EVENT.replace("END:VALARM", "END:VEVENT"));
+        assert!(!valid_calendar_invitation(&misnested));
+        let trailing = format!("{}BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", invitation(EVENT));
+        assert!(!valid_calendar_invitation(&trailing));
+        assert!(!valid_calendar_invitation(
+            &invitation(EVENT).replace("\r\n", "\n")
+        ));
+        assert!(!valid_calendar_invitation(&invitation("")));
+        let oversized = invitation(&format!(
+            "BEGIN:VEVENT\r\nUID:a\r\nDESCRIPTION:{}\r\nEND:VEVENT\r\n",
+            "x".repeat(MAX_CALENDAR_ICS_BYTES)
+        ));
+        assert!(!valid_calendar_invitation(&oversized));
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
