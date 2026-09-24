@@ -162,11 +162,12 @@ use vello::{
     peniko::Color,
 };
 
-/// Cached `QUICK_UI_PERF=1` check, so the per-frame read is cheap.
+/// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
+/// (`QUICK_UI_PERF=1` natively), so the per-frame read is cheap.
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_PERF").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| crate::host::environment().diagnostics.perf_log)
 }
 
 /// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
@@ -176,7 +177,11 @@ fn perf_enabled() -> bool {
 fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SCROLL_OPT").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| {
+        crate::host::environment()
+            .diagnostics
+            .disable_scroll_fast_path
+    })
 }
 
 /// Whether an animation request should keep the event loop on its 60 Hz pump.
@@ -637,7 +642,9 @@ impl AppConstructionInputs {
                 field: crate::widget::SearchField::new,
             },
             watch_system_settings: true,
-            debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
+            debug_mode: || {
+                cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
+            },
             theme_store_stamp: || {
                 settings_store::settings_path()
                     .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
@@ -645,7 +652,7 @@ impl AppConstructionInputs {
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
-                if App::screen_reader_env_enabled()
+                if crate::host::environment().accessibility.screen_reader
                     || App::persisted_accessibility_bool("screen_reader")
                 {
                     Some(App::configured_screen_reader())
@@ -653,10 +660,20 @@ impl AppConstructionInputs {
                     None
                 }
             },
-            high_contrast: App::high_contrast_env_enabled,
-            reduce_motion: App::reduce_motion_env_enabled,
-            text_scale: || App::text_scale_env().unwrap_or(1.0),
-            ui_scale: || App::ui_scale_env().unwrap_or(1.0),
+            high_contrast: || crate::host::environment().accessibility.high_contrast,
+            reduce_motion: || crate::host::environment().accessibility.reduce_motion,
+            text_scale: || {
+                crate::host::environment()
+                    .accessibility
+                    .text_scale
+                    .unwrap_or(1.0)
+            },
+            ui_scale: || {
+                crate::host::environment()
+                    .accessibility
+                    .ui_scale
+                    .unwrap_or(1.0)
+            },
             pending_continuation_restore: crate::collaboration::continuation_restore_env,
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
@@ -787,14 +804,15 @@ impl App {
     }
 
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
+        let accessibility = crate::host::environment().accessibility;
         let theme = Theme::configured().with_a11y(
             &crate::a11y::A11ySettings {
-                high_contrast: Self::high_contrast_env_enabled(),
-                reduce_motion: Self::reduce_motion_env_enabled(),
+                high_contrast: accessibility.high_contrast,
+                reduce_motion: accessibility.reduce_motion,
                 ..Default::default()
             },
-            Self::text_scale_env().unwrap_or(1.0),
-            Self::ui_scale_env().unwrap_or(1.0),
+            accessibility.text_scale.unwrap_or(1.0),
+            accessibility.ui_scale.unwrap_or(1.0),
         );
         let mut text_renderer = TextRenderer::new();
         text_renderer.set_text_scale(theme.text_scale);
@@ -1649,7 +1667,7 @@ impl App {
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
-            || Self::screen_reader_env_enabled();
+            || crate::host::environment().accessibility.screen_reader;
         self.set_screen_reader_enabled(configured_reader);
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             Self::configure_screen_reader(reader);
@@ -2084,7 +2102,7 @@ impl App {
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
         #[cfg(target_os = "macos")]
-        if std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1") {
+        if crate::host::environment().diagnostics.window_no_activate {
             use winit::platform::macos::EventLoopBuilderExtMacOS;
             // Native scripted input does not need to take the user's keyboard.
             // Keep normal launches unchanged; this is an opt-in profiling mode.
@@ -2355,8 +2373,9 @@ mod generic_floating_activity_tests {
 
 /// See [`resolve_title_from`] for the precedence.
 fn resolve_window_title(explicit: Option<&str>) -> String {
-    let app_name = std::env::var("TILO_APP_NAME").ok();
-    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+    let environment = crate::host::environment();
+    let app_name = environment.identity.app_name.clone();
+    let package_id = environment.identity.package_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -2373,7 +2392,7 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
-    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+    let package_id = crate::host::environment().identity.package_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));

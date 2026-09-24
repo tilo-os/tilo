@@ -77,15 +77,18 @@ fn record_main_stage_with(
 pub(crate) fn enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        gate(
-            cfg!(all(target_os = "macos", feature = "presentation-feedback")),
-            std::env::var("QOS_PROFILE_PRESENTATION").ok().as_deref(),
-            std::env::var_os("QOS_NATIVE_SCENARIO").as_deref(),
-        )
+        cfg!(all(target_os = "macos", feature = "presentation-feedback"))
+            && crate::host::environment().diagnostics.presentation_profile
     })
 }
 
-fn gate(supported: bool, profile: Option<&str>, scenario: Option<&std::ffi::OsStr>) -> bool {
+/// Presentation profiling needs support, an explicit `profile == "1"`, and a
+/// native scenario to profile.
+pub(crate) fn gate(
+    supported: bool,
+    profile: Option<&str>,
+    scenario: Option<&std::ffi::OsStr>,
+) -> bool {
     supported && profile == Some("1") && scenario.is_some_and(|path| !path.is_empty())
 }
 

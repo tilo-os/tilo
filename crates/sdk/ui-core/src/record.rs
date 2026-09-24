@@ -759,8 +759,8 @@ struct Reserved {
 
 impl RecordSet {
     /// The launch-environment set: per-record documents under this package's
-    /// state directory. `TILO_PACKAGE_ID` always wins over `manifest_id` (as
-    /// in [`crate::persist::open`]) — resolving it differently here would
+    /// state directory. The host's package id always wins over `manifest_id`
+    /// (as in [`crate::persist::open_room`]) — resolving it differently here would
     /// split a package's records from its room index.
     ///
     /// This route resolves its storage from the native process environment
@@ -768,18 +768,20 @@ impl RecordSet {
     /// through [`RecordOwners`] instead, which persists through any
     /// [`DurableStore`].
     pub fn open(manifest_id: impl Into<String>) -> Self {
-        let package_id = std::env::var("TILO_PACKAGE_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
+        Self::open_in(manifest_id, &crate::host::environment().identity)
+    }
+
+    /// [`Self::open`] for an explicit host identity: its package id wins over
+    /// `manifest_id`, and its workspace (else cluster) id scopes the records.
+    pub fn open_in(manifest_id: impl Into<String>, identity: &crate::host::HostIdentity) -> Self {
+        let package_id = identity
+            .package_id
+            .clone()
             .unwrap_or_else(|| manifest_id.into());
-        let home = std::env::var("TILO_WORKSPACE_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                std::env::var("QUICK_CLUSTER_ID")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-            })
+        let home = identity
+            .workspace_id
+            .clone()
+            .or_else(|| identity.cluster_id.clone())
             // A launcher-less process still gets an explicit, non-routable
             // scope.  It may not collaborate (the broker rejects nil), but
             // it must never fall back to the historical package-global file.

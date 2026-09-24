@@ -681,7 +681,7 @@ impl NavSplit {
 fn split_cache_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SPLIT_CACHE").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| crate::host::environment().diagnostics.disable_split_cache)
 }
 
 impl Widget for NavSplit {

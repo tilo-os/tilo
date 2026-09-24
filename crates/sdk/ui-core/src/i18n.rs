@@ -171,14 +171,15 @@ fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
         .map_err(|_| I18nError::InvalidLocale(locale.to_owned()))
 }
 
+/// Whether `locale` names a language this module can load — not empty,
+/// `C` or `POSIX`.
+pub(crate) fn is_usable_locale(locale: &str) -> bool {
+    parse_locale(locale).is_ok()
+}
+
+/// The host's preferred locale; see [`crate::host::HostEnvironment::locale`].
 fn preferred_locale() -> Option<LanguageIdentifier> {
-    ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
-        .into_iter()
-        .find_map(|name| {
-            std::env::var(name)
-                .ok()
-                .and_then(|value| parse_locale(&value).ok())
-        })
+    parse_locale(crate::host::environment().locale.as_deref()?).ok()
 }
 
 fn make_bundle(

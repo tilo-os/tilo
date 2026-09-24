@@ -75,9 +75,19 @@ pub fn open(manifest_id: &str) -> (State, Autosave) {
 /// moved or deleted.  The next autosave lands in the room directory, so a
 /// crash during migration still leaves the legacy source intact.
 pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
-    let package_id = std::env::var("TILO_PACKAGE_ID")
-        .ok()
-        .filter(|id| !id.is_empty())
+    open_room_in(manifest_id, room_id, &crate::host::environment().identity)
+}
+
+/// [`open_room`] for an explicit host identity: its package id, when set,
+/// wins over `manifest_id`.
+pub fn open_room_in(
+    manifest_id: &str,
+    room_id: &str,
+    identity: &crate::host::HostIdentity,
+) -> (State, Autosave) {
+    let package_id = identity
+        .package_id
+        .clone()
         .unwrap_or_else(|| manifest_id.to_string());
     let attempt = || -> Result<(State, Autosave), StoreError> {
         let mut store = DocStore::open_room(&package_id, room_id)?;
