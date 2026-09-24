@@ -521,3 +521,36 @@ impl ChangeBuilder<Set<NonZeroU64>, Set<ActorId>, Set<u64>, Set<i64>> {
         })
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl<O: OpReadState> NativeVisit for Change<'_, O> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            bytes,
+            header: _,
+            dependencies,
+            actor,
+            other_actors,
+            seq: _,
+            start_op: _,
+            timestamp: _,
+            message,
+            ops_meta: _,
+            ops_data: _,
+            extra_bytes: _,
+            num_ops: _,
+            _phantom: _,
+        } = self;
+        // Header and ChangeOpsColumns contain scalars, ranges and PhantomData;
+        // no retained decoder, heap buffer or shared handle is embedded there.
+        bytes.native_visit(visitor)?;
+        dependencies.native_visit(visitor)?;
+        actor.native_visit(visitor)?;
+        other_actors.native_visit(visitor)?;
+        message.native_visit(visitor)
+    }
+}

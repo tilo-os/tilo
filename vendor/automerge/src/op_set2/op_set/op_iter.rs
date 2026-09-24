@@ -306,6 +306,17 @@ pub(crate) struct CtrWalker<'a> {
 }
 
 impl<'a> CtrWalker<'a> {
+    /// Size the exact opaque iterator placed in the Box, without constructing
+    /// it (construction itself allocates the persistent predicate-search stack).
+    pub(super) fn native_allocation_bytes(col: &'a ColumnData<DeltaCursor>) -> Option<usize> {
+        fn result_size<T>(_: impl FnOnce() -> T) -> usize {
+            std::mem::size_of::<T>()
+        }
+        result_size(|| col.find_by_range(0..0)).checked_add(
+            hexane::SlabTree::<SlabWeight>::search_stack_allocation_bound(col.slabs.len())?,
+        )
+    }
+
     pub(crate) fn new(col: &'a ColumnData<DeltaCursor>, range: Range<usize>) -> Self {
         let ctr = Box::new(col.find_by_range(range));
         Self { ctr }

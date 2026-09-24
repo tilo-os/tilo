@@ -138,3 +138,23 @@ impl From<Vec<Value>> for Value {
         Value::List(List::from(values))
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for List {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        self.0.native_visit(visitor)
+    }
+}
+impl NativeVisit for ListValue {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let _ = visitor;
+        Err(crate::resource_limits::NativeResourceError::Unaccounted)
+    }
+}

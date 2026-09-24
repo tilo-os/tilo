@@ -1,0 +1,53 @@
+# The libFuzzer harness for moq-net's wire codecs. `just rs fuzz <target>` drives it,
+# and nightly.yml runs every target for five minutes.
+#
+# A workspace member so it shares the root lockfile, which is the only thing that
+# keeps its resolve from drifting when a sibling it depends on is bumped. It is
+# excluded from every gate that means "all of it" instead: libFuzzer needs a nightly
+# toolchain and sanitizer flags, so nothing in `check` or `test` may compile it.
+#
+# The target bodies live in `moq-net`'s hidden `fuzz` module, not here: `lite` and
+# `ietf` are private modules, so this crate cannot reach a single decoder, and sharing
+# the bodies is what lets the crate's own tests replay the corpus on stable.
+[package]
+name = "moq-net-fuzz"
+version = "0.0.0"
+license = "MIT OR Apache-2.0"
+publish = false
+edition = "2024"
+autobins = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "lite"
+path = "fuzz_targets/lite.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ietf"
+path = "fuzz_targets/ietf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "varint"
+path = "fuzz_targets/varint.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path"
+path = "fuzz_targets/path.rs"
+test = false
+doc = false
+bench = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+moq-net = { workspace = true, features = ["fuzz"] }

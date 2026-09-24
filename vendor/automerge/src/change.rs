@@ -1,3 +1,5 @@
+pub(crate) mod native_mutation;
+
 use std::{borrow::Cow, num::NonZeroU64};
 
 use crate::{
@@ -352,6 +354,36 @@ impl From<&Change> for crate::ExpandedChange {
             start_op: c.start_op(),
             extra_bytes: c.extra_bytes().to_vec(),
             message: c.message().cloned(),
+        }
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Change {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            stored,
+            compression,
+            len,
+        } = self;
+        let _ = len;
+        stored.native_visit(visitor)?;
+        compression.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for CompressionState {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Compressed(value) => value.native_visit(visitor),
+            Self::NotCompressed | Self::TooSmallToCompress => Ok(()),
         }
     }
 }

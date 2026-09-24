@@ -1401,3 +1401,34 @@ mod tests {
         assert!(tx.get(&a, "b").unwrap().is_some());
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for TransactionInner {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            message,
+            deps,
+            scope,
+            checkpoint,
+            pending,
+            actor,
+            seq,
+            start_op,
+            time,
+        } = self;
+        let _ = actor;
+        let _ = seq;
+        let _ = start_op;
+        let _ = time;
+        message.native_visit(visitor)?;
+        deps.native_visit(visitor)?;
+        scope.native_visit(visitor)?;
+        checkpoint.native_visit(visitor)?;
+        pending.native_visit(visitor)?;
+        Ok(())
+    }
+}

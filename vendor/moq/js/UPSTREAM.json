@@ -1,0 +1,68 @@
+{
+  "repository": "https://github.com/moq-dev/moq",
+  "commit": "3aedaf3503146c664479f6fc53a50b36bb5e816d",
+  "copiedPaths": [
+    "js/net",
+    "js/signals",
+    "js/tsconfig.json",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "sourceVersions": {
+    "@moq/net": "0.3.5-source-tree-only",
+    "@moq/signals": "0.2.3"
+  },
+  "registryPackageAccepted": false,
+  "registryPackageReason": "The published @moq/net@0.3.5 has gitHead c3e9cc6c1ca8f030505b5f83ec2bf39843972f89 and lacks Draft 21.",
+  "localPatches": [
+    {
+      "path": "net/src/ietf/parameters.ts",
+      "purpose": "Bound and encode the standard Draft 21 Authorization Token SETUP option."
+    },
+    {
+      "path": "net/src/connection/handshake.ts",
+      "purpose": "Place the opaque authorization proof in the outgoing SETUP."
+    },
+    {
+      "path": "net/src/connection/connect.ts",
+      "purpose": "Expose authorization connect props, validate before dialing, and require moqt-21 without WebSocket fallback."
+    },
+    {
+      "path": "net/src/group.ts",
+      "purpose": "Expose retained-frame accounting and eviction hooks used by bounded track caches."
+    },
+    {
+      "path": "net/src/track.ts",
+      "purpose": "Enforce optional local hard group/frame bounds for producer and subscriber caches."
+    },
+    {
+      "path": "net/src/broadcast.ts",
+      "purpose": "Accept local track cache limits when creating a static broadcast track."
+    },
+    {
+      "path": "net/src/stream.ts",
+      "purpose": "Coalesce the field-by-field writes an encoder issues in one task into a single WebTransport write (one QUIC STREAM frame per object instead of ~6 tiny packets)."
+    },
+    {
+      "path": "net/src/ietf/datagram.ts",
+      "purpose": "New: Draft 21 OBJECT_DATAGRAM (section 11.2.1) codec; emits single-object groups (END_OF_GROUP|ZERO_OBJECT_ID|DEFAULT_PRIORITY), drops malformed/status datagrams instead of closing the session."
+    },
+    {
+      "path": "net/src/ietf/publisher.ts",
+      "purpose": "Forward a subscribed track's datagrams as OBJECT_DATAGRAMs (Group ID = datagram sequence), best-effort, never awaited."
+    },
+    {
+      "path": "net/src/ietf/subscriber.ts",
+      "purpose": "Route received OBJECT_DATAGRAMs by track alias to the subscription's track as datagrams."
+    },
+    {
+      "path": "net/src/ietf/connection.ts",
+      "purpose": "Run the OBJECT_DATAGRAM receive loop for the session (best-effort, never fatal)."
+    },
+    {
+      "path": "net/src/ietf/aliases.ts",
+      "purpose": "Synchronous alias lookup for datagram routing."
+    }
+  ],
+  "bundleLock": "scripts/moq-browser/package-lock.json"
+}

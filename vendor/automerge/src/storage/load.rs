@@ -1,3 +1,5 @@
+mod incoming;
+pub(crate) use incoming::load_all_changes_bounded;
 use tracing::instrument;
 
 use crate::{
@@ -49,6 +51,46 @@ pub(crate) enum LoadedChanges<'a> {
         /// The error encountered whilst trying to parse `remaining`
         error: Error,
     },
+}
+
+/// Complete checked-storage tail loading. The permit borrows the reserved
+/// concrete peak, and every branch uses strict bounded reconstruction.
+pub(crate) fn load_changes_bounded(
+    mut data: parse::Input<'_>,
+    text_encoding: TextEncoding,
+    current: &ChangeGraph,
+    permit: &crate::resource_limits::reconstruct::Permit<'_>,
+) -> Result<Vec<Change>, crate::resource_limits::NativeResourceError> {
+    use crate::resource_limits::NativeResourceError as Error;
+    let mut changes = Vec::new();
+    while !data.is_empty() {
+        let (remaining, chunk) = storage::Chunk::parse(data).map_err(|_| Error::Invalid)?;
+        if !chunk.checksum_valid() {
+            return Err(Error::Invalid);
+        }
+        match chunk {
+            storage::Chunk::Document(document) => {
+                if !document.heads().iter().all(|head| current.has_change(head)) {
+                    changes.extend(document.reconstruct_changes_bounded(text_encoding, permit)?);
+                }
+            }
+            storage::Chunk::Change(change) => {
+                changes.push(
+                    Change::new_from_unverified(change.into_owned(), None)
+                        .map_err(|_| Error::Invalid)?,
+                );
+            }
+            storage::Chunk::Bundle(bundle) => {
+                let bundle =
+                    Bundle::new_from_unverified(bundle.into_owned()).map_err(|_| Error::Invalid)?;
+                changes.extend(bundle.to_changes_bounded(permit)?);
+            }
+            // Normalization has already decoded compressed change chunks.
+            storage::Chunk::CompressedChange(..) => return Err(Error::Invalid),
+        }
+        data = remaining.reset();
+    }
+    Ok(changes)
 }
 
 /// Attempt to Load all the chunks in `data`.

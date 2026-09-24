@@ -23,5 +23,12 @@ compile under the workspace's `-D warnings` policy:
 - `src/columnar/column_range/generic.rs` implements the private iterator dispatch directly,
   removing an otherwise unused forwarding method.
 
+Host logging hygiene:
+
+- `src/automerge.rs` records `load_with` / `load_with_options` errors at `debug` rather than
+  `error` (`#[tracing::instrument(err(level = "debug"))]`). Callers validate single change chunks
+  by loading them and expect `MissingDeps`; the error is still returned unchanged. At `error` this
+  emitted about 68,000 log lines per two-minute native host session.
+
 No other packaged file is modified. Unpatched Automerge 0.8.0 peers are known not to support this
 populated-Table path; coordinated ingress/version admission remains an integration requirement.

@@ -116,6 +116,10 @@ optional = true
 [dependencies.flate2]
 version = "^1.0.22"
 
+# Fixed-layout inflater state lets bounded admission reserve decoder scratch.
+[dependencies.miniz_oxide]
+version = "=0.8.9"
+
 [dependencies.getrandom]
 version = "0.3"
 

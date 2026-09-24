@@ -49,3 +49,15 @@ impl<'a> Compressed<'a> {
         }
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Compressed<'_> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { checksum: _, bytes } = self;
+        bytes.native_visit(visitor)
+    }
+}

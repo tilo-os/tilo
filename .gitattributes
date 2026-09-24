@@ -12,3 +12,7 @@ crates/sdk/ui-core/assets/fonts/manifest.toml text eol=lf
 tools/windows/gstreamer-licenses/*.txt -text
 tools/windows/gstreamer-licenses/*-COPYING -text
 tools/windows/gstreamer-licenses/*-LICENSE -text
+
+# Pinned MoQ artifacts retain their provenance-verified bytes, including notices.
+crates/browser/qos-browser-runtime/web/media-moq-library.mjs -text
+crates/browser/qos-browser-runtime/web/media-moq-library.LICENSE.txt -text

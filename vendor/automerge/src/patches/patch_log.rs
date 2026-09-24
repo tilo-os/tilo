@@ -44,6 +44,8 @@ pub struct PatchLog {
     pub(crate) events: Vec<(ObjId, Event)>,
     expose: HashSet<OpId>,
     active: bool,
+    // Private bounded execution never retains observation history.
+    discard: bool,
     path_map: BTreeMap<ObjId, (Prop, ObjId)>,
     path_hint: usize,
     pub(crate) heads: Option<Vec<ChangeHash>>,
@@ -168,6 +170,7 @@ impl PatchLog {
     pub fn new(active: bool) -> Self {
         PatchLog {
             active,
+            discard: false,
             expose: HashSet::default(),
             events: vec![],
             heads: None,
@@ -195,8 +198,15 @@ impl PatchLog {
         Self::new(true)
     }
 
+    /// Private bounded batch sink. Public active/inactive/null constructors
+    /// preserve their existing recording behavior. This mode cannot be enabled
+    /// by callers and never becomes recording through branch or activation.
+    pub(crate) fn native_discard() -> Self {
+        Self { discard: true, ..Self::inactive() }
+    }
+
     pub(crate) fn set_active(&mut self, setting: bool) {
-        self.active = setting
+        self.active = setting && !self.discard
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -204,10 +214,12 @@ impl PatchLog {
     }
 
     pub(crate) fn delete_seq(&mut self, obj: ObjId, index: usize, num: usize) {
+        if self.discard { return; }
         self.events.push((obj, Event::DeleteSeq { index, num }))
     }
 
     pub(crate) fn delete_map(&mut self, obj: ObjId, key: &str) {
+        if self.discard { return; }
         self.events
             .push((obj, Event::DeleteMap { key: key.into() }))
     }
@@ -220,6 +232,7 @@ impl PatchLog {
     }
 
     pub(crate) fn increment_map(&mut self, obj: ObjId, key: &str, n: i64, id: OpId) {
+        if self.discard { return; }
         self.events.push((
             obj,
             Event::IncrementMap {
@@ -231,6 +244,7 @@ impl PatchLog {
     }
 
     pub(crate) fn increment_seq(&mut self, obj: ObjId, index: usize, n: i64, id: OpId) {
+        if self.discard { return; }
         self.events
             .push((obj, Event::IncrementSeq { index, n, id }))
     }
@@ -243,11 +257,13 @@ impl PatchLog {
     }
 
     pub(crate) fn flag_conflict_map(&mut self, obj: ObjId, key: &str) {
+        if self.discard { return; }
         self.events
             .push((obj, Event::FlagConflictMap { key: key.into() }))
     }
 
     pub(crate) fn flag_conflict_seq(&mut self, obj: ObjId, index: usize) {
+        if self.discard { return; }
         self.events.push((obj, Event::FlagConflictSeq { index }))
     }
 
@@ -275,6 +291,7 @@ impl PatchLog {
         conflict: bool,
         expose: bool,
     ) {
+        if self.discard { return; }
         if expose && value.is_object() {
             self.expose.insert(id);
         }
@@ -298,6 +315,7 @@ impl PatchLog {
         conflict: bool,
         expose: bool,
     ) {
+        if self.discard { return; }
         if expose && value.is_object() {
             self.expose.insert(id);
         }
@@ -319,6 +337,7 @@ impl PatchLog {
         text: &str,
         marks: Option<Arc<MarkSet>>,
     ) {
+        if self.discard { return; }
         self.events.push((
             obj,
             Event::Splice {
@@ -330,6 +349,7 @@ impl PatchLog {
     }
 
     pub(crate) fn mark(&mut self, obj: ObjId, index: usize, len: usize, marks: &Arc<MarkSet>) {
+        if self.discard { return; }
         if let Some((_, Event::Mark { marks: tail_marks })) = self.events.last_mut() {
             tail_marks.add(index, len, marks);
             return;
@@ -348,6 +368,7 @@ impl PatchLog {
         conflict: bool,
         expose: bool,
     ) {
+        if self.discard { return; }
         if expose && value.is_object() {
             self.expose.insert(id);
         }
@@ -362,6 +383,7 @@ impl PatchLog {
         id: OpId,
         conflict: bool,
     ) {
+        if self.discard { return; }
         let event = Event::Insert {
             index,
             value,
@@ -380,6 +402,7 @@ impl PatchLog {
     }
 
     pub(crate) fn make_patches(&mut self, doc: &Automerge) -> Vec<Patch> {
+        if self.discard { return Vec::new(); }
         self.events.sort_by(|(a, _), (b, _)| a.cmp(b));
         let expose = ExposeQueue(self.expose.iter().map(|id| doc.id_to_exid(*id)).collect());
         let clock = self.heads.as_ref().map(|h| doc.clock_at(h));
@@ -418,7 +441,7 @@ impl PatchLog {
     }
 
     pub(crate) fn truncate(&mut self) {
-        self.active = true;
+        self.active = !self.discard;
         self.events.truncate(0);
         self.path_hint = 0;
         self.path_map = Default::default();
@@ -428,6 +451,7 @@ impl PatchLog {
     pub(crate) fn branch(&mut self) -> Self {
         Self {
             active: self.active,
+            discard: self.discard,
             expose: HashSet::new(),
             events: Default::default(),
             path_map: Default::default(),
@@ -438,6 +462,7 @@ impl PatchLog {
     }
 
     pub(crate) fn migrate_actor(&mut self, index: usize) {
+        if self.discard { return; }
         let dirty = std::mem::take(&mut self.events);
         self.events = dirty
             .into_iter()
@@ -455,6 +480,7 @@ impl PatchLog {
     // this is an uncommon operation so this seems preferable to storing ExId's in place
     // for every objid and opid
     pub(crate) fn migrate_actors(&mut self, others: &Vec<ActorId>) -> Result<(), AutomergeError> {
+        if self.discard { return Ok(()); }
         if &self.actors != others {
             if self.actors.is_empty() {
                 self.actors = others.clone();
@@ -478,10 +504,12 @@ impl PatchLog {
     }
 
     pub(crate) fn merge(&mut self, other: Self) {
+        if self.discard { return; }
         self.events.extend(other.events);
     }
 
     pub(crate) fn path_hint(&mut self, hint: BTreeMap<ObjId, (Prop, ObjId)>) {
+        if self.discard { return; }
         self.path_map = hint;
         self.path_hint = self.events.len();
     }
@@ -578,5 +606,105 @@ impl ExposeQueue {
             }
         }
         Some(())
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for PatchLog {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            events,
+            expose,
+            active: _,
+            discard: _,
+            path_map,
+            path_hint: _,
+            heads,
+            actors,
+        } = self;
+        events.native_visit(visitor)?;
+        // expose only inserts, extends and clears; no individual deletion.
+        visitor.hash_set(expose, expose.capacity())?;
+        path_map.native_visit(visitor)?;
+        heads.native_visit(visitor)?;
+        actors.native_visit(visitor)
+    }
+}
+impl NativeVisit for Event {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::PutMap { key, value, .. } => {
+                key.native_visit(visitor)?;
+                value.native_visit(visitor)
+            }
+            Self::PutSeq { value, .. } | Self::Insert { value, .. } => value.native_visit(visitor),
+            Self::DeleteMap { key }
+            | Self::IncrementMap { key, .. }
+            | Self::FlagConflictMap { key } => key.native_visit(visitor),
+            Self::Splice { text, marks, .. } => {
+                text.native_visit(visitor)?;
+                marks.native_visit(visitor)
+            }
+            Self::Mark { marks } => marks.native_visit(visitor),
+            Self::DeleteSeq { .. } | Self::IncrementSeq { .. } | Self::FlagConflictSeq { .. } => {
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_discard_tests {
+    use super::*;
+    use crate::transaction::Transactable;
+    use crate::{AutoCommit, ROOT};
+
+    // Supplemental vendor-unit coverage. The current existing-target qps
+    // proof uses the actual public bounded apply path; this test is not part
+    // of that target and must not be reported as executed by its filter.
+    #[test]
+    fn discarded_batch_preserves_history_and_cannot_resume_recording() {
+        let mut source = AutoCommit::new();
+        source.put(ROOT, "key", "value").unwrap();
+        source.commit();
+        let changes = source.get_changes(&[]);
+        let mut legacy = Automerge::new();
+        let mut legacy_log = PatchLog::inactive();
+        legacy.apply_changes_batch_log_patches(changes.clone(), &mut legacy_log).unwrap();
+        assert!(!legacy_log.events.is_empty());
+
+        let mut discarded = PatchLog::native_discard();
+        discarded.set_active(true);
+        discarded.truncate();
+        assert!(!discarded.is_active());
+        let mut branch = discarded.branch();
+        branch.set_active(true);
+        branch.merge(legacy_log.clone());
+        let mut actual = Automerge::new();
+        actual.apply_changes_batch_log_patches(changes, &mut branch).unwrap();
+        branch.truncate();
+        branch.set_active(true);
+        branch.merge(legacy_log);
+        assert!(!branch.is_active());
+        assert!(branch.events.is_empty());
+        assert!(branch.expose.is_empty());
+        assert!(branch.actors.is_empty());
+        assert!(branch.heads.is_none());
+        assert!(branch.path_map.is_empty());
+        assert_eq!(actual.get_heads(), legacy.get_heads());
+        let actual_changes = actual.get_changes(&[]);
+        let legacy_changes = legacy.get_changes(&[]);
+        assert_eq!(actual_changes.len(), legacy_changes.len());
+        for (actual, legacy) in actual_changes.iter().zip(&legacy_changes) {
+            assert_eq!(actual.hash(), legacy.hash());
+            assert_eq!(actual.raw_bytes(), legacy.raw_bytes());
+        }
     }
 }

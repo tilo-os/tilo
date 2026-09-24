@@ -1,3 +1,6 @@
+mod native_mutation;
+mod native_validation;
+
 use crate::hydrate::Value;
 use crate::iter::RichTextDiff;
 use crate::op_set2::types::{Action, KeyRef, MarkData, PropRef};
@@ -660,7 +663,7 @@ impl<'a> ValueState<'a> {
             match (self.doc.0.take(), self.change.0.take()) {
                 (None, Some(c)) => log.insert(obj, index, c.value, c.id, c.conflict),
                 (Some(d), Some(c)) if d.id == c.id => {
-                    let n = c.value.as_i64() - d.value.as_i64();
+                    let n = c.value.as_i64().wrapping_sub(d.value.as_i64());
                     if n != 0 {
                         log.increment_seq(obj, index, n, c.id);
                     }
@@ -743,7 +746,7 @@ impl<'a> ValueState<'a> {
                 }
             }
             (Some(d), Some(c)) if d.id == c.id => {
-                let n = c.value.as_i64() - d.value.as_i64();
+                let n = c.value.as_i64().wrapping_sub(d.value.as_i64());
                 if n != 0 {
                     log.increment_map(obj, key, n, c.id);
                 }
@@ -972,6 +975,98 @@ struct ObjSpan {
 }
 
 impl Automerge {
+    pub(crate) fn native_batch_reconstruction_plan(
+        shape: &crate::resource_limits::reconstruct::Shape,
+        budget: &mut crate::resource_limits::reconstruct::Budget,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::reconstruct::{product, sum};
+        let changes = shape.changes;
+        let ops = shape.dense;
+        let edges = shape.edges;
+        // Queue, pooled input and BatchApply change slots can overlap. Payload
+        // ownership moves between them; those bytes are counted by the parser
+        // and canonical collector rather than counted as deep copies here.
+        budget.growing_vec::<Change>(changes)?;
+        budget.growing_vec::<Change>(changes)?;
+        budget.growing_vec::<Option<Change>>(changes)?;
+        for _ in 0..3 {
+            budget.hash::<ChangeHash, ()>(changes)?;
+        }
+        for _ in 0..2 {
+            budget.hash::<ActorId, HashSet<u64>>(shape.actors)?;
+            budget.hash_many::<u64, ()>(shape.actors, changes)?;
+            budget.add(shape.actor_bytes)?;
+        }
+        budget.growing_vec::<u32>(changes)?; // unsatisfied
+        budget.growing_vec::<bool>(changes)?; // consumed
+        budget.growing_vec::<usize>(changes)?; // topological order
+        budget.growing_vec::<usize>(changes)?; // ready VecDeque
+        budget.hash::<ChangeHash, Vec<usize>>(edges)?;
+        budget.growing_vec::<usize>(edges)?;
+        budget.array::<usize>(product(edges, 4)?)?;
+        // Imported operation vector, incoming per-change vector, and stable
+        // sort's scratch buffer coexist; scratch holds shallow slots only.
+        budget.growing_vec::<ChangeOp>(ops)?;
+        budget.growing_vec::<ChangeOp>(ops)?;
+        budget.array::<ChangeOp>(ops)?;
+        budget.growing_vec::<usize>(shape.actors)?; // actor remapping
+        budget.growing_vec::<ObjSpan>(ops)?;
+        budget.hash::<OpId, Vec<(OpId, Option<i64>)>>(edges)?;
+        budget.growing_vec::<(OpId, Option<i64>)>(edges)?;
+        budget.array::<(OpId, Option<i64>)>(product(edges, 4)?)?;
+        // Per-ChangeOp predecessor/successor vectors, plus temporary mapped
+        // predecessors while the original ChangeOp is constructed.
+        for _ in 0..2 {
+            budget.growing_vec::<OpId>(edges)?;
+            budget.array::<OpId>(product(edges, 4)?)?;
+        }
+        budget.growing_vec::<(OpId, Option<i64>)>(edges)?;
+        budget.array::<(OpId, Option<i64>)>(product(edges, 4)?)?;
+        budget.hash::<OpId, Vec<usize>>(ops)?; // entry
+        budget.hash::<usize, Vec<usize>>(ops)?; // gosub
+        budget.hash::<ElemId, Vec<usize>>(ops)?; // updates
+        budget.hash::<OpId, usize>(ops)?; // temporary e_to_i
+        for _ in 0..3 {
+            budget.growing_vec::<usize>(ops)?;
+            budget.array::<usize>(product(ops, 4)?)?;
+        }
+        budget.growing_vec::<usize>(ops)?; // untangler stack
+        budget.growing_vec::<usize>(ops)?; // updates stack
+        budget.growing_vec::<SuccInsert>(edges)?;
+        budget.growing_vec::<Adjust>(sum(ops, shape.operations)?)?;
+        budget.hash::<OpId, super::super::op_set::ObjInfo>(sum(ops, shape.operations)?)?;
+        budget.add(shape.values)?; // imported owned strings/scalars
+        budget.add(shape.values)?; // doc/change ValueState owned payload
+        budget.add(shape.values)?; // ValueState clone during conflict handling
+                                   // RichTextDiff has before/after machines. MarkDiff can retain their
+                                   // old Arcs during copy-on-write, and mark_above/mark_below create
+                                   // temporary MarkData clones. Bound those concrete simultaneous sets.
+        for _ in 0..6 {
+            budget.growing_vec::<(OpId, MarkData<'static>)>(shape.marks)?;
+            budget.tree::<smol_str::SmolStr, crate::ScalarValue>(shape.marks)?;
+            budget.add(shape.values)?;
+        }
+        budget.arc::<crate::marks::MarkSet>(6)?;
+        budget.array::<std::sync::atomic::AtomicUsize>(product(shape.marks, 12)?)?;
+        // Replacement columns and their encode/copy work coexist with the
+        // loaded state. A batch touches 16 operation, 5 index and 4 graph
+        // columns. Actor rewrites are sequential and fit the same replacement
+        // allowance; their source columns remain covered by the load plan.
+        let cells = sum(
+            sum(product(ops, 21)?, product(changes, 4)?)?,
+            product(edges, 2)?,
+        )?;
+        let encoded = sum(product(cells, 20)?, shape.values)?;
+        budget.columns::<hexane::StrCursor>(
+            25,
+            sum(cells, shape.column_events)?,
+            sum(encoded, shape.column_bytes)?,
+        )?;
+        budget.raw_columns(2, sum(shape.raw_column_bytes, shape.values)?)?;
+        super::super::op_set::IndexBuilder::native_reconstruction_plan(shape, budget)?;
+        Ok(())
+    }
+
     pub fn apply_changes_batch(
         &mut self,
         changes: impl IntoIterator<Item = Change> + Clone,

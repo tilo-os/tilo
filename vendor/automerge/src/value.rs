@@ -379,7 +379,9 @@ pub struct Counter {
 
 impl Counter {
     pub(crate) fn increment(&mut self, inc: i64) {
-        self.current += inc;
+        // Counter arithmetic wraps like the release profile, so a valid
+        // remote history can never panic a debug build or diverge by profile.
+        self.current = self.current.wrapping_add(inc);
     }
 }
 
@@ -441,7 +443,7 @@ impl From<&Counter> for f64 {
 }
 
 /// A value which is not a composite value
-#[derive(Serialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, PartialEq, Clone)]
 #[serde(untagged)]
 pub enum ScalarValue {
     Bytes(Vec<u8>),
@@ -458,6 +460,43 @@ pub enum ScalarValue {
         bytes: Vec<u8>,
     },
     Null,
+}
+
+/// Shared borrowed view of the existing derived ScalarValue debug shape. Both
+/// legacy owners and native loans use these exact variant/field names. Counter
+/// lends both fields rather than reducing an arbitrary value to its current sum.
+#[derive(Debug)]
+pub(crate) enum ScalarDebug<'a> {
+    Bytes(&'a [u8]),
+    Str(&'a str),
+    Int(i64),
+    Uint(u64),
+    F64(f64),
+    Counter(&'a Counter),
+    Timestamp(i64),
+    Boolean(bool),
+    Unknown { type_code: u8, bytes: &'a [u8] },
+    Null,
+}
+impl fmt::Debug for ScalarValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Bytes(v) => ScalarDebug::Bytes(v),
+            Self::Str(v) => ScalarDebug::Str(v),
+            Self::Int(v) => ScalarDebug::Int(*v),
+            Self::Uint(v) => ScalarDebug::Uint(*v),
+            Self::F64(v) => ScalarDebug::F64(*v),
+            Self::Counter(v) => ScalarDebug::Counter(v),
+            Self::Timestamp(v) => ScalarDebug::Timestamp(*v),
+            Self::Boolean(v) => ScalarDebug::Boolean(*v),
+            Self::Unknown { type_code, bytes } => ScalarDebug::Unknown {
+                type_code: *type_code,
+                bytes,
+            },
+            Self::Null => ScalarDebug::Null,
+        };
+        value.fmt(f)
+    }
 }
 
 impl PartialEq for Counter {
@@ -758,6 +797,38 @@ impl fmt::Display for ScalarValue {
             ScalarValue::Boolean(b) => write!(f, "{}", b),
             ScalarValue::Null => write!(f, "null"),
             ScalarValue::Unknown { type_code, .. } => write!(f, "unknown type {}", type_code),
+        }
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Value<'_> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Object(_) => Ok(()),
+            Self::Scalar(value) => value.native_visit(visitor),
+        }
+    }
+}
+impl NativeVisit for ScalarValue {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Bytes(value) | Self::Unknown { bytes: value, .. } => value.native_visit(visitor),
+            Self::Str(value) => value.native_visit(visitor),
+            Self::Int(_)
+            | Self::Uint(_)
+            | Self::F64(_)
+            | Self::Counter(_)
+            | Self::Timestamp(_)
+            | Self::Boolean(_)
+            | Self::Null => Ok(()),
         }
     }
 }

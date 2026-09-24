@@ -1,3 +1,5 @@
+mod native_history;
+
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -555,6 +557,78 @@ impl<'a> ChangeBuilder<'a> {
 }
 
 impl<'a> ChangeCollector<'a> {
+    pub(crate) fn native_reconstruction_plan(
+        shape: &crate::resource_limits::reconstruct::Shape,
+        budget: &mut crate::resource_limits::reconstruct::Budget,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::reconstruct::{product, sum};
+        budget.growing_vec::<BuildChangeMetadata<'_>>(shape.changes)?;
+        budget.growing_vec::<ChangeBuilder<'_>>(shape.changes)?;
+        budget.growing_vec_forest::<Option<OpBuilder<'_>>>(shape.dense, shape.changes)?;
+        budget.growing_vec_forest::<u64>(shape.edges, shape.changes)?; // metadata dependencies
+        budget.array::<u64>(product(shape.actors, 2)?)?; // collect max_op/seq
+        budget.growing_vec::<bool>(shape.actors)?; // ActorMapper.seen
+        budget.growing_vec::<Option<usize>>(shape.actors)?; // ActorMapper.mapping
+        budget.growing_vec::<usize>(shape.actors)?; // ActorMapper.other_actors
+        budget.hash::<OpId, Vec<OpId>>(shape.edges)?;
+        // Each predecessor vector can retain a four-element first allocation;
+        // a delete flush copies its vector while the map still owns the source.
+        for _ in 0..2 {
+            budget.growing_vec::<OpId>(shape.edges)?;
+            budget.array::<OpId>(product(shape.edges, 4)?)?;
+        }
+        budget.growing_vec::<Change>(shape.changes)?;
+        budget.tree::<ChangeHash, ()>(shape.changes)?;
+        budget.growing_vec_forest::<ChangeHash>(shape.edges, shape.changes)?;
+        budget
+            .growing_vec_forest::<ActorId>(product(shape.changes, shape.actors)?, shape.changes)?;
+        budget.add(product(shape.changes, shape.actor_bytes)?)?;
+        budget.add(shape.values)?; // metadata message/string ownership
+        budget.add(shape.values)?; // returned Change message ownership
+                                   // Fourteen canonical operation columns: at most a ten-byte run/count
+                                   // header and a ten-byte scalar/length prefix per logical cell. Variable
+                                   // payloads, predecessor cells and change prefixes are separate terms.
+        let cells = sum(product(shape.dense, 14)?, product(shape.edges, 2)?)?;
+        let column_bytes = sum(product(cells, 20)?, shape.values)?;
+        // Document/bundle graph extra-data also appears in a raw column;
+        // preserve it in each regenerated canonical change body.
+        let prefix_bytes = sum(
+            sum(
+                product(shape.edges, size_of::<ChangeHash>())?,
+                product(shape.changes, 10 * (8 + 2 * 14))?,
+            )?,
+            sum(
+                product(
+                    shape.changes,
+                    sum(shape.actor_bytes, product(shape.actors, 10)?)?,
+                )?,
+                sum(
+                    shape.values,
+                    sum(shape.extra_bytes, shape.raw_column_bytes)?,
+                )?,
+            )?,
+        )?;
+        let body_bytes = sum(column_bytes, prefix_bytes)?;
+        // col_data, body, and final header+body coexist in finish(); the Vec
+        // growth allowance includes each old/replacement allocation overlap.
+        budget.growing_vec::<u8>(column_bytes)?;
+        budget.growing_vec::<u8>(body_bytes)?;
+        budget.growing_vec::<u8>(sum(body_bytes, product(shape.changes, 20)?)?)?;
+        // write_change_ops invokes ColumnCursor::encode columns sequentially,
+        // writing directly to the already-accounted col_data Vec. Only the
+        // current RleState literal vector is live; it does not create slabs or
+        // a SlabWriter. Cow<str> covers the widest canonical packed item.
+        budget.growing_vec::<Cow<'_, str>>(shape.dense.max(shape.edges))?;
+        budget.add(shape.values)?; // current encoder's owned literal payloads
+        budget.growing_vec::<crate::storage::RawColumn<crate::storage::columns::compression::Uncompressed>>(14)?;
+        // Op::succ materializes a temporary vector while collector/index
+        // process the same operation. A repeated string can become owned when
+        // crossing a slab, even when the source key/value is normally borrowed.
+        budget.growing_vec::<OpId>(shape.edges)?;
+        budget.add(shape.values)?;
+        Ok(())
+    }
+
     pub(crate) fn with_index(self, index: &'a mut IndexBuilder) -> IndexedChangeCollector<'a> {
         IndexedChangeCollector {
             collector: self,
@@ -573,6 +647,19 @@ impl<'a> ChangeCollector<'a> {
             meta.push(c);
         }
         ChangeCollector::try_from_change_meta(meta, &op_set.actors)
+    }
+
+    pub(crate) fn try_new_dense(
+        change_cols: &'a ChangeGraphCols,
+        op_set: &'a OpSet,
+    ) -> Result<ChangeCollector<'a>, OutOfMemory> {
+        let mut meta = Vec::new();
+        meta.try_reserve_exact(change_cols.len())
+            .map_err(|_| OutOfMemory)?;
+        for change in change_cols.iter() {
+            meta.push(change);
+        }
+        Self::try_from_change_meta_inner(meta, &op_set.actors, true)
     }
 
     pub(crate) fn process_ops(&mut self, op_set: &'a OpSet) -> Result<(), ReadOpError> {
@@ -600,8 +687,23 @@ impl<'a> ChangeCollector<'a> {
     }
 
     pub(crate) fn try_from_change_meta(
+        changes: Vec<BuildChangeMetadata<'a>>,
+        actors: &'a [ActorId],
+    ) -> Result<ChangeCollector<'a>, OutOfMemory> {
+        Self::try_from_change_meta_inner(changes, actors, false)
+    }
+
+    pub(crate) fn try_from_change_meta_dense(
+        changes: Vec<BuildChangeMetadata<'a>>,
+        actors: &'a [ActorId],
+    ) -> Result<ChangeCollector<'a>, OutOfMemory> {
+        Self::try_from_change_meta_inner(changes, actors, true)
+    }
+
+    fn try_from_change_meta_inner(
         mut changes: Vec<BuildChangeMetadata<'a>>,
         actors: &'a [ActorId],
+        dense: bool,
     ) -> Result<ChangeCollector<'a>, OutOfMemory> {
         let mut builders = Vec::new();
         builders
@@ -613,7 +715,11 @@ impl<'a> ChangeCollector<'a> {
                 seq: e.seq,
                 change: index,
                 start_op: e.start_op,
-                encoder: OpEncoderStrategy::try_new(e.num_ops())?,
+                encoder: if dense {
+                    OpEncoderStrategy::Ops(VecEncoder::try_new(e.num_ops() as u64)?)
+                } else {
+                    OpEncoderStrategy::try_new(e.num_ops())?
+                },
             })
         }
 

@@ -1,3 +1,5 @@
+mod native_mutation;
+
 use crate::op_set2::op_set::RichTextQueryState;
 use crate::op_set2::MarkData;
 use crate::types::{Clock, OpId};
@@ -59,11 +61,13 @@ impl MarkIndexValue {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct MarkIndexSpanner {
     pub(crate) pos: usize,
     pub(crate) start: HashSet<OpId>,
     pub(crate) end: HashSet<OpId>,
+    start_capacity_high_water: usize,
+    end_capacity_high_water: usize,
 }
 
 impl SpanWeight<Slab> for MarkIndexSpanner {
@@ -72,22 +76,26 @@ impl SpanWeight<Slab> for MarkIndexSpanner {
         let pos = slab.len();
         let mut start = HashSet::default();
         let mut end = HashSet::default();
+        let mut start_capacity_high_water = 0;
+        let mut end_capacity_high_water = 0;
         let mut cursor = MarkIndex::default();
         let bytes = slab.as_slice();
         while let Some(run) = cursor.next(bytes) {
             match run.value.as_deref() {
                 Some(MarkIndexValue::Start(id)) => {
                     start.insert(*id);
+                    start_capacity_high_water = start_capacity_high_water.max(start.capacity());
                 }
                 Some(MarkIndexValue::End(id)) => {
                     if !start.remove(id) {
                         end.insert(*id);
+                        end_capacity_high_water = end_capacity_high_water.max(end.capacity());
                     }
                 }
                 None => {}
             }
         }
-        Self { pos, end, start }
+        Self { pos, end, start, start_capacity_high_water, end_capacity_high_water }
     }
     fn and(mut self, other: &Self) -> Self {
         self.union(other);
@@ -99,11 +107,13 @@ impl SpanWeight<Slab> for MarkIndexSpanner {
         for id in &other.start {
             if !self.end.remove(id) {
                 self.start.insert(*id);
+                self.start_capacity_high_water = self.start_capacity_high_water.max(self.start.capacity());
             }
         }
         for id in &other.end {
             if !self.start.remove(id) {
                 self.end.insert(*id);
+                self.end_capacity_high_water = self.end_capacity_high_water.max(self.end.capacity());
             }
         }
     }
@@ -160,6 +170,26 @@ pub(crate) struct MarkIndexColumn {
 }
 
 impl MarkIndexColumn {
+    pub(crate) fn native_reconstruction_plan(
+        shape: &crate::resource_limits::reconstruct::Shape,
+        budget: &mut crate::resource_limits::reconstruct::Budget,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::reconstruct::{product, sum};
+        let marks = shape.marks;
+        budget.hash::<OpId, MarkData<'static>>(marks)?;
+        budget.growing_vec::<Option<MarkIndexValue>>(marks)?;
+        budget.add(shape.values)?;
+        let nodes =
+            budget.columns::<MarkIndex>(1, shape.operations, product(shape.operations, 20)?)?;
+        // Each retained tree weight has two sets. Tree split/recompute and
+        // cursor traversal clone weights along a path; at most six additional
+        // weights per path level coexist with the retained nodes.
+        let height = usize::BITS as usize - nodes.max(1).leading_zeros() as usize + 1;
+        let weights = sum(nodes, product(height, 6)?)?;
+        budget.hash_many::<OpId, ()>(product(weights, 2)?, marks)?;
+        Ok(())
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.data.len()
     }
@@ -289,4 +319,39 @@ pub(crate) mod tests {
 
     #[test]
     fn column_data_delta_simple() {}
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl PartialEq for MarkIndexSpanner {
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos && self.start == other.start && self.end == other.end
+    }
+}
+impl NativeVisit for MarkIndexSpanner {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            pos: _,
+            start,
+            end,
+            start_capacity_high_water,
+            end_capacity_high_water,
+        } = self;
+        visitor.hash_set(start, *start_capacity_high_water)?;
+        visitor.hash_set(end, *end_capacity_high_water)
+    }
+}
+impl NativeVisit for MarkIndexColumn {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { data, cache } = self;
+        data.native_visit(visitor)?;
+        // Cache deletion is unimplemented; actor rewrites replace the table.
+        visitor.hash_map(cache, cache.capacity())
+    }
 }

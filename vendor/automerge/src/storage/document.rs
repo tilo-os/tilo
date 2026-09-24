@@ -349,6 +349,49 @@ impl<'a> Document<'a> {
         Ok(Automerge::from_parts(op_set, change_graph))
     }
 
+    /// Private checked-storage reconstruction. Allocation credit is held by
+    /// the caller's unforgeable permit; all failures are closed, so a head
+    /// mismatch cannot allocate a diagnostic clone of the complete history.
+    pub(crate) fn reconstruct_bounded(
+        &self,
+        text_encoding: TextEncoding,
+        _permit: &crate::resource_limits::reconstruct::Permit<'_>,
+    ) -> Result<Automerge, crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::NativeResourceError as Error;
+        let mut op_set = OpSet::load(self, text_encoding).map_err(|_| Error::Invalid)?;
+        let change_cols = ChangeGraphCols::load(self).map_err(|_| Error::Invalid)?;
+        let mut index = op_set.index_builder();
+        let collector =
+            ChangeCollector::try_new_dense(&change_cols, &op_set).map_err(|_| Error::WorkBytes)?;
+        let mut collector = collector.with_index(&mut index);
+        collector.process_ops(&op_set).map_err(|_| Error::Invalid)?;
+        let changes = collector.collect(&op_set).map_err(|_| Error::Invalid)?;
+        if !self.heads().iter().eq(changes.heads.iter()) {
+            return Err(Error::Invalid);
+        }
+        op_set.set_indexes(index);
+        let graph = change_cols.finalize(&changes.changes);
+        Ok(Automerge::from_parts(op_set, graph))
+    }
+
+    pub(crate) fn reconstruct_changes_bounded(
+        &self,
+        text_encoding: TextEncoding,
+        _permit: &crate::resource_limits::reconstruct::Permit<'_>,
+    ) -> Result<Vec<Change>, crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::NativeResourceError as Error;
+        let op_set = OpSet::load(self, text_encoding).map_err(|_| Error::Invalid)?;
+        let graph = ChangeGraphCols::load(self).map_err(|_| Error::Invalid)?;
+        let mut collector =
+            ChangeCollector::try_new_dense(&graph, &op_set).map_err(|_| Error::WorkBytes)?;
+        collector.process_ops(&op_set).map_err(|_| Error::Invalid)?;
+        let changes = collector.collect(&op_set).map_err(|_| Error::Invalid)?;
+        if !self.heads().iter().eq(changes.heads.iter()) {
+            return Err(Error::Invalid);
+        }
+        Ok(changes.changes)
+    }
+
     pub(crate) fn reconstruct_changes(
         &self,
         text_encoding: TextEncoding,

@@ -98,6 +98,26 @@ pub(crate) struct Indexes {
 }
 
 impl IndexBuilder {
+    pub(crate) fn native_reconstruction_plan(
+        shape: &crate::resource_limits::reconstruct::Shape,
+        budget: &mut crate::resource_limits::reconstruct::Budget,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::reconstruct::{product, sum};
+        budget.growing_vec::<u32>(shape.operations)?;
+        budget.growing_vec::<bool>(shape.operations)?;
+        budget.growing_vec::<u64>(shape.operations)?;
+        budget.growing_vec::<Option<i64>>(shape.edges)?;
+        budget.growing_vec::<Option<MarkIndexBuilder>>(shape.operations)?;
+        budget.hash::<OpId, Vec<(usize, usize)>>(shape.edges)?;
+        budget.growing_vec::<(usize, usize)>(shape.edges)?;
+        budget.array::<(usize, usize)>(product(shape.edges, 4)?)?;
+        budget.hash::<OpId, ObjInfo>(shape.operations)?;
+        budget.add(shape.values)?; // MarkIndexBuilder's owned name/value copies
+        let rows = sum(product(shape.operations, 3)?, shape.edges)?;
+        budget.columns::<UIntCursor>(4, rows, product(rows, 20)?)?;
+        MarkIndexColumn::native_reconstruction_plan(shape, budget)
+    }
+
     pub(crate) fn new(op_set: &OpSet, encoding: TextEncoding) -> Self {
         Self {
             counters: HashMap::new(),
@@ -193,5 +213,30 @@ fn vis_num(op: &Op<'_>) -> u32 {
         u32::MAX
     } else {
         op.succ().len() as u32
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for ObjIndex {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        // Insert-only or replaced in full during actor rewrites.
+        visitor.hash_map(&self.0, self.0.capacity())
+    }
+}
+impl NativeVisit for ObjInfo {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            parent: _,
+            obj_type: _,
+        } = self;
+        let _ = visitor;
+        Ok(())
     }
 }

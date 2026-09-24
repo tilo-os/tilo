@@ -84,6 +84,36 @@ impl Default for AutoCommit {
 }
 
 impl AutoCommit {
+    pub(crate) fn native_mutation_is_closed(&self) -> bool {
+        self.transaction.is_none()
+            && self.isolation.is_none()
+            && !self.patch_log.is_active()
+            && self.patch_log.events.is_empty()
+            && self.diff_cursor.is_empty()
+            && self.diff_cache.is_none()
+            && self.save_cursor.is_empty()
+    }
+
+    pub(crate) fn native_save(
+        &self,
+        allowance: &crate::resource_limits::NativeAllowance,
+        options: SaveOptions,
+        maximum_output_bytes: usize,
+    ) -> Result<
+        crate::resource_limits::retained::NativeSaved,
+        crate::resource_limits::NativeResourceError,
+    > {
+        if self.transaction.is_some() || self.isolation.is_some() {
+            return Err(crate::resource_limits::NativeResourceError::Unaccounted);
+        }
+        self.doc.native_save(allowance, options, maximum_output_bytes)
+    }
+
+    /// Native bounded reads currently cover the full current view only.
+    pub(crate) fn native_read_is_isolated(&self) -> bool {
+        self.isolation.is_some()
+    }
+
     pub fn new() -> AutoCommit {
         AutoCommit::default()
     }
@@ -107,6 +137,22 @@ impl AutoCommit {
 
     pub fn load(data: &[u8]) -> Result<Self, AutomergeError> {
         let doc = Automerge::load(data)?;
+        Ok(Self {
+            doc,
+            transaction: None,
+            patch_log: PatchLog::inactive(),
+            diff_cursor: Vec::new(),
+            diff_cache: None,
+            save_cursor: Vec::new(),
+            isolation: None,
+        })
+    }
+
+    pub(crate) fn load_checked_native(
+        data: &[u8],
+        permit: &crate::resource_limits::reconstruct::Permit<'_>,
+    ) -> Result<Self, crate::resource_limits::NativeResourceError> {
+        let doc = Automerge::load_checked_native(data, permit)?;
         Ok(Self {
             doc,
             transaction: None,
@@ -1280,5 +1326,44 @@ mod tests {
     #[test]
     fn test_autocommit_is_send() {
         is_send::<super::AutoCommit>();
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for AutoCommit {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            doc,
+            transaction,
+            patch_log,
+            diff_cursor,
+            diff_cache,
+            save_cursor,
+            isolation,
+        } = self;
+
+        doc.native_visit(visitor)?;
+        transaction.native_visit(visitor)?;
+        patch_log.native_visit(visitor)?;
+        diff_cursor.native_visit(visitor)?;
+        diff_cache.native_visit(visitor)?;
+        save_cursor.native_visit(visitor)?;
+        isolation.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for OpRange {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { hashes, before_len } = self;
+        let _ = before_len;
+        hashes.native_visit(visitor)?;
+        Ok(())
     }
 }

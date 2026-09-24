@@ -58,6 +58,28 @@ pub(crate) struct ChangeOp {
 }
 
 impl ChangeOp {
+    fn successor_ids(
+        values: &[(OpId, Option<i64>)],
+    ) -> impl ExactSizeIterator<Item = OpId> + '_ {
+        values.iter().map(|value| value.0)
+    }
+
+    fn successor_increments(
+        values: &[(OpId, Option<i64>)],
+    ) -> impl ExactSizeIterator<Item = Option<i64>> + '_ {
+        values.iter().map(|value| value.1)
+    }
+
+    /// Actual erased cursor payloads used by Columns::splice. Constructing
+    /// neither iterator nor Box is necessary to obtain these concrete sizes.
+    pub(crate) fn native_successor_cursor_bytes() -> usize {
+        fn result_size<T>(_: impl FnOnce() -> T) -> usize {
+            std::mem::size_of::<T>()
+        }
+        result_size(|| Self::successor_ids(&[]))
+            + result_size(|| Self::successor_increments(&[]))
+    }
+
     pub(crate) fn prop_static(&self) -> Option<PropRef<'static>> {
         match &self.bld.key {
             KeyRef::Map(s) => Some(PropRef::Map(Cow::Owned(String::from(s.as_ref())))),
@@ -89,8 +111,12 @@ impl ChangeOp {
     ) -> hydrate::Value {
         if self.bld.action == Action::Set {
             if let ScalarValue::Counter(c) = &self.bld.value {
-                let inc: i64 = self.succ.iter().filter_map(|(_, inc)| *inc).sum();
-                hydrate::Value::Scalar(types::ScalarValue::counter(c + inc))
+                let inc = self
+                    .succ
+                    .iter()
+                    .filter_map(|(_, inc)| *inc)
+                    .fold(0i64, i64::wrapping_add);
+                hydrate::Value::Scalar(types::ScalarValue::counter(c.wrapping_add(inc)))
             } else {
                 hydrate::Value::Scalar(self.bld.value.to_owned())
             }
@@ -659,11 +685,11 @@ impl OpLike for ChangeOp {
     }
 
     fn succ_inc(op: &Self) -> Box<dyn Iterator<Item = Option<i64>> + '_> {
-        Box::new(op.succ.iter().map(|o| o.1))
+        Box::new(Self::successor_increments(&op.succ))
     }
 
     fn succ(&self) -> Self::SuccIter<'_> {
-        Box::new(self.succ.iter().map(|o| o.0))
+        Box::new(Self::successor_ids(&self.succ))
     }
 
     fn id(&self) -> OpId {
@@ -967,14 +993,14 @@ impl<'a> Op<'a> {
                 if let Some(v) = val {
                     if let Some(c) = clock {
                         if c.covers(&i) {
-                            inc += v;
+                            inc = i64::wrapping_add(inc, v);
                         }
                     } else {
-                        inc += v;
+                        inc = i64::wrapping_add(inc, v);
                     }
                 }
             }
-            self.value = ScalarValue::Counter(n + inc);
+            self.value = ScalarValue::Counter(n.wrapping_add(inc));
         }
     }
 
@@ -1359,5 +1385,56 @@ impl Default for OpStepper<'_> {
             key: KeyRef::Map(Cow::Borrowed("")),
             id: OpId::default(),
         }
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for TxOp {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            bld,
+            obj_type,
+            index,
+            pos,
+            noop,
+        } = self;
+        let _ = obj_type;
+        let _ = index;
+        let _ = pos;
+        let _ = noop;
+        bld.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for OpBuilder<'_> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            key,
+            value,
+            mark_name,
+            pred,
+            id,
+            obj,
+            action,
+            insert,
+            expand,
+        } = self;
+        let _ = id;
+        let _ = obj;
+        let _ = action;
+        let _ = insert;
+        let _ = expand;
+        key.native_visit(visitor)?;
+        value.native_visit(visitor)?;
+        mark_name.native_visit(visitor)?;
+        pred.native_visit(visitor)?;
+        Ok(())
     }
 }
