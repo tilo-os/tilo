@@ -6487,6 +6487,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     }),
                 context: None,
                 confirmation: None,
+                revision: None,
             };
             let run_id = request.get_run_id();
             let job = state

@@ -488,4 +488,149 @@ impl CapnpBrokerState {
         self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
             .map_err(|reason| ActionHostError::NotCancellable { reason })
     }
+
+    /// Admit `request` for `caller` and return the broker job behind it as
+    /// well as the receipt — for an in-process caller that tracks jobs
+    /// itself.
+    pub(crate) fn action_invoke_job(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(u64, InvocationReceipt), ActionHostError> {
+        let receipt = self.action_invoke(caller, None, request)?;
+        let job = self
+            .remote_job(caller, &request.invocation)
+            .ok_or(ActionHostError::UnknownInvocation)?;
+        Ok((job, receipt))
+    }
+
+    /// Admit `request` against a provider's live, revision-bound action
+    /// directory: the owner re-resolves the target at `request.revision`
+    /// on the broker's local set before anything starts. Idempotent per
+    /// invocation id through the same ledger as every other path.
+    pub(crate) async fn action_invoke_resolved(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<(u64, InvocationReceipt), ActionHostError> {
+        use tilo_actions::remote::Reservation;
+        let room = caller.room().ok_or(ActionHostError::UnknownAction)?;
+        let revision =
+            request
+                .revision
+                .as_deref()
+                .ok_or_else(|| ActionHostError::InvalidRequest {
+                    reason: "a directory action needs the revision it was chosen at".into(),
+                })?;
+        let peer_id = request
+            .target
+            .provider
+            .parse::<u64>()
+            .map_err(|_| ActionHostError::UnknownAction)?;
+        let reservation = self
+            .remote_invocations
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            })?
+            .reserve(caller, request)?;
+        if reservation == Reservation::Admitted {
+            let job = self
+                .remote_job(caller, &request.invocation)
+                .ok_or(ActionHostError::UnknownInvocation)?;
+            let receipt = self.invocation_status(job).map_or(
+                InvocationReceipt {
+                    invocation: request.invocation,
+                    status: ReceiptStatus::Accepted,
+                },
+                |update| InvocationState::new(request.invocation, update).receipt(),
+            );
+            return Ok((job, receipt));
+        }
+        let started = self
+            .start_directory_action(caller, room, peer_id, revision, request)
+            .await;
+        let mut ledger =
+            self.remote_invocations
+                .lock()
+                .map_err(|_| ActionHostError::Unavailable {
+                    reason: "the invocation ledger is unavailable".into(),
+                })?;
+        match started {
+            Ok(started) => {
+                ledger.complete(&request.invocation, started.invocation_id);
+                drop(ledger);
+                Ok((
+                    started.invocation_id,
+                    InvocationState::new(request.invocation, started.initial_update).receipt(),
+                ))
+            }
+            Err(error) => {
+                ledger.abandon(&request.invocation);
+                drop(ledger);
+                Err(error)
+            }
+        }
+    }
+
+    async fn start_directory_action(
+        &self,
+        caller: &Caller,
+        room: &str,
+        peer_id: u64,
+        revision: &str,
+        request: &InvokeRequest,
+    ) -> Result<super::StartedDirectoryAction, ActionHostError> {
+        use super::{ActionDirectoryBridgeError, ActionDirectoryBridgeResponse};
+        let confirmation = request
+            .confirmation
+            .clone()
+            .map(|confirmation| match confirmation {
+                Confirmation::Confirmed => super::DirectoryActionConfirmation::Confirmed,
+                Confirmation::Phrase(phrase) => super::DirectoryActionConfirmation::Phrase(phrase),
+            });
+        let bridge_error = |error: ActionDirectoryBridgeError| match error {
+            ActionDirectoryBridgeError::NotFound => ActionHostError::UnknownAction,
+            ActionDirectoryBridgeError::ConfirmationRequired => {
+                ActionHostError::ConfirmationRequired
+            }
+            ActionDirectoryBridgeError::StaleRevision => ActionHostError::InvalidRequest {
+                reason: "the action changed since that revision; list it again".into(),
+            },
+            ActionDirectoryBridgeError::InvalidRequest => ActionHostError::InvalidRequest {
+                reason: "the directory request is malformed".into(),
+            },
+            other => ActionHostError::Unavailable {
+                reason: format!("the action directory is {other:?}"),
+            },
+        };
+        let reply = self
+            .action_directory_request_queue()
+            .try_start_resolved(
+                BrokerActor::for_caller(caller),
+                room,
+                peer_id,
+                revision,
+                &request.target.address.resource,
+                &request.target.address.action,
+                request.argument.to_slot(),
+                confirmation,
+            )
+            .map_err(bridge_error)?;
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), reply)
+            .await
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "admission timed out and may be unknown; observe before retrying".into(),
+            })?
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "the action directory is unavailable".into(),
+            })?
+            .map_err(bridge_error)?;
+        match reply {
+            ActionDirectoryBridgeResponse::StartedDirectoryAction(started) => Ok(started),
+            _ => Err(ActionHostError::Unavailable {
+                reason: "the action directory answered with something else".into(),
+            }),
+        }
+    }
 }

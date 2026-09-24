@@ -244,80 +244,72 @@ struct PeerInvocation<'a> {
     phrase: Option<&'a str>,
 }
 
+/// Start a published action through the session's action host, confined to
+/// the room of the publishing surface: the same admission, permission and
+/// confirmation path every other caller takes.
 fn start_on_peer(
     broker: &AppActionBroker,
     invocation: &PeerInvocation<'_>,
-) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
-    match invocation.confirmation {
-        tilo_actions::ConfirmationPolicy::None => broker.start(
-            invocation.peer_id,
-            invocation.resource,
-            invocation.action,
-            invocation.argument,
-            invocation.actor,
-        ),
+) -> Result<ActionReceipt, String> {
+    use tilo_actions::remote::{
+        Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+    };
+    let room = broker
+        .surfaces()
+        .into_iter()
+        .find(|surface| surface.peer_id == invocation.peer_id && surface.live)
+        .map(|surface| surface.route.cluster_id)
+        .ok_or_else(|| "the application no longer publishes that action".to_string())?;
+    let argument = match invocation.argument {
+        None => InvokeArgument::None,
+        Some(slot) => match slot
+            .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        {
+            Some(serde_json::Value::Object(object)) => InvokeArgument::Json(object),
+            _ => InvokeArgument::Text(slot.to_string()),
+        },
+    };
+    let confirmation = match invocation.confirmation {
+        tilo_actions::ConfirmationPolicy::None => None,
         tilo_actions::ConfirmationPolicy::Confirm => {
-            if !invocation.confirmed {
-                return Err("explicit confirmation is required".into());
-            }
-            let token = broker.prepare_confirmation(
-                invocation.peer_id,
-                invocation.resource,
-                invocation.action,
-                invocation.argument,
-                invocation.actor,
-                None,
-            )?;
-            broker.start_confirmed(
-                invocation.peer_id,
-                invocation.resource,
-                invocation.action,
-                invocation.argument,
-                invocation.actor,
-                &token,
-            )
+            invocation.confirmed.then_some(Confirmation::Confirmed)
         }
-        tilo_actions::ConfirmationPolicy::Phrase { .. } => {
-            let token = broker.prepare_confirmation(
-                invocation.peer_id,
-                invocation.resource,
-                invocation.action,
-                invocation.argument,
-                invocation.actor,
-                invocation.phrase,
-            )?;
-            broker.start_confirmed(
-                invocation.peer_id,
-                invocation.resource,
-                invocation.action,
-                invocation.argument,
-                invocation.actor,
-                &token,
-            )
-        }
-    }
+        tilo_actions::ConfirmationPolicy::Phrase { .. } => invocation
+            .phrase
+            .map(|phrase| Confirmation::Phrase(phrase.to_string())),
+    };
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: invocation.peer_id.to_string(),
+            address: tilo_actions::ActionAddress::new(invocation.resource, invocation.action),
+        },
+        argument,
+        context: None,
+        confirmation,
+        revision: None,
+    };
+    let (job, receipt) = crate::shell::remote_actions::BrokerActionHost::new(broker.clone())
+        .invoke_job(
+            &Caller::local_person(invocation.actor).in_room(room),
+            &request,
+        )
+        .map_err(|error| error.to_string())?;
+    let update = broker
+        .status(job)
+        .unwrap_or(tilo_actions::InvocationUpdate::Accepted {
+            invocation: receipt.invocation,
+        });
+    Ok(ActionReceipt {
+        broker_invocation_id: Some(job),
+        update,
+    })
 }
 
 fn deadline_after(duration: std::time::Duration) -> std::time::Instant {
     let now = std::time::Instant::now();
     now.checked_add(duration).unwrap_or(now)
-}
-
-fn receipt_for_job(
-    broker: &AppActionBroker,
-    job: crate::shell::collab_broker_capnp::InvocationJob,
-) -> ActionReceipt {
-    let update =
-        broker
-            .status(job.id)
-            .unwrap_or_else(|| tilo_actions::InvocationUpdate::Accepted {
-                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job.id))),
-            });
-    drop(job.completion);
-    ActionReceipt {
-        broker_invocation_id: Some(job.id),
-        update,
-    }
 }
 
 fn invocation_argument(
@@ -1862,12 +1854,11 @@ impl SearchProvider for LiveAppActionsProvider {
                                                     phrase: phrase.as_deref(),
                                                 },
                                             ) {
-                                                Ok(job) => {
+                                                Ok(receipt) => {
                                                     tracing::debug!(
-                                                        invocation_id = job.id,
+                                                        invocation_id = ?receipt.broker_invocation_id,
                                                         "deferred application action accepted"
                                                     );
-                                                    drop(job.completion);
                                                 }
                                                 Err(error) => tracing::warn!(
                                                     %error,
@@ -1888,7 +1879,7 @@ impl SearchProvider for LiveAppActionsProvider {
                                 .map_err(|error| ActionError::Refused(error.to_string()))?;
                             return Ok(());
                         }
-                        let job = start_on_peer(
+                        let receipt = start_on_peer(
                             &broker,
                             &PeerInvocation {
                                 peer_id,
@@ -1902,10 +1893,10 @@ impl SearchProvider for LiveAppActionsProvider {
                             },
                         )
                         .map_err(ActionError::Refused)?;
-                        tracing::debug!(invocation_id = job.id, "application action accepted");
-                        // Completion remains owned by the broker's job registry;
-                        // dropping this compatibility receiver does not erase status.
-                        drop(job.completion);
+                        tracing::debug!(
+                            invocation_id = ?receipt.broker_invocation_id,
+                            "application action accepted"
+                        );
                         // Admission is synchronous; execution is observed as a
                         // broker job rather than blocking the compositor.
                         Ok(())
@@ -1949,7 +1940,7 @@ impl SearchProvider for LiveAppActionsProvider {
                                         })
                                 });
                                 if let Some(target) = target {
-                                    let job = start_on_peer(
+                                    return start_on_peer(
                                         &invoke_broker,
                                         &PeerInvocation {
                                             peer_id: target.peer_id,
@@ -1962,8 +1953,7 @@ impl SearchProvider for LiveAppActionsProvider {
                                             phrase: phrase.as_deref(),
                                         },
                                     )
-                                    .map_err(ActionError::Refused)?;
-                                    return Ok(receipt_for_job(&invoke_broker, job));
+                                    .map_err(ActionError::Refused);
                                 }
                                 std::thread::sleep(std::time::Duration::from_millis(100));
                             }
@@ -1971,7 +1961,7 @@ impl SearchProvider for LiveAppActionsProvider {
                                 "application did not publish its launchable action in time".into(),
                             ));
                         }
-                        let job = start_on_peer(
+                        start_on_peer(
                             &invoke_broker,
                             &PeerInvocation {
                                 peer_id,
@@ -1984,8 +1974,7 @@ impl SearchProvider for LiveAppActionsProvider {
                                 phrase: phrase.as_deref(),
                             },
                         )
-                        .map_err(ActionError::Refused)?;
-                        Ok(receipt_for_job(&invoke_broker, job))
+                        .map_err(ActionError::Refused)
                     })),
                     on_begin_invoke: None,
                 });
