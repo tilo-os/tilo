@@ -48,6 +48,11 @@ block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: w
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
+tree-rename-field = Rename
+tree-move-up = Move up
+tree-move-down = Move down
+tree-move-indent = Move into the item above
+tree-move-outdent = Move out of the parent item
 
 # Authentication surfaces share the system theme and catalog.
 greeter-welcome-back = Welcome back to Tilo
