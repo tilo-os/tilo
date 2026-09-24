@@ -41,7 +41,8 @@ taffy.workspace = true
 hmac.workspace = true
 sha1 = "0.11"
 sha2.workspace = true
-base32.workspace = true
+data-encoding.workspace = true
+data-encoding-macro.workspace = true
 
 # Pure-Rust QR detection over image-decoded greyscale buffers. Image codecs
 # are limited to PNG and JPEG for screenshot/photo imports.
