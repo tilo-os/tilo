@@ -14,6 +14,13 @@
 //     time-zone dropdown popped open; `keyboard` renders the keyboard step
 //     seeded with a non-default (German) layout so the visual preview shows
 //     the remapped keys. Defaults to `disk`.
+//   * `--headless-drive '<json>'` — the live widget tree with no window
+//     (docs/headless-testing.md); scenarios click named controls or invoke
+//     the installer's published actions by address.
+//
+// A live run also answers the tilo-control action protocol (actions list,
+// actions invoke, state-dump) on its console endpoints — see
+// crates/session/console-control for where they listen and why only there.
 
 #![cfg_attr(
     test,
@@ -62,12 +69,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // `--headless-drive '<json>'`: the same widget tree and the same
+    // published actions, driven with no window and no GPU (see
+    // docs/headless-testing.md). Scenarios address controls by name or
+    // invoke published actions by address.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        let code = ui::headless::run(&spec, Box::new(InstallerApp::new()), HEADLESS_MANIFEST_ID);
+        std::process::exit(code);
+    }
+
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     // Shared slot the event loop fills with its proxy once running; the
     // install worker thread reads it to stream progress back in.
     let proxy_slot: ProxySlot = Arc::new(Mutex::new(None));
-    let widget = InstallerApp::new().with_proxy(proxy_slot.clone());
+    let console = console_control::ConsoleServer::new();
+    let widget = InstallerApp::new()
+        .with_proxy(proxy_slot.clone())
+        .with_console(console.clone());
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
     // Hand the keyboard to the first field/row at startup so the wizard
@@ -79,10 +98,40 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let slot = proxy_slot;
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = slot.lock() {
-            *g = Some(proxy);
+            *g = Some(proxy.clone());
         }
+        serve_console(&console, proxy);
     });
     Ok(())
+}
+
+/// Package namespace for `--headless-drive` runs (never the live medium).
+const HEADLESS_MANIFEST_ID: &str = "org.tilo.Installer";
+
+/// Start the console endpoints that exist on this machine: the private
+/// runtime socket, and the virtio port when a hypervisor attached one. Each
+/// queued request wakes the event loop, which answers it on the UI thread.
+fn serve_console(
+    console: &console_control::ConsoleServer,
+    proxy: winit::event_loop::EventLoopProxy<ui::app::UserEvent>,
+) {
+    let proxy = Mutex::new(proxy);
+    let waker: console_control::server::Waker = Arc::new(move || {
+        if let Ok(proxy) = proxy.lock() {
+            let _ = proxy.send_event(ui::app::UserEvent::External(
+                installer::installer_app::CONSOLE_WAKE.to_owned(),
+            ));
+        }
+    });
+    let endpoints = console_control::Endpoint::discover(installer::operation::PROVIDER);
+    let failed = console.serve_all(&endpoints, &waker);
+    for endpoint in &endpoints {
+        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
+            tracing::warn!(?endpoint, %error, "installer console endpoint unavailable");
+        } else {
+            tracing::info!(?endpoint, "installer console listening");
+        }
+    }
 }
 
 /// Returns the optional logical-pixel viewport supplied to the headless
