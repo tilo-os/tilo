@@ -6,23 +6,31 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-# One mount per enabled WebDAV/Nextcloud account under ~/Remote. The service
-# reads the account store and opens the account vault; each `fs mount-cloud`
-# child receives only its own account's credential on stdin. Per-account
-# metadata, queued uploads and the content cache live under the state dir:
-# queued edits are not a cache and must survive cache cleaning.
+# One mount per enabled cloud storage account (WebDAV, Nextcloud, Google
+# Drive, OneDrive, Dropbox, iCloud Drive) under ~/Remote. The service reads
+# the account store and each account's short-lived credential from the
+# handoff store; it never opens the account vault. When a credential is
+# missing, expired or rejected it runs Settings' credential helper, which
+# alone opens the vault for that call and publishes a fresh short-lived
+# credential. Each `fs mount-cloud` child receives only its own account's
+# credential on stdin. Per-account metadata, queued uploads and the content
+# cache live under the state dir: queued edits are not a cache and must
+# survive cache cleaning.
 # The sandbox below makes the home read-only; create the mounts root first.
 ExecStartPre=+/usr/bin/mkdir -p %h/Remote
+Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential
 ExecStart=/usr/bin/fs cloud-service --mounts-root %h/Remote --state-root %S/tilo/cloud
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=20s
 
 # Mounts need `fusermount3`'s privilege transition in the children, so
-# NoNewPrivileges must remain off. Settings' account store is read through
-# the read-only home; the vault key comes from the session's Secret Service.
-# Mount health is written to the shared account status store, the one
-# writable path under the config directory.
+# NoNewPrivileges must remain off. Settings' account store and the handoff
+# store are read through the read-only home; the handoff key comes from the
+# session's Secret Service. The accounts directory stays writable for the
+# account status store and for the credential helper this service runs,
+# which seals rotated grants back into the vault and publishes handoff
+# credentials; nothing else under the config directory is.
 PrivateTmp=yes
 PrivateIPC=yes
 ProtectSystem=strict

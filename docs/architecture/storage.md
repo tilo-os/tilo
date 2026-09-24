@@ -675,9 +675,8 @@ bounds.
 
 ### 6.10 Cloud accounts
 
-An external file account set up in Settings (WebDAV and Nextcloud today;
-Google Drive, OneDrive, Dropbox and iCloud Drive through the same interface)
-is an ordinary folder at `~/Remote/<account label>`. Every app and POSIX tool
+An external file account set up in Settings (WebDAV, Nextcloud, Google
+Drive, OneDrive, Dropbox and iCloud Drive) is an ordinary folder at `~/Remote/<account label>`. Every app and POSIX tool
 uses it the way it uses any other folder. Rooms replicate signed records
 between peers. A cloud account mirrors a server, and the server is the
 authority for its own tree. That is why this is a separate backing, not a
@@ -687,13 +686,28 @@ room.
 `tilo-fs-cloud.service`) follows Settings' account store. It keeps one
 `fs mount-cloud` child per enabled file account. Disabling an account
 unmounts it. Removing an account also drops its cached content and queued
-state. The service is the only process that opens the account vault. It
-reads the secret of one account and sends the child only the credential
-that account's provider needs, on stdin: HTTP Basic, an OAuth2 access token,
-or a web session. When the server rejects a credential, the child says so
-and the service re-reads the vault, because Settings may have refreshed a
-token or the person may have signed in again. Closing the child's stdin
-unmounts it. Mount health goes to the shared account status store, which
+state. Neither the service nor its children open the account vault, where
+Settings keeps long-lived grants (refresh tokens, app passwords, iCloud
+trust state). The service reads one account's short-lived credential from a
+separate handoff store (`accounts::handoff`: one sealed file per account,
+under its own key) and sends the child only that, on stdin: HTTP Basic, an
+OAuth2 access token, or iCloud web session headers. When the credential is
+missing, has expired or the server rejected it, the service runs Settings'
+credential helper, `tilo-account-credential refresh <id>`, through
+`bounded-command`. The helper opens the vault for that one call, refreshes
+the grant, seals a rotated one back and publishes only the short-lived part.
+A grant the provider no longer accepts marks the account "sign in again".
+Closing the child's stdin unmounts it.
+
+Settings resolves an OAuth account's storage once at sign-in (the OneDrive
+drive and root ids, a Dropbox member's team space root; Google Drive and
+iCloud Drive store their defaults) and keeps the provider crate's own serde
+configuration in the account's non-secret `config` under `mount`. The
+daemon's provider table (`crates/system/fs/src/cloud/providers.rs`) mounts
+from it and sends credentials only to HTTPS or loopback endpoints.
+Public OAuth client registrations are data in
+`crates/system/account-custody/oauth-clients.toml`, overridable per value
+from the environment. Mount health goes to the shared account status store, which
 Settings and Files read. Files has no transport of its own. It opens the
 folder and shows the account's health as a badge.
 
@@ -711,7 +725,9 @@ folder and shows the account's health as a badge.
 `crates/system/cloud-source-dav` implements it for WebDAV and Nextcloud. Its
 Nextcloud support covers recursive ETags, checksums, chunked uploads,
 versions and trash, and it uses a `sync-collection` feed where the server
-offers one.
+offers one. `cloud-source-gdrive`, `cloud-source-onedrive`,
+`cloud-source-dropbox` and `cloud-source-icloud` implement it for the other
+providers, each with an in-process fake server (feature `fake-server`).
 
 **Data path.** Each mount is a `CloudVolume`
 (`crates/system/fs/src/cloud/`) behind FUSE:
@@ -748,6 +764,12 @@ unchanged in three layers:
 
 `crates/system/fs/tests/cloud_mount.rs` covers the mount end to end against
 the fake, including a kernel mount where `/dev/fuse` exists.
+`apps/settings/tests/cloud_storage.rs` covers every provider from sign-in to
+removal: Settings signs in through the fake authorization server (or Apple's
+sign-in on the fake iCloud), custody publishes the handoff credential, the
+cloud service mounts the account against the provider's fake, a file is
+written and read back, and removing the account unmounts it and deletes its
+cache.
 
 ---
 

@@ -64,7 +64,7 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
             /usr/libexec/tilo/native-atspi-smoke.sh \
             /usr/libexec/tilo/atspi-external-client.py /usr/libexec/tilo/installed-atspi-apps.sh \
-            /usr/libexec/tilo-session \
+            /usr/libexec/tilo-session /usr/libexec/tilo-account-credential \
             /usr/bin/dbus-update-activation-environment; do
   require_exec "$path"
 done
@@ -140,6 +140,7 @@ require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/tilo
 require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "/usr/bin/fs recipient-service --socket %t/tilo/services/tilo-fs.sock"
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "--mounts-root %h/Shared --cache-root %h/.cache/tilo/received-files"
+require_line /usr/lib/systemd/user/tilo-fs-cloud.service "Environment=TILO_ACCOUNT_CREDENTIAL_HELPER=/usr/libexec/tilo-account-credential"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.service "Requires=tilo-identity.service"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.service "PartOf=graphical-session.target"
 require_line /usr/lib/systemd/user/tilo-fs-recipient.socket "ListenStream=%t/tilo/services/tilo-fs.sock"
