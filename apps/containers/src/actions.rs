@@ -78,6 +78,16 @@ mod tests {
     use crate::model::ContainerStatus;
     use crate::podman::Action as Lifecycle;
 
+    // Containers publishes only view and effect operations: the host engine
+    // is not a document, so the registry decodes nothing and the sweep checks
+    // the published surface itself.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| Widget::resources(&ContainersApp::new(false), doc),
+        palette: ["Open web-frontend", "Open postgres"],
+    }
+
     fn device_id() -> DeviceId {
         // winit exposes no public DeviceId constructor; tests only need a value.
         unsafe { std::mem::zeroed() }

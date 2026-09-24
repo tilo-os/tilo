@@ -53,6 +53,7 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true
