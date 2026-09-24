@@ -478,7 +478,7 @@ pub fn spawn_with_agent_actions(
             .expect("the harness owner grants an app fixture its own surface");
     }
     let mut tree = shell::shell::state::WorkspaceTree::default();
-    tree.workspaces.push(workspace);
+    tree.desktop.workspaces.push(workspace);
     let trusted_devices = ["ada", "Scribe", "files", "photos"]
         .map(|handle| device_key(handle).verifying_key().to_bytes())
         .into_iter()

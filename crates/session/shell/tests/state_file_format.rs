@@ -98,16 +98,18 @@ fn populated_tree() -> WorkspaceTree {
         maximized: false,
     });
     ws.strips.push(strip);
-    tree.workspaces.push(ws);
+    tree.desktop.workspaces.push(ws);
     let mut joined = Workspace::new(WorkspaceId(9), "Joined");
     joined.room = room(2);
     joined.strips.push(Strip::new(StripId(10), "Shared"));
-    tree.workspaces.push(joined);
+    tree.desktop.workspaces.push(joined);
 
-    tree.active = WorkspaceId(1);
-    tree.active_strip.insert(WorkspaceId(1), StripId(2));
-    tree.active_strip.insert(WorkspaceId(9), StripId(10));
-    tree.active_group.insert(StripId(2), 6);
+    tree.desktop.active = WorkspaceId(1);
+    tree.desktop.active_strip.insert(WorkspaceId(1), StripId(2));
+    tree.desktop
+        .active_strip
+        .insert(WorkspaceId(9), StripId(10));
+    tree.desktop.active_group.insert(StripId(2), 6);
     tree.room_authority.insert(
         room(2),
         RoomAuthority::Peer(PeerOrigin::peer_id("peer-endpoint")),

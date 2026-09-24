@@ -59,7 +59,7 @@ fn host_with_portal(
 ) -> (ShellOverlayHost, GrantStoreHandle, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
-    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
     tree.set_active(id);
     let handle = tree.shared();
     {
@@ -246,6 +246,7 @@ async fn denying_a_prompt_releases_the_portal_call_too() {
     let tree = grants.tree_handle();
     let guard = tree.read();
     let caps = guard
+        .desktop
         .workspaces
         .iter()
         .find(|w| w.id == ws)
@@ -279,6 +280,7 @@ async fn a_session_grant_answers_and_persists() {
     let has_replicated_camera = {
         let guard = tree.read();
         guard
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws)
@@ -306,7 +308,7 @@ async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
     let grants = {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::from(1);
-        tree.workspaces.push(Workspace::new(id, "demo"));
+        tree.desktop.workspaces.push(Workspace::new(id, "demo"));
         tree.set_active(id);
         GrantStoreHandle::new(tree.shared())
     };

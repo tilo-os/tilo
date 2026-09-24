@@ -767,6 +767,7 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
             // would put two tabs on one document, which is the
             // thing this scenario exists to show cannot happen.
             let id = tree
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|w| &w.strips)
@@ -776,7 +777,7 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
                 .max()
                 .unwrap_or(0)
                 .saturating_add(1);
-            let Some(ws) = tree.active_workspace_mut() else {
+            let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return;
             };
             let Some(group) = ws
@@ -959,7 +960,8 @@ fn apply_wheel_and_reveal_samples<S: SnapshotSink>(
                 let strips: Vec<_> = {
                     let st = driver.chrome();
                     let tree = st.tree();
-                    tree.active_workspace()
+                    tree.desktop
+                        .active_workspace()
                         .map(|ws| ws.strips.iter().map(|s| s.id).collect())
                         .unwrap_or_default()
                 };
@@ -1006,7 +1008,8 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
             let strips: Vec<_> = {
                 let st = driver.chrome();
                 let tree = st.tree();
-                tree.active_workspace()
+                tree.desktop
+                    .active_workspace()
                     .map(|ws| ws.strips.iter().map(|s| s.id).collect())
                     .unwrap_or_default()
             };
@@ -1030,7 +1033,7 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
             driver.with_chrome(|st: &mut ChromeState| {
                 {
                     let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.active_workspace_mut() {
+                    if let Some(ws) = tree.desktop.active_workspace_mut() {
                         for strip in &mut ws.strips {
                             for g in &mut strip.window_groups {
                                 g.width = shell::shell::state::WindowWidth::Fraction(permille);
@@ -1046,7 +1049,8 @@ fn apply_make_space_sample_and_widths<S: SnapshotSink>(
             let strips: Vec<_> = {
                 let st = driver.chrome();
                 let tree = st.tree();
-                tree.active_workspace()
+                tree.desktop
+                    .active_workspace()
                     .map(|ws| ws.strips.iter().map(|s| s.id).collect())
                     .unwrap_or_default()
             };
@@ -1189,6 +1193,7 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                 {
                     let mut tree = st.tree_mut();
                     let Some(strip_id) = tree
+                        .desktop
                         .active_workspace()
                         .and_then(|ws| ws.strips.first().map(|s| s.id))
                     else {
@@ -1197,17 +1202,18 @@ fn apply_seed_wifi_and_select_group(driver: &mut ShellDriver, action: &Action) {
                     match idx {
                         Some(i) => {
                             let gid = tree
+                                .desktop
                                 .active_workspace()
                                 .and_then(|ws| ws.strips.first())
                                 .and_then(|s| s.window_groups.get(i).map(|g| g.id));
                             if let Some(gid) = gid {
-                                let active = tree.active;
-                                tree.active_strip.insert(active, strip_id);
-                                tree.set_active_group(strip_id, gid);
+                                let active = tree.desktop.active;
+                                tree.desktop.active_strip.insert(active, strip_id);
+                                tree.desktop.set_active_group(strip_id, gid);
                             }
                         }
                         None => {
-                            tree.active_group.remove(&strip_id);
+                            tree.desktop.active_group.remove(&strip_id);
                         }
                     }
                 }
@@ -1228,7 +1234,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
             driver.with_chrome(|st: &mut ChromeState| {
                 {
                     let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.active_workspace_mut()
+                    if let Some(ws) = tree.desktop.active_workspace_mut()
                         && let Some(g) = ws
                             .strips
                             .first_mut()
@@ -1247,7 +1253,8 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
             let strip_id = {
                 let chrome = driver.chrome();
                 let tree = chrome.tree();
-                tree.active_workspace()
+                tree.desktop
+                    .active_workspace()
                     .and_then(|workspace| workspace.strips.first())
                     .map(|strip| strip.id)
             };
@@ -1274,7 +1281,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
                 let mut tree = st.tree_mut();
-                if let Some(ws) = tree.workspaces.get(*idx) {
+                if let Some(ws) = tree.desktop.workspaces.get(*idx) {
                     let id = ws.id;
                     tree.set_active(id);
                     drop(tree);
@@ -1362,13 +1369,19 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     let st = driver.chrome();
     let host = driver.host();
     let tree = st.tree();
-    let active = tree.active.raw();
+    let active = tree.desktop.active.raw();
     let active_idx = tree
+        .desktop
         .workspaces
         .iter()
-        .position(|w| w.id == tree.active)
+        .position(|w| w.id == tree.desktop.active)
         .unwrap_or(0);
-    let workspace_names: Vec<String> = tree.workspaces.iter().map(|w| w.name.clone()).collect();
+    let workspace_names: Vec<String> = tree
+        .desktop
+        .workspaces
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
     // Nothing past this point reads the tree; `st` (a separate guard) is
     // still needed below.
     drop(tree);
@@ -4302,7 +4315,7 @@ mod tests {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
             let state = driver.chrome();
             let tree = state.tree();
-            let Some(workspace) = tree.active_workspace() else {
+            let Some(workspace) = tree.desktop.active_workspace() else {
                 return;
             };
             match name {
@@ -4387,13 +4400,13 @@ mod tests {
     #[test]
     fn scenario_workspace_switch_moves_active_index() {
         let mut d = ShellDriver::new((1600, 900));
-        let initial = d.chrome().tree().active;
+        let initial = d.chrome().tree().desktop.active;
         let mut sink = NullSink;
         let scenario = workspace_switch();
         run(&mut d, &scenario, &mut sink);
         // After the round-trip the active workspace should match the
         // initial one again.
-        assert_eq!(d.chrome().tree().active, initial);
+        assert_eq!(d.chrome().tree().desktop.active, initial);
     }
 
     /// Regression: post-action waits in built-in scenarios must outlast
@@ -4508,7 +4521,8 @@ mod tests {
             let strip_id = {
                 let st = driver.chrome();
                 let tree = st.tree();
-                tree.active_workspace()
+                tree.desktop
+                    .active_workspace()
                     .and_then(|ws| ws.strips.first().map(|s| s.id))
             };
             let (scroll_x, max_scroll_x, pan_max_scroll_x) = strip_id
@@ -4537,7 +4551,11 @@ mod tests {
 
         let st = d.chrome();
         let tree = st.tree();
-        let strip = &tree.active_workspace().expect("active workspace").strips[0];
+        let strip = &tree
+            .desktop
+            .active_workspace()
+            .expect("active workspace")
+            .strips[0];
         let kinds: Vec<&shell::shell::state::AppKind> = strip
             .window_groups
             .iter()

@@ -317,7 +317,7 @@ impl GrantStoreHandle {
             },
             ..Default::default()
         };
-        tree.workspaces.push(ws);
+        tree.desktop.workspaces.push(ws);
         (Self::with_consent_path(tree.shared(), None), ws_id)
     }
 
@@ -346,6 +346,7 @@ impl GrantStoreHandle {
         let matching_expiries: Vec<GrantScope> = {
             let tree = self.tree.read();
             let ws = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == caller.workspace_id)?;
@@ -381,7 +382,12 @@ impl GrantStoreHandle {
     )]
     pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Verb) -> bool {
         let tree = self.tree.read();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
+        let Some(ws) = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == caller.workspace_id)
+        else {
             return false;
         };
         let actor = ws.actor_for_app(&caller.app_id);
@@ -396,6 +402,7 @@ impl GrantStoreHandle {
     pub fn insert(&self, caller: &PortalCaller, capability: &Capability) -> bool {
         let mut tree = self.tree.write();
         let Some(ws) = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == caller.workspace_id)
@@ -459,7 +466,8 @@ impl GrantStoreHandle {
 
     fn portal_consent_key(&self, caller: &PortalCaller, kind: CapabilityKind) -> Option<String> {
         let tree = self.tree.read();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .any(|workspace| workspace.id == caller.workspace_id)
             .then(|| {
@@ -485,7 +493,12 @@ impl GrantStoreHandle {
     )]
     pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
         let tree = self.tree.read();
-        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
+        let Some(ws) = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id == caller.workspace_id)
+        else {
             return false;
         };
         // Asks the capability model rather than re-deriving prefix logic:
@@ -518,6 +531,7 @@ impl GrantStoreHandle {
         let rooms = crate::shell::launcher::verified_workspaces_for_app(app_id);
         let tree = self.tree.read();
         let mut matches = tree
+            .desktop
             .workspaces
             .iter()
             .filter(|workspace| rooms.iter().any(|room| room == &workspace.room.to_string()));
@@ -1369,8 +1383,8 @@ mod tests {
         let ws_id = WorkspaceId(1);
         {
             let mut tree = handle.write();
-            tree.active = ws_id;
-            tree.workspaces.push(empty_ws(1));
+            tree.desktop.active = ws_id;
+            tree.desktop.workspaces.push(empty_ws(1));
         }
 
         let portal = GrantStoreHandle::new(handle.clone());
@@ -1390,7 +1404,10 @@ mod tests {
         let has_camera_app_grant = {
             let st = chrome.borrow();
             let tree = st.tree();
-            let ws = tree.active_workspace().expect("active workspace exists");
+            let ws = tree
+                .desktop
+                .active_workspace()
+                .expect("active workspace exists");
             ws.app_grants_snapshot().contains_key("camera-app")
         };
         assert!(
@@ -1529,7 +1546,8 @@ mod tests {
         let tree = store.tree_handle();
         let tree = tree.read();
         assert!(
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .unwrap()
                 .app_grants_snapshot()
                 .get("app")
@@ -1549,7 +1567,7 @@ mod tests {
             },
             ..Default::default()
         };
-        tree.workspaces.push(empty_ws(31));
+        tree.desktop.workspaces.push(empty_ws(31));
         let shared = tree.shared();
         let caller = PortalCaller::new(WorkspaceId(31), "private-app");
         let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
@@ -1565,7 +1583,7 @@ mod tests {
             Some(GRANT_ALWAYS)
         );
         assert!(
-            shared.read().workspaces[0]
+            shared.read().desktop.workspaces[0]
                 .app_grants_snapshot()
                 .get("private-app")
                 .is_none()

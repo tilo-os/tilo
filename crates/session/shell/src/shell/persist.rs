@@ -136,7 +136,7 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     // same tab.
     symbolise_foreign_surfaces(&mut durable);
     clear_transient_launch_notes(&mut durable);
-    for ws in &mut durable.workspaces {
+    for ws in &mut durable.desktop.workspaces {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
     }
@@ -156,19 +156,19 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // Refuse before anything else touches it: mutators here write the
     // whole tree back, so "load it and see" is "overwrite it and see".
-    if tree.schema_version > STATE_SCHEMA_VERSION {
+    if tree.desktop.schema_version > STATE_SCHEMA_VERSION {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
                 "state file layout {} is newer than the {STATE_SCHEMA_VERSION} \
                  this build understands",
-                tree.schema_version
+                tree.desktop.schema_version
             ),
         ));
     }
     // Normalise so the next write stamps the current version rather
     // than carrying an old one forward for ever.
-    tree.schema_version = STATE_SCHEMA_VERSION;
+    tree.desktop.schema_version = STATE_SCHEMA_VERSION;
     // An early production bootstrap accidentally used the screenshot/demo
     // fixture. One of its own two-session demonstrations then renamed that
     // synthetic Home room to `Shared room <unix time>`, leaving the invented
@@ -219,7 +219,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
 fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
     use crate::shell::state::{AppKind, TileContent, WindowWidth};
 
-    let [home, research, design] = tree.workspaces.as_slice() else {
+    let [home, research, design] = tree.desktop.workspaces.as_slice() else {
         return false;
     };
     let shared_demo_name = home
@@ -284,13 +284,13 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
         || research_strip.id.raw() != research_strip_id
         || design.id.raw() != design_id
         || design_strip.id.raw() != design_strip_id
-        || tree.active != home.id
-        || tree.active_strip.len() != 3
-        || tree.active_strip.get(&home.id) != Some(&home_strip.id)
-        || tree.active_strip.get(&research.id) != Some(&research_strip.id)
-        || tree.active_strip.get(&design.id) != Some(&design_strip.id)
-        || tree.active_group.len() != 1
-        || tree.active_group.get(&home_strip.id) != Some(&group.id)
+        || tree.desktop.active != home.id
+        || tree.desktop.active_strip.len() != 3
+        || tree.desktop.active_strip.get(&home.id) != Some(&home_strip.id)
+        || tree.desktop.active_strip.get(&research.id) != Some(&research_strip.id)
+        || tree.desktop.active_strip.get(&design.id) != Some(&design_strip.id)
+        || tree.desktop.active_group.len() != 1
+        || tree.desktop.active_group.get(&home_strip.id) != Some(&group.id)
         || group.active_tab != notes_id
         || group.width != WindowWidth::Wide
         || group.maximized
@@ -301,6 +301,7 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
             .chain(&design.strips)
             .any(|strip| strip.name != "Main")
         || tree
+            .desktop
             .workspaces
             .iter()
             .any(|workspace| !workspace.tasks.is_empty() || !workspace.shared_surfaces.is_empty())
@@ -368,7 +369,7 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
 fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
     use crate::shell::state::TileContent;
 
-    for workspace in &mut tree.workspaces {
+    for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -395,7 +396,7 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
 fn clear_transient_launch_notes(tree: &mut WorkspaceTree) {
     use crate::shell::state::TileContent;
 
-    for workspace in &mut tree.workspaces {
+    for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -423,7 +424,7 @@ fn repair_legacy_foreign_surfaces(tree: &mut WorkspaceTree) {
     let mut removed_tabs = std::collections::HashSet::new();
     let mut removed_surfaces = std::collections::HashSet::new();
 
-    for workspace in &mut tree.workspaces {
+    for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 group.tabs.retain(|tab| {
@@ -455,6 +456,7 @@ fn repair_legacy_foreign_surfaces(tree: &mut WorkspaceTree) {
     }
 
     let valid_active_groups: std::collections::HashSet<_> = tree
+        .desktop
         .workspaces
         .iter()
         .flat_map(|workspace| &workspace.strips)
@@ -465,7 +467,8 @@ fn repair_legacy_foreign_surfaces(tree: &mut WorkspaceTree) {
                 .map(move |group| (strip.id, group.id))
         })
         .collect();
-    tree.active_group
+    tree.desktop
+        .active_group
         .retain(|strip_id, group_id| valid_active_groups.contains(&(*strip_id, *group_id)));
     for workspace in &tree.desktop.workspaces {
         for strip in &workspace.strips {
@@ -541,7 +544,7 @@ mod tests {
 
         let mut tree = WorkspaceTree::bootstrap_demo();
         let base = 12_u64;
-        let home = &mut tree.workspaces[0];
+        let home = &mut tree.desktop.workspaces[0];
         home.id = crate::shell::state::WorkspaceId(base);
         home.name = "Shared room 1786892560".into();
         home.strips[0].id = crate::shell::state::StripId(base + 1);
@@ -556,12 +559,12 @@ mod tests {
             kind: AppKind::Browser,
             label: "Browser".into(),
         };
-        tree.workspaces[1].id = crate::shell::state::WorkspaceId(base + 7);
-        tree.workspaces[1].strips[0].id = crate::shell::state::StripId(base + 8);
-        tree.workspaces[2].id = crate::shell::state::WorkspaceId(base + 9);
-        tree.workspaces[2].strips[0].id = crate::shell::state::StripId(base + 10);
-        tree.active = crate::shell::state::WorkspaceId(base);
-        tree.active_strip = [
+        tree.desktop.workspaces[1].id = crate::shell::state::WorkspaceId(base + 7);
+        tree.desktop.workspaces[1].strips[0].id = crate::shell::state::StripId(base + 8);
+        tree.desktop.workspaces[2].id = crate::shell::state::WorkspaceId(base + 9);
+        tree.desktop.workspaces[2].strips[0].id = crate::shell::state::StripId(base + 10);
+        tree.desktop.active = crate::shell::state::WorkspaceId(base);
+        tree.desktop.active_strip = [
             (
                 crate::shell::state::WorkspaceId(base),
                 crate::shell::state::StripId(base + 1),
@@ -577,13 +580,13 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        tree.active_group = [(crate::shell::state::StripId(base + 1), base + 2)]
+        tree.desktop.active_group = [(crate::shell::state::StripId(base + 1), base + 2)]
             .into_iter()
             .collect();
         // The leaked collaboration demo adopted/changed governance after
         // creating the furniture. Those mutations are evidence of the demo,
         // not user-created windows, and must not prevent cleanup.
-        tree.workspaces[0].owner = Some("alice".into());
+        tree.desktop.workspaces[0].owner = Some("alice".into());
         let _ = tree.adopt_ownerless_workspaces(&"ada".to_string());
         tree
     }
@@ -594,7 +597,7 @@ mod tests {
         save_tree_to(tree, &path).expect("save near miss");
         let loaded = load_tree_from(&path).expect("load near miss");
         assert_eq!(
-            loaded.workspaces.len(),
+            loaded.desktop.workspaces.len(),
             3,
             "a user-modified demo-shaped layout must be preserved ({label})"
         );
@@ -605,9 +608,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let fixture = escaped_demo_fixture();
-        assert!(fixture.workspaces[0].owner.is_some());
-        assert!(fixture.workspaces[1].owner.is_some());
-        assert!(!fixture.workspaces[1].capabilities.is_empty());
+        assert!(fixture.desktop.workspaces[0].owner.is_some());
+        assert!(fixture.desktop.workspaces[1].owner.is_some());
+        assert!(!fixture.desktop.workspaces[1].capabilities.is_empty());
         assert!(
             is_legacy_demo_bootstrap(&fixture),
             "automatic collaboration governance changes remain part of the escaped demo signature"
@@ -615,14 +618,22 @@ mod tests {
         save_tree_to(&fixture, &path).expect("save escaped fixture");
 
         let first = load_tree_from(&path).expect("migrate escaped fixture");
-        assert_eq!(first.workspaces.len(), 1);
-        assert_eq!(first.workspaces[0].name, "Home");
-        assert!(first.workspaces[0].strips[0].window_groups.is_empty());
+        assert_eq!(first.desktop.workspaces.len(), 1);
+        assert_eq!(first.desktop.workspaces[0].name, "Home");
+        assert!(
+            first.desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty()
+        );
         let replacement = std::fs::read(&path).expect("read atomic replacement");
 
         let second = load_tree_from(&path).expect("load replacement again");
-        assert_eq!(second.workspaces.len(), 1);
-        assert!(second.workspaces[0].strips[0].window_groups.is_empty());
+        assert_eq!(second.desktop.workspaces.len(), 1);
+        assert!(
+            second.desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty()
+        );
         assert_eq!(
             std::fs::read(&path).expect("read after second restart"),
             replacement,
@@ -633,21 +644,21 @@ mod tests {
     #[test]
     fn demo_migration_preserves_every_near_miss_user_layout() {
         let mut renamed = escaped_demo_fixture();
-        renamed.workspaces[0].name = "My actual room".into();
+        renamed.desktop.workspaces[0].name = "My actual room".into();
         assert_demo_near_miss_is_preserved(&renamed, "renamed room");
 
         let mut retitled = escaped_demo_fixture();
-        retitled.workspaces[0].strips[0].window_groups[0].tabs[0].title = "My notes".into();
+        retitled.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].title = "My notes".into();
         assert_demo_near_miss_is_preserved(&retitled, "retitled tab");
 
         let mut reordered = escaped_demo_fixture();
-        reordered.workspaces[0].strips[0].window_groups[0]
+        reordered.desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .swap(0, 1);
         assert_demo_near_miss_is_preserved(&reordered, "reordered tabs");
 
         let mut resized = escaped_demo_fixture();
-        resized.workspaces[0].strips[0].window_groups[0].width =
+        resized.desktop.workspaces[0].strips[0].window_groups[0].width =
             crate::shell::state::WindowWidth::Normal;
         assert_demo_near_miss_is_preserved(&resized, "resized group");
 
@@ -656,7 +667,7 @@ mod tests {
         assert_demo_near_miss_is_preserved(&continued, "continuation state");
 
         let mut non_contiguous = escaped_demo_fixture();
-        non_contiguous.workspaces[2].strips[0].id = crate::shell::state::StripId(99_999);
+        non_contiguous.desktop.workspaces[2].strips[0].id = crate::shell::state::StripId(99_999);
         non_contiguous.desktop.active_strip.insert(
             non_contiguous.desktop.workspaces[2].id,
             crate::shell::state::StripId(99_999),
@@ -665,7 +676,8 @@ mod tests {
     }
 
     fn foreign_tabs(tree: &WorkspaceTree) -> Vec<(u64, u64)> {
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
             .flat_map(|strip| &strip.window_groups)
@@ -680,7 +692,8 @@ mod tests {
     }
 
     fn local_apps(tree: &WorkspaceTree) -> Vec<(u64, String)> {
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
             .flat_map(|strip| &strip.window_groups)
@@ -695,7 +708,8 @@ mod tests {
     }
 
     fn symbolic_note(tree: &WorkspaceTree, tab_id: u64) -> Option<&str> {
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
             .flat_map(|strip| &strip.window_groups)
@@ -716,7 +730,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.workspaces[0].strips = vec![Strip {
+        tree.desktop.workspaces[0].strips = vec![Strip {
             id: StripId::from(91_100),
             name: "Main".into(),
             window_groups: vec![WindowGroup {
@@ -727,7 +741,7 @@ mod tests {
                 maximized: false,
             }],
         }];
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs = vec![
             Tab {
                 id: 91_101,
@@ -769,7 +783,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let mut legacy = WorkspaceTree::bootstrap_default();
-        legacy.workspaces[0].strips = vec![Strip {
+        legacy.desktop.workspaces[0].strips = vec![Strip {
             id: StripId::from(91_104),
             name: "Main".into(),
             window_groups: vec![WindowGroup {
@@ -780,7 +794,7 @@ mod tests {
                 maximized: false,
             }],
         }];
-        let group = &mut legacy.workspaces[0].strips[0].window_groups[0];
+        let group = &mut legacy.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs = vec![Tab {
             id: 91_103,
             title: "XTerm".into(),
@@ -809,10 +823,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_default();
-        let workspace_id = tree.workspaces[0].id;
-        let strip_id = tree.workspaces[0].strips[0].id;
+        let workspace_id = tree.desktop.workspaces[0].id;
+        let strip_id = tree.desktop.workspaces[0].strips[0].id;
         let survivor = 90_000;
-        tree.workspaces[0].strips[0]
+        tree.desktop.workspaces[0].strips[0]
             .window_groups
             .push(WindowGroup {
                 id: 89_999,
@@ -829,7 +843,7 @@ mod tests {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: 90_001,
             title: "External editor".into(),
@@ -839,9 +853,9 @@ mod tests {
             },
         });
         group.active_tab = 90_001;
-        tree.active = workspace_id;
-        tree.active_strip.insert(workspace_id, strip_id);
-        tree.active_group.insert(strip_id, 89_999);
+        tree.desktop.active = workspace_id;
+        tree.desktop.active_strip.insert(workspace_id, strip_id);
+        tree.desktop.active_group.insert(strip_id, 89_999);
 
         save_tree_to(&tree, &path).expect("save");
         let on_disk: WorkspaceTree =
@@ -859,10 +873,13 @@ mod tests {
             vec![(90_001, "org.example.Editor".into())],
             "a live app becomes a relaunchable record in the same tab"
         );
-        let loaded_group = &loaded.workspaces[0].strips[0].window_groups[0];
-        assert_eq!(loaded.active, workspace_id);
-        assert_eq!(loaded.active_strip.get(&workspace_id), Some(&strip_id));
-        assert_eq!(loaded.active_group.get(&strip_id), Some(&89_999));
+        let loaded_group = &loaded.desktop.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(loaded.desktop.active, workspace_id);
+        assert_eq!(
+            loaded.desktop.active_strip.get(&workspace_id),
+            Some(&strip_id)
+        );
+        assert_eq!(loaded.desktop.active_group.get(&strip_id), Some(&89_999));
         assert_eq!(loaded_group.active_tab, 90_001);
         assert!(
             loaded_group
@@ -880,7 +897,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.workspaces[0].strips[0]
+        tree.desktop.workspaces[0].strips[0]
             .window_groups
             .push(WindowGroup {
                 id: 92_001,
@@ -911,10 +928,10 @@ mod tests {
         use crate::shell::state::{Collaborator, Tab, TileContent, WindowGroup, WindowWidth};
 
         let mut tree = WorkspaceTree::bootstrap_default();
-        let strip_id = tree.workspaces[0].strips[0].id;
+        let strip_id = tree.desktop.workspaces[0].strips[0].id;
         let tab_id = 91_001;
         let surface_id = 91_002;
-        tree.workspaces[0].strips[0]
+        tree.desktop.workspaces[0].strips[0]
             .window_groups
             .push(WindowGroup {
                 id: 91_003,
@@ -930,21 +947,27 @@ mod tests {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        tree.active_group.insert(strip_id, 91_003);
-        tree.workspaces[0].shared_surfaces.share(surface_id, 44);
-        tree.workspaces[0]
+        tree.desktop.active_group.insert(strip_id, 91_003);
+        tree.desktop.workspaces[0]
+            .shared_surfaces
+            .share(surface_id, 44);
+        tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("peer", "Peer", tab_id));
         tree.continuation_tabs.insert(tab_id);
         tree.continuation_owned_tabs
-            .insert(tab_id, tree.workspaces[0].room);
+            .insert(tab_id, tree.desktop.workspaces[0].room);
 
         repair_legacy_foreign_surfaces(&mut tree);
 
-        assert!(tree.workspaces[0].strips[0].window_groups.is_empty());
-        assert!(!tree.active_group.contains_key(&strip_id));
-        assert!(tree.workspaces[0].shared_surfaces.is_empty());
-        assert_eq!(tree.workspaces[0].collaborators[0].active_tab, None);
+        assert!(
+            tree.desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty()
+        );
+        assert!(!tree.desktop.active_group.contains_key(&strip_id));
+        assert!(tree.desktop.workspaces[0].shared_surfaces.is_empty());
+        assert_eq!(tree.desktop.workspaces[0].collaborators[0].active_tab, None);
         assert!(!tree.continuation_tabs.contains(&tab_id));
         assert!(!tree.continuation_owned_tabs.contains_key(&tab_id));
     }
@@ -956,7 +979,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("legacy-state.json");
         let mut legacy = WorkspaceTree::bootstrap_default();
-        legacy.workspaces[0].strips[0]
+        legacy.desktop.workspaces[0].strips[0]
             .window_groups
             .push(WindowGroup {
                 id: 90_004,
@@ -965,7 +988,7 @@ mod tests {
                 width: WindowWidth::Normal,
                 maximized: false,
             });
-        let group = &mut legacy.workspaces[0].strips[0].window_groups[0];
+        let group = &mut legacy.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: 90_002,
             title: "Stale client".into(),
@@ -989,7 +1012,7 @@ mod tests {
         let loaded = load_tree_from(&path).expect("load legacy state");
         assert!(foreign_tabs(&loaded).is_empty());
         assert!(
-            loaded.workspaces[0].strips[0].window_groups[0]
+            loaded.desktop.workspaces[0].strips[0].window_groups[0]
                 .tabs
                 .iter()
                 .any(|tab| matches!(&tab.tile, TileContent::PeerWindow { .. }))
@@ -1008,20 +1031,29 @@ mod tests {
         let path = dir.path().join("state.json");
 
         let mut original = WorkspaceTree::bootstrap_default();
-        let room = original.active_workspace().expect("active workspace").room;
+        let room = original
+            .desktop
+            .active_workspace()
+            .expect("active workspace")
+            .room;
         assert!(original.note_peer_present(room, 0x11, "alice"));
         assert!(original.admit_collaborator_in_room(
             room,
             Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
         ));
-        let owner_before = original.active_workspace().unwrap().owner.clone();
-        let caps_before = original.active_workspace().unwrap().capabilities.len();
+        let owner_before = original.desktop.active_workspace().unwrap().owner.clone();
+        let caps_before = original
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .capabilities
+            .len();
 
         save_tree_to(&original, &path).expect("save");
         let (loaded, notice) = load_or_default(&path);
         assert!(notice.is_none(), "a file this build just wrote must load");
 
-        for ws in &loaded.workspaces {
+        for ws in &loaded.desktop.workspaces {
             assert!(
                 ws.collaborators.is_empty(),
                 "workspace {:?} came back from disk showing {:?} — nobody \
@@ -1034,6 +1066,7 @@ mod tests {
         }
 
         let after = loaded
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.room == room)
@@ -1065,7 +1098,7 @@ mod tests {
             "a file this build just wrote must load without a notice"
         );
         assert!(
-            !loaded.workspaces.is_empty(),
+            !loaded.desktop.workspaces.is_empty(),
             "bootstrap tree must round-trip workspaces"
         );
         assert!(
@@ -1091,6 +1124,7 @@ mod tests {
         // every workspace, so it stays *loadable* as the struct grows.
         let mut original = WorkspaceTree::default();
         original
+            .desktop
             .workspaces
             .push(Workspace::new(WorkspaceId(7), "Home"));
         save_tree_to(&original, &path).expect("save");
@@ -1116,6 +1150,7 @@ mod tests {
         // its id is minted fresh, never 7.
         assert_eq!(
             first_boot
+                .desktop
                 .workspaces
                 .iter()
                 .map(|w| w.id)
@@ -1125,7 +1160,7 @@ mod tests {
              fallback or something else entirely"
         );
         assert!(
-            first_boot.workspaces[0].room.is_nil(),
+            first_boot.desktop.workspaces[0].room.is_nil(),
             "a workspace deserialised from a pre-rooms file has no identity \
              yet; that is what the boot-time migration is for"
         );
@@ -1137,14 +1172,14 @@ mod tests {
             1,
             "the migration must mint for the one roomless workspace"
         );
-        let room = first_boot.workspaces[0].room;
+        let room = first_boot.desktop.workspaces[0].room;
         assert!(!room.is_nil(), "the minted room must be a real identity");
 
         // The mint and the write are one operation, so the *next* boot
         // reads the same value rather than minting again.
         let (mut second_boot, _) = load_or_default(&path);
         assert_eq!(
-            second_boot.workspaces[0].room, room,
+            second_boot.desktop.workspaces[0].room, room,
             "the room minted on first boot must have been written to disk, \
              so the second boot loads it instead of minting a new one"
         );
@@ -1154,7 +1189,7 @@ mod tests {
             "a second boot must find nothing to migrate"
         );
         assert_eq!(
-            second_boot.workspaces[0].room, room,
+            second_boot.desktop.workspaces[0].room, room,
             "and must leave the room it loaded alone"
         );
     }
@@ -1194,6 +1229,7 @@ mod tests {
         // about the wrong refusal.
         let mut original = WorkspaceTree::default();
         original
+            .desktop
             .workspaces
             .push(crate::shell::state::Workspace::new(
                 crate::shell::state::WorkspaceId(7),
@@ -1211,7 +1247,7 @@ mod tests {
 
         // Refused: this is a bootstrapped tree, not the one on disk.
         assert!(
-            !tree.workspaces.iter().any(|w| w.id.0 == 7),
+            !tree.desktop.workspaces.iter().any(|w| w.id.0 == 7),
             "a file from a newer layout must NOT be loaded; workspace 7 came \
              from it and must not be in the session"
         );
@@ -1281,6 +1317,7 @@ mod tests {
 
         let mut original = WorkspaceTree::default();
         original
+            .desktop
             .workspaces
             .push(crate::shell::state::Workspace::new(
                 crate::shell::state::WorkspaceId(9),
@@ -1306,11 +1343,11 @@ mod tests {
             "a pre-versioning file must not be refused"
         );
         assert!(
-            tree.workspaces.iter().any(|w| w.id.0 == 9),
+            tree.desktop.workspaces.iter().any(|w| w.id.0 == 9),
             "the workspaces in a pre-versioning file must still be loaded"
         );
         assert_eq!(
-            tree.schema_version, STATE_SCHEMA_VERSION,
+            tree.desktop.schema_version, STATE_SCHEMA_VERSION,
             "and the loaded tree must carry the current version, so the next \
              write stamps it rather than leaving the file unversioned for ever"
         );

@@ -59,7 +59,7 @@ fn addressed_text_tab(st: &ChromeState, record: &RecordId) -> Option<AddressedTe
     // Found (or not) while the read lock is held; the lock is released
     // below, before this returns to the caller.
     let found = 'search: {
-        for w in &tree.workspaces {
+        for w in &tree.desktop.workspaces {
             for s in &w.strips {
                 for g in &s.window_groups {
                     for t in &g.tabs {
@@ -288,7 +288,7 @@ mod tests {
         let (user, app_id) = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let workspace = &tree.workspaces[0];
+            let workspace = &tree.desktop.workspaces[0];
             (
                 state.local_user_for_room(&workspace.room),
                 AppKind::Other("Notes".into()).app_id(),
@@ -297,7 +297,7 @@ mod tests {
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let workspace = &mut tree.workspaces[0];
+            let workspace = &mut tree.desktop.workspaces[0];
             let instance = collab_types::document_artifact_id(
                 &app_id,
                 &workspace.room.to_string(),
@@ -363,12 +363,12 @@ mod tests {
             let user = {
                 let state = chrome.borrow();
                 let tree = state.tree();
-                state.local_user_for_room(&tree.workspaces[0].room)
+                state.local_user_for_room(&tree.desktop.workspaces[0].room)
             };
             {
                 let state = chrome.borrow();
                 let mut tree = state.tree_mut();
-                let workspace = &mut tree.workspaces[0];
+                let workspace = &mut tree.desktop.workspaces[0];
                 workspace.owner = None;
                 workspace.capabilities.clear();
                 workspace.grant_capability(crate::shell::state::CapOverride::grant(
@@ -518,7 +518,7 @@ mod tests {
         {
             let state = chrome.borrow_mut();
             let mut tree = state.tree_mut();
-            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             group.tabs.push(Tab {
                 id: OTHER_TAB,
                 title: "Other note".into(),
@@ -569,11 +569,11 @@ mod tests {
         {
             let state = chrome.borrow_mut();
             let mut tree = state.tree_mut();
-            tree.workspaces[0].set_owner("another-person");
+            tree.desktop.workspaces[0].set_owner("another-person");
             let mut active = Workspace::new(WorkspaceId::new(), "Authorized elsewhere");
             active.set_owner(crate::shell::state::local_user_id_for_room(&active.room));
             let active_id = active.id;
-            tree.workspaces.push(active);
+            tree.desktop.workspaces.push(active);
             tree.set_active(active_id);
         }
 

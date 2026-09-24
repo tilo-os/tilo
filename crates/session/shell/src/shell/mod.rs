@@ -1328,15 +1328,17 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     WorkspaceSceneParts,
 ) {
     let strips_for_view: Vec<String> = tree
+        .desktop
         .active_workspace()
         .map(|w| w.strips.iter().map(|s| s.name.clone()).collect())
         .unwrap_or_default();
     let strip_view: Box<dyn Widget> = Box::new(StripView::new(strips_for_view, 0));
     let workspace_view: Box<dyn Widget> = Box::new(WorkspaceView::new(
-        tree.workspaces.len(),
-        tree.workspaces
+        tree.desktop.workspaces.len(),
+        tree.desktop
+            .workspaces
             .iter()
-            .position(|w| w.id == tree.active)
+            .position(|w| w.id == tree.desktop.active)
             .unwrap_or(0),
     ));
 
@@ -1367,7 +1369,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
         .push(workspace_view)
         .push(strip_view);
 
-    let workspace_is_empty = tree.active_workspace().is_some_and(|workspace| {
+    let workspace_is_empty = tree.desktop.active_workspace().is_some_and(|workspace| {
         workspace
             .strips
             .iter()
@@ -1386,7 +1388,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     let mut group_row_ptrs: std::collections::HashMap<state::StripId, *mut GroupRow> =
         std::collections::HashMap::new();
 
-    if let Some(ws) = tree.active_workspace() {
+    if let Some(ws) = tree.desktop.active_workspace() {
         for strip in &ws.strips {
             // GroupRow routes cross-group tab drag-drops; each WindowGroup
             // still handles its own close/reorder/maximize.
@@ -1422,7 +1424,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
     // Full-screen siblings-underneath layer so the translucent topbar
     // (alpha 204) picks up the gradient tint behind it — a Vello stand-in
     // for backdrop-blur.
-    let mut backdrop: Box<dyn Widget> = tree.active_workspace().map_or_else(
+    let mut backdrop: Box<dyn Widget> = tree.desktop.active_workspace().map_or_else(
         || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
         |workspace| {
             let workspace_id = workspace.id.0.to_string();
@@ -1540,6 +1542,7 @@ fn build_overlay_host_from_chrome(
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
     // the nearest one.
     let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
+        .desktop
         .workspaces
         .iter()
         .map(|w| sidebar_wheel_disc::SpokeLabel {
@@ -1548,9 +1551,10 @@ fn build_overlay_host_from_chrome(
         })
         .collect();
     let active_idx = tree
+        .desktop
         .workspaces
         .iter()
-        .position(|w| w.id == tree.active)
+        .position(|w| w.id == tree.desktop.active)
         .unwrap_or(0);
     let sidebar: Box<dyn Widget> = Box::new(
         sidebar_wheel_disc::SidebarWheelDisc::new(spokes)
@@ -1573,7 +1577,7 @@ fn build_overlay_host_from_chrome(
     .with_sidebar_top(sidebar_top)
     .with_group_row_ptrs(group_row_ptrs)
     .with_workspace_scene_parts(scene_parts)
-    .with_content_workspace(tree.active.raw())
+    .with_content_workspace(tree.desktop.active.raw())
     .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)
 }
@@ -1586,7 +1590,7 @@ fn build_overlay_host_from_chrome(
 pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
     use ui::permissions::UserId;
     use ui::presence::PresenceKey;
-    if let Some(ws) = tree.active_workspace() {
+    if let Some(ws) = tree.desktop.active_workspace() {
         for c in &ws.collaborators {
             // Colour overrides first: later write wins for the same user
             // id, but ordering doesn't matter since this only walks the
@@ -1604,7 +1608,7 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
     }
     // Tree-level roster too (top-bar avatar stack); only the colour
     // override applies since tab attribution lives on the workspace.
-    for c in &tree.collaborators {
+    for c in &tree.desktop.collaborators {
         if let Some(hex) = &c.cursor_color {
             ctx.set_color_override(UserId(c.id.clone()), hex);
         }

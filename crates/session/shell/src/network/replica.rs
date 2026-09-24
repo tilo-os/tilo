@@ -280,7 +280,7 @@ mod tests {
 
         // Re-point each room at its own owner so the two are distinguishable on the wire.
         tree.adopt_ownerless_workspaces(&ROOM_A_OWNER.to_string());
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == b) {
+        if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == b) {
             ws.owner = Some(ROOM_B_OWNER.to_string());
         }
 
@@ -411,6 +411,7 @@ mod tests {
         let token = make_invite_token(
             &owner_key,
             host_tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == host_a)
@@ -452,7 +453,7 @@ mod tests {
         assert_absent(&held, ROOM_B_PATH, "room B's capability");
         // And the guest gained no workspace it was not invited to.
         assert_eq!(
-            guest_handle.read().workspaces.len(),
+            guest_handle.read().desktop.workspaces.len(),
             1,
             "the guest has one workspace — its own, now in room A",
         );
@@ -473,6 +474,7 @@ mod tests {
         assert_eq!(
             guest_handle
                 .read()
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == guest_ws)
@@ -583,6 +585,7 @@ mod tests {
             .room_authority
             .insert(room_a, crate::shell::state::RoomAuthority::Local);
         guest
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == guest_ws)
@@ -613,6 +616,7 @@ mod tests {
 
         let mut tree = host_handle.write();
         let ws = tree
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == a)
@@ -716,6 +720,7 @@ mod tests {
         );
         let guest = tree_b.read();
         let ws = guest
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == guest_ws)
@@ -791,6 +796,7 @@ mod tests {
             let (bob_role, carol_role) = {
                 let tree = tree.read();
                 let workspace = tree
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|ws| ws.id == workspace)
@@ -820,6 +826,7 @@ mod tests {
             let (bob_role, carol_role) = {
                 let tree = tree.read();
                 let workspace = tree
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|ws| ws.id == workspace)
@@ -856,7 +863,7 @@ mod tests {
         let tree_b = guest_tree.shared();
         tree_a.write().sync_room_doc(room_a);
 
-        let before = tree_b.read().room_epoch();
+        let before = tree_b.read().desktop.room_epoch();
 
         let rep_a = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree_a.clone())));
         let rep_b = Arc::new(Mutex::new(WorkspaceTreeReplica::new(2, tree_b.clone())));
@@ -872,7 +879,7 @@ mod tests {
             "the round must have delivered the room document"
         );
         assert!(
-            tree_b.read().room_epoch() > before,
+            tree_b.read().desktop.room_epoch() > before,
             "content landed in the guest's tree but nothing told the frame \
              loop to rebuild, so it would never be drawn"
         );
@@ -898,12 +905,12 @@ mod tests {
         hub.attach(Box::new(ArcReplica(rep_a.clone())));
         hub.attach(Box::new(ArcReplica(rep_b.clone())));
         sync_round(&mut hub, &rep_b, &[&rep_a]);
-        let settled = tree_b.read().room_epoch();
+        let settled = tree_b.read().desktop.room_epoch();
 
         // Nothing changed; sync again.
         sync_round(&mut hub, &rep_b, &[&rep_a]);
         assert_eq!(
-            tree_b.read().room_epoch(),
+            tree_b.read().desktop.room_epoch(),
             settled,
             "a sync round that carried no change must not announce one"
         );
@@ -1052,7 +1059,8 @@ mod tests {
         chrome.borrow_mut().add_workspace("New");
         let room = {
             let tree = handle.read();
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.name == "New")
                 .map(|w| w.room)

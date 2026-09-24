@@ -140,7 +140,7 @@ async fn two_actors_exchange_a_workspace_change() {
             .apply_room_changes(room, &changes, &PeerOrigin::peer(&sender))
             .unwrap()
     );
-    assert_eq!(target.workspaces[0].name, "Renamed");
+    assert_eq!(target.desktop.workspaces[0].name, "Renamed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

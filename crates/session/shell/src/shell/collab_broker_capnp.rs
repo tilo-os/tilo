@@ -568,6 +568,7 @@ fn admit_verified_join(
     verified: VerifiedJoinIdentity,
 ) -> Result<AdmittedJoinIdentity, String> {
     let workspace = tree
+        .desktop
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -595,6 +596,7 @@ fn admit_agent_delegation(
     agent_id: &str,
 ) -> Result<(), String> {
     let workspace = tree
+        .desktop
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -1996,7 +1998,7 @@ fn apply_permission_profile_operation(
                 description,
                 rules,
             };
-            tree.workspaces[workspace_index]
+            tree.desktop.workspaces[workspace_index]
                 .save_permission_profile_as_actor(caller, profile.clone())
                 .map_err(|error| error.to_string())?;
             tree.doc_upsert_permission_profile(workspace_id, &profile);
@@ -2016,10 +2018,10 @@ fn apply_permission_profile_operation(
             let expiry = (expires_unix > 0)
                 .then_some(expires_unix)
                 .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-            let ids = tree.workspaces[workspace_index]
+            let ids = tree.desktop.workspaces[workspace_index]
                 .assign_permission_profile_as_actor(caller, &profile, &subject, expiry)
                 .map_err(|error| error.to_string())?;
-            let capabilities = tree.workspaces[workspace_index]
+            let capabilities = tree.desktop.workspaces[workspace_index]
                 .capabilities
                 .iter()
                 .filter(|capability| ids.contains(&capability.id))
@@ -2329,6 +2331,7 @@ impl CapnpBrokerState {
         };
         let mut tree = membership.write();
         let Some(workspace_id) = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == pending.cluster_id)
@@ -2951,6 +2954,7 @@ impl CapnpBrokerState {
         })?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == cluster_id)
@@ -2996,18 +3000,19 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
         let mut tree = membership.write();
         let workspace_index = tree
+            .desktop
             .workspaces
             .iter()
             .position(|workspace| workspace.room.to_string() == cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let caller = if actor.is_agent {
-            tree.workspaces[workspace_index]
+            tree.desktop.workspaces[workspace_index]
                 .actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
         } else {
-            tree.workspaces[workspace_index].actor_for_person(&actor.id)
+            tree.desktop.workspaces[workspace_index].actor_for_person(&actor.id)
         };
         let surface = crate::shell::workspace_settings::permission_profile_resource_with_access(
-            &tree.workspaces[workspace_index],
+            &tree.desktop.workspaces[workspace_index],
             true,
         );
         let resource = find_resource(&surface, resource_id)
@@ -3024,7 +3029,7 @@ impl CapnpBrokerState {
         {
             return Err("explicit confirmation is required".into());
         }
-        if tree.workspaces[workspace_index].decide(
+        if tree.desktop.workspaces[workspace_index].decide(
             &caller,
             &ResourceRef::Action {
                 app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
@@ -3036,7 +3041,7 @@ impl CapnpBrokerState {
             return Err("the caller is not allowed to manage permission profiles".into());
         }
         let operation = decode_permission_profile_operation(spec, argument)?;
-        let workspace_id = tree.workspaces[workspace_index].id;
+        let workspace_id = tree.desktop.workspaces[workspace_index].id;
         apply_permission_profile_operation(
             &mut tree,
             workspace_index,
@@ -3067,7 +3072,7 @@ impl CapnpBrokerState {
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
         );
-        tree.external_revision = tree.external_revision.wrapping_add(1);
+        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
         tree.flush_to_disk();
         drop(tree);
         self.record_completion(id, actor.id.clone(), update.clone());
@@ -3305,6 +3310,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
@@ -3540,6 +3546,7 @@ impl CapnpBrokerState {
         let task_snapshot = {
             let tree = membership.read();
             let lookup = match tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room.to_string() == cluster_id)
@@ -3671,6 +3678,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
@@ -3743,6 +3751,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
         let mut tree = membership.write();
         let workspace_id = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
@@ -4095,6 +4104,7 @@ impl CapnpBrokerState {
         })?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -4664,6 +4674,7 @@ impl CapnpChannelHandle {
         })?;
         let grants = membership
             .read()
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -5602,6 +5613,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let mut tree = membership.write();
         let Some(workspace_id) = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
@@ -9417,7 +9429,7 @@ pub(crate) mod tests {
             "Directory test room",
         );
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
     }
@@ -9440,6 +9452,7 @@ pub(crate) mod tests {
     ) -> LocalDirectoryFixture {
         let cluster_id = membership
             .read()
+            .desktop
             .active_workspace()
             .expect("directory fixture requires an active workspace")
             .room
@@ -10088,7 +10101,7 @@ pub(crate) mod tests {
 
     fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, principal: &str, room: &str) {
         let mut tree = membership.write();
-        let workspace = &mut tree.workspaces[0];
+        let workspace = &mut tree.desktop.workspaces[0];
         workspace.owner = None;
         workspace.capabilities.clear();
         workspace.capabilities.push(CapOverride::membership(
@@ -10112,7 +10125,7 @@ pub(crate) mod tests {
             crate::shell::state::Verb::Write,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
 
         let admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("a certified editor is admitted");
@@ -10158,7 +10171,7 @@ pub(crate) mod tests {
             Verb::Comment,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
 
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("the owner is admitted before delegation");
@@ -10175,7 +10188,7 @@ pub(crate) mod tests {
         );
 
         let membership = tree.shared();
-        assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
+        assert!(membership.write().desktop.workspaces[0].revoke_capability(&agent_membership));
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -10210,7 +10223,7 @@ pub(crate) mod tests {
             Verb::Write,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
             .expect("the person is a member");
         assert!(admit_agent_delegation(&tree, &route, &mut admitted, "operator").is_err());
@@ -10232,7 +10245,7 @@ pub(crate) mod tests {
             crate::shell::state::Verb::Read,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
 
         assert!(admit_verified_join(&tree, &route, verified_device(&stranger)).is_err());
         let admitted = admit_verified_join(&tree, &route, verified_device(&member))
@@ -10246,7 +10259,7 @@ pub(crate) mod tests {
             Some(Arc::clone(&membership_tree)),
             None,
         );
-        assert!(membership_tree.write().workspaces[0].revoke_capability(&membership));
+        assert!(membership_tree.write().desktop.workspaces[0].revoke_capability(&membership));
         assert!(
             state.revalidate_admission(&route, &admitted).is_err(),
             "removing membership rejects the certified session's next operation"
@@ -10264,8 +10277,8 @@ pub(crate) mod tests {
             crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(4), "Other room");
         let replay_route = CrdtRoute::cluster(other_workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(member_workspace);
-        tree.workspaces.push(other_workspace);
+        tree.desktop.workspaces.push(member_workspace);
+        tree.desktop.workspaces.push(other_workspace);
 
         assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
     }
@@ -10359,7 +10372,7 @@ pub(crate) mod tests {
         workspace.set_owner(&principal);
         let route = CrdtRoute::record("so.tilo.notes", workspace.room.to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let admitted = admit_verified_join(
             &membership.read(),
@@ -10563,7 +10576,7 @@ pub(crate) mod tests {
         workspace.set_owner("owner");
         let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -10894,7 +10907,7 @@ pub(crate) mod tests {
         let workspace = profile_governed_workspace("architect");
         let cluster = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -10969,7 +10982,7 @@ pub(crate) mod tests {
             .expect("broker-owned assignment succeeds");
 
         let tree = membership.read();
-        let workspace = &tree.workspaces[0];
+        let workspace = &tree.desktop.workspaces[0];
         assert!(workspace.allows(
             &workspace.actor_for_person(&"alice".into()),
             &collab_types::ResourceRef::Action {
@@ -10995,7 +11008,7 @@ pub(crate) mod tests {
         workspace.set_owner("owner");
         let cluster_id = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -11070,7 +11083,7 @@ pub(crate) mod tests {
         );
 
         let tree = membership.read();
-        let receipts = &tree.workspaces[0].effect_receipts;
+        let receipts = &tree.desktop.workspaces[0].effect_receipts;
         assert_eq!(
             receipts.len(),
             2,

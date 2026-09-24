@@ -496,8 +496,8 @@ mod tests {
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "Action API test");
         workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
-        tree.workspaces.push(workspace);
-        tree.active = id;
+        tree.desktop.workspaces.push(workspace);
+        tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
         ChromeState::new_with_handle(handle)
     }

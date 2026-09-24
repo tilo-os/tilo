@@ -176,6 +176,7 @@ fn sign(
     let allowed = {
         let tree = tree.read();
         let Some(workspace) = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| &workspace.room == room)
@@ -301,6 +302,7 @@ fn sign_collaboration_op(
     let allowed = {
         let tree = tree.read();
         let Some(workspace) = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| &workspace.room == bound_room)
@@ -469,14 +471,14 @@ mod tests {
             crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Room");
         workspace.room = room;
         let mut tree = crate::shell::state::WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let tree = tree.shared();
 
         assert!(matches!(
             sign(&tree, &room, "so.tilo.notes", "document.save", b"payload"),
             Response::Denied(_)
         ));
-        tree.write().workspaces[0]
+        tree.write().desktop.workspaces[0]
             .capabilities
             .push(CapOverride::grant(
                 Subject::app("so.tilo.notes"),
@@ -573,7 +575,7 @@ mod tests {
         workspace.room = room;
         workspace.set_owner(profile.principal_id());
         let mut tree = crate::shell::state::WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let tree = tree.shared();
 
         let now = std::time::SystemTime::now();
@@ -679,7 +681,7 @@ mod tests {
         ));
 
         let mut tree_guard = tree.write();
-        let workspace = &mut tree_guard.workspaces[0];
+        let workspace = &mut tree_guard.desktop.workspaces[0];
         workspace.owner = None;
         workspace.capabilities.clear();
         workspace.capabilities.push(CapOverride::membership(
@@ -718,7 +720,7 @@ mod tests {
             Response::Denied(reason) if reason.contains("denies this document action")
         ));
         let mut tree_guard = tree.write();
-        let workspace = &mut tree_guard.workspaces[0];
+        let workspace = &mut tree_guard.desktop.workspaces[0];
         workspace.capabilities.clear();
         workspace.capabilities.push(CapOverride::membership(
             Subject::person(profile.principal_id()),
@@ -787,7 +789,7 @@ mod tests {
             Verb::Write,
         ));
         let mut tree = crate::shell::state::WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let socket = temp.path().join("identity.sock");
         let _broker = spawn(socket.clone(), tree.shared()).expect("broker");
         let mut client = UnixStream::connect(socket).expect("connect");

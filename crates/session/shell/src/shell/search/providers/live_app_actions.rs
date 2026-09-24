@@ -438,6 +438,7 @@ impl LiveAppActionsProvider {
         let room = ctx
             .chrome
             .tree()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             .unwrap_or_default();
@@ -460,6 +461,7 @@ impl LiveAppActionsProvider {
         let room = ctx
             .chrome
             .tree()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.room.to_string());
         let app = ctx.chrome.active_app_id();
@@ -843,6 +845,7 @@ impl LiveAppActionsProvider {
             ) && ctx
                 .chrome
                 .tree()
+                .desktop
                 .active_workspace()
                 .map(|workspace| workspace.room.to_string())
                 != Some(root.cluster_id.clone())
@@ -852,6 +855,7 @@ impl LiveAppActionsProvider {
             let root_actor = ctx
                 .chrome
                 .tree()
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room.to_string() == root.cluster_id)
@@ -1223,6 +1227,7 @@ impl LiveAppActionsProvider {
         let workspace_rooms = ctx
             .chrome
             .tree()
+            .desktop
             .workspaces
             .iter()
             .map(|workspace| workspace.room)
@@ -1598,6 +1603,7 @@ impl SearchProvider for LiveAppActionsProvider {
     ) -> SearchProximity {
         let current_room = chrome
             .tree()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.room.to_string());
         if Self::hierarchy(&result.id)
@@ -1657,6 +1663,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 ) && ctx
                     .chrome
                     .tree()
+                    .desktop
                     .active_workspace()
                     .map(|workspace| workspace.room.to_string())
                     != Some(root.cluster_id.clone())
@@ -1670,6 +1677,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let root_actor = ctx
                     .chrome
                     .tree()
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|workspace| workspace.room.to_string() == root.cluster_id)
@@ -2108,6 +2116,7 @@ impl SearchProvider for LiveAppActionsProvider {
         ) && ctx
             .chrome
             .tree()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.room.to_string())
             != Some(root.cluster_id.clone())
@@ -2117,6 +2126,7 @@ impl SearchProvider for LiveAppActionsProvider {
         let actor = ctx
             .chrome
             .tree()
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == root.cluster_id)
@@ -2485,9 +2495,10 @@ mod tests {
     fn chrome() -> crate::shell::chrome_state::Chrome {
         let mut workspace_tree = WorkspaceTree::default();
         workspace_tree
+            .desktop
             .workspaces
             .push(Workspace::new(WorkspaceId(1), "Search fixture"));
-        workspace_tree.active = WorkspaceId(1);
+        workspace_tree.desktop.active = WorkspaceId(1);
         let tree: WorkspaceTreeHandle = Arc::new(RwLock::new(workspace_tree));
         ChromeState::new_with_handle(tree)
     }
@@ -2757,8 +2768,8 @@ mod tests {
         let broker = broker_for(&chrome);
         let provider = LiveAppActionsProvider::new(broker.clone());
         let chrome = chrome.borrow();
-        let cluster_id = chrome.tree().workspaces[0].room.to_string();
-        let actor = chrome.local_user_for_room(&chrome.tree().workspaces[0].room);
+        let cluster_id = chrome.tree().desktop.workspaces[0].room.to_string();
+        let actor = chrome.local_user_for_room(&chrome.tree().desktop.workspaces[0].room);
         let root = ActionDirectoryRoot {
             peer_id: 9,
             app_id: "so.tilo.remote".into(),
@@ -3037,7 +3048,7 @@ mod tests {
         let provider = LiveAppActionsProvider::new(broker);
         let chrome = chrome();
         let chrome = chrome.borrow();
-        let room = chrome.tree().workspaces[0].room.to_string();
+        let room = chrome.tree().desktop.workspaces[0].room.to_string();
         let result = |cluster: &str| SearchResult {
             kind: ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::Effect,
@@ -3081,10 +3092,12 @@ mod tests {
         let chrome = chrome();
         let broker = broker_for(&chrome);
         let provider = LiveAppActionsProvider::new(broker.clone());
-        let cluster_id = chrome.borrow().tree().workspaces[0].room.to_string();
+        let cluster_id = chrome.borrow().tree().desktop.workspaces[0]
+            .room
+            .to_string();
         let actor = chrome
             .borrow()
-            .local_user_for_room(&chrome.borrow().tree().workspaces[0].room);
+            .local_user_for_room(&chrome.borrow().tree().desktop.workspaces[0].room);
         let root = ActionDirectoryRoot {
             peer_id: 9,
             app_id: "so.tilo.reader".into(),

@@ -302,7 +302,7 @@ fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
 
     let mut tree_with_files = tree_with_seeded_roster();
     let owner = shell::shell::state::local_user_id();
-    if let Some(active) = tree_with_files.active_workspace_mut() {
+    if let Some(active) = tree_with_files.desktop.active_workspace_mut() {
         for i in 0..3 {
             active
                 .grant_as(
@@ -467,7 +467,7 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
     let mut tree = WorkspaceTree::bootstrap_demo();
     let owner = shell::shell::state::local_user_id();
     tree.adopt_ownerless_workspaces(&owner);
-    if let Some(ws) = tree.active_workspace_mut() {
+    if let Some(ws) = tree.desktop.active_workspace_mut() {
         let room = ws.id.raw().to_string();
         for (person, verb) in [
             ("ada", Verb::Write),
@@ -1268,7 +1268,7 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     use shell::shell::state::Collaborator;
 
     let mut tree = WorkspaceTree::bootstrap_default();
-    let active_id = tree.active;
+    let active_id = tree.desktop.active;
     // Colours are stated explicitly so the hex checked below is a property of
     // this fixture, not whatever the local user id happens to hash to.
     assert!(tree.admit_collaborator(
@@ -1281,10 +1281,11 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     ));
 
     let active_ws = tree
+        .desktop
         .active_workspace()
         .expect("the tree leaves an active workspace");
     let active_collabs = active_ws.collaborators.len();
-    let tree_collabs = tree.collaborators.len();
+    let tree_collabs = tree.desktop.collaborators.len();
     assert_eq!(
         active_collabs, 2,
         "the fixture must put exactly the two admitted peers on the \
@@ -1365,15 +1366,16 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
 fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
     let tree = WorkspaceTree::bootstrap_default();
     let active_ws = tree
+        .desktop
         .active_workspace()
         .expect("bootstrap_default leaves an active workspace");
     assert!(
-        active_ws.collaborators.is_empty() && tree.collaborators.is_empty(),
+        active_ws.collaborators.is_empty() && tree.desktop.collaborators.is_empty(),
         "a first-boot tree must have an empty roster — a name here is a \
          person who does not exist, persisted into the user's workspace \
          document. Active ws has {}, tree-level has {}.",
         active_ws.collaborators.len(),
-        tree.collaborators.len()
+        tree.desktop.collaborators.len()
     );
 
     let mut chrome = TopBarChrome::from_tree(&tree);
@@ -1571,7 +1573,11 @@ fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
     use ui::presence::PresenceKey;
 
     let mut tree = WorkspaceTree::bootstrap_default();
-    let room = tree.active_workspace().expect("active workspace").room;
+    let room = tree
+        .desktop
+        .active_workspace()
+        .expect("active workspace")
+        .room;
 
     let before = TopBarChrome::from_tree(&tree);
     assert!(
@@ -1686,7 +1692,7 @@ fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
         },
         ..Default::default()
     };
-    tree.active = ws_id;
+    tree.desktop.active = ws_id;
 
     let mut chrome = TopBarChrome::from_tree(&tree);
     // Contract: 3 chips (peers beyond the local user, capped at 3) + a "+2"
@@ -1874,12 +1880,12 @@ mod overview_add_workspace {
             "add-workspace rect must be populated before clicking"
         );
 
-        let initial_count = h.chrome.borrow().tree().workspaces.len();
+        let initial_count = h.chrome.borrow().tree().desktop.workspaces.len();
         assert!(
             initial_count >= 1,
             "bootstrap_demo carries at least one workspace"
         );
-        let initial_active = h.chrome.borrow().tree().active;
+        let initial_active = h.chrome.borrow().tree().desktop.active;
 
         // Simulate winit's cursor-then-press sequence; handle_event reads
         // last_cursor on MouseInput::Pressed.
@@ -1922,13 +1928,13 @@ mod overview_add_workspace {
 
         let st = h.chrome.borrow();
         assert_eq!(
-            st.tree().workspaces.len(),
+            st.tree().desktop.workspaces.len(),
             initial_count + 1,
             "clicking the overview's '+ Add workspace' tile must append a \
              new workspace via chrome.add_workspace()"
         );
         assert_ne!(
-            st.tree().active,
+            st.tree().desktop.active,
             initial_active,
             "the newly-appended workspace must be activated, mirroring \
              the wheel-disc plus slot's create-and-switch semantics"
@@ -1937,9 +1943,13 @@ mod overview_add_workspace {
             !st.overlays.overview,
             "creating a workspace must dismiss overview so navigation reaches the new workspace"
         );
-        let active_id = st.tree().active;
+        let active_id = st.tree().desktop.active;
         assert!(
-            st.tree().workspaces.iter().any(|w| w.id == active_id),
+            st.tree()
+                .desktop
+                .workspaces
+                .iter()
+                .any(|w| w.id == active_id),
             "active id must point at one of the workspaces in the tree"
         );
     }
@@ -1994,7 +2004,7 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
     // Listed but powerless: collaborator records everywhere, no capability
     // anywhere.
     let mut listed_only = WorkspaceTree::bootstrap_demo();
-    for ws in &mut listed_only.workspaces {
+    for ws in &mut listed_only.desktop.workspaces {
         ws.owner = None;
         ws.capabilities.clear();
         ws.collaborators = vec![
@@ -2010,7 +2020,7 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
             },
         ];
     }
-    for ws in &listed_only.workspaces {
+    for ws in &listed_only.desktop.workspaces {
         assert!(
             room_people(ws, &listed_only).is_empty(),
             "a person who holds no capability in the workspace gets no face on \
@@ -2024,14 +2034,14 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
     }
 
     let mut with_member = listed_only.clone();
-    let room = with_member.workspaces[0].id.raw().to_string();
-    with_member.workspaces[0].grant_capability(CapOverride::membership(
+    let room = with_member.desktop.workspaces[0].id.raw().to_string();
+    with_member.desktop.workspaces[0].grant_capability(CapOverride::membership(
         Subject::Principal(Principal::Person("ada".into())),
         room,
         Verb::Write,
     ));
 
-    let faces = room_people(&with_member.workspaces[0], &with_member);
+    let faces = room_people(&with_member.desktop.workspaces[0], &with_member);
     assert_eq!(
         faces.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
         vec!["ada"],
@@ -2043,7 +2053,7 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
         "the collaborator record still supplies the display name"
     );
 
-    for ws in with_member.workspaces.iter().skip(1) {
+    for ws in with_member.desktop.workspaces.iter().skip(1) {
         assert!(
             room_people(ws, &with_member).is_empty(),
             "granting in one workspace must not put a face on another's row"

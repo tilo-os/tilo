@@ -83,13 +83,14 @@ fn chrome_with_pending_grant(
 ) -> (std::rc::Rc<std::cell::RefCell<ChromeState>>, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
-    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
     tree.set_active(id);
     let chrome = ChromeState::new(tree);
     {
         let mut st = chrome.borrow_mut();
         let room = st
             .tree()
+            .desktop
             .active_workspace()
             .expect("fixture workspace")
             .room;
@@ -197,7 +198,7 @@ fn pump_drains_pending_grant_after_choice() {
         "queue must be empty after the user clicks Allow",
     );
     let tree = st.tree();
-    let ws = tree.active_workspace().expect("active workspace");
+    let ws = tree.desktop.active_workspace().expect("active workspace");
     assert!(
         !ws.app_grants_snapshot().contains_key("org.example.app"),
         "Once doesn't persist on the workspace's grants map — \
@@ -234,7 +235,7 @@ fn pump_keeps_session_choice_out_of_the_shared_workspace() {
     let st = chrome.borrow();
     assert!(st.pending_grants.is_empty(), "queue must drain");
     let tree = st.tree();
-    let ws = tree.active_workspace().expect("active workspace");
+    let ws = tree.desktop.active_workspace().expect("active workspace");
     assert!(
         !ws.app_grants_snapshot().contains_key("org.example.app"),
         "a local portal consent must not be replicated to workspace peers",
@@ -268,7 +269,7 @@ fn pump_keeps_always_choice_out_of_workspace_persistence() {
     let has_shared_grant = {
         let st = chrome.borrow();
         let tree = st.tree();
-        let ws = tree.active_workspace().expect("active workspace");
+        let ws = tree.desktop.active_workspace().expect("active workspace");
         let has = ws.app_grants_snapshot().contains_key("org.gnome.gedit");
         drop(tree);
         has
@@ -328,7 +329,7 @@ fn pump_deny_drops_pending_grant_without_persisting() {
     let st = chrome.borrow();
     assert!(st.pending_grants.is_empty(), "queue must drain on Deny");
     let tree = st.tree();
-    let ws = tree.active_workspace().expect("active workspace");
+    let ws = tree.desktop.active_workspace().expect("active workspace");
     assert!(
         !ws.app_grants_snapshot().contains_key("org.example.app"),
         "Deny must not persist any grant — got {:?}",
@@ -342,7 +343,8 @@ fn pump_does_not_latch_when_queue_is_empty() {
     {
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .push(Workspace::new(WorkspaceId::from(1), "demo"));
         let id = WorkspaceId::from(1);
         tree.set_active(id);
@@ -360,7 +362,7 @@ fn pump_advances_to_next_grant_after_first_drain() {
     // Allow then Deny across two apps: both visible in sequence, nothing left.
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
-    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
     tree.set_active(id);
     let chrome = ChromeState::new(tree);
     {

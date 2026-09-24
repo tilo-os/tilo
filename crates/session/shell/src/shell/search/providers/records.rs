@@ -88,6 +88,7 @@ impl SearchProvider for RecordsProvider {
         };
         let here = chrome
             .tree()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.room);
         let is_here = here.is_some_and(|room| {
@@ -146,7 +147,10 @@ impl SearchProvider for RecordsProvider {
         }
         let (here, rooms) = {
             let tree = ctx.chrome.tree();
-            (tree.active_workspace().map(|w| w.room), room_names(&tree))
+            (
+                tree.desktop.active_workspace().map(|w| w.room),
+                room_names(&tree),
+            )
         };
         let needle = ctx.needle.trim().to_lowercase();
         let (revision, after) = {
@@ -248,7 +252,7 @@ fn bring_into_this_room(
     let here = {
         let chrome_state = chrome.borrow();
         let tree = chrome_state.tree();
-        tree.active_workspace().map(|w| w.room)
+        tree.desktop.active_workspace().map(|w| w.room)
     };
     if let Some(here) = here {
         index.borrow_mut().reference(here, id, kind);
@@ -280,7 +284,8 @@ fn bring_into_this_room(
 
 /// Room uuid → the name the user gave that workspace.
 fn room_names(tree: &WorkspaceTree) -> Vec<(RoomId, String)> {
-    tree.workspaces
+    tree.desktop
+        .workspaces
         .iter()
         .map(|w| (w.room, w.name.clone()))
         .collect()
@@ -406,14 +411,14 @@ mod tests {
             let mut ws = Workspace::new(WorkspaceId::new(), *name);
             ws.room = RoomId::new();
             rooms.push(ws.room);
-            tree.workspaces.push(ws);
+            tree.desktop.workspaces.push(ws);
         }
-        tree.active = tree.workspaces[0].id;
+        tree.desktop.active = tree.desktop.workspaces[0].id;
         (ChromeState::new(tree), rooms)
     }
 
     fn activate(chrome: &Chrome, id: WorkspaceId) {
-        chrome.borrow().tree_mut().active = id;
+        chrome.borrow().tree_mut().desktop.active = id;
     }
 
     fn query(provider: &RecordsProvider, needle: &str, chrome: &Chrome) -> Vec<SearchResult> {
@@ -814,7 +819,7 @@ mod tests {
     #[test]
     fn provenance_follows_the_active_room() {
         let (chrome, rooms) = chrome_with_rooms(&["Work", "Reading"]);
-        let reading_ws = chrome.borrow().tree().workspaces[1].id;
+        let reading_ws = chrome.borrow().tree().desktop.workspaces[1].id;
         let index = Rc::new(RefCell::new(RoomRecords::in_memory()));
         let id = RecordId::minted();
         index
