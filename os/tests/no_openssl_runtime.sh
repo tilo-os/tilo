@@ -321,13 +321,13 @@ else
   bad 'unused libevent OpenSSL adapter is not removed and audited'
 fi
 
-grep -Fq 'tilo-crypto sign-module' "$repo/os/kernel/Containerfile" \
-  && grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/Containerfile" \
+grep -Fq 'tilo-crypto sign-module' "$repo/os/kernel/build-support.sh" \
+  && grep -Fq 'tilo-crypto verify-module' "$repo/os/kernel/build-support.sh" \
   || bad 'kernel modules are not signed and verified by tilo-crypto'
 if grep -Fq "sed -i '/hostprogs-always-\$(CONFIG_MODULE_SIG_FORMAT).*sign-file/d' scripts/Makefile" \
-    "$repo/os/kernel/Containerfile" \
+    "$repo/os/kernel/build-support.sh" \
   && grep -Fq "sed -i '/^hostprogs := extract-cert\$/d' certs/Makefile" \
-    "$repo/os/kernel/Containerfile"; then
+    "$repo/os/kernel/build-support.sh"; then
   ok 'kernel recipe disables upstream libcrypto host helpers'
 else
   bad 'kernel recipe does not disable upstream libcrypto host helpers'

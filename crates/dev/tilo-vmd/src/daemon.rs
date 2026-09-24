@@ -10,11 +10,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_vm_protocol::{
-    Action, AppInstallResult, ApplyResult, BaseInfo, ComponentInfo, GcResult, HelloResult,
-    InputAction, InputResult, Issue, LayerImportResult, LayerSource, LayerUploadBeginResult,
-    LayerUploadChunkResult, Lease, LogsResult, Manifest, Owner, PROTOCOL_VERSION, Policy,
-    Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult, SlotInfo, SlotKind,
-    SlotRmResult, StatusResult, Storage, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
+    Action, AppInstallResult, ApplyResult, BaseInfo, BootConfirmResult, ComponentInfo, GcResult,
+    HelloResult, InputAction, InputResult, Issue, LayerImportResult, LayerSource,
+    LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest, Owner,
+    PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult,
+    SlotInfo, SlotKind, SlotRmResult, StatusResult, Storage, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
 };
 
 use crate::apply::{self, Apply, GREETER_UNIT, SessionChange, session_unit};
@@ -145,6 +145,7 @@ fn unchanged(record: SlotRecord) -> ApplyResult {
         policy: Policy::NoRestart,
         actions: Vec::new(),
         warnings: Vec::new(),
+        boot: None,
     }
 }
 
@@ -438,7 +439,18 @@ impl Daemon {
                 let _locks = self.slot_locks(&p.slot)?;
                 to_value(&self.install_app(&p.slot, p.source)?)
             }
+            Request::BootConfirm(p) => {
+                let _locks = self.slot_locks(VM_SLOT)?;
+                to_value(&self.confirm_boot(p.expect_version.as_deref())?)
+            }
         }
+    }
+
+    fn confirm_boot(
+        &mut self,
+        expect_version: Option<&str>,
+    ) -> Result<BootConfirmResult, DaemonError> {
+        self.apply.confirm_boot(expect_version)
     }
 
     fn input(&mut self, name: &str, actions: &[InputAction]) -> Result<InputResult, DaemonError> {
@@ -764,6 +776,7 @@ impl Daemon {
             policy,
             actions,
             warnings: Vec::new(),
+            boot: None,
         })
     }
 
@@ -811,10 +824,7 @@ impl Daemon {
             } else {
                 Scope::Session
             };
-            ComponentInfo {
-                scope,
-                units: Vec::new(),
-            }
+            ComponentInfo::new(scope, Vec::new())
         })
     }
 
@@ -841,7 +851,7 @@ impl Daemon {
             });
         };
         let mut result = self.transition(&mut record, &from, &to)?;
-        result.warnings = warnings;
+        result.warnings.splice(0..0, warnings);
         Ok(result)
     }
 
@@ -872,15 +882,49 @@ impl Daemon {
             &units,
             SessionChange::Keep,
         )?;
-        self.slots.set_current(record, to.number)?;
+        let mut boot = None;
+        let mut warnings = Vec::new();
         match policy {
             Policy::VmRefresh => {
+                self.slots.set_current(record, to.number)?;
                 actions.extend(self.restart_all_sessions()?);
                 let slots = self.user_slots()?;
                 self.verify_parity(slots.iter().map(String::as_str))?;
             }
-            Policy::SessionRestart => self.verify_parity([record.name.as_str()])?,
-            Policy::NoRestart => {}
+            Policy::Reboot => {
+                // The kernel's modules are merged now; its boot entry is next.
+                // Sessions restart with the reboot the client runs.
+                let kernel = to
+                    .components
+                    .values()
+                    .find(|entry| entry.info.reboot)
+                    .map(|entry| self.layers.require(&entry.layer))
+                    .transpose()?;
+                let (change, notes) = self.apply.boot_kernel(kernel.as_deref())?;
+                if let Some(entry) = &change.entry {
+                    if let Some(kver) = &change.kver {
+                        actions.push(Action::InstallBootEntry {
+                            entry: entry.clone(),
+                            kver: kver.clone(),
+                        });
+                        actions.push(Action::SetNextBoot {
+                            entry: entry.clone(),
+                        });
+                    } else {
+                        actions.push(Action::SetDefaultBoot {
+                            entry: entry.clone(),
+                        });
+                    }
+                }
+                warnings.extend(notes);
+                boot = Some(change);
+                self.slots.set_current(record, to.number)?;
+            }
+            Policy::SessionRestart => {
+                self.slots.set_current(record, to.number)?;
+                self.verify_parity([record.name.as_str()])?;
+            }
+            Policy::NoRestart => self.slots.set_current(record, to.number)?,
         }
         Ok(ApplyResult {
             slot: record.name.clone(),
@@ -888,7 +932,8 @@ impl Daemon {
             changed: true,
             policy,
             actions,
-            warnings: Vec::new(),
+            warnings,
+            boot,
         })
     }
 

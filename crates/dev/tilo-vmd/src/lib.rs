@@ -3,6 +3,7 @@
 //! `tilo-vm` runs over SSH.
 
 pub mod apply;
+pub mod boot;
 pub mod daemon;
 pub mod error;
 mod fsutil;

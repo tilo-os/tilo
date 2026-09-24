@@ -24,9 +24,16 @@
 #   kind        "userspace": takes effect when its session or units restart.
 #               "boot": only takes effect on a cold boot (kernel, UKI,
 #               bootloader, initramfs, installer media); dev tooling redirects a
-#               swap to `scenario` instead of restarting anything.
+#               swap to `scenario` instead of restarting anything, unless the
+#               component declares `dev_swap`.
 #   scenario    boot components only: the os/dev/ driver script that
 #               cold-boots and exercises the component
+#   dev_swap    boot components only: "reboot" when `tilo-vm swap` can put a
+#               dev build of it into a dev VM, as the VM's next boot entry
+#               followed by a reboot (the kernel). Without it a swap is
+#               redirected to `scenario`.
+#   dev_build   with dev_swap: the os/ script that builds the component for a
+#               dev VM from the same sources as the image (os/kernel/dev-build.sh)
 #   scope       "session": per-overlay (compositor, user services, CLIs a user
 #               runs); a swap is a normal session restart.
 #               "vm": VM-wide (system services, greeter, boot tooling); a swap
@@ -468,7 +475,10 @@ files = [
 # ---- Boot: effective only after a cold boot ---------------------------------
 # Built and installed outside this manifest for now (the kernel RPM stage, the
 # `uki` stage via os/dev/uki.sh, dracut in the rootfs stage). Listed so dev
-# tooling redirects a swap of them to the scenario that cold-boots them.
+# tooling knows what a swap of them means. The kernel is swappable in a dev VM
+# (`dev_swap = "reboot"`): tilo-vm builds it with `dev_build`, installs it
+# VM-wide as the next boot entry and reboots. The others stay scenario-only, and
+# a swap of them is redirected to the scenario that cold-boots them.
 # `installer` and `rollback` above are boot components too: the installer runs
 # from installer media, and tilo-rollback is copied into the initramfs by
 # os/usr/lib/dracut/modules.d/91tilo-rollback.
@@ -478,6 +488,8 @@ name = "kernel"
 kind = "boot"
 scope = "vm"
 scenario = "os/dev/vm.sh"
+dev_swap = "reboot"
+dev_build = "os/kernel/dev-build.sh"
 
 [[component]]
 name = "initramfs"
