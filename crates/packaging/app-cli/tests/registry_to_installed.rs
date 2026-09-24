@@ -28,8 +28,8 @@ use registry_types::{
     PublisherAuthorization, RegistryEntry, RegistryVersion, SignedRegistrySnapshot, sign_entry,
     sign_snapshot,
 };
+use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
-use tilo_app_package::{Manifest, MemoryBlobStore};
 
 /// The .tapp-authoring the local test registry does, shared verbatim
 /// so tests use the same manifest contract as the served package.
@@ -111,9 +111,8 @@ type = "gui"
         native_target().1,
     );
     let manifest = Manifest::from_toml_str(&manifest_toml).unwrap();
-    let mut store = MemoryBlobStore::new();
-    let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-    app_registry::tapp::write_bytes(id, &store).unwrap()
+    let packed = pack(&payload, &manifest, identity).unwrap();
+    tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
 }
 
 /// Manifest key/value and registry wire label for the runner's architecture.

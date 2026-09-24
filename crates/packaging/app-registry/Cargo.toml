@@ -34,7 +34,6 @@ xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 blake3.workspace = true
 bytes.workspace = true
-tar.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 semver.workspace = true
 thiserror.workspace = true

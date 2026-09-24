@@ -1,24 +1,21 @@
-//! Content-addressed blob storage abstracted behind a small synchronous trait.
+//! Content addressing for package payloads.
 //!
-//! Why not iroh-blobs directly: `tilo-app-package` packages must also be
-//! produceable as Flatpaks with no iroh runtime, and `iroh-blobs` is
-//! async-tokio with a large surface that would force every consumer
-//! (CLI, build tools, tests) into a tokio runtime. The on-wire
-//! BLAKE3-rooted content addressing is identical either way — a
-//! "Collection" is just `(name → hash)` pairs, encoded here as a
-//! small deterministic blob (see [`Collection`]).
-//!
-//! The iroh-blobs-backed adapter lives in the loader (a follow-on
-//! crate), implementing [`BlobStore`] over an iroh `Store` so a
-//! node can ingest a `.tapp` and re-serve its blobs to peers.
+//! A payload file is named by the BLAKE3 hash of its bytes, the same hash
+//! the device's content store and iroh-blobs use, so a package's files are
+//! ordinary content wherever they are held. This module owns the naming
+//! ([`BlobHash`]), the signed path index ([`Collection`]), and the two
+//! streaming edges a codec needs: [`BlobSource`] to read payload bytes that
+//! live somewhere else and [`BlobSink`] to hand decoded bytes to whoever
+//! stores them. Nothing here keeps bytes itself.
 
 use std::collections::BTreeMap;
+use std::io::{self, Read};
 
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// 32-byte BLAKE3 hash. The blob-store key.
+/// 32-byte BLAKE3 hash of a blob's bytes.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BlobHash(pub [u8; 32]);
@@ -31,9 +28,27 @@ impl BlobHash {
         Self(*h.finalize().as_bytes())
     }
 
+    /// Hash everything `reader` yields, returning the hash and the length.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from reading.
+    pub fn of_reader(reader: &mut dyn Read) -> io::Result<(Self, u64)> {
+        let mut hashing = HashingReader::new(reader);
+        io::copy(&mut hashing, &mut io::sink())?;
+        Ok(hashing.finish())
+    }
+
     /// Lower-case hex encoding (64 chars).
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
+    }
+
+    /// Parse the 64-character hex form.
+    pub fn from_hex(text: &str) -> Option<Self> {
+        let mut out = [0u8; 32];
+        hex::decode_to_slice(text, &mut out).ok()?;
+        Some(Self(out))
     }
 
     /// Raw 32 bytes.
@@ -56,83 +71,104 @@ impl std::fmt::Display for BlobHash {
     }
 }
 
-/// A blob-store backend, synchronous, errors as `BlobStoreError`; the
-/// in-memory impl suffices for tests + CLI, the loader provides an iroh-blobs adapter.
-pub trait BlobStore {
-    /// Insert `bytes`; return the BLAKE3 hash. Idempotent — re-inserting the same bytes returns the same hash.
+/// A reader that hashes what passes through it.
+pub struct HashingReader<R> {
+    inner: R,
+    hasher: Hasher,
+    len: u64,
+}
+
+impl<R: Read> HashingReader<R> {
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Hasher::new(),
+            len: 0,
+        }
+    }
+
+    /// The hash and length of everything read so far.
+    pub fn finish(&self) -> (BlobHash, u64) {
+        (BlobHash(*self.hasher.finalize().as_bytes()), self.len)
+    }
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(buf.get(..n).unwrap_or_default());
+        self.len = self.len.saturating_add(n as u64);
+        Ok(n)
+    }
+}
+
+/// An open blob: its claimed length and a reader over its bytes.
+pub struct OpenBlob<'a> {
+    pub len: u64,
+    pub reader: Box<dyn Read + 'a>,
+}
+
+/// Where payload bytes can be read from: a directory being packed, a
+/// materialised install, an in-memory map in a test.
+pub trait BlobSource {
+    /// Open the bytes of `hash`, or `Ok(None)` when this source lacks them.
+    /// Callers verify the hash while reading; a source is not trusted.
     ///
     /// # Errors
     ///
-    /// Returns [`BlobStoreError::Io`] if a disk-backed implementation fails
-    /// to write the blob. The in-memory implementation never fails.
-    fn put(&mut self, bytes: &[u8]) -> Result<BlobHash, BlobStoreError>;
+    /// Returns an error if the bytes exist but cannot be opened.
+    fn open_blob(&self, hash: &BlobHash) -> io::Result<Option<OpenBlob<'_>>>;
+}
 
-    /// Borrow the bytes for `hash`; `None` if not present.
+/// Where decoded payload bytes go. The codec verifies each blob against its
+/// name after the sink has consumed it, so a sink may store eagerly: a blob
+/// that fails verification is only ever stored under its true hash.
+pub trait BlobSink {
+    /// Called once with the package's metadata, before the first blob (or
+    /// at the end of an archive that carries none). Returning an error
+    /// aborts decoding before any payload byte reaches the sink — the place
+    /// to apply trust policy.
     ///
     /// # Errors
     ///
-    /// Returns [`BlobStoreError::Io`] if a disk-backed implementation fails
-    /// to read the blob. The in-memory implementation never fails.
-    fn get(&self, hash: &BlobHash) -> Result<Option<Vec<u8>>, BlobStoreError>;
+    /// Returns an error to refuse the package.
+    fn metadata(&mut self, _meta: &crate::package::PackageMeta) -> io::Result<()> {
+        Ok(())
+    }
 
-    /// Whether `hash` is present.
-    fn has(&self, hash: &BlobHash) -> bool {
-        matches!(self.get(hash), Ok(Some(_)))
+    /// Consume the `len` bytes of the blob named `hash`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error to abort decoding.
+    fn accept(&mut self, hash: &BlobHash, len: u64, bytes: &mut dyn Read) -> io::Result<()>;
+}
+
+impl BlobSource for BTreeMap<BlobHash, Vec<u8>> {
+    fn open_blob(&self, hash: &BlobHash) -> io::Result<Option<OpenBlob<'_>>> {
+        Ok(self.get(hash).map(|bytes| OpenBlob {
+            len: bytes.len() as u64,
+            reader: Box::new(bytes.as_slice()),
+        }))
     }
 }
 
-/// Errors from a `BlobStore`; the in-memory impl is infallible but
-/// disk-backed impls (`FsStore` in the loader) can surface I/O errors here.
-#[derive(Debug, Error)]
-pub enum BlobStoreError {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("blob {0} not found")]
-    Missing(BlobHash),
-}
-
-/// A trivial in-memory `BlobStore` — used by the CLI, tests, and the
-/// canonical .tapp builder; persistence is the loader's job.
-#[derive(Debug, Default, Clone)]
-pub struct MemoryBlobStore {
-    blobs: BTreeMap<BlobHash, Vec<u8>>,
-}
-
-impl MemoryBlobStore {
-    /// Fresh, empty store.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Snapshot every (hash, bytes) pair; used when serialising a .tapp to tar.
-    pub fn iter(&self) -> impl Iterator<Item = (&BlobHash, &Vec<u8>)> {
-        self.blobs.iter()
-    }
-
-    /// Number of blobs stored.
-    pub fn len(&self) -> usize {
-        self.blobs.len()
-    }
-
-    /// Whether the store contains no blobs.
-    pub fn is_empty(&self) -> bool {
-        self.blobs.is_empty()
+impl BlobSink for BTreeMap<BlobHash, Vec<u8>> {
+    fn accept(&mut self, hash: &BlobHash, len: u64, bytes: &mut dyn Read) -> io::Result<()> {
+        let mut buf = Vec::with_capacity(usize::try_from(len).unwrap_or(0).min(1 << 24));
+        bytes.read_to_end(&mut buf)?;
+        self.insert(*hash, buf);
+        Ok(())
     }
 }
 
-impl BlobStore for MemoryBlobStore {
-    fn put(&mut self, bytes: &[u8]) -> Result<BlobHash, BlobStoreError> {
-        let h = BlobHash::of(bytes);
-        self.blobs.entry(h).or_insert_with(|| bytes.to_vec());
-        Ok(h)
-    }
+/// A sink that keeps nothing; decoding still verifies every blob.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DiscardBlobs;
 
-    fn get(&self, hash: &BlobHash) -> Result<Option<Vec<u8>>, BlobStoreError> {
-        Ok(self.blobs.get(hash).cloned())
-    }
-
-    fn has(&self, hash: &BlobHash) -> bool {
-        self.blobs.contains_key(hash)
+impl BlobSink for DiscardBlobs {
+    fn accept(&mut self, _hash: &BlobHash, _len: u64, bytes: &mut dyn Read) -> io::Result<()> {
+        io::copy(bytes, &mut io::sink()).map(drop)
     }
 }
 
@@ -280,11 +316,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn put_and_get_roundtrip() {
-        let mut s = MemoryBlobStore::new();
-        let h = s.put(b"hello").unwrap();
-        assert_eq!(h, BlobHash::of(b"hello"));
-        assert_eq!(s.get(&h).unwrap().unwrap(), b"hello");
+    fn hashing_a_reader_matches_hashing_the_bytes() {
+        let bytes = b"hello payload".to_vec();
+        let (hash, len) = BlobHash::of_reader(&mut bytes.as_slice()).unwrap();
+        assert_eq!(hash, BlobHash::of(&bytes));
+        assert_eq!(len, bytes.len() as u64);
+        assert_eq!(BlobHash::from_hex(&hash.to_hex()), Some(hash));
+        assert_eq!(BlobHash::from_hex("zz"), None);
+    }
+
+    #[test]
+    fn a_map_is_both_a_source_and_a_sink() {
+        let mut map = BTreeMap::new();
+        let hash = BlobHash::of(b"abc");
+        map.accept(&hash, 3, &mut &b"abc"[..]).unwrap();
+        let mut out = Vec::new();
+        let blob = map.open_blob(&hash).unwrap().unwrap();
+        assert_eq!(blob.len, 3);
+        blob.reader.take(3).read_to_end(&mut out).unwrap();
+        assert_eq!(out, b"abc");
+        assert!(map.open_blob(&BlobHash([0; 32])).unwrap().is_none());
     }
 
     #[test]

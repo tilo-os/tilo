@@ -15,22 +15,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::io::{Cursor, Write};
-
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use serde::{Deserialize, Serialize};
-use tilo_app_package::blobs::{BlobHash, BlobStore, MemoryBlobStore};
-use tilo_app_package::signed::SignedRoot;
 use tilo_app_package::{Manifest, PackageId, SigningIdentity, pack};
-
-const TAPP_FORMAT: u32 = 1;
-
-#[derive(Serialize, Deserialize)]
-struct TappHeader {
-    package_id: String,
-    format: u32,
-}
 
 /// Same TOML shape as the pkg crate's fixtures.
 pub const SAMPLE_APP_MANIFEST_TEMPLATE: &str = r#"
@@ -112,44 +99,8 @@ pub fn build_tapp(payload_kib: usize) -> (Vec<u8>, PackageId) {
     let payload_dir = tempfile::tempdir().unwrap();
     write_app_payload_with_bulk(payload_dir.path(), payload_kib).unwrap();
 
-    let mut store = MemoryBlobStore::new();
     let identity = SigningIdentity::from_signing_key(sk);
-    let id = pack(payload_dir.path(), &manifest, &identity, &mut store).expect("pack");
-
-    (write_tapp_bytes(id, &store), id)
-}
-
-pub fn write_tapp_bytes(id: PackageId, store: &MemoryBlobStore) -> Vec<u8> {
-    let buf = Cursor::new(Vec::new());
-    let mut tar = tar::Builder::new(buf);
-
-    let header = TappHeader {
-        package_id: id.to_string(),
-        format: TAPP_FORMAT,
-    };
-    let header_toml = toml::to_string_pretty(&header).unwrap();
-    tar_append(&mut tar, "tapp.toml", header_toml.as_bytes());
-
-    let signed = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
-    tar_append(&mut tar, "signed-root", &signed);
-    let signed_dec = SignedRoot::decode(&signed).unwrap();
-    let manifest = store.get(&signed_dec.manifest_hash).unwrap().unwrap();
-    tar_append(&mut tar, "manifest.toml", &manifest);
-    let collection = store.get(&signed_dec.payload_root_hash).unwrap().unwrap();
-    tar_append(&mut tar, "collection.qcl", &collection);
-    for (h, b) in store.iter() {
-        let name = format!("blobs/{h}");
-        tar_append(&mut tar, &name, b);
-    }
-    let inner = tar.into_inner().unwrap();
-    inner.into_inner()
-}
-
-fn tar_append<W: Write>(tar: &mut tar::Builder<W>, name: &str, bytes: &[u8]) {
-    let mut header = tar::Header::new_gnu();
-    header.set_size(bytes.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    tar.append_data(&mut header, name, bytes)
-        .expect("write tar entry");
+    let packed = pack(payload_dir.path(), &manifest, &identity).expect("pack");
+    let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).expect("write tapp");
+    (bytes, packed.id())
 }

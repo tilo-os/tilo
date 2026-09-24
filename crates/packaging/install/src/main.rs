@@ -23,12 +23,11 @@ use std::process::Command;
 use clap::{Args, Parser, Subcommand};
 use install::shim;
 use serde::{Deserialize, Serialize};
-use tilo_app_package::blobs::BlobStore;
 use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
     default_revoked_keys_path, default_trusted_attestors_path,
 };
-use tilo_app_package::{MemoryBlobStore, PackageId, Verification, unpack, verify_with_trust};
+use tilo_app_package::{BlobHash, PackageId, PackageMeta, Verification, unpack, verify_with_trust};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -498,7 +497,7 @@ fn save_registry(reg: &Registry) -> Result<(), Error> {
 /// attestor policy. Returns the publisher key set for `verify_with_trust`.
 fn validate_registry_constraints(
     pkg_id: PackageId,
-    store: &MemoryBlobStore,
+    meta: &PackageMeta,
     trust: &TrustFlags,
 ) -> Result<Vec<[u8; 32]>, Error> {
     if let Some(required) = trust.require_package_root.as_deref() {
@@ -526,8 +525,7 @@ fn validate_registry_constraints(
     let required: [u8; 32] = decoded.try_into().map_err(|bytes: Vec<u8>| {
         Error::InvalidRequiredPublisher(format!("decoded to {} bytes", bytes.len()))
     })?;
-    let found = extract_publisher_key(&pkg_id, store)
-        .ok_or_else(|| Error::Verify("signed root has no publisher key".to_string()))?;
+    let found = meta.publisher();
     if found != required {
         return Err(Error::PublisherMismatch {
             required: hex::encode(required),
@@ -540,16 +538,14 @@ fn validate_registry_constraints(
 /// Verify `pkg_id` against trust config under the caller's `TrustFlags`
 /// policy; returns the manifest and attestor id (empty if self-signed).
 fn verify_and_gate(
-    pkg_id: PackageId,
-    store: &MemoryBlobStore,
+    meta: &PackageMeta,
     trust: &TrustFlags,
 ) -> Result<(tilo_app_package::Manifest, String, String), Error> {
     let attestors = load_trusted_attestors()?;
     let revocation = load_revocation_list()?;
-    let required_publishers = validate_registry_constraints(pkg_id, store, trust)?;
+    let required_publishers = validate_registry_constraints(meta.id, meta, trust)?;
     let outcome = verify_with_trust(
-        pkg_id,
-        store,
+        meta,
         &required_publishers,
         attestors.as_slice(),
         &revocation,
@@ -564,9 +560,7 @@ fn verify_and_gate(
                     found: attestor,
                 });
             }
-            let pub_key_hex = extract_publisher_key(&pkg_id, store)
-                .map(hex::encode)
-                .unwrap_or_default();
+            let pub_key_hex = hex::encode(meta.publisher());
             Ok((manifest, pub_key_hex, attestor))
         }
         Verification::UntrustedPublisher { identity, manifest } => {
@@ -599,9 +593,7 @@ fn verify_and_gate(
             Err(Error::Revoked { reason })
         }
         Verification::Trusted { manifest } => {
-            let pub_key_hex = extract_publisher_key(&pkg_id, store)
-                .map(hex::encode)
-                .unwrap_or_default();
+            let pub_key_hex = hex::encode(meta.publisher());
             if let Some(required) = &trust.require_attestor {
                 // Trusted-key path bypasses the attestor chain; --require-attestor is
                 // strict, so refuse here regardless.
@@ -622,7 +614,8 @@ fn verify_and_gate(
 /// working install.
 struct Ingested {
     pkg_id: PackageId,
-    store: MemoryBlobStore,
+    meta: PackageMeta,
+    blobs: std::collections::BTreeMap<BlobHash, Vec<u8>>,
     manifest: tilo_app_package::Manifest,
     publisher_key_hex: String,
     attested_by: String,
@@ -652,12 +645,18 @@ impl Ingested {
 /// `--allow-self-signed` decides *whose* signature is acceptable, never
 /// whether one is required.
 fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
-    let app_registry::tapp::TappMeta {
-        package_id: pkg_id,
-        store,
-        ..
-    } = app_registry::tapp::load(bytes).map_err(|error| Error::Parse(error.to_string()))?;
-    let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, trust)?;
+    let mut blobs = std::collections::BTreeMap::new();
+    let tapp = tilo_app_package::tapp::read(bytes, &mut blobs)
+        .map_err(|error| Error::Parse(error.to_string()))?;
+    if !tapp.is_complete() {
+        return Err(Error::Parse(format!(
+            ".tapp lacks {} payload blob(s)",
+            tapp.missing().len()
+        )));
+    }
+    let meta = tapp.meta;
+    let pkg_id = meta.id;
+    let (manifest, publisher_key_hex, attested_by) = verify_and_gate(&meta, trust)?;
 
     if !tilo_app_package::tapp_size_allowed(
         manifest.package.kind,
@@ -675,24 +674,14 @@ fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
     // here regardless of signature.
     tilo_app_package::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
 
-    let blob = |hash: &tilo_app_package::BlobHash, what: &str| -> Result<Vec<u8>, Error> {
-        store
-            .get(hash)
-            .map_err(|e| Error::Parse(e.to_string()))?
-            .ok_or_else(|| Error::Parse(format!(".tapp is missing its {what}")))
-    };
-    let signed_root = blob(
-        &tilo_app_package::BlobHash(*pkg_id.as_bytes()),
-        "signed root",
-    )?;
-    let root = tilo_app_package::SignedRoot::decode(&signed_root)
-        .map_err(|e| Error::Parse(format!("signed root: {e}")))?;
-    let manifest_bytes = blob(&root.manifest_hash, "manifest")?;
-    let collection_bytes = blob(&root.payload_root_hash, "payload collection")?;
+    let signed_root = meta.signed_root_bytes().to_vec();
+    let manifest_bytes = meta.manifest_bytes.clone();
+    let collection_bytes = meta.collection_bytes.clone();
 
     Ok(Ingested {
         pkg_id,
-        store,
+        meta,
+        blobs,
         manifest,
         publisher_key_hex,
         attested_by,
@@ -709,9 +698,8 @@ fn place_payload(ingested: &Ingested, dest: &Path) -> Result<PathBuf, Error> {
     if dest.exists() {
         fs::remove_dir_all(dest)?;
     }
-    fs::create_dir_all(dest)?;
-    let manifest =
-        unpack(ingested.pkg_id, &ingested.store, dest).map_err(|e| Error::Unpack(e.to_string()))?;
+    unpack(&ingested.meta, &ingested.blobs, dest).map_err(|e| Error::Unpack(e.to_string()))?;
+    let manifest = &ingested.manifest;
     let manifest_path = dest.join("manifest.toml");
     fs::write(
         &manifest_path,
@@ -2462,17 +2450,6 @@ fn main() {
         eprintln!("tilo-install: {e}");
         std::process::exit(1);
     }
-}
-
-/// Best-effort publisher key extraction: reads the signed-root blob by
-/// `PackageId` and decodes the 32-byte `publisher_identity`.
-fn extract_publisher_key(id: &PackageId, store: &MemoryBlobStore) -> Option<[u8; 32]> {
-    let blob = store
-        .get(&tilo_app_package::blobs::BlobHash(*id.as_bytes()))
-        .ok()
-        .flatten()?;
-    let signed = tilo_app_package::signed::SignedRoot::decode(&blob).ok()?;
-    Some(signed.publisher_identity)
 }
 
 fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {
