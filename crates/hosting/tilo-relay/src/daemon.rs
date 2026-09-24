@@ -2166,6 +2166,10 @@ mod tests {
         );
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one live refresh task must observe both the grant and the later revocation, so setup and both waits share a single lifecycle"
+    )]
     #[tokio::test]
     async fn live_authority_refresh_removes_the_last_room_collaborator() {
         use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
@@ -2230,9 +2234,9 @@ mod tests {
             policy,
             workspaces.clone(),
         );
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-        assert!(
-            workspaces
+        let registry = &workspaces;
+        let admitted = move || async move {
+            registry
                 .lock()
                 .await
                 .get(&42)
@@ -2240,8 +2244,17 @@ mod tests {
                 .lock()
                 .await
                 .admitted_users
-                .contains(&collaborator)
-        );
+                .clone()
+        };
+        // The refresh task rereads the bundle on its own period; wait for it
+        // to apply rather than sleeping for one period and hoping.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !admitted().await.contains(&collaborator) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the refreshed authority admitted the collaborator");
 
         let revoked = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
             ticket.workspace_id(),
@@ -2256,17 +2269,14 @@ mod tests {
             postcard::to_allocvec(&revoked).unwrap(),
         )
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(1100)).await;
-        let users = workspaces
-            .lock()
-            .await
-            .get(&42)
-            .unwrap()
-            .lock()
-            .await
-            .admitted_users
-            .clone();
-        assert_eq!(users, std::collections::HashSet::from([revoked.governor]));
+        let only_governor = std::collections::HashSet::from([revoked.governor]);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while admitted().await != only_governor {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the revoked authority left only its governor admitted");
         task.abort();
     }
 
