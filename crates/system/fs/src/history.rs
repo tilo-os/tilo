@@ -6,7 +6,7 @@
 //! in full on open so corrupt ancestry cannot become an eviction or restore
 //! root.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -115,9 +115,41 @@ struct RecordState {
     conflicts: BTreeMap<Uuid, FileConflictV1>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct HistoryState {
     records: BTreeMap<FileRecordId, RecordState>,
+    /// The record owning each version id; ids are unique workspace-wide, so
+    /// collision checks are a lookup instead of a scan of every record.
+    version_owner: HashMap<FileVersionId, FileRecordId>,
+    log: HistoryLog,
+}
+
+/// The open append-only log beside the snapshot and how much of it is
+/// known-good.
+#[derive(Debug, Default)]
+struct HistoryLog {
+    file: Option<std::fs::File>,
+    len: u64,
+    entries: usize,
+}
+
+/// One durable history mutation. Each is validated once when it is made and
+/// once when the log is replayed at open; appending never re-reads or
+/// re-validates the rest of the workspace's history.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum LogEntry {
+    Versions {
+        versions: Vec<FileVersionV1>,
+    },
+    Conflict {
+        conflict: FileConflictV1,
+    },
+    Resolve {
+        record_id: FileRecordId,
+        conflict_id: Uuid,
+        resolution: ConflictResolution,
+    },
 }
 
 /// A bounded copy suitable for metadata/UI projection without exposing the
@@ -131,19 +163,33 @@ pub struct RecordHistorySnapshot {
 }
 
 /// Single-writer, crash-safe history database for one workspace.
+///
+/// State is a validated snapshot (`history.json`, the format written by
+/// earlier releases, read as-is) plus an append-only log of later mutations
+/// (`history.json.log`). Every line of the log carries the blake3 hash of
+/// its entry; a torn final line (a write that never returned) is discarded
+/// at open, any other damage fails the open. After
+/// [`LOG_COMPACT_AFTER_ENTRIES`] entries the log is folded into a new
+/// snapshot, so an append costs O(the record it touches), not O(workspace).
 pub struct FileHistoryStore {
     path: PathBuf,
+    log_path: PathBuf,
     state: Mutex<HistoryState>,
 }
 
+/// Log entries after which the log is folded into the snapshot.
+pub const LOG_COMPACT_AFTER_ENTRIES: usize = 4096;
+
 /// Existing history writer lock borrowed by a compound admission/projection.
 pub(crate) struct HistoryLease<'a> {
-    path: &'a Path,
+    store: &'a FileHistoryStore,
     state: std::sync::MutexGuard<'a, HistoryState>,
 }
 
 pub(crate) struct HistoryCandidate {
-    state: HistoryState,
+    touched: BTreeMap<FileRecordId, RecordAdditions>,
+    owners: Vec<(FileVersionId, FileRecordId)>,
+    accepted: Vec<FileVersionV1>,
     appended: Vec<bool>,
 }
 
@@ -154,129 +200,58 @@ impl HistoryLease<'_> {
         conflict_id: Uuid,
         resolution: ConflictResolution,
     ) -> Result<bool, HistoryError> {
-        let current = &mut *self.state;
-        let record = current
-            .records
-            .get(&record_id)
-            .ok_or(HistoryError::UnknownRecord(record_id))?;
-        let conflict = record
-            .conflicts
-            .get(&conflict_id)
-            .ok_or(HistoryError::UnknownConflict(conflict_id))?;
-        if let Some(existing) = &conflict.resolution
-            && (existing == &resolution
-                || !collab_types::prefer_conflict_resolution(&resolution, existing))
-        {
+        let Some(resolved) = stage_resolution(&self.state, record_id, conflict_id, &resolution)?
+        else {
+            return Ok(false);
+        };
+        self.store.append_entry(
+            &mut self.state,
+            &LogEntry::Resolve {
+                record_id,
+                conflict_id,
+                resolution,
+            },
+        )?;
+        install_conflict(&mut self.state, resolved);
+        self.store.maybe_compact(&mut self.state);
+        Ok(true)
+    }
+
+    pub fn record_conflict(&mut self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
+        if !stage_conflict(&self.state, &conflict)? {
             return Ok(false);
         }
-        let result = record
-            .versions
-            .get(&resolution.result)
-            .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
-        if result.provenance != FileProvenance::ConflictResolution {
-            return Err(HistoryError::ResolutionProvenance);
-        }
-        if result.actor != resolution.actor {
-            return Err(HistoryError::ResolutionActorMismatch);
-        }
-        if result.timestamp_ms != resolution.timestamp_ms {
-            return Err(HistoryError::ResolutionTimestampMismatch);
-        }
+        self.store.append_entry(
+            &mut self.state,
+            &LogEntry::Conflict {
+                conflict: conflict.clone(),
+            },
+        )?;
+        install_conflict(&mut self.state, conflict);
+        self.store.maybe_compact(&mut self.state);
+        Ok(true)
+    }
 
-        let mut next = current.clone();
-        let record = next
-            .records
-            .get_mut(&record_id)
-            .ok_or(HistoryError::UnknownRecord(record_id))?;
-        let conflict = record
-            .conflicts
-            .get_mut(&conflict_id)
-            .ok_or(HistoryError::UnknownConflict(conflict_id))?;
-        conflict.status = ConflictStatus::Resolved;
-        conflict.resolution = Some(resolution);
-        conflict.validate()?;
-        persist(self.path, &next)?;
-        *current = next;
-        Ok(true)
-    }
-    pub fn record_conflict(&mut self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
-        conflict.validate()?;
-        let current = &mut *self.state;
-        let record = current
-            .records
-            .get(&conflict.record_id)
-            .ok_or(HistoryError::UnknownRecord(conflict.record_id))?;
-        validate_conflict(record, &conflict)?;
-        if let Some(existing) = record.conflicts.get(&conflict.id) {
-            return if existing == &conflict {
-                Ok(false)
-            } else {
-                Err(HistoryError::ConflictIdCollision(conflict.id))
-            };
-        }
-        let mut next = current.clone();
-        next.records
-            .get_mut(&conflict.record_id)
-            .ok_or(HistoryError::UnknownRecord(conflict.record_id))?
-            .conflicts
-            .insert(conflict.id, conflict);
-        persist(self.path, &next)?;
-        *current = next;
-        Ok(true)
-    }
     pub fn prepare_versions(
         &self,
         versions: &[FileVersionV1],
     ) -> Result<HistoryCandidate, HistoryError> {
-        for version in versions {
-            version.validate()?;
-        }
-        let current = &*self.state;
-        let mut next = current.clone();
-        let mut appended = Vec::with_capacity(versions.len());
-        for version in versions {
-            if let Some(existing) = find_version(&next, version.id) {
-                if existing == version {
-                    appended.push(false);
-                    continue;
-                }
-                return Err(HistoryError::VersionIdCollision(version.id));
-            }
-
-            let record = next.records.entry(version.record_id).or_default();
-            if record.versions.is_empty() {
-                if let Some(parent) = version.parents.first() {
-                    return Err(HistoryError::MissingParent(*parent));
-                }
-            } else {
-                if version.parents.is_empty() {
-                    return Err(HistoryError::DisconnectedVersion(version.id));
-                }
-                for parent in &version.parents {
-                    if !record.versions.contains_key(parent) {
-                        return Err(HistoryError::MissingParent(*parent));
-                    }
-                }
-            }
-            for parent in &version.parents {
-                record.heads.remove(parent);
-            }
-            record.heads.insert(version.id);
-            record.versions.insert(version.id, version.clone());
-            appended.push(true);
-        }
-        Ok(HistoryCandidate {
-            state: next,
-            appended,
-        })
+        stage_versions(&self.state, versions)
     }
 
     pub fn install(&mut self, candidate: HistoryCandidate) -> Result<Vec<bool>, HistoryError> {
-        if candidate.appended.iter().any(|value| *value) {
-            persist(self.path, &candidate.state)?;
-            *self.state = candidate.state;
+        if candidate.accepted.is_empty() {
+            return Ok(candidate.appended);
         }
-        Ok(candidate.appended)
+        self.store.append_entry(
+            &mut self.state,
+            &LogEntry::Versions {
+                versions: candidate.accepted.clone(),
+            },
+        )?;
+        let appended = install_versions(&mut self.state, candidate);
+        self.store.maybe_compact(&mut self.state);
+        Ok(appended)
     }
 
     pub fn append_batch(&mut self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
@@ -292,24 +267,364 @@ impl HistoryLease<'_> {
     }
 }
 
+/// The versions a batch adds to one record and the heads that result.
+#[derive(Debug, Default)]
+struct RecordAdditions {
+    versions: BTreeMap<FileVersionId, FileVersionV1>,
+    heads: BTreeSet<FileVersionId>,
+}
+
+/// Validate `versions` against `state` (in input order) without touching it.
+/// Nothing is copied but the batch itself and the heads of touched records.
+fn stage_versions(
+    state: &HistoryState,
+    versions: &[FileVersionV1],
+) -> Result<HistoryCandidate, HistoryError> {
+    for version in versions {
+        version.validate()?;
+    }
+    let mut touched: BTreeMap<FileRecordId, RecordAdditions> = BTreeMap::new();
+    let mut owners: HashMap<FileVersionId, FileRecordId> = HashMap::new();
+    let mut accepted = Vec::new();
+    let mut appended = Vec::with_capacity(versions.len());
+    for version in versions {
+        let owner = owners
+            .get(&version.id)
+            .or_else(|| state.version_owner.get(&version.id))
+            .copied();
+        if let Some(owner) = owner {
+            let existing = touched
+                .get(&owner)
+                .and_then(|additions| additions.versions.get(&version.id))
+                .or_else(|| {
+                    state
+                        .records
+                        .get(&owner)
+                        .and_then(|record| record.versions.get(&version.id))
+                });
+            if existing == Some(version) {
+                appended.push(false);
+                continue;
+            }
+            return Err(HistoryError::VersionIdCollision(version.id));
+        }
+
+        let current = state.records.get(&version.record_id);
+        let additions = touched
+            .entry(version.record_id)
+            .or_insert_with(|| RecordAdditions {
+                versions: BTreeMap::new(),
+                heads: current
+                    .map(|record| record.heads.clone())
+                    .unwrap_or_default(),
+            });
+        let known = |id: &FileVersionId| {
+            additions.versions.contains_key(id)
+                || current.is_some_and(|record| record.versions.contains_key(id))
+        };
+        let empty = additions.versions.is_empty()
+            && current.is_none_or(|record| record.versions.is_empty());
+        if empty {
+            if let Some(parent) = version.parents.first() {
+                return Err(HistoryError::MissingParent(*parent));
+            }
+        } else {
+            if version.parents.is_empty() {
+                return Err(HistoryError::DisconnectedVersion(version.id));
+            }
+            if let Some(parent) = version.parents.iter().find(|parent| !known(parent)) {
+                return Err(HistoryError::MissingParent(*parent));
+            }
+        }
+        for parent in &version.parents {
+            additions.heads.remove(parent);
+        }
+        additions.heads.insert(version.id);
+        additions.versions.insert(version.id, version.clone());
+        owners.insert(version.id, version.record_id);
+        accepted.push(version.clone());
+        appended.push(true);
+    }
+    Ok(HistoryCandidate {
+        touched,
+        owners: owners.into_iter().collect(),
+        accepted,
+        appended,
+    })
+}
+
+fn install_versions(state: &mut HistoryState, candidate: HistoryCandidate) -> Vec<bool> {
+    for (record_id, additions) in candidate.touched {
+        let record = state.records.entry(record_id).or_default();
+        record.versions.extend(additions.versions);
+        record.heads = additions.heads;
+    }
+    state.version_owner.extend(candidate.owners);
+    candidate.appended
+}
+
+/// `Ok(true)` when `conflict` is new and valid, `Ok(false)` for an exact
+/// replay.
+fn stage_conflict(state: &HistoryState, conflict: &FileConflictV1) -> Result<bool, HistoryError> {
+    conflict.validate()?;
+    let record = state
+        .records
+        .get(&conflict.record_id)
+        .ok_or(HistoryError::UnknownRecord(conflict.record_id))?;
+    validate_conflict(record, conflict)?;
+    match record.conflicts.get(&conflict.id) {
+        Some(existing) if existing == conflict => Ok(false),
+        Some(_) => Err(HistoryError::ConflictIdCollision(conflict.id)),
+        None => Ok(true),
+    }
+}
+
+fn install_conflict(state: &mut HistoryState, conflict: FileConflictV1) {
+    if let Some(record) = state.records.get_mut(&conflict.record_id) {
+        record.conflicts.insert(conflict.id, conflict);
+    }
+}
+
+/// The resolved conflict to install, or `None` when `resolution` changes
+/// nothing (an exact replay, or a resolution the current one is preferred to).
+fn stage_resolution(
+    state: &HistoryState,
+    record_id: FileRecordId,
+    conflict_id: Uuid,
+    resolution: &ConflictResolution,
+) -> Result<Option<FileConflictV1>, HistoryError> {
+    let record = state
+        .records
+        .get(&record_id)
+        .ok_or(HistoryError::UnknownRecord(record_id))?;
+    let conflict = record
+        .conflicts
+        .get(&conflict_id)
+        .ok_or(HistoryError::UnknownConflict(conflict_id))?;
+    if let Some(existing) = &conflict.resolution
+        && (existing == resolution
+            || !collab_types::prefer_conflict_resolution(resolution, existing))
+    {
+        return Ok(None);
+    }
+    let result = record
+        .versions
+        .get(&resolution.result)
+        .ok_or(HistoryError::UnknownResolutionVersion(resolution.result))?;
+    if result.provenance != FileProvenance::ConflictResolution {
+        return Err(HistoryError::ResolutionProvenance);
+    }
+    if result.actor != resolution.actor {
+        return Err(HistoryError::ResolutionActorMismatch);
+    }
+    if result.timestamp_ms != resolution.timestamp_ms {
+        return Err(HistoryError::ResolutionTimestampMismatch);
+    }
+    let mut resolved = conflict.clone();
+    resolved.status = ConflictStatus::Resolved;
+    resolved.resolution = Some(resolution.clone());
+    resolved.validate()?;
+    Ok(Some(resolved))
+}
+
+/// Apply one replayed log entry with the same validation as a live append.
+/// Entries already contained in the snapshot are exact replays.
+fn replay_entry(state: &mut HistoryState, entry: LogEntry) -> Result<(), HistoryError> {
+    match entry {
+        LogEntry::Versions { versions } => {
+            let candidate = stage_versions(state, &versions)?;
+            install_versions(state, candidate);
+        }
+        LogEntry::Conflict { conflict } => {
+            if stage_conflict(state, &conflict)? {
+                install_conflict(state, conflict);
+            }
+        }
+        LogEntry::Resolve {
+            record_id,
+            conflict_id,
+            resolution,
+        } => {
+            if let Some(resolved) = stage_resolution(state, record_id, conflict_id, &resolution)? {
+                install_conflict(state, resolved);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn encode_log_line(entry: &LogEntry) -> Result<Vec<u8>, HistoryError> {
+    let json = serde_json::to_vec(entry)?;
+    let mut line = Vec::with_capacity(json.len().saturating_add(66));
+    line.extend_from_slice(blake3::hash(&json).to_hex().as_bytes());
+    line.push(b' ');
+    line.extend_from_slice(&json);
+    line.push(b'\n');
+    Ok(line)
+}
+
+fn decode_log_line(line: &[u8]) -> Result<LogEntry, String> {
+    let (digest, json) = line
+        .split_first_chunk::<64>()
+        .ok_or_else(|| "log line is too short".to_string())?;
+    let json = json
+        .strip_prefix(b" ")
+        .ok_or_else(|| "log line has no separator".to_string())?;
+    if blake3::hash(json).to_hex().as_bytes() != digest {
+        return Err("log line does not match its digest".into());
+    }
+    serde_json::from_slice(json).map_err(|error| error.to_string())
+}
+
+/// Replay the log at `log_path` into `state`. Returns the length of the
+/// good prefix and its entry count; a torn final line is reported so the
+/// caller can drop it.
+fn replay_log(
+    log_path: &Path,
+    state: &mut HistoryState,
+) -> Result<(u64, usize, bool), HistoryError> {
+    let bytes = match std::fs::read(log_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((0, 0, false));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut good = 0_usize;
+    let mut entries = 0_usize;
+    let mut rest = bytes.as_slice();
+    while let Some(newline) = rest.iter().position(|byte| *byte == b'\n') {
+        let (line, tail) = rest.split_at(newline);
+        let tail = tail.get(1..).unwrap_or_default();
+        match decode_log_line(line) {
+            Ok(entry) => replay_entry(state, entry)?,
+            // A write that never returned can leave a damaged last line;
+            // anything before it was acknowledged and must be intact.
+            Err(_) if tail.is_empty() => break,
+            Err(error) => {
+                return Err(HistoryError::DamagedLog(format!(
+                    "{} at byte {good}: {error}",
+                    log_path.display()
+                )));
+            }
+        }
+        good = good.saturating_add(newline).saturating_add(1);
+        entries = entries.saturating_add(1);
+        rest = tail;
+    }
+    Ok((good as u64, entries, good < bytes.len()))
+}
+
 impl FileHistoryStore {
     pub(crate) fn lease(&self) -> Result<HistoryLease<'_>, HistoryError> {
         Ok(HistoryLease {
-            path: &self.path,
+            store: self,
             state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)?,
         })
     }
 
-    /// Open and fully validate a durable history store, recovering only from a
-    /// retained generation that passes the same validation.
+    /// Durably append `entry` to the log. On failure the log is cut back to
+    /// its last good length, so a failed append never leaves a torn line in
+    /// the middle of the log.
+    fn append_entry(&self, state: &mut HistoryState, entry: &LogEntry) -> Result<(), HistoryError> {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+
+        let line = encode_log_line(entry)?;
+        if state.log.file.is_none() {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(&self.log_path)?;
+            if let Some(parent) = self.log_path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                atomic_file::sync_directory(parent)?;
+            }
+            file.set_len(state.log.len)?;
+            state.log.file = Some(file);
+        }
+        let Some(file) = state.log.file.as_mut() else {
+            return Err(HistoryError::StatePoisoned);
+        };
+        if let Err(error) = file.write_all(&line).and_then(|()| file.sync_data()) {
+            let _ = file.set_len(state.log.len);
+            state.log.file = None;
+            return Err(error.into());
+        }
+        state.log.len = state.log.len.saturating_add(line.len() as u64);
+        state.log.entries = state.log.entries.saturating_add(1);
+        Ok(())
+    }
+
+    fn maybe_compact(&self, state: &mut HistoryState) {
+        if state.log.entries >= LOG_COMPACT_AFTER_ENTRIES
+            && let Err(error) = self.compact_locked(state)
+        {
+            // The log already holds every entry durably; compaction only
+            // bounds its length and is retried on the next append.
+            eprintln!(
+                "could not fold history log {} into its snapshot: {error}",
+                self.log_path.display()
+            );
+        }
+    }
+
+    /// Write the full state as a new snapshot, then empty the log. A crash
+    /// between the two replays entries the snapshot already holds, which
+    /// are exact replays.
+    fn compact_locked(&self, state: &mut HistoryState) -> Result<(), HistoryError> {
+        persist(&self.path, state)?;
+        match state.log.file.as_mut() {
+            Some(file) => {
+                file.set_len(0)?;
+                file.sync_all()?;
+            }
+            None => match std::fs::OpenOptions::new().write(true).open(&self.log_path) {
+                Ok(file) => {
+                    file.set_len(0)?;
+                    file.sync_all()?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            },
+        }
+        state.log.len = 0;
+        state.log.entries = 0;
+        Ok(())
+    }
+
+    /// Fold the log into the snapshot now.
     ///
     /// # Errors
     ///
-    /// Returns an error for I/O, malformed history, invalid graph/conflicts, or
-    /// damaged state without a valid retained generation.
+    /// Returns an error when the snapshot cannot be written or the log
+    /// cannot be emptied.
+    pub fn compact(&self) -> Result<(), HistoryError> {
+        let mut state = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
+        let result = self.compact_locked(&mut state);
+        drop(state);
+        result
+    }
+
+    /// Entries in the log that are not yet folded into the snapshot.
+    #[must_use]
+    pub fn pending_log_entries(&self) -> usize {
+        self.state.lock().map_or(0, |state| state.log.entries)
+    }
+
+    /// Open and fully validate a durable history store: the snapshot (with
+    /// recovery only from a retained generation that passes the same
+    /// validation), then every log entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for I/O, malformed history, invalid graph/conflicts, a
+    /// damaged log, or damaged state without a valid retained generation.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
         let path = path.into();
-        let state = match crate::durable_backup::read_primary(&path)? {
+        let mut state = match crate::durable_backup::read_primary(&path)? {
             Some(bytes) => match decode_document(&bytes) {
                 Ok(state) => state,
                 Err(primary_error) => {
@@ -337,8 +652,18 @@ impl FileHistoryStore {
             },
             None => HistoryState::default(),
         };
+        let log_path = log_path_for(&path);
+        let (good, entries, torn) = replay_log(&log_path, &mut state)?;
+        if torn {
+            let file = std::fs::OpenOptions::new().write(true).open(&log_path)?;
+            file.set_len(good)?;
+            file.sync_all()?;
+        }
+        state.log.len = good;
+        state.log.entries = entries;
         Ok(Self {
             path,
+            log_path,
             state: Mutex::new(state),
         })
     }
@@ -361,9 +686,9 @@ impl FileHistoryStore {
     /// This is the history-side commit primitive for operations such as a
     /// POSIX replacement rename, where moving the source and deleting the
     /// destination are one logical mutation. Every item is validated against
-    /// a cloned candidate (in input order), the complete candidate is written
-    /// with one atomic file replacement, and only then is it published in
-    /// memory. A failure therefore exposes neither half of a multi-record
+    /// copies of the records it touches (in input order), the accepted items
+    /// are written as one durable log entry, and only then are they published
+    /// in memory. A failure therefore exposes neither half of a multi-record
     /// history transition. Exact replays are reported as `false` per item.
     ///
     /// # Errors
@@ -483,13 +808,6 @@ fn snapshot(record_id: FileRecordId, record: &RecordState) -> RecordHistorySnaps
     }
 }
 
-fn find_version(state: &HistoryState, id: FileVersionId) -> Option<&FileVersionV1> {
-    state
-        .records
-        .values()
-        .find_map(|record| record.versions.get(&id))
-}
-
 fn validate_conflict(record: &RecordState, conflict: &FileConflictV1) -> Result<(), HistoryError> {
     for version in &conflict.versions {
         if !record.versions.contains_key(version) {
@@ -520,7 +838,6 @@ fn decode_document(bytes: &[u8]) -> Result<HistoryState, HistoryError> {
         return Err(HistoryError::UnsupportedVersion(document.schema_version));
     }
     let mut state = HistoryState::default();
-    let mut global_versions = BTreeSet::new();
     for document_record in document.records {
         if state.records.contains_key(&document_record.record_id) {
             return Err(HistoryError::DuplicateRecord(document_record.record_id));
@@ -532,7 +849,11 @@ fn decode_document(bytes: &[u8]) -> Result<HistoryState, HistoryError> {
             if version.record_id != document_record.record_id {
                 return Err(HistoryError::WrongRecord);
             }
-            if !global_versions.insert(version_id) {
+            if state
+                .version_owner
+                .insert(version_id, document_record.record_id)
+                .is_some()
+            {
                 return Err(HistoryError::VersionIdCollision(version_id));
             }
             if record.versions.insert(version_id, version).is_some() {
@@ -612,6 +933,16 @@ fn computed_heads(versions: &BTreeMap<FileVersionId, FileVersionV1>) -> BTreeSet
     heads
 }
 
+/// The log lives beside the snapshot: `history.json` → `history.json.log`.
+fn log_path_for(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    name.push(".log");
+    path.with_file_name(name)
+}
+
 fn persist(path: &Path, state: &HistoryState) -> Result<(), HistoryError> {
     let document = HistoryDocument {
         schema_version: HISTORY_SCHEMA_VERSION,
@@ -686,6 +1017,8 @@ pub enum HistoryError {
     Publication(String),
     #[error("record cannot take another signed version: {0}")]
     CapacityExhausted(String),
+    #[error("history log is damaged: {0}")]
+    DamagedLog(String),
     #[error("history state lock is poisoned")]
     StatePoisoned,
 }
@@ -753,7 +1086,7 @@ mod tests {
         let record = FileRecordId::new();
         let root = version(record, vec![], FileProvenance::Create, 1);
         store.append(root.clone()).unwrap();
-        let before = std::fs::read(&path).unwrap();
+        let before = disk_state(&path);
         let orphan = version(record, vec![FileVersionId::new()], FileProvenance::Edit, 2);
         assert!(matches!(
             store.append(orphan),
@@ -765,7 +1098,7 @@ mod tests {
             store.append(collision),
             Err(HistoryError::VersionIdCollision(_))
         ));
-        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert_eq!(disk_state(&path), before);
     }
 
     #[test]
@@ -797,12 +1130,12 @@ mod tests {
             2,
         );
         destination_delete.parents = vec![FileVersionId::new()];
-        let before = std::fs::read(&path).unwrap();
+        let before = disk_state(&path);
         assert!(matches!(
             store.append_batch(&[source_move.clone(), destination_delete]),
             Err(HistoryError::MissingParent(_))
         ));
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(disk_state(&path), before);
         assert_eq!(store.snapshot(source_record).unwrap().versions.len(), 1);
         assert_eq!(
             store.snapshot(destination_record).unwrap().versions.len(),
@@ -884,6 +1217,131 @@ mod tests {
         assert_eq!(conflict.resolution.as_ref().unwrap().result, result.id);
     }
 
+    /// Everything the store keeps on disk: snapshot and log bytes.
+    fn disk_state(path: &Path) -> (Vec<u8>, Vec<u8>) {
+        (
+            std::fs::read(path).unwrap_or_default(),
+            std::fs::read(log_path_for(path)).unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn a_whole_file_history_from_earlier_releases_is_read_and_extended() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let record = FileRecordId::new();
+        let root = version(record, vec![], FileProvenance::Create, 1);
+        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+        // Earlier releases rewrote this one document on every append.
+        let mut legacy = HistoryState::default();
+        let candidate = stage_versions(&legacy, &[root.clone(), edit.clone()]).unwrap();
+        install_versions(&mut legacy, candidate);
+        persist(&path, &legacy).unwrap();
+        let legacy_bytes = std::fs::read(&path).unwrap();
+
+        let store = FileHistoryStore::open(&path).unwrap();
+        assert_eq!(
+            store.snapshot(record).unwrap().versions,
+            vec![root.clone(), edit.clone()]
+        );
+        let next = version(record, vec![edit.id], FileProvenance::Edit, 3);
+        assert!(store.append(next.clone()).unwrap());
+        assert!(!store.append(root.clone()).unwrap(), "exact replay");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            legacy_bytes,
+            "an append writes only the log"
+        );
+        assert_eq!(store.pending_log_entries(), 1);
+        drop(store);
+
+        let reopened = FileHistoryStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.snapshot(record).unwrap().versions,
+            vec![root.clone(), edit.clone(), next.clone()]
+        );
+        reopened.compact().unwrap();
+        assert_eq!(reopened.pending_log_entries(), 0);
+        assert!(disk_state(&path).1.is_empty());
+        drop(reopened);
+        let compacted = FileHistoryStore::open(&path).unwrap();
+        assert_eq!(
+            compacted.snapshot(record).unwrap().versions,
+            vec![root, edit, next]
+        );
+    }
+
+    #[test]
+    fn a_torn_final_log_line_is_dropped_and_damage_before_it_fails_closed() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let record = FileRecordId::new();
+        let root = version(record, vec![], FileProvenance::Create, 1);
+        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+        let store = FileHistoryStore::open(&path).unwrap();
+        store.append(root).unwrap();
+        let edit_id = edit.id;
+        store.append(edit).unwrap();
+        drop(store);
+        let log = log_path_for(&path);
+        let intact = std::fs::read(&log).unwrap();
+
+        // A write that never returned: half a line, no newline.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        file.write_all(b"0123456789abcdef {\"op\":\"vers").unwrap();
+        drop(file);
+        let store = FileHistoryStore::open(&path).unwrap();
+        assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
+        assert_eq!(std::fs::read(&log).unwrap(), intact, "torn tail removed");
+        let later = version(record, vec![edit_id], FileProvenance::Edit, 3);
+        store.append(later).unwrap();
+        drop(store);
+        assert_eq!(
+            FileHistoryStore::open(&path)
+                .unwrap()
+                .snapshot(record)
+                .unwrap()
+                .versions
+                .len(),
+            3
+        );
+
+        // Damage to an acknowledged entry is never silently skipped.
+        let mut damaged = std::fs::read(&log).unwrap();
+        damaged[70] ^= 0x01;
+        std::fs::write(&log, &damaged).unwrap();
+        assert!(matches!(
+            FileHistoryStore::open(&path),
+            Err(HistoryError::DamagedLog(_))
+        ));
+        assert_eq!(std::fs::read(&log).unwrap(), damaged, "evidence kept");
+    }
+
+    #[test]
+    fn the_log_folds_into_the_snapshot_after_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let store = FileHistoryStore::open(&path).unwrap();
+        let record = FileRecordId::new();
+        let mut parent = version(record, vec![], FileProvenance::Create, 0);
+        store.append(parent.clone()).unwrap();
+        for i in 1..LOG_COMPACT_AFTER_ENTRIES as u64 {
+            let next = version(record, vec![parent.id], FileProvenance::Edit, i);
+            store.append(next.clone()).unwrap();
+            parent = next;
+        }
+        assert_eq!(store.pending_log_entries(), 0, "compacted at the bound");
+        assert!(disk_state(&path).1.is_empty());
+        drop(store);
+        let reopened = FileHistoryStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.snapshot(record).unwrap().versions.len(),
+            LOG_COMPACT_AFTER_ENTRIES
+        );
+    }
+
     #[test]
     fn corrupt_heads_are_rejected_on_open() {
         let dir = tempfile::tempdir().unwrap();
@@ -893,6 +1351,7 @@ mod tests {
         store
             .append(version(record, vec![], FileProvenance::Create, 1))
             .unwrap();
+        store.compact().unwrap();
         drop(store);
         let mut document: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
