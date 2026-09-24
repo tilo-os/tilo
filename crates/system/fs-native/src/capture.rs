@@ -20,7 +20,7 @@ use crate::btrfs;
 use crate::chunking::{ChunkStats, Manifest};
 use crate::extents;
 use crate::hydrate::RESIDENCY_XATTR;
-use crate::journal::{JournalBatch, JournalOp};
+use crate::journal::{ChangeJournal, JournalBatch, JournalOp};
 use crate::sys;
 
 /// Directory marker that opts a tree out of sync, per
@@ -209,14 +209,49 @@ impl EpochCapture {
     /// Cuts one epoch. Without a previous epoch, or when `batch` asks for a
     /// rescan, the whole room is compared; otherwise only what the journal
     /// names.
+    ///
+    /// `batch` must name every change that completed before the snapshot is
+    /// taken, which holds only when nothing writes while this runs. With
+    /// live writers use [`Self::capture_from`], which splits the journal at
+    /// the snapshot.
     pub fn capture(&mut self, batch: &JournalBatch) -> io::Result<Changeset> {
         let t0 = Instant::now();
+        let (epoch, snapshot) = self.take_snapshot()?;
+        let t_snap = t0.elapsed();
+        self.finish(t0, t_snap, epoch, snapshot, batch)
+    }
+
+    /// Cuts one epoch while writers keep running: barriers placed in the
+    /// journal just before and just after the snapshot decide which
+    /// entries the snapshot can contain. Entries from the window between
+    /// the two are examined now and again in the next epoch, so no change
+    /// is published before the journal entries of the changes it depends on.
+    pub fn capture_from(&mut self, journal: &mut ChangeJournal) -> io::Result<Changeset> {
+        let before = journal.barrier(&self.cfg.epochs)?;
+        let t0 = Instant::now();
+        let (epoch, snapshot) = self.take_snapshot()?;
+        let t_snap = t0.elapsed();
+        let after = journal.barrier(&self.cfg.epochs)?;
+        let batch = journal.take_epoch(before, after)?;
+        self.finish(t0, t_snap, epoch, snapshot, &batch)
+    }
+
+    fn take_snapshot(&mut self) -> io::Result<(u64, PathBuf)> {
         let epoch = self.next_epoch;
         let snapshot = self.cfg.epochs.join(format!("{epoch:016}"));
         btrfs::snapshot(&self.cfg.live, &snapshot, true)?;
         self.next_epoch = self.next_epoch.saturating_add(1);
-        let t_snap = t0.elapsed();
+        Ok((epoch, snapshot))
+    }
 
+    fn finish(
+        &mut self,
+        t0: Instant,
+        t_snap: Duration,
+        epoch: u64,
+        snapshot: PathBuf,
+        batch: &JournalBatch,
+    ) -> io::Result<Changeset> {
         let full = self.prev.is_none() || batch.rescan.is_some();
         let (candidates, order) = self.candidates(&snapshot, batch, full)?;
 
