@@ -7,6 +7,7 @@
 #   tilo-disk-encrypt prepare  <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
 #   tilo-disk-encrypt prepare-partition <root-part> --efi <esp> [...]
 #   tilo-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2] [--passphrase]
+#                              [--store-part P --store-key-file F]
 #   tilo-disk-encrypt enrol    <luks-part> --reseal   # currently fails closed
 #   tilo-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
 #   tilo-disk-encrypt teardown <disk> [--mnt DIR]
@@ -17,6 +18,15 @@
 #
 #   MNT=… ESP=… BOOT_PART=… LUKS_PART=… LUKS_UUID=… ROOT_FS_UUID=…
 #   KEY_FILE=… KARGS=…
+#
+# When the disk is large enough (tilo-store-volume plan), the root is followed
+# by the room store: a LUKS2 + Btrfs partition of its own, which the storage
+# daemon's native data plane needs (docs/architecture/storage.md §6.2). Its
+# key file is persistent — the installer moves it into the encrypted root,
+# from where the store unlocks without a second prompt — and `enrol
+# --store-part` adds the recovery key to it. `prepare` then also prints:
+#
+#   STORE_PART=… STORE_LUKS_UUID=… STORE_FS_UUID=… STORE_KEY_FILE=…
 #
 # KARGS is what the install has to bake into the boot entry for early userspace
 # to find and open the volume. `enrol` adds the real unlock factors, `finish`
@@ -45,9 +55,14 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 GUID_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
 GUID_LINUX=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 GUID_TILO_ROOT=7A2E8D75-3F01-4E5A-B2C9-51F6ED90B8AB
+# Tilo's own type for the store, so neither root discovery (which requires
+# exactly one GUID_TILO_ROOT) nor systemd-gpt-auto-generator (which would
+# mount a discoverable /srv or /home type) ever claims it.
+GUID_TILO_STORE=0B6C5D38-8BA9-40AA-A1F6-DCC035F5438D
 
 ESP_SIZE=${TILO_ESP_SIZE:-512M}
 BOOT_SIZE=${TILO_BOOT_SIZE:-1G}
+STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 MIN_ALONGSIDE_ESP_BYTES=2147483648
 MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 
@@ -55,6 +70,20 @@ MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824
 # 0700 dir on the installer's tmpfs, never on the target disk, and `finish`
 # removes both it and its key slot.
 default_key_file() { printf '/run/tilo-install/luks.key'; }
+# The store's key sits next to it until the installer moves it into the root.
+store_key_file() { printf '%s/store.key' "$(dirname "$1")"; }
+
+# Bytes of an sfdisk-style size (512M, 1G, or plain bytes).
+size_bytes() {
+  case "$1" in
+    *[!0-9KMGT]*|'') die "invalid size '$1'" ;;
+    *K) printf '%s' $(( ${1%K} * 1024 )) ;;
+    *M) printf '%s' $(( ${1%M} * 1024 * 1024 )) ;;
+    *G) printf '%s' $(( ${1%G} * 1024 * 1024 * 1024 )) ;;
+    *T) printf '%s' $(( ${1%T} * 1024 * 1024 * 1024 * 1024 )) ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
 
@@ -215,7 +244,7 @@ cmd_prepare() {
   [ -n "$key" ] || key="$(default_key_file)"
   case "$fs" in btrfs|ext4|xfs) : ;; *) die "prepare: unsupported filesystem '$fs'" ;; esac
 
-  for t in sfdisk cryptsetup wipefs blkid lsblk "mkfs.$fs" mkfs.vfat mkfs.ext4; do need "$t"; done
+  for t in blockdev sfdisk cryptsetup wipefs blkid lsblk "mkfs.$fs" mkfs.vfat mkfs.ext4 "$STORE_VOLUME"; do need "$t"; done
 
   [ -b "$disk" ] || die "prepare: $disk is not a block device"
   [ "$(lsblk -dno TYPE "$disk" 2>/dev/null)" = "disk" ] \
@@ -232,22 +261,47 @@ cmd_prepare() {
   # mapping open — otherwise the retry cannot wipe the partition table.
   trap 'teardown "$mnt" "$disk"' ERR
 
-  log "  wiping $disk and writing a GPT (ESP $ESP_SIZE + /boot $BOOT_SIZE + LUKS root)"
+  # The root/store split. Reserved: the 1 MiB lead-in, ESP, /boot, and 1 MiB
+  # for the backup GPT at the end of the disk.
+  local disk_bytes reserved plan root_bytes store_bytes
+  disk_bytes="$(blockdev --getsize64 "$disk")"
+  reserved=$(( 2 * 1024 * 1024 + $(size_bytes "$ESP_SIZE") + $(size_bytes "$BOOT_SIZE") ))
+  plan="$("$STORE_VOLUME" plan --disk-bytes "$disk_bytes" --reserved-bytes "$reserved")" \
+    || die "prepare: could not plan the store volume"
+  root_bytes="$(printf '%s\n' "$plan" | sed -n 's/^ROOT_BYTES=//p')"
+  store_bytes="$(printf '%s\n' "$plan" | sed -n 's/^STORE_BYTES=//p')"
+  case "$root_bytes$store_bytes" in ''|*[!0-9]*) die "prepare: malformed store plan: $plan" ;; esac
+
   wipefs -a "$disk" >/dev/null
-  sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<EOF
+  if [ "$store_bytes" -gt 0 ]; then
+    log "  wiping $disk and writing a GPT (ESP $ESP_SIZE + /boot $BOOT_SIZE + LUKS root $((root_bytes / 1048576)) MiB + LUKS store)"
+    sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<EOF
+label: gpt
+start=1M, size=$ESP_SIZE, type=$GUID_ESP, name="EFI-SYSTEM"
+size=$BOOT_SIZE, type=$GUID_LINUX, name="boot"
+size=$((root_bytes / 1048576))MiB, type=$GUID_TILO_ROOT, name="Tilo root"
+type=$GUID_TILO_STORE, name="Tilo store"
+EOF
+  else
+    log "  wiping $disk and writing a GPT (ESP $ESP_SIZE + /boot $BOOT_SIZE + LUKS root; too small for a store partition)"
+    sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<EOF
 label: gpt
 start=1M, size=$ESP_SIZE, type=$GUID_ESP, name="EFI-SYSTEM"
 size=$BOOT_SIZE, type=$GUID_LINUX, name="boot"
 type=$GUID_TILO_ROOT, name="Tilo root"
 EOF
+  fi
   udevadm settle 2>/dev/null || true
 
-  local esp boot_part luks_part
+  local esp boot_part luks_part store_part="" want_parts=3
+  [ "$store_bytes" -eq 0 ] || want_parts=4
   esp="$(parts_of "$disk" | sed -n 1p)"
   boot_part="$(parts_of "$disk" | sed -n 2p)"
   luks_part="$(parts_of "$disk" | sed -n 3p)"
+  [ "$want_parts" -eq 3 ] || store_part="$(parts_of "$disk" | sed -n 4p)"
   [ -b "$esp" ] && [ -b "$boot_part" ] && [ -b "$luks_part" ] \
-    || die "prepare: expected three partitions on $disk, got: $(parts_of "$disk" | tr '\n' ' ')"
+    && { [ "$want_parts" -eq 3 ] || [ -b "$store_part" ]; } \
+    || die "prepare: expected $want_parts partitions on $disk, got: $(parts_of "$disk" | tr '\n' ' ')"
 
   log "  ESP=$esp  boot=$boot_part  root(LUKS)=$luks_part"
   mkfs.vfat -n EFI-SYSTEM "$esp" >/dev/null
@@ -282,6 +336,20 @@ EOF
   root_fs_uuid="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
   [ -n "$root_fs_uuid" ] || die "prepare: could not read the root filesystem UUID"
 
+  # The store has its own persistent random key: the installer moves it into
+  # the root, which is what unlocks the store on every boot.
+  local store_key="" store_luks_uuid="" store_fs_uuid="" store_report
+  if [ -n "$store_part" ]; then
+    store_key="$(store_key_file "$key")"
+    ( umask 0077; head -c 64 /dev/urandom > "$store_key" )
+    store_report="$("$STORE_VOLUME" format "$store_part" --key-file "$store_key")" \
+      || die "prepare: could not format the store volume on $store_part"
+    store_luks_uuid="$(printf '%s\n' "$store_report" | sed -n 's/^LUKS_UUID=//p')"
+    store_fs_uuid="$(printf '%s\n' "$store_report" | sed -n 's/^FS_UUID=//p')"
+    [ -n "$store_luks_uuid" ] && [ -n "$store_fs_uuid" ] \
+      || die "prepare: the store volume helper did not report the volume it made"
+  fi
+
   install -d -m 0700 "$mnt"
   mount "/dev/mapper/$mapper" "$mnt"
   chmod 0700 "$mnt"
@@ -306,16 +374,24 @@ EOF
   printf 'MAPPER=%s\n'       "$mapper"
   printf 'ROOT_FS_UUID=%s\n' "$root_fs_uuid"
   printf 'KEY_FILE=%s\n'     "$key"
+  if [ -n "$store_part" ]; then
+    printf 'STORE_PART=%s\n'      "$store_part"
+    printf 'STORE_LUKS_UUID=%s\n' "$store_luks_uuid"
+    printf 'STORE_FS_UUID=%s\n'   "$store_fs_uuid"
+    printf 'STORE_KEY_FILE=%s\n'  "$store_key"
+  fi
   printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto,fido2-device=auto\n' \
       "$luks_uuid" "$luks_uuid"
 }
 
 cmd_enrol() {
   local dev="" key="" pin_file="" want_fido2=0 reseal=0 predictions="" generation="" rollback_state=""
-  local require_tpm_prediction=0
+  local require_tpm_prediction=0 store_part="" store_key=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
+      --store-part) store_part="${2:-}"; shift 2 ;;
+      --store-key-file) store_key="${2:-}"; shift 2 ;;
       --pin-file) pin_file="${2:-}"; shift 2 ;;
       --predictions) predictions="${2:-}"; shift 2 ;;
       --generation) generation="${2:-}"; shift 2 ;;
@@ -335,6 +411,10 @@ cmd_enrol() {
   done
   [ -n "$dev" ] || die "enrol: missing <luks-part>"
   [ -n "$key" ] || key="$(default_key_file)"
+  if [ -n "$store_part$store_key" ]; then
+    [ -b "$store_part" ] && [ -f "$store_key" ] \
+      || die "enrol: --store-part and --store-key-file go together"
+  fi
   need systemd-cryptenroll
   need cryptsetup
 
@@ -411,6 +491,20 @@ cmd_enrol() {
     fi
   else
     die "a recovery key slot was enrolled but its value could not be read back; refusing to finish without showing a usable recovery key"
+  fi
+
+  # The store unlocks from its key file inside the root. Should the root ever
+  # be unreadable, the same recovery key opens the store from any rescue
+  # system, so the person's rooms are never behind a factor they were not
+  # shown. A passphrase slot, so it gets cryptsetup's default Argon2 cost.
+  if [ -n "$store_part" ]; then
+    log "  adding the recovery key to the store volume…"
+    cryptsetup luksAddKey --batch-mode --key-file "$store_key" \
+      --new-keyfile "$scratch/recovery" "$store_part" \
+      || die "could not add the recovery key to the store volume $store_part"
+    cryptsetup open --test-passphrase --key-file "$scratch/recovery" "$store_part" 2>/dev/null \
+      || die "the recovery key was added to $store_part but does not open it"
+    log "  recovery key verified: it opens the store volume."
   fi
 
   # (2) FIDO2, if a token was asked for. An explicit installer choice is a
@@ -493,6 +587,11 @@ cmd_finish() {
       || die "finish: could not remove the install key slot"
     shred -u "$key" 2>/dev/null || rm -f "$key"
   fi
+  # The installer has copied the store's key into the root by now; the live
+  # medium's copy has no further use.
+  local store_key
+  store_key="$(store_key_file "$key")"
+  [ ! -f "$store_key" ] || shred -u "$store_key" 2>/dev/null || rm -f "$store_key"
 
   # Unmount deepest-first; the tree is ESP under /boot under the root.
   umount "$mnt/boot/efi" 2>/dev/null || true
@@ -527,6 +626,6 @@ case "$sub" in
   enrol|enroll) cmd_enrol "$@" ;;
   finish) cmd_finish "$@" ;;
   teardown) cmd_teardown "$@" ;;
-  -h|--help|"") sed -n '2,40p' "$0" ;;
+  -h|--help|"") sed -n '2,44p' "$0" ;;
   *) die "unknown subcommand: $sub (try --help)" ;;
 esac

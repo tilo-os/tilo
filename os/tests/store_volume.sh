@@ -6,12 +6,15 @@
 #   bash os/tests/store_volume.sh
 #
 # The unprivileged part always runs. With root (or passwordless sudo) and loop
-# devices it also builds an image-backed store on a loop-mounted Btrfs "root"
-# and mounts it with the options the installed system uses.
+# devices it also builds a whole-disk encrypted layout on a sparse loop disk
+# and an image-backed store on a loop-mounted Btrfs "root", and mounts both
+# with the options the installed system uses.
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 helper="$repo/os/usr/libexec/tilo-store-volume"
+encryptor="$repo/os/usr/libexec/tilo-disk-encrypt"
+backend="$repo/os/usr/libexec/tilo-install"
 fs_unit="$repo/os/usr/lib/systemd/system/fs.service"
 volume_unit="$repo/os/usr/lib/systemd/system/tilo-store-volume.service"
 loop_unit="$repo/os/usr/lib/systemd/system/tilo-store-loop.service"
@@ -232,13 +235,26 @@ else
   bad "the image does not ship the store helper and its units"
 fi
 
+# The installer's whole-disk layout and the recovery-key binding.
+if grep -Fq 'GUID_TILO_STORE=0B6C5D38-8BA9-40AA-A1F6-DCC035F5438D' "$encryptor" \
+   && grep -Fq 'size=$((root_bytes / 1048576))MiB, type=$GUID_TILO_ROOT, name="Tilo root"' "$encryptor" \
+   && grep -Fq 'type=$GUID_TILO_STORE, name="Tilo store"' "$encryptor" \
+   && ! grep -qi '0b6c5d38-8ba9-40aa-a1f6-dcc035f5438d' "$repo/os/usr/libexec/tilo-root-discover" \
+   && grep -Fq -- '--new-keyfile "$scratch/recovery" "$store_part"' "$encryptor" \
+   && grep -Fq 'ENROL_ARGS+=(--store-part "$STORE_PART" --store-key-file "$STORE_KEY_FILE")' "$backend" \
+   && grep -Fq '"$STORE_VOLUME" install-config --etc "$DEPLOY_ETC"' "$backend"; then
+  ok "whole-disk installs end with a Tilo-typed store partition the recovery key also opens"
+else
+  bad "the installer's store partition, its type or its recovery binding is missing"
+fi
+
 # --- loopback proofs ------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ] && ! sudo -n true >/dev/null 2>&1; then
   printf 'SKIP  loopback store proofs need root or passwordless sudo\n'
   [ "$fail" -eq 0 ] || exit 1
   exit 0
 fi
-for tool in losetup mkfs.btrfs btrfs; do
+for tool in losetup cryptsetup systemd-cryptenroll mkfs.btrfs sfdisk btrfs; do
   command -v "$tool" >/dev/null 2>&1 || { printf 'SKIP  loopback store proofs need %s\n' "$tool"; exit "$fail"; }
 done
 
@@ -254,7 +270,105 @@ mount_options() {
   printf '%s\n' "$1" | tr ',' '\n' | grep -v $option_filter | paste -sd, -
 }
 
-# An existing install: ensure creates, mounts and announces an image store.
+# 1. Whole disk: prepare, enrol, configure, finish.
+truncate -s 64G "$tmp/disk.img"
+if ! disk="$(run_root losetup --find --show --partscan "$tmp/disk.img" 2>"$tmp/losetup.err")"; then
+  printf 'SKIP  loopback store proofs need a usable loop device (%s)\n' "$(tr '\n' ' ' < "$tmp/losetup.err")"
+  exit "$fail"
+fi
+cleanup_steps+=("run_root losetup -d '$disk'")
+install -d -m 0700 "$tmp/keys"
+# A loop device is not TYPE disk; wrap only that one lsblk query so prepare's
+# whole-disk gate stays exercised.
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/lsblk" <<SH
+#!/bin/sh
+if [ "\$#" -eq 3 ] && [ "\$1" = -dno ] && [ "\$2" = TYPE ] && [ "\$3" = '$disk' ]; then
+  echo disk
+else
+  exec /usr/bin/lsblk "\$@"
+fi
+SH
+chmod 0755 "$tmp/bin/lsblk"
+cleanup_steps+=("run_root env PATH='$tmp/bin:$PATH' '$encryptor' teardown '$disk' --mnt '$tmp/mnt'")
+if prep="$(run_root env PATH="$tmp/bin:$PATH" TILO_STORE_VOLUME="$helper" "$encryptor" prepare "$disk" \
+             --mnt "$tmp/mnt" --key-file "$tmp/keys/luks.key" 2>"$tmp/prepare.err")"; then
+  store_part="$(value_of "$prep" STORE_PART)"
+  store_key="$(value_of "$prep" STORE_KEY_FILE)"
+  luks_part="$(value_of "$prep" LUKS_PART)"
+  types="$(run_root sfdisk --json "$disk" | python3 -c 'import json,sys; print(" ".join(p["type"].lower() for p in json.load(sys.stdin)["partitiontable"]["partitions"]))')"
+  root_size="$(run_root blockdev --getsize64 "$luks_part")"
+  want_root="$(value_of "$("$helper" plan --disk-bytes $((64 * GIB)) --reserved-bytes "$RESERVED")" ROOT_BYTES)"
+  if [ "$types" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b 0fc63daf-8483-4772-8e79-3d69d8477de4 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab 0b6c5d38-8ba9-40aa-a1f6-dcc035f5438d" ] \
+     && [ "$root_size" = "$want_root" ] && [ "$store_key" = "$tmp/keys/store.key" ] \
+     && run_root cryptsetup isLuks --type luks2 "$store_part"; then
+    ok "a 64 GiB disk gets ESP, /boot, a $((root_size / GIB)) GiB LUKS2 root and a LUKS2 store"
+  else
+    bad "unexpected whole-disk layout: types [$types], root $root_size (planned $want_root), key $store_key"
+  fi
+
+  printf '%s' 'correct horse battery staple' > "$tmp/keys/pin"
+  if enrol_out="$(run_root "$encryptor" enrol "$luks_part" --key-file "$tmp/keys/luks.key" \
+        --passphrase --pin-file "$tmp/keys/pin" \
+        --store-part "$store_part" --store-key-file "$store_key" 2>&1)"; then
+    recovery="$(printf '%s\n' "$enrol_out" | sed -n 's/^::tilo-recovery-key:://p' | tail -1)"
+    printf '%s' "$recovery" > "$tmp/keys/recovery"
+    if [ -n "$recovery" ] \
+       && run_root cryptsetup open --test-passphrase --key-file "$tmp/keys/recovery" "$store_part" \
+       && run_root cryptsetup open --test-passphrase --key-file "$store_key" "$store_part" \
+       && ! run_root cryptsetup open --test-passphrase --key-file "$tmp/keys/pin" "$store_part" 2>/dev/null; then
+      ok "the install's recovery key and the root's key file open the store; the boot passphrase does not"
+    else
+      bad "the store does not open with exactly the recovery key and its key file"
+    fi
+  else
+    bad "enrol with a store volume failed:"$'\n'"$enrol_out"
+  fi
+
+  deploy_etc="$tmp/mnt/etc-under-test"
+  run_root install -d -m 0755 "$deploy_etc"
+  if run_root "$helper" install-config --etc "$deploy_etc" \
+       --luks-uuid "$(value_of "$prep" STORE_LUKS_UUID)" --fs-uuid "$(value_of "$prep" STORE_FS_UUID)" \
+       --key-file "$store_key" --owner "$me" >/dev/null; then
+    # What systemd-cryptsetup and the fstab line do at boot, by hand.
+    run_root cryptsetup open --key-file "$deploy_etc/cryptsetup-keys.d/tilo-store.key" "$store_part" tilo-store-under-test
+    cleanup_steps+=("run_root cryptsetup close tilo-store-under-test")
+    shipped="$(run_root awk '$2=="/var/lib/tilo/store"{print $4}' "$deploy_etc/fstab")"
+    case "$shipped" in
+      *noatime*context=*) ;;
+      *) bad "the installed fstab line carries no usable mount options ('$shipped')" ;;
+    esac
+    options="$(mount_options "$shipped")"
+    mkdir -p "$tmp/store-mnt"
+    if run_root mount -t btrfs -o "$options" /dev/mapper/tilo-store-under-test "$tmp/store-mnt"; then
+      cleanup_steps+=("run_root umount '$tmp/store-mnt'")
+      features="$(run_root btrfs inspect-internal dump-super /dev/mapper/tilo-store-under-test)"
+      if grep -q 'BLOCK_GROUP_TREE' <<<"$features" && grep -q 'SIMPLE_QUOTA' <<<"$features" \
+         && [ "$(run_root blkid -s LABEL -o value /dev/mapper/tilo-store-under-test)" = tilo-store ]; then
+        ok "the store unlocks from the installed key file and mounts with the shipped options"
+      else
+        bad "the store filesystem lacks its label, block-group tree or simple quotas"
+      fi
+      run_root umount "$tmp/store-mnt"
+    else
+      bad "the store does not mount with the shipped options ($options)"
+    fi
+    run_root cryptsetup close tilo-store-under-test
+  else
+    bad "install-config failed on the formatted store"
+  fi
+
+  if run_root "$encryptor" finish "$luks_part" --key-file "$tmp/keys/luks.key" --mnt "$tmp/mnt" >/dev/null 2>&1 \
+     && [ ! -e "$store_key" ] && [ ! -e "$tmp/keys/luks.key" ]; then
+    ok "finish removes both install-time key files from the live medium"
+  else
+    bad "finish left an install-time key file behind"
+  fi
+else
+  bad "prepare failed:"$'\n'"$(cat "$tmp/prepare.err")"
+fi
+
+# 2. An existing install: ensure creates, mounts and announces an image store.
 truncate -s 64G "$tmp/root.img"
 root_loop="$(run_root losetup --find --show "$tmp/root.img")"
 cleanup_steps+=("run_root losetup -d '$root_loop'")
