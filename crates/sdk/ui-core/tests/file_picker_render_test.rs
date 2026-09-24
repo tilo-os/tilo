@@ -118,16 +118,8 @@ fn assert_panel_edge_registers(rgba: &[u8], w: u32, theme_name: &str) {
 fn dump(name: &str, rgba: &[u8], w: u32, h: u32) {
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let _ = std::fs::create_dir_all(&dir);
-        let mut png = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut png, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut writer = enc.write_header().unwrap();
-            writer.write_image_data(rgba).unwrap();
-        }
         let path = format!("{dir}/{name}.png");
-        std::fs::write(&path, png).unwrap();
+        tilo_ui::png::write_rgba8(&path, w, h, rgba).unwrap();
         eprintln!("wrote {path}");
     }
 }

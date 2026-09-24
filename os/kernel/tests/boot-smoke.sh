@@ -2,6 +2,7 @@
 # Native, diskless kernel boot and module-signature acceptance test.
 # This does not establish UEFI, installer, or physical-board acceptance.
 set -euo pipefail
+command -v zstd >/dev/null
 stage=$(realpath "${1:?usage: boot-smoke.sh STAGE.tar.gz KERNEL_RELEASE OUTPUT_DIRECTORY}")
 release=${2:?kernel release required}
 out=${3:?new output directory required}
@@ -27,19 +28,35 @@ test -n "$interpreter"
 mkdir -p "$out/rootfs$(dirname "$interpreter")"
 cp -L "$interpreter" "$out/rootfs$interpreter"
 python3 - "$stage" "$release" "$out" <<'PY'
-import hashlib, json, struct, sys, tarfile
+import hashlib, json, struct, subprocess, sys, tarfile
 from pathlib import Path
 stage, release, output = sys.argv[1:]
 out = Path(output)
 with tarfile.open(stage) as archive:
     prefix = f"./lib/modules/{release}/"
     # Read only named regular files; never extract archive paths or symlinks.
-    for source, target in (("vmlinuz", "Image"),
-                           ("kernel/drivers/net/dummy.ko", "rootfs/signed.ko")):
-        member = archive.getmember(prefix + source)
-        if not member.isfile():
-            raise ValueError(f"not a regular file: {member.name}")
-        (out / target).write_bytes(archive.extractfile(member).read())
+    kernel = archive.getmember(prefix + "vmlinuz")
+    if not kernel.isfile():
+        raise ValueError(f"not a regular file: {kernel.name}")
+    (out / "Image").write_bytes(archive.extractfile(kernel).read())
+    module_names = [
+        prefix + "kernel/drivers/net/dummy.ko",
+        prefix + "kernel/drivers/net/dummy.ko.zst",
+    ]
+    modules = [member for member in archive.getmembers()
+               if member.name in module_names and member.isfile()]
+    if len(modules) != 1:
+        raise ValueError(f"expected one packaged dummy module, found {len(modules)}")
+    module = modules[0]
+    data = archive.extractfile(module).read()
+    if module.name.endswith(".zst"):
+        data = subprocess.run(
+            ["zstd", "--decompress", "--stdout", "--quiet"],
+            input=data, capture_output=True, check=True,
+        ).stdout
+    if not 0 < len(data) <= 64 * 1024 * 1024:
+        raise ValueError("dummy module has an implausible decompressed size")
+    (out / "rootfs/signed.ko").write_bytes(data)
 data = (out / "rootfs/signed.ko").read_bytes()
 trailer = b"~Module signature appended~\n"
 if not data.endswith(trailer):

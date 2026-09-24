@@ -156,8 +156,10 @@ exists so a fresh install has apps to list before anyone has run
 `tilo-launcher::registry::list_installed` reads both stores, system first,
 and a user entry **shadows** a system entry with the same id — installing
 your own build of a preinstalled app replaces it in the launcher rather
-than producing a duplicate row. `TILO_APPS_SYSTEM_DIR` overrides the
-system path the same way `TILO_APPS_DATA_DIR` overrides the user one.
+than producing a duplicate row. In a developer build (debug, or
+`--features dev-overrides`), `TILO_APPS_SYSTEM_DIR` overrides the system
+path the same way `TILO_APPS_DATA_DIR` overrides the user one; a release
+build ignores it and always reads the image's store.
 
 Being preinstalled grants a package nothing. The sandbox is still built
 from its manifest, the payload is still bound read-only, and the one

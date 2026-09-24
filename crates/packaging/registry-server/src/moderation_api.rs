@@ -587,7 +587,7 @@ pub enum ModerationApiError {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use registry_types::{
         RegistryEntry, RegistryTarget, RegistryVersion, TILO_OS_PLATFORM, sign_entry,
         sign_moderation_mutation,
@@ -602,8 +602,8 @@ mod tests {
     ) {
         let directory = tempfile::tempdir().unwrap();
         let storage = Storage::open(directory.path()).unwrap();
-        let publisher = SigningKey::generate(&mut OsRng);
-        let reviewer = SigningKey::generate(&mut OsRng);
+        let publisher = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let reviewer = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut entry = RegistryEntry {
             package_id: "so.tilo.notes".into(),
             name: "Notes".into(),
@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn report_is_signed_idempotent_and_publicly_verifiable() {
         let (directory, service, _publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let request = report(&reporter, "request-one");
         let first = service.apply(&request, 110, &allowlist).unwrap();
         assert_eq!(service.apply(&request, 111, &allowlist).unwrap(), first);
@@ -710,7 +710,7 @@ mod tests {
     #[test]
     fn request_id_reuse_and_expiry_are_rejected() {
         let (_directory, service, _publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         service
             .apply(&report(&reporter, "same"), 110, &allowlist)
             .unwrap();
@@ -741,11 +741,11 @@ mod tests {
     #[test]
     fn only_package_publisher_can_reply_or_appeal() {
         let (_directory, service, publisher, _reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let case = service
             .apply(&report(&reporter, "file"), 110, &allowlist)
             .unwrap();
-        let attacker = SigningKey::generate(&mut OsRng);
+        let attacker = SigningKey::generate(&mut UnwrapErr(SysRng));
         let make = |key: &SigningKey, id: &str| {
             sign_moderation_mutation(
                 id.into(),
@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn only_registry_owner_can_make_reviewer_decision() {
         let (_directory, service, _publisher, reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let case = service
             .apply(&report(&reporter, "file"), 110, &allowlist)
             .unwrap();
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn restore_recovers_when_catalogue_effect_was_durable_before_public_event() {
         let (_directory, service, _publisher, reviewer, allowlist) = setup();
-        let reporter = SigningKey::generate(&mut OsRng);
+        let reporter = SigningKey::generate(&mut UnwrapErr(SysRng));
         let case = service
             .apply(&report(&reporter, "file-for-recovery"), 110, &allowlist)
             .unwrap();

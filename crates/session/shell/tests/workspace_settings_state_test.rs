@@ -15,6 +15,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
+use shell::shell::state::WorkspaceAuthority as _;
 use shell::shell::state::{
     CapOverride, CapRole, ResourceRef, Scope, Subject, Verb, Workspace, WorkspaceId,
 };

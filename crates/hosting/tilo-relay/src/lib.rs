@@ -69,6 +69,7 @@
 )]
 
 pub mod antientropy;
+pub mod app_serving;
 pub mod auth;
 pub mod client;
 pub mod coedit;
@@ -89,6 +90,7 @@ pub mod transport;
 pub mod workspace;
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
+pub use app_serving::{ActionHostPlane, AppServingPlane};
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};

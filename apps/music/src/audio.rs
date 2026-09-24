@@ -1423,7 +1423,7 @@ fn download_into(
 
     use std::io::Read;
     use std::sync::atomic::Ordering::Relaxed;
-    let Ok(client) = reqwest::blocking::Client::builder()
+    let Ok(client) = tilo_net::http::blocking_client()
         .user_agent(ua_for_uri(uri))
         // A blocking request cannot be interrupted by another thread. Keep its
         // deadline short so `cancel()` is observed between bounded requests,

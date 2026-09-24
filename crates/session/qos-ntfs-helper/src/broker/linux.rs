@@ -51,7 +51,7 @@ fn digest(fields: &[&[u8]]) -> String {
         digest.update(u64::try_from(field.len()).unwrap_or(u64::MAX).to_le_bytes());
         digest.update(field);
     }
-    format!("{:x}", digest.finalize())
+    hex::encode(digest.finalize())
 }
 fn candidate(path: &Path) -> io::Result<Candidate> {
     let sysfs = fs::canonicalize(path)?;

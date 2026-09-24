@@ -12,6 +12,7 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::crdt_text::CrdtTextBody;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::providers::text_app::tile_hosts_app;
+use crate::shell::state::WorkspaceAuthority as _;
 use ui::record::RecordId;
 
 /// Stable address of this action within the `actions` provider.
@@ -58,7 +59,7 @@ fn addressed_text_tab(st: &ChromeState, record: &RecordId) -> Option<AddressedTe
     // Found (or not) while the read lock is held; the lock is released
     // below, before this returns to the caller.
     let found = 'search: {
-        for w in &tree.workspaces {
+        for w in &tree.desktop.workspaces {
             for s in &w.strips {
                 for g in &s.window_groups {
                     for t in &g.tabs {
@@ -177,6 +178,7 @@ mod tests {
     use crate::shell::chrome_state::Chrome;
     use crate::shell::notes_app::BODY_KEY;
     use crate::shell::search::action_api::ArgValue;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
@@ -214,25 +216,36 @@ mod tests {
             }],
         };
         let mut ws = Workspace::new(ws_id, "Home");
-        ws.set_owner(crate::shell::state::local_user_id_for_room(&ws.room));
+        ws.set_owner(FIXTURE_USER);
         ws.strips = vec![strip];
         let mut active_strip = StdMap::new();
         active_strip.insert(ws_id, strip_id);
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }));
-        let chrome = crate::shell::chrome_state::ChromeState::new_with_handle(handle);
+        // An explicit identity: the session registry lives under the user's
+        // configuration directory, which is not this test's to read.
+        let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+            handle,
+            crate::shell::hosted_inputs::HostedTileInputs::default(),
+        );
         let store = RecordStore::in_memory();
         store.open_record(&crate::shell::tab_documents::scratch_tab_record(TAB));
         chrome.borrow_mut().set_records(store.clone());
         (chrome, store)
     }
+
+    /// The principal a fixture chrome speaks for.
+    const FIXTURE_USER: &str = "shell-fixture";
 
     fn args(mut pairs: Vec<(&str, ArgValue)>) -> ActionArgs {
         if !pairs.iter().any(|(name, _)| *name == "resource") {
@@ -283,7 +296,7 @@ mod tests {
         let (user, app_id) = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let workspace = &tree.workspaces[0];
+            let workspace = &tree.desktop.workspaces[0];
             (
                 state.local_user_for_room(&workspace.room),
                 AppKind::Other("Notes".into()).app_id(),
@@ -292,7 +305,7 @@ mod tests {
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let workspace = &mut tree.workspaces[0];
+            let workspace = &mut tree.desktop.workspaces[0];
             let instance = collab_types::document_artifact_id(
                 &app_id,
                 &workspace.room.to_string(),
@@ -332,7 +345,7 @@ mod tests {
                     .iter()
                     .filter(|hash| !entry.before.contains(hash))
                     .filter_map(|hash| doc.get_change_by_hash(hash))
-                    .find_map(|change| change.message().cloned())
+                    .find_map(|change| change.message().map(str::to_owned))
                     .and_then(|message| tilo_actions::ActionContext::from_change_message(&message))
                     .expect("semantic action provenance");
                 assert_eq!(context.action_label, "Insert text");
@@ -358,12 +371,12 @@ mod tests {
             let user = {
                 let state = chrome.borrow();
                 let tree = state.tree();
-                state.local_user_for_room(&tree.workspaces[0].room)
+                state.local_user_for_room(&tree.desktop.workspaces[0].room)
             };
             {
                 let state = chrome.borrow();
                 let mut tree = state.tree_mut();
-                let workspace = &mut tree.workspaces[0];
+                let workspace = &mut tree.desktop.workspaces[0];
                 workspace.owner = None;
                 workspace.capabilities.clear();
                 workspace.grant_capability(crate::shell::state::CapOverride::grant(
@@ -513,7 +526,7 @@ mod tests {
         {
             let state = chrome.borrow_mut();
             let mut tree = state.tree_mut();
-            let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             group.tabs.push(Tab {
                 id: OTHER_TAB,
                 title: "Other note".into(),
@@ -564,11 +577,11 @@ mod tests {
         {
             let state = chrome.borrow_mut();
             let mut tree = state.tree_mut();
-            tree.workspaces[0].set_owner("another-person");
+            tree.desktop.workspaces[0].set_owner("another-person");
             let mut active = Workspace::new(WorkspaceId::new(), "Authorized elsewhere");
-            active.set_owner(crate::shell::state::local_user_id_for_room(&active.room));
+            active.set_owner(FIXTURE_USER);
             let active_id = active.id;
-            tree.workspaces.push(active);
+            tree.desktop.workspaces.push(active);
             tree.set_active(active_id);
         }
 

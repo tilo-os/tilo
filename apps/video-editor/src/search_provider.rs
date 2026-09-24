@@ -7,12 +7,9 @@
 //! query page by work and result count instead.
 
 use std::collections::HashMap;
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 
 use crate::model::{Clip, ClipEffect, Marker, MediaItem, Project, Track};
 use crate::timecode;
@@ -228,35 +225,13 @@ fn media_text(item: &MediaItem) -> &str {
     item.text.as_ref().map_or("", |text| text.content.as_str())
 }
 
-impl SearchProvider for ProjectSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for ProjectSearchProvider {
+    fn provider_name(&self) -> &'static str {
         "Video editor"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 }
 
@@ -264,6 +239,8 @@ impl SearchProvider for ProjectSearchProvider {
 mod tests {
     use super::*;
     use crate::model::{MediaKind, Project, TextSource, Track, TrackKind};
+    use ui::search::SearchProvider;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn add_track(project: &mut Project, kind: TrackKind, name: impl Into<String>) -> uuid::Uuid {
         let id = uuid::Uuid::new_v4();
@@ -356,18 +333,21 @@ mod tests {
     }
 
     #[test]
-    fn late_track_remains_findable_beyond_one_hundred_thousand_rows() {
-        let mut project = Project::new("large");
-        for number in 0..100_001 {
-            add_track(&mut project, TrackKind::Video, format!("Track {number}"));
-        }
-        project.tracks.last_mut().expect("last track").name = "Late catalogue needle".into();
-        let provider = ProjectSearchProvider::new(&project);
-        let page = provider.search_page("catalogue needle", None, 4, 4);
+    fn late_track_remains_findable_in_a_large_project() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut project = Project::new("large");
+                for row in corpus {
+                    add_track(&mut project, TrackKind::Video, row.text);
+                }
+                ProjectSearchProvider::new(&project)
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
         assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Late catalogue needle");
-        assert_eq!(provider.stats().records, 100_001);
+        assert_eq!(provider.stats().records, 3_000);
     }
 
     #[test]

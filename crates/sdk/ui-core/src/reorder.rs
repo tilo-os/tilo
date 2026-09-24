@@ -1,6 +1,6 @@
 //! Shared drag/reorder state for virtualized collection widgets.
 
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 use vello::kurbo::{Point, Rect};
 
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn threshold_separates_click_from_reorder() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut reorder = ReorderController::new();
         reorder.begin(1, Point::new(10.0, 10.0));
         reorder.update(
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn invalid_target_has_no_preview_or_drop() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut reorder = ReorderController::new().with_drag_threshold(0.0);
         reorder.begin(1, Point::ZERO);
         reorder.update(
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn finish_emits_one_validated_drop() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut reorder = ReorderController::new().with_drag_threshold(0.0);
         reorder.begin(1, Point::ZERO);
         reorder.update(
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn edge_scroll_accelerates_toward_edges() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut reorder = ReorderController::new()
             .with_drag_threshold(0.0)
             .with_edge_scroll(40.0, 800.0);
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn inside_hover_expands_once_after_delay() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut reorder = ReorderController::new()
             .with_drag_threshold(0.0)
             .with_hover_expand_delay(Duration::from_millis(500));

@@ -11,9 +11,9 @@ use super::{
 use crate::collaboration::CollaborationManager;
 use crate::presence::PresenceKey;
 use crate::theme::Theme;
+use crate::time::Instant;
 use crate::widget::Widget;
 use std::cell::{Cell, RefCell};
-use std::time::Instant;
 use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
@@ -48,6 +48,13 @@ impl LayoutRuntime {
 }
 
 /// Input modality, gesture, cursor, and tooltip state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
     pub(super) interaction: crate::interaction::InteractionEnvironment,
@@ -83,16 +90,13 @@ pub(super) struct ActionRuntime {
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
-    pub(super) bound_directory_route: Option<crate::collaboration::PrimaryRouteWitness>,
     pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
     #[cfg(test)]
     pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
-    pub(super) bound_directory_stamp: Option<(
-        Vec<crate::bound_dispatch::BoundDirectoryWitness>,
-        u64,
-        Vec<String>,
-        String,
-    )>,
+    pub(super) action_directory_stamp:
+        Option<(super::action_directory_snapshot::DirectoryWitness, String)>,
+    pub(super) action_directory_snapshot:
+        Option<super::action_directory_snapshot::ActionDirectorySnapshot>,
     pub(super) bound_invocations: std::collections::HashMap<
         tilo_actions::InvocationId,
         crate::bound_dispatch::BoundActionTarget,
@@ -103,6 +107,8 @@ pub(super) struct ActionRuntime {
     pub(super) permission_generation: Cell<u64>,
     pub(super) last_control_availability: Option<(ResourceCacheKey, u64)>,
     pub(super) last_published_actions: Option<Vec<tilo_actions::ActionDescriptor>>,
+    #[cfg(test)]
+    pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
     pub(super) action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
     /// Background operations admitted by the retained widget tree.
@@ -115,8 +121,20 @@ pub(super) struct ActionRuntime {
     >,
     pub(super) pending_application_launches:
         std::collections::HashMap<u64, tilo_actions::InvocationId>,
+    /// Requests to the session action host awaiting their answer, keyed by
+    /// the answer they expect, to the local request id they correlate with.
+    pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
     /// `None` means this process exhausted the complete request-id namespace.
     pub(super) next_broker_request_id: Option<u64>,
+}
+
+/// Which answer from the session action host a request is waiting for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum BrokerReply {
+    /// The receipt for an invocation.
+    Receipt(tilo_actions::InvocationId),
+    /// The state of an invocation being observed.
+    Update(tilo_actions::InvocationId),
 }
 
 impl ActionRuntime {
@@ -129,11 +147,11 @@ impl ActionRuntime {
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             bound_record_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
-            bound_directory_route: None,
             last_published_bound_route: None,
             #[cfg(test)]
             bound_broker_route_for_test: None,
-            bound_directory_stamp: None,
+            action_directory_stamp: None,
+            action_directory_snapshot: None,
             bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
             open_resource_search_cache: RefCell::new(None),
@@ -141,10 +159,13 @@ impl ActionRuntime {
             permission_generation: Cell::new(0),
             last_control_availability: None,
             last_published_actions: None,
+            #[cfg(test)]
+            action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
+            broker_requests: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
         }
     }
@@ -188,7 +209,7 @@ impl AccessibilityRuntime {
 
 /// Persistence and record-checkout state.
 pub(super) struct PersistenceRuntime {
-    pub(super) autosave: Option<crate::persist::Autosave>,
+    pub(super) autosave: Option<crate::persist::DocWriter>,
     /// The live document belongs to the record selected by the root widget.
     pub(super) records: Option<crate::record::RecordSet>,
     pub(super) room_index: Option<crate::state::DocumentReplica>,
@@ -245,6 +266,13 @@ impl CollaborationRuntime {
 }
 
 /// Presence publication, follow, and frame-pump state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
     pub(super) pointer_space: Option<crate::presence::PointerSpace>,
@@ -289,6 +317,13 @@ impl HistoryRuntime {
 }
 
 /// Host window identity and fullscreen reconciliation state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct WindowRuntime {
     pub(super) fullscreen_requested: bool,
     pub(super) fullscreen_active: bool,

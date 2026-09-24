@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use futures_lite::StreamExt;
 use zbus::interface;
 use zbus::names::OwnedUniqueName;
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 
 /// Resource that must be torn down when a request or session ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,7 +279,7 @@ impl PortalLifecycle {
     /// state machine cannot retain a stale session.
     pub async fn close_session_object(&self, connection: &zbus::Connection, path: &str) {
         if self.finish_session(path).is_some() {
-            if let Ok(context) = SignalContext::new(connection, path) {
+            if let Ok(context) = SignalEmitter::new(connection, path) {
                 let _ = SessionObject::closed(&context).await;
             }
         }
@@ -427,7 +427,7 @@ impl SessionObject {
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
-        #[zbus(signal_context)] context: SignalContext<'_>,
+        #[zbus(signal_emitter)] context: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         let owner = header
             .sender()
@@ -454,7 +454,7 @@ impl SessionObject {
     }
 
     #[zbus(signal)]
-    async fn closed(context: &SignalContext<'_>) -> zbus::Result<()>;
+    async fn closed(context: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[cfg(test)]

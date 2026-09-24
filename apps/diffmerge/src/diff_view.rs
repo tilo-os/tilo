@@ -16,7 +16,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -24,6 +23,7 @@ use ui::widget::{SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
 use crate::model::{DiffModel, RowKind};
+use ui::paint::with_alpha;
 
 /// Minimum row pitch; the measured line height of `FONT_SIZE` wins when the
 /// text scale makes it taller (see [`Metrics`]).
@@ -1002,9 +1002,4 @@ fn draw_code_line(
         let (w, _) = tr.measure(&seg, FONT_SIZE, None);
         x += f64::from(w);
     }
-}
-
-/// Apply an explicit 8-bit alpha to a colour.
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }

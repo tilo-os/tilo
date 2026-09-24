@@ -157,26 +157,31 @@ must_not_contain "$PORTAL_PRINT_RS" 'wait_with_output\(\)|\.output\(\)' \
 
 echo "== apps reach printing through the portal, never the socket =="
 # The whole point of the Print portal: no sandbox may be handed the cups
-# socket. If a bind mount for it ever appears, this fails.
-SANDBOX_SRC="$OS_ROOT/../crates/session/shell/src/sandbox"
-if [ -d "$SANDBOX_SRC" ]; then
-    if grep -rEq 'cups\.sock|/run/cups' "$SANDBOX_SRC"; then
-        fail "the sandbox references the cups socket — apps must go through the Print portal"
+# socket. Sandboxes are built by tilo-launcher (its bind plan, and the
+# shared confinement primitives it uses); if a bind for the socket ever
+# appears there, this fails.
+SANDBOX_SRCS=(
+    "$OS_ROOT/../crates/packaging/launcher/src"
+    "$OS_ROOT/../crates/system/sandbox-core/src"
+)
+if [ -d "${SANDBOX_SRCS[0]}" ] && [ -d "${SANDBOX_SRCS[1]}" ]; then
+    if grep -rEq 'cups\.sock|/run/cups' "${SANDBOX_SRCS[@]}"; then
+        fail "the sandbox builder references the cups socket — apps must go through the Print portal"
     else
         ok
     fi
 else
     # Running from inside the image, where the Rust sources are absent. The
     # invariant still has to be checked against something observable, so
-    # check the shipped binary instead of quietly passing.
-    if [ -x "$OS_ROOT/usr/bin/shell" ]; then
-        if strings "$OS_ROOT/usr/bin/shell" 2>/dev/null | grep -q '/run/cups'; then
-            fail "the shipped compositor binary references /run/cups"
+    # check the shipped launcher binary instead of quietly passing.
+    if [ -x "$OS_ROOT/usr/bin/tilo-launcher" ]; then
+        if strings "$OS_ROOT/usr/bin/tilo-launcher" 2>/dev/null | grep -q '/run/cups'; then
+            fail "the shipped launcher binary references /run/cups"
         else
             ok
         fi
     else
-        fail "neither crates/session/shell/src/sandbox nor /usr/bin/shell is present — cannot check that the cups socket stays out of sandboxes"
+        fail "neither the launcher sources nor /usr/bin/tilo-launcher is present — cannot check that the cups socket stays out of sandboxes"
     fi
 fi
 

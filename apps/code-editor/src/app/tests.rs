@@ -1270,3 +1270,275 @@ fn closing_a_clean_tab_closes_immediately() {
     );
     assert_eq!(app.session.open.len(), before - 1);
 }
+
+#[test]
+fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
+    let mut app = CodeApp::with_sample();
+    let mut doc = AutoCommit::new();
+
+    app.apply_command(Command::GoToProblems, &mut doc);
+    assert!(app.panel_visible);
+    assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+
+    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    assert!(!app.panel_visible);
+    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    assert!(app.panel_visible);
+    assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+
+    app.apply_command(Command::GoToTerminal, &mut doc);
+    assert!(app.panel_visible);
+    assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+    assert!(
+        app.terminal.is_some(),
+        "Terminal command keeps the live terminal opener"
+    );
+    let terminal_before = app
+        .terminal
+        .as_ref()
+        .map(std::ptr::from_ref)
+        .expect("Terminal command creates a retained terminal");
+    let terminal_content_before = app.shots_terminal_grid_text();
+    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+    assert!(
+        app.terminal.is_some(),
+        "closing and reopening preserves the terminal session"
+    );
+    assert_eq!(
+        app.terminal.as_ref().map(std::ptr::from_ref),
+        Some(terminal_before),
+        "closing and reopening retains the same live Terminal object"
+    );
+    assert_eq!(
+        app.shots_terminal_grid_text(),
+        terminal_content_before,
+        "closing and reopening does not replace Terminal content"
+    );
+}
+
+#[test]
+fn explicit_problems_open_survives_an_empty_diagnostics_refresh() {
+    let mut app = CodeApp::new();
+    let mut doc = AutoCommit::new();
+    app.apply_command(Command::GoToProblems, &mut doc);
+
+    app.refresh_diagnostics(&doc);
+
+    assert!(app.panel.problems().is_empty());
+    assert!(
+        app.panel_visible,
+        "an explicit Problems open is authoritative"
+    );
+    assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+}
+
+#[test]
+fn fresh_editor_collapses_the_empty_bottom_panel() {
+    let app = CodeApp::with_sample();
+
+    assert!(
+        !app.panel_visible,
+        "a fresh editor must give its height to code"
+    );
+    assert!(
+        app.children()
+            .iter()
+            .all(|child| child.test_id() != Some("bottom_panel")),
+        "the hidden dock must leave the retained child tree"
+    );
+}
+
+#[test]
+fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal() {
+    let mut app = CodeApp::with_sample();
+    app.shots_open_terminal();
+    let mut driver = ui::headless::Driver::new(ui::State::new(), Box::new(app), (480, 900));
+
+    let panel = driver.targets()["bottom_panel"];
+    driver.click_at(panel.center().x, panel.y1 - 20.0);
+    driver.set_modifiers(&["ctrl".to_string()]);
+    driver.key("j");
+    driver.set_modifiers(&[]);
+
+    assert!(!driver.targets().contains_key("bottom_panel"));
+    assert_eq!(
+        driver
+            .focused_access_node()
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Show bottom panel"),
+        "keyboard close returns focus to the retained disclosure"
+    );
+
+    driver.set_modifiers(&["ctrl".to_string()]);
+    driver.key("j");
+    driver.set_modifiers(&[]);
+    assert!(driver.targets().contains_key("bottom_panel"));
+    assert_eq!(
+        driver
+            .focused_access_node()
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Hide bottom panel"),
+        "reopening keeps focus on the disclosure instead of hidden Terminal content"
+    );
+
+    driver.key("Enter");
+    assert!(
+        !driver.targets().contains_key("bottom_panel"),
+        "Enter reaches the focused disclosure after reopening instead of the Terminal"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    reason = "one pointer and keyboard walk through the dock; its geometry is exact"
+)]
+fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes() {
+    fn trigger_semantics(snapshot: &ui::headless::InspectionSnapshot) -> &ui::a11y::AccessNode {
+        fn find(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
+            if node.test_id.as_deref() == Some("code.bottom-panel-toggle") {
+                return node.semantics.as_ref();
+            }
+            node.children.iter().find_map(find)
+        }
+
+        find(&snapshot.root).expect("dock trigger semantics")
+    }
+
+    let mut driver = ui::headless::Driver::new(
+        ui::State::new(),
+        Box::new(CodeApp::with_sample()),
+        (480, 900),
+    );
+    let targets = driver.targets();
+    let tabs = targets.get("tabs").copied().expect("tab bar target");
+    let trigger = targets
+        .get("code.bottom-panel-toggle")
+        .copied()
+        .expect("retained dock trigger");
+    // The trigger stays in the chrome row, centred an `s1` clear of the
+    // row's top and of the editor below it (HIG §7: nothing touches), so
+    // it neither spans the full bar nor shares pixels with the content.
+    let inset = f64::from(ui::theme::Theme::dark().tokens.spacing.s1);
+    assert!(
+        (trigger.y0 - (tabs.y0 + inset)).abs() < 0.01,
+        "trigger stays in the existing chrome row, inset s1: {} vs {}",
+        trigger.y0,
+        tabs.y0
+    );
+    assert!(
+        (trigger.height() - (tabs.height() - 2.0 * inset)).abs() < 0.01,
+        "trigger is the chrome row minus the s1 insets: {} vs {}",
+        trigger.height(),
+        tabs.height()
+    );
+    assert!(
+        tabs.x1 <= trigger.x0,
+        "tab pills and dock trigger must not overlap"
+    );
+    let closed_snapshot = driver.inspection();
+    let closed = trigger_semantics(&closed_snapshot);
+    assert_eq!(closed.name.as_deref(), Some("Show bottom panel"));
+    assert_eq!(closed.state.expanded, Some(false));
+    assert!(!closed.state.selected);
+
+    driver
+        .click_named("code.bottom-panel-toggle")
+        .expect("pointer activates retained trigger");
+    assert!(driver.targets().contains_key("bottom_panel"));
+    let open_snapshot = driver.inspection();
+    let open = trigger_semantics(&open_snapshot);
+    assert_eq!(open.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(open.state.expanded, Some(true));
+    assert!(open.state.selected);
+    assert_eq!(
+        driver
+            .focused_access_node()
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Hide bottom panel"),
+        "click transfers keyboard focus to the retained trigger"
+    );
+
+    driver.key("Enter");
+    assert!(
+        !driver.targets().contains_key("bottom_panel"),
+        "keyboard activation routes through the same toggle command"
+    );
+
+    driver.set_modifiers(&["ctrl".to_string()]);
+    driver.key("j");
+    driver.set_modifiers(&[]);
+    assert!(
+        driver.targets().contains_key("bottom_panel"),
+        "Ctrl+J remains an equivalent keyboard route"
+    );
+
+    driver.key("Escape");
+    assert!(
+        !driver.targets().contains_key("bottom_panel"),
+        "Escape closes the dock disclosure"
+    );
+    assert_eq!(
+        driver
+            .focused_access_node()
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Show bottom panel"),
+        "Escape returns focus to the retained trigger"
+    );
+
+    let trigger_node = driver
+        .a11y_node_named("Show bottom panel")
+        .expect("trigger is exported to assistive technology");
+    driver
+        .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
+        .expect("semantic activation uses the retained control");
+    assert!(
+        driver.targets().contains_key("bottom_panel"),
+        "assistive activation reaches the same canonical toggle"
+    );
+
+    let panel_narrow = driver.targets()["bottom_panel"];
+    assert!(
+        panel_narrow.x0 >= 0.0
+            && panel_narrow.y0 >= 0.0
+            && panel_narrow.x1 <= 480.0
+            && panel_narrow.y1 <= 900.0,
+        "open panel stays inside the narrow viewport"
+    );
+    driver.resize((800, 700)).expect("resize open editor");
+    let resized = driver.targets();
+    let panel_standard = resized["bottom_panel"];
+    let tabs_standard = resized["tabs"];
+    let trigger_standard = resized["code.bottom-panel-toggle"];
+    assert!(
+        panel_standard.x0 >= 0.0
+            && panel_standard.y0 >= 0.0
+            && panel_standard.x1 <= 800.0
+            && panel_standard.y1 <= 700.0,
+        "open panel stays inside the resized viewport"
+    );
+    assert_eq!(panel_standard.height(), panel_narrow.height());
+    // Same inset geometry after the resize: in the chrome row, `s1` clear
+    // of its top and of the editor.
+    assert!((trigger_standard.y0 - (tabs_standard.y0 + inset)).abs() < 0.01);
+    assert!((trigger_standard.height() - (tabs_standard.height() - 2.0 * inset)).abs() < 0.01);
+    assert!(tabs_standard.x1 <= trigger_standard.x0);
+    let resized_snapshot = driver.inspection();
+    let resized_trigger = trigger_semantics(&resized_snapshot);
+    assert_eq!(resized_trigger.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(resized_trigger.state.expanded, Some(true));
+    assert!(resized_trigger.state.selected);
+
+    driver.resize((480, 900)).expect("resize back while open");
+    let restored = driver.targets();
+    assert!(restored.contains_key("bottom_panel"));
+    assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
+    assert!(restored["tabs"].x1 <= restored["code.bottom-panel-toggle"].x0);
+}

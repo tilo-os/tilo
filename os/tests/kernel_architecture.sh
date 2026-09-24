@@ -115,10 +115,18 @@ for contract in \
     'COPY os/kernel/build-support.sh /work/kernel-build-support.sh' \
     'COPY os/kernel/config-fragments/ /work/kernel-config/' \
     'sh /work/kernel-build-support.sh validate-arch "$ARCH"' \
-    '"/work/kernel-config/$ARCH.config"' \
-    'sh /work/kernel-build-support.sh check-config "$ARCH" .config' \
-    'sh /work/kernel-build-support.sh stage-boot "$(uname -m)" "$KSRC" "$STAGE" "$KVER"'; do
+    'sh /work/kernel-build-support.sh prepare-source "$ARCH" "$KSRC"' \
+    'sh /work/kernel-build-support.sh compile "$(uname -m)" "$KSRC" "$JOBS"' \
+    'sh /work/kernel-build-support.sh stage-modules "$(uname -m)" "$KSRC" "$STAGE" "$KVER"'; do
     grep -Fq "$contract" "$tmp/Containerfile" || fail "kernel build bypassed tested helper: $contract"
+done
+# The helper's own steps: the native fragment, the resolved-config checks and
+# the boot staging all sit behind the commands above.
+for contract in \
+    '"/work/kernel-config/$arch.config"' \
+    'sh "$self" check-config "$arch" .config' \
+    'sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"'; do
+    grep -Fq "$contract" "$helper" || fail "kernel build helper lost a step: $contract"
 done
 spec="$repo/os/kernel/tilo-kernel-payload.spec"
 if grep -Eq '^BuildArch:' "$spec"; then fail 'RPM overrides the native target architecture'; fi

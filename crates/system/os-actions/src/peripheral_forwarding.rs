@@ -9,7 +9,8 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -604,7 +605,7 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
 fn random_nonzero() -> [u8; 16] {
     let mut value = [0; 16];
     while value == [0; 16] {
-        OsRng.fill_bytes(&mut value);
+        UnwrapErr(SysRng).fill_bytes(&mut value);
     }
     value
 }

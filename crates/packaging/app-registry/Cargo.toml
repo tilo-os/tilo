@@ -25,7 +25,7 @@ iroh-blobs.workspace = true
 # blob is fetched over iroh. Both async.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
 # rustls-tls only (no openssl / native-tls) to match the rest of the tree.
-reqwest = { workspace = true, features = ["rustls-tls"] }
+tilo-net = { path = "../../system/tilo-net", features = ["http"] }
 
 serde.workspace = true
 serde_json.workspace = true

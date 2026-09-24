@@ -684,7 +684,7 @@ mod tests {
         FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId, mint_bearer_file_invite,
         mint_file_invite,
     };
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     use super::*;
 
@@ -703,7 +703,7 @@ mod tests {
         collab_types::BearerFileInvite,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let (issuer, issuer_public) = collab_types::generate_keypair();
         let invite = mint_bearer_file_invite(
             FileInviteSpec {
@@ -866,7 +866,7 @@ mod tests {
             &issuer_sk,
         )
         .unwrap();
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let bearer = mint_bearer_file_invite(
             FileInviteSpec {
                 workspace_id,

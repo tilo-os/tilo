@@ -51,6 +51,13 @@
     clippy::useless_conversion,
     reason = "migration stack lint debt is scoped to this target"
 )]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::disallowed_methods,
+        reason = "unit tests may drive real threads and wait on the real clock; the rule guards the library"
+    )
+)]
 
 //! The Tilo UI toolkit: retained-mode, CRDT-native widgets.
 //!
@@ -109,16 +116,20 @@ extern crate self as tilo_ui;
 pub(crate) mod application_test_support;
 
 pub mod app;
+pub mod background;
 pub mod caps_lock;
+pub mod capture;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
 pub mod clipboard;
 pub mod collaboration;
 pub mod collection_transition;
+pub mod color;
 pub mod color_compat;
 pub mod content_layout;
 mod damage;
+pub mod date;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 /// Shared by the WebView's page buffers and the video decoder's hardware
@@ -143,8 +154,9 @@ pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
+pub mod host;
 #[cfg(all(windows, feature = "notifications"))]
-pub mod host_notifications;
+pub use native::host_notifications;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
@@ -153,16 +165,21 @@ pub mod interaction;
 pub mod launch;
 pub mod live_collaboration;
 pub mod local_state;
+pub mod location;
 pub mod math;
 pub mod mpris;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod nav_stack;
 pub mod num;
 pub mod offscreen;
 pub mod overlay;
+pub mod paint;
 pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod png;
 pub mod portal;
 pub mod presence;
 pub mod profiling;
@@ -195,6 +212,7 @@ pub mod text_metrics;
 pub mod text_render;
 pub mod text_selection;
 pub mod theme;
+pub mod time;
 pub mod tokens;
 pub mod ui_graph;
 pub mod undo;
@@ -202,7 +220,8 @@ pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
 pub mod wake;
-pub mod warmup;
+#[cfg(feature = "native")]
+pub use native::warmup;
 pub mod webview;
 pub mod widget;
 pub mod window_icon;
@@ -227,8 +246,8 @@ pub use collection_transition::{
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
-pub use i18n::{ArgValue, I18nError, I18nManager, PseudoLocale};
-pub use image_store::{Fetcher, ImageStore};
+pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
+pub use image_store::{Fetcher, HostImageLoader, ImageStore};
 pub use input::{
     ActionBindings, BindingConflict, BindingSet, ControllerBinding, ControllerButton, InputBinding,
     KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,

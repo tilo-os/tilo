@@ -26,7 +26,7 @@ fn identity(doc: &AutoCommit, block: &ObjId) -> Option<Uuid> {
         .ok()
         .flatten()?
         .0
-        .to_str()?
+        .as_str()?
         .parse()
         .ok()
 }

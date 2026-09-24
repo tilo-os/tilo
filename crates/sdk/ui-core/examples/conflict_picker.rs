@@ -19,7 +19,7 @@
 //!   `MergeOrPick` kind, which the kanban scenario doesn't produce).
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use tilo_ui::widget::{Alternative, Column, ConflictBanner, ConflictKind, ConflictPicker};
 use tilo_ui::{App, State};
@@ -29,9 +29,9 @@ fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
         label: label.into(),
         summary: summary.into(),
         author: author.into(),
-        timestamp: SystemTime::now()
+        timestamp: tilo_ui::time::wall()
             .checked_sub(Duration::from_secs(secs_ago))
-            .unwrap_or_else(SystemTime::now),
+            .unwrap_or_else(tilo_ui::time::wall),
         payload: Arc::from(Vec::<u8>::new()),
     }
 }

@@ -12,8 +12,7 @@
 
 use std::collections::BTreeMap;
 use ui::icons::Icon;
-
-use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchProvider, SearchResult};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use crate::model::{Account, Vault};
 
@@ -87,35 +86,13 @@ impl TotpSearchProvider {
     }
 }
 
-impl SearchProvider for TotpSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for TotpSearchProvider {
+    fn provider_name(&self) -> &str {
         ACCOUNT_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &ui::search::SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&ui::search::SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> ui::search::SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 }
 
@@ -123,6 +100,7 @@ impl SearchProvider for TotpSearchProvider {
 mod tests {
     use super::*;
     use crate::model::Vault;
+    use ui::search::SearchProvider;
     fn populated() -> Vault {
         let mut v = Vault::new();
         for a in crate::model::demo_accounts() {

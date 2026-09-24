@@ -94,7 +94,7 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
     if let Some((v, _)) = doc
         .get(ROOT, "calculator_resources_v2")
         .map_err(|e| e.to_string())?
-        && v.to_bool() != Some(true)
+        && v.as_bool() != Some(true)
     {
         return Err("Unsupported calculator schema marker".into());
     }
@@ -473,7 +473,7 @@ mod viewport_tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("preserve")
             );
         }

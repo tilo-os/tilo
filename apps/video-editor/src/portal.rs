@@ -23,11 +23,6 @@ use ui::portal::{FileFilter, PickRequest};
 pub use ui::portal::{MultiChannel as ImportChannel, MultiOutcome as ImportOutcome};
 pub use ui::portal::{PortalChannel as ExportDestChannel, PortalOutcome as ExportDestOutcome};
 
-#[cfg(test)]
-pub use ui::portal::inject_for_test as inject_dest_for_test;
-#[cfg(test)]
-pub use ui::portal::inject_multi_for_test as inject_for_test;
-
 /// The container / still formats the editor can bring into the bin. Both globs
 /// and MIME types are supplied because portal backends differ in which they
 /// honour.
@@ -203,22 +198,6 @@ pub fn request_save_project(suggested_name: &str) -> ProjectChannel {
     }
 }
 
-/// Test-only: deliver a project `outcome` on the exact per-frame drain path
-/// the real worker feeds.
-#[cfg(test)]
-pub fn inject_project_for_test(outcome: ProjectOutcome) -> ProjectChannel {
-    let (single, save) = match outcome {
-        ProjectOutcome::Open(p) => (ui::portal::PortalOutcome::Opened(p), false),
-        ProjectOutcome::Save(p) => (ui::portal::PortalOutcome::Opened(p), true),
-        ProjectOutcome::Cancelled => (ui::portal::PortalOutcome::Cancelled, false),
-        ProjectOutcome::Failed(e) => (ui::portal::PortalOutcome::Failed(e), false),
-    };
-    ProjectChannel {
-        rx: ui::portal::inject_for_test(single),
-        save,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,18 +228,28 @@ mod tests {
         // here" for the other. Confusing them destroys the file the user
         // meant to read, so the channel is what keeps them apart.
         let p = std::path::PathBuf::from("/home/alice/Holiday.qvp");
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(p.clone()));
         assert_eq!(
-            inject_project_for_test(ProjectOutcome::Open(p.clone())).try_recv(),
+            request_open_project().try_recv(),
             Ok(ProjectOutcome::Open(p.clone())),
         );
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(p.clone()));
         assert_eq!(
-            inject_project_for_test(ProjectOutcome::Save(p.clone())).try_recv(),
+            request_save_project("Holiday.qvp").try_recv(),
             Ok(ProjectOutcome::Save(p)),
         );
         assert_eq!(
-            inject_project_for_test(ProjectOutcome::Cancelled).try_recv(),
+            request_open_project().try_recv(),
             Ok(ProjectOutcome::Cancelled),
         );
+        let titles: Vec<String> = recorder
+            .pick_requests()
+            .iter()
+            .map(|r| r.title().to_string())
+            .collect();
+        assert_eq!(titles, ["Open project", "Save project", "Open project"]);
     }
 
     #[test]
@@ -296,8 +285,12 @@ mod tests {
 
     #[test]
     fn a_cancelled_export_dialog_drains_like_an_import_does() {
-        let rx = inject_dest_for_test(ExportDestOutcome::Cancelled);
+        let (services, recorder) = ui::host::HostServices::recording();
+        let rx = ui::host::scoped(&services, || {
+            request_export_destination("Coastline_Doc_v3.mp4", "mp4")
+        });
         assert_eq!(rx.try_recv(), Ok(ExportDestOutcome::Cancelled));
+        assert_eq!(recorder.pick_requests()[0].title(), "Export video");
     }
 
     #[test]
@@ -311,9 +304,12 @@ mod tests {
     }
 
     #[test]
-    fn inject_drives_the_same_drain_path_the_worker_feeds() {
-        let rx = inject_for_test(ImportOutcome::Cancelled);
+    fn a_cancelled_import_drains_through_the_channel_the_worker_feeds() {
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick_multiple(ImportOutcome::Cancelled);
+        let rx = ui::host::scoped(&services, request_import);
         assert_eq!(rx.try_recv(), Ok(ImportOutcome::Cancelled));
+        assert!(recorder.pick_requests()[0].is_multiple());
     }
 }
 

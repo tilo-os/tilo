@@ -26,7 +26,7 @@ use launcher::capture::{
 use launcher::manifest::{MinimalManifest, read_manifest};
 use launcher::registry::InstalledPackage;
 #[cfg(target_os = "linux")]
-use launcher::run::{LaunchMode, RunOptions, run_with_captured_bounded};
+use launcher::run::{IdentitySource, LaunchMode, RunOptions, run_with_captured_bounded};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -389,7 +389,7 @@ impl ComputeSandbox for LauncherComputeSandbox {
                     .flatten(),
                 wayland_socket: None,
                 capabilities_path: None,
-                identity_host_path: None,
+                identity: IdentitySource::UserStore,
                 trusted_identities_host_path: None,
                 open_document: None,
                 open_uri: None,

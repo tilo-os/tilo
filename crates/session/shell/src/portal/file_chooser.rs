@@ -28,7 +28,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 
@@ -68,7 +68,7 @@ impl FileChooserBackend {
     )]
     async fn open_file(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -98,7 +98,7 @@ impl FileChooserBackend {
     )]
     async fn save_file(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -134,7 +134,7 @@ impl FileChooserBackend {
     )]
     async fn save_files(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -298,12 +298,13 @@ pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::portal::{GrantStoreHandle, MockFilePickerSpawner};
+    use crate::shell::state::WorkspaceAuthority as _;
     use crate::shell::state::{Workspace, WorkspaceId};
 
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "fc")
+        Workspace::new(WorkspaceId(id), "fc")
     }
 
     #[test]
@@ -455,6 +456,7 @@ mod tests {
         let grant_count = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
@@ -494,6 +496,7 @@ mod tests {
         let granted_fs = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)

@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -72,7 +73,7 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
         strips: vec![strip0, strip1],
         // Everything else — including the workspace's durable collaboration room
         // — comes from the builder, so a new `Workspace` field won't break this.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -82,11 +83,14 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
     active_group.insert(s1_id, b0);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -103,8 +107,8 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
     // chasing the wire-up.
     {
         let st = chrome.borrow();
-        assert_eq!(st.tree().active_group_for(s0_id), Some(a0));
-        assert_eq!(st.tree().active_group_for(s1_id), Some(b0));
+        assert_eq!(st.tree().desktop.active_group_for(s0_id), Some(a0));
+        assert_eq!(st.tree().desktop.active_group_for(s1_id), Some(b0));
     }
 
     // No-op tick: nothing is closing, so the reconciler must leave both
@@ -112,8 +116,8 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
     host.tick_active_group_reconcile_for_tests();
     {
         let st = chrome.borrow();
-        assert_eq!(st.tree().active_group_for(s0_id), Some(a0));
-        assert_eq!(st.tree().active_group_for(s1_id), Some(b0));
+        assert_eq!(st.tree().desktop.active_group_for(s0_id), Some(a0));
+        assert_eq!(st.tree().desktop.active_group_for(s1_id), Some(b0));
     }
 
     {
@@ -131,12 +135,12 @@ fn shell_tick_advances_active_group_off_closing_in_strip_0_only() {
     {
         let st = chrome.borrow();
         assert_eq!(
-            st.tree().active_group_for(s0_id),
+            st.tree().desktop.active_group_for(s0_id),
             Some(a1),
             "active-group pointer must advance to A1 once A0 enters the close fade",
         );
         assert_eq!(
-            st.tree().active_group_for(s1_id),
+            st.tree().desktop.active_group_for(s1_id),
             Some(b0),
             "strip-1 pointer must not change when only strip-0 has a closing group",
         );
@@ -161,7 +165,7 @@ fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
 
     let st = chrome.borrow();
     assert_eq!(
-        st.tree().active_group_for(s0_id),
+        st.tree().desktop.active_group_for(s0_id),
         None,
         "every-group-closing must drop the strip-0 pointer entirely; \
          the data-layer reconciler clears it rather than dangle",
@@ -170,7 +174,7 @@ fn shell_tick_clears_pointer_when_every_group_in_strip_is_closing() {
     // the strip-1-untouched assertion below.
     let _ = (a0, a1);
     assert_eq!(
-        st.tree().active_group_for(s1_id),
+        st.tree().desktop.active_group_for(s1_id),
         Some(b0),
         "strip-1 must remain unaffected even when strip-0 fully empties",
     );

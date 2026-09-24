@@ -18,7 +18,7 @@
 use std::io::{Cursor, Write};
 
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde::{Deserialize, Serialize};
 use tilo_app_package::blobs::{BlobHash, BlobStore, MemoryBlobStore};
 use tilo_app_package::signed::SignedRoot;
@@ -103,7 +103,7 @@ pub fn write_app_payload_with_bulk(dir: &std::path::Path, bulk_kib: usize) -> st
 }
 
 pub fn build_tapp(payload_kib: usize) -> (Vec<u8>, PackageId) {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = SigningKey::generate(&mut rng);
     let pub_hex = hex::encode(sk.verifying_key().to_bytes());
     let src = render_template(SAMPLE_APP_MANIFEST_TEMPLATE, &pub_hex);

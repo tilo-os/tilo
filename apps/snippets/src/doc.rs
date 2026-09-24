@@ -25,7 +25,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use ui::doc::{put_if_changed, put_text_diffed};
+use ui::doc::{put_if_changed, put_text_diffed, read_bool, read_str, read_str_or_text};
 
 use crate::model::{Language, Snippet, SnippetId};
 
@@ -64,17 +64,6 @@ impl SnippetsDoc {
             _ => doc
                 .put_object(&map, key.as_str(), ObjType::Map)
                 .expect("put_object snippet map never fails"),
-        }
-    }
-
-    fn read_text(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).unwrap_or_default(),
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => s.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
         }
     }
 
@@ -138,16 +127,9 @@ impl SnippetsDoc {
         out
     }
 
-    fn read_bool(doc: &AutoCommit, parent: &ObjId, key: &str) -> bool {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
-            _ => false,
-        }
-    }
-
     fn read_int(doc: &AutoCommit, parent: &ObjId, key: &str) -> u32 {
         match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0).max(0) as u32,
+            Ok(Some((Value::Scalar(v), _))) => v.as_i64().unwrap_or(0).max(0) as u32,
             _ => 0,
         }
     }
@@ -170,16 +152,16 @@ impl SnippetsDoc {
         let Ok(Some((Value::Object(ObjType::Map), snip))) = doc.get(&map, key.as_str()) else {
             return None;
         };
-        let language = Language::from_slug(&Self::read_str(doc, &snip, "language"));
+        let language = Language::from_slug(&read_str(doc, &snip, "language").unwrap_or_default());
         Some(Snippet {
             id,
-            title: Self::read_text(doc, &snip, "title"),
+            title: read_str_or_text(doc, &snip, "title").unwrap_or_default(),
             language,
-            folder: Self::read_str(doc, &snip, "folder"),
+            folder: read_str(doc, &snip, "folder").unwrap_or_default(),
             tags: Self::read_tags(doc, &snip),
-            body: Self::read_text(doc, &snip, "body"),
-            description: Self::read_text(doc, &snip, "description"),
-            favorite: Self::read_bool(doc, &snip, "favorite"),
+            body: read_str_or_text(doc, &snip, "body").unwrap_or_default(),
+            description: read_str_or_text(doc, &snip, "description").unwrap_or_default(),
+            favorite: read_bool(doc, &snip, "favorite").unwrap_or(false),
             uses: Self::read_int(doc, &snip, "uses"),
         })
     }
@@ -198,31 +180,22 @@ impl SnippetsDoc {
             let Ok(Some((Value::Object(ObjType::Map), snip))) = doc.get(&map, key.as_str()) else {
                 continue;
             };
-            let language = Language::from_slug(&Self::read_str(doc, &snip, "language"));
+            let language =
+                Language::from_slug(&read_str(doc, &snip, "language").unwrap_or_default());
             out.push(Snippet {
                 id,
-                title: Self::read_text(doc, &snip, "title"),
+                title: read_str_or_text(doc, &snip, "title").unwrap_or_default(),
                 language,
-                folder: Self::read_str(doc, &snip, "folder"),
+                folder: read_str(doc, &snip, "folder").unwrap_or_default(),
                 tags: Self::read_tags(doc, &snip),
-                body: Self::read_text(doc, &snip, "body"),
-                description: Self::read_text(doc, &snip, "description"),
-                favorite: Self::read_bool(doc, &snip, "favorite"),
+                body: read_str_or_text(doc, &snip, "body").unwrap_or_default(),
+                description: read_str_or_text(doc, &snip, "description").unwrap_or_default(),
+                favorite: read_bool(doc, &snip, "favorite").unwrap_or(false),
                 uses: Self::read_int(doc, &snip, "uses"),
             });
         }
         out.sort_by_key(|a| a.title.to_lowercase());
         out
-    }
-
-    fn read_str(doc: &AutoCommit, parent: &ObjId, key: &str) -> String {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => s.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        }
     }
 
     /// True if the document has no snippets yet — used by the app to

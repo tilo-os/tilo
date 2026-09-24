@@ -16,6 +16,7 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
@@ -31,7 +32,8 @@ use std::time::{Duration, Instant};
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
@@ -46,10 +48,9 @@ use collab_types::{
     validate_admitted_inbound_op,
 };
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
-    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
-    workspace_control_handle,
+    OpKind, action_directory, action_input, channel_handle, collab_service, context_stream,
+    invocation_stream, presence_event, presence_handle, presence_payload, presence_stream,
+    realtime_stream, scrollback_batch, stream, task_run_stream, workspace_control_handle,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
@@ -59,8 +60,8 @@ use crate::shell::collab_broker::{
 };
 use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::state::{
-    CapRole, Capability, FsMode, GRANT_SESSION, Principal, WorkspaceTaskStatus, WorkspaceTree,
-    WorkspaceTreeHandle,
+    CapRole, Capability, FsMode, GRANT_SESSION, Principal, WorkspaceId, WorkspaceTaskStatus,
+    WorkspaceTree, WorkspaceTreeHandle,
 };
 
 /// Launcher preambles are deliberately tiny: they only bind a socket to the
@@ -123,7 +124,7 @@ impl NearbyTargetRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyTargetHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -214,7 +215,7 @@ impl NearbyDestinationRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyDestinationHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -304,7 +305,7 @@ impl NearbyTransferRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyTransferHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -368,6 +369,8 @@ fn nearby_source_from_grants(
         })
         .ok_or_else(|| "Nearby Send source is outside this Files instance's grants".into())
 }
+
+mod action_host;
 
 fn nearby_policy_enabled(
     policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
@@ -457,14 +460,6 @@ fn stage_launch_content(
     Ok(Some(path))
 }
 
-fn invocation_target_peer(requested: u64, current_connection: u64) -> u64 {
-    if requested == ui::collaboration::CURRENT_CONNECTION_PEER_ID {
-        current_connection
-    } else {
-        requested
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CollabLaunchHandoff {
@@ -530,6 +525,15 @@ impl AdmittedJoinIdentity {
         }
     }
 
+    /// The caller this admitted connection is, confined to its room.
+    fn caller(&self, room: &str) -> tilo_actions::remote::Caller {
+        match &self.agent_id {
+            Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
+            None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
+        }
+        .in_room(room)
+    }
+
     fn policy_actor(&self, room: &str) -> Actor {
         match &self.agent_id {
             Some(agent) => Actor::agent(agent),
@@ -539,10 +543,22 @@ impl AdmittedJoinIdentity {
     }
 }
 
-fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
+pub(crate) fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
     match Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(user_public_key)) {
         Principal::Person(id) => id,
         _ => hex::encode(user_public_key),
+    }
+}
+
+/// The capability verb an action's declared permission requires, if any.
+fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
+    match requirement {
+        tilo_actions::PermissionRequirement::None => None,
+        tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
     }
 }
 
@@ -552,6 +568,7 @@ fn admit_verified_join(
     verified: VerifiedJoinIdentity,
 ) -> Result<AdmittedJoinIdentity, String> {
     let workspace = tree
+        .desktop
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -579,6 +596,7 @@ fn admit_agent_delegation(
     agent_id: &str,
 ) -> Result<(), String> {
     let workspace = tree
+        .desktop
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -773,12 +791,12 @@ pub struct PublishedSurface {
 }
 
 #[derive(Clone, Debug)]
-struct InvocationEnvelope {
+pub(crate) struct InvocationEnvelope {
     id: u64,
-    resource: String,
+    pub(crate) resource: String,
     action: String,
     argument: Option<String>,
-    actor: String,
+    pub(crate) actor: String,
     context: Option<tilo_actions::ActionContext>,
 }
 
@@ -913,46 +931,25 @@ impl LocalActionDirectoryRegistry {
     }
 }
 
-/// Inert result returned from the broker `LocalSet` to shell chrome.  It never
-/// carries a Cap'n Proto capability or widget reference across threads.
+/// Inert result returned from the broker `LocalSet` to the action host.  It
+/// never carries a Cap'n Proto capability across threads.
 #[derive(Debug)]
-pub enum ActionDirectoryBridgeResponse {
+pub(crate) enum ActionDirectoryBridgeResponse {
     Page(runtime_collab::ActionDirectoryPage),
     Resolution(runtime_collab::ActionDirectoryResolution),
-    StartedDirectoryAction(StartedDirectoryAction),
-}
-
-/// Explicit consent supplied with an atomic directory invocation.  It is
-/// carried to the broker `LocalSet`, checked against the freshly resolved
-/// contract, and never retained in a shell search-result cache.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DirectoryActionConfirmation {
-    Confirmed,
-    Phrase(String),
-}
-
-/// Inert admission receipt for a directory action.  Progress remains
-/// available through the existing invocation-status subscription.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StartedDirectoryAction {
-    pub invocation_id: u64,
-    pub initial_update: tilo_actions::InvocationUpdate,
 }
 
 /// A bounded bridge failure.  `Busy` is deliberate backpressure: palette
 /// code must retain its last cached results rather than blocking a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionDirectoryBridgeError {
+pub(crate) enum ActionDirectoryBridgeError {
     Busy,
     InvalidRequest,
     Unavailable,
     TimedOut,
-    StaleRevision,
-    NotFound,
-    ConfirmationRequired,
 }
 
-pub type ActionDirectoryBridgeReply =
+pub(crate) type ActionDirectoryBridgeReply =
     Result<ActionDirectoryBridgeResponse, ActionDirectoryBridgeError>;
 
 enum ActionDirectoryBridgeRequest {
@@ -960,7 +957,7 @@ enum ActionDirectoryBridgeRequest {
         actor: BrokerActor,
         cluster_id: String,
         query: runtime_collab::ActionDirectoryQuery,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+        reply: tilo_actions::remote::Completer<ActionDirectoryBridgeReply>,
     },
     Resolve {
         actor: BrokerActor,
@@ -969,26 +966,16 @@ enum ActionDirectoryBridgeRequest {
         revision: String,
         resource: String,
         action: String,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
-    },
-    Start {
-        actor: BrokerActor,
-        cluster_id: String,
-        peer_id: u64,
-        revision: String,
-        resource: String,
-        action: String,
-        argument: Option<String>,
-        confirmation: Option<DirectoryActionConfirmation>,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+        reply: tilo_actions::remote::Completer<ActionDirectoryBridgeReply>,
     },
 }
 
-/// Thread-safe sender for palette/search code.  The receiver is drained only
-/// by the broker's `LocalSet`, where its Rc-backed capability clients remain
-/// valid.  Callers receive a oneshot they may poll from any executor.
+/// The action host's way to an application's directory capability.  The
+/// receiver is drained only by the broker's `LocalSet`, where its Rc-backed
+/// capability clients remain valid; the answer arrives as a
+/// [`tilo_actions::remote::Pending`], completed on that `LocalSet`.
 #[derive(Clone)]
-pub struct ActionDirectoryRequestQueue {
+pub(crate) struct ActionDirectoryRequestQueue {
     sender: std::sync::mpsc::SyncSender<ActionDirectoryBridgeRequest>,
 }
 
@@ -999,19 +986,17 @@ impl ActionDirectoryRequestQueue {
     ///
     /// Returns an error when the query is invalid, the bounded broker queue is
     /// full, or the broker is unavailable.
-    pub fn try_query(
+    pub(crate) fn try_query(
         &self,
         actor: BrokerActor,
         cluster_id: impl Into<String>,
         query: runtime_collab::ActionDirectoryQuery,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
+    ) -> Result<tilo_actions::remote::Pending<ActionDirectoryBridgeReply>, ActionDirectoryBridgeError>
+    {
         if validate_directory_query_input(&query).is_err() {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
-        let (reply, response) = tokio::sync::oneshot::channel();
+        let (reply, response) = tilo_actions::remote::pending();
         match self.sender.try_send(ActionDirectoryBridgeRequest::Query {
             actor,
             cluster_id: cluster_id.into(),
@@ -1034,7 +1019,7 @@ impl ActionDirectoryRequestQueue {
     ///
     /// Returns an error when the target is invalid, the bounded broker queue
     /// is full, or the broker is unavailable.
-    pub fn try_resolve(
+    pub(crate) fn try_resolve(
         &self,
         actor: BrokerActor,
         cluster_id: impl Into<String>,
@@ -1042,20 +1027,18 @@ impl ActionDirectoryRequestQueue {
         revision: impl Into<String>,
         resource: impl Into<String>,
         action: impl Into<String>,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
+    ) -> Result<tilo_actions::remote::Pending<ActionDirectoryBridgeReply>, ActionDirectoryBridgeError>
+    {
         let cluster_id = cluster_id.into();
         let revision = revision.into();
         let resource = resource.into();
         let action = action.into();
-        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None, None)
+        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None)
             .is_err()
         {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
-        let (reply, response) = tokio::sync::oneshot::channel();
+        let (reply, response) = tilo_actions::remote::pending();
         match self.sender.try_send(ActionDirectoryBridgeRequest::Resolve {
             actor,
             cluster_id,
@@ -1063,64 +1046,6 @@ impl ActionDirectoryRequestQueue {
             revision,
             resource,
             action,
-            reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Directory invocation carries actor and exact directory target fields plus the action argument and confirmation."
-    )]
-    /// # Errors
-    ///
-    /// Returns an error when invocation inputs are invalid, the bounded broker
-    /// queue is full, or the broker is unavailable.
-    pub fn try_start_resolved(
-        &self,
-        actor: BrokerActor,
-        cluster_id: impl Into<String>,
-        peer_id: u64,
-        revision: impl Into<String>,
-        resource: impl Into<String>,
-        action: impl Into<String>,
-        argument: Option<String>,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
-        let cluster_id = cluster_id.into();
-        let revision = revision.into();
-        let resource = resource.into();
-        let action = action.into();
-        if validate_directory_target_input(
-            &cluster_id,
-            &revision,
-            &resource,
-            &action,
-            argument.as_deref(),
-            confirmation.as_ref(),
-        )
-        .is_err()
-        {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
-        let (reply, response) = tokio::sync::oneshot::channel();
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Start {
-            actor,
-            cluster_id,
-            peer_id,
-            revision,
-            resource,
-            action,
-            argument,
-            confirmation,
             reply,
         }) {
             Ok(()) => Ok(response),
@@ -1207,7 +1132,6 @@ fn validate_directory_target_input(
     resource: &str,
     action: &str,
     argument: Option<&str>,
-    confirmation: Option<&DirectoryActionConfirmation>,
 ) -> Result<(), capnp::Error> {
     validate_directory_identifier(
         cluster_id,
@@ -1240,83 +1164,6 @@ fn validate_directory_target_input(
             DIRECTORY_MAX_PARAMS_BYTES,
             false,
         )?;
-    }
-    if let Some(DirectoryActionConfirmation::Phrase(phrase)) = confirmation {
-        validate_directory_text(
-            phrase,
-            "directory confirmation",
-            DIRECTORY_MAX_CONFIRMATION_BYTES,
-            true,
-        )?;
-    }
-    Ok(())
-}
-
-fn write_directory_descriptor(
-    mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
-    descriptor: &runtime_collab::ExportedAction,
-) {
-    out.set_resource(&descriptor.resource);
-    out.set_action(&descriptor.action);
-    out.set_resource_kind(&descriptor.resource_kind);
-    out.set_resource_label(&descriptor.resource_label);
-    out.set_action_label(&descriptor.action_label);
-    out.set_description(descriptor.description.as_deref().unwrap_or(""));
-    out.set_operation_kind(&descriptor.operation_kind);
-    out.set_params_json(&descriptor.params_json);
-    out.set_contract_json(&descriptor.contract_json);
-    let mut input = out.init_input();
-    match &descriptor.input {
-        runtime_collab::ExportedInput::None => input.set_none(()),
-        runtime_collab::ExportedInput::Text {
-            prompt,
-            placeholder,
-            wants_content,
-        } => {
-            let mut text = input.init_text();
-            text.set_prompt(prompt);
-            text.set_placeholder(placeholder);
-            text.set_wants_content(*wants_content);
-        }
-    }
-}
-
-fn write_directory_row(
-    mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
-    row: &runtime_collab::ActionDirectoryRow,
-) {
-    out.set_parent_resource(&row.parent_resource);
-    out.set_resource(&row.resource);
-    out.set_resource_kind(&row.resource_kind);
-    out.set_resource_label(&row.resource_label);
-    out.set_resource_presentation_json(&row.resource_presentation_json);
-    out.set_action(row.action.as_deref().unwrap_or(""));
-    out.set_has_children(row.has_children);
-    out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
-    out.set_visibility_contract_json(&row.visibility_contract_json);
-    if let Some(descriptor) = &row.descriptor {
-        write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
-    }
-}
-
-fn write_directory_page(
-    mut out: runtime_collab::collab_capnp::action_directory_page::Builder<'_>,
-    page: &runtime_collab::ActionDirectoryPage,
-) -> Result<(), capnp::Error> {
-    out.set_revision(&page.revision);
-    out.set_next_cursor(&page.next_cursor);
-    out.set_exhausted(page.exhausted);
-    out.set_stale_cursor(page.stale_cursor);
-    out.set_budget_exhausted(page.budget_exhausted);
-    let len = u32::try_from(page.rows.len())
-        .map_err(|_| capnp::Error::failed("too many action directory rows".into()))?;
-    let mut rows = out.reborrow().init_rows(len);
-    for (index, row) in page.rows.iter().enumerate() {
-        write_directory_row(
-            rows.reborrow()
-                .get(u32::try_from(index).unwrap_or(u32::MAX)),
-            row,
-        );
     }
     Ok(())
 }
@@ -1381,8 +1228,6 @@ struct ChannelSubscribers {
     context: Vec<ContextSub>,
 }
 
-type ActionCatalogueSubscriber = (String, BrokerActor, mpsc::UnboundedSender<String>);
-
 struct RealtimeBinding {
     id: crate::shell::realtime_session::RealtimeSessionId,
     app: crate::shell::realtime_session::VerifiedAppRegistration,
@@ -1436,7 +1281,7 @@ impl RealtimeBridge {
     fn new_token(&self) -> String {
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let token = hex::encode(bytes);
             if !self.sessions.contains_key(&token) {
                 return token;
@@ -1713,7 +1558,6 @@ pub struct CapnpBrokerState {
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
-    action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     completed_invocations: Mutex<HashMap<u64, (String, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
@@ -1722,6 +1566,9 @@ pub struct CapnpBrokerState {
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
+    /// Remote-action invocation ids to broker jobs, shared by every caller
+    /// path so a retry is idempotent whichever way it arrives.
+    remote_invocations: Mutex<tilo_actions::remote::InvocationLedger<u64>>,
     realtime: Mutex<RealtimeBridge>,
     nearby_targets: Mutex<NearbyTargetRegistry>,
     nearby_transfers: Mutex<NearbyTransferRegistry>,
@@ -2090,6 +1937,104 @@ impl RealtimeFabricAppBridge {
     }
 }
 
+/// Find `id` in `resource`'s subtree.
+fn find_resource<'a>(
+    resource: &'a tilo_actions::Resource,
+    id: &str,
+) -> Option<&'a tilo_actions::Resource> {
+    if resource.id.as_str() == id {
+        return Some(resource);
+    }
+    resource
+        .children
+        .iter()
+        .find_map(|child| find_resource(child, id))
+}
+
+/// Decode a workspace governance invocation's typed `argument` into the
+/// permission-profile operation `spec` encodes.
+fn decode_permission_profile_operation(
+    spec: &tilo_actions::ActionSpec,
+    argument: Option<&str>,
+) -> Result<crate::shell::workspace_settings::PermissionProfileOperation, String> {
+    let json = argument
+        .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+        .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
+    let arguments = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+        .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+    let encoded = spec
+        .build_json(&arguments)
+        .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+    if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
+        return Err(format!(
+            "invalid workspace governance arguments: {}",
+            String::from_utf8_lossy(&encoded.payload)
+        ));
+    }
+    if encoded.type_id != crate::shell::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
+        return Err("workspace governance action encoded an unexpected operation".into());
+    }
+    serde_json::from_slice(&encoded.payload)
+        .map_err(|error| format!("invalid workspace governance operation: {error}"))
+}
+
+/// Apply a permission-profile operation as `caller` to one workspace and
+/// mirror it into the room document.
+fn apply_permission_profile_operation(
+    tree: &mut WorkspaceTree,
+    workspace_index: usize,
+    workspace_id: WorkspaceId,
+    caller: &Actor,
+    operation: crate::shell::workspace_settings::PermissionProfileOperation,
+) -> Result<(), String> {
+    match operation {
+        crate::shell::workspace_settings::PermissionProfileOperation::Save {
+            name,
+            description,
+            rules,
+        } => {
+            let profile = collab_types::PermissionProfile {
+                name,
+                description,
+                rules,
+            };
+            tree.desktop.workspaces[workspace_index]
+                .save_permission_profile_as_actor(caller, profile.clone())
+                .map_err(|error| error.to_string())?;
+            tree.doc_upsert_permission_profile(workspace_id, &profile);
+        }
+        crate::shell::workspace_settings::PermissionProfileOperation::Assign {
+            profile,
+            subject_kind,
+            subject,
+            expires_unix,
+        } => {
+            let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
+                "person" => collab_types::Subject::person(subject.trim()),
+                "app" => collab_types::Subject::app(subject.trim()),
+                "agent" => collab_types::Subject::agent(subject.trim()),
+                _ => return Err("subject_kind must be person, app, or agent".into()),
+            };
+            let expiry = (expires_unix > 0)
+                .then_some(expires_unix)
+                .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
+            let ids = tree.desktop.workspaces[workspace_index]
+                .assign_permission_profile_as_actor(caller, &profile, &subject, expiry)
+                .map_err(|error| error.to_string())?;
+            let capabilities = tree.desktop.workspaces[workspace_index]
+                .capabilities
+                .iter()
+                .filter(|capability| ids.contains(&capability.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            for capability in capabilities {
+                tree.doc_insert_capability(workspace_id, &capability);
+            }
+        }
+    }
+    Ok(())
+}
+
 impl CapnpBrokerState {
     #[allow(
         clippy::too_many_lines,
@@ -2386,6 +2331,7 @@ impl CapnpBrokerState {
         };
         let mut tree = membership.write();
         let Some(workspace_id) = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == pending.cluster_id)
@@ -2556,7 +2502,6 @@ impl CapnpBrokerState {
                 action_directory_roots: Mutex::new(HashMap::new()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
-                action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
@@ -2565,6 +2510,7 @@ impl CapnpBrokerState {
                 pending_task_runs: Mutex::new(HashMap::new()),
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(1),
+                remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
                 realtime: Mutex::new(RealtimeBridge::default()),
                 nearby_targets: Mutex::new(NearbyTargetRegistry::default()),
                 nearby_transfers: Mutex::new(NearbyTransferRegistry::default()),
@@ -2587,6 +2533,34 @@ impl CapnpBrokerState {
             None,
         );
         crate::shell::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_broker_with_membership(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> crate::shell::collab_broker::AppActionBroker {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = Self::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership),
+            None,
+        );
+        crate::shell::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    /// Stand in for an application's invocation stream on `peer_id`.
+    #[cfg(test)]
+    pub(crate) fn capture_invocations_for_test(
+        &self,
+        peer_id: u64,
+    ) -> mpsc::UnboundedReceiver<InvocationEnvelope> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
+            subscribers.insert(peer_id, tx);
+        }
+        rx
     }
 
     #[cfg(test)]
@@ -2664,7 +2638,7 @@ impl CapnpBrokerState {
     /// enqueues inert values; the broker `LocalSet` rechecks authority when
     /// it later services the request.
     #[must_use]
-    pub fn action_directory_request_queue(&self) -> ActionDirectoryRequestQueue {
+    pub(crate) fn action_directory_request_queue(&self) -> ActionDirectoryRequestQueue {
         self.action_directory_bridge.clone()
     }
 
@@ -2752,9 +2726,6 @@ impl CapnpBrokerState {
                         query,
                         reply,
                     } => {
-                        if reply.is_closed() {
-                            return;
-                        }
                         let response = tokio::time::timeout(
                             Self::DIRECTORY_BRIDGE_TIMEOUT,
                             state.query_action_directory_for_actor(
@@ -2773,7 +2744,7 @@ impl CapnpBrokerState {
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
                             },
                         );
-                        let _ = reply.send(response);
+                        reply.complete(response);
                     }
                     ActionDirectoryBridgeRequest::Resolve {
                         actor,
@@ -2784,9 +2755,6 @@ impl CapnpBrokerState {
                         action,
                         reply,
                     } => {
-                        if reply.is_closed() {
-                            return;
-                        }
                         let response = tokio::time::timeout(
                             Self::DIRECTORY_BRIDGE_TIMEOUT,
                             state.resolve_action_directory_for_actor(
@@ -2808,44 +2776,7 @@ impl CapnpBrokerState {
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
                             },
                         );
-                        let _ = reply.send(response);
-                    }
-                    ActionDirectoryBridgeRequest::Start {
-                        actor,
-                        cluster_id,
-                        peer_id,
-                        revision,
-                        resource,
-                        action,
-                        argument,
-                        confirmation,
-                        reply,
-                    } => {
-                        if reply.is_closed() {
-                            return;
-                        }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.start_action_directory_for_actor(
-                                &directories,
-                                &actor,
-                                &cluster_id,
-                                peer_id,
-                                &revision,
-                                &resource,
-                                &action,
-                                argument.as_deref(),
-                                confirmation,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
-                                result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
-                            },
-                        );
-                        let _ = reply.send(response);
+                        reply.complete(response);
                     }
                 }
             });
@@ -2948,7 +2879,7 @@ impl CapnpBrokerState {
         resource: &str,
         action: &str,
     ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
-        validate_directory_target_input(cluster_id, revision, resource, action, None, None)
+        validate_directory_target_input(cluster_id, revision, resource, action, None)
             .map_err(|error| error.to_string())?;
         let registered = directories
             .registered(peer_id, cluster_id)
@@ -2987,155 +2918,6 @@ impl CapnpBrokerState {
         }
     }
 
-    /// Atomically resolve and start a directory action on the broker
-    /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
-    /// thread participates in admission.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::future_not_send,
-        reason = "Admission carries actor, exact directory target, argument, and confirmation through Rc-backed capabilities on the broker LocalSet."
-    )]
-    async fn start_action_directory_for_actor(
-        &self,
-        directories: &LocalActionDirectoryRegistry,
-        actor: &BrokerActor,
-        cluster_id: &str,
-        peer_id: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
-        validate_directory_target_input(
-            cluster_id,
-            revision,
-            resource,
-            action,
-            argument,
-            confirmation.as_ref(),
-        )
-        .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)?;
-        let registered = directories
-            .registered(peer_id, cluster_id)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let resolved = self
-            .resolve_action_directory_for_actor(
-                directories,
-                actor,
-                cluster_id,
-                peer_id,
-                revision,
-                resource,
-                action,
-            )
-            .await
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let runtime_collab::ActionDirectoryResolution::Found(row) = resolved else {
-            return Err(match resolved {
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    ActionDirectoryBridgeError::StaleRevision
-                }
-                _ => ActionDirectoryBridgeError::NotFound,
-            });
-        };
-        let published = published_directory_action(&row)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        // Resolve rechecked the current capability and actor.  Re-run the
-        // validation immediately before constructing the invocation surface
-        // so a future local caller cannot bypass the same boundary.
-        if !permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
-        {
-            return Err(ActionDirectoryBridgeError::NotFound);
-        }
-        let confirmation_token = self.directory_confirmation_token(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            &published.contract,
-            confirmation,
-        )?;
-        let surface = PublishedSurface {
-            peer_id,
-            app_id: registered.app_id,
-            route: registered.route,
-            actions: vec![published.clone()],
-            live: true,
-        };
-        let job = self
-            .start_invocation_from_offered(
-                peer_id,
-                (surface, published),
-                argument,
-                actor,
-                confirmation_token.as_deref(),
-                None,
-            )
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let initial_update = self
-            .invocation_status(job.id)
-            .ok_or(ActionDirectoryBridgeError::Unavailable)?;
-        Ok(StartedDirectoryAction {
-            invocation_id: job.id,
-            initial_update,
-        })
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Confirmation grants bind peer/resource/action/argument and actor identity to the action contract and supplied approval."
-    )]
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
-    )]
-    fn directory_confirmation_token(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        contract: &tilo_actions::ActionContract,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<Option<String>, ActionDirectoryBridgeError> {
-        match &contract.confirmation {
-            tilo_actions::ConfirmationPolicy::None => return Ok(None),
-            tilo_actions::ConfirmationPolicy::Confirm
-                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) => {}
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
-                {}
-            _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
-        }
-        let token = uuid::Uuid::new_v4().to_string();
-        let mut grants = self
-            .confirmation_grants
-            .lock()
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let now = std::time::Instant::now();
-        grants.retain(|_, grant| grant.expires >= now);
-        grants.insert(
-            token.clone(),
-            ConfirmationGrant {
-                peer_id,
-                resource: resource.to_string(),
-                action: action.to_string(),
-                argument_digest: argument_digest(argument),
-                actor: actor.id.clone(),
-                expires: now
-                    .checked_add(std::time::Duration::from_secs(60))
-                    .ok_or(ActionDirectoryBridgeError::Unavailable)?,
-            },
-        );
-        // Token ownership is now in the registry; do not retain its mutex
-        // while the caller begins the invocation it authorizes.
-        drop(grants);
-        Ok(Some(token))
-    }
-
     /// Check the descriptor returned by an untrusted app capability against
     /// the current workspace authority, not the authority that existed when a
     /// cursor was issued. Resource-only rows are rejected by callers because
@@ -3172,6 +2954,7 @@ impl CapnpBrokerState {
         })?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == cluster_id)
@@ -3197,254 +2980,6 @@ impl CapnpBrokerState {
         Ok(allowed)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue projection applies one ordered authorization and serialization pass"
-    )]
-    #[cfg(test)]
-    fn action_catalogue_json(&self, cluster_id: &str, actor: &str) -> Result<String, String> {
-        self.action_catalogue_json_for(
-            cluster_id,
-            &BrokerActor {
-                id: actor.to_string(),
-                is_agent: false,
-            },
-        )
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "catalogue serialization and policy filtering remain adjacent so a published action cannot bypass the actor check"
-    )]
-    fn action_catalogue_json_for(
-        &self,
-        cluster_id: &str,
-        actor: &BrokerActor,
-    ) -> Result<String, String> {
-        let membership = self
-            .membership
-            .as_ref()
-            .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
-        let tree = membership.read();
-        let workspace = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room.to_string() == cluster_id)
-            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?
-            .clone();
-        drop(tree);
-        let caller = if actor.is_agent {
-            workspace.actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
-        } else {
-            workspace.actor_for_person(&actor.id)
-        };
-        let live_apps = self
-            .published_surfaces()
-            .into_iter()
-            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
-            .map(|surface| surface.app_id)
-            .collect::<std::collections::HashSet<_>>();
-        let mut surfaces = self
-            .published_surfaces()
-            .into_iter()
-            .filter(|surface| surface.live && surface.route.cluster_id == cluster_id)
-            .filter_map(|surface| {
-                let actions = surface
-                    .actions
-                    .into_iter()
-                    .filter(|action| {
-                        let Some(verb) = (match action.contract.permission {
-                            tilo_actions::PermissionRequirement::None => None,
-                            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
-                            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-                            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
-                            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-                            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
-                        }) else {
-                            return true;
-                        };
-                        workspace.decide(
-                            &caller,
-                            &ResourceRef::Action {
-                                app: surface.app_id.clone(),
-                                action: action.action.clone(),
-                            },
-                            verb,
-                        ) == CapDecision::Allow
-                    })
-                    .map(|action| {
-                        let input = match action.input {
-                            PublishedInput::None => serde_json::json!({"kind": "none"}),
-                            PublishedInput::Text {
-                                prompt,
-                                placeholder,
-                                wants_content,
-                            } => serde_json::json!({
-                                "kind": "text",
-                                "prompt": prompt,
-                                "placeholder": placeholder,
-                                "wants_content": wants_content,
-                            }),
-                        };
-                        serde_json::json!({
-                            "resource": action.resource,
-                            "action": action.action,
-                            "resource_kind": action.resource_kind,
-                            "resource_label": action.resource_label,
-                            "action_label": action.action_label,
-                            "description": action.description,
-                            "operation_kind": action.operation_kind,
-                            "params": action.params,
-                            "contract": action.contract,
-                            "input": input,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                (!actions.is_empty()).then(|| {
-                    serde_json::json!({
-                        "peer_id": surface.peer_id,
-                        "app_id": surface.app_id,
-                        "cluster_id": surface.route.cluster_id,
-                        "record_id": surface.route.record_id,
-                        "live": surface.live,
-                        "actions": actions,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-        let profile_resource =
-            crate::shell::workspace_settings::permission_profile_resource_with_access(
-                &workspace, true,
-            );
-        let profile_actions = tilo_actions::door::survey(&[profile_resource])
-            .into_iter()
-            .filter(|descriptor| {
-                let verb = match descriptor.contract.permission {
-                    tilo_actions::PermissionRequirement::None => return true,
-                    tilo_actions::PermissionRequirement::Read => Verb::Read,
-                    tilo_actions::PermissionRequirement::Comment => Verb::Comment,
-                    tilo_actions::PermissionRequirement::Write => Verb::Write,
-                    tilo_actions::PermissionRequirement::Invite => Verb::Invite,
-                    tilo_actions::PermissionRequirement::Admin => Verb::Admin,
-                };
-                workspace.decide(
-                    &caller,
-                    &ResourceRef::Action {
-                        app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
-                        action: descriptor.address.action.clone(),
-                    },
-                    verb,
-                ) == CapDecision::Allow
-            })
-            .map(|descriptor| {
-                let input = match descriptor.input {
-                    tilo_actions::InputSpec::None => serde_json::json!({"kind": "none"}),
-                    tilo_actions::InputSpec::Text {
-                        prompt,
-                        placeholder,
-                        collects,
-                    } => serde_json::json!({
-                        "kind": "text",
-                        "prompt": prompt,
-                        "placeholder": placeholder,
-                        "wants_content": collects == tilo_actions::Collects::Content,
-                    }),
-                };
-                serde_json::json!({
-                    "resource": descriptor.address.resource,
-                    "action": descriptor.address.action,
-                    "resource_kind": descriptor.resource_kind,
-                    "resource_label": descriptor.resource_label,
-                    "action_label": descriptor.action_label,
-                    "description": descriptor.description,
-                    "operation_kind": descriptor.kind,
-                    "params": descriptor.params,
-                    "contract": descriptor.contract,
-                    "input": input,
-                })
-            })
-            .collect::<Vec<_>>();
-        if !profile_actions.is_empty() {
-            surfaces.push(serde_json::json!({
-                "peer_id": 0,
-                "app_id": crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
-                "cluster_id": cluster_id,
-                "record_id": "workspace-governance",
-                "live": true,
-                "actions": profile_actions,
-            }));
-        }
-        for app in crate::shell::launcher::gui_apps()
-            .into_iter()
-            .filter(|app| !live_apps.contains(&app.package_id))
-            .filter(|app| {
-                workspace.decide(
-                    &caller,
-                    &ResourceRef::App(app.package_id.clone()),
-                    Verb::Write,
-                ) == CapDecision::Allow
-            })
-        {
-            let package_id = app.package_id;
-            let display_name = app.display_name;
-            surfaces.push(serde_json::json!({
-                "peer_id": 0,
-                "app_id": package_id,
-                "cluster_id": cluster_id,
-                "record_id": "",
-                "live": true,
-                "actions": [{
-                    "resource": format!("app.{package_id}"),
-                    "action": "open",
-                    "resource_kind": "applications.app",
-                    "resource_label": display_name,
-                    "action_label": format!("Open {display_name}"),
-                    "description": "Launch this application into the current workspace",
-                    "operation_kind": tilo_actions::OperationKind::Effect,
-                    "params": [],
-                    "contract": tilo_actions::ActionContract::default(),
-                    "input": {"kind": "none"},
-                }],
-            }));
-        }
-        serde_json::to_string(&serde_json::json!({
-            "version": 1,
-            "surfaces": surfaces,
-        }))
-        .map_err(|error| error.to_string())
-    }
-
-    fn publish_action_catalogue(&self) {
-        let subscribers = self
-            .action_catalogue_subscribers
-            .lock()
-            .map(|subscribers| {
-                subscribers
-                    .iter()
-                    .map(|(peer, (cluster, actor, tx))| {
-                        (*peer, cluster.clone(), actor.clone(), tx.clone())
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let mut disconnected = Vec::new();
-        for (peer, cluster, actor, tx) in subscribers {
-            let delivered = self
-                .action_catalogue_json_for(&cluster, &actor)
-                .is_ok_and(|snapshot| tx.send(snapshot).is_ok());
-            if !delivered {
-                disconnected.push(peer);
-            }
-        }
-        if !disconnected.is_empty()
-            && let Ok(mut subscribers) = self.action_catalogue_subscribers.lock()
-        {
-            for peer in disconnected {
-                subscribers.remove(&peer);
-            }
-        }
-    }
-
     /// Execute the shell-owned permission-profile surface advertised with
     /// peer id zero. Unlike an application action there is no UI process to
     /// forward to: the broker already owns the workspace capability authority,
@@ -3459,37 +2994,25 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         confirmation: &serde_json::Value,
     ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
-        fn find_resource<'a>(
-            resource: &'a tilo_actions::Resource,
-            id: &str,
-        ) -> Option<&'a tilo_actions::Resource> {
-            if resource.id.as_str() == id {
-                return Some(resource);
-            }
-            resource
-                .children
-                .iter()
-                .find_map(|child| find_resource(child, id))
-        }
-
         let membership = self
             .membership
             .as_ref()
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
         let mut tree = membership.write();
         let workspace_index = tree
+            .desktop
             .workspaces
             .iter()
             .position(|workspace| workspace.room.to_string() == cluster_id)
             .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
         let caller = if actor.is_agent {
-            tree.workspaces[workspace_index]
+            tree.desktop.workspaces[workspace_index]
                 .actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
         } else {
-            tree.workspaces[workspace_index].actor_for_person(&actor.id)
+            tree.desktop.workspaces[workspace_index].actor_for_person(&actor.id)
         };
         let surface = crate::shell::workspace_settings::permission_profile_resource_with_access(
-            &tree.workspaces[workspace_index],
+            &tree.desktop.workspaces[workspace_index],
             true,
         );
         let resource = find_resource(&surface, resource_id)
@@ -3506,7 +3029,7 @@ impl CapnpBrokerState {
         {
             return Err("explicit confirmation is required".into());
         }
-        if tree.workspaces[workspace_index].decide(
+        if tree.desktop.workspaces[workspace_index].decide(
             &caller,
             &ResourceRef::Action {
                 app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
@@ -3517,73 +3040,15 @@ impl CapnpBrokerState {
         {
             return Err("the caller is not allowed to manage permission profiles".into());
         }
-        let json = argument
-            .and_then(|value| value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
-            .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
-        let arguments = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
-        let encoded = spec
-            .build_json(&arguments)
-            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
-        if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
-            return Err(format!(
-                "invalid workspace governance arguments: {}",
-                String::from_utf8_lossy(&encoded.payload)
-            ));
-        }
-        if encoded.type_id != crate::shell::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
-            return Err("workspace governance action encoded an unexpected operation".into());
-        }
-        let operation = serde_json::from_slice::<
-            crate::shell::workspace_settings::PermissionProfileOperation,
-        >(&encoded.payload)
-        .map_err(|error| format!("invalid workspace governance operation: {error}"))?;
-        let workspace_id = tree.workspaces[workspace_index].id;
-        match operation {
-            crate::shell::workspace_settings::PermissionProfileOperation::Save {
-                name,
-                description,
-                rules,
-            } => {
-                let profile = collab_types::PermissionProfile {
-                    name,
-                    description,
-                    rules,
-                };
-                tree.workspaces[workspace_index]
-                    .save_permission_profile_as_actor(&caller, profile.clone())
-                    .map_err(|error| error.to_string())?;
-                tree.doc_upsert_permission_profile(workspace_id, &profile);
-            }
-            crate::shell::workspace_settings::PermissionProfileOperation::Assign {
-                profile,
-                subject_kind,
-                subject,
-                expires_unix,
-            } => {
-                let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
-                    "person" => collab_types::Subject::person(subject.trim()),
-                    "app" => collab_types::Subject::app(subject.trim()),
-                    "agent" => collab_types::Subject::agent(subject.trim()),
-                    _ => return Err("subject_kind must be person, app, or agent".into()),
-                };
-                let expiry = (expires_unix > 0)
-                    .then_some(expires_unix)
-                    .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
-                let ids = tree.workspaces[workspace_index]
-                    .assign_permission_profile_as_actor(&caller, &profile, subject, expiry)
-                    .map_err(|error| error.to_string())?;
-                let capabilities = tree.workspaces[workspace_index]
-                    .capabilities
-                    .iter()
-                    .filter(|capability| ids.contains(&capability.id))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for capability in capabilities {
-                    tree.doc_insert_capability(workspace_id, &capability);
-                }
-            }
-        }
+        let operation = decode_permission_profile_operation(spec, argument)?;
+        let workspace_id = tree.desktop.workspaces[workspace_index].id;
+        apply_permission_profile_operation(
+            &mut tree,
+            workspace_index,
+            workspace_id,
+            &caller,
+            operation,
+        )?;
         let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
         let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let update = tilo_actions::InvocationUpdate::Succeeded {
@@ -3607,11 +3072,10 @@ impl CapnpBrokerState {
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
         );
-        tree.external_revision = tree.external_revision.wrapping_add(1);
+        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
         tree.flush_to_disk();
         drop(tree);
         self.record_completion(id, actor.id.clone(), update.clone());
-        self.publish_action_catalogue();
         Ok((id, update))
     }
 
@@ -3623,7 +3087,8 @@ impl CapnpBrokerState {
     ///
     /// Returns an error if the surface or action is unavailable or the
     /// invocation cannot be sent to its owning connection.
-    pub fn invoke(
+    #[cfg(test)]
+    pub(crate) fn invoke(
         &self,
         peer_id: u64,
         resource: &str,
@@ -3651,11 +3116,13 @@ impl CapnpBrokerState {
         self.start_invocation_confirmed(peer_id, resource, action, argument, actor, None)
     }
 
-    /// Prepare a one-use confirmation token bound to this exact invocation.
+    /// Prepare a one-use confirmation token bound to this exact invocation
+    /// of an eager surface action.
     ///
     /// # Errors
     ///
     /// Returns an error when the action, phrase, or confirmation registry is invalid.
+    #[cfg(test)]
     pub fn prepare_confirmation(
         &self,
         peer_id: u64,
@@ -3676,39 +3143,67 @@ impl CapnpBrokerState {
                     })
                 })
                 .ok_or_else(|| "the application no longer publishes that action".to_string())?;
-        match &offered.contract.confirmation {
+        let evidence = match &offered.contract.confirmation {
             tilo_actions::ConfirmationPolicy::None => {
                 return Err("the action does not require confirmation".into());
             }
-            tilo_actions::ConfirmationPolicy::Confirm => {}
-            tilo_actions::ConfirmationPolicy::Phrase { phrase: expected } => {
-                if phrase != Some(expected.as_str()) {
-                    return Err("the confirmation phrase did not match".into());
-                }
+            tilo_actions::ConfirmationPolicy::Confirm => {
+                tilo_actions::remote::Confirmation::Confirmed
             }
+            tilo_actions::ConfirmationPolicy::Phrase { .. } => {
+                tilo_actions::remote::Confirmation::Phrase(phrase.unwrap_or_default().to_string())
+            }
+        };
+        self.confirmation_token(peer_id, &offered, argument, actor, Some(&evidence))
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "the action does not require confirmation".into())
+    }
+
+    /// Check `evidence` against the offered action's confirmation policy and,
+    /// when one is required, mint the one-use grant that binds it to this
+    /// exact peer, address, argument and actor. The one confirmation path
+    /// every caller goes through.
+    pub(crate) fn confirmation_token(
+        &self,
+        peer_id: u64,
+        offered: &PublishedAction,
+        argument: Option<&str>,
+        actor: &str,
+        evidence: Option<&tilo_actions::remote::Confirmation>,
+    ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
+        use tilo_actions::remote::{ActionHostError, Confirmation};
+        match (&offered.contract.confirmation, evidence) {
+            (tilo_actions::ConfirmationPolicy::None, _) => return Ok(None),
+            (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => {}
+            (
+                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected },
+                Some(Confirmation::Phrase(phrase)),
+            ) if phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected => {}
+            _ => return Err(ActionHostError::ConfirmationRequired),
         }
+        let unavailable = || ActionHostError::Unavailable {
+            reason: "the confirmation registry is unavailable".into(),
+        };
         let token = uuid::Uuid::new_v4().to_string();
-        let mut grants = self
-            .confirmation_grants
-            .lock()
-            .map_err(|_| "the confirmation registry is unavailable".to_string())?;
         let now = std::time::Instant::now();
+        let expires = now
+            .checked_add(std::time::Duration::from_secs(60))
+            .ok_or_else(unavailable)?;
+        let mut grants = self.confirmation_grants.lock().map_err(|_| unavailable())?;
         grants.retain(|_, grant| grant.expires >= now);
         grants.insert(
             token.clone(),
             ConfirmationGrant {
                 peer_id,
-                resource: resource.to_string(),
-                action: action.to_string(),
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
                 actor: actor.to_string(),
-                expires: std::time::Instant::now()
-                    .checked_add(std::time::Duration::from_secs(60))
-                    .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
+                expires,
             },
         );
         drop(grants);
-        Ok(token)
+        Ok(Some(token))
     }
 
     #[allow(
@@ -3815,6 +3310,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == offered.0.route.cluster_id)
@@ -4050,6 +3546,7 @@ impl CapnpBrokerState {
         let task_snapshot = {
             let tree = membership.read();
             let lookup = match tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.room.to_string() == cluster_id)
@@ -4181,6 +3678,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
@@ -4253,6 +3751,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the task broker has no workspace authority".to_string())?;
         let mut tree = membership.write();
         let workspace_id = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == run.cluster_id)
@@ -4342,9 +3841,6 @@ impl CapnpBrokerState {
         }
         self.refresh_action_directory_root_snapshot();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
-            subscribers.remove(&peer_id);
-        }
-        if let Ok(mut subscribers) = self.action_catalogue_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
@@ -4518,7 +4014,6 @@ impl CapnpBrokerState {
                 }
             }
         }
-        self.publish_action_catalogue();
     }
 
     /// `joinChannel(channelId, identity)` carries no announced handle,
@@ -4609,6 +4104,7 @@ impl CapnpBrokerState {
         })?;
         let tree = membership.read();
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -4708,8 +4204,7 @@ impl CapnpBrokerState {
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
-            | CollabEvent::ActionCatalogue { .. }
-            | CollabEvent::PublishedInvocationResult { .. }
+            | CollabEvent::RemoteAction { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
@@ -5005,6 +4500,7 @@ impl collab_service::Server for CapnpCollabService {
                 "PROBE join_channel",
             );
             state.ensure_channel(&channel_id);
+            state.publisher().local_route(&route);
 
             let handle = CapnpChannelHandle {
                 state: state.clone(),
@@ -5179,6 +4675,7 @@ impl CapnpChannelHandle {
         })?;
         let grants = membership
             .read()
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == route.cluster_id)
@@ -5211,6 +4708,56 @@ fn nearby_transfer_reply(
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    /// The caller-side door to published actions: one remote-action request
+    /// frame in, one answer out, as the caller this channel was admitted as.
+    fn remote_action(
+        self: Rc<Self>,
+        params: channel_handle::RemoteActionParams,
+        mut results: channel_handle::RemoteActionResults,
+    ) -> Promise<(), capnp::Error> {
+        use tilo_actions::remote::{RemoteActionFrame, serve};
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let frame = match params
+            .get()
+            .and_then(channel_handle::remote_action_params::Reader::get_frame)
+        {
+            Ok(frame) => frame,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match RemoteActionFrame::decode(frame) {
+            Ok(request) => request,
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let caller = current.caller(&self.route().cluster_id);
+        let host = crate::shell::remote_actions::BrokerActionHost::for_connection(
+            crate::shell::collab_broker::AppActionBroker::from_state(Arc::clone(&self.state)),
+            self.peer_id,
+        );
+        let Some(answer) = serve(&host, &caller, request.message) else {
+            return Promise::err(capnp::Error::failed(
+                "only remote-action requests are answered".into(),
+            ));
+        };
+        // Awaited on this local set, which is also where an application's
+        // directory answers; the connection's other calls keep flowing.
+        Promise::from_future(async move {
+            let answer = answer.await.ok_or_else(|| {
+                capnp::Error::failed("the action host dropped the request".into())
+            })?;
+            let bytes = RemoteActionFrame::new(answer)
+                .encode()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_frame(&bytes);
+            Ok(())
+        })
+    }
+
     fn request_document_snapshot(
         self: Rc<Self>,
         _params: channel_handle::RequestDocumentSnapshotParams,
@@ -6067,6 +5614,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let mut tree = membership.write();
         let Some(workspace_id) = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room.to_string() == surface.route.cluster_id)
@@ -6473,7 +6021,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .map_err(|_| capnp::Error::failed("action surface registry unavailable".into()))?
                 .insert(peer_id, surface);
             state.surface_generation.fetch_add(1, Ordering::Relaxed);
-            state.publish_action_catalogue();
             Ok(())
         })
     }
@@ -6536,230 +6083,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             );
         }
         self.state.refresh_action_directory_root_snapshot();
-        // The directory can alter remote discoverability without an eager
-        // action snapshot changing, so notify legacy catalogue subscribers.
-        self.state.publish_action_catalogue();
         Promise::ok(())
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one broker boundary must copy bounded input, enforce current policy, and copy a capability page without retaining it"
-    )]
-    fn query_action_directory(
-        self: Rc<Self>,
-        params: channel_handle::QueryActionDirectoryParams,
-        mut results: channel_handle::QueryActionDirectoryResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let request = match params.get().and_then(
-            runtime_collab::collab_capnp::channel_handle::query_action_directory_params::Reader::get_query,
-        ) {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let peer_id = request.get_peer_id();
-        // A global root is intentionally not synthesised from every app here:
-        // that would force a scan of all live directories for each keystroke.
-        // Callers discover live app ids from the small authenticated catalogue,
-        // then page one source at a time with an opaque source cursor.
-        if peer_id == 0 {
-            return Promise::err(capnp::Error::failed(
-                "a directory page must name one live application peer".into(),
-            ));
-        }
-        let revision = match request.get_revision().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        let needle = match request.get_needle().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        let parent_resource = match request.get_parent_resource().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        let cursor = match request.get_cursor() {
-            Ok(cursor) => cursor.to_vec(),
-            Err(error) => return Promise::err(error),
-        };
-        if let Err(error) = validate_directory_query_input(&runtime_collab::ActionDirectoryQuery {
-            peer_id,
-            revision: revision.clone(),
-            cursor: cursor.clone(),
-            needle: needle.clone(),
-            parent_resource: parent_resource.clone(),
-            // Input validation is independent of numeric page budgets; these
-            // placeholders avoid delaying it until after a capability lookup.
-            max_results: 1,
-            max_bytes: 1,
-            max_work: 1,
-            max_depth: 0,
-        }) {
-            return Promise::err(error);
-        }
-        let max_results = request
-            .get_max_results()
-            .min(CapnpBrokerState::DIRECTORY_MAX_RESULTS);
-        let max_bytes = request
-            .get_max_bytes()
-            .min(CapnpBrokerState::DIRECTORY_MAX_BYTES);
-        let max_work = request
-            .get_max_work()
-            .min(CapnpBrokerState::DIRECTORY_MAX_WORK);
-        let max_depth = request
-            .get_max_depth()
-            .min(CapnpBrokerState::DIRECTORY_MAX_DEPTH);
-        if max_results == 0 || max_bytes == 0 || max_work == 0 {
-            return Promise::err(capnp::Error::failed(
-                "directory query budgets must be non-zero".into(),
-            ));
-        }
-        let cluster = self.route().cluster_id;
-        let actor = self.verified_identity.broker_actor();
-        let registered = match self.directories.registered(peer_id, &cluster) {
-            Ok(registered) => registered,
-            Err(error) => return Promise::err(error),
-        };
-        let state = self.state.clone();
-        Promise::from_future(async move {
-            let mut forward = registered.directory.query_request();
-            {
-                let mut query = forward.get().init_query();
-                query.set_peer_id(peer_id);
-                query.set_revision(&revision);
-                query.set_cursor(&cursor);
-                query.set_needle(&needle);
-                query.set_parent_resource(&parent_resource);
-                query.set_max_results(max_results);
-                query.set_max_bytes(max_bytes);
-                query.set_max_work(max_work);
-                query.set_max_depth(max_depth);
-            }
-            let response = forward.send().promise.await?;
-            let page = response.get()?.get_page()?;
-            let bytes = page.total_size()?.word_count.saturating_mul(8);
-            if bytes > u64::from(max_bytes) {
-                return Err(capnp::Error::failed(
-                    "application exceeded directory byte budget".into(),
-                ));
-            }
-            let page = runtime_collab::decode_action_directory_page(page)?;
-            let page = filter_directory_page(
-                &state,
-                &cluster,
-                &actor,
-                &registered.app_id,
-                page,
-                max_results,
-            )?;
-            write_directory_page(results.get().init_page(), &page)?;
-            Ok(())
-        })
-    }
-
-    fn resolve_published_action(
-        self: Rc<Self>,
-        params: channel_handle::ResolvePublishedActionParams,
-        mut results: channel_handle::ResolvePublishedActionResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let peer_id = request.get_peer_id();
-        let read_text = |value: capnp::Result<capnp::text::Reader<'_>>| {
-            value
-                .and_then(|value| {
-                    value
-                        .to_str()
-                        .map_err(|error| capnp::Error::failed(error.to_string()))
-                })
-                .map(str::to_owned)
-        };
-        let revision = match read_text(request.get_revision()) {
-            Ok(value) => value,
-            Err(error) => return Promise::err(error),
-        };
-        let resource = match read_text(request.get_resource()) {
-            Ok(value) => value,
-            Err(error) => return Promise::err(error),
-        };
-        let action = match read_text(request.get_action()) {
-            Ok(value) => value,
-            Err(error) => return Promise::err(error),
-        };
-        let cluster = self.route().cluster_id;
-        if let Err(error) =
-            validate_directory_target_input(&cluster, &revision, &resource, &action, None, None)
-        {
-            return Promise::err(error);
-        }
-        let actor = self.verified_identity.broker_actor();
-        let registered = match self.directories.registered(peer_id, &cluster) {
-            Ok(registered) => registered,
-            Err(error) => return Promise::err(error),
-        };
-        let state = self.state.clone();
-        Promise::from_future(async move {
-            let mut forward = registered.directory.resolve_request();
-            {
-                let mut resolve = forward.get();
-                resolve.set_revision(&revision);
-                resolve.set_resource(&resource);
-                resolve.set_action(&action);
-            }
-            let response = forward.send().promise.await?;
-            let resolution = response.get()?.get_resolution()?;
-            let resolution = runtime_collab::decode_action_directory_resolution(resolution)?;
-            let mut out = results.get().init_resolution();
-            match resolution {
-                runtime_collab::ActionDirectoryResolution::Found(row)
-                    if row.resource == resource
-                        && row.action.as_deref() == Some(action.as_str())
-                        && permits_directory_row(
-                            &state,
-                            &cluster,
-                            &actor,
-                            &registered.app_id,
-                            &row,
-                        )? =>
-                {
-                    write_directory_row(out.init_found(), &row);
-                }
-                runtime_collab::ActionDirectoryResolution::Found(_)
-                | runtime_collab::ActionDirectoryResolution::NotFound => out.set_not_found(()),
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    out.set_stale_revision(());
-                }
-                runtime_collab::ActionDirectoryResolution::Unavailable => out.set_unavailable(()),
-            }
-            Ok(())
-        })
     }
 
     fn subscribe_invocations(
@@ -6871,6 +6195,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(current) => current,
             Err(error) => return Promise::err(error),
         };
+        let caller = current.caller(&self.route().cluster_id);
         let Some(agent_id) = current.agent_id else {
             return Promise::err(capnp::Error::failed(
                 "only an agent may invoke a task action".into(),
@@ -6897,27 +6222,58 @@ impl channel_handle::Server for CapnpChannelHandle {
                         .and_then(|value| Ok(value.to_str()?.to_owned()))
                 })
                 .transpose()?;
+            let invocation = uuid::Uuid::parse_str(request.get_invocation()?.to_str()?)
+                .map(tilo_actions::InvocationId)
+                .map_err(|_| capnp::Error::failed("task action needs an invocation id".into()))?;
+            let target_peer = request.get_peer_id();
+            // Admitted through the same idempotency ledger as every other
+            // caller path, so a retry cannot start the action twice and the
+            // invocation is observable and cancellable by its id.
+            let synthesized = tilo_actions::remote::InvokeRequest {
+                invocation,
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: target_peer.to_string(),
+                    address: tilo_actions::ActionAddress::new(&resource, &action),
+                },
+                argument: argument
+                    .clone()
+                    .map_or(tilo_actions::remote::InvokeArgument::None, |argument| {
+                        tilo_actions::remote::InvokeArgument::Text(argument)
+                    }),
+                context: None,
+                confirmation: None,
+                revision: None,
+            };
+            let run_id = request.get_run_id();
             let job = state
-                .start_task_action(
-                    peer_id,
-                    &agent_id,
-                    request.get_run_id(),
-                    &lease,
-                    request.get_peer_id(),
-                    &resource,
-                    &action,
-                    argument.as_deref(),
-                )
-                .map_err(capnp::Error::failed)?;
-            let update = state.invocation_status(job.id).ok_or_else(|| {
+                .remote_invocations
+                .lock()
+                .map_err(|_| capnp::Error::failed("the invocation ledger is unavailable".into()))?
+                .admit(&caller, &synthesized, || {
+                    state
+                        .start_task_action(
+                            peer_id,
+                            &agent_id,
+                            run_id,
+                            &lease,
+                            target_peer,
+                            &resource,
+                            &action,
+                            argument.as_deref(),
+                        )
+                        .map(|job| job.id)
+                        .map_err(|reason| tilo_actions::remote::ActionHostError::Refused { reason })
+                })
+                .map(|(job, _)| *job)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            let update = state.invocation_status(job).ok_or_else(|| {
                 capnp::Error::failed("accepted task action has no broker state".into())
             })?;
-            results.get().set_id(job.id);
+            results.get().set_id(job);
             results.get().set_update_json(
                 &serde_json::to_string(&update)
                     .map_err(|error| capnp::Error::failed(error.to_string()))?,
             );
-            drop(job.completion);
             Ok(())
         })
     }
@@ -7208,410 +6564,6 @@ impl channel_handle::Server for CapnpChannelHandle {
             .is_ok_and(|requests| requests.contains(&id));
         results.get().set_cancelled(cancelled);
         Promise::ok(())
-    }
-
-    fn action_catalogue(
-        self: Rc<Self>,
-        _params: channel_handle::ActionCatalogueParams,
-        mut results: channel_handle::ActionCatalogueResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        match self.state.action_catalogue_json_for(
-            &self.route().cluster_id,
-            &self.verified_identity.broker_actor(),
-        ) {
-            Ok(snapshot) => {
-                results.get().set_catalogue_json(&snapshot);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error)),
-        }
-    }
-
-    fn subscribe_action_catalogue(
-        self: Rc<Self>,
-        _params: channel_handle::SubscribeActionCatalogueParams,
-        mut results: channel_handle::SubscribeActionCatalogueResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let cluster = self.route().cluster_id;
-        let actor = self.verified_identity.broker_actor();
-        let (tx, rx) = mpsc::unbounded_channel();
-        let initial = match self.state.action_catalogue_json_for(&cluster, &actor) {
-            Ok(snapshot) => snapshot,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        if tx.send(initial).is_err() {
-            return Promise::err(capnp::Error::disconnected(
-                "action catalogue stream closed".into(),
-            ));
-        }
-        if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
-            subscribers.insert(self.peer_id, (cluster, actor, tx));
-        } else {
-            return Promise::err(capnp::Error::failed(
-                "action catalogue subscriber registry unavailable".into(),
-            ));
-        }
-        let client: action_catalogue_stream::Client =
-            capnp_rpc::new_client(ActionCatalogueStreamServer {
-                rx: Rc::new(AsyncMutex::new(rx)),
-            });
-        results.get().set_stream(client);
-        Promise::ok(())
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the RPC performs one complete authorized invocation admission transaction"
-    )]
-    fn invoke_published_action(
-        self: Rc<Self>,
-        params: channel_handle::InvokePublishedActionParams,
-        mut results: channel_handle::InvokePublishedActionResults,
-    ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let requested_peer_id = request.get_peer_id();
-        let peer_id = invocation_target_peer(requested_peer_id, self.peer_id);
-        let resource = match request.get_resource().and_then(|s| {
-            s.to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let action = match request.get_action().and_then(|s| {
-            s.to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let argument = if request.get_has_argument() {
-            match request.get_argument().and_then(|s| {
-                s.to_str()
-                    .map_err(|error| capnp::Error::failed(error.to_string()))
-            }) {
-                Ok(value) => Some(value.to_owned()),
-                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-            }
-        } else {
-            None
-        };
-        let confirmation = match request.get_confirmation_json().and_then(|s| {
-            s.to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok("") => serde_json::Value::Object(serde_json::Map::new()),
-            Ok(value) => match serde_json::from_str::<serde_json::Value>(value) {
-                Ok(value) => value,
-                Err(error) => {
-                    return Promise::err(capnp::Error::failed(format!(
-                        "invalid confirmation evidence: {error}"
-                    )));
-                }
-            },
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let state = self.state.clone();
-        let cluster = self.route().cluster_id;
-        Promise::from_future(async move {
-            if requested_peer_id == 0
-                && matches!(
-                    action.as_str(),
-                    crate::shell::state::PROFILE_SAVE_ACTION_ID
-                        | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
-                )
-            {
-                let actor = current.broker_actor();
-                let (id, update) = state
-                    .invoke_workspace_profile_action(
-                        &cluster,
-                        &actor,
-                        &resource,
-                        &action,
-                        argument.as_deref(),
-                        &confirmation,
-                    )
-                    .map_err(capnp::Error::failed)?;
-                results.get().set_id(id);
-                results.get().set_update_json(
-                    &serde_json::to_string(&update)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?,
-                );
-                return Ok(());
-            }
-            let offered = state
-                .surfaces
-                .lock()
-                .ok()
-                .and_then(|surfaces| surfaces.get(&peer_id).cloned())
-                .filter(|surface| surface.route.cluster_id == cluster)
-                .and_then(|surface| {
-                    surface.actions.into_iter().find(|candidate| {
-                        candidate.resource == resource && candidate.action == action
-                    })
-                })
-                .ok_or_else(|| capnp::Error::failed("unknown application action".into()))?;
-            let actor = current.broker_actor();
-            let phrase = confirmation
-                .get("confirmation_phrase")
-                .and_then(serde_json::Value::as_str);
-            let job = match &offered.contract.confirmation {
-                tilo_actions::ConfirmationPolicy::None => state.start_invocation_confirmed_for(
-                    peer_id,
-                    &resource,
-                    &action,
-                    argument.as_deref(),
-                    &actor,
-                    None,
-                    None,
-                ),
-                tilo_actions::ConfirmationPolicy::Confirm => {
-                    if confirmation
-                        .get("confirm")
-                        .and_then(serde_json::Value::as_bool)
-                        != Some(true)
-                    {
-                        return Err(capnp::Error::failed(
-                            "explicit confirmation is required".into(),
-                        ));
-                    }
-                    let token = state
-                        .prepare_confirmation(
-                            peer_id,
-                            &resource,
-                            &action,
-                            argument.as_deref(),
-                            &actor.id,
-                            None,
-                        )
-                        .map_err(capnp::Error::failed)?;
-                    state.start_invocation_confirmed_for(
-                        peer_id,
-                        &resource,
-                        &action,
-                        argument.as_deref(),
-                        &actor,
-                        Some(&token),
-                        None,
-                    )
-                }
-                tilo_actions::ConfirmationPolicy::Phrase { .. } => {
-                    let token = state
-                        .prepare_confirmation(
-                            peer_id,
-                            &resource,
-                            &action,
-                            argument.as_deref(),
-                            &actor.id,
-                            phrase,
-                        )
-                        .map_err(capnp::Error::failed)?;
-                    state.start_invocation_confirmed_for(
-                        peer_id,
-                        &resource,
-                        &action,
-                        argument.as_deref(),
-                        &actor,
-                        Some(&token),
-                        None,
-                    )
-                }
-            }
-            .map_err(capnp::Error::failed)?;
-            let update = state.invocation_status(job.id).ok_or_else(|| {
-                capnp::Error::failed("accepted invocation has no broker state".into())
-            })?;
-            let update_json = serde_json::to_string(&update)
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            results.get().set_id(job.id);
-            results.get().set_update_json(&update_json);
-            drop(job.completion);
-            Ok(())
-        })
-    }
-
-    fn published_invocation_status(
-        self: Rc<Self>,
-        params: channel_handle::PublishedInvocationStatusParams,
-        mut results: channel_handle::PublishedInvocationStatusResults,
-    ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let id = match params.get() {
-            Ok(request) => request.get_id(),
-            Err(error) => return Promise::err(error),
-        };
-        let update = self
-            .state
-            .invocation_statuses(&current.broker_actor().id)
-            .into_iter()
-            .find_map(|(candidate, update)| (candidate == id).then_some(update));
-        let mut result = results.get();
-        result.set_found(update.is_some());
-        if let Some(update) = update {
-            match serde_json::to_string(&update) {
-                Ok(json) => result.set_update_json(&json),
-                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-            }
-        }
-        Promise::ok(())
-    }
-
-    fn cancel_published_invocation(
-        self: Rc<Self>,
-        params: channel_handle::CancelPublishedInvocationParams,
-        mut results: channel_handle::CancelPublishedInvocationResults,
-    ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let id = match params.get() {
-            Ok(request) => request.get_id(),
-            Err(error) => return Promise::err(error),
-        };
-        if let Err(error) = self
-            .state
-            .request_cancellation(id, &current.broker_actor().id)
-        {
-            return Promise::err(capnp::Error::failed(error));
-        }
-        let Some(update) = self.state.invocation_status(id) else {
-            return Promise::err(capnp::Error::failed("unknown invocation id".into()));
-        };
-        match serde_json::to_string(&update) {
-            Ok(json) => {
-                results.get().set_update_json(&json);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
-    }
-
-    fn launch_published_application(
-        self: Rc<Self>,
-        params: channel_handle::LaunchPublishedApplicationParams,
-        mut results: channel_handle::LaunchPublishedApplicationResults,
-    ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let app_id = match request.get_app_id() {
-            Ok(value) => match value.to_str() {
-                Ok(value) => value.to_owned(),
-                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-            },
-            Err(error) => return Promise::err(error),
-        };
-        let content_hash = match request.get_content_hash() {
-            Ok(value) => match value.to_str() {
-                Ok(value) => value.to_owned(),
-                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-            },
-            Err(error) => return Promise::err(error),
-        };
-        let Some(membership) = self.state.membership.as_ref() else {
-            return Promise::err(capnp::Error::failed(
-                "the action broker has no workspace authority".into(),
-            ));
-        };
-        let workspace = {
-            let tree = membership.read();
-            let Some(workspace) = tree
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room.to_string() == self.route().cluster_id)
-            else {
-                return Promise::err(capnp::Error::failed(
-                    "the application workspace is no longer hosted".into(),
-                ));
-            };
-            let workspace = workspace.clone();
-            drop(tree);
-            let caller = current.policy_actor(&self.route().cluster_id);
-            if workspace.decide(&caller, &ResourceRef::App(app_id.clone()), Verb::Write)
-                != CapDecision::Allow
-            {
-                return Promise::err(capnp::Error::failed(
-                    "the caller is not allowed to launch that application".into(),
-                ));
-            }
-            workspace
-        };
-        let mut workspace = workspace;
-        let document = match stage_launch_content(&app_id, &content_hash, &mut workspace) {
-            Ok(document) => document,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match crate::shell::launcher::launch_document_in_workspace(
-            &app_id,
-            &workspace,
-            document.as_deref(),
-        ) {
-            Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(error) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "launch_failed".into(),
-                    message: error.to_string(),
-                    details: None,
-                    retryable: false,
-                },
-            },
-        };
-        self.state
-            .record_completion(id, current.broker_actor().id, update.clone());
-        match serde_json::to_string(&update) {
-            Ok(json) => {
-                results.get().set_id(id);
-                results.get().set_update_json(&json);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
     }
 
     fn report_continuation(
@@ -8883,29 +7835,6 @@ struct TaskRunStreamServer {
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<TaskRunEnvelope>>>,
 }
 
-struct ActionCatalogueStreamServer {
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<String>>>,
-}
-
-impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
-    fn read(
-        self: Rc<Self>,
-        _params: action_catalogue_stream::ReadParams,
-        mut results: action_catalogue_stream::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
-        Promise::from_future(async move {
-            let mut guard = rx.lock().await;
-            let snapshot = guard.recv().await.ok_or_else(|| {
-                capnp::Error::disconnected("action catalogue stream closed".into())
-            })?;
-            drop(guard);
-            results.get().set_catalogue_json(&snapshot);
-            Ok(())
-        })
-    }
-}
-
 impl invocation_stream::Server for InvocationStreamServer {
     fn read(
         self: Rc<Self>,
@@ -9520,9 +8449,11 @@ async fn drive_connection(
 )]
 pub(crate) mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::SystemTime;
+    use tilo_actions::remote::ActionHost as _;
 
     use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
     use crate::shell::search::providers::live_app_actions::LiveAppActionsProvider;
@@ -10194,7 +9125,7 @@ pub(crate) mod tests {
 
     #[test]
     fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
@@ -10211,9 +9142,8 @@ pub(crate) mod tests {
     #[serial_test::serial(process_env)]
     fn launch_content_refuses_corrupt_or_symlinked_staging_targets() {
         let runtime = tempfile::tempdir().expect("runtime directory");
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: this serial test restores the process setting before exit.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
         let hash = qdoc::blobstore::put(b"verified launch fixture").expect("store fixture");
         let staged = runtime
             .path()
@@ -10221,7 +9151,7 @@ pub(crate) mod tests {
             .join(format!("{hash}.bin"));
         std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
         std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId::new(),
             "launcher test",
         );
@@ -10231,14 +9161,6 @@ pub(crate) mod tests {
         std::fs::write(&target, b"outside").expect("outside fixture");
         std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
         assert!(stage_launch_content("so.tilo.photos", &hash, &mut workspace).is_err());
-        // SAFETY: paired with the guarded process-wide override above.
-        unsafe {
-            if let Some(previous) = previous {
-                std::env::set_var("XDG_RUNTIME_DIR", previous);
-            } else {
-                std::env::remove_var("XDG_RUNTIME_DIR");
-            }
-        }
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10297,6 +9219,75 @@ pub(crate) mod tests {
                 visibility_contract_json: contract_json,
             }
         }
+    }
+
+    fn write_directory_descriptor(
+        mut out: runtime_collab::collab_capnp::exported_action::Builder<'_>,
+        descriptor: &runtime_collab::ExportedAction,
+    ) {
+        out.set_resource(&descriptor.resource);
+        out.set_action(&descriptor.action);
+        out.set_resource_kind(&descriptor.resource_kind);
+        out.set_resource_label(&descriptor.resource_label);
+        out.set_action_label(&descriptor.action_label);
+        out.set_description(descriptor.description.as_deref().unwrap_or(""));
+        out.set_operation_kind(&descriptor.operation_kind);
+        out.set_params_json(&descriptor.params_json);
+        out.set_contract_json(&descriptor.contract_json);
+        let mut input = out.init_input();
+        match &descriptor.input {
+            runtime_collab::ExportedInput::None => input.set_none(()),
+            runtime_collab::ExportedInput::Text {
+                prompt,
+                placeholder,
+                wants_content,
+            } => {
+                let mut text = input.init_text();
+                text.set_prompt(prompt);
+                text.set_placeholder(placeholder);
+                text.set_wants_content(*wants_content);
+            }
+        }
+    }
+
+    fn write_directory_row(
+        mut out: runtime_collab::collab_capnp::action_directory_row::Builder<'_>,
+        row: &runtime_collab::ActionDirectoryRow,
+    ) {
+        out.set_parent_resource(&row.parent_resource);
+        out.set_resource(&row.resource);
+        out.set_resource_kind(&row.resource_kind);
+        out.set_resource_label(&row.resource_label);
+        out.set_resource_presentation_json(&row.resource_presentation_json);
+        out.set_action(row.action.as_deref().unwrap_or(""));
+        out.set_has_children(row.has_children);
+        out.set_visibility_action(row.visibility_action.as_deref().unwrap_or(""));
+        out.set_visibility_contract_json(&row.visibility_contract_json);
+        if let Some(descriptor) = &row.descriptor {
+            write_directory_descriptor(out.reborrow().init_descriptor(), descriptor);
+        }
+    }
+
+    fn write_directory_page(
+        mut out: runtime_collab::collab_capnp::action_directory_page::Builder<'_>,
+        page: &runtime_collab::ActionDirectoryPage,
+    ) -> Result<(), capnp::Error> {
+        out.set_revision(&page.revision);
+        out.set_next_cursor(&page.next_cursor);
+        out.set_exhausted(page.exhausted);
+        out.set_stale_cursor(page.stale_cursor);
+        out.set_budget_exhausted(page.budget_exhausted);
+        let len = u32::try_from(page.rows.len())
+            .map_err(|_| capnp::Error::failed("too many action directory rows".into()))?;
+        let mut rows = out.reborrow().init_rows(len);
+        for (index, row) in page.rows.iter().enumerate() {
+            write_directory_row(
+                rows.reborrow()
+                    .get(u32::try_from(index).unwrap_or(u32::MAX)),
+                row,
+            );
+        }
+        Ok(())
     }
 
     struct TestActionDirectoryServer {
@@ -10425,12 +9416,12 @@ pub(crate) mod tests {
 
     fn local_directory_fixture() -> LocalDirectoryFixture {
         let mut tree = WorkspaceTree::default();
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(71),
             "Directory test room",
         );
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         local_directory_fixture_with_membership(tree.shared())
     }
@@ -10453,6 +9444,7 @@ pub(crate) mod tests {
     ) -> LocalDirectoryFixture {
         let cluster_id = membership
             .read()
+            .desktop
             .active_workspace()
             .expect("directory fixture requires an active workspace")
             .room
@@ -10585,7 +9577,7 @@ pub(crate) mod tests {
     #[test]
     fn directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app() {
         let fixture = local_directory_fixture();
-        let queue = fixture.broker.action_directory_request_queue();
+        let queue = fixture.state.action_directory_request_queue();
         let mut oversized_text = runtime_collab::ActionDirectoryQuery {
             peer_id: fixture.peer_id,
             revision: String::new(),
@@ -10626,33 +9618,28 @@ pub(crate) mod tests {
             ),
             Err(ActionDirectoryBridgeError::InvalidRequest)
         ));
+        let mut oversized_argument =
+            crate::shell::remote_actions::BrokerActionHost::new(fixture.broker.clone()).invoke(
+                &tilo_actions::remote::Caller::local_person("actor-a").in_room(&fixture.cluster_id),
+                tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Text(
+                        "x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1)),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                },
+            );
         assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
-                Some("x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1))),
-                None,
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
-                None,
-                Some(DirectoryActionConfirmation::Phrase(
-                    "x".repeat(DIRECTORY_MAX_CONFIRMATION_BYTES.saturating_add(1)),
-                )),
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
+            oversized_argument.poll_ready(),
+            tilo_actions::remote::PendingPoll::Ready(Err(
+                tilo_actions::remote::ActionHostError::InvalidRequest { .. }
+            ))
         ));
         assert_eq!(
             fixture.directory_state.borrow().query_count,
@@ -10764,42 +9751,48 @@ pub(crate) mod tests {
         let local = tokio::task::LocalSet::new();
         runtime.block_on(local.run_until(async {
             let mut fixture = local_directory_fixture();
-            let queue = fixture.broker.action_directory_request_queue();
             let room = crate::shell::state::RoomId::parse(&fixture.cluster_id)
                 .expect("fixture route is a room id");
             let directory_actor = fixture.chrome.borrow().local_user_for_room(&room);
 
-            // A request remains pending until the LocalSet drains it; no shell
-            // caller is allowed to block the compositor waiting for an RPC.
+            // A directory start stays pending until the LocalSet has the
+            // owner re-resolve the row; no caller blocks the compositor on
+            // an RPC. The shared confirmation check refuses it there.
             fixture.directory_state.borrow_mut().confirmation_required = true;
-            let mut confirmation = queue
-                .try_start_resolved(
-                    BrokerActor::person(&directory_actor),
-                    &fixture.cluster_id,
-                    fixture.peer_id,
-                    "directory-r1",
-                    "workspace:atlas",
-                    "open",
-                    None,
-                    None,
-                )
-                .expect("bounded queue accepts one request");
+            let mut confirmation = crate::shell::remote_actions::BrokerActionHost::new(
+                fixture.broker.clone(),
+            )
+            .invoke(
+                &tilo_actions::remote::Caller::local_person(&directory_actor)
+                    .in_room(&fixture.cluster_id),
+                tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                },
+            );
             assert!(matches!(
-                confirmation.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                confirmation.poll_ready(),
+                tilo_actions::remote::PendingPoll::Waiting
             ));
             drain_directory_bridge(&fixture).await;
-            let confirmation_reply = tokio::time::timeout(
-                Duration::from_millis(100),
-                confirmation,
-            )
-            .await
-            .expect("LocalSet reply deadline")
-            .expect("reply sender survives");
-            assert!(matches!(
-                confirmation_reply,
-                Err(ActionDirectoryBridgeError::ConfirmationRequired)
-            ), "unexpected confirmation reply: {confirmation_reply:?}");
+            let confirmation_reply = tokio::time::timeout(Duration::from_millis(100), confirmation)
+                .await
+                .expect("LocalSet reply deadline")
+                .expect("the host answers");
+            assert!(
+                matches!(
+                    confirmation_reply,
+                    Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
+                ),
+                "unexpected confirmation reply: {confirmation_reply:?}"
+            );
             fixture.directory_state.borrow_mut().confirmation_required = false;
 
             let provider = LiveAppActionsProvider::new(fixture.broker.clone());
@@ -11100,7 +10093,7 @@ pub(crate) mod tests {
 
     fn downgrade_member_to_viewer(membership: &WorkspaceTreeHandle, principal: &str, room: &str) {
         let mut tree = membership.write();
-        let workspace = &mut tree.workspaces[0];
+        let workspace = &mut tree.desktop.workspaces[0];
         workspace.owner = None;
         workspace.capabilities.clear();
         workspace.capabilities.push(CapOverride::membership(
@@ -11115,10 +10108,8 @@ pub(crate) mod tests {
     fn certified_join_admission_uses_workspace_membership_and_role() {
         let root = SigningKey::from_bytes(&[20; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(1),
-            "Member room",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Member room");
         let route = CrdtRoute::cluster(workspace.room.to_string());
         workspace.grant_capability(crate::shell::state::CapOverride::membership(
             crate::shell::state::Subject::person(&principal),
@@ -11126,7 +10117,7 @@ pub(crate) mod tests {
             crate::shell::state::Verb::Write,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
 
         let admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("a certified editor is admitted");
@@ -11162,10 +10153,8 @@ pub(crate) mod tests {
     fn agent_delegation_uses_agent_caps_and_is_revoked_live() {
         let root = SigningKey::from_bytes(&[44; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(44),
-            "Agent room",
-        );
+        let mut workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(44), "Agent room");
         workspace.owner = Some(principal);
         let route = CrdtRoute::cluster(workspace.room.to_string());
         let agent_membership = workspace.grant_capability(CapOverride::membership(
@@ -11174,7 +10163,7 @@ pub(crate) mod tests {
             Verb::Comment,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
 
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&root))
             .expect("the owner is admitted before delegation");
@@ -11191,7 +10180,7 @@ pub(crate) mod tests {
         );
 
         let membership = tree.shared();
-        assert!(membership.write().workspaces[0].revoke_capability(&agent_membership));
+        assert!(membership.write().desktop.workspaces[0].revoke_capability(&agent_membership));
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
             &fanout,
@@ -11210,7 +10199,7 @@ pub(crate) mod tests {
     fn non_owner_cannot_claim_an_agent_principal() {
         let member = SigningKey::from_bytes(&[45; 32]);
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(45),
             "Delegation room",
         );
@@ -11226,7 +10215,7 @@ pub(crate) mod tests {
             Verb::Write,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let mut admitted = admit_verified_join(&tree, &route, verified_device(&member))
             .expect("the person is a member");
         assert!(admit_agent_delegation(&tree, &route, &mut admitted, "operator").is_err());
@@ -11237,7 +10226,7 @@ pub(crate) mod tests {
         let member = SigningKey::from_bytes(&[21; 32]);
         let stranger = SigningKey::from_bytes(&[22; 32]);
         let member_id = principal_id_for_root(member.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(2),
             "Revocation room",
         );
@@ -11248,7 +10237,7 @@ pub(crate) mod tests {
             crate::shell::state::Verb::Read,
         ));
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
 
         assert!(admit_verified_join(&tree, &route, verified_device(&stranger)).is_err());
         let admitted = admit_verified_join(&tree, &route, verified_device(&member))
@@ -11262,7 +10251,7 @@ pub(crate) mod tests {
             Some(Arc::clone(&membership_tree)),
             None,
         );
-        assert!(membership_tree.write().workspaces[0].revoke_capability(&membership));
+        assert!(membership_tree.write().desktop.workspaces[0].revoke_capability(&membership));
         assert!(
             state.revalidate_admission(&route, &admitted).is_err(),
             "removing membership rejects the certified session's next operation"
@@ -11273,19 +10262,15 @@ pub(crate) mod tests {
     fn certified_join_admission_rejects_cross_workspace_replay() {
         let root = SigningKey::from_bytes(&[23; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut member_workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(3),
-            "Member room",
-        );
+        let mut member_workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(3), "Member room");
         member_workspace.set_owner(&principal);
-        let other_workspace = crate::shell::state::Workspace::test_default(
-            crate::shell::state::WorkspaceId(4),
-            "Other room",
-        );
+        let other_workspace =
+            crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(4), "Other room");
         let replay_route = CrdtRoute::cluster(other_workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(member_workspace);
-        tree.workspaces.push(other_workspace);
+        tree.desktop.workspaces.push(member_workspace);
+        tree.desktop.workspaces.push(other_workspace);
 
         assert!(admit_verified_join(&tree, &replay_route, verified_device(&root)).is_err());
     }
@@ -11372,14 +10357,14 @@ pub(crate) mod tests {
         let root = SigningKey::from_bytes(&[24; 32]);
         let device = SigningKey::from_bytes(&[25; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(5),
             "Typed document room",
         );
         workspace.set_owner(&principal);
         let route = CrdtRoute::record("so.tilo.notes", workspace.room.to_string(), "meeting-notes");
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let admitted = admit_verified_join(
             &membership.read(),
@@ -11576,14 +10561,14 @@ pub(crate) mod tests {
     )]
     #[test]
     fn live_action_invocation_is_fresh_directed_and_permission_checked() {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(31),
             "Action room",
         );
         workspace.set_owner("owner");
         let route = CrdtRoute::app("so.tilo.files", workspace.room.to_string());
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -11666,13 +10651,15 @@ pub(crate) mod tests {
             .route
             .cluster_id
             .clone();
-        let owner_catalogue = state
-            .action_catalogue_json(&action_cluster, "owner")
-            .expect("owner catalogue");
+        let owner_catalogue = catalogue_text(
+            &state,
+            &tilo_actions::remote::Caller::local_person("owner").in_room(&action_cluster),
+        );
         assert!(owner_catalogue.contains("files.entry:/tmp/report"));
-        let denied_catalogue = state
-            .action_catalogue_json(&action_cluster, "stranger")
-            .expect("filtered catalogue");
+        let denied_catalogue = catalogue_text(
+            &state,
+            &tilo_actions::remote::Caller::local_person("stranger").in_room(&action_cluster),
+        );
         assert!(
             !denied_catalogue.contains("files.entry:/tmp/report"),
             "denied actions must be absent from discovery, not merely refused later"
@@ -11856,17 +10843,37 @@ pub(crate) mod tests {
         assert!(!archived[0].live);
         assert_eq!(archived[0].actions[0].action, "new-window");
         assert!(
-            !state
-                .action_catalogue_json(&archived[0].route.cluster_id, "owner")
-                .expect("live-only direct catalogue")
-                .contains("new-window"),
+            !catalogue_text(
+                &state,
+                &tilo_actions::remote::Caller::local_person("owner")
+                    .in_room(&archived[0].route.cluster_id),
+            )
+            .contains("new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
         );
     }
 
-    #[test]
-    fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+    /// The catalogue `caller` is offered, as searchable text.
+    fn catalogue_text(
+        state: &Arc<CapnpBrokerState>,
+        caller: &tilo_actions::remote::Caller,
+    ) -> String {
+        let mut page = state.action_query(
+            caller,
+            &tilo_actions::remote::CatalogueQuery {
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            },
+        );
+        let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = page.poll_ready() else {
+            panic!("the eager catalogue answers at once");
+        };
+        serde_json::to_string(&page).expect("catalogue encodes")
+    }
+
+    /// A workspace whose `agent` may save and assign permission profiles.
+    fn profile_governed_workspace(agent: &str) -> crate::shell::state::Workspace {
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(32),
             "Governance room",
         );
@@ -11876,7 +10883,7 @@ pub(crate) mod tests {
             crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
         ] {
             workspace.grant_capability(collab_types::CapOverride::grant(
-                collab_types::Subject::agent("architect"),
+                collab_types::Subject::agent(agent),
                 collab_types::Scope::Action {
                     app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
                     action: action.into(),
@@ -11884,9 +10891,15 @@ pub(crate) mod tests {
                 collab_types::Verb::Admin,
             ));
         }
+        workspace
+    }
+
+    #[test]
+    fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
+        let workspace = profile_governed_workspace("architect");
         let cluster = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -11900,9 +10913,10 @@ pub(crate) mod tests {
             id: "agent:architect".into(),
             is_agent: true,
         };
-        let catalogue = state
-            .action_catalogue_json_for(&cluster, &actor)
-            .expect("authorized agent catalogue");
+        let catalogue = catalogue_text(
+            &state,
+            &tilo_actions::remote::Caller::local_agent("architect").in_room(&cluster),
+        );
         assert!(catalogue.contains(crate::shell::state::PROFILE_SAVE_ACTION_ID));
         assert!(catalogue.contains(crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID));
 
@@ -11960,7 +10974,7 @@ pub(crate) mod tests {
             .expect("broker-owned assignment succeeds");
 
         let tree = membership.read();
-        let workspace = &tree.workspaces[0];
+        let workspace = &tree.desktop.workspaces[0];
         assert!(workspace.allows(
             &workspace.actor_for_person(&"alice".into()),
             &collab_types::ResourceRef::Action {
@@ -11979,14 +10993,14 @@ pub(crate) mod tests {
     )]
     #[test]
     fn remote_agent_effect_terminals_become_redacted_workspace_receipts() {
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(32),
             "Agent effect room",
         );
         workspace.set_owner("owner");
         let cluster_id = workspace.room.to_string();
         let mut tree = WorkspaceTree::default();
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = CapnpBrokerState::new(
@@ -12061,7 +11075,7 @@ pub(crate) mod tests {
         );
 
         let tree = membership.read();
-        let receipts = &tree.workspaces[0].effect_receipts;
+        let receipts = &tree.desktop.workspaces[0].effect_receipts;
         assert_eq!(
             receipts.len(),
             2,
@@ -12086,15 +11100,6 @@ pub(crate) mod tests {
             receipt.invocation == succeeded_invocation
                 && receipt.status == tilo_actions::EffectReceiptStatus::Succeeded
         }));
-    }
-
-    #[test]
-    fn current_connection_invocation_sentinel_cannot_target_another_app() {
-        assert_eq!(
-            invocation_target_peer(ui::collaboration::CURRENT_CONNECTION_PEER_ID, 41),
-            41
-        );
-        assert_eq!(invocation_target_peer(7, 41), 7);
     }
 
     #[test]

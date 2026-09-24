@@ -35,6 +35,41 @@ pub enum Action {
         semantic_target: Option<String>,
         action: SemanticAction,
     },
+    Invoke(Invocation),
+}
+
+/// Invoke one action the app publishes, by its `(resource, action)` address,
+/// through the same door every other caller uses. No coordinates: the
+/// scenario names what to do, not where to click.
+#[derive(Clone, PartialEq)]
+pub struct Invocation {
+    pub resource: String,
+    pub action: String,
+    /// Typed arguments, bound strictly against the action's parameters.
+    pub args: serde_json::Map<String, serde_json::Value>,
+    /// Explicit confirmation for an action whose contract asks for one.
+    pub confirm: bool,
+    /// The exact phrase for an action whose contract asks for a typed one.
+    pub confirmation_phrase: Option<String>,
+    /// Expect the invocation to be refused with this door code
+    /// (`unknown_action`, `invalid_arguments`, `action_unavailable`,
+    /// `action_confirmation_required`, `action_failed`) instead of running.
+    pub expect_error: Option<String>,
+}
+
+impl std::fmt::Debug for Invocation {
+    /// Arguments can carry secrets (passphrases); a scenario's debug output
+    /// names the address and the argument names only.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Invocation")
+            .field("resource", &self.resource)
+            .field("action", &self.action)
+            .field("args", &self.args.keys().collect::<Vec<_>>())
+            .field("confirm", &self.confirm)
+            .field("confirmation_phrase", &self.confirmation_phrase.is_some())
+            .field("expect_error", &self.expect_error)
+            .finish()
+    }
 }
 
 /// Semantic outcome required at this point in a saved scenario.
@@ -210,8 +245,89 @@ fn parse_action(value: &serde_json::Value) -> Result<Action, String> {
         "wait_for_named" => parse_wait_for_named(argument),
         "expect" => parse_expectation(argument).map(Action::Expect),
         "perform" => parse_semantic_action(argument),
+        "invoke" => parse_invocation(argument).map(Action::Invoke),
         other => Err(format!("unknown action {other:?}")),
     }
+}
+
+const INVOCATION_CODES: &[&str] = &[
+    "unknown_action",
+    "invalid_arguments",
+    "action_unavailable",
+    "action_confirmation_required",
+    "action_failed",
+];
+
+fn parse_invocation(value: &serde_json::Value) -> Result<Invocation, String> {
+    const FIELDS: &[&str] = &[
+        "resource",
+        "action",
+        "args",
+        "confirm",
+        "confirmation_phrase",
+        "expect_error",
+    ];
+    let object = value
+        .as_object()
+        .ok_or("invoke takes an object with resource and action")?;
+    if let Some(unknown) = object.keys().find(|key| !FIELDS.contains(&key.as_str())) {
+        return Err(format!("unknown field {unknown:?} for invoke"));
+    }
+    let non_empty = |name: &str| {
+        object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("invoke.{name} must be a non-empty string"))
+    };
+    let args = match object.get("args") {
+        None => serde_json::Map::new(),
+        Some(serde_json::Value::Object(args)) => args.clone(),
+        Some(_) => return Err("invoke.args must be an object".to_owned()),
+    };
+    let confirm = object
+        .get("confirm")
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or("invoke.confirm must be true or false")
+        })
+        .transpose()?
+        .unwrap_or(false);
+    let confirmation_phrase = object
+        .get("confirmation_phrase")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|phrase| !phrase.is_empty())
+                .map(str::to_owned)
+                .ok_or("invoke.confirmation_phrase must be a non-empty string")
+        })
+        .transpose()?;
+    let expect_error = object
+        .get("expect_error")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|code| INVOCATION_CODES.contains(code))
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "invoke.expect_error must be one of {}",
+                        INVOCATION_CODES.join(", ")
+                    )
+                })
+        })
+        .transpose()?;
+    Ok(Invocation {
+        resource: non_empty("resource")?,
+        action: non_empty("action")?,
+        args,
+        confirm,
+        confirmation_phrase,
+        expect_error,
+    })
 }
 
 fn parse_expectation(value: &serde_json::Value) -> Result<Expectation, String> {
@@ -520,6 +636,43 @@ mod tests {
         assert_eq!(complete.viewport, Some((800, 600)));
         assert!(complete.audit);
         assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
+    }
+
+    #[test]
+    fn invocations_address_actions_and_parse_strictly() {
+        let actions = parse_actions(
+            r#"[{"invoke":{"resource":"installer.review","action":"begin","confirmation_phrase":"/dev/vdb"}},
+                {"invoke":{"resource":"installer.account","action":"set-passphrase","args":{"passphrase":"s3cret-words-here","confirmation":"s3cret-words-here"}}},
+                {"invoke":{"resource":"installer","action":"next","expect_error":"action_unavailable"}}]"#,
+        )
+        .unwrap();
+        let Action::Invoke(begin) = &actions[0] else {
+            panic!("not an invocation");
+        };
+        assert_eq!(begin.resource, "installer.review");
+        assert_eq!(begin.confirmation_phrase.as_deref(), Some("/dev/vdb"));
+        assert!(!begin.confirm);
+        let Action::Invoke(secret) = &actions[1] else {
+            panic!("not an invocation");
+        };
+        assert!(
+            !format!("{secret:?}").contains("s3cret"),
+            "debug output must not print argument values"
+        );
+        let Action::Invoke(refused) = &actions[2] else {
+            panic!("not an invocation");
+        };
+        assert_eq!(refused.expect_error.as_deref(), Some("action_unavailable"));
+        for source in [
+            r#"[{"invoke":{"action":"next"}}]"#,
+            r#"[{"invoke":{"resource":"r","action":""}}]"#,
+            r#"[{"invoke":{"resource":"r","action":"a","args":[]}}]"#,
+            r#"[{"invoke":{"resource":"r","action":"a","confirm":"yes"}}]"#,
+            r#"[{"invoke":{"resource":"r","action":"a","expect_error":"nope"}}]"#,
+            r#"[{"invoke":{"resource":"r","action":"a","extra":1}}]"#,
+        ] {
+            assert!(parse_actions(source).is_err(), "accepted {source}");
+        }
     }
 
     #[test]

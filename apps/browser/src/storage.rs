@@ -41,17 +41,17 @@ pub fn explicit_root() -> Option<&'static Path> {
 pub fn data_dir() -> Option<PathBuf> {
     ROOT.get()
         .cloned()
-        .or_else(|| dirs::data_dir().map(|p| p.join("qos-browser")))
+        .or_else(|| xdg_paths::data_dir().map(|p| p.join("qos-browser")))
 }
 pub fn config_dir() -> Option<PathBuf> {
     ROOT.get()
         .cloned()
-        .or_else(|| dirs::config_dir().map(|p| p.join("qos-browser")))
+        .or_else(|| xdg_paths::config_dir().map(|p| p.join("qos-browser")))
 }
 pub fn cache_dir() -> Option<PathBuf> {
     ROOT.get()
         .map(|p| p.join("cache"))
-        .or_else(|| dirs::cache_dir().map(|p| p.join("qos-browser")))
+        .or_else(|| xdg_paths::cache_dir().map(|p| p.join("qos-browser")))
 }
 
 /// Create and mark an isolated private-storage directory.
