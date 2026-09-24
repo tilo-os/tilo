@@ -72,6 +72,9 @@ iroh-base.workspace = true
 # Identity + workspace directory + cert-chain verification.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
+# Remote-action vocabulary: the relay routes these frames between devices and,
+# only when an app-serving plane is supplied, answers them through ActionHost.
+tilo-actions = { path = "../../collab/actions" }
 
 # Workspace CRDT (same version as identity + shell).
 automerge.workspace = true

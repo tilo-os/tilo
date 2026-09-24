@@ -236,7 +236,50 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         delta_since: Vec<u8>,
     },
+
+    /// A remote-action frame (`tilo_actions::remote::RemoteActionFrame`
+    /// bytes) addressed to one device of the workspace.
+    ///
+    /// The relay routes it to the addressed device's live connection and
+    /// never stores, replays or executes it: an action that ran late would
+    /// be worse than one that did not run. Only when the addressed device is
+    /// the relay itself *and* an app-serving plane was supplied does the
+    /// relay answer it, through that plane. Anything else comes back as
+    /// [`Envelope::RemoteActionUndeliverable`].
+    RemoteAction {
+        /// Workspace id both devices are subscribed to.
+        workspace_id: u64,
+        /// Version of this envelope kind, see [`REMOTE_ACTION_ENVELOPE_VERSION`].
+        version: u16,
+        /// The addressed device.
+        to_device_public_key: [u8; 32],
+        /// The sending device, stamped by the relay from the authenticated
+        /// connection. Whatever a sender puts here is overwritten.
+        from_device_public_key: [u8; 32],
+        /// The user root the sending device chains to, stamped the same way.
+        from_user_public_key: [u8; 32],
+        /// Opaque remote-action frame.
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
+
+    /// The relay could not deliver a [`Envelope::RemoteAction`]: the
+    /// addressed device is not connected to this workspace, the envelope
+    /// version is unknown, or nothing here serves apps.
+    RemoteActionUndeliverable {
+        /// Workspace id of the undelivered envelope.
+        workspace_id: u64,
+        /// The device it was addressed to.
+        to_device_public_key: [u8; 32],
+        /// Human-readable reason (for tracing / logging).
+        reason: String,
+    },
 }
+
+/// Version of the [`Envelope::RemoteAction`] kind this build routes. The
+/// relay refuses other versions as undeliverable instead of forwarding
+/// frames whose routing fields it may misread.
+pub const REMOTE_ACTION_ENVELOPE_VERSION: u16 = 1;
 
 /// Encode an envelope for the wire. Returns the length-prefixed
 /// bytes ready for `send.write_all`.
