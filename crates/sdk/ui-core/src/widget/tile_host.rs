@@ -3493,6 +3493,12 @@ mod tests {
         assert_eq!(body_of(&store, &checkout.id), None);
     }
 
+    /// Backdate the spawn so its fade window has already elapsed.
+    fn expire_spawn_animation(h: &mut TileHost) {
+        h.spawned_at =
+            crate::time::now().checked_sub(Duration::from_millis(millis(SPAWN_FADE_MS) + 20));
+    }
+
     fn stub_host() -> TileHost {
         TileHost::new(TileContent::Stub {
             kind: AppKind::Terminal,
@@ -3515,9 +3521,6 @@ mod tests {
     fn spawn_in_flight_returns_true_within_duration() {
         let mut h = stub_host();
         h.start_spawn_animation();
-        // Sleep well inside the fade window so the elapsed check
-        // can't race a slow CI box past `SPAWN_FADE_MS`.
-        std::thread::sleep(Duration::from_millis(20));
         assert!(
             h.spawn_in_flight(),
             "spawn_in_flight must be true within SPAWN_FADE_MS",
@@ -3533,9 +3536,7 @@ mod tests {
     fn spawn_in_flight_returns_false_after_duration() {
         let mut h = stub_host();
         h.start_spawn_animation();
-        // Sleep past `SPAWN_FADE_MS + 20` so the elapsed check
-        // definitively exceeds the window even with timer jitter.
-        std::thread::sleep(Duration::from_millis(millis(SPAWN_FADE_MS) + 20));
+        expire_spawn_animation(&mut h);
         assert!(
             !h.spawn_in_flight(),
             "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
@@ -4138,7 +4139,7 @@ mod tests {
             h.needs_animation_frame(),
             "in-flight spawn must pump the App run loop",
         );
-        std::thread::sleep(Duration::from_millis(millis(SPAWN_FADE_MS) + 20));
+        expire_spawn_animation(&mut h);
         assert!(
             !h.needs_animation_frame(),
             "after the spawn window elapses, no more frames are needed",
