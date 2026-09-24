@@ -279,11 +279,13 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 Use a task branch and a pull request for routine integration. Group related,
 tested changes into small coherent increments; do not push work-in-progress or
 minute-by-minute fixups directly to main. Keep the PR updated rather than opening
-another PR for each iteration. A PR merges once the required checks
-(`CI / affected packages` and `CI / fast quality`) pass for its current head and
-the branch is up to date with main; rebase and let CI rerun when main moves.
-Review is optional and informational and never blocks integration. See
-`DEVELOPMENT.md`.
+another PR for each iteration. Open the PR ready (not draft) and move on: it lands
+automatically once the required checks (`CI / affected packages` and
+`CI / fast quality`) pass on its current head. It does not need to be up to date
+with main; resolve only real conflicts. Park a PR with draft, the `hold` label or
+a `WIP` title. If a landed PR breaks main, it is reverted automatically and the
+PR gets a comment on how to reland. Review is optional and informational and never
+blocks integration. See `DEVELOPMENT.md`.
 
 Keep check/lint results for every main commit. Affected Tilo/Linux apps package
 after relevant main changes; unchanged collection members are reused. Full OS
