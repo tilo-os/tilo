@@ -24,7 +24,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn author_never_receives_echo_through_federation() {
@@ -33,6 +33,7 @@ async fn author_never_receives_echo_through_federation() {
     let relay_dev_2 = user.enrol("relay-2", DeviceCapabilities::host());
     let p1 = user.enrol("laptop", DeviceCapabilities::primary());
 
+    let (relay_key_1, relay_key_2) = (relay_dev_1.device_pubkey(), relay_dev_2.device_pubkey());
     let relay1 = spawn_relay(&user, relay_dev_1, &[9], &[p1.device_pubkey()]).await;
     let relay2 = spawn_relay(&user, relay_dev_2, &[9], &[p1.device_pubkey()]).await;
 
@@ -61,8 +62,9 @@ async fn author_never_receives_echo_through_federation() {
         .await
         .expect("ready timeout");
 
-    // Let the federation settle.
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // Both directions of the federation are live, so an echo has a path.
+    wait_until_subscribed(&relay1.relay, 9, &relay_key_2).await;
+    wait_until_subscribed(&relay2.relay, 9, &relay_key_1).await;
 
     c.send(Envelope::Delta {
         workspace_id: 9,

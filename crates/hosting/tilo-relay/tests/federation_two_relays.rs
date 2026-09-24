@@ -22,7 +22,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestUser, client_endpoint, spawn_relay, wait_until_subscribed};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn op_on_relay1_reaches_device_on_relay2() {
@@ -33,6 +33,7 @@ async fn op_on_relay1_reaches_device_on_relay2() {
     let p2 = user.enrol("phone", DeviceCapabilities::member());
 
     let members = vec![p1.device_pubkey(), p2.device_pubkey()];
+    let (relay_key_1, relay_key_2) = (relay_dev_1.device_pubkey(), relay_dev_2.device_pubkey());
     let relay1 = spawn_relay(&user, relay_dev_1, &[3], &members).await;
     let relay2 = spawn_relay(&user, relay_dev_2, &[3], &members).await;
 
@@ -84,11 +85,10 @@ async fn op_on_relay1_reaches_device_on_relay2() {
         assert!(matches!(env, Envelope::Ready { .. }));
     }
 
-    // Give the peer-relay dial tasks a beat to complete their
-    // handshake + PeerRelayHello exchange + Subscribe. Reconnect
-    // starts with a 1s backoff on failed initial dial, but on a
-    // clean localhost dial this is normally under 500ms.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Each relay forwards to the other once the other's peer-relay session
+    // has finished its handshake, PeerRelayHello exchange and Subscribe.
+    wait_until_subscribed(&relay1.relay, 3, &relay_key_2).await;
+    wait_until_subscribed(&relay2.relay, 3, &relay_key_1).await;
 
     // p1 publishes on relay1.
     let payload = b"federated-delta".to_vec();
