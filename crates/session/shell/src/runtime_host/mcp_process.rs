@@ -130,7 +130,7 @@ pub fn load_manifest(path: &Path) -> io::Result<ValidatedManifest> {
 ///
 /// This function does not mutate process-global state. The native executable
 /// applies the returned values at its single-threaded startup boundary.
-pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 6]> {
+pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str, PathBuf); 5]> {
     if !profile.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -144,7 +144,6 @@ pub fn prepare_profile_environment(profile: &Path) -> io::Result<[(&'static str,
         ("XDG_CACHE_HOME", profile.join("cache")),
         ("XDG_STATE_HOME", profile.join("state")),
         ("TILO_IDENTITY_ROOT", profile.join("identity")),
-        ("TILO_BLOB_STORE", profile.join("blobs")),
     ];
     for (_, path) in &paths {
         super::unix::private_directory(path)?;
