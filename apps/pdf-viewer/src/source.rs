@@ -178,6 +178,9 @@ pub struct LoadedDoc {
     pub raster: Rasterizer,
     /// The file's display name (for the window chrome / status bar).
     pub name: String,
+    /// The file's durable record identity ([`ui::RecordId::identify_file`]):
+    /// the same across renames and moves, so its markup follows it.
+    pub file: ui::RecordId,
 }
 
 /// Load a PDF from `path` through the shared PDF engine.
@@ -215,10 +218,14 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
     let t = Instant::now();
     doc.outline = r.outline();
     prof("outline (bookmarks)", t);
+    // Read (or mint) the durable identity here, on the thread that opens
+    // the file, rather than on the UI thread.
+    let file = ui::RecordId::identify_file(path);
     Ok(LoadedDoc {
         doc,
         raster: r,
         name,
+        file,
     })
 }
 
@@ -1334,6 +1341,8 @@ pub enum RasterEvent {
         document: Document,
         name: String,
         raster: RasterDocument,
+        /// The file's durable record identity.
+        file: ui::RecordId,
     },
     OpenFailed {
         request: OpenRequest,
@@ -2035,7 +2044,12 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
         let session_id = command.session_id;
         let event = match command.command {
             RasterCommand::OpenPath(request) => match open(&request.path) {
-                Ok(LoadedDoc { doc, raster, name }) => {
+                Ok(LoadedDoc {
+                    doc,
+                    raster,
+                    name,
+                    file,
+                }) => {
                     let page_sizes = (0..raster.page_count())
                         .map(|page| raster.page_size(page))
                         .collect();
@@ -2061,6 +2075,7 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                         document: doc,
                         name,
                         raster,
+                        file,
                     }
                 }
                 Err(error) => RasterEvent::OpenFailed {
