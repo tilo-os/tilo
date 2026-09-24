@@ -51,6 +51,7 @@ use crate::availability::{
     AvailabilityPolicy, AvailabilityRegistry, RecordAvailability, RecordKind, Residency,
     TransferPhase,
 };
+use crate::clock::unix_now_ms as now_ms;
 use crate::eviction::{EvictionMode, EvictionQueue, EvictionRequestId, EvictionRequestState};
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
@@ -4674,10 +4675,6 @@ fn child_path(dir: &str, name: &[u8]) -> String {
     } else {
         format!("{dir}/{name}")
     }
-}
-
-fn now_ms() -> u64 {
-    crate::clock::unix_now_ms()
 }
 
 fn update_retry_state(

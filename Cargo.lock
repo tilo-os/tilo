@@ -4316,6 +4316,7 @@ dependencies = [
  "thiserror 2.0.18",
  "thumbnail",
  "tilo-automerge",
+ "tilo-clock",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-user-identity",
@@ -14314,6 +14315,10 @@ dependencies = [
  "clap",
  "clap_complete",
 ]
+
+[[package]]
+name = "tilo-clock"
+version = "0.1.0"
 
 [[package]]
 name = "tilo-connected-protocol"

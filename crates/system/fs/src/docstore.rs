@@ -14,7 +14,6 @@ use automerge::{AutoCommit, Change};
 use bytes::Bytes;
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tilo_automerge::ApplyIncoming;
 
 use crate::store::ContentStore;
@@ -108,7 +107,7 @@ impl<'a> DocStore<'a> {
             .collect();
         let parent = self.latest().map(|v| *v.manifest_hash.as_bytes());
         let version = self.history.len() as u64;
-        let time_ms = now_ms();
+        let time_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
         let manifest = VersionManifest {
             version,
             change_hashes,
@@ -263,12 +262,6 @@ impl<'a> DocStore<'a> {
         let sb = qdoc::sheet::model::materialize(&b, &cb);
         Ok(qdoc::diff_workbooks(&sa, &sb))
     }
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]

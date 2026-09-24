@@ -84,6 +84,7 @@ on:
       - "crates/sdk/ui-core/**"
       - "crates/dev/test-env/**"
       - "crates/system/fs-native/**"
+      - "crates/system/tilo-clock/**"
       - "scripts/ci-run.sh"
       - "tools/ci/focused_test.py"
       - "os/usr/libexec/tilo-session"

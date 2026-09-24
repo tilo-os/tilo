@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::authenticated_transport::{
     AuthenticatedTransportConfig, AuthenticatedTransportError, authenticate_fs_peer_parts_at,
 };
+use crate::clock::{unix_now_ms, unix_now_ns};
 use crate::identity::PeerCredentials;
 use crate::record_access::{RecordAccessBinding, RecordAccessRegistry};
 use crate::record_replication::{RecordEnvelopeV1, RecordSnapshot};
@@ -1001,14 +1002,6 @@ where
     send.write_all(&bytes).await.map_err(io::Error::other)?;
     send.flush().await.map_err(io::Error::other)?;
     Ok(())
-}
-
-fn unix_now_ns() -> u64 {
-    crate::clock::unix_now_ns()
-}
-
-fn unix_now_ms() -> u64 {
-    crate::clock::unix_now_ms()
 }
 
 #[cfg(test)]
