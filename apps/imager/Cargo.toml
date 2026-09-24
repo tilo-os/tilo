@@ -50,7 +50,7 @@ taffy.workspace = true
 tempfile.workspace = true
 block-devices = { path = "../../crates/system/block-devices" }
 bounded-command = { path = "../../crates/system/bounded-command" }
-zbus = { workspace = true, optional = true, default-features = true }
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
