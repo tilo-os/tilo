@@ -258,10 +258,17 @@ jobs:
             type=raw,value=pr-${{ github.event.number }}-${{ matrix.arch }},enable=${{ github.event_name == 'pull_request' }}
             type=raw,value=dispatch-${{ github.sha }}-${{ matrix.arch }},enable=${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
 
-      # Push only on tags/dispatch so main-branch commits verify without
-      # touching the registry.
+      # A shared Docker daemon can still hold this commit's image from an
+      # earlier attempt; the registry-push retry below must never publish it.
+      - name: Discard any earlier local image for this commit
+        run: docker image rm -f 'code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}' >/dev/null 2>&1 || true
+
+      # Publication runs push; pull requests only build and load. A failure
+      # always reaches the next step, which retries only a publication push
+      # of a completed build and otherwise fails the job.
       - name: Build the tilo-kernel image (push only on tags/dispatch)
         id: build
+        continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -287,8 +294,74 @@ jobs:
           # work can outlive a successful compile and exhaust the runner's
           # hard deadline. Main/tag/dispatch builds refresh final-stage
           # dependencies only; mode=max duplicates the multi-GiB source tree.
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0},mode=min', matrix.arch) || '' }}
+          # ignore-error: a cache write failure must not fail a build whose
+          # image was already pushed; the next run simply starts colder.
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0},mode=min,ignore-error=true', matrix.arch) || '' }}
           provenance: false
+
+      # Reached only when the build step failed. Pull request builds do not
+      # push, so their failure is always fatal. The image is loaded before
+      # buildx pushes it, so a present local image means the compile
+      # succeeded and only the registry write failed; an absent one is a real
+      # build failure and stays fatal.
+      - name: Retry the registry push of the completed build
+        id: push-retry
+        if: ${{ steps.build.outcome == 'failure' }}
+        env:
+          PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
+          LOCAL_IMAGE: code.sandbox.example/qos/tilo-kernel:native-${{ github.sha }}-${{ matrix.arch }}
+          PUBLISH_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          [ "$PUBLISH" = true ] || {
+            echo '::error::the kernel image build failed'
+            exit 1
+          }
+          docker image inspect "$LOCAL_IMAGE" >/dev/null 2>&1 || {
+            echo '::error::the kernel image build failed before producing an image'
+            exit 1
+          }
+          digest=''
+          for attempt in 1 2 3; do
+            if log="$(docker push "$LOCAL_IMAGE" 2>&1)"; then
+              printf '%s\n' "$log"
+              digest="$(printf '%s\n' "$log" | sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' | tail -1)"
+              break
+            fi
+            printf '%s\n' "$log" >&2
+            [ "$attempt" -lt 3 ] || { echo '::error::registry push failed after 3 attempts'; exit 1; }
+            sleep $((attempt * 30))
+          done
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::registry push did not report a manifest digest'
+            exit 1
+          }
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag "$LOCAL_IMAGE" "$tag"
+            for attempt in 1 2 3; do
+              docker push "$tag" && break
+              [ "$attempt" -lt 3 ] || { echo "::error::could not push $tag"; exit 1; }
+              sleep $((attempt * 30))
+            done
+          done <<< "$PUBLISH_TAGS"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the published kernel digest
+        id: published
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          RETRY_DIGEST: ${{ steps.push-retry.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD_OUTCOME" = success ]; then digest="$BUILD_DIGEST"; else digest="$RETRY_DIGEST"; fi
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::no published kernel manifest digest'
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Install native kernel acceptance tools
         run: |
@@ -375,8 +448,8 @@ jobs:
             *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
-          ref="code.sandbox.example/qos/tilo-kernel@${{ steps.build.outputs.digest }}"
-          digest='${{ steps.build.outputs.digest }}'
+          ref="code.sandbox.example/qos/tilo-kernel@${{ steps.published.outputs.digest }}"
+          digest='${{ steps.published.outputs.digest }}'
           jq -n \
             --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
             --arg digest "$digest" \
@@ -427,8 +500,13 @@ jobs:
       - name: Report the new digest to commit
         if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
         run: |
-          ref="code.sandbox.example/qos/tilo-kernel@${{ steps.build.outputs.digest }}"
-          variable=KERNEL_RPMS_${{ matrix.arch }}_REF
+          ref="code.sandbox.example/qos/tilo-kernel@${{ steps.published.outputs.digest }}"
+          # Promotion reads KERNEL_RPMS_X86_64_REF / KERNEL_RPMS_AARCH64_REF.
+          variable="KERNEL_RPMS_$(printf '%s' '${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF"
+          case "$variable" in
+            KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;
+            *) echo "::error::unexpected kernel pin variable $variable"; exit 1 ;;
+          esac
           mkdir -p refs
           printf '%s=%s\n' "$variable" "$ref" > "refs/${{ matrix.arch }}.env"
           echo "::notice::tilo-kernel ${{ matrix.arch }} published. Set os/kernel-snapshot.env to: $variable=$ref"
