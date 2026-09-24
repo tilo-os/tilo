@@ -4,6 +4,7 @@
 //! reports typed hits, while the host applies them through the existing
 //! authenticated `Workspace` mutation methods.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 
 use vello::Scene;

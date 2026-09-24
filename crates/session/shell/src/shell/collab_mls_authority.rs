@@ -4,6 +4,7 @@
 //! typed commands containing only random handles registered by [`MlsVaultProvider`].
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};

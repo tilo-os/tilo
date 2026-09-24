@@ -11,6 +11,7 @@
 //! the decision made, so a refusal or launch is not re-run on every sync.
 
 use crate::shell::launcher;
+use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     GroupId, ResourceRef, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
 };

@@ -298,6 +298,7 @@ pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::portal::{GrantStoreHandle, MockFilePickerSpawner};
+    use crate::shell::state::WorkspaceAuthority as _;
     use crate::shell::state::{Workspace, WorkspaceId};
 
     use std::sync::Arc;

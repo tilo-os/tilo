@@ -1,5 +1,6 @@
 //! Capability-gated identity metadata and signing service for app sandboxes.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
