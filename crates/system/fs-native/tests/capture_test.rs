@@ -500,3 +500,35 @@ fn staging_files_are_never_captured() {
     assert_eq!(op_paths(&cs), ["+real"]);
     cap.release().unwrap();
 }
+
+#[test]
+fn an_invalidated_path_is_captured_again_or_removed() {
+    let Some(s) = btrfs_scratch("capture_invalidate") else {
+        return;
+    };
+    fs::write(s.live.join("kept"), b"k").unwrap();
+    fs::write(s.live.join("moved"), b"m").unwrap();
+    let mut cfg = CaptureConfig::new(&s.live, &s.epochs);
+    cfg.hash_content = false;
+    let mut cap = EpochCapture::new(cfg).unwrap();
+    cap.capture(&batch(&[])).unwrap();
+
+    // Publishing both failed: an unchanged file is captured again...
+    cap.invalidate(Path::new("kept"));
+    cap.invalidate(Path::new("moved"));
+    // ...and one renamed away before the next epoch is removed.
+    fs::rename(s.live.join("moved"), s.live.join("elsewhere")).unwrap();
+    let cs = cap
+        .capture(&batch(&[(
+            JournalOp::Rename {
+                from: Some("moved".into()),
+            },
+            "elsewhere",
+            false,
+        )]))
+        .unwrap();
+    let mut got = op_paths(&cs);
+    got.sort();
+    assert_eq!(got, ["+elsewhere", "+kept", "-moved"]);
+    cap.release().unwrap();
+}
