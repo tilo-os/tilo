@@ -27,6 +27,13 @@
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
+//! A whole-disk install on a large enough disk also gets the room store: a
+//! second LUKS2 + Btrfs partition after the root, for the storage daemon's
+//! native data plane. It unlocks from a key file inside the encrypted root and
+//! the recovery key opens it too, so it adds no prompt and no new factor.
+//! Alongside installs get an image-backed store on first boot instead
+//! (`os/usr/libexec/tilo-store-volume`).
+//!
 //! Encryption does **not** require a TPM. The privileged backend independently
 //! enforces the mandatory encryption and strong-passphrase policy, so an older
 //! or malformed UI fails closed instead of installing plaintext or weakening
