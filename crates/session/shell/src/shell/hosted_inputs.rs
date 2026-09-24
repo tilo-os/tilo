@@ -277,7 +277,6 @@ impl HostedTileInputs {
 pub enum HostedTileError {
     RequiredServiceMissing(&'static str),
     Terminal(terminal::HostedTerminalError),
-    Browser(String),
     Fixture(String),
 }
 
@@ -288,7 +287,6 @@ impl std::fmt::Display for HostedTileError {
                 write!(formatter, "Required service unavailable: {service}")
             }
             Self::Terminal(error) => error.fmt(formatter),
-            Self::Browser(error) => write!(formatter, "Browser unavailable: {error}"),
             Self::Fixture(error) => write!(formatter, "Fixture unavailable: {error}"),
         }
     }
