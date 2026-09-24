@@ -200,7 +200,7 @@ fn creating_then_visiting_another_note_keeps_creation_reachable_by_ctrl_z() {
         .unwrap();
     let mut live = driver(&fixture, 225, &checkout);
 
-    let new_note = semantic_rect(&live, "notes:new-page").center();
+    let new_note = semantic_rect(&live, "heading-action").center();
     live.click_at(new_note.x, new_note.y);
     assert_eq!(
         fixture

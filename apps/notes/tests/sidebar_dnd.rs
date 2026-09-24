@@ -1,7 +1,7 @@
 //! Drag-to-reorder / re-parent and the right-click context menu, driven
 //! through `NotesApp::handle_event` on a live, settled taffy layout — the
 //! same five-pass cycle `ui::App` runs. These exercise the real pointer
-//! hit-tests + the toolkit `DragController`, not internal helpers.
+//! hit-tests + the toolkit `TreeView` reorder, not internal helpers.
 
 #![allow(
     clippy::unwrap_used,
@@ -169,7 +169,7 @@ fn root_order(app: &NotesApp) -> Vec<uuid::Uuid> {
 }
 
 #[test]
-fn drag_reflows_live_commits_only_on_drop() {
+fn drag_previews_live_commits_only_on_drop() {
     let (mut app, welcome, one, two) = three_page_app().unwrap();
     let mut state = ui::State::new();
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
@@ -201,15 +201,19 @@ fn drag_reflows_live_commits_only_on_drop() {
         &cursor_moved(r0.x, r2.y + 8.0),
     );
 
-    // Mid-drag: the list reflows live (a non-dragged row is shifted) but
-    // the model is NOT mutated yet — commit only happens on drop.
+    // Mid-drag: the tree shows where the page would land (an insertion line
+    // below the last row) but the model is NOT mutated yet — commit only
+    // happens on drop.
     assert!(
         app.sidebar_drag_active_for_test(),
         "drag promoted past the threshold"
     );
+    let indicator = app
+        .sidebar_drop_indicator_for_test()
+        .expect("the toolkit shows the live drop position");
     assert!(
-        app.sidebar_row_shift_for_test(1) != 0.0,
-        "the toolkit reflows the list live to open the drop gap"
+        indicator.height() < 4.0 && indicator.center().y > r2.y,
+        "an insertion line below the last row, not a nest target: {indicator:?}"
     );
     assert_eq!(
         root_order(&app),
