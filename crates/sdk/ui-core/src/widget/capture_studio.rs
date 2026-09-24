@@ -22,10 +22,9 @@ use crate::{
     widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
 };
 use automerge::{AutoCommit, ObjId};
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use std::collections::HashMap;
+
+use crate::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::{
     Scene,
@@ -509,7 +508,7 @@ impl CaptureStudio {
         self.screenshot_receipt = None;
         self.screenshot_pin_pending = false;
         self.open = true;
-        self.opened_at = Some(Instant::now());
+        self.opened_at = Some(crate::time::now());
         self.regions.clear();
         self.region_remove_rects.clear();
         self.drag = None;
@@ -576,7 +575,7 @@ impl CaptureStudio {
             width,
             height,
             preview,
-            shown_at: Instant::now(),
+            shown_at: crate::time::now(),
             origin,
         });
         self.screenshot_pin_pending = false;
@@ -602,9 +601,9 @@ impl CaptureStudio {
             return;
         };
         let progress = f64::from(permille.min(1_000)) / 1_000.0;
-        receipt.shown_at = Instant::now()
+        receipt.shown_at = crate::time::now()
             .checked_sub(SCREENSHOT_RECEIPT_ENTER.mul_f64(progress))
-            .unwrap_or_else(Instant::now);
+            .unwrap_or_else(crate::time::now);
     }
     pub fn is_open(&self) -> bool {
         self.open
@@ -656,7 +655,7 @@ impl CaptureStudio {
             self.recording_request_started_at = None;
             self.recording_finished_at = None;
             self.recording_finished_duration = Duration::ZERO;
-            self.recording_started_at = Some(Instant::now());
+            self.recording_started_at = Some(crate::time::now());
             self.recording_scope = self.recording_scope_label();
             self.recording_confirmation_regions = self.current_recording_regions();
             self.recording_continuation_edges = self.current_recording_continuation_edges();
@@ -707,7 +706,7 @@ impl CaptureStudio {
         }
         let progress = f64::from(permille.min(1_000)) / 1_000.0;
         let offset = RECORDING_HOLD + RECORDING_SETTLE.mul_f64(progress);
-        self.recording_started_at = Instant::now().checked_sub(offset);
+        self.recording_started_at = crate::time::now().checked_sub(offset);
     }
 
     /// Keep the compositor's spatial recording affordance alive just long
@@ -733,7 +732,7 @@ impl CaptureStudio {
         self.recording_state_changed_at = None;
         self.recording_transition_from_paused = None;
         self.recording_state_progress_override = None;
-        self.recording_finished_at = Some(Instant::now());
+        self.recording_finished_at = Some(crate::time::now());
         self.recording_receipt_progress_override = None;
         self.open = true;
     }
@@ -747,7 +746,7 @@ impl CaptureStudio {
         };
         self.replay_buffered_seconds = 0;
         self.replay_saved_at = None;
-        self.replay_started_at = active.then(Instant::now);
+        self.replay_started_at = active.then(crate::time::now);
         if active {
             self.open = true;
         } else if !self.recording_active && self.recording_finished_at.is_none() {
@@ -763,7 +762,7 @@ impl CaptureStudio {
 
     pub fn set_replay_saved(&mut self) {
         if self.replay_active {
-            self.replay_saved_at = Some(Instant::now());
+            self.replay_saved_at = Some(crate::time::now());
         }
     }
     pub fn set_recording_paused(&mut self, paused: bool) {
@@ -771,7 +770,7 @@ impl CaptureStudio {
             return;
         }
         if paused != self.recording_paused {
-            let now = Instant::now();
+            let now = crate::time::now();
             self.recording_transition_from_paused = Some(self.recording_paused);
             if paused {
                 self.recording_paused_at = Some(now);
@@ -850,7 +849,7 @@ impl CaptureStudio {
         self.recording_confirmation_regions = self.current_recording_regions();
         self.recording_continuation_edges = self.current_recording_continuation_edges();
         self.recording_start_pending = true;
-        self.recording_request_started_at = Some(Instant::now());
+        self.recording_request_started_at = Some(crate::time::now());
         self.recording_finished_at = None;
         self.open = true;
         self.mode = CaptureMode::Recording;
@@ -1711,7 +1710,7 @@ impl CaptureStudio {
         let Some(started) = self.recording_started_at else {
             return Duration::ZERO;
         };
-        let now = Instant::now();
+        let now = crate::time::now();
         let current_pause = self
             .recording_paused_at
             .map_or(Duration::ZERO, |paused_at| {
@@ -2206,7 +2205,7 @@ impl CaptureStudio {
             self.drag = None;
             self.armed_capture = Some(ArmedCapture {
                 intent,
-                started_at: Instant::now(),
+                started_at: crate::time::now(),
                 duration: Duration::from_secs(u64::from(self.delay_seconds)),
             });
         } else {
@@ -5775,7 +5774,7 @@ mod tests {
         assert!(s.modal_capture().is_none(), "apps must remain interactive");
         assert!(s.take_intents().is_empty(), "capture is not queued early");
 
-        s.armed_capture.as_mut().unwrap().started_at = Instant::now() - Duration::from_secs(4);
+        s.armed_capture.as_mut().unwrap().started_at = crate::time::now() - Duration::from_secs(4);
         let intent = s.take_intents().pop().expect("expired delayed intent");
         assert_eq!(intent.destination, CaptureDestination::File);
         assert_eq!(intent.source, SourceMode::Display);
@@ -5848,7 +5847,7 @@ mod tests {
         let mut s = CaptureStudio::default();
         s.rect = Rect::new(0., 0., 1200., 800.);
         s.set_recording_active(true);
-        s.recording_started_at = Some(Instant::now() - Duration::from_secs(42));
+        s.recording_started_at = Some(crate::time::now() - Duration::from_secs(42));
         s.set_recording_finished();
 
         assert!(!s.is_recording_active());
@@ -6095,7 +6094,7 @@ mod tests {
         let mut s = CaptureStudio::default();
         s.rect = Rect::new(0., 0., 1000., 700.);
         s.set_recording_active(true);
-        s.recording_started_at = Some(Instant::now() - Duration::from_secs(10));
+        s.recording_started_at = Some(crate::time::now() - Duration::from_secs(10));
 
         let (_, pause, _) = s.recording_indicator_rects_at(1.0);
         s.click(pause.center());
@@ -6414,7 +6413,7 @@ mod tests {
         s.set_recording_active(true);
         s.set_recording_finished();
         s.set_recording_receipt_transition_progress(500);
-        s.recording_finished_at = Some(Instant::now() - RECORDING_RECEIPT_DURATION * 2);
+        s.recording_finished_at = Some(crate::time::now() - RECORDING_RECEIPT_DURATION * 2);
 
         s.draw_recording_indicator(
             &mut Scene::new(),

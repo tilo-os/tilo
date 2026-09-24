@@ -77,7 +77,7 @@ pub enum Action {
     /// and asynchronous model delegates without timing sleeps.
     WaitForNamed {
         target: String,
-        timeout: std::time::Duration,
+        timeout: crate::time::Duration,
     },
     /// Require semantic output or state at this exact point in a scenario.
     Expect(SemanticExpectation),
@@ -89,6 +89,36 @@ pub enum Action {
         semantic_target: Option<String>,
         action: crate::a11y::Action,
     },
+    /// Invoke one published action by address, through the same resolution,
+    /// availability, confirmation and strict binding the live host applies.
+    Invoke(Invocation),
+}
+
+/// A scenario step that performs a published action. See
+/// [`Driver::invoke_action`].
+#[derive(Clone)]
+pub struct Invocation {
+    pub address: tilo_actions::ActionAddress,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// Explicit confirmation, for a `Confirm` contract.
+    pub confirm: bool,
+    /// The exact phrase, for a `Phrase` contract.
+    pub confirmation_phrase: Option<String>,
+    /// Pass only if the door refuses with this code.
+    pub expect_error: Option<String>,
+}
+
+impl std::fmt::Debug for Invocation {
+    /// Arguments can carry secrets; debug output names only their keys.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Invocation")
+            .field("address", &self.address)
+            .field("arguments", &self.arguments.keys().collect::<Vec<_>>())
+            .field("confirm", &self.confirm)
+            .field("confirmation_phrase", &self.confirmation_phrase.is_some())
+            .field("expect_error", &self.expect_error)
+            .finish()
+    }
 }
 
 fn action_description(action: &Action) -> String {
@@ -119,6 +149,10 @@ fn action_description(action: &Action) -> String {
             );
             format!("perform {} on {target}", semantic_action_name(action))
         }
+        Action::Invoke(invocation) => format!(
+            "invoke {} on {:?}",
+            invocation.address.action, invocation.address.resource
+        ),
     }
 }
 
@@ -143,7 +177,7 @@ fn semantic_action_name(action: &crate::a11y::Action) -> &'static str {
 pub struct SemanticExpectation {
     pub target: String,
     pub semantic_target: Option<String>,
-    pub timeout: Option<std::time::Duration>,
+    pub timeout: Option<crate::time::Duration>,
     pub role: Option<String>,
     pub name: Option<String>,
     pub name_contains: Option<String>,
@@ -178,7 +212,7 @@ impl SemanticExpectation {
     /// Drive live-equivalent frames until this assertion matches or the
     /// explicit bound expires. Without this, assertions are immediate.
     #[must_use]
-    pub fn within(mut self, timeout: std::time::Duration) -> Self {
+    pub fn within(mut self, timeout: crate::time::Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
@@ -540,11 +574,13 @@ impl FrameHarness {
         Ok(harness)
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn resize_component_capture(&mut self, viewport: (u32, u32)) {
         let _ = self.resize(viewport);
     }
 
     /// Shared final-output boundary for prepared CLI capture and audit.
+    #[cfg(feature = "native")]
     pub(crate) fn prepare_component_output(&mut self) {
         self.pump_component_wakes();
     }
@@ -1188,6 +1224,24 @@ impl FrameHarness {
         self.render_png_on(out, self.theme.bg_app);
     }
 
+    /// Rasterise the most recently laid-out frame over a transparent
+    /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
+    pub fn render_rgba(&self) -> Vec<u8> {
+        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
+    }
+
+    /// [`FrameHarness::render_rgba`] over the theme background, as the
+    /// native window composites it.
+    pub fn render_window_rgba(&self) -> Vec<u8> {
+        self.render_rgba_on(self.theme.bg_app)
+    }
+
+    fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
+        self.drain_component_wakes();
+        let (w, h) = self.viewport;
+        crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+    }
+
     fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
         self.drain_component_wakes();
         if let Some(parent) = out.parent() {
@@ -1365,7 +1419,7 @@ impl FrameHarness {
         self.tick_records();
         self.root.update(&mut self.state.doc, &self.state.root);
         self.tick_records();
-        let t_sync = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
         self.root.sync(&mut self.state.doc, &self.state.root);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
@@ -1395,7 +1449,7 @@ impl FrameHarness {
         let view = self.root.view_state();
         let mut first = true;
         settle_widget_composition(viewport_changed, |rebuild| {
-            let t_build = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            let t_build = self.profiler.as_ref().map(|_| crate::time::now());
             // Preserve the existing action-driven relayout contract; additional
             // refreshes occur only for viewport or explicit structure changes.
             if first || rebuild {
@@ -1503,7 +1557,7 @@ impl FrameHarness {
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
-            let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            let t_apply = self.profiler.as_ref().map(|_| crate::time::now());
             if self.history_chrome_enabled {
                 self.apply_history_frame();
             } else if let Some(history) = &mut self.history {
@@ -1572,7 +1626,7 @@ impl FrameHarness {
         // enabled state the user would see.
         self.publish_undo_status();
 
-        let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         self.scene.reset();
         if let Some(history) = &mut self.history {
             history.draw(
@@ -1678,11 +1732,12 @@ impl FrameHarness {
     ///
     /// This is the deterministic test seam for worker completions and
     /// asynchronous model notifications. Each attempt runs update, sync,
-    /// layout, and draw; the short sleep avoids a busy-spin while preserving
-    /// millisecond-scale tests.
+    /// layout, and draw. Between attempts the thread parks on the current
+    /// [`crate::background::Background`]: a pumped executor runs its queue and
+    /// advances its virtual clock instead of waiting in real time.
     pub fn wait_until(
         &mut self,
-        timeout: std::time::Duration,
+        timeout: crate::time::Duration,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
         self.relayout();
@@ -1691,19 +1746,29 @@ impl FrameHarness {
         if condition(self) {
             return true;
         }
-        let Some(deadline) = std::time::Instant::now().checked_add(timeout) else {
+        let background = crate::background::Background::current();
+        let Some(deadline) = background.now().checked_add(timeout) else {
             return false;
         };
-        while std::time::Instant::now() < deadline {
+        loop {
+            let now = background.now();
+            if now >= deadline {
+                return false;
+            }
+            // Park on the executor so background work completing (or a
+            // pumped clock advancing) ends the wait early. Work that settles
+            // outside the executor's view is still noticed within a slice.
+            let slice = now
+                .checked_add(crate::time::Duration::from_millis(1))
+                .unwrap_or(deadline);
+            background.park(slice.min(deadline));
             self.relayout();
             self.idle_control_tick();
             self.relayout();
             if condition(self) {
                 return true;
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        false
     }
 
     /// Run the normal frame pipeline until requested visual work completes.
@@ -1711,7 +1776,7 @@ impl FrameHarness {
     /// # Errors
     /// Returns an error instead of capturing an unfinished placeholder when
     /// the work does not complete within `timeout`.
-    pub fn wait_for_visuals(&mut self, timeout: std::time::Duration) -> Result<(), String> {
+    pub fn wait_for_visuals(&mut self, timeout: crate::time::Duration) -> Result<(), String> {
         if self.wait_until(timeout, |driver| !driver.root.has_pending_visual_work()) {
             Ok(())
         } else {
@@ -1727,7 +1792,7 @@ impl FrameHarness {
     pub fn wait_for_named(
         &mut self,
         name: &str,
-        timeout: std::time::Duration,
+        timeout: crate::time::Duration,
     ) -> Result<(), String> {
         self.pump_component_wakes();
         if self.wait_until(timeout, |driver| driver.targets().contains_key(name)) {
@@ -2776,7 +2841,7 @@ impl FrameHarness {
         let standalone_input = self.history_event(event, &mut handled, &mut focus_target);
         history_input |= standalone_input;
         let _standalone_frame = FrameworkInputFrame::new(&self.framework_input, standalone_input);
-        let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
+        let t_event = self.profiler.as_ref().map(|_| crate::time::now());
         if !standalone_input {
             if let Some(history) = &mut self.history {
                 history.route_event(
@@ -3037,87 +3102,92 @@ impl FrameHarness {
                 self.dispatch_bound_control(target, &intent);
                 continue;
             }
-            // The legacy executor may only consume declarations belonging to
-            // the outer document; bound targets were selected or refused above.
-            let mut resources = Vec::new();
-            crate::bound_dispatch::collect_unbound_resources(
-                self.root.as_ref(),
-                &self.state.doc,
-                &mut resources,
-            );
-            if tilo_actions::door::resolve(&resources, &intent.address).is_none()
-                && let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
-                    self.root.as_ref(),
-                    &self.state.doc,
-                    &intent.address.resource,
-                )
-            {
-                resources.push(resource);
-            }
-            let invocation = tilo_actions::InvocationId::new();
-            let result = (|| {
-                let (arguments, resource, spec) =
-                    crate::bound_dispatch::resolve_resource_invocation(
-                        &resources,
-                        &intent.address,
-                        None,
-                        Some(&intent.arguments),
-                        false,
-                    )?;
-                if !crate::bound_dispatch::permits_local_action(
-                    &self.permissions,
-                    &crate::collaboration::local_app_id(),
-                    spec,
-                ) {
-                    return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
-                }
-                let encoded = crate::bound_dispatch::encode_resource_action(
-                    &resources,
-                    &intent.address,
-                    arguments.as_ref(),
-                    None,
-                )?;
-                let before = (spec.kind == tilo_actions::OperationKind::Document)
-                    .then(|| self.state.doc.get_heads());
-                let started = crate::bound_dispatch::execute_resource_operation(
-                    self.root.as_mut(),
-                    &mut self.state.doc,
-                    &self.state.root,
-                    &self.action_registry,
-                    self.action_transport.as_mut(),
-                    &intent.address,
-                    resource,
-                    spec,
-                    encoded,
-                    &self.author.0,
-                    &self.author.0,
-                    false,
-                    invocation,
-                    None,
-                )?;
-                if let Some(before) = before {
-                    self.state.record_committed_action_authored(
-                        before,
-                        None,
-                        None,
-                        Some(self.author.clone()),
-                    );
-                }
-                Ok::<_, tilo_actions::DoorError>(started)
-            })();
+            let result = self.invoke_unbound(&intent.address, &intent.arguments, false);
             self.root
                 .on_control_invocation_result(&intent.address, &result);
-            match result {
-                Ok(crate::widget::ResourceOperationStart::Accepted) => {
-                    self.pending_control_invocations.insert(invocation);
-                }
-                Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
-                Err(error) => {
-                    tracing::warn!(code = error.code(), %error, "headless: control action refused");
-                    self.control_failures.push(error.to_string());
-                }
+            if let Err(error) = result {
+                tracing::warn!(code = error.code(), %error, "headless: control action refused");
+                self.control_failures.push(error.to_string());
             }
         }
+    }
+
+    /// The legacy executor for declarations belonging to the outer document;
+    /// bound targets are selected (or refused) before this is reached.
+    /// `confirmed` is true only when the caller already completed the
+    /// action's confirmation contract.
+    fn invoke_unbound(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let mut resources = Vec::new();
+        crate::bound_dispatch::collect_unbound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            &mut resources,
+        );
+        if tilo_actions::door::resolve(&resources, address).is_none()
+            && let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
+                self.root.as_ref(),
+                &self.state.doc,
+                &address.resource,
+            )
+        {
+            resources.push(resource);
+        }
+        let invocation = tilo_actions::InvocationId::new();
+        let (arguments, resource, spec) = crate::bound_dispatch::resolve_resource_invocation(
+            &resources,
+            address,
+            None,
+            Some(supplied),
+            confirmed,
+        )?;
+        if !crate::bound_dispatch::permits_local_action(
+            &self.permissions,
+            &crate::collaboration::local_app_id(),
+            spec,
+        ) {
+            return Err(tilo_actions::DoorError::Unknown(address.clone()));
+        }
+        let encoded = crate::bound_dispatch::encode_resource_action(
+            &resources,
+            address,
+            arguments.as_ref(),
+            None,
+        )?;
+        let before = (spec.kind == tilo_actions::OperationKind::Document)
+            .then(|| self.state.doc.get_heads());
+        let started = crate::bound_dispatch::execute_resource_operation(
+            self.root.as_mut(),
+            &mut self.state.doc,
+            &self.state.root,
+            &self.action_registry,
+            self.action_transport.as_mut(),
+            address,
+            resource,
+            spec,
+            encoded,
+            &self.author.0,
+            &self.author.0,
+            false,
+            invocation,
+            None,
+        )?;
+        if let Some(before) = before {
+            self.state.record_committed_action_authored(
+                before,
+                None,
+                None,
+                Some(self.author.clone()),
+            );
+        }
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.pending_control_invocations.insert(invocation);
+        }
+        Ok(started)
     }
 
     fn poll_control_invocations(&mut self) {
@@ -3470,7 +3540,123 @@ impl FrameHarness {
                 semantic_target,
                 action,
             } => self.perform_semantic_named(target, semantic_target.as_deref(), action),
+            Action::Invoke(invocation) => self.perform_invocation(invocation),
         }
+    }
+
+    fn perform_invocation(&mut self, invocation: &Invocation) -> Result<(), String> {
+        let result = self.invoke_action(
+            &invocation.address,
+            &invocation.arguments,
+            invocation.confirm,
+            invocation.confirmation_phrase.as_deref(),
+        );
+        match (result, invocation.expect_error.as_deref()) {
+            (Ok(_), None) => Ok(()),
+            (Ok(_), Some(code)) => Err(format!(
+                "expected the door to refuse with {code}, but the action ran"
+            )),
+            (Err(error), Some(code)) if error.code() == code => Ok(()),
+            (Err(error), _) => Err(format!("{}: {error}", error.code())),
+        }
+    }
+
+    /// Invoke one published action by address, the way an agent, a script
+    /// or a screen reader does: resolve it against the tree the app
+    /// publishes now, refuse it when unavailable, require the confirmation
+    /// its contract names (`confirm` for `Confirm`, the exact phrase for
+    /// `Phrase`), bind the arguments strictly, and run it through the host's
+    /// own executor. Then run the same host tick a real input event gets.
+    ///
+    /// # Errors
+    ///
+    /// Returns the door's refusal: unknown or hidden address, unavailable
+    /// action, missing confirmation, invalid arguments, or a failed run.
+    pub fn invoke_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirm: bool,
+        confirmation_phrase: Option<&str>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.pump_component_wakes();
+        let resources = self.resources();
+        let spec = tilo_actions::door::resolve(&resources, address)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        if let tilo_actions::Availability::Unavailable { code, reason } =
+            &spec.contract.availability
+        {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: code.clone(),
+                reason: reason.clone(),
+            });
+        }
+        let confirmed = match &spec.contract.confirmation {
+            tilo_actions::ConfirmationPolicy::None => false,
+            tilo_actions::ConfirmationPolicy::Confirm if confirm => true,
+            tilo_actions::ConfirmationPolicy::Phrase { phrase }
+                if confirmation_phrase == Some(phrase.as_str()) =>
+            {
+                true
+            }
+            tilo_actions::ConfirmationPolicy::Confirm
+            | tilo_actions::ConfirmationPolicy::Phrase { .. } => {
+                return Err(tilo_actions::DoorError::ConfirmationRequired);
+            }
+        };
+        let result = self.invoke_address(address, arguments, confirmed);
+        self.host_tick();
+        self.relayout();
+        result
+    }
+
+    /// Deliver an out-of-band payload the way the live host delivers a
+    /// [`crate::app::UserEvent::External`] — a worker's progress line, or a
+    /// wake-up for requests the app queued itself — then run the host tick.
+    pub fn deliver_external(&mut self, payload: &str) {
+        self.pump_component_wakes();
+        self.root
+            .on_external_event(payload, &mut self.state.doc, &self.state.root);
+        self.host_tick();
+        self.relayout();
+    }
+
+    fn invoke_address(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let selected = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            Some(address),
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::Dispatch)
+        .and_then(|snapshots| crate::bound_dispatch::select_bound_target(&snapshots, address, None))
+        .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        let Some(target) = selected else {
+            return self.invoke_unbound(address, arguments, confirmed);
+        };
+        let invocation = tilo_actions::InvocationId::new();
+        let started = crate::bound_dispatch::invoke_resource_action(
+            self.root.as_mut(),
+            &mut self.state.doc,
+            &target,
+            self.action_transport.as_mut(),
+            None,
+            Some(arguments),
+            &self.author.0,
+            confirmed,
+            false,
+            invocation,
+            None,
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.bound_invocations.insert(invocation, target);
+        }
+        Ok(started)
     }
 
     /// The document rendered as JSON, for a harness to diff across a
@@ -4099,12 +4285,12 @@ fn action_from_wire(action: tilo_headless_schema::Action) -> Action {
         Wire::Modifiers(modifiers) => Action::Modifiers(modifiers),
         Wire::WaitForNamed { target, timeout_ms } => Action::WaitForNamed {
             target,
-            timeout: std::time::Duration::from_millis(timeout_ms),
+            timeout: crate::time::Duration::from_millis(timeout_ms),
         },
         Wire::Expect(expected) => Action::Expect(SemanticExpectation {
             target: expected.target,
             semantic_target: expected.semantic_target,
-            timeout: expected.timeout_ms.map(std::time::Duration::from_millis),
+            timeout: expected.timeout_ms.map(crate::time::Duration::from_millis),
             role: expected.role,
             name: expected.name,
             name_contains: expected.name_contains,
@@ -4127,6 +4313,13 @@ fn action_from_wire(action: tilo_headless_schema::Action) -> Action {
             semantic_target,
             action: semantic_action_from_wire(action),
         },
+        Wire::Invoke(invocation) => Action::Invoke(Invocation {
+            address: tilo_actions::ActionAddress::new(invocation.resource, invocation.action),
+            arguments: invocation.args,
+            confirm: invocation.confirm,
+            confirmation_phrase: invocation.confirmation_phrase,
+            expect_error: invocation.expect_error,
+        }),
     }
 }
 
@@ -4155,7 +4348,7 @@ fn drive_spec_actions(
     tilo_startup_metrics::mark("headless-actions-start");
     // Native idle frames admit queued local controls even without input. Use
     // the same host tick here, including fresh permissions and undo recording.
-    if !driver.wait_until(std::time::Duration::from_secs(10), |driver| {
+    if !driver.wait_until(crate::time::Duration::from_secs(10), |driver| {
         !driver.root.has_pending_control_invocation()
             && driver.pending_control_invocations.is_empty()
             && driver.bound_invocations.is_empty()
@@ -4338,7 +4531,7 @@ pub fn run_with_theme(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str, the
 pub(crate) fn build_initialized_driver(
     inputs: crate::launch::LegacyLaunchInputs,
     viewport: (u32, u32),
-) -> Result<(Box<Driver>, crate::persist::Autosave), String> {
+) -> Result<(Box<Driver>, crate::persist::DocWriter), String> {
     use crate::launch::LegacyRecordPolicy;
     let autosave = &inputs.autosave;
     // An explicitly disabled writer is not successful durability, and never
@@ -4371,11 +4564,12 @@ pub(crate) fn build_initialized_driver(
 /// Inspect the same explicit record binding without requiring or flushing a
 /// writer. Legacy automatic headless persistence remains opt-in to headless
 /// execution; an audit must not activate that compatibility behavior.
+#[cfg(feature = "native")]
 pub(crate) fn build_audit_driver(
     inputs: crate::launch::LegacyLaunchInputs,
     viewport: (u32, u32),
     theme: Theme,
-) -> (Box<Driver>, crate::persist::Autosave) {
+) -> (Box<Driver>, crate::persist::DocWriter) {
     build_legacy_driver(inputs, viewport, theme, false)
 }
 
@@ -4384,7 +4578,7 @@ fn build_legacy_driver(
     viewport: (u32, u32),
     theme: Theme,
     activate_automatic_records: bool,
-) -> (Box<Driver>, crate::persist::Autosave) {
+) -> (Box<Driver>, crate::persist::DocWriter) {
     use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
     let LegacyLaunchInputs {
         mut state,
@@ -4561,7 +4755,7 @@ mod tests {
         let inputs = crate::launch::LegacyLaunchInputs::new(
             state,
             Box::new(crate::widget::Text::new("audit")),
-            crate::persist::Autosave::disabled("audit-only fixture"),
+            crate::persist::DocWriter::disabled("audit-only fixture"),
         )
         .with_records(crate::record::RecordSet::in_memory(), index);
         let (mut driver, autosave) =
@@ -4580,7 +4774,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("body")
         );
         assert_eq!(
@@ -4590,7 +4784,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("index")
         );
     }
@@ -4600,7 +4794,7 @@ mod tests {
         let mut inputs = crate::launch::LegacyLaunchInputs::new(
             State::new(),
             Box::new(crate::widget::Text::new("audit")),
-            crate::persist::Autosave::disabled("audit-only fixture"),
+            crate::persist::DocWriter::disabled("audit-only fixture"),
         );
         inputs.records = crate::launch::LegacyRecordPolicy::AutomaticHeadless {
             records: crate::record::RecordSet::in_memory(),
@@ -4999,13 +5193,13 @@ mod tests {
         assert!(matches!(
             &spec.actions[8],
             Action::WaitForNamed { target, timeout }
-                if target == "result" && *timeout == std::time::Duration::from_millis(750)
+                if target == "result" && *timeout == crate::time::Duration::from_millis(750)
         ));
         assert!(matches!(
             &spec.actions[9],
             Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout: Some(timeout), .. })
                 if target == "result" && role == "static_text"
-                    && *timeout == std::time::Duration::from_secs(1)
+                    && *timeout == crate::time::Duration::from_secs(1)
         ));
         assert!(matches!(
             &spec.actions[10],
@@ -5140,14 +5334,14 @@ mod tests {
         driver
             .perform(&Action::WaitForNamed {
                 target: "ready".into(),
-                timeout: std::time::Duration::from_millis(10),
+                timeout: crate::time::Duration::from_millis(10),
             })
             .expect("an already-present target succeeds immediately");
 
         let error = driver
             .perform(&Action::WaitForNamed {
                 target: "never-appears".into(),
-                timeout: std::time::Duration::from_millis(1),
+                timeout: crate::time::Duration::from_millis(1),
             })
             .unwrap_err();
         assert!(error.contains("1 ms"), "{error}");
@@ -5192,7 +5386,7 @@ mod tests {
                 &SemanticExpectation::named("items-tree")
                     .semantic_target("node:2")
                     .name("Still wrong")
-                    .within(std::time::Duration::from_millis(2)),
+                    .within(crate::time::Duration::from_millis(2)),
             )
             .unwrap_err();
         assert!(timeout.contains("timed out after 2 ms"), "{timeout}");
@@ -5355,7 +5549,7 @@ mod tests {
             .get(&automerge::ROOT, "remember")
             .unwrap()
             .unwrap();
-        assert_eq!(value.to_bool(), Some(true));
+        assert_eq!(value.as_bool(), Some(true));
     }
 
     #[test]
@@ -5793,7 +5987,7 @@ mod tests {
             let inputs = crate::launch::LegacyLaunchInputs::new(
                 State::new(),
                 Box::new(probe),
-                crate::persist::Autosave::disabled("fixture owns storage"),
+                crate::persist::DocWriter::disabled("fixture owns storage"),
             )
             .with_widget_owned_persistence();
             assert_eq!(
@@ -5821,7 +6015,7 @@ mod tests {
             let inputs = crate::launch::LegacyLaunchInputs::new(
                 State::new(),
                 Box::new(probe),
-                crate::persist::Autosave::disabled("fixture owns storage"),
+                crate::persist::DocWriter::disabled("fixture owns storage"),
             )
             .with_widget_owned_persistence();
             assert_eq!(
@@ -5913,7 +6107,7 @@ mod tests {
                 let edits = doc
                     .get(automerge::ROOT, "edit_count")
                     .unwrap()
-                    .and_then(|(value, _)| value.to_u64())
+                    .and_then(|(value, _)| value.as_u64())
                     .unwrap_or(0);
                 doc.put(automerge::ROOT, "edit_count", edits + 1).unwrap();
                 true
@@ -5954,7 +6148,7 @@ mod tests {
                 actions: vec![
                     Action::WaitForNamed {
                         target: "record-ready".into(),
-                        timeout: std::time::Duration::from_secs(2),
+                        timeout: crate::time::Duration::from_secs(2),
                     },
                     Action::Perform {
                         target: "record-ready".into(),
@@ -5990,7 +6184,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("late record content")
             );
             return;
@@ -6033,7 +6227,7 @@ mod tests {
         let mut inputs = LegacyLaunchInputs::new(
             state,
             Box::new(Button::new("plain-root", "Plain", None)),
-            crate::persist::Autosave::disabled("no writes in this fixture"),
+            crate::persist::DocWriter::disabled("no writes in this fixture"),
         );
         inputs.records = LegacyRecordPolicy::AutomaticHeadless {
             records: crate::record::RecordSet::in_memory(),
@@ -6076,7 +6270,7 @@ mod tests {
             ("bootstrap_only", "loaded body"),
         ] {
             assert_eq!(
-                reopened.get(ROOT, key).unwrap().unwrap().0.to_str(),
+                reopened.get(ROOT, key).unwrap().unwrap().0.as_str(),
                 Some(value)
             );
         }
@@ -6103,7 +6297,7 @@ mod tests {
                     actions: vec![
                         Action::WaitForNamed {
                             target: "record-ready".into(),
-                            timeout: std::time::Duration::from_secs(2),
+                            timeout: crate::time::Duration::from_secs(2),
                         },
                         Action::Perform {
                             target: "record-ready".into(),
@@ -6131,7 +6325,7 @@ mod tests {
                 AutoCommit::load(&stored_bytes)
                     .expect("all saved record bytes must be loadable, not a fallback");
                 assert_eq!(
-                    record.get(ROOT, "edit_count").unwrap().unwrap().0.to_u64(),
+                    record.get(ROOT, "edit_count").unwrap().unwrap().0.as_u64(),
                     Some(expected)
                 );
                 assert!(index.get(ROOT, "edit_count").unwrap().is_none());
@@ -6181,7 +6375,7 @@ mod tests {
                 let mut state = State::from_doc(incoming);
                 assert!(records.checkout(&mut state, None, &want));
                 assert_eq!(
-                    state.doc.get(ROOT, "branch").unwrap().unwrap().0.to_str(),
+                    state.doc.get(ROOT, "branch").unwrap().unwrap().0.as_str(),
                     Some("unsaved live edit")
                 );
                 let error = records.try_flush(&mut state.doc).unwrap_err();
@@ -6199,7 +6393,7 @@ mod tests {
                     let spec = Spec {
                         actions: vec![Action::WaitForNamed {
                             target: "record-ready".into(),
-                            timeout: std::time::Duration::from_secs(2),
+                            timeout: crate::time::Duration::from_secs(2),
                         }],
                         ..Spec::default()
                     };
@@ -6232,17 +6426,17 @@ mod tests {
             command.creation_flags(0x0800_0000);
         }
         let mut child = command.spawn().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(45);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
             }
-            if std::time::Instant::now() >= deadline {
+            if crate::time::now() >= deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
                 panic!("record restart regression timed out");
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(crate::time::Duration::from_millis(20));
         };
         assert!(
             status.success(),
@@ -7341,7 +7535,7 @@ mod prepared_driver_tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_owned();
                 doc.put(ROOT, "body", format!("{before}{text}")).unwrap();

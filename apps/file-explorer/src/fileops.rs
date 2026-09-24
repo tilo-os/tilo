@@ -64,7 +64,7 @@ pub fn trash_dir() -> Option<PathBuf> {
         None
     }
     #[cfg(not(windows))]
-    dirs::data_dir().map(|d| d.join("Trash").join("files"))
+    xdg_paths::data_dir().map(|d| d.join("Trash").join("files"))
 }
 
 /// Whether `path` is the home-trash files directory.

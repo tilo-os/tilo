@@ -3194,7 +3194,7 @@ mod tests {
         button.activate(&mut doc, &automerge::ROOT);
 
         let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();
-        assert_eq!(value.to_str(), Some("apply"));
+        assert_eq!(value.as_str(), Some("apply"));
     }
 
     #[test]
@@ -3205,7 +3205,7 @@ mod tests {
         assert!(button.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
 
         let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();
-        assert_eq!(value.to_str(), Some("apply"));
+        assert_eq!(value.as_str(), Some("apply"));
     }
 
     #[test]

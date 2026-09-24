@@ -63,6 +63,8 @@ pub mod fill;
 pub mod formula;
 pub mod grid;
 pub mod infer;
+#[cfg(test)]
+mod interchange_tests;
 pub mod model;
 pub mod ods;
 pub mod search_provider;

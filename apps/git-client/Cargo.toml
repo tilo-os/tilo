@@ -32,7 +32,8 @@ taffy.workspace = true
 anyhow.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "cred"] }
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 russh = { version = "0.63.3", default-features = false, features = ["ring", "flate2"] }
 tokio = { workspace = true, features = ["rt", "net", "time"] }
 url.workspace = true

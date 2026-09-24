@@ -7,6 +7,30 @@ use super::*;
 use crate::collaboration::RouteSpec;
 use automerge::transaction::Transactable;
 
+/// The user-visible status a transport outcome implies for a route: `Some`
+/// replaces the current one (clearing it on success), `None` leaves it (a
+/// transient refusal is retried silently).
+#[allow(
+    clippy::option_option,
+    reason = "three outcomes: replace with a message, clear it, or leave the current status"
+)]
+pub(super) fn outbound_failure(
+    result: &Result<(), crate::collaboration::CollabSendError>,
+) -> Option<Option<String>> {
+    match result {
+        Ok(()) => Some(None),
+        Err(crate::collaboration::CollabSendError::TooLarge { actual, max }) => {
+            Some(Some(format!(
+                "Changes are no longer shared: one change is {}, above the {} collaboration limit. \
+             They remain on this device.",
+                crate::format::bytes(u64::try_from(*actual).unwrap_or(u64::MAX)),
+                crate::format::bytes(u64::try_from(*max).unwrap_or(u64::MAX)),
+            )))
+        }
+        Err(_) => None,
+    }
+}
+
 fn matches_route(route: &RouteSpec, envelope: &collab_types::SignedOp) -> bool {
     collab_types::validate_document_payload_route(
         &route.app_id,
@@ -52,11 +76,18 @@ impl App {
             .status
             .as_deref()
             .or(self.document_routes.primary.failure.as_deref())
+            .or(self.document_routes.outbound.as_deref())
             .or_else(|| {
                 self.document_routes
                     .owners
                     .iter()
                     .find_map(|entry| entry.pending.failure.as_deref())
+            })
+            .or_else(|| {
+                self.document_routes
+                    .owners
+                    .iter()
+                    .find_map(|entry| entry.outbound_failure.as_deref())
             })
             .or_else(|| {
                 if self.document_routes.witness.is_none() {
@@ -91,12 +122,21 @@ impl App {
             self.layout.layout_dirty = true;
         }
     }
-    fn send_owned_document(&mut self, route: RouteSpec, request: CollabRequest) {
+    fn send_owned_document(
+        &mut self,
+        route: RouteSpec,
+        request: CollabRequest,
+    ) -> Result<(), crate::collaboration::CollabSendError> {
         #[cfg(test)]
-        self.document_routes
-            .sent
-            .push((route.clone(), request.clone()));
-        self.collaboration.manager.send_to_route(route, request);
+        {
+            if let Some(refusal) = self.document_routes.refuse_for_test.clone() {
+                return Err(refusal);
+            }
+            self.document_routes.sent.push((route, request));
+            Ok(())
+        }
+        #[cfg(not(test))]
+        self.collaboration.manager.try_send_to_route(route, request)
     }
     pub(super) fn publish_owned_documents(&mut self) {
         self.refresh_document_routes();
@@ -132,12 +172,31 @@ impl App {
             } else {
                 CollabRequest::document_incremental(document.save_after(&entry.sent_heads))
             };
-            entry.sent_heads = heads;
-            entry.needs_snapshot = false;
-            sends.push((entry.route.clone(), request));
+            sends.push((entry.route.clone(), request, heads));
         }
-        for (route, request) in sends {
-            self.send_owned_document(route, request);
+        for (route, request, heads) in sends {
+            let result = self.send_owned_document(route.clone(), request);
+            let failure = outbound_failure(&result);
+            let Some(entry) = self
+                .document_routes
+                .owners
+                .iter_mut()
+                .find(|entry| entry.route == route)
+            else {
+                continue;
+            };
+            // Only an accepted change moves the route's frontier; a refused
+            // one is offered again on the next publication.
+            if result.is_ok() {
+                entry.sent_heads = heads;
+                entry.needs_snapshot = false;
+            }
+            if let Some(failure) = failure
+                && entry.outbound_failure.as_ref() != failure.as_ref()
+            {
+                entry.outbound_failure = failure;
+                self.layout.layout_dirty = true;
+            }
         }
     }
     pub(super) fn drain_document_routes(&mut self) {

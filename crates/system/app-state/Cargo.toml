@@ -17,6 +17,8 @@ atomic-file = { path = "../../../crates/system/atomic-file" }
 # `standalone_state_dir` come from the CLI SDK, which is also what
 # `cli::resolve_workspace_path` falls back to. One resolver, two callers.
 cli = { path = "../../runtime/cli" }
+# The storage seam `FsStore` implements and `DocWriter` persists through.
+durable-store = { path = "../durable-store" }
 
 automerge.workspace = true
 thiserror.workspace = true
@@ -32,8 +34,10 @@ dirs.workspace = true
 same-file = "1.0.6"
 
 [dev-dependencies]
+durable-store = { path = "../durable-store", features = ["conformance"] }
 tempfile.workspace = true
 serial_test.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

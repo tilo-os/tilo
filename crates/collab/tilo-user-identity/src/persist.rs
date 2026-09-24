@@ -27,6 +27,7 @@
 //! root (or the reader for an injected/test store) and never reachable by
 //! anyone outside that group.
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::fs;
@@ -277,7 +278,7 @@ impl IdentityPaths {
             .unwrap_or_else(|| Path::new("device"));
         device_dir
             .join("certs")
-            .join(format!("{}.bin", hex_encode(user_public_key)))
+            .join(format!("{}.bin", hex::encode(user_public_key)))
     }
 }
 
@@ -633,7 +634,7 @@ pub fn load_or_create_device_key(
         Ok(_) => Ok((read_device_key(path)?, DeviceKeyOutcome::Loaded)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             paths.ensure_directories()?;
-            let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+            let sk = SigningKey::generate(&mut UnwrapErr(SysRng));
             let created = publish_device_key_no_clobber(path, &sk)?;
             // Always reload the final path.  When a simultaneous creator won
             // the atomic claim, returning our locally generated key would
@@ -1048,25 +1049,6 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
     fs::create_dir_all(parent)?;
     atomic_file::write(path, &bytes)?;
     Ok(())
-}
-
-/// # Panics
-/// Never in practice: `byte >> 4` and `byte & 0x0f` are both bounded to
-/// `0..16` by the bit operation itself (not by any external input), so
-/// indexing the 16-entry `HEX` table can never go out of range.
-#[allow(
-    clippy::indexing_slicing,
-    reason = "byte >> 4 and byte & 0x0f are both unconditionally in 0..16, so HEX[..] cannot go out of range; see this fn's # Panics doc"
-)]
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(unix)]

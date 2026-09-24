@@ -39,8 +39,9 @@ use fcast_sender_sdk::device::{
     TrackList,
 };
 use fcast_sender_sdk::{DeviceDiscovererEventHandler, url_format_ip_addr};
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use mdns_sd::ServiceEvent;
-use rand::{RngCore, rngs::OsRng};
+use rand::Rng;
 use tilo_projector::{
     CaptureProfile, DisplayResolutionLimit, DisplayStreamPolicy, ProjectionDevice, ProjectionMode,
     ProjectionProtocol, VideoPacket,
@@ -695,7 +696,7 @@ fn random_media_token() -> String {
     use std::fmt::Write as _;
 
     let mut bytes = [0u8; 24];
-    OsRng.fill_bytes(&mut bytes);
+    UnwrapErr(SysRng).fill_bytes(&mut bytes);
     let mut token = String::with_capacity(bytes.len().saturating_mul(2));
     for byte in bytes {
         let _ = write!(token, "{byte:02x}");
@@ -926,20 +927,23 @@ fn run_airplay_session(args: &[String]) -> Result<(), String> {
 fn airplay_credentials_path() -> Result<PathBuf, String> {
     airplay_credentials_path_from(
         std::env::var_os("TILO_PROJECTOR_STATE_DIR"),
-        std::env::var_os("XDG_STATE_HOME"),
-        std::env::var_os("HOME"),
+        std::env::var_os("XDG_STATE_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
     )
 }
 
 fn airplay_credentials_path_from(
     override_root: Option<std::ffi::OsString>,
-    xdg_state_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
+    xdg_state_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
 ) -> Result<PathBuf, String> {
     let state_root = override_root
         .map(PathBuf::from)
-        .or_else(|| xdg_state_home.map(|dir| Path::new(&dir).join("tilo-projector")))
-        .or_else(|| home.map(|dir| Path::new(&dir).join(".local/state/tilo-projector")))
+        .or_else(|| {
+            xdg_paths::xdg::Base::State
+                .resolve_from(xdg_state_home, home)
+                .map(|dir| dir.join("tilo-projector"))
+        })
         .ok_or_else(|| "cannot resolve persistent AirPlay pairing storage".to_owned())?;
     fs::create_dir_all(&state_root)
         .map_err(|error| format!("cannot create AirPlay pairing storage: {error}"))?;

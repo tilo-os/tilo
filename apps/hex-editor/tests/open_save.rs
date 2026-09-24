@@ -108,11 +108,35 @@ fn open_via_portal_loads_real_bytes_through_the_drain_path() {
     assert!(!view.has_file(), "starts in the honest empty state");
     assert!(view.model().is_empty(), "no fabricated buffer");
 
-    // Feed the chosen path through the exact drain path the portal worker feeds.
-    view.inject_open_outcome_for_test(PortalOutcome::Opened(path.clone()));
-
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;
+    let (taffy, node) = dummy_layout();
+    let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+    // Ctrl+O opens the host file chooser; the recording host answers it with
+    // the chosen path over the same channel a real chooser would use.
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+    ui::host::scoped(&services, || {
+        let mut handled = false;
+        let mut focus = None;
+        view.handle_event(
+            &key_press(Key::Character("o".into())),
+            1.0,
+            &ctrl,
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert!(handled, "Ctrl+O is consumed in the empty state");
+    });
+    let picks = recorder.pick_requests();
+    assert_eq!(picks.len(), 1, "exactly one file chooser was requested");
+    assert_eq!(picks[0].title(), "Open file");
+
     view.sync(&mut doc, &root); // drains the pick -> open_path()
 
     assert!(view.has_file(), "opening a file leaves the empty state");

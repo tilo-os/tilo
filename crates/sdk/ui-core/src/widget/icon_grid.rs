@@ -65,7 +65,7 @@ pub struct IconGrid {
     is_focused: bool,
     hover: Option<usize>,
     last_cursor: Point,
-    last_click: Option<(usize, std::time::Instant)>,
+    last_click: Option<(usize, crate::time::Instant)>,
 
     on_item_click: Option<ItemClick>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
@@ -368,11 +368,10 @@ impl Widget for IconGrid {
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
-            let label = truncate_to_width(
-                text_renderer,
+            let label = text_renderer.elide_to_width(
                 &item.label,
                 label_size,
-                self.cell_w - label_inset,
+                crate::num::f32_of_f64(self.cell_w - label_inset),
             );
             let (tw, th) = text_renderer.measure(&label, label_size, None);
             // The glyph + label block is centred in the cell so the margins
@@ -470,7 +469,7 @@ impl Widget for IconGrid {
                     if let Some(cb) = &mut self.on_item_click {
                         cb(i, ctrl, shift);
                     }
-                    let now = std::time::Instant::now();
+                    let now = crate::time::now();
                     let is_double = matches!(
                         self.last_click,
                         Some((pi, t)) if pi == i && now.duration_since(t) < crate::gesture::multi_click_interval()
@@ -580,28 +579,6 @@ impl Widget for IconGrid {
         }
         Some(node)
     }
-}
-
-/// Trim `text` (adding an ellipsis) until it measures within `max_w`.
-fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    let (w, _) = tr.measure(text, size, None);
-    if f64::from(w) <= max_w {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut keep = chars.len();
-    while keep > 0 {
-        keep = keep.saturating_sub(1);
-        let candidate: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
-        let (cw, _) = tr.measure(&candidate, size, None);
-        if f64::from(cw) <= max_w {
-            return candidate;
-        }
-    }
-    "…".to_string()
 }
 
 #[cfg(test)]

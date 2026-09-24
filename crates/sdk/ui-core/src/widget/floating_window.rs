@@ -15,9 +15,9 @@
     reason = "floating-window animation and geometry operate on bounded screen coordinates"
 )]
 
+use crate::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -179,7 +179,7 @@ impl<C: Widget> FloatingWindow<C> {
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         if open && !self.open {
-            self.opened_at = Some(Instant::now());
+            self.opened_at = Some(crate::time::now());
             self.reset_overlay_chrome_presence();
         }
         self.open = open;
@@ -193,7 +193,7 @@ impl<C: Widget> FloatingWindow<C> {
     /// Non-builder form of [`Self::open`].
     pub fn set_open(&mut self, open: bool) {
         if open && !self.open {
-            self.opened_at = Some(Instant::now());
+            self.opened_at = Some(crate::time::now());
             self.reset_overlay_chrome_presence();
         }
         self.open = open;
@@ -358,7 +358,7 @@ impl<C: Widget> FloatingWindow<C> {
     pub fn update_pointer_presence(&mut self, point: Point) {
         self.set_overlay_chrome_hovered(
             self.rect.contains(point) || self.drag.is_some(),
-            Instant::now(),
+            crate::time::now(),
         );
     }
 
@@ -496,7 +496,7 @@ impl<C: Widget> FloatingWindow<C> {
         if speed > 0.25 {
             self.squish = (speed / 34.0).clamp(0.0, 1.0);
             self.squish_axis = delta;
-            self.last_motion_at = Some(Instant::now());
+            self.last_motion_at = Some(crate::time::now());
         }
         match drag {
             Drag::Move { grab } => {
@@ -559,7 +559,7 @@ impl<C: Widget> FloatingWindow<C> {
             self.squish = 0.0;
             return (transform, 1.0);
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let open_t = self.opened_at.map_or(1.0, |at| {
             (now.saturating_duration_since(at).as_secs_f64() / OPEN_MOTION.as_secs_f64())
                 .clamp(0.0, 1.0)
@@ -937,7 +937,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             // landing chrome regardless of slow software readback time.
             1.0
         } else {
-            self.overlay_chrome_alpha_at(Instant::now(), theme.reduce_motion)
+            self.overlay_chrome_alpha_at(crate::time::now(), theme.reduce_motion)
         };
         let chrome_alpha = landing_alpha * presence_alpha;
         if chrome_alpha > 0.001 {
@@ -1135,7 +1135,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 if self.closable
                     && self.close_rect().contains(pt)
                     && (!self.overlay_chrome
-                        || self.overlay_chrome_alpha_at(Instant::now(), false) > 0.2)
+                        || self.overlay_chrome_alpha_at(crate::time::now(), false) > 0.2)
                 {
                     self.set_open(false);
                     *handled = true;
@@ -1931,21 +1931,21 @@ mod tests {
     fn pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover() {
         let (mut w, _e) = laid_out(true);
         w.overlay_chrome = true;
-        let now = Instant::now();
+        let now = crate::time::now();
         w.opened_at = Some(now - OVERLAY_CHROME_HOLD - OVERLAY_CHROME_FADE);
         assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
 
         w.update_pointer_position(w.window_rect().center());
-        assert!(w.overlay_chrome_alpha_at(Instant::now(), false) < 0.05);
-        w.overlay_chrome_changed_at = Some(Instant::now() - OVERLAY_CHROME_FADE);
-        assert!(w.overlay_chrome_alpha_at(Instant::now(), false) > 0.99);
+        assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) < 0.05);
+        w.overlay_chrome_changed_at = Some(crate::time::now() - OVERLAY_CHROME_FADE);
+        assert!(w.overlay_chrome_alpha_at(crate::time::now(), false) > 0.99);
 
         w.update_pointer_position(Point::new(-20.0, -20.0));
-        w.overlay_chrome_changed_at = Some(Instant::now() - OVERLAY_CHROME_FADE / 2);
-        let leaving = w.overlay_chrome_alpha_at(Instant::now(), false);
+        w.overlay_chrome_changed_at = Some(crate::time::now() - OVERLAY_CHROME_FADE / 2);
+        let leaving = w.overlay_chrome_alpha_at(crate::time::now(), false);
         assert!((0.45..=0.55).contains(&leaving));
         w.update_pointer_position(w.window_rect().center());
-        let interrupted = w.overlay_chrome_alpha_at(Instant::now(), false);
+        let interrupted = w.overlay_chrome_alpha_at(crate::time::now(), false);
         assert!(
             (interrupted - leaving).abs() < 0.05,
             "re-entering must continue from the current alpha, not jump"

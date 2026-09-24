@@ -25,7 +25,7 @@ path = "src/lib.rs"
 tracing = "0.1"
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
-zbus = { version = "4", default-features = false, features = ["tokio"] }
+zbus = { workspace = true, features = ["tokio"] }
 tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 futures-util = "0.3"
 

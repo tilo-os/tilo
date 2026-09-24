@@ -206,7 +206,7 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     let target = {
         let state = chrome.borrow();
         let tree = state.tree();
-        let workspace = tree.active_workspace();
+        let workspace = tree.desktop.active_workspace();
         resolve_for(
             path,
             &state.local_user_id,
@@ -293,7 +293,8 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     let launched = {
         let st = chrome.borrow();
         let tree = st.tree();
-        tree.active_workspace()
+        tree.desktop
+            .active_workspace()
             .map(|ws| launcher::launch_document_in_workspace(&app.package_id, ws, Some(path)))
     };
     match launched {
@@ -322,13 +323,14 @@ fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
 fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
     let st = chrome.borrow();
     let tree = st.tree();
-    let ws = tree.active_workspace()?;
+    let ws = tree.desktop.active_workspace()?;
     let strip_id = tree
+        .desktop
         .active_strip
         .get(&ws.id)
         .copied()
         .or_else(|| ws.strips.first().map(|s| s.id))?;
-    tree.active_group_for(strip_id).or_else(|| {
+    tree.desktop.active_group_for(strip_id).or_else(|| {
         ws.strips
             .iter()
             .find(|s| s.id == strip_id)
@@ -590,7 +592,7 @@ fn existing_window_for(record: &RecordId, chrome: &Chrome) -> Option<Existing> {
 /// Anywhere in the tree, not just the active workspace — focusing it
 /// may mean switching to where it is.
 fn tab_showing_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabAddress> {
-    for w in &tree.workspaces {
+    for w in &tree.desktop.workspaces {
         for s in &w.strips {
             for g in &s.window_groups {
                 for t in &g.tabs {
@@ -625,10 +627,10 @@ fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result
     let ws_id = {
         let st = chrome.borrow();
         let tree = st.tree();
-        if tree.active_workspace().is_none() {
+        if tree.desktop.active_workspace().is_none() {
             return Err(OpenError::NoWorkspace);
         }
-        tree.active
+        tree.desktop.active
     };
     let store = {
         let st = chrome.borrow();
@@ -698,7 +700,7 @@ mod tests {
 
     /// A stand-in `tilo-launcher` that records its argv, wired in via
     /// `TILO_LAUNCHER_BIN` so the log holds what production really ran.
-    fn install_recording_launcher(dir: &Path) -> PathBuf {
+    fn install_recording_launcher(dir: &Path, env: &mut tilo_test_env::ScopedEnv) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let log = dir.join("launched.log");
         let bin = dir.join("tilo-launcher");
@@ -708,11 +710,8 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // SAFETY: every caller is in the `process_env` serial group.
-        unsafe {
-            std::env::set_var("TILO_LAUNCHER_BIN", &bin);
-            std::env::set_var("XDG_RUNTIME_DIR", dir);
-        }
+        env.set("TILO_LAUNCHER_BIN", &bin)
+            .set("XDG_RUNTIME_DIR", dir);
         launcher::set_test_execution_program(Some(bin));
         launcher::set_wayland_socket_path(Some(dir.join("wayland-0")));
         log
@@ -741,21 +740,15 @@ mod tests {
         clear_open_documents();
     }
 
+    /// The environment itself is restored by each test's `ScopedEnv`.
     fn clear_launch_env() {
-        // SAFETY: every caller is in the `process_env` serial group.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_LAUNCHER_BIN");
-            std::env::remove_var("XDG_RUNTIME_DIR");
-            std::env::remove_var("TILO_WORKSPACE_ROOTS");
-        }
         launcher::set_test_execution_program(None);
         launcher::set_wayland_socket_path(None);
         reset_session_state();
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn continuation_uses_root_catalog_when_file_xattr_is_unavailable() {
         let root = tempfile::tempdir().unwrap();
         let document = root.path().join("deep/report.pdf");
@@ -777,8 +770,8 @@ mod tests {
             &serde_json::to_vec(&projection).unwrap(),
         )
         .unwrap();
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", root.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOTS", root.path());
         clear_open_documents();
         note_opening(
             &RecordId::for_file(&document),
@@ -804,7 +797,7 @@ mod tests {
     /// command the compositor executed and the events it queued, not
     /// what `open_in_workspace` handed back.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn each_format_opens_in_the_package_that_declares_it() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -815,9 +808,9 @@ mod tests {
         );
         install(tmp.path(), "so.tilo.pdf-viewer", "PDF Viewer", &["pdf"]);
         install(tmp.path(), "so.tilo.text-editor", "Text Editor", &["md"]);
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -865,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn explicit_drop_placement_survives_launch_until_toplevel_adoption() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -874,16 +867,16 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
         let (strip_id, group_id, old_first) = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let strip = &tree.workspaces[0].strips[0];
+            let strip = &tree.desktop.workspaces[0].strips[0];
             let ids = (
                 strip.id,
                 strip.window_groups[0].id,
@@ -913,7 +906,7 @@ mod tests {
         {
             let state = chrome.borrow();
             let tree = state.tree();
-            let group = &tree.workspaces[0].strips[0].window_groups[0];
+            let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
             assert_eq!(group.tabs[0].id, left_tab);
             assert_eq!(group.tabs[1].id, old_first);
             drop(tree);
@@ -940,7 +933,7 @@ mod tests {
             let state = chrome.borrow();
             let tree = state.tree();
             assert_eq!(
-                tree.workspaces[0].strips[0].window_groups[0].tabs[0].id,
+                tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id,
                 seam_tab
             );
             drop(tree);
@@ -953,7 +946,7 @@ mod tests {
     /// One instance, one launch — asserted against the tree the
     /// compositor paints and the commands it ran.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn opening_an_open_document_focuses_it_instead_of_launching_again() {
         const SURFACE: u64 = 4242;
         let tmp = tempfile::tempdir().unwrap();
@@ -963,9 +956,9 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let doc = tmp.path().join("report.odt");
@@ -992,11 +985,14 @@ mod tests {
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            let strip = tree.workspaces[0].strips[0].id;
-            let other = tree.workspaces[0].strips[0].window_groups[0].id;
-            let first_tab = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-            tree.set_active_group(strip, other);
-            if let Some(g) = tree.workspaces[0].strips[0].window_groups.first_mut() {
+            let strip = tree.desktop.workspaces[0].strips[0].id;
+            let other = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
+            let first_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+            tree.desktop.set_active_group(strip, other);
+            if let Some(g) = tree.desktop.workspaces[0].strips[0]
+                .window_groups
+                .first_mut()
+            {
                 g.active_tab = first_tab;
             }
         }
@@ -1018,6 +1014,7 @@ mod tests {
         let st = chrome.borrow();
         let tree = st.tree();
         let foreign: Vec<u64> = tree
+            .desktop
             .workspaces
             .iter()
             .flat_map(|w| w.strips.iter())
@@ -1035,18 +1032,21 @@ mod tests {
         );
 
         let addr = tab_showing_surface(&tree, SURFACE).expect("the window is in the tree");
-        assert_eq!(tree.active, addr.workspace, "its workspace is active");
         assert_eq!(
-            tree.active_strip.get(&addr.workspace).copied(),
+            tree.desktop.active, addr.workspace,
+            "its workspace is active"
+        );
+        assert_eq!(
+            tree.desktop.active_strip.get(&addr.workspace).copied(),
             Some(addr.strip),
             "its strip is active"
         );
         assert_eq!(
-            tree.active_group_for(addr.strip),
+            tree.desktop.active_group_for(addr.strip),
             Some(addr.group),
             "its group is active"
         );
-        let group = tree.workspaces[0]
+        let group = tree.desktop.workspaces[0]
             .strips
             .iter()
             .flat_map(|s| s.window_groups.iter())
@@ -1069,7 +1069,7 @@ mod tests {
     /// production route ([`crate::shell::install_document_opener`]) —
     /// the wiring is under test, not a direct call.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn the_file_explorer_opens_a_document_in_the_app_that_owns_it() {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
@@ -1079,9 +1079,9 @@ mod tests {
         std::fs::create_dir_all(&files).unwrap();
         let doc = files.join("agenda.odt");
         std::fs::write(&doc, b"x").unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &apps) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps);
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -1121,7 +1121,7 @@ mod tests {
             use crate::shell::state::{Effect, Scope, Subject};
             let st = chrome.borrow();
             let tree = st.tree();
-            let ws = tree.active_workspace().unwrap();
+            let ws = tree.desktop.active_workspace().unwrap();
             let want = Subject::app("so.tilo.word-processor");
             let scopes: Vec<Scope> = ws
                 .capabilities
@@ -1139,7 +1139,7 @@ mod tests {
 
     /// A type nothing claims is refused in words the explorer shows.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn the_file_explorer_reports_a_type_nothing_opens() {
         let tmp = tempfile::tempdir().unwrap();
         let apps = tmp.path().join("apps");
@@ -1148,9 +1148,9 @@ mod tests {
         let files = tmp.path().join("files");
         std::fs::create_dir_all(&files).unwrap();
         std::fs::write(files.join("archive.zzz"), b"x").unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &apps) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", &apps);
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -1193,7 +1193,7 @@ mod tests {
 
     /// A closed window means the next activation launches for real.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn a_closed_window_means_the_document_is_no_longer_open() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -1202,9 +1202,9 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let log = install_recording_launcher(tmp.path());
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let doc = tmp.path().join("report.odt");
@@ -1245,7 +1245,7 @@ mod tests {
     /// Resolution must land on the declaring package, not a name the
     /// compositor made up.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn declared_extension_resolves_to_the_declaring_package() {
         let tmp = tempfile::tempdir().unwrap();
         install(
@@ -1254,8 +1254,8 @@ mod tests {
             "Word Processor",
             &["odt", "md"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
         let target = resolve(Path::new("/w/report.odt"));
@@ -1277,20 +1277,19 @@ mod tests {
             DocumentTarget::App { .. }
         ));
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         launcher::invalidate_app_cache();
     }
 
     /// A format with nothing installed is its own answer — different
     /// from "this file is not a document".
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn document_with_no_installed_handler_is_distinguishable() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
         assert_eq!(
@@ -1306,8 +1305,7 @@ mod tests {
             "mkv is neither a qdoc format nor claimed by anything installed"
         );
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         launcher::invalidate_app_cache();
     }
 
@@ -1317,7 +1315,7 @@ mod tests {
     /// (no Wayland socket in a unit test), which is the point: the
     /// grant is recorded *before* the launch, so it's observable either way.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn opening_a_document_grants_read_for_that_path() {
         use crate::shell::state::{Effect, Scope, Subject};
 
@@ -1328,8 +1326,8 @@ mod tests {
             "Word Processor",
             &["odt"],
         );
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
         let doc_path = tmp.path().join("report.odt");
@@ -1339,6 +1337,7 @@ mod tests {
             chrome
                 .borrow()
                 .tree()
+                .desktop
                 .active_workspace()
                 .unwrap()
                 .capabilities
@@ -1350,7 +1349,7 @@ mod tests {
 
         let st = chrome.borrow();
         let tree = st.tree();
-        let ws = tree.active_workspace().unwrap();
+        let ws = tree.desktop.active_workspace().unwrap();
         let want_subject = Subject::app("so.tilo.word-processor");
         let granted: Vec<_> = ws
             .capabilities
@@ -1383,23 +1382,22 @@ mod tests {
         drop(tree);
         drop(st);
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         launcher::invalidate_app_cache();
     }
 
     /// Nothing installed claims `.zzz`, so the open is refused rather
     /// than silently launching something arbitrary.
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn unclaimed_extension_refuses_with_a_reportable_reason() {
         let tmp = tempfile::tempdir().unwrap();
         install(tmp.path(), "so.tilo.calculator", "Calculator", &[]);
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         launcher::invalidate_app_cache();
 
-        let log = install_recording_launcher(tmp.path());
+        let log = install_recording_launcher(tmp.path(), &mut env);
         reset_session_state();
 
         let chrome = chrome_with_workspace();
@@ -1433,6 +1431,7 @@ mod tests {
             chrome
                 .borrow()
                 .tree()
+                .desktop
                 .active_workspace()
                 .unwrap()
                 .capabilities
@@ -1449,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    #[serial_test::serial(process_env, launch_events)]
     fn remote_file_reference_resolves_a_projected_record_without_source_path() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("hydrated-on-read.md");
@@ -1492,9 +1491,8 @@ mod tests {
         xattr::set(&path, "user.tilo.content-hash", &[0x43; 32]).unwrap();
         xattr::set(&path, "user.tilo.thumb", b"fresh preview").unwrap();
 
-        let previous = std::env::var_os("TILO_WORKSPACE_ROOTS");
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ROOTS", root.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ROOTS", root.path());
         let resolved = open_continuity_file_reference(&reference)
             .expect("the mounted Files record catalog resolves and hydrates the remote reference");
         assert_eq!(resolved, path);
@@ -1505,9 +1503,8 @@ mod tests {
                 .contains(root.path().to_str().unwrap())
         );
         install(root.path(), "so.tilo.text-editor", "Text Editor", &["md"]);
-        // SAFETY: guarded by the process_env serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", root.path()) };
-        let log = install_recording_launcher(root.path());
+        env.set("TILO_APPS_DATA_DIR", root.path());
+        let log = install_recording_launcher(root.path(), &mut env);
         reset_session_state();
         let chrome = chrome_with_workspace();
         {
@@ -1526,12 +1523,5 @@ mod tests {
             "activation must use the normal document launcher: {launch:?}"
         );
         clear_launch_env();
-        // SAFETY: restore the process-global environment under the same lock.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_WORKSPACE_ROOTS", value),
-                None => std::env::remove_var("TILO_WORKSPACE_ROOTS"),
-            }
-        }
     }
 }

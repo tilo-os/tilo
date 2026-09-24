@@ -62,12 +62,6 @@ pub enum SliderCommit {
     Volume(f32),
 }
 
-struct ControlPaint {
-    control: QuickSettingsControl,
-    rect: Rect,
-    on: bool,
-}
-
 /// Root interaction state.  Editing uses the shared Tilo reorder controller;
 /// it never serialises paint geometry, only stable control identifiers.
 pub struct QuickSettingsRoot {
@@ -116,11 +110,10 @@ impl QuickSettingsRoot {
 
     const PAD: f64 = 16.0;
     const ACTION_COUNT: usize = 4;
-    const SLIDER_FOCUS_START: usize = Self::ACTION_COUNT + 1;
+    const SLIDER_FOCUS_START: usize = 0;
     const CONTROL_FOCUS_START: usize = Self::SLIDER_FOCUS_START + 2;
-    #[cfg(test)]
-    const EDIT_ACTION_WIDTH: f64 = 76.0;
-    const EDIT_HELP_COPY: &'static str = "Drag rows to reorder · Ctrl + Up/Down";
+    const EDIT_ACTION_WIDTH: f64 = 76.0; // Text affordance width, not a spacing step.
+    const EDIT_HELP_COPY: &'static str = "Drag to reorder · Ctrl + Up/Down";
 
     /// Single-line height of a chrome type role at the user's text scale.
     ///
@@ -349,13 +342,17 @@ impl QuickSettingsRoot {
     /// leaving text itself at the user's full theme scale. The same effective
     /// factor drives drawing and hit testing through every geometry helper.
     pub fn fit_root_layout_to_height(&mut self, state: &QuickSettingsState, height: f64) {
+        // Preserve the refined root's compact footprint even when the host
+        // could offer the old 416px panel. Text remains at its full scale;
+        // only spatial chrome participates in this fit.
+        let height = height.min(320.0);
         let unscaled = self.preferred_height_at(state, 1.0);
-        self.layout_scale = self.layout_scale.min((height / unscaled).clamp(0.35, 1.2));
+        self.layout_scale = self.layout_scale.min((height / unscaled).clamp(0.2, 1.2));
         // Rows that had to grow for their type do not shrink with the chrome
         // scale, so the proportional estimate above can still overshoot.
         // Walk the chrome down to the same floor until the whole root fits.
-        while self.preferred_height(state) > height && self.layout_scale > 0.35 {
-            self.layout_scale = (self.layout_scale - 0.01).max(0.35);
+        while self.preferred_height(state) > height && self.layout_scale > 0.2 {
+            self.layout_scale = (self.layout_scale - 0.01).max(0.2);
         }
     }
     fn target_at(scale: f64) -> f64 {
@@ -665,7 +662,6 @@ impl QuickSettingsRoot {
         let y = self.grid_top(panel) + n(row) * (card + gap);
         Rect::new(x, y, x + w, y + card)
     }
-    #[cfg(test)]
     fn edit_action_rect(&self, row: Rect) -> Rect {
         Rect::new(
             row.x1 - self.scaled(Self::EDIT_ACTION_WIDTH + 6.0),
@@ -686,6 +682,15 @@ impl QuickSettingsRoot {
         let w = (panel.width() - 2.0 * pad - gap) / 2.0;
         let x = panel.x0 + pad + n(i % 2) * (w + gap);
         Rect::new(x, y, x + w, y + card)
+    }
+    fn has_details(control: QuickSettingsControl, state: &QuickSettingsState) -> bool {
+        matches!(
+            control,
+            QuickSettingsControl::Bluetooth | QuickSettingsControl::Vpn
+        ) || (control == QuickSettingsControl::Wifi && state.radios.wifi_available)
+    }
+    fn control_details_rect(&self, card: Rect) -> Rect {
+        self.card_drill_in_rect(card)
     }
     /// A card's icon row: the band its glyph and its switch or chevron are
     /// centred on, on the control padding.
@@ -713,16 +718,6 @@ impl QuickSettingsRoot {
             chevron.center().y.clamp(card.y0 + half, card.y1 - half),
         );
         Rect::from_center_size(center, (target, target))
-    }
-    /// The drag handle on an edit row: the grip's glyph slot and its insets,
-    /// the row's full height.
-    fn edit_grip_rect(&self, row: Rect) -> Rect {
-        let slot = leading_glyph(
-            row,
-            self.scaled(CONTROL_INSET),
-            Self::glyph_at(self.layout_scale),
-        );
-        Rect::new(row.x0, row.y0, slot.x1 + self.scaled(CONTROL_INSET), row.y1)
     }
     /// Compatibility geometry for integration tests; the renderer uses the
     /// current control vector above.
@@ -801,6 +796,20 @@ impl QuickSettingsRoot {
         // activation; using a separate offset here makes the painted focus
         // ring target a different control from Enter.
         Self::CONTROL_FOCUS_START.saturating_add(control_count)
+    }
+    fn utility(&self, panel: Rect, state: &QuickSettingsState, index: usize) -> Rect {
+        let _ = (panel, state);
+        match index {
+            // Edit is painted as a quiet square in the title band, but owns
+            // the same wide pointer target as a labelled action tile.
+            0 => {
+                let edit = self.edit_rect();
+                Rect::from_center_size(edit.center(), (self.action(0).width(), 44.0))
+            }
+            1 => self.action(0),
+            2 => self.action(3),
+            _ => Rect::ZERO,
+        }
     }
     fn edit_rect(&self) -> Rect {
         let pad = self.scaled(PANEL_PAD);
@@ -1213,21 +1222,13 @@ impl QuickSettingsRoot {
             if !row.contains(point) {
                 continue;
             }
-            let present = self.config.controls.contains(&c);
-            if present && self.edit_grip_rect(row).contains(point) {
-                self.edit_drag.begin(c, i, point.y - row.y0, point);
-                return RootAction::None;
-            }
-            if !c.required() {
-                if present {
-                    self.config.controls.retain(|x| *x != c);
-                } else {
-                    self.config.controls.push(c);
-                }
+            let action = self.edit_action_rect(row);
+            if !c.required() && action.contains(point) {
+                self.config.controls.retain(|x| *x != c);
                 self.save_config();
                 return RootAction::LayoutChanged;
             }
-            if present {
+            if self.config.controls.contains(&c) {
                 self.edit_drag.begin(c, i, point.y - row.y0, point);
                 return RootAction::None;
             }
@@ -1318,9 +1319,8 @@ impl QuickSettingsRoot {
         // paints nothing under its controls. A second fill here (formerly
         // `surfaces.raised`) covered the inner half of that border and made
         // the tiles' own `raised` faces vanish into it.
-        self.header(scene, transform, text, theme, cursor);
         if self.edit_mode {
-            self.header(scene, transform, text, theme, cursor, state);
+            self.header(scene, transform, text, theme, cursor);
             self.draw_edit(scene, transform, text, theme, cursor, state);
         } else {
             self.draw_root(scene, transform, text, theme, cursor, state);
@@ -1333,7 +1333,6 @@ impl QuickSettingsRoot {
         text: &mut TextRenderer,
         theme: &Theme,
         cursor: Option<Point>,
-        state: &QuickSettingsState,
     ) {
         let colors = &theme.tokens.colors;
         // Panel title (HIG §9.6): `scale.base` semibold, centred on the
@@ -1486,6 +1485,11 @@ impl QuickSettingsRoot {
         paint_control(scene, transform, theme, sliders, false, false);
         for i in 0..2 {
             let face = self.slider_face_rect(self.panel, i);
+            let available = if i == 0 {
+                state.brightness_available
+            } else {
+                state.volume_available
+            };
             let band = Rect::new(sliders.x0, face.y0, sliders.x1, face.y1);
             ui::icons::draw_icon(
                 scene,
@@ -1918,6 +1922,17 @@ impl QuickSettingsRoot {
                 .focused(self.keyboard_focus == Some(edit_count))
                 .accessible_name("Reset Quick Settings defaults"),
         );
+        Button::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(done, "Done")
+                .primary()
+                .hovered(cursor.is_some_and(|p| done.contains(p)))
+                .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
+                .accessible_name("Finish editing Quick Settings"),
+        );
     }
     /// The grip, label and add/remove button of an edit row, shared by the
     /// resting rows and the drag ghost so the two cannot drift apart. Every
@@ -2115,26 +2130,6 @@ impl QuickSettingsRoot {
                     .with_state(AccessState::new().focusable(true)),
                 self.power_geometry(self.panel, state),
             ));
-        }
-        if !self.edit_mode {
-            root.children.push(
-                AccessNode::new(Role::Button)
-                    .with_name("Power profile")
-                    .with_value(state.power_profile.label())
-                    .with_description("Activate to use the next power profile")
-                    .with_state(AccessState::new().focusable(true)),
-            );
-            for name in [
-                "Customize Quick Settings",
-                "Open Settings",
-                "Open power menu",
-            ] {
-                root.children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_state(AccessState::new().focusable(true)),
-                );
-            }
         }
         if self.edit_mode {
             root.children.push(bounded(

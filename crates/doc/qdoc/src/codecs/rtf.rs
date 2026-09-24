@@ -1,5 +1,5 @@
 //! Built-in RTF **import** codec — parses `{\rtf1 …}` back onto the canonical
-//! rich-text model (`qdoc-rtf` handles export). Groups `{ … }` push/pop
+//! rich-text model ([`crate::export_rtf`] handles export). Groups `{ … }` push/pop
 //! formatting state; control words `\word`/`\wordN` take an optional signed
 //! parameter; control symbols cover literal specials (`\\ \{ \}`), `\'XX` hex
 //! bytes, `\uN` Unicode units, and `\*` (skip-destination).
@@ -12,8 +12,9 @@
 //! is parsed for the color lookup; escapes decode to literal text.
 //!
 //! RTF has no semantic headings, so every paragraph maps to `paragraph` (or
-//! `list_item` if bulleted). `export` is `Unsupported`: RTF export lives in
-//! `qdoc-rtf` (needs a materialized snapshot a `FormatProvider` doesn't get).
+//! `list_item` if bulleted). `export` is `Unsupported`: RTF export is
+//! [`crate::export_rtf::render_rtf`] (needs a materialized snapshot a
+//! `FormatProvider` doesn't get).
 use crate::format::{CodecError, Confidence, FormatProvider};
 use crate::model::{DocMut, DocRef};
 
@@ -51,9 +52,9 @@ impl FormatProvider for RtfCodec {
     }
 
     fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        // Reusing `qdoc-rtf`'s writer here would need `qdoc` to depend on it — a cycle.
+        // The RTF writer renders a materialized `DocSnapshot`, not a `DocRef`.
         Err(CodecError::Unsupported(
-            "RTF export is provided by the `qdoc-rtf` crate (editor), not the qdoc codec"
+            "RTF export is provided by qdoc::export_rtf::render_rtf, not the qdoc codec"
                 .to_string(),
         ))
     }
@@ -551,7 +552,10 @@ fn open_block(
 }
 
 /// Ensures a current block exists (opening one if a paragraph break is pending), returning its id.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the RTF reader threads its whole parse state through these steps"
+)]
 fn ensure_block(
     doc: &mut DocMut,
     prev: &mut Option<String>,
@@ -570,7 +574,10 @@ fn ensure_block(
     cur.clone().unwrap_or_default()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the RTF reader threads its whole parse state through these steps"
+)]
 fn push_char(
     doc: &mut DocMut,
     prev: &mut Option<String>,
@@ -587,7 +594,10 @@ fn push_char(
 }
 
 /// Pushes a run of literal text under the active char formatting, gathering the run marks it implies.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the RTF reader threads its whole parse state through these steps"
+)]
 fn push_text(
     s: &str,
     cs: &CharState,
@@ -668,7 +678,10 @@ fn push_text(
 }
 
 /// Handle a control word: toggle char state, break paragraphs, or note a bullet.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the RTF reader threads its whole parse state through these steps"
+)]
 fn handle_control(
     word: &str,
     param: Option<i32>,
@@ -700,7 +713,7 @@ fn handle_control(
         }
         "pard" => {
             // Reset paragraph-level state; also a soft break so `\pard` between paragraphs
-            // starts a new block (`qdoc-rtf` emits one `\pard … \par` per paragraph); doesn't reset char state.
+            // starts a new block (`export_rtf` emits one `\pard … \par` per paragraph); doesn't reset char state.
             *need_new_block = true;
             *cur = None;
             *pending_bullet = false;
@@ -723,7 +736,7 @@ fn handle_control(
         "cf" => cs.color = usize::try_from(param.unwrap_or(0).max(0)).unwrap_or(0),
         "fs" => cs.fs_halfpt = param,
         "plain" => *cs = CharState::default(),
-        // A literal bullet glyph (`qdoc-rtf` emits `\bullet\tab `) marks the paragraph as a
+        // A literal bullet glyph (`export_rtf` emits `\bullet\tab `) marks the paragraph as a
         // list item; `\pntext`/`\pn` groups are list-marker destinations we skip but still flag it.
         "bullet" => *pending_bullet = true,
         "pntext" | "pn" | "listtext" => {
@@ -946,8 +959,8 @@ mod tests {
         assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
     }
 
-    /// A hand-written RTF snapshot shaped like `qdoc-rtf`'s emit side; the full
-    /// round-trip lives in `editor` (avoiding the `qdoc`↔`qdoc-rtf` dependency cycle).
+    /// A hand-written RTF snapshot shaped like `export_rtf`'s emit side; the full
+    /// round-trip lives in the word processor's tests.
     #[test]
     fn roundtrip_docrtf_shaped_rtf_preserves_text_and_bold() {
         let rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fswiss Helvetica;}}{\\colortbl;}\n\

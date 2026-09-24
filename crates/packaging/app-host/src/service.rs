@@ -50,14 +50,51 @@ struct SystemPackage {
     manifest_text: String,
 }
 
-fn system_data_dir() -> PathBuf {
-    std::env::var_os("TILO_APPS_SYSTEM_DIR")
-        .map_or_else(|| PathBuf::from(SYSTEM_DATA_DIR), PathBuf::from)
+/// Where the image's preinstalled packages are listed: the metadata
+/// directory holding `registry.toml` and the root every listed payload must
+/// lie under.
+///
+/// Resolved once when the daemon starts and shared by every connection, so
+/// a request never consults the process environment.
+#[derive(Clone, Debug)]
+pub struct SystemCatalog {
+    data_dir: PathBuf,
+    payload_dir: PathBuf,
 }
 
-fn system_payload_dir() -> PathBuf {
-    std::env::var_os("TILO_APPS_SYSTEM_PAYLOAD_DIR")
-        .map_or_else(|| PathBuf::from(SYSTEM_PAYLOAD_DIR), PathBuf::from)
+impl SystemCatalog {
+    /// The catalog at explicit directories.
+    pub fn at(data_dir: impl Into<PathBuf>, payload_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            data_dir: data_dir.into(),
+            payload_dir: payload_dir.into(),
+        }
+    }
+
+    /// The image's catalog: `/usr/share/tilo-apps` and `/usr/lib/tilo-apps`,
+    /// unless `TILO_APPS_SYSTEM_DIR` / `TILO_APPS_SYSTEM_PAYLOAD_DIR` name
+    /// other directories in a developer build (see [`crate::dev_env`]).
+    pub fn from_env() -> Self {
+        Self::at(
+            path_or_default(
+                crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_DIR_ENV),
+                SYSTEM_DATA_DIR,
+            ),
+            path_or_default(
+                crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_PAYLOAD_DIR_ENV),
+                SYSTEM_PAYLOAD_DIR,
+            ),
+        )
+    }
+
+    fn packages(&self) -> Result<Vec<SystemPackage>, Error> {
+        system_packages_from(&self.data_dir, &self.payload_dir)
+    }
+}
+
+/// The override the build's gate let through, else the image default.
+fn path_or_default(allowed_override: Option<std::ffi::OsString>, default: &str) -> PathBuf {
+    allowed_override.map_or_else(|| PathBuf::from(default), PathBuf::from)
 }
 
 fn is_within(root: &Path, path: &Path) -> bool {
@@ -68,10 +105,6 @@ fn is_within(root: &Path, path: &Path) -> bool {
         return false;
     };
     path.starts_with(root)
-}
-
-fn system_packages() -> Result<Vec<SystemPackage>, Error> {
-    system_packages_from(&system_data_dir(), &system_payload_dir())
 }
 
 fn system_packages_from(root: &Path, payload_root: &Path) -> Result<Vec<SystemPackage>, Error> {
@@ -168,9 +201,14 @@ fn visible_entries(
     entries
 }
 
-fn visible_system_for_id(store: &Store, id: PackageId) -> Result<Option<SystemPackage>, Error> {
+fn visible_system_for_id(
+    store: &Store,
+    catalog: &SystemCatalog,
+    id: PackageId,
+) -> Result<Option<SystemPackage>, Error> {
     let user_ids = user_app_ids(&store.list());
-    Ok(system_packages()?
+    Ok(catalog
+        .packages()?
         .into_iter()
         .find(|entry| entry.id == id && !user_ids.contains(&entry.app_id)))
 }
@@ -178,16 +216,18 @@ fn visible_system_for_id(store: &Store, id: PackageId) -> Result<Option<SystemPa
 /// Service state shared across every accepted connection.
 pub struct AppHostServer {
     store: Arc<Store>,
+    catalog: Arc<SystemCatalog>,
     max_store_bytes: u64,
 }
 
 impl AppHostServer {
-    /// Build a new server backed by `store`. `max_store_bytes` is the
-    /// soft cap used by the post-install GC sweep; pass `0` to disable
-    /// GC.
-    pub fn new(store: Arc<Store>, max_store_bytes: u64) -> Self {
+    /// Build a new server backed by `store`, listing the preinstalled
+    /// packages of `catalog` beside it. `max_store_bytes` is the soft cap
+    /// used by the post-install GC sweep; pass `0` to disable GC.
+    pub fn new(store: Arc<Store>, catalog: Arc<SystemCatalog>, max_store_bytes: u64) -> Self {
         Self {
             store,
+            catalog,
             max_store_bytes,
         }
     }
@@ -247,10 +287,12 @@ fn payload_size(_store: &Store, entry: &RegistryEntry) -> u64 {
     crate::store::dir_size(&entry.payload_root).unwrap_or(0)
 }
 
+/// The launcher that builds every app's sandbox. `TILO_LAUNCHER_BIN`
+/// re-points it in developer builds only.
 fn launcher_bin() -> std::path::PathBuf {
-    std::env::var_os("TILO_LAUNCHER_BIN").map_or_else(
-        || std::path::PathBuf::from("/usr/bin/tilo-launcher"),
-        std::path::PathBuf::from,
+    path_or_default(
+        crate::dev_env::dev_override(crate::dev_env::LAUNCHER_BIN_ENV),
+        "/usr/bin/tilo-launcher",
     )
 }
 
@@ -350,10 +392,11 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::ListResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
+        let catalog = Arc::clone(&self.catalog);
         async move {
             let entries = tokio::task::spawn_blocking(move || {
                 let user_entries = store.list();
-                let system_entries = system_packages()?;
+                let system_entries = catalog.packages()?;
                 let entries = visible_entries(user_entries, system_entries);
                 let sizes: Vec<u64> = entries
                     .iter()
@@ -388,6 +431,7 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::ResolveResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
+        let catalog = Arc::clone(&self.catalog);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
             let id_bytes = p
@@ -400,7 +444,7 @@ impl app_host::Server for AppHostServer {
                     let size = payload_size(&store, &entry);
                     return Ok((entry, size, true));
                 }
-                let system = visible_system_for_id(&store, id)
+                let system = visible_system_for_id(&store, &catalog, id)
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("unknown package {id}"))?;
                 let entry = system_as_registry(&system);
@@ -588,6 +632,7 @@ impl app_host::Server for AppHostServer {
         mut results: app_host::LaunchResults,
     ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
         let store = Arc::clone(&self.store);
+        let catalog = Arc::clone(&self.catalog);
         async move {
             let p = params.get().map_err(|e| Error::failed(e.to_string()))?;
             let id = parse_id(p.get_id().map_err(|e| Error::failed(e.to_string()))?)?;
@@ -606,7 +651,7 @@ impl app_host::Server for AppHostServer {
                         .map_err(|e| Error::failed(format!("materialize manifest: {e}")))?;
                     (entry, manifest, true)
                 } else {
-                    let system = visible_system_for_id(&store, id)?
+                    let system = visible_system_for_id(&store, &catalog, id)?
                         .ok_or_else(|| Error::failed(format!("unknown package {id}")))?;
                     let manifest = system.manifest_path.clone();
                     (system_as_registry(&system), manifest, false)
@@ -773,6 +818,31 @@ impl app_host::Server for AppHostServer {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn a_release_build_keeps_the_image_store_and_launcher() {
+        use crate::dev_env::{
+            APPS_SYSTEM_DIR_ENV, APPS_SYSTEM_PAYLOAD_DIR_ENV, LAUNCHER_BIN_ENV, dev_override_from,
+        };
+        for (name, default) in [
+            (APPS_SYSTEM_DIR_ENV, SYSTEM_DATA_DIR),
+            (APPS_SYSTEM_PAYLOAD_DIR_ENV, SYSTEM_PAYLOAD_DIR),
+            (LAUNCHER_BIN_ENV, "/usr/bin/tilo-launcher"),
+        ] {
+            let gated = dev_override_from(false, name, Some("/tmp/attacker".into()));
+            assert_eq!(
+                path_or_default(gated, default),
+                PathBuf::from(default),
+                "{name}"
+            );
+            let honoured = dev_override_from(true, name, Some("/dev/overlay".into()));
+            assert_eq!(
+                path_or_default(honoured, default),
+                PathBuf::from("/dev/overlay"),
+                "{name}"
+            );
+        }
+    }
 
     fn system_manifest(id: &str) -> String {
         format!(

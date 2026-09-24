@@ -1,16 +1,12 @@
 //! Durable ciphertext-only governance frame and targeted-delivery journal.
 
-use std::fs::{self, OpenOptions};
-use std::io::Write as _;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::fs;
 use std::path::PathBuf;
 
 use collab_types::{
     Ed25519PublicKey, EncryptionMetadata, MlsGovernanceAction, MlsGovernanceContext,
     MlsGovernanceFrameV1,
 };
-use rand::RngCore as _;
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
@@ -268,32 +264,7 @@ impl GovernanceJournal {
     fn persist(&self, state: &JournalState) -> Result<()> {
         let bytes = postcard::to_allocvec(state)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut random = [0_u8; 8];
-        rand::rngs::OsRng.fill_bytes(&mut random);
-        let tmp = self
-            .path
-            .with_extension(format!("tmp-{:016x}", u64::from_le_bytes(random)));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let result = (|| -> std::io::Result<()> {
-            let mut file = options.open(&tmp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&tmp, &self.path)?;
-            if let Some(parent) = self.path.parent() {
-                OpenOptions::new().read(true).open(parent)?.sync_all()?;
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        result.map_err(Error::Io)
+        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600).map_err(Error::Io)
     }
 }
 

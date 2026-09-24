@@ -289,47 +289,65 @@ mod tests {
         }))
     }
 
+    /// A read that blocks until the test releases it, and records whether
+    /// it had finished — so "did the caller wait for it" is a fact, not a
+    /// wall-clock guess. An inline read would only finish after the hang
+    /// guard expires, and then report itself finished.
+    fn gated_read() -> (
+        std::sync::mpsc::Sender<()>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        impl FnOnce() + Send + 'static,
+    ) {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_finished = std::sync::Arc::clone(&finished);
+        let wait = move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            worker_finished.store(true, std::sync::atomic::Ordering::SeqCst);
+        };
+        (release_tx, finished, wait)
+    }
+
     #[test]
     fn dispatching_a_slow_read_does_not_block_the_caller() {
         let mut r = QsRefresh::new();
-        let read_cost = Duration::from_millis(400);
-        let started = Instant::now();
+        let (release, finished, wait) = gated_read();
         r.kick_fast_with(move || {
-            std::thread::sleep(read_cost);
+            wait();
             empty_fast()
         });
-        let dispatch = started.elapsed();
         assert!(
-            dispatch < read_cost / 4,
-            "kick returned after {dispatch:?}; a {read_cost:?} read was performed inline"
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "kick returned only after the read finished: it was performed inline"
         );
         assert!(r.is_in_flight(), "the tier should be marked outstanding");
         assert!(
             r.drain().is_empty(),
             "no reading can have landed yet — draining must not block waiting for one"
         );
+        release.send(()).expect("release the read");
     }
 
     #[test]
     fn dispatching_a_slow_wifi_join_does_not_block_and_delivers_its_result() {
-        use std::sync::mpsc;
-
         let mut refresh = QsRefresh::without_os_reads();
         // Explicit test work must remain enabled even though ambient host
         // reads are disabled for this deterministic fixture.
         refresh.enabled = true;
-        let (release_tx, release_rx) = mpsc::channel();
-        let started = std::time::Instant::now();
+        let (release_tx, finished, wait) = gated_read();
         refresh.kick_wifi_join_with("Cafe".into(), Some("secret".into()), false, move |_, _| {
-            let _ = release_rx.recv();
+            wait();
             Ok(())
         });
-        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "the join ran inline"
+        );
         assert!(refresh.is_in_flight());
         assert!(refresh.drain().is_empty());
         release_tx.send(()).expect("release wifi worker");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             let readings = refresh.drain();
             if let Some(QsReading::WifiJoin(result)) = readings.into_iter().next() {

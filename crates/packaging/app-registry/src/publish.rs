@@ -14,7 +14,7 @@
 
 use std::path::Path;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use tilo_app_package::PackageId;
 use tilo_app_package::manifest::Arch;
@@ -212,7 +212,9 @@ pub fn entry_publish_body(entry: &IndexEntry) -> Result<Vec<u8>> {
 pub async fn emit_entry_https(base_url: &str, entry: &IndexEntry) -> Result<()> {
     let url = format!("{}/publish", base_url.trim_end_matches('/'));
     let body = entry_publish_body(entry)?;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client()
+        .build()
+        .context("build registry HTTP client")?;
     let resp = client
         .post(&url)
         .header("content-type", "application/json")

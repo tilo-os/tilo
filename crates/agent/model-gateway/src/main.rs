@@ -122,6 +122,10 @@ fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
     Ok(listener)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to spawned children; cleared once, right after the descriptor is taken at the start of `serve`, before any thread is spawned"
+)]
 fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
     const SYSTEMD_LISTEN_FD: i32 = 3;
 
@@ -382,7 +386,7 @@ fn plan(
     let endpoint = provider_url(&profile);
     let timeout = requested_timeout.min(MAX_PROVIDER_TIMEOUT);
     let began = Instant::now();
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .connect_timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
@@ -431,7 +435,7 @@ fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Resul
 
     let endpoint = provider_url(&profile);
     let body = local_vision_body(model_id, image);
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .connect_timeout(Duration::from_secs(8))
         .build()
         .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
@@ -471,7 +475,7 @@ fn cluster_faces(profile_id: &str, model_id: &str, images: &[FaceImage]) -> Resu
     }
     let endpoint = provider_url(&profile);
     let body = local_face_body(model_id, images);
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .connect_timeout(Duration::from_secs(8))
         .build()
         .map_err(|_| "gateway HTTP client is unavailable".to_string())?;

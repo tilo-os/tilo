@@ -33,13 +33,7 @@ pub fn week_days(date: NaiveDate) -> Vec<NaiveDate> {
 
 /// Number of days in month `m` of year `y`.
 pub fn days_in_month(y: i32, m: u32) -> u32 {
-    // Every month has at least 28 days, so probing downward from 31
-    // always finds a valid date without needing to construct — and
-    // possibly overflow into — the next month.
-    (28..=31)
-        .rev()
-        .find(|&d| NaiveDate::from_ymd_opt(y, m, d).is_some())
-        .unwrap_or(28)
+    ui::date::days_in_month(i64::from(y), m)
 }
 
 /// Shift `date` by `delta` whole months, clamping the day-of-month so

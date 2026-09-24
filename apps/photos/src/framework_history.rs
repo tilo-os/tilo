@@ -68,14 +68,14 @@ fn values<'a>(
     doc.get_all(obj, key).map_err(|e| e.to_string())
 }
 fn json<T: serde::de::DeserializeOwned>(v: &Value<'_>) -> Result<T, String> {
-    let text = v.to_str().ok_or("Recorded Photos JSON must be a string")?;
+    let text = v.as_str().ok_or("Recorded Photos JSON must be a string")?;
     if text.len() > 16 * 1024 * 1024 {
         return Err("Recorded Photos JSON exceeds safe size".into());
     }
     serde_json::from_str(text).map_err(|e| format!("Malformed recorded Photos JSON: {e}"))
 }
 fn text(v: &Value<'_>) -> Result<(), String> {
-    v.to_str()
+    v.as_str()
         .filter(|s| s.len() <= 65_536)
         .map(|_| ())
         .ok_or_else(|| "Invalid recorded text".into())
@@ -305,7 +305,7 @@ pub(crate) fn validate(doc: &AutoCommit) -> Result<(), String> {
                                     for (v, _) in values(doc, &row, field)? {
                                         text(&v)?;
                                         if field == "content" {
-                                            let h = v.to_str().unwrap_or_default();
+                                            let h = v.as_str().unwrap_or_default();
                                             image(&OpenImage {
                                                 content: Some(h.into()),
                                                 ..OpenImage::default()

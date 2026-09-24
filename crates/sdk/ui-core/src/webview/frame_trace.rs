@@ -23,6 +23,7 @@ impl SceneFrames {
             self.ids.push(id);
         }
     }
+    #[cfg(feature = "native")]
     fn take(&mut self) -> (Vec<u64>, bool) {
         (
             std::mem::take(&mut self.ids),
@@ -66,6 +67,7 @@ pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option
     Some(id)
 }
 /// Discard observations from any offscreen draw before this window scene.
+#[cfg(feature = "native")]
 pub(crate) fn begin_scene() {
     if enabled() {
         DRAWN.with(|scene| {
@@ -80,6 +82,7 @@ pub(crate) fn drawn(id: Option<u64>) {
 }
 /// Called after recording a complete scene, even when it has no fresh input.
 /// Missing CPU IDs or overflow must be rejected by the measurement analyzer.
+#[cfg(feature = "native")]
 pub(crate) fn finish_scene(cpu_frame_id: Option<u64>) {
     if !enabled() {
         return;

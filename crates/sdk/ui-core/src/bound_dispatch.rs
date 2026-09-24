@@ -6,7 +6,6 @@ use crate::widget::Widget;
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::fmt::Write;
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 
@@ -310,9 +309,7 @@ impl BoundPublication {
             .into());
         }
         let mut alias = prefix;
-        for byte in resource.as_bytes() {
-            let _ = write!(alias, "{byte:02x}");
-        }
+        alias.push_str(&hex::encode(resource));
         owners.insert(binding.lifetime_id, binding.clone());
         Ok(alias)
     }
@@ -540,6 +537,7 @@ pub(crate) fn publication_visibility(
 }
 
 /// Opaque legacy navigation remains scoped to the provider that produced it.
+#[cfg(feature = "native")]
 pub(crate) fn activate_bound_search(
     root: &mut dyn Widget,
     doc: &mut AutoCommit,
@@ -1337,7 +1335,7 @@ impl RecordActionState {
             qdoc::history::commit_stamped_with_message(doc, pending.context.change_message());
         } else if doc.pending_ops() != 0 {
             // Legacy widget input is not wrapped in a bound action frame.
-            // Persistence must still close that transaction or Autosave sees
+            // Persistence must still close that transaction or DocWriter sees
             // unchanged heads and silently writes only the earlier snapshot.
             doc.commit();
         }
@@ -2722,8 +2720,8 @@ fn authorize_legacy_owner(
     let (_, app, _) = store
         .history_namespace(&checkout.id)
         .map_err(|error| error.to_string())?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = crate::time::wall()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map_err(|_| "execution time unavailable")?
         .as_secs();
     let current = authority.clone().at_unix_time(now);

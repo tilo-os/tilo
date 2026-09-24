@@ -1,26 +1,28 @@
 //! Page header / footer ⇄ OOXML header/footer parts. `WordprocessingML` keeps each page
 //! region in its own part (`word/header1.xml`/`word/footer1.xml`, `w:hdr`/`w:ftr`),
-//! referenced from the body's `w:sectPr` by relationship id. A page-number field is a
+//! referenced from the body's `w:sectPr` by relationship id. The canonical model holds one
+//! header and one footer, exported as the section's `default` pair; `first`/`even` variants
+//! are carried through unedited (see `section`). A page-number field is a
 //! `PAGE` field, emitted as `w:fldSimple w:instr=" PAGE "` and parsed from both that
 //! simple form and the complex `w:instrText` form.
 
+use crate::codecs::xml_escape::push_text;
 use crate::model::{DocMut, DocRef, Region, materialize_region};
 use crate::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
 use crate::snapshot::BlockView;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
-// `write!` into a `String` cannot fail; the discarded `Result` is the
-// `fmt::Write` contract, not a swallowed error.
-use std::fmt::Write as _;
+use std::borrow::Cow;
 
-/// The fixed part names + relationship ids qdoc writes for header/footer.
-pub(super) const HEADER_PART: &str = "word/header1.xml";
-pub(super) const FOOTER_PART: &str = "word/footer1.xml";
+/// The relationship ids qdoc's own header/footer are referenced under; the parts they point at
+/// are named per export (see `section::plan`).
 pub(super) const HEADER_REL_ID: &str = "rIdQdocHdr";
 pub(super) const FOOTER_REL_ID: &str = "rIdQdocFtr";
 
 /// Resolve the default header + footer part names via `word/_rels/document.xml.rels`.
-/// Prefers the `w:type="default"` reference; falls back to the first of each kind.
+/// Reads the body's final `w:sectPr` (the one export keeps); prefers its `w:type="default"`
+/// reference, then its first reference of each kind, then — as Word does for a section
+/// without one — whatever an earlier section referenced.
 pub(super) fn resolve_default_parts(
     document_xml: &[u8],
     rels_xml: Option<&[u8]>,
@@ -38,49 +40,69 @@ pub(super) fn resolve_default_parts(
     (resolve(hdr_rid), resolve(ftr_rid))
 }
 
-/// The default (or first) header/footer relationship ids from the first `w:sectPr`.
+/// The header/footer references of one `w:sectPr`: the `default` one and the first one.
+#[derive(Default)]
+struct SectionRefs {
+    default: Option<String>,
+    first: Option<String>,
+}
+
+impl SectionRefs {
+    fn record(&mut self, rid: Option<String>, kind: Option<&str>) {
+        if self.first.is_none() {
+            self.first.clone_from(&rid);
+        }
+        if kind.is_none_or(|k| k == "default") {
+            self.default = rid;
+        }
+    }
+
+    fn best(self) -> Option<String> {
+        self.default.or(self.first)
+    }
+}
+
+/// The default (or first) header/footer relationship ids of the last `w:sectPr` that has any.
 fn sectpr_reference_ids(document_xml: &[u8]) -> (Option<String>, Option<String>) {
     let Ok(s) = std::str::from_utf8(document_xml) else {
         return (None, None);
     };
     let mut reader = Reader::from_str(s);
     let mut in_sectpr = false;
-    let mut hdr_default: Option<String> = None;
-    let mut hdr_first: Option<String> = None;
-    let mut ftr_default: Option<String> = None;
-    let mut ftr_first: Option<String> = None;
+    let mut hdr = SectionRefs::default();
+    let mut ftr = SectionRefs::default();
+    let mut found_hdr: Option<String> = None;
+    let mut found_ftr: Option<String> = None;
     while let Ok(ev) = reader.read_event() {
         match ev {
-            Event::Start(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = true,
+            Event::Start(e) if e.name().as_ref() == b"w:sectPr" => {
+                in_sectpr = true;
+                hdr = SectionRefs::default();
+                ftr = SectionRefs::default();
+            }
             Event::Empty(e) | Event::Start(e) if in_sectpr => match e.name().as_ref() {
                 b"w:headerReference" => {
-                    let rid = attr_r_id(&e);
-                    let kind = attr_w_val(&e, b"w:type");
-                    if hdr_first.is_none() {
-                        hdr_first.clone_from(&rid);
-                    }
-                    if kind.as_deref() == Some("default") {
-                        hdr_default = rid;
-                    }
+                    hdr.record(attr_r_id(&e), attr_w_val(&e, b"w:type").as_deref());
                 }
                 b"w:footerReference" => {
-                    let rid = attr_r_id(&e);
-                    let kind = attr_w_val(&e, b"w:type");
-                    if ftr_first.is_none() {
-                        ftr_first.clone_from(&rid);
-                    }
-                    if kind.as_deref() == Some("default") {
-                        ftr_default = rid;
-                    }
+                    ftr.record(attr_r_id(&e), attr_w_val(&e, b"w:type").as_deref());
                 }
                 _ => {}
             },
-            Event::End(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = false,
+            Event::End(e) if e.name().as_ref() == b"w:sectPr" => {
+                in_sectpr = false;
+                if let Some(rid) = std::mem::take(&mut hdr).best() {
+                    found_hdr = Some(rid);
+                }
+                if let Some(rid) = std::mem::take(&mut ftr).best() {
+                    found_ftr = Some(rid);
+                }
+            }
             Event::Eof => break,
             _ => {}
         }
     }
-    (hdr_default.or(hdr_first), ftr_default.or(ftr_first))
+    (found_hdr, found_ftr)
 }
 
 /// `(Id, Target)` pairs from a `word/_rels/document.xml.rels`.
@@ -107,7 +129,7 @@ fn rel_targets(rels_xml: &[u8]) -> Vec<(String, String)> {
 }
 
 /// A rels `Target` (relative to `word/`) → package part name; absolute targets are de-slashed.
-fn normalize_target(target: &str) -> String {
+pub(super) fn normalize_target(target: &str) -> String {
     let t = target.trim_start_matches('/');
     if t.starts_with("word/") {
         t.to_string()
@@ -219,6 +241,20 @@ fn handle_fld_char(
     }
 }
 
+/// The characters a text event, or an entity or character reference (which
+/// quick-xml reports as an event of its own), contributes to the text around it;
+/// empty when there are none.
+fn character_data<'a>(ev: &'a Event<'_>) -> Cow<'a, str> {
+    match ev {
+        Event::Text(t) => t.xml10_content().unwrap_or_default(),
+        Event::GeneralRef(r) => crate::codecs::resolve_general_ref(r)
+            .map(String::from)
+            .unwrap_or_default()
+            .into(),
+        _ => Cow::Borrowed(""),
+    }
+}
+
 /// Import a `w:hdr`/`w:ftr` part into a region: `w:p` → paragraph blocks, `w:t` → text,
 /// `w:tab`/`w:br` → tab/newline, a `PAGE` field (simple or complex) → a page-number field.
 pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
@@ -290,8 +326,8 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 ),
                 _ => {}
             },
-            Event::Text(t) => {
-                let Ok(txt) = t.xml10_content() else { continue };
+            ev @ (Event::Text(_) | Event::GeneralRef(_)) => {
+                let txt = character_data(&ev);
                 if in_instr {
                     if field_in_progress && is_page_instr(&txt) {
                         field_pending = true;
@@ -345,15 +381,6 @@ fn attr_w_val(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
         .and_then(|a| crate::codecs::unescape_attr(&a))
 }
 
-fn push_escaped(out: &mut String, c: char) {
-    match c {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        _ => out.push(c),
-    }
-}
-
 /// Whether character `i` of `b` is a page-number field placeholder.
 fn page_number_field_at(b: &BlockView, i: usize) -> bool {
     b.marks.iter().any(|m| {
@@ -374,7 +401,7 @@ fn render_block(b: &BlockView) -> String {
         if !buf.is_empty() {
             out.push_str(r#"<w:r><w:t xml:space="preserve">"#);
             for c in buf.chars() {
-                push_escaped(out, c);
+                push_text(out, c);
             }
             out.push_str("</w:t></w:r>");
             buf.clear();
@@ -428,12 +455,6 @@ pub(super) struct ExportedParts {
     pub footer: Option<Vec<u8>>,
 }
 
-impl ExportedParts {
-    pub fn any(&self) -> bool {
-        self.header.is_some() || self.footer.is_some()
-    }
-}
-
 pub(super) fn export_parts(doc: &DocRef) -> ExportedParts {
     let header = materialize_region(doc.doc, doc.c, Region::Header);
     let footer = materialize_region(doc.doc, doc.c, Region::Footer);
@@ -441,22 +462,4 @@ pub(super) fn export_parts(doc: &DocRef) -> ExportedParts {
         header: region_part_xml(&header, "hdr"),
         footer: region_part_xml(&footer, "ftr"),
     }
-}
-
-/// The `w:headerReference`/`w:footerReference` elements for a `w:sectPr`, given which parts exist.
-pub(super) fn section_references(parts: &ExportedParts) -> String {
-    let mut s = String::new();
-    if parts.header.is_some() {
-        let _ = write!(
-            s,
-            r#"<w:headerReference w:type="default" r:id="{HEADER_REL_ID}"/>"#
-        );
-    }
-    if parts.footer.is_some() {
-        let _ = write!(
-            s,
-            r#"<w:footerReference w:type="default" r:id="{FOOTER_REL_ID}"/>"#
-        );
-    }
-    s
 }

@@ -617,14 +617,20 @@ mod tests {
         path
     }
 
+    /// Services are found under `$XDG_RUNTIME_DIR`; point it at `dir` for
+    /// as long as the returned scope lives.
+    fn runtime_dir_env(dir: &std::path::Path) -> tilo_test_env::ScopedEnv {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", dir);
+        env
+    }
+
     #[test]
-    #[serial_test::serial(process_env)]
     fn identity_handoff_is_bound_to_launcher_app_and_workspace_context() {
         use std::io::Read;
 
         let dir = tempfile::tempdir().expect("runtime");
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().expect("services root");
         let path = root.join("identity.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
@@ -644,23 +650,14 @@ mod tests {
         let handshake = reader.join().expect("reader");
         assert_eq!(handshake["app_id"], "so.tilo.notes");
         assert_eq!(handshake["workspace_id"], "room-7");
-
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn collab_handoff_is_framed_for_broker_authentication() {
         use std::io::Read;
 
         let dir = tempfile::tempdir().expect("runtime");
-        let previous = std::env::var_os("XDG_RUNTIME_DIR");
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().expect("services root");
         let listener =
             std::os::unix::net::UnixListener::bind(root.join("collab.sock")).expect("listen");
@@ -694,13 +691,6 @@ mod tests {
         assert_eq!(handoff["protocol"], COLLAB_LAUNCH_PROTOCOL_VERSION);
         assert_eq!(handoff["app_id"], "so.tilo.notes");
         assert_eq!(handoff["workspace_id"], "room-7");
-
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
-                None => std::env::remove_var("XDG_RUNTIME_DIR"),
-            }
-        }
     }
 
     #[test]
@@ -720,10 +710,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn optional_service_whose_socket_refuses_is_skipped_not_fatal() {
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         dead_socket(&root, "collab");
 
@@ -738,10 +727,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn required_service_whose_socket_refuses_is_still_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         dead_socket(&root, "collab");
 
@@ -756,10 +744,9 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_live_optional_socket_is_handed_over() {
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         // Kept alive for the duration of the call, so `connect` succeeds.
         let _listener =
@@ -777,12 +764,11 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn shell_ui_connection_is_authenticated_before_child_handoff() {
         use std::io::{BufRead, BufReader};
 
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         let listener = std::os::unix::net::UnixListener::bind(root.join("shell-ui.sock")).unwrap();
         let mut services = BTreeMap::new();
@@ -833,13 +819,12 @@ mod tests {
     /// cycle at the only part that touches descriptors: resolve, read the
     /// numbers the fork will need, let the resolution go.
     #[test]
-    #[serial_test::serial(process_env)]
     #[cfg(target_os = "linux")]
     fn a_finished_launch_leaves_no_descriptor_behind() {
         const LAUNCHES: usize = 8;
 
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         let _listener =
             std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
@@ -885,12 +870,11 @@ mod tests {
     /// nothing owned or closed this descriptor, so every caller held a live
     /// connection nothing would ever release.
     #[test]
-    #[serial_test::serial(process_env)]
     fn the_launchers_end_is_released_when_the_launch_is_over() {
         use std::io::Read;
 
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         let listener =
             std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
@@ -933,13 +917,12 @@ mod tests {
     /// it was handed over, and a test only watching for EOF would call
     /// that a pass.
     #[test]
-    #[serial_test::serial(process_env)]
     fn the_apps_copy_outlives_the_launchers() {
         use std::io::Read;
         use std::os::fd::FromRawFd;
 
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         let listener =
             std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
@@ -994,10 +977,9 @@ mod tests {
     /// would hold a live connection to a session service opened on an
     /// app's behalf.
     #[test]
-    #[serial_test::serial(process_env)]
     fn the_launchers_copy_is_not_inherited_by_the_next_child() {
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let root = ensure_services_root().unwrap();
         let _listener =
             std::os::unix::net::UnixListener::bind(root.join("test-lifecycle.sock")).unwrap();
@@ -1046,13 +1028,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn required_missing_returns_required_missing_error() {
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), "required@1".to_string());
         // Point XDG_RUNTIME_DIR at a tempdir with nothing in it.
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let _env = runtime_dir_env(dir.path());
         let err = resolve_service_binds(&svcs, false).unwrap_err();
         match err {
             ServiceError::RequiredMissing { name, version, .. } => {

@@ -1,0 +1,17 @@
+[package]
+name = "xdg-paths"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Per-user base directories resolved by the XDG Base Directory rules, plus per-app subdirectories."
+
+[lib]
+name = "xdg_paths"
+path = "src/lib.rs"
+
+# Deliberately no dependencies: every app and service that stores anything
+# resolves one of these directories, so this stays a std-only leaf.
+
+[lints]
+workspace = true

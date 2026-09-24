@@ -31,6 +31,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{read_bool, read_f64_coerced, read_i64_coerced, read_str, read_str_or_text};
 
 use crate::model::{Background, Deck, Element, ElementKind, Layout, PaletteKind, Slide, TextAlign};
 
@@ -109,8 +110,8 @@ impl SlidesDoc {
         let mut entries = Vec::new();
         for physical in 0..doc.length(&slides) {
             if let Ok(Some((Value::Object(ObjType::Map), object))) = doc.get(&slides, physical) {
-                let id = str_field(doc, &object, "id").unwrap_or_default();
-                let rank = i64_field(doc, &object, "order")
+                let id = read_str(doc, &object, "id").unwrap_or_default();
+                let rank = read_i64_coerced(doc, &object, "order")
                     .unwrap_or_else(|| (physical as i64).saturating_mul(ORDER_GAP));
                 entries.push((rank, id, object));
             }
@@ -257,7 +258,7 @@ impl SlidesDoc {
         let n = doc.length(&elements);
         for j in 0..n {
             if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j)
-                && str_field(doc, &e, "id").as_deref() == Some(elem_id)
+                && read_str(doc, &e, "id").as_deref() == Some(elem_id)
             {
                 return Some(e);
             }
@@ -568,7 +569,7 @@ impl SlidesDoc {
             let n = doc.length(&elements);
             for j in 0..n {
                 if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&elements, j)
-                    && str_field(doc, &e, "id").as_deref() == Some(elem_id)
+                    && read_str(doc, &e, "id").as_deref() == Some(elem_id)
                 {
                     let _ = doc.delete(&elements, j);
                     return;
@@ -626,9 +627,9 @@ impl SlidesDoc {
 
     pub fn load(doc: &AutoCommit) -> Option<Deck> {
         let deck = Self::deck_get(doc)?;
-        let title = text_field(doc, &deck, "title").unwrap_or_else(|| "Untitled deck".into());
+        let title = read_str_or_text(doc, &deck, "title").unwrap_or_else(|| "Untitled deck".into());
         let palette = PaletteKind::from_str(
-            &str_field(doc, &deck, "palette").unwrap_or_else(|| "indigo".into()),
+            &read_str(doc, &deck, "palette").unwrap_or_else(|| "indigo".into()),
         );
         let Ok(Some((Value::Object(ObjType::List), _slides_list))) = doc.get(&deck, "slides")
         else {
@@ -636,14 +637,14 @@ impl SlidesDoc {
         };
         let mut slides = Vec::new();
         for (_, _, so) in Self::ordered_slides(doc) {
-            let id = str_field(doc, &so, "id").unwrap_or_else(crate::model::new_id);
+            let id = read_str(doc, &so, "id").unwrap_or_else(crate::model::new_id);
             let layout = Layout::from_str(
-                &str_field(doc, &so, "layout").unwrap_or_else(|| "title-content".into()),
+                &read_str(doc, &so, "layout").unwrap_or_else(|| "title-content".into()),
             );
             let background = Background::from_str(
-                &str_field(doc, &so, "background").unwrap_or_else(|| "surface".into()),
+                &read_str(doc, &so, "background").unwrap_or_else(|| "surface".into()),
             );
-            let notes = text_field(doc, &so, "notes").unwrap_or_default();
+            let notes = read_str_or_text(doc, &so, "notes").unwrap_or_default();
             let mut elements = Vec::new();
             if let Ok(Some((Value::Object(ObjType::List), el_list))) = doc.get(&so, "elements") {
                 for j in 0..doc.length(&el_list) {
@@ -651,27 +652,27 @@ impl SlidesDoc {
                         continue;
                     };
                     elements.push(Element {
-                        id: str_field(doc, &e, "id").unwrap_or_else(crate::model::new_id),
+                        id: read_str(doc, &e, "id").unwrap_or_else(crate::model::new_id),
                         kind: ElementKind::from_str(
-                            &str_field(doc, &e, "kind").unwrap_or_else(|| "text".into()),
+                            &read_str(doc, &e, "kind").unwrap_or_else(|| "text".into()),
                         ),
-                        x: f64_field(doc, &e, "x").unwrap_or(0.0),
-                        y: f64_field(doc, &e, "y").unwrap_or(0.0),
-                        w: f64_field(doc, &e, "w").unwrap_or(200.0),
-                        h: f64_field(doc, &e, "h").unwrap_or(80.0),
-                        text: text_field(doc, &e, "text").unwrap_or_default(),
-                        src: str_field(doc, &e, "src").unwrap_or_default(),
-                        fill: str_field(doc, &e, "fill").unwrap_or_else(|| "text".into()),
-                        stroke: str_field(doc, &e, "stroke").unwrap_or_else(|| "none".into()),
-                        stroke_width: f64_field(doc, &e, "stroke_width").unwrap_or(0.0),
-                        font_size: f64_field(doc, &e, "font_size").unwrap_or(32.0),
+                        x: read_f64_coerced(doc, &e, "x").unwrap_or(0.0),
+                        y: read_f64_coerced(doc, &e, "y").unwrap_or(0.0),
+                        w: read_f64_coerced(doc, &e, "w").unwrap_or(200.0),
+                        h: read_f64_coerced(doc, &e, "h").unwrap_or(80.0),
+                        text: read_str_or_text(doc, &e, "text").unwrap_or_default(),
+                        src: read_str(doc, &e, "src").unwrap_or_default(),
+                        fill: read_str(doc, &e, "fill").unwrap_or_else(|| "text".into()),
+                        stroke: read_str(doc, &e, "stroke").unwrap_or_else(|| "none".into()),
+                        stroke_width: read_f64_coerced(doc, &e, "stroke_width").unwrap_or(0.0),
+                        font_size: read_f64_coerced(doc, &e, "font_size").unwrap_or(32.0),
                         align: TextAlign::from_str(
-                            &str_field(doc, &e, "align").unwrap_or_else(|| "left".into()),
+                            &read_str(doc, &e, "align").unwrap_or_else(|| "left".into()),
                         ),
-                        bold: bool_field(doc, &e, "bold").unwrap_or(false),
-                        italic: bool_field(doc, &e, "italic").unwrap_or(false),
-                        radius: f64_field(doc, &e, "radius").unwrap_or(0.0),
-                        z: i64_field(doc, &e, "z").unwrap_or(0),
+                        bold: read_bool(doc, &e, "bold").unwrap_or(false),
+                        italic: read_bool(doc, &e, "italic").unwrap_or(false),
+                        radius: read_f64_coerced(doc, &e, "radius").unwrap_or(0.0),
+                        z: read_i64_coerced(doc, &e, "z").unwrap_or(0),
                     });
                 }
             }
@@ -694,42 +695,6 @@ impl SlidesDoc {
 // ===========================================================================
 // Field readers
 // ===========================================================================
-
-fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
-}
-
-fn text_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
-        Ok(Some((Value::Scalar(v), _))) => v.to_str().map(std::string::ToString::to_string),
-        _ => None,
-    }
-}
-
-fn f64_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_f64().or_else(|| v.to_i64().map(|i| i as f64)),
-        _ => None,
-    }
-}
-
-fn i64_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64().or_else(|| v.to_f64().map(|f| f as i64)),
-        _ => None,
-    }
-}
-
-fn bool_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_bool(),
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {

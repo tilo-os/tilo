@@ -190,7 +190,7 @@ impl OwnerHistoryStore {
                     .get(&history, "legacy_shared_migration_v1")
                     .ok()
                     .flatten()
-                    .and_then(|(value, _)| value.to_bool())
+                    .and_then(|(value, _)| value.as_bool())
             })
             .unwrap_or(false)
     }
@@ -303,7 +303,7 @@ impl OwnerHistoryStore {
                                 values
                                     .into_iter()
                                     .filter_map(|(value, _)| {
-                                        value.to_str().and_then(|value| value.parse::<u64>().ok())
+                                        value.as_str().and_then(|value| value.parse::<u64>().ok())
                                     })
                                     .max()
                             })
@@ -328,7 +328,7 @@ impl OwnerHistoryStore {
                                 .get_all(&entries, video_id.as_str())
                                 .ok()?
                                 .into_iter()
-                                .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                                .filter_map(|(value, _)| value.as_str().map(str::to_owned))
                                 .filter_map(|value| {
                                     serde_json::from_str::<HistoryEntryRecord>(&value).ok()
                                 }),

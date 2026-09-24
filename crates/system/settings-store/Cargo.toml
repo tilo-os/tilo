@@ -12,15 +12,13 @@ path = "src/lib.rs"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-# Resolves `$HOME` for the XDG fallback. `dirs::config_dir()` is deliberately
-# NOT used to locate the config root — see the module docs for why its
-# handling of a relative `XDG_CONFIG_HOME` differs from the XDG basedir spec.
-dirs.workspace = true
+# Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else
+# `$HOME/.config`), shared with every other reader of the settings file.
+xdg-paths = { path = "../xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 
 [dev-dependencies]
-serial_test.workspace = true
 tempfile.workspace = true
 
 [lints]

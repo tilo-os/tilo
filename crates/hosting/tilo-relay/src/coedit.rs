@@ -152,6 +152,16 @@ pub enum Inbound {
         /// PresencePayload)` pair the toolkit encodes).
         payload: Vec<u8>,
     },
+    /// A remote-action frame another device of the workspace addressed to
+    /// this one, relayed because there was no direct route. The relay
+    /// stamped the sender from its authenticated connection; the frame is
+    /// the same bytes the direct route would have carried.
+    RemoteAction {
+        /// The sending device's public key.
+        from: [u8; 32],
+        /// The remote-action frame, as the sender encoded it.
+        frame: Vec<u8>,
+    },
     /// The host's reply to the initial subscribe: how many queued
     /// deltas it is about to flush from this device's offline queue.
     Ready {
@@ -299,6 +309,27 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
+    /// Send a remote-action frame to one device of this workspace through
+    /// the host. The host routes it to that device's live connection only;
+    /// it is never stored or fanned out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the connection is gone.
+    pub fn publish_remote_action(&self, to: [u8; 32], frame: Vec<u8>) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::RemoteAction {
+                workspace_id: self.workspace_id,
+                version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                to_device_public_key: to,
+                // The host overwrites both from the authenticated connection.
+                from_device_public_key: self.author,
+                from_user_public_key: [0; 32],
+                frame,
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
     /// Await the next inbound co-edit event, translating the host
     /// [`Envelope`] into the toolkit-facing [`Inbound`]. Keep-alives
     /// (`Ping`/`Pong`) and other non-co-edit frames are skipped; a
@@ -341,6 +372,17 @@ impl RelayCoeditSession {
                             payload: body,
                         });
                     }
+                }
+                Envelope::RemoteAction {
+                    workspace_id,
+                    from_device_public_key,
+                    frame,
+                    ..
+                } if workspace_id == self.workspace_id => {
+                    return Some(Inbound::RemoteAction {
+                        from: from_device_public_key,
+                        frame,
+                    });
                 }
                 Envelope::Ready { pending_deltas, .. } => {
                     return Some(Inbound::Ready {

@@ -11,6 +11,7 @@ use vello::peniko::Color;
 
 use crate::model::TypeClass;
 use ui::ColorCompat;
+use ui::paint::with_alpha;
 use ui::theme::Theme;
 
 /// A bundle of derived colours for one frame, computed from a [`Theme`].
@@ -40,10 +41,6 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let lerp = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
     Color::from_rgb8(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
-}
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
 
 impl ThemeExt for Theme {

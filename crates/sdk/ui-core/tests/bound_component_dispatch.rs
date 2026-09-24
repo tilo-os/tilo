@@ -230,7 +230,7 @@ impl Leaf {
     }
     fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
         assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
         doc.put(ROOT, "last_callback", label).unwrap();
@@ -360,7 +360,7 @@ impl Widget for Leaf {
     }
     fn resource(&self, doc: &AutoCommit, _: &str) -> Option<tilo_actions::Resource> {
         assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
         self.capture("resource-resolve");
@@ -380,7 +380,7 @@ impl Widget for Leaf {
         _: &ObjId,
     ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
         assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
         self.capture("operation-start");
@@ -395,7 +395,7 @@ impl Widget for Leaf {
         _: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
         assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
         if cancel {
@@ -426,7 +426,7 @@ impl Widget for Leaf {
     }
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
         self.capture("resources");
@@ -481,7 +481,7 @@ impl Widget for Root {
         let marker = doc
             .get(ROOT, "marker")
             .map_err(|e| e.to_string())?
-            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .unwrap_or_default();
         LEGACY_DOCUMENTS.with_borrow_mut(|seen| seen.push((marker, path == &ROOT)));
         doc.put(ROOT, "legacy-follow-up", true)
@@ -575,14 +575,14 @@ impl Widget for Root {
     }
     fn activate_search_result(&mut self, _: &str, doc: &mut AutoCommit, _: &ObjId) {
         assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.1.as_str())
         );
         self.mark("search-activate");
     }
     fn on_external_event(&mut self, _: &str, doc: &mut AutoCommit, _: &ObjId) {
         assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.1.as_str())
         );
         self.mark("external");
@@ -749,7 +749,7 @@ fn component_raw_descendants_keep_the_record_and_mount_for_focus_ime_and_actions
         assert!(receiver.try_recv().is_ok());
     }
     assert_eq!(
-        outer.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+        outer.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
         Some("shell")
     );
     assert_eq!(
@@ -759,7 +759,7 @@ fn component_raw_descendants_keep_the_record_and_mount_for_focus_ime_and_actions
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_owned())
             .unwrap(),
@@ -908,7 +908,7 @@ fn same_record_reentry_reuses_the_borrow_and_cross_record_reentry_is_refused() {
                             .unwrap()
                             .unwrap()
                             .0
-                            .to_str()
+                            .as_str()
                             .unwrap()
                             .to_owned()
                     })
@@ -1083,7 +1083,7 @@ fn driver_retains_both_replacement_failures_and_retries_after_the_last_tile_drop
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_owned())
             .unwrap(),
@@ -1885,7 +1885,7 @@ fn nested_replacement_reports_reach_driver_while_parent_remains_open() {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_owned()
             })
@@ -1912,7 +1912,7 @@ fn nested_replacement_reports_reach_driver_while_parent_remains_open() {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str()
+                    .as_str()
                     .unwrap()
                     .to_owned()
             })
@@ -2035,7 +2035,7 @@ fn legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_b
                 .unwrap()
                 .unwrap()
                 .0
-                .to_bool()
+                .as_bool()
                 .unwrap())
             .unwrap()
     );
@@ -2158,7 +2158,7 @@ fn legacy_mutable_admission_follows_new_intent_only_after_checked_resolution() {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_bool()
+                .as_bool()
                 .unwrap())
             .unwrap()
     );
@@ -2239,7 +2239,7 @@ fn task4_driver_qualified_equal_resource_ids_use_their_record_and_view_owner() {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_str(),
+                    .as_str(),
                 Some("initialized")
             );
         })
@@ -2336,7 +2336,7 @@ fn task4_driver_unqualified_control_selects_or_refuses_bound_targets() {
                 .read_history(&checkout.id, |doc, history| {
                     let changed = authorized == 1 && index == 0;
                     assert_eq!(
-                        doc.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+                        doc.get(ROOT, "body").unwrap().unwrap().0.as_str(),
                         Some(if changed { "edited" } else { "initialized" })
                     );
                     assert_eq!(

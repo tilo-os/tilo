@@ -142,15 +142,7 @@ fn scrollbar_paints_along_right_edge() {
             ("scrollbar_off", &rgba_without),
         ] {
             let path = format!("{dir}/{name}.png");
-            let mut png = Vec::new();
-            {
-                let mut enc = png::Encoder::new(&mut png, W, H);
-                enc.set_color(png::ColorType::Rgba);
-                enc.set_depth(png::BitDepth::Eight);
-                let mut writer = enc.write_header().unwrap();
-                writer.write_image_data(buf).unwrap();
-            }
-            std::fs::write(&path, png).unwrap();
+            tilo_ui::png::write_rgba8(&path, W, H, buf).unwrap();
             eprintln!("wrote {path}");
         }
     }
