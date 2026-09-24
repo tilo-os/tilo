@@ -108,6 +108,108 @@ impl<T: Send + 'static> Initialization<T> {
     }
 }
 
+/// Where decoded audio goes.
+#[cfg(feature = "audio")]
+#[derive(Clone)]
+pub enum AudioOutput {
+    /// The desktop's sound server, through `autoaudiosink`.
+    System,
+    /// An `appsink` that records the PCM reaching it and counts what it
+    /// renders. A test observes the decoded audio itself this way, and needs
+    /// no sound server or speaker.
+    Capture(PcmCapture),
+}
+
+#[cfg(feature = "audio")]
+impl AudioOutput {
+    /// A unit test captures by default so that its playback is observable and
+    /// silent; the application always plays through the system.
+    fn for_build() -> Self {
+        if cfg!(test) {
+            Self::Capture(PcmCapture::default())
+        } else {
+            Self::System
+        }
+    }
+}
+
+/// What a capturing output has received so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CapturedPcm {
+    /// Buffers of decoded audio that reached the sink, prerolled or played.
+    pub buffers: u64,
+    /// Buffers the sink rendered on the pipeline clock: audio that a speaker
+    /// would have played, as opposed to a paused pipeline's preroll.
+    pub rendered: u64,
+    /// Signed 16-bit samples across every channel.
+    pub samples: u64,
+    /// The largest absolute sample value seen; zero means only silence arrived.
+    pub peak: u16,
+}
+
+/// Shared record of the PCM a [`AudioOutput::Capture`] sink received, with a
+/// condition variable so a reader can wait for audio instead of sleeping.
+#[derive(Clone, Default)]
+pub struct PcmCapture(std::sync::Arc<(std::sync::Mutex<CapturedPcm>, std::sync::Condvar)>);
+
+impl PcmCapture {
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(dead_code, reason = "only the native sink records")
+    )]
+    fn record(&self, bytes: &[u8]) {
+        let (state, changed) = &*self.0;
+        let mut pcm = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pcm.buffers += 1;
+        for sample in bytes.chunks_exact(2) {
+            if let [low, high] = *sample {
+                let value = i16::from_le_bytes([low, high]);
+                pcm.peak = pcm.peak.max(value.unsigned_abs());
+                pcm.samples += 1;
+            }
+        }
+        drop(pcm);
+        changed.notify_all();
+    }
+
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(dead_code, reason = "only the native sink renders")
+    )]
+    fn note_rendered(&self) {
+        let (state, changed) = &*self.0;
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rendered += 1;
+        changed.notify_all();
+    }
+
+    pub fn snapshot(&self) -> CapturedPcm {
+        *self
+            .0
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Wait until more audio arrives or is rendered, or `timeout` passes,
+    /// returning the latest record either way.
+    pub fn wait_for_more(&self, timeout: std::time::Duration) -> CapturedPcm {
+        let (state, changed) = &*self.0;
+        let pcm = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seen = *pcm;
+        let (pcm, _) = changed
+            .wait_timeout_while(pcm, timeout, |pcm| *pcm == seen)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *pcm
+    }
+}
+
 /// The UI-owned audio handle. Construction and all observations are free of
 /// native initialization. The first requested source starts a background job;
 /// only the latest transport intent is applied when the backend arrives.
@@ -123,6 +225,8 @@ pub struct AudioEngine {
     preroll_started: Option<std::time::Instant>,
     initialization_failed: bool,
     initialization_error: std::sync::Mutex<Option<String>>,
+    #[cfg(feature = "audio")]
+    output: AudioOutput,
 }
 
 impl Default for AudioEngine {
@@ -133,6 +237,33 @@ impl Default for AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Self {
+        #[cfg(feature = "audio")]
+        {
+            Self::with_output(AudioOutput::for_build())
+        }
+        #[cfg(not(feature = "audio"))]
+        Self::unconfigured()
+    }
+
+    /// An engine whose pipelines send decoded audio to `output`.
+    #[cfg(feature = "audio")]
+    pub fn with_output(output: AudioOutput) -> Self {
+        Self {
+            output,
+            ..Self::unconfigured()
+        }
+    }
+
+    /// The capture this engine's pipelines record into, when it has one.
+    #[cfg(feature = "audio")]
+    pub fn capture(&self) -> Option<&PcmCapture> {
+        match &self.output {
+            AudioOutput::Capture(capture) => Some(capture),
+            AudioOutput::System => None,
+        }
+    }
+
+    fn unconfigured() -> Self {
         Self {
             backend: None,
             initialization: None,
@@ -145,6 +276,8 @@ impl AudioEngine {
             preroll_started: None,
             initialization_failed: false,
             initialization_error: std::sync::Mutex::new(None),
+            #[cfg(feature = "audio")]
+            output: AudioOutput::System,
         }
     }
 
@@ -184,7 +317,10 @@ impl AudioEngine {
                 self.initialization = None;
             }
             if self.initialization.is_none() && !self.initialization_failed {
-                self.initialization = Some(Initialization::spawn(AudioBackend::try_new));
+                let output = self.output.clone();
+                self.initialization = Some(Initialization::spawn(move || {
+                    AudioBackend::try_new(&output)
+                }));
             }
         }
     }
@@ -651,7 +787,11 @@ struct Inner {
 
 impl AudioBackend {
     /// Construct the actual pipeline on the initialization worker.
-    fn try_new() -> Result<Self, String> {
+    #[cfg_attr(
+        not(feature = "audio"),
+        allow(dead_code, reason = "the silent build never starts a backend")
+    )]
+    fn try_new(#[cfg(feature = "audio")] output: &AudioOutput) -> Result<Self, String> {
         #[cfg(feature = "audio")]
         let inner = {
             use gstreamer::prelude::*;
@@ -665,7 +805,7 @@ impl AudioBackend {
             // output is audible and verifiable. `autoaudiosink` selects
             // the concrete system sink (pipewire/pulse/alsa); the pad
             // probe lets us confirm real buffers flow.
-            let sink = build_audio_sink(&playbin, &frames);
+            let sink = build_audio_sink(&playbin, &frames, output);
             let errored = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             // Defensive: never leave the transport muted, and start at a
             // sane volume so "no sound" is never a stuck property.
@@ -1553,27 +1693,69 @@ fn download_into(
 ///
 /// If any element is missing we return `None` and leave `playbin` to auto-plug
 /// its own sink, so audio still works (just without the verification hooks).
+///
+/// A [`AudioOutput::Capture`] ends the same chain in an `appsink` instead,
+/// fixed to signed 16-bit PCM so the probe can record the samples themselves.
+/// It keeps `sync=true`, so playback position advances in real time exactly as
+/// it does against a sound server. Each rendered sample is recorded and
+/// released at once, and end-of-stream is not held back for a reader; either
+/// would stall the pipeline where a real sink would not.
 #[cfg(feature = "audio")]
 fn build_audio_sink(
     playbin: &gstreamer::Element,
     frames: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    output: &AudioOutput,
 ) -> Option<gstreamer::Element> {
     use gstreamer::prelude::*;
     // `ghost_unlinked_pads=true` auto-exposes the audioconvert sink pad so
     // playbin can feed decoded audio into the chain (same idiom as the video
     // sink bin in `apps/tube`). `autoaudiosink` plugs the real system sink.
-    let bin = gstreamer::parse::bin_from_description(
-        "audioconvert ! audioresample ! autoaudiosink name=tilo_audiosink sync=true",
-        true,
-    )
-    .ok()?;
+    let description = match output {
+        AudioOutput::System => {
+            "audioconvert ! audioresample ! autoaudiosink name=tilo_audiosink sync=true"
+        }
+        AudioOutput::Capture(_) => {
+            "audioconvert ! audioresample ! appsink name=tilo_audiosink sync=true \
+             caps=audio/x-raw,format=S16LE,layout=interleaved \
+             emit-signals=true max-buffers=1 drop=true wait-on-eos=false"
+        }
+    };
+    let bin = gstreamer::parse::bin_from_description(description, true).ok()?;
     let sink = bin.by_name("tilo_audiosink")?;
-    // Count decoded PCM buffers arriving at the real sink.
+    // Count decoded PCM buffers arriving at the sink, and record a capture's.
+    let capture = match output {
+        AudioOutput::Capture(capture) => Some(capture.clone()),
+        AudioOutput::System => None,
+    };
     if let Some(pad) = sink.static_pad("sink") {
         let frames = frames.clone();
-        pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+        let capture = capture.clone();
+        pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_, info| {
             frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Some(capture) = &capture
+                && let Some(buffer) = info.buffer()
+                && let Ok(map) = buffer.map_readable()
+            {
+                capture.record(map.as_slice());
+            }
             gstreamer::PadProbeReturn::Ok
+        });
+    }
+    // A buffer arrives while the pipeline is still prerolling; the capture
+    // also counts what the sink renders once the clock says it is time to
+    // play it, as a speaker would.
+    if let Some(capture) = capture {
+        sink.connect("new-sample", false, move |values| {
+            let sample = values
+                .first()
+                .and_then(|value| value.get::<gstreamer::Element>().ok())
+                .and_then(|sink| {
+                    sink.emit_by_name::<Option<gstreamer::Sample>>("pull-sample", &[])
+                });
+            if sample.is_some() {
+                capture.note_rendered();
+            }
+            Some(gstreamer::FlowReturn::Ok.to_value())
         });
     }
     playbin.set_property("audio-sink", &bin);
@@ -1753,9 +1935,10 @@ mod tests {
         let uri = media::source::path_to_file_uri(&path).unwrap();
         let (release, wait) = std::sync::mpsc::channel();
         let mut engine = AudioEngine::new();
+        let output = engine.output.clone();
         engine.initialization = Some(Initialization::spawn(move || {
             wait.recv().unwrap();
-            AudioBackend::try_new()
+            AudioBackend::try_new(&output)
         }));
         engine.load("file:///obsolete-must-never-open.wav");
         engine.play();
@@ -1791,7 +1974,11 @@ mod tests {
             assert!(!engine.pump());
             engine.frames_rendered() > 0
         });
-        assert_eq!(engine.audio_sink_is_real(), Some(true));
+        let pcm = engine
+            .capture()
+            .unwrap()
+            .wait_for_more(std::time::Duration::from_secs(5));
+        assert!(pcm.peak > 0, "the decoded tone reached the sink: {pcm:?}");
         engine.stop();
     }
 
@@ -1799,7 +1986,7 @@ mod tests {
     #[cfg(feature = "audio")]
     fn deferred_seek_timeout_reports_error_and_stops_polling() {
         let mut engine = AudioEngine::new();
-        engine.backend = Some(AudioBackend::try_new().unwrap());
+        engine.backend = Some(AudioBackend::try_new(&engine.output).unwrap());
         // A source that has not prerolled cannot accept a seek. Exercise the
         // production timeout with the actual native backend still in NULL.
         engine.current_uri = Some("file:///not-yet-prerolled.wav".into());
@@ -1909,7 +2096,9 @@ mod tests {
         ));
         let wav = sine_wav(1, 44_100);
         std::fs::write(&path, &wav).expect("staged audio bytes");
-        let mut engine = AudioBackend::try_new().expect("native backend");
+        let capture = PcmCapture::default();
+        let mut engine =
+            AudioBackend::try_new(&AudioOutput::Capture(capture.clone())).expect("native backend");
         engine.set_volume(0.05);
         // The transfer has completed; drive the same pending-file transition
         // that the download worker exposes to the production pump.
@@ -1930,17 +2119,15 @@ mod tests {
             .property::<Option<String>>("current-uri")
             .expect("playbin committed the staged URI after entering PLAYING");
         assert_eq!(url::Url::parse(&uri).unwrap().to_file_path().unwrap(), path);
-        for _ in 0..80 {
-            if engine.frames_rendered() > 0 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut pcm = capture.snapshot();
+        while pcm.peak == 0 && std::time::Instant::now() < deadline {
+            pcm = capture.wait_for_more(std::time::Duration::from_millis(100));
         }
         assert!(
-            engine.frames_rendered() > 0,
-            "staged PCM reached the native sink"
+            engine.frames_rendered() > 0 && pcm.peak > 0,
+            "staged PCM reached the sink: {pcm:?}"
         );
-        assert_eq!(engine.audio_sink_is_real(), Some(true));
         engine.stop();
         engine.clear_pending();
         assert!(
@@ -1972,12 +2159,21 @@ mod tests {
     ///   * the concrete sink `autoaudiosink` plugged is a **real** audio sink
     ///     (`pulsesink`/`pipewiresink`/`alsasink`), never a `fakesink`.
     ///
-    /// Requires WAV decode plugins and a real platform audio endpoint. Missing
-    /// prerequisites fail this proof; a fake sink cannot establish playback.
+    /// Requires WAV decode plugins and a real platform audio endpoint, so it
+    /// runs where `TILO_REQUIRE_AUDIO=1` says one exists (`tools/with-headless-audio.sh`
+    /// sets it). There, missing prerequisites fail this proof; a fake sink
+    /// cannot establish playback. Every other test captures the decoded PCM
+    /// through an `appsink` and needs no sound server.
     #[cfg(feature = "audio")]
     #[test]
     #[serial_test::serial(audio_backend)]
     fn real_sink_renders_audio_and_is_not_fakesink() {
+        if std::env::var_os("TILO_REQUIRE_AUDIO").is_none_or(|value| value != "1") {
+            eprintln!(
+                "real audio output not checked: set TILO_REQUIRE_AUDIO=1 where a sound server runs"
+            );
+            return;
+        }
         assert!(gstreamer::init().is_ok(), "gstreamer initialises");
         // The decode graph playbin needs for a local WAV, plus the real sink.
         let need = [
@@ -2001,7 +2197,7 @@ mod tests {
         std::fs::write(&path, sine_wav(1, 44_100)).expect("write test wav");
         let uri = media::source::path_to_file_uri(&path).expect("native audio file URI");
 
-        let mut engine = AudioEngine::new();
+        let mut engine = AudioEngine::with_output(AudioOutput::System);
         engine.set_volume(0.05); // audible path, but keep the test quiet
         engine.load(&uri);
         engine.play();
@@ -2054,7 +2250,7 @@ mod tests {
     /// was the reported "can't seek while playing" bug. Uses a fully-seekable
     /// local file so this exercises the real `seek_simple` path.
     ///
-    /// Requires decode/sink plugins and a real platform audio endpoint.
+    /// Requires the decode plugins; the audio is captured, not played aloud.
     #[cfg(feature = "audio")]
     #[test]
     #[serial_test::serial(audio_backend)]
@@ -2065,7 +2261,7 @@ mod tests {
             "wavparse",
             "audioconvert",
             "audioresample",
-            "autoaudiosink",
+            "appsink",
         ];
         assert!(
             need.iter()
@@ -2080,6 +2276,7 @@ mod tests {
         let uri = media::source::path_to_file_uri(&path).expect("native audio file URI");
 
         let mut engine = AudioEngine::new();
+        let capture = engine.capture().expect("tests capture by default").clone();
         engine.set_volume(0.05);
         engine.load(&uri);
         engine.play();
@@ -2093,7 +2290,7 @@ mod tests {
         let dur = {
             let mut d = None;
             for _ in 0..40 {
-                std::thread::sleep(std::time::Duration::from_millis(25));
+                capture.wait_for_more(std::time::Duration::from_millis(25));
                 d = engine.duration_ms();
                 if d.is_some() {
                     break;
@@ -2114,7 +2311,7 @@ mod tests {
         // pipeline must still be playing (never EOS'd by the seek).
         let mut pos = 0;
         for _ in 0..60 {
-            std::thread::sleep(std::time::Duration::from_millis(25));
+            capture.wait_for_more(std::time::Duration::from_millis(25));
             if let Some(p) = engine.position_ms() {
                 pos = p;
                 if p >= target.saturating_sub(700) && p <= target + 1_500 {
@@ -2134,7 +2331,7 @@ mod tests {
         let before = engine.frames_rendered();
         let mut after = before;
         for _ in 0..40 {
-            std::thread::sleep(std::time::Duration::from_millis(25));
+            capture.wait_for_more(std::time::Duration::from_millis(25));
             after = engine.frames_rendered();
             if after > before {
                 break;
