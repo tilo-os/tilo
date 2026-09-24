@@ -275,43 +275,30 @@ mod tests {
         assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
     }
 
-    // Both of these mutate `PROXY_BIN_ENV` (and one nukes `PATH`), process-wide
-    // state, so they take the same `process_env` lock as the rest of the
-    // crate's env-reading tests to avoid clobbering each other or unrelated
-    // tests.
+    // The proxy binary is located through `PROXY_BIN_ENV` and `PATH`, which
+    // is the interface these two pin.
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn find_proxy_binary_honours_env_override() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("xdg-dbus-proxy-mock");
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
         // Env var wins.
-        unsafe { std::env::set_var(PROXY_BIN_ENV, &bin) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(PROXY_BIN_ENV, &bin);
         let found = find_proxy_binary().expect("env override");
         assert_eq!(found, bin);
-        unsafe { std::env::remove_var(PROXY_BIN_ENV) };
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
-        let saved_path = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy");
-            // Nuke PATH so the fallback can't find a real binary.
-            std::env::set_var("PATH", "");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        // Empty PATH so the fallback can't find a real binary.
+        env.set(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy")
+            .set("PATH", "");
         let found = find_proxy_binary();
-        unsafe {
-            std::env::remove_var(PROXY_BIN_ENV);
-            // Put `PATH` back before asserting: a failed assertion must not strand
-            // the rest of the suite with an empty PATH.
-            match &saved_path {
-                Some(p) => std::env::set_var("PATH", p),
-                None => std::env::remove_var("PATH"),
-            }
-        }
+        // Put `PATH` back before asserting.
+        drop(env);
         assert!(
             found.is_none(),
             "expected None with bad env + empty PATH, got {found:?}"
