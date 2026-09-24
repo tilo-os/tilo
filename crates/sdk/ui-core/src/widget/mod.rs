@@ -2636,9 +2636,9 @@ pub mod image_viewer;
 pub use image_viewer::ImageViewer;
 pub mod tree_view;
 pub use tree_view::{
-    TreeChildState, TreeClickActivation, TreeLoadReason, TreeLoadRequest, TreeModel,
-    TreeModelChange, TreeNode, TreeRowDecoration, TreeRowIcon, TreeRowInfo, TreeRowKey,
-    TreeRowTone, TreeSlot, TreeView,
+    TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
+    TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
+    TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
 pub mod virtual_list;
 pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
