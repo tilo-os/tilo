@@ -800,7 +800,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("edited after cancelled Quit")
         );
         assert!(!app.close_admission.admitted);

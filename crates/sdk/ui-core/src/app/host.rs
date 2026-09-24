@@ -2597,7 +2597,7 @@ mod action_palette_tests {
                         .doc
                         .get(&ROOT, "escaped_keyboard")
                         .unwrap()
-                        .and_then(|(value, _)| value.to_bool()),
+                        .and_then(|(value, _)| value.as_bool()),
                     Some(true)
                 );
                 app.state.doc.delete(&ROOT, "escaped_keyboard").unwrap();
@@ -2612,7 +2612,7 @@ mod action_palette_tests {
                         .doc
                         .get(&ROOT, "escaped_keyboard")
                         .unwrap()
-                        .and_then(|(value, _)| value.to_bool()),
+                        .and_then(|(value, _)| value.as_bool()),
                     Some(true)
                 );
             }
@@ -2730,7 +2730,7 @@ mod action_palette_tests {
             .doc
             .get(&ROOT, "flipped")
             .unwrap()
-            .and_then(|(v, _)| v.to_bool());
+            .and_then(|(v, _)| v.as_bool());
         assert_eq!(
             flipped,
             Some(true),
@@ -2863,7 +2863,7 @@ mod action_palette_tests {
             .doc
             .get(&ROOT, "navigated")
             .unwrap()
-            .and_then(|(v, _)| v.to_str().map(str::to_string));
+            .and_then(|(v, _)| v.as_str().map(str::to_string));
         assert_eq!(
             nav,
             Some("person:Ada Lovelace".to_string()),
@@ -3711,7 +3711,7 @@ mod semantic_tree_app_tests {
             match self {
                 CounterAction::Bump | CounterAction::HostBump => {
                     let n = match doc.get(&ROOT, "n") {
-                        Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+                        Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
                         _ => 0,
                     };
                     doc.put(&ROOT, "n", ScalarValue::Int(n.saturating_add(1)))?;
@@ -4120,7 +4120,7 @@ mod semantic_tree_app_tests {
 
     fn counter_in_doc(doc: &automerge::AutoCommit) -> i64 {
         match doc.get(&ROOT, "n") {
-            Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+            Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
             _ => 0,
         }
     }
@@ -4901,7 +4901,7 @@ mod semantic_tree_app_tests {
 
         let via_a11y = counter(&app);
         let via_affordance = match host_doc.get(&ROOT, "n") {
-            Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+            Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
             _ => 0,
         };
         assert_eq!(
@@ -6074,7 +6074,7 @@ mod bound_component_tests {
             assert_eq!(type_id, "bound.follow-up");
             assert_eq!(path, &ROOT);
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             let mode = COMPOUND_MODE.get();
@@ -6134,7 +6134,7 @@ mod bound_component_tests {
                 return None;
             }
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
@@ -6147,7 +6147,7 @@ mod bound_component_tests {
 
         fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             Self::capture("sync");
@@ -6201,7 +6201,7 @@ mod bound_component_tests {
             _: &TaffyTree<()>,
         ) {
             assert_eq!(
-                d.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                d.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             Self::capture("event");
@@ -6238,7 +6238,7 @@ mod bound_component_tests {
             _: &automerge::ObjId,
         ) -> bool {
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             doc.put(ROOT, "action", true).unwrap();
@@ -6406,7 +6406,7 @@ mod bound_component_tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_bool()
+                    .as_bool()
                     .unwrap())
                 .unwrap()
         );
@@ -6522,7 +6522,7 @@ mod bound_component_tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("record-0")
         );
         assert!(
@@ -8209,7 +8209,7 @@ mod prepared_runner_tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some(expected)
         );
     }
@@ -8469,7 +8469,7 @@ mod prepared_runner_tests {
                                 .unwrap()
                                 .unwrap()
                                 .0
-                                .to_str()
+                                .as_str()
                                 .unwrap()
                                 .to_owned()
                         })

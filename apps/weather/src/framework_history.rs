@@ -86,7 +86,7 @@ fn object(
 fn string(d: &AutoCommit, o: &ObjId, p: impl Into<Prop>) -> Result<String, String> {
     match single(d, o, p)? {
         Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Str(_)) => {
-            Ok(v.to_str().unwrap_or_default().to_string())
+            Ok(v.as_str().unwrap_or_default().to_string())
         }
         _ => Err("Missing or invalid saved-place text".into()),
     }

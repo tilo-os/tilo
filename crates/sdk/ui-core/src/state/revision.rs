@@ -93,7 +93,7 @@ impl RevisionHistory {
                 children: Vec::new(),
                 actor: change.actor_id().to_hex_string(),
                 timestamp: timestamp(change.timestamp()),
-                message: change.message().cloned(),
+                message: change.message().map(str::to_owned),
                 operations: change.len(),
                 is_head: head_set.contains(&RevisionId(change.hash())),
             })

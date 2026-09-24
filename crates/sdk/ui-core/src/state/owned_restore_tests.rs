@@ -8,7 +8,7 @@ use std::cell::Cell;
 
 thread_local! { static VALIDATION_MODE: Cell<u8> = const { Cell::new(0) }; }
 fn validate_result(doc: &AutoCommit) -> Result<(), String> {
-    if doc.get(ROOT, "body").unwrap().unwrap().0.to_str() == Some("old") {
+    if doc.get(ROOT, "body").unwrap().unwrap().0.as_str() == Some("old") {
         match VALIDATION_MODE.get() {
             1 => return Err("result refused".into()),
             2 => panic!("result validator unwound"),
@@ -43,7 +43,7 @@ pub(crate) fn value(doc: &AutoCommit) -> String {
         .unwrap()
         .unwrap()
         .0
-        .to_str()
+        .as_str()
         .unwrap()
         .to_owned()
 }
@@ -303,14 +303,14 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
         .restore_prepared_owned(&admission(&authority), &plan)
         .unwrap();
     assert_eq!(
-        state.doc.get(&mixed, "body").unwrap().unwrap().0.to_str(),
+        state.doc.get(&mixed, "body").unwrap().unwrap().0.as_str(),
         Some("old")
     );
     state
         .undo_as(Some(&UserId("ada".into())), None, None)
         .unwrap();
     assert_eq!(
-        state.doc.get(&mixed, "body").unwrap().unwrap().0.to_str(),
+        state.doc.get(&mixed, "body").unwrap().unwrap().0.as_str(),
         Some("live")
     );
     assert_eq!(state.doc.get(ROOT, "mixed").unwrap().unwrap().1, mixed);
@@ -325,7 +325,7 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("current remote session")
     );
     for head in remote_heads {

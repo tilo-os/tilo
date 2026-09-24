@@ -98,7 +98,7 @@ pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
             actor_hex: ch.actor_id().to_hex_string(),
             time_ms: ch.timestamp().saturating_mul(1000),
             change_hash: ch.hash().to_string(),
-            message: ch.message().cloned(),
+            message: ch.message().map(str::to_owned),
         })
         .collect()
 }
@@ -203,7 +203,7 @@ mod tests {
         let patches = doc.diff(&heads, &after);
         assert!(matches!(patches.as_slice(), [automerge::Patch {
             action: automerge::PatchAction::PutMap { key, value, .. }, ..
-        }] if key == "body" && value.0.to_str() == Some("edited")));
+        }] if key == "body" && value.0.as_str() == Some("edited")));
     }
 
     #[test]

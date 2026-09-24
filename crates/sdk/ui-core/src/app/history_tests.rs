@@ -400,7 +400,7 @@ impl RoutedOwners {
             .read_checked(&self.bindings[index].checkout.id, |doc| {
                 doc.get(ROOT, key)
                     .unwrap()
-                    .and_then(|(v, _)| v.to_str().map(str::to_owned))
+                    .and_then(|(v, _)| v.as_str().map(str::to_owned))
             })
             .unwrap()
     }
@@ -656,7 +656,7 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
     };
     let doc = automerge::AutoCommit::load(data).unwrap();
     assert_eq!(
-        doc.get(ROOT, "offline").unwrap().unwrap().0.to_str(),
+        doc.get(ROOT, "offline").unwrap().unwrap().0.as_str(),
         Some("restored locally")
     );
 }
@@ -1566,7 +1566,7 @@ fn native_scrollback_and_live_share_exact_primary_and_owned_route_admission() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("outer peer")
     );
     assert!(
@@ -1670,7 +1670,7 @@ fn native_queued_remote_cannot_retarget_same_id_new_legacy_store() {
                     doc.pending_ops(),
                     doc.get(ROOT, "draft")
                         .unwrap()
-                        .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                        .and_then(|(value, _)| value.as_str().map(str::to_owned)),
                     doc.get(ROOT, "remote").unwrap().is_some(),
                 )
             })
@@ -2323,7 +2323,7 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
                 .doc
                 .get(ROOT, "recovered")
                 .unwrap()
-                .map(|(value, _)| value.to_str().unwrap().to_owned())
+                .map(|(value, _)| value.as_str().unwrap().to_owned())
                 .as_deref(),
             Some("remote"),
             "primary malformed front must not block fresh snapshot recovery"
@@ -2337,7 +2337,7 @@ fn round1_primary_malformed_remote_recovers_with_snapshot_after_local_edit_finis
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("preserved")
         );
         assert_eq!(fixture.app.state.history_revision(), revision);
@@ -2616,7 +2616,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
                 .doc
                 .get(ROOT, key)
                 .unwrap()
-                .map(|(value, _)| value.to_str().unwrap().to_owned())
+                .map(|(value, _)| value.as_str().unwrap().to_owned())
         }
     };
     assert_eq!(value(&fixture, "recovery-S").as_deref(), Some("first"));
@@ -2696,7 +2696,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
         };
         let published = automerge::AutoCommit::load(data).unwrap();
         assert_eq!(
-            published.get(ROOT, "later-D").unwrap().unwrap().0.to_str(),
+            published.get(ROOT, "later-D").unwrap().unwrap().0.as_str(),
             Some("later")
         );
     } else {

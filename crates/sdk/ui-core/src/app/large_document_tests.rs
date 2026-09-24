@@ -104,7 +104,7 @@ fn a_change_larger_than_one_frame_reaches_the_broker_before_the_frontier_moves()
     assert_eq!(
         automerge::ReadDoc::get(&peer, automerge::ROOT, "body")
             .unwrap()
-            .and_then(|(value, _)| value.to_bytes().map(<[u8]>::to_vec)),
+            .and_then(|(value, _)| value.as_bytes().map(<[u8]>::to_vec)),
         Some(body),
         "the peer receives the whole change"
     );

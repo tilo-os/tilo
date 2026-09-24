@@ -2177,7 +2177,7 @@ fn validate_replica_identity(
             if values.is_empty()
                 || values
                     .iter()
-                    .any(|(value, _)| value.to_str() != Some(expected))
+                    .any(|(value, _)| value.as_str() != Some(expected))
             {
                 return Err("conflicting record identity".into());
             }

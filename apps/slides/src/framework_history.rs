@@ -61,7 +61,7 @@ fn object(
 fn string(doc: &AutoCommit, obj: &ObjId, key: &str) -> Result<String, String> {
     match doc.get(obj, key).map_err(|e| e.to_string())? {
         Some((Value::Scalar(v), _)) => v
-            .to_str()
+            .as_str()
             .map(str::to_owned)
             .ok_or_else(|| format!("{key} must be a string")),
         _ => Err(format!("{key} must be a string")),

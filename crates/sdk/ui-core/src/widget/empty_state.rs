@@ -1204,14 +1204,14 @@ mod tests {
         }
         assert!(matches!(
             doc.get(&root, key),
-            Ok(Some((Value::Scalar(value), _))) if value.as_ref().to_bool() == Some(true)
+            Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
         ));
 
         let _ = doc.put(&root, key, false);
         assert!(es.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
         assert!(matches!(
             doc.get(&root, key),
-            Ok(Some((Value::Scalar(value), _))) if value.as_ref().to_bool() == Some(true)
+            Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
         ));
     }
 
@@ -1483,7 +1483,7 @@ mod tests {
         );
         assert!(matches!(
             doc.get(&root, "empty.review"),
-            Ok(Some((Value::Scalar(value), _))) if value.as_ref().to_bool() == Some(true)
+            Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
         ));
 
         let _ = doc.put(&root, "empty.review", false);
@@ -1492,7 +1492,7 @@ mod tests {
         assert!(child.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
         assert!(matches!(
             doc.get(&root, "empty.review"),
-            Ok(Some((Value::Scalar(value), _))) if value.as_ref().to_bool() == Some(true)
+            Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
         ));
     }
 

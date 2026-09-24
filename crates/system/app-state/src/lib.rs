@@ -153,8 +153,8 @@ pub fn schema_version_of(doc: &AutoCommit) -> u32 {
         .into_iter()
         .filter_map(|key| {
             doc.get(ROOT, key).ok().flatten().and_then(|(v, _)| {
-                v.to_u64()
-                    .or_else(|| v.to_i64().and_then(|i| u64::try_from(i).ok()))
+                v.as_u64()
+                    .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
                     .and_then(|n| u32::try_from(n).ok())
             })
         })
@@ -1548,7 +1548,7 @@ mod tests {
         assert_eq!(fs::read(store.document_path()).unwrap(), bytes);
         let legacy = store.load().unwrap().unwrap();
         assert_eq!(
-            legacy.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+            legacy.get(ROOT, "body").unwrap().unwrap().0.as_str(),
             Some("first"),
             "ordinary legacy recovery retains its prior partial-load behavior"
         );
