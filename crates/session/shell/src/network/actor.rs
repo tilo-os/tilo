@@ -1635,29 +1635,7 @@ impl ActorState {
                 self.handle_topic_event(ws, event).await;
             }
             Some(InternalEvent::Closed { ws }) => {
-                self.topics.remove(&ws);
-                let subscriber = self.subscribers.get(&ws).cloned();
-                let closed = self
-                    .peers_seen
-                    .iter()
-                    .filter_map(|(&(peer_ws, peer), membership)| {
-                        (peer_ws == ws).then_some((peer, membership.epoch))
-                    })
-                    .collect::<Vec<_>>();
-                for (peer, epoch) in closed {
-                    if self.remove_membership_if_epoch(ws, peer, epoch)
-                        && let Some(tx) = subscriber.as_ref()
-                    {
-                        let _ = tx
-                            .send(NetEvent::PeerLeft {
-                                ws,
-                                peer,
-                                cause: PeerDepartureCause::WorkspaceRouteClosed,
-                                membership_epoch: Some(epoch),
-                            })
-                            .await;
-                    }
-                }
+                self.handle_workspace_closed(ws).await;
             }
             Some(InternalEvent::HostConnected {
                 ws,
@@ -1676,37 +1654,7 @@ impl ActorState {
                 fingerprint,
                 msg,
             }) => {
-                // A bare ALPN connection is not workspace admission. Require
-                // the peer to have appeared on this workspace's authenticated
-                // gossip topic first; ShellNetwork performs the capability
-                // and claimed-publisher checks before dispatch.
-                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
-                    tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
-                    return true;
-                };
-                // Input has no event id or timestamp, so two deliberate
-                // identical key/button events must not be content-deduped.
-                // A remote-action retry is byte-identical on purpose; the
-                // receiving host deduplicates it by invocation id instead.
-                if (matches!(
-                    &msg,
-                    NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. }
-                ) || mark_new_message(
-                    ws,
-                    fingerprint,
-                    &mut self.recent,
-                    &mut self.recent_order,
-                )) && let Some(tx) = self.subscribers.get(&ws)
-                {
-                    let _ = tx
-                        .send(NetEvent::Msg {
-                            ws,
-                            peer,
-                            membership_epoch: Some(membership_epoch),
-                            msg,
-                        })
-                        .await;
-                }
+                self.handle_surface_frame(ws, peer, fingerprint, msg).await;
             }
             Some(InternalEvent::SurfaceFanoutComplete {
                 ws,
@@ -1714,46 +1662,8 @@ impl ActorState {
                 outcomes,
                 all_delivered,
             }) => {
-                self.surface_fanout_tasks.remove(&ws);
-                if !self.subscribers.contains_key(&ws) {
-                    self.pending_surface_frames.remove(&ws);
-                    return true;
-                }
-                for outcome in outcomes {
-                    if outcome.delivered && self.peers_seen.contains_key(&(ws, outcome.peer)) {
-                        if let Some(connection) = outcome.connection {
-                            self.surface_connections.insert(outcome.peer, connection);
-                        }
-                    } else {
-                        self.surface_connections.remove(&outcome.peer);
-                    }
-                }
-                if !all_delivered {
-                    publish(
-                        &self.topics,
-                        &self.host_sessions,
-                        ws,
-                        msg,
-                        false,
-                        true,
-                        false,
-                    )
+                self.handle_surface_fanout_complete(ws, msg, outcomes, all_delivered)
                     .await;
-                }
-                if let Some(next) = self.pending_surface_frames.remove(&ws)
-                    && !self.start_surface_fanout(ws, next.clone())
-                {
-                    publish(
-                        &self.topics,
-                        &self.host_sessions,
-                        ws,
-                        next,
-                        false,
-                        true,
-                        false,
-                    )
-                    .await;
-                }
             }
             Some(InternalEvent::PersonalFabric {
                 ws,
@@ -1762,33 +1672,14 @@ impl ActorState {
                 user_public_key,
                 payload,
             }) => {
-                // Topic membership establishes reachability only. ShellNetwork
-                // still binds the frame to the peer's certified person/device.
-                let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
-                    tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
-                    return true;
-                };
-                if !bind_personal_fabric_ingress(
-                    &mut self.personal_fabric_ingress,
+                self.handle_personal_fabric(
+                    ws,
                     peer,
                     connection_incarnation,
-                    ws,
-                    membership_epoch,
-                ) {
-                    tracing::warn!(ws, peer = %peer, "personal fabric connection crossed membership authority");
-                    return true;
-                }
-                if let Some(tx) = self.subscribers.get(&ws) {
-                    let _ = tx
-                        .send(NetEvent::PersonalFabric {
-                            ws,
-                            peer,
-                            membership_epoch,
-                            user_public_key,
-                            payload,
-                        })
-                        .await;
-                }
+                    user_public_key,
+                    payload,
+                )
+                .await;
             }
             Some(InternalEvent::PersonalFabricClosed {
                 peer,
@@ -1826,32 +1717,203 @@ impl ActorState {
                 outcome,
                 sent_bytes,
             }) => {
-                let key = (target, transfer_id);
-                if let Some(active) =
-                    take_personal_media_generation(&mut self.active_personal_media, key, generation)
-                {
-                    let status = match outcome {
-                        PersonalMediaStreamOutcome::Completed => {
-                            PersonalMediaTransferStatus::Completed
-                        }
-                        PersonalMediaStreamOutcome::Failed => PersonalMediaTransferStatus::Failed,
-                        PersonalMediaStreamOutcome::Cancelled => {
-                            PersonalMediaTransferStatus::Cancelled
-                        }
-                    };
-                    self.report_personal_media(
-                        active.workspace,
-                        target,
-                        transfer_id,
-                        sent_bytes,
-                        active.total_bytes,
-                        status,
-                    );
-                }
+                self.handle_personal_media_finished(
+                    target,
+                    transfer_id,
+                    generation,
+                    outcome,
+                    sent_bytes,
+                );
             }
             None => return false,
         }
         true
+    }
+
+    /// [`InternalEvent::Closed`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_workspace_closed(&mut self, ws: WorkspaceId) {
+        self.topics.remove(&ws);
+        let subscriber = self.subscribers.get(&ws).cloned();
+        let closed = self
+            .peers_seen
+            .iter()
+            .filter_map(|(&(peer_ws, peer), membership)| {
+                (peer_ws == ws).then_some((peer, membership.epoch))
+            })
+            .collect::<Vec<_>>();
+        for (peer, epoch) in closed {
+            if self.remove_membership_if_epoch(ws, peer, epoch)
+                && let Some(tx) = subscriber.as_ref()
+            {
+                let _ = tx
+                    .send(NetEvent::PeerLeft {
+                        ws,
+                        peer,
+                        cause: PeerDepartureCause::WorkspaceRouteClosed,
+                        membership_epoch: Some(epoch),
+                    })
+                    .await;
+            }
+        }
+    }
+
+    /// [`InternalEvent::SurfaceFrame`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_surface_frame(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        fingerprint: [u8; 32],
+        msg: NeighbourMsg,
+    ) {
+        // A bare ALPN connection is not workspace admission. Require
+        // the peer to have appeared on this workspace's authenticated
+        // gossip topic first; ShellNetwork performs the capability
+        // and claimed-publisher checks before dispatch.
+        let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
+            tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
+            return;
+        };
+        // Input has no event id or timestamp, so two deliberate
+        // identical key/button events must not be content-deduped.
+        // A remote-action retry is byte-identical on purpose; the
+        // receiving host deduplicates it by invocation id instead.
+        if (matches!(
+            &msg,
+            NeighbourMsg::RemoteInput { .. } | NeighbourMsg::RemoteAction { .. }
+        ) || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order))
+            && let Some(tx) = self.subscribers.get(&ws)
+        {
+            let _ = tx
+                .send(NetEvent::Msg {
+                    ws,
+                    peer,
+                    membership_epoch: Some(membership_epoch),
+                    msg,
+                })
+                .await;
+        }
+    }
+
+    /// [`InternalEvent::SurfaceFanoutComplete`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_surface_fanout_complete(
+        &mut self,
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+        outcomes: Vec<SurfaceFanoutOutcome>,
+        all_delivered: bool,
+    ) {
+        self.surface_fanout_tasks.remove(&ws);
+        if !self.subscribers.contains_key(&ws) {
+            self.pending_surface_frames.remove(&ws);
+            return;
+        }
+        for outcome in outcomes {
+            if outcome.delivered && self.peers_seen.contains_key(&(ws, outcome.peer)) {
+                if let Some(connection) = outcome.connection {
+                    self.surface_connections.insert(outcome.peer, connection);
+                }
+            } else {
+                self.surface_connections.remove(&outcome.peer);
+            }
+        }
+        if !all_delivered {
+            publish(
+                &self.topics,
+                &self.host_sessions,
+                ws,
+                msg,
+                false,
+                true,
+                false,
+            )
+            .await;
+        }
+        if let Some(next) = self.pending_surface_frames.remove(&ws)
+            && !self.start_surface_fanout(ws, next.clone())
+        {
+            publish(
+                &self.topics,
+                &self.host_sessions,
+                ws,
+                next,
+                false,
+                true,
+                false,
+            )
+            .await;
+        }
+    }
+
+    /// [`InternalEvent::PersonalFabric`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    async fn handle_personal_fabric(
+        &mut self,
+        ws: WorkspaceId,
+        peer: EndpointId,
+        connection_incarnation: u64,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    ) {
+        // Topic membership establishes reachability only. ShellNetwork
+        // still binds the frame to the peer's certified person/device.
+        let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
+            tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
+            return;
+        };
+        if !bind_personal_fabric_ingress(
+            &mut self.personal_fabric_ingress,
+            peer,
+            connection_incarnation,
+            ws,
+            membership_epoch,
+        ) {
+            tracing::warn!(ws, peer = %peer, "personal fabric connection crossed membership authority");
+            return;
+        }
+        if let Some(tx) = self.subscribers.get(&ws) {
+            let _ = tx
+                .send(NetEvent::PersonalFabric {
+                    ws,
+                    peer,
+                    membership_epoch,
+                    user_public_key,
+                    payload,
+                })
+                .await;
+        }
+    }
+
+    /// [`InternalEvent::PersonalMediaFinished`] arm of [`Self::handle_internal`], split
+    /// out to keep that dispatcher short.
+    fn handle_personal_media_finished(
+        &mut self,
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        generation: u64,
+        outcome: PersonalMediaStreamOutcome,
+        sent_bytes: u64,
+    ) {
+        let key = (target, transfer_id);
+        if let Some(active) =
+            take_personal_media_generation(&mut self.active_personal_media, key, generation)
+        {
+            let status = match outcome {
+                PersonalMediaStreamOutcome::Completed => PersonalMediaTransferStatus::Completed,
+                PersonalMediaStreamOutcome::Failed => PersonalMediaTransferStatus::Failed,
+                PersonalMediaStreamOutcome::Cancelled => PersonalMediaTransferStatus::Cancelled,
+            };
+            self.report_personal_media(
+                active.workspace,
+                target,
+                transfer_id,
+                sent_bytes,
+                active.total_bytes,
+                status,
+            );
+        }
     }
 
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
