@@ -1416,7 +1416,11 @@ COPY \
 # rule `brightnessctl` would have brought with it; Tilo writes the sysfs
 # attribute directly (no fork per keypress — brightness keys autorepeat)
 # and therefore ships the rule rather than the package.
-COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules /usr/lib/udev/rules.d/
+#
+# 70-tilo-console.rules hands a VM's console port (org.tilo.console.0, which
+# only a hypervisor can attach) to the greetd user, whose greeter answers the
+# tilo-control action protocol there (crates/session/console-control).
+COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules /usr/lib/udev/rules.d/
 
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the

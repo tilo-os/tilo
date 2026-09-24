@@ -1,0 +1,10 @@
+# The console channel of a VM (crates/session/console-control).
+#
+# A virtio-serial port named org.tilo.console.0 exists only when a hypervisor
+# attaches one (os/dev/vm.sh does, for the installer and target boots); a
+# physical machine has no virtio-serial bus, so this rule never matches there.
+# The console session app — the live installer, or the greeter on an installed
+# system — runs as greetd and answers the tilo-control action protocol on the
+# port, so it alone may open it. Every other virtio port keeps its root-only
+# default.
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.tilo.console.0", OWNER="greetd", GROUP="greetd", MODE="0600"
