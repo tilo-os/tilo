@@ -47,7 +47,7 @@ Tilo (codename **tilo**) is a collaborative Linux OS built on Fedora Bootc. See 
 ## Three Pillars
 
 ### 1. OS Layer (Fedora Bootc)
-- Immutable base OS defined as an OCI container image (`quay.io/fedora/fedora-bootc:42`).
+- Immutable base OS defined as an OCI container image (`quay.io/fedora/fedora-bootc:44`).
 - Atomic updates via `bootc upgrade`; rollback via `bootc rollback`.
 - Read-only root; persistent state lives under `/var`.
 - User apps via Flatpak; dev environments via Distrobox.

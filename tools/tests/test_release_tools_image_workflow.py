@@ -19,7 +19,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
     def test_image_installs_only_publication_runtime_tools(self) -> None:
         self.assertRegex(
             self.containerfile,
-            r"FROM registry\.fedoraproject\.org/fedora-minimal:42@sha256:[0-9a-f]{64}",
+            r"FROM registry\.fedoraproject\.org/fedora-minimal:44@sha256:[0-9a-f]{64}",
         )
         install = self.containerfile.split("RUN microdnf install", 1)[1].split("&&", 1)[0]
         for compiler in ("cargo", "rustc", "gcc", "clang", "make", "cmake"):

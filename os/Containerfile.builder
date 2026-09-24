@@ -7,52 +7,38 @@
 FROM scratch AS external-assets
 COPY --from=github-assets / /
 
-FROM registry.fedoraproject.org/fedora:42
+FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b
 
-# nodejs: actions/checkout. capnproto: runtime-collab build.rs.
-# vulkan-loader + mesa-vulkan-drivers: llvmpipe, so GPU tests run headless.
-# Qt examples and LibreOffice are installed by the path-gated legacy-app E2E.
-# GNOME Text Editor stays here: shell integration tests also launch it directly.
-# bubblewrap is a test *subject*, not a tool — the launcher's confinement
-# suites drive the sandbox and refuse to skip when it is absent. So is
-# rust-analyzer, for the code editor's language-server suite, but it comes from
-# rustup below: the shims in /usr/local/cargo/bin precede /usr/bin, so a Fedora
-# package here would be shadowed by a shim reporting the component missing.
-# pulseaudio supplies only the private software endpoint started by
-# tools/with-headless-audio.sh; CI does not start or replace a host audio service.
-# cryptsetup, swtpm and tpm2-tools are test subjects too: tilo-rollback's
-# mechanism suite drives a real LUKS2 header and a private software TPM and must
-# fail rather than report success when that security boundary is unavailable.
-# The pinned NTFS reader archive bootstraps with autotools; libgcrypt-devel
-# supplies its configure macro even though production crypto is disabled.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# The workspace's build dependencies, the test suites' runtime (GStreamer
+# plugins, fonts, lavapipe, PulseAudio, the sandbox/LUKS/TPM test subjects) and
+# the pinned cargo-nextest come from the same script and profile the developer
+# distrobox (dist/dev/Containerfile.fedora44) installs, so CI builds and tests
+# against exactly what developers do. The script also bootstraps the pinned Rust
+# toolchain through its checksum-pinned rustup-init. rustup, not Fedora's rust:
+# the workspace pins its compiler in rust-toolchain.toml, and a job that
+# silently used a different one would report failures the pinned toolchain does
+# not have. rust-analyzer is a test subject too (the code editor's
+# language-server suite); it comes from rustup because the shims in
+# /usr/local/cargo/bin precede /usr/bin, so a Fedora package would be shadowed
+# by a shim reporting the component missing.
+ARG RUST_CHANNEL
+RUN --mount=type=bind,source=dist/ci/install-build-deps.sh,target=/tmp/install-build-deps.sh,ro \
+    test -n "${RUST_CHANNEL}" \
+    && TILO_RUST_TOOLCHAIN="${RUST_CHANNEL}" \
+       TILO_RUST_COMPONENTS="rustfmt clippy rust-src rust-analyzer" \
+       bash /tmp/install-build-deps.sh fedora test \
+    && rustc --version && rust-analyzer --version && cargo nextest --version
+
+# CI-only workflow tooling. nodejs: actions/checkout. ripgrep, time, yt-dlp:
+# workflow and measurement tools (tools/ci/measure.sh needs GNU time). Qt
+# examples and LibreOffice are installed by the path-gated legacy-app E2E.
 RUN dnf install -y \
       nodejs \
-      capnproto \
-      gcc gcc-c++ make cmake perl perl-FindBin python3 git jq ripgrep time yt-dlp \
-      autoconf automake libtool libgcrypt-devel \
-      clang clang-devel pkgconf-pkg-config \
-      libxkbcommon-devel wayland-devel \
-      libseat-devel libinput-devel systemd-devel libdrm-devel \
-      mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
-      pipewire-devel pulseaudio \
-      ffmpeg-free-devel libva-devel \
-      gstreamer1 gstreamer1-devel gstreamer1-plugins-base-devel \
-      gstreamer1-plugins-good gstreamer1-plugins-bad-free \
-      gstreamer1-plugin-openh264 \
-      sqlite-devel zlib-ng-compat-devel \
-      fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
-      google-noto-sans-fonts google-noto-sans-mono-fonts \
-      google-noto-serif-fonts google-noto-color-emoji-fonts \
-      google-noto-sans-symbols-fonts google-noto-sans-symbols-2-fonts \
-      google-noto-sans-math-fonts google-noto-sans-cjk-fonts \
-      google-noto-sans-arabic-fonts google-noto-sans-hebrew-fonts \
-      google-noto-sans-devanagari-fonts google-noto-sans-bengali-fonts \
-      google-noto-sans-thai-fonts \
-      fuse3-devel dbus-devel dbus-daemon xdg-dbus-proxy \
-      nasm \
-      vulkan-loader mesa-vulkan-drivers \
-      bubblewrap gnome-text-editor \
-      cryptsetup swtpm swtpm-tools tpm2-tools \
+      ripgrep time yt-dlp \
     && dnf clean all
 
 # Required by production PDF capture tests. Use the same verified external
@@ -62,21 +48,6 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     --mount=type=bind,source=os/external-assets/github-assets.tsv,target=/tmp/tilo-assets.tsv,ro \
     bash /tmp/install-pdfium.sh /tilo-assets /usr /tmp/tilo-assets.tsv
 ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
-
-ENV RUSTUP_HOME=/usr/local/rustup \
-    CARGO_HOME=/usr/local/cargo \
-    PATH=/usr/local/cargo/bin:$PATH
-
-# rustup, not Fedora's rust: the workspace pins its compiler in
-# rust-toolchain.toml, and a job that silently used a different one would
-# report failures the pinned toolchain does not have.
-ARG RUST_CHANNEL
-RUN curl -fsSL https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile minimal \
-          --default-toolchain "${RUST_CHANNEL}" \
-          --component rustfmt --component clippy \
-          --component rust-src --component rust-analyzer \
-    && cargo --version && rustc --version && rust-analyzer --version
 
 # Remote compiler caching is part of the build environment rather than a
 # per-job download. Pin and verify the upstream static binary so every shard
@@ -102,8 +73,8 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # Keep tool-install downloads and extracted crate sources out of the image.
 # CI restores its own Cargo downloads under /cargo-home; only these binaries ship.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    cargo install --locked cargo-nextest cargo-deny cargo-machete \
-    && cargo nextest --version && cargo deny --version && cargo machete --version
+    cargo install --locked cargo-deny cargo-machete \
+    && cargo deny --version && cargo machete --version
 
 # Match the workspace's own check so a stale image fails loudly rather than
 # compiling against the wrong libraries.
@@ -111,10 +82,11 @@ COPY tools/ci/check-build-env.sh /usr/local/bin/tilo-check-build-env
 RUN chmod +x /usr/local/bin/tilo-check-build-env && tilo-check-build-env
 
 # Keep the optional CI linker in the final layer so it does not invalidate the
-# expensive native dependencies or Rust tools above. Fedora 42's aarch64 mold
-# pulls in a mimalloc build that uses ARM LSE atomics, while the native CI pool
-# includes ARMv8.0 Graviton 1 hosts. Use mold's checksum-pinned baseline binary
-# on both architectures so the qualification covers one consistent toolchain.
+# expensive native dependencies or Rust tools above. Fedora's aarch64 mold
+# package pulls in a mimalloc build that uses ARM LSE atomics, while the native
+# CI pool includes ARMv8.0 Graviton 1 hosts. Use mold's checksum-pinned baseline
+# binary on both architectures so the qualification covers one consistent
+# toolchain.
 ARG MOLD_VERSION=2.40.4
 ARG MOLD_SHA256_X86_64=4c999e19ffa31afa5aa429c679b665d5e2ca5a6b6832ad4b79668e8dcf3d8ec1
 ARG MOLD_SHA256_AARCH64=c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37
