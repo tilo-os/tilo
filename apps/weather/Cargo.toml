@@ -41,5 +41,8 @@ tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros"] }
 chrono = { workspace = true, features = ["std", "clock"] }
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [lints]
 workspace = true

@@ -662,6 +662,7 @@ mod tests {
     use tilo_actions::ActionAddress;
     use tilo_actions::ResourceProvider;
     use ui::search::SearchProvider;
+    use ui::search::testing::assert_late_hit_reachable;
 
     fn open_doc(name: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -1079,27 +1080,33 @@ mod tests {
     }
 
     #[test]
-    fn exact_unique_match_beyond_one_hundred_thousand_is_bounded_and_reachable() {
-        let doc = AutoCommit::new();
-        let mut library = crate::model::PhotoLibrary::default();
-        library.photos.reserve(100_001);
-        for index in 0..100_001 {
-            let name = if index == 100_000 {
-                "needle-beyond-100k-夏.png".to_owned()
-            } else {
-                format!("photo-{index}.png")
-            };
-            library.photos.push(crate::model::LibraryPhoto::from_image(
-                OpenImage::from_path(&format!("/pictures/{name}"), 1, 1),
-            ));
-        }
-        let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
-        let expected_records = library.photos.len() + 4; // library + timeline + places + albums
+    fn exact_unique_match_in_a_large_library_is_bounded_and_reachable() {
+        let mut expected_records = 0;
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let doc = AutoCommit::new();
+                let mut library = crate::model::PhotoLibrary::default();
+                for row in corpus {
+                    let stem = row.text.replace(' ', "-");
+                    let name = if row.is_target {
+                        format!("{stem}-夏.png")
+                    } else {
+                        format!("{stem}.png")
+                    };
+                    library.photos.push(crate::model::LibraryPhoto::from_image(
+                        OpenImage::from_path(&format!("/pictures/{name}"), 1, 1),
+                    ));
+                }
+                expected_records = library.photos.len() + 4; // library + timeline + places + albums
+                PhotosSearchProvider::from_library(&doc, &library).unwrap()
+            },
+            3_000,
+        );
         assert_eq!(provider.stats().records, expected_records);
-        let page = provider.search_page("needle-beyond-100k-夏", None, 2, 1);
-        assert_eq!(page.results.len(), 1);
+        let page = provider.search_page("needle-夏", None, 2, 1);
+        assert_eq!(page.results, vec![hit.clone()]);
         assert!(page.inspected <= 2);
-        let address = page.results[0].action_address().unwrap();
+        let address = hit.action_address().unwrap();
         assert_eq!(address.action, "open");
         assert!(provider.resolve_action_resource(&address).is_some());
         let (seeds, prebuilt_action_trees) = provider.retained_seed_stats();

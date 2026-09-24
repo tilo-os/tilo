@@ -38,6 +38,7 @@ qdoc = { path = "../../crates/doc/qdoc" }
 uuid.workspace = true
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
