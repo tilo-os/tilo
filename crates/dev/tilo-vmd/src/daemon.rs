@@ -314,10 +314,6 @@ impl Daemon {
             .collect())
     }
 
-    /// Handle one request.
-    ///
-    /// # Errors
-    /// Whatever the method reports; see [`DaemonError::hint`].
     /// Bring every slot back after the VM boots; see [`restore_slots`].
     pub fn restore(&mut self) -> Vec<Issue> {
         let issues = restore_slots(&self.slots, &self.locks, self.apply.as_mut());
@@ -325,6 +321,10 @@ impl Daemon {
         issues
     }
 
+    /// Handle one request.
+    ///
+    /// # Errors
+    /// Whatever the method reports; see [`DaemonError::hint`].
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per method, each a line or three"
@@ -1148,7 +1148,10 @@ mod tests {
             .position(|c| c == &format!("start {}", session_unit("a")))
             .unwrap();
         assert!(seat < session, "{calls:?}");
-        assert!(calls.contains(&format!("start {}", session_unit("b"))), "{calls:?}");
+        assert!(
+            calls.contains(&format!("start {}", session_unit("b"))),
+            "{calls:?}"
+        );
     }
 
     #[test]
