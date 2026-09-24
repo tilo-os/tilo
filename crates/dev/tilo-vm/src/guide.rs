@@ -30,6 +30,11 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         include_str!("../guide/driving.md"),
     ),
     (
+        "scenarios",
+        "scenario install: boot an installer medium, install through its actions, verify first boot",
+        include_str!("../guide/scenarios.md"),
+    ),
+    (
         "images",
         "Containerfile, unit, /etc and package changes: vm upgrade --from local, rollback-image",
         include_str!("../guide/images.md"),
@@ -82,6 +87,7 @@ mod tests {
             "concepts",
             "swapping",
             "driving",
+            "scenarios",
             "images",
             "storage",
             "platforms",
@@ -89,6 +95,16 @@ mod tests {
             "fedora-loop",
         ] {
             assert!(topic(name).is_some_and(|t| t.starts_with("# ")), "{name}");
+        }
+        let scenarios = topic("scenarios").unwrap();
+        for needle in [
+            "tilo-vm scenario install",
+            "tilo-control --socket",
+            "confirmation_phrase",
+            "org.tilo.console.0",
+            "os/dev/test-installer-cycle.sh",
+        ] {
+            assert!(scenarios.contains(needle), "scenarios guide lacks {needle}");
         }
         assert!(index().contains("swapping"));
     }

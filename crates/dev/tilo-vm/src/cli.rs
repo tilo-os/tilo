@@ -97,7 +97,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, kernel, driving, images, storage, platforms, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, kernel, driving, scenarios, images, storage, platforms, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -211,6 +211,9 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
+    /// Cold-boot scenarios in a throwaway VM: boot components that swapping cannot replace.
+    #[command(subcommand)]
+    Scenario(ScenarioCommand),
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
         after_help = "Examples:\n  tilo-vm gc --dry-run\n  tilo-vm gc --keep 2\n  tilo-vm gc --keep-targets 0   # evict every in-VM build dir not in use\n  tilo-vm gc --min-age 0        # also your own orphaned layers from the last hour\n\nUnreferenced layers younger than an hour stay by default: another agent's\nimport may still be waiting for its swap. gc names them and when they go."
@@ -231,9 +234,46 @@ pub enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ScenarioCommand {
+    /// Boot an installer medium, install through its published actions, cold-boot the result and verify first boot.
+    #[command(
+        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo slot and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
+    )]
+    Install(InstallScenarioArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct InstallScenarioArgs {
+    /// The installer medium (default: os/output/installer/qcow2/disk.qcow2, what os/dev/build-custom-installer.sh writes). Never modified: the VM boots a throwaway overlay.
+    #[arg(long)]
+    pub medium: Option<PathBuf>,
+    /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
+    #[arg(long, value_enum, default_value = "erase")]
+    pub layout: crate::scenario::Layout,
+    /// How the always-on disk encryption unlocks: passphrase (no TPM) or tpm-pin (software TPM; the installer offers it only for a verified boot chain).
+    #[arg(long, value_enum, default_value = "passphrase")]
+    pub encrypt: crate::scenario::Unlock,
+    /// Graphics for both boots: gl (virgl, what the installed desktop needs) or software.
+    #[arg(long, value_enum, default_value = "gl")]
+    pub graphics: crate::scenario::Graphics,
+    /// Artifact directory (default: target/tilo-vm-scenarios/scenario-install-<time>).
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+    /// Longest the install itself may take, in seconds.
+    #[arg(long, default_value_t = 3600)]
+    pub install_timeout: u64,
+    /// Keep the target disk and the VM's runtime state afterwards.
+    #[arg(long)]
+    pub keep: bool,
+    /// Print the plan (every command, the console socket, the artifact directory) without booting anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
 /// Does this command leave a receipt? Only commands that change state or
 /// run long do; looking around (status, doctor, guide, lists, logs, slot
-/// show and exec, vm ssh without `--raw`) does not.
+/// show and exec, vm ssh without `--raw`, a scenario's dry run) does not.
 pub fn writes_receipt(command: Option<&Command>) -> bool {
     !matches!(
         command,
@@ -248,6 +288,10 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                 | Command::Slot(
                     SlotCommand::List | SlotCommand::Show { .. } | SlotCommand::Exec { .. }
                 )
+                | Command::Scenario(ScenarioCommand::Install(InstallScenarioArgs {
+                    dry_run: true,
+                    ..
+                }))
         )
     )
 }
@@ -758,6 +802,7 @@ mod tests {
             &["logs"],
             &["vm", "ssh"],
             &["vm", "ssh", "--", "systemctl", "status", "tilo-vmd"],
+            &["scenario", "install", "--dry-run"],
         ] {
             assert!(!writes_receipt(parse(quiet).as_ref()), "{quiet:?}");
         }
@@ -775,6 +820,7 @@ mod tests {
             &["seat", "claim"],
             &["shot"],
             &["vm", "restart"],
+            &["scenario", "install"],
         ] {
             assert!(writes_receipt(parse(loud).as_ref()), "{loud:?}");
         }
@@ -833,6 +879,44 @@ mod tests {
             matches!(cli.command, Some(Command::Control { ref args, .. }) if args == &["click", "--x", "1"])
         );
         assert!(Cli::try_parse_from(["tilo-vm"]).unwrap().command.is_none());
+    }
+
+    #[test]
+    fn the_install_scenario_takes_a_medium_a_layout_and_an_unlock() {
+        let cli = Cli::try_parse_from([
+            "tilo-vm",
+            "scenario",
+            "install",
+            "--medium",
+            "/m/installer.qcow2",
+            "--layout",
+            "guided-alongside",
+            "--encrypt",
+            "tpm-pin",
+            "--graphics",
+            "software",
+        ])
+        .unwrap();
+        let Some(Command::Scenario(ScenarioCommand::Install(args))) = cli.command else {
+            panic!("not the install scenario");
+        };
+        assert_eq!(
+            args.medium.as_deref(),
+            Some(std::path::Path::new("/m/installer.qcow2"))
+        );
+        assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
+        assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
+        assert_eq!(args.graphics, crate::scenario::Graphics::Software);
+        assert_eq!(args.install_timeout, 3600);
+        let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
+        let Some(Command::Scenario(ScenarioCommand::Install(args))) = defaults.command else {
+            panic!("not the install scenario");
+        };
+        assert_eq!(args.layout, crate::scenario::Layout::Erase);
+        assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
+        assert!(
+            Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"]).is_err()
+        );
     }
 
     #[test]

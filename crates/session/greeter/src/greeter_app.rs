@@ -55,6 +55,10 @@ use ui::widget::{
     Widget,
 };
 
+mod console;
+
+pub use console::{CONSOLE_WAKE, PROVIDER as CONSOLE_PROVIDER};
+
 use crate::auth::{AuthUpdate, spawn_auth};
 use crate::local_users::{LoginUser, discover_default_login_user};
 use crate::sessions::{DEFAULT_SESSIONS_DIR, Session, read_sessions};
@@ -620,6 +624,9 @@ pub struct GreeterApp {
     /// The compact-viewport scroll position survives status/caps/auth
     /// rebuilds, which recreate the composed tree.
     viewport_offset: Rc<Cell<(f32, f32)>>,
+    /// Queued console requests (see [`console`]); `None` in shots and tests
+    /// that do not exercise the console.
+    console: Option<console_control::ConsoleServer>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -719,6 +726,7 @@ impl GreeterApp {
             composed: None,
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
+            console: None,
         }
     }
 
@@ -1766,6 +1774,10 @@ impl Widget for GreeterApp {
     }
 
     fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+        if payload == CONSOLE_WAKE {
+            self.serve_console(state);
+            return;
+        }
         // Progress from the background auth worker (see `crate::auth`).
         match AuthUpdate::decode(payload) {
             Some(AuthUpdate::Prompt { text, is_error: _ }) => {

@@ -363,10 +363,31 @@ window and no GPU.
 ```
 
 Actions: `click_named`, `click_at` (`[x, y]`), `key` (a named key or one
-character), `type`, `modifiers`. Optional `viewport` (`[w, h]`), `dump` and
-`targets` paths. Exit codes: `0` all actions ran, `1` an action failed (the
-reason is on stderr — a missing target is an error, not a silent no-op), `3`
-persistence was unavailable.
+character), `type`, `modifiers`, and `invoke`. Optional `viewport` (`[w, h]`),
+`dump` and `targets` paths. Exit codes: `0` all actions ran, `1` an action
+failed (the reason is on stderr — a missing target is an error, not a silent
+no-op), `3` persistence was unavailable.
+
+`invoke` performs one action the app publishes, by address — no coordinates —
+through the same resolution, availability, confirmation and strict argument
+binding the live host applies:
+
+```json
+{"invoke": {"resource": "installer.review", "action": "begin",
+            "confirmation_phrase": "/dev/vdb"}}
+{"invoke": {"resource": "installer", "action": "next",
+            "expect_error": "action_unavailable"}}
+```
+
+`args` is the typed argument object; `confirm: true` satisfies a `Confirm`
+contract and `confirmation_phrase` a `Phrase` one. `expect_error` makes the
+step pass only when the door refuses with that code (`unknown_action`,
+`invalid_arguments`, `action_unavailable`, `action_confirmation_required`,
+`action_failed`), so a scenario can prove a refusal as well as a success.
+From Rust, `Driver::invoke_action` is the same call, and
+`Driver::deliver_external` delivers a `UserEvent::External` payload the way
+the live host does. `crates/session/installer/tests/headless_wizard.rs` runs
+the whole installer wizard this way against a recording install backend.
 
 The run persists through the app's real store (`ui::persist`), so pointing
 `XDG_DATA_HOME` and `TILO_PACKAGE_ID` at a scratch directory gives a complete
