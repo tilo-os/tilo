@@ -12,6 +12,15 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 | `imager-macos-x86_64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
 | `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
 
+Manual installer-only rehearsals do not need those release labels: dispatch
+`release-imager.yml` with `installer_only=true` and `full_native=true`. The
+workflow uses the native `runner-disk-100g` and `runner-disk-100g-arm64`
+large-disk lanes for erase, prepared-alongside, and guided-alongside cycles. Their isolated
+job containers use QEMU's slower TCG accelerator and capturable software
+framebuffer because host KVM/DRI devices are intentionally not exposed. Tagged
+releases still require hardware KVM/DRI and the dedicated six-platform fleet
+above; installer-only rehearsals skip host packaging and every publication job.
+
 Use Forgejo 15 or newer and Forgejo Runner 12.5 or newer. Register every host at
 **repository scope** (`qos/qos`), select ephemeral mode, expose exactly one of
 the labels above as `<label>:host`, and start it with `forgejo-runner one-job`.
@@ -292,23 +301,21 @@ a Forgejo secret:
   in the server that delivered it.
 - Windows: keep the EV/OV Authenticode certificate in Azure Trusted Signing or
   another PKCS#11/KMS service. Federate Forgejo OIDC into that service and
-  install a small signer wrapper on the ephemeral runner image. Set repository
-  variable `IMAGER_WINDOWS_SIGNER` to its absolute path. The packaging script
-  passes it one artifact path at a time and then runs `signtool verify`; the
-  wrapper exchanges the OIDC token, signs by key reference and timestamps the
-  file without exporting a PFX.
+  install a small signer wrapper on the ephemeral runner image. The
+  `IMAGER_WINDOWS_CREDENTIAL_BROKER` validates the job identity and returns that
+  trusted wrapper path for the lease. The packaging script passes it one
+  artifact path at a time and then runs `signtool verify`; the wrapper signs by
+  key reference and timestamps the file without exporting a PFX.
 - macOS: the Developer ID certificate itself is long-lived. Keep it in a
   signing service or secrets manager and release a short lease to the
   ephemeral macOS runner. Prefer an App Store Connect API key for notarization;
   scope it to the Tilo team and retrieve it through the same OIDC lease.
 
-For initial bring-up only, set `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP=1`; the
-workflow then accepts the protected `IMAGER_*` secrets documented in the
-packaging README. Without that explicit switch, a release tag fails closed when
-the broker is absent. Remove the switch and every bootstrap secret after one
-broker-backed release succeeds. `IMAGER_WINDOWS_SIGNER` is a separate supported
-steady-state path for a preinstalled Windows wrapper which performs its own
-OIDC exchange; it is not a path to a PFX.
+There is no static signing or publication bootstrap. A release tag fails closed
+when any required OIDC broker is absent or rejects the job. Initial bring-up
+uses the unsigned, non-publishing `full_native` workflow dispatch until all
+broker-backed release paths are ready; private signing keys, PFX/P12 archives,
+Apple app passwords, and publication tokens must not be stored in Forgejo.
 
 ## Bring-up checklist
 
@@ -324,7 +331,7 @@ Before creating a release tag, verify all of the following:
   tooling in the table above; Linux hosts can use rootful Podman for live-media
   assembly, and Windows/macOS hosts have access to their native GUI session for
   the packaged smoke launch;
-- all six broker-path variables plus the direct PCR signer path above are
+- all seven broker-path variables plus the direct PCR signer path above are
   protected; the Linux full fingerprint is independently set in protected variable
   `IMAGER_LINUX_SIGNING_FINGERPRINT`; `IMAGER_WINDOWS_PUBLISHER` pins the full
   Authenticode certificate subject; `IMAGER_MAC_TEAM_ID` and
@@ -381,7 +388,6 @@ administrators):
 | `IMAGER_MAC_CERT_SHA256` | uppercase 64-hex SHA-256 fingerprint of the expected Developer ID leaf certificate |
 | `WINGET_GITHUB_USER` | dedicated GitHub submission bot login |
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
-| `IMAGER_WINDOWS_SIGNER` | optional alternative to the Windows broker; absolute OIDC-aware wrapper path |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.sandbox.example`. Give its service account read-only access to the published
@@ -389,99 +395,50 @@ Tilo image and its signature/attestation attachments. The workflow copies its
 short-lived Podman auth file into a private Docker config for Cosign, then
 destroys both after use; installer-media CI never
 pushes an OS image or allocates a generation. Rotate it independently of
-signing. The WPE buildroot snapshot workflow does **not** use
-that persistent token in steady state; its broker setup is described below.
+signing. The WPE buildroot snapshot workflow uses the same token and signing
+secrets as the other snapshot workflows; see below.
 The source job's `github.token` is deliberately never used for binary
 publication. `IMAGER_RELEASE_CREDENTIAL_BROKER` exchanges the protected-tag
 OIDC identity for the short-lived, target-only token described above.
 
-Do not configure any of the following in steady state:
+Delete and do not configure these retired legacy secrets and variables; the
+release and monitor workflows do not read them:
 `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP`, `IMAGER_LINUX_SIGNING_KEY_B64`,
 `IMAGER_LINUX_SIGNING_KEY_ID`, `IMAGER_WINDOWS_CERT_PFX_B64`,
 `IMAGER_WINDOWS_CERT_PASSWORD`, `IMAGER_MAC_CERT_P12_B64`,
 `IMAGER_MAC_CERT_PASSWORD`, `IMAGER_MAC_SIGNING_IDENTITY`, `IMAGER_APPLE_ID`,
 `IMAGER_APPLE_TEAM_ID`, `IMAGER_APPLE_APP_PASSWORD`, `HOMEBREW_TAP_TOKEN`,
-`WINGET_GITHUB_TOKEN`, or `SITE_RELEASE_TOKEN`. They exist solely to unblock a
-time-bounded first bootstrap and should be deleted immediately afterward.
+`WINGET_GITHUB_TOKEN`, `SITE_RELEASE_TOKEN`, or `IMAGER_WINDOWS_SIGNER`.
 
 ## WPE buildroot snapshot credentials
 
-`snapshot-wpe-buildroot.yml` is a separate main-branch trust boundary. Set the
-protected repository variable `WPE_SNAPSHOT_CREDENTIAL_BROKER` to an absolute,
-root-owned executable on both native Linux golden images. Both snapshot jobs
-enable Forgejo OIDC. They invoke the broker as:
+`snapshot-wpe-buildroot.yml` authenticates, signs and lands its pins exactly
+like `snapshot-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
+variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
 
-```text
-BROKER resolve-x86_64 OUTPUT
-BROKER resolve-aarch64 OUTPUT
-BROKER publish-x86_64 OUTPUT
-BROKER publish-aarch64 OUTPUT
-BROKER promote OUTPUT
-```
+- `REGISTRY_TOKEN` logs in to `code.sandbox.example` to read the mirrored base and
+  push `qos/tilo-wpe-buildroot`.
+- `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
+  buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
+  preflight job refuses to start the multi-hour builds unless the KMS public
+  key equals `keys/cosign.pub`.
+- The job token pushes an `automation/wpe-buildroot-snapshot-<digest>` branch
+  and `RELEASE_TOKEN` opens the protected-main pull request through
+  `os/dev/open-snapshot-pr.py`.
 
-The broker must fail if `OUTPUT` exists, create it as a regular mode-0600 file
-owned by the runner account, and write exactly one newline-terminated
-`NAME=value` per line. Resolve and promotion leases contain
-`TILO_REGISTRY_USERNAME`, `TILO_REGISTRY_PASSWORD`,
-and `TILO_LEASE_EXPIRES_AT`. Publish leases also contain `TILO_WPE_SIGNER`. The
-expiry is a Unix timestamp no more than 15 minutes in the future. CI acquires a
-read lease to resolve the base image, builds without pushing, logs out, then
-acquires a fresh write/signing lease immediately before push and signing;
-a signing handle is never left to expire during the long Fedora transaction.
-The helper rejects duplicate, malformed, or additional settings, uses the
-registry password only for `docker login`, removes the response, and logs out
-after the job. No registry password is copied to `GITHUB_ENV` or an artifact.
-
-The helper deliberately never handles the JWT itself: it verifies that
-Forgejo injected `ACTIONS_ID_TOKEN_REQUEST_URL` and
-`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, then invokes the trusted broker with both
-still present in its environment. The broker must request the audience
-`tilo-wpe-buildroot-snapshot` from that URL, validate and exchange the returned
-JWT server-side, and must never copy either OIDC value into `OUTPUT`, logs, or
-an artifact. A broker which merely trusts the requested mode or other process
-environment without validating the signed JWT is not conforming.
-
-`TILO_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
-outside the checkout and job temporary directory. It receives one argument:
-the immutable
-`code.sandbox.example/qos/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
-hold or acquire a non-exportable KMS/HSM signing lease, reject every other
-repository/reference shape, sign at most once for its build lease, upload the
-transparency-log entry, and return only after signing succeeds. CI immediately
-verifies the result with `keys/cosign.pub`; the broker cannot rotate the trusted
-identity by returning another public key.
-
-Configure this broker with a dedicated audience such as
-`tilo-wpe-buildroot-snapshot` and the same JWT signature/time/replay checks
-described above, but with a policy specific to this workflow:
-
-- `repository == qos/qos` and the pinned immutable repository ID;
-- `event_name` is `push` or an authorized `workflow_dispatch`, `ref_type` is
-  `branch`, `ref == refs/heads/main`, and main is protected;
-- `workflow == snapshot-wpe-buildroot.yml`, with `workflow_ref` in `qos/qos`;
-- the requested mode is exactly one of the two `resolve-*`, two `publish-*`, or
-  `promote` modes above, and `(run_id, run_attempt, mode)` has not already
-  received a lease.
-
-Give resolve-mode registry leases pull access, publish-mode leases push access,
-and promotion-mode leases pull access only to `qos/tilo-wpe-buildroot`. The
-promotion job explicitly gives `actions/checkout` Forgejo's job-scoped
-`github.token` for its atomic main-branch pin commit, so the broker does not
-mint a repository PAT.
-Its `contents: write` permission exists only on that promotion job; native build
-jobs have `contents: read`.
-
-There is no static-credential bootstrap path. If the broker is absent or fails
-validation, the snapshot stops before resolving or publishing an image. In
-particular, do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`: WPE
-buildroots accept only the broker-returned non-exportable signer.
+Each architecture builds on its native runner with `no-cache`, publishes by
+digest, and must carry a matching `/usr/lib/tilo/wpe-buildroot-arch` marker,
+a recorded package list, and no remaining yum repositories. Both signatures
+are verified with `keys/cosign.pub` before either reference is recorded, and
+promotion refuses to proceed if any snapshot input changed on main while the
+builds ran. Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
 
 ## Package indexes
 
 `publish-homebrew-tap.sh` updates the pre-created `tilo-os/homebrew-tilo`, renders
 the formula and cask from release digests, audits them, and pushes `main`. Configure
-the broker's `homebrew` exchange as described above. `HOMEBREW_TAP_TOKEN` is
-accepted only when the explicit static-bootstrap switch is enabled.
+the broker's `homebrew` exchange as described above. The workflow accepts no
+repository token fallback.
 
 WinGet's public consumer path is the Microsoft community index. A self-hosted
 source is a separate HTTPS REST service that every user must add as
@@ -490,8 +447,7 @@ the release bot's GitHub fork when needed and opens the one-version PR expected
 by `microsoft/winget-pkgs`. Configure:
 
 - the broker's `winget` exchange with the dedicated bot's expiring GitHub App
-  user token described above. `WINGET_GITHUB_TOKEN` is a
-  static-bootstrap-only fallback;
+  user token described above; the workflow accepts no repository token fallback;
 - repository variable `WINGET_GITHUB_USER`: that bot account's login.
 
 The `Monitor / WinGet acceptance` workflow runs every six hours and can also be

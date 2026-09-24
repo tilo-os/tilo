@@ -14,8 +14,15 @@
 //! * Value escaping: `\n` `\,` `\;` `\\` on read; the inverse on write.
 //! * Structured `N` and `ADR` component splitting on unescaped `;`.
 //! * `BDAY` in both `YYYY-MM-DD` (3.0) and `YYYYMMDD` (4.0) shapes.
+//!
+//! The content-line layer (folding, parameter quoting, TEXT escaping) is the
+//! shared `pim-lines` codec that iCalendar uses too.
 
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled};
+use pim_lines::{
+    ContentLine, Unfolded, encode_param_value, escape_text as esc, fold_into, split_unescaped,
+    unescape_text as unescape,
+};
 use uuid::Uuid;
 
 /// Import limits keep a malformed or hostile `.vcf` from monopolising the UI
@@ -130,7 +137,10 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
         lines.push(format!("BDAY:{}", format_bday(bday, version)));
     }
     if !c.website.trim().is_empty() {
-        lines.push(format!("URL:{}", esc(&c.website)));
+        // URL is a URI value (RFC 6350 §6.7.8): no TEXT escaping, so commas
+        // and semicolons in a link reach other clients intact.
+        let url: String = c.website.chars().filter(|ch| !ch.is_control()).collect();
+        lines.push(format!("URL:{url}"));
     }
     if !c.notes.trim().is_empty() {
         lines.push(format!("NOTE:{}", esc(&c.notes)));
@@ -145,8 +155,7 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
     // Fold long lines to <=75 octets and join with CRLF per the spec.
     let mut doc = String::new();
     for l in lines {
-        doc.push_str(&fold_line(&l));
-        doc.push_str("\r\n");
+        fold_into(&mut doc, &l);
     }
     doc
 }
@@ -156,10 +165,12 @@ pub fn to_vcard(c: &Contact, version: VCardVersion) -> String {
 fn type_param(label: &str, version: VCardVersion) -> String {
     let label = label.trim();
     let label = if label.is_empty() { "other" } else { label };
-    match version {
-        VCardVersion::V3 => format!("TYPE={}", label.to_uppercase()),
-        VCardVersion::V4 => format!("TYPE={}", label.to_lowercase()),
-    }
+    let label = match version {
+        VCardVersion::V3 => label.to_uppercase(),
+        VCardVersion::V4 => label.to_lowercase(),
+    };
+    // A user label is free text; `;` or `:` in it must not end the parameter.
+    format!("TYPE={}", encode_param_value(&label))
 }
 
 /// Birthday formatting: 4.0 prefers the basic `YYYYMMDD`; 3.0 keeps the
@@ -178,48 +189,6 @@ fn format_bday(bday: &Birthday, version: VCardVersion) -> String {
     }
 }
 
-/// Escape a value for a vCard content line (RFC 6350 §3.4).
-fn esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => {}
-            ',' => out.push_str("\\,"),
-            ';' => out.push_str("\\;"),
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// Fold a content line to 75-*octet* segments, continuation lines prefixed
-/// with a single space (RFC 6350 §3.2).  The previous character-counting
-/// implementation exceeded the wire limit for non-ASCII names and notes.
-/// Split only at UTF-8 character boundaries, so each physical line remains
-/// valid UTF-8 and every continuation includes its required leading space in
-/// the 75-octet budget.
-fn fold_line(line: &str) -> String {
-    const LIMIT: usize = 75;
-    let mut out = String::with_capacity(line.len() + line.len() / LIMIT * 3);
-    let mut used = 0usize;
-    let mut continuation = false;
-    for ch in line.chars() {
-        let bytes = ch.len_utf8();
-        // A continuation's leading whitespace consumes one octet.
-        let payload_limit = LIMIT - usize::from(continuation);
-        if used > 0 && used + bytes > payload_limit {
-            out.push_str("\r\n ");
-            continuation = true;
-            used = 0;
-        }
-        out.push(ch);
-        used += bytes;
-    }
-    out
-}
-
 // ---------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------
@@ -234,17 +203,26 @@ pub fn parse_vcards(input: &str) -> Vec<Contact> {
 /// Parse a bounded vCard stream and retain enough outcome data for callers to
 /// distinguish a clean import from a partial one.
 pub fn parse_vcards_report(input: &str) -> VCardParseReport {
-    let logical = unfold(input);
+    let logical = pim_lines::unfold_bounded(input, MAX_VCARD_LOGICAL_LINE_BYTES);
     let mut report = VCardParseReport::default();
     let mut cur: Option<(Contact, bool)> = None;
 
     for raw in logical {
-        let line = raw.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
+        let Unfolded::Line(raw) = raw else {
+            // An oversized property invalidates its card rather than being
+            // imported in part.
+            if let Some((_, invalid)) = cur.as_mut() {
+                *invalid = true;
+            }
+            continue;
+        };
+        if raw.is_empty() {
             continue;
         }
-        let upper = line.to_ascii_uppercase();
-        if upper.starts_with("BEGIN:VCARD") {
+        let Some(line) = ContentLine::parse(&raw) else {
+            continue;
+        };
+        if line.begins("VCARD") {
             if cur.take().is_some() {
                 report.skipped_cards += 1;
             }
@@ -264,7 +242,7 @@ pub fn parse_vcards_report(input: &str) -> VCardParseReport {
             ));
             continue;
         }
-        if upper.starts_with("END:VCARD") {
+        if line.ends("VCARD") {
             if let Some((mut c, invalid)) = cur.take() {
                 if !invalid && has_contact_data(&c) {
                     assign_import_identities(&mut c);
@@ -275,21 +253,10 @@ pub fn parse_vcards_report(input: &str) -> VCardParseReport {
             }
             continue;
         }
-        let Some((contact, invalid)) = cur.as_mut() else {
+        let Some((contact, _)) = cur.as_mut() else {
             continue;
         };
-        if line == "\0" {
-            *invalid = true;
-            continue;
-        }
-        if line.len() > MAX_VCARD_LOGICAL_LINE_BYTES {
-            *invalid = true;
-            continue;
-        }
-        let Some((props, value)) = split_line(line) else {
-            continue;
-        };
-        apply_property(contact, &props, value);
+        apply_property(contact, &line);
     }
     if cur.is_some() {
         report.skipped_cards += 1;
@@ -411,106 +378,32 @@ fn deterministic_uuid<'a>(parts: impl IntoIterator<Item = &'a str>) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-/// RFC line unfolding: any line beginning with SP or TAB continues the
-/// previous one (the leading whitespace is dropped).
-fn unfold(input: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for line in input.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if (line.starts_with(' ') || line.starts_with('\t'))
-            && let Some(last) = out.last_mut()
-        {
-            // The leading char is a single-byte SP/TAB, so byte offset 1 is
-            // always a char boundary; `.get` is a defensive, never-panicking
-            // way to say so.
-            let continuation = line.get(1..).unwrap_or("");
-            if last.len().saturating_add(continuation.len()) > MAX_VCARD_LOGICAL_LINE_BYTES {
-                // Keep a sentinel that the parser cannot mistake for a
-                // property. This prevents a huge folded value from being
-                // accumulated or partially imported.
-                last.clear();
-                last.push('\0');
-            } else {
-                last.push_str(continuation);
-            }
-            continue;
-        }
-        if line.len() > MAX_VCARD_LOGICAL_LINE_BYTES {
-            out.push("\0".to_string());
-        } else {
-            out.push(line.to_string());
-        }
-    }
-    out
-}
-
-/// Split a content line into its property part (`NAME;PARAM=…`) and its
-/// raw value, on the first unescaped colon.
-fn split_line(line: &str) -> Option<(String, &str)> {
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    let mut prev_backslash = false;
-    while i < bytes.len() {
-        // ':' is ASCII, so a byte-exact match can't land mid-codepoint of a
-        // multi-byte char; `.get` still guards it defensively instead of
-        // trusting that reasoning at the panic site.
-        let c = *bytes.get(i)? as char;
-        if c == ':' && !prev_backslash {
-            return Some((line.get(..i)?.to_string(), line.get(i + 1..)?));
-        }
-        prev_backslash = c == '\\' && !prev_backslash;
-        i += 1;
-    }
-    None
-}
-
-/// Parsed property descriptor: the upper-cased name plus its params.
-struct PropDesc {
-    name: String,
-    params: Vec<(String, String)>,
-}
-
-fn parse_props(props: &str) -> PropDesc {
-    // Strip an optional `group.` prefix (e.g. `item1.TEL`).
-    let parts = split_unescaped(props, ';');
-    let mut iter = parts.into_iter();
-    let raw_name = iter.next().unwrap_or_default();
-    let name = match raw_name.split_once('.') {
-        Some((_group, n)) => n,
-        None => raw_name.as_str(),
-    }
-    .to_ascii_uppercase();
-
-    let mut params = Vec::new();
-    for p in iter {
-        if let Some((k, v)) = p.split_once('=') {
-            params.push((k.to_ascii_uppercase(), v.to_string()));
-        } else if !p.is_empty() {
-            // Legacy bare type (vCard 2.1/3.0): `TEL;WORK:…`.
-            params.push(("TYPE".to_string(), p));
-        }
-    }
-    PropDesc { name, params }
-}
-
 /// Collect every `TYPE=` value (comma-joined or repeated), lower-cased,
 /// dropping the catch-all `voice`/`internet`/`pref` noise so the label
 /// reads cleanly (home/work/mobile/…).
-fn collect_types(desc: &PropDesc) -> String {
+fn collect_types(line: &ContentLine) -> String {
     let mut types: Vec<String> = Vec::new();
-    for (k, v) in &desc.params {
-        if k == "TYPE" {
-            for t in v.split(',') {
-                let t = t.trim().to_lowercase();
-                if t.is_empty() {
-                    continue;
-                }
-                if matches!(t.as_str(), "voice" | "internet" | "pref") {
-                    continue;
-                }
-                if !types.contains(&t) {
-                    types.push(t);
-                }
+    // `TYPE=work,voice`, `TYPE="work,voice"`, repeated `TYPE=` parameters and
+    // the legacy bare form (`TEL;WORK:`) all contribute.
+    let mut values: Vec<&str> = Vec::new();
+    for param in &line.params {
+        if param.values.is_empty() {
+            values.push(&param.name);
+        } else if param.name == "TYPE" {
+            values.extend(param.values.iter().map(String::as_str));
+        }
+    }
+    for v in values {
+        for t in v.split(',') {
+            let t = t.trim().to_lowercase();
+            if t.is_empty() {
+                continue;
+            }
+            if matches!(t.as_str(), "voice" | "internet" | "pref") {
+                continue;
+            }
+            if !types.contains(&t) {
+                types.push(t);
             }
         }
     }
@@ -520,9 +413,9 @@ fn collect_types(desc: &PropDesc) -> String {
         .unwrap_or_else(|| "other".to_string())
 }
 
-fn apply_property(c: &mut Contact, props: &str, value: &str) {
-    let desc = parse_props(props);
-    match desc.name.as_str() {
+fn apply_property(c: &mut Contact, line: &ContentLine) {
+    let value = line.value.as_str();
+    match line.name.as_str() {
         "FN" => {
             // Only use FN to seed names if N didn't already populate them.
             if c.first.is_empty() && c.last.is_empty() {
@@ -568,13 +461,13 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
         }
         "TEL" => {
             c.phones.push(Labeled::new(
-                &collect_types(&desc),
+                &collect_types(line),
                 &unescape(strip_uri(value)),
             ));
         }
         "EMAIL" => {
             c.emails
-                .push(Labeled::new(&collect_types(&desc), &unescape(value)));
+                .push(Labeled::new(&collect_types(line), &unescape(value)));
         }
         "ADR" => {
             let comps = split_unescaped(value, ';');
@@ -582,7 +475,7 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
             let g = |i: usize| comps.get(i).map(|s| unescape(s)).unwrap_or_default();
             let addr = Address {
                 id: Uuid::new_v4(),
-                label: collect_types(&desc),
+                label: collect_types(line),
                 street: g(2),
                 city: g(3),
                 region: g(4),
@@ -598,7 +491,7 @@ fn apply_property(c: &mut Contact, props: &str, value: &str) {
         "NOTE" => c.notes = unescape(value),
         "CATEGORIES" => {
             for cat in split_unescaped(value, ',') {
-                let cat = unescape(&cat).trim().to_string();
+                let cat = unescape(cat).trim().to_string();
                 if !cat.is_empty() {
                     c.groups.push(GroupEntry::new(cat));
                 }
@@ -635,46 +528,6 @@ fn strip_uri(value: &str) -> &str {
         }
     }
     value
-}
-
-/// Split `s` on `delim`, honouring backslash escaping so an escaped
-/// delimiter (`\;` inside a NOTE) doesn't split the value.
-fn split_unescaped(s: &str, delim: char) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut prev_backslash = false;
-    for ch in s.chars() {
-        if ch == delim && !prev_backslash {
-            out.push(std::mem::take(&mut cur));
-            continue;
-        }
-        // Preserve the backslash in the segment; `unescape` resolves it.
-        cur.push(ch);
-        prev_backslash = ch == '\\' && !prev_backslash;
-    }
-    out.push(cur);
-    out
-}
-
-/// Resolve `\n \, \; \\` escape sequences in a value.
-fn unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.next() {
-                Some('n' | 'N') => out.push('\n'),
-                Some(',') => out.push(','),
-                Some(';') => out.push(';'),
-                Some('\\') => out.push('\\'),
-                Some(other) => out.push(other),
-                None => {}
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -833,26 +686,79 @@ mod tests {
 
     #[test]
     fn folding_keeps_value_recoverable() {
-        let long = "x".repeat(200);
-        let folded = fold_line(&format!("NOTE:{long}"));
-        assert!(folded.contains("\r\n "), "long line must fold");
-        // Unfolding the folded output restores the original logical line.
-        let restored = unfold(&format!("{folded}\r\n"));
-        assert_eq!(restored[0], format!("NOTE:{long}"));
+        let mut c = sample();
+        c.notes = "x".repeat(200);
+        let doc = to_vcard(&c, VCardVersion::V4);
+        assert!(doc.contains("\r\n "), "long line must fold");
+        assert_eq!(parse_vcards(&doc)[0].notes, c.notes);
     }
 
     #[test]
     fn folding_respects_the_octet_limit_for_unicode() {
-        let line = format!("NOTE:{}", "é".repeat(80));
-        let folded = fold_line(&line);
-        for physical in folded.split("\r\n") {
+        let mut c = sample();
+        c.notes = "é".repeat(80);
+        let doc = to_vcard(&c, VCardVersion::V3);
+        for physical in doc.split("\r\n") {
             assert!(
                 physical.len() <= 75,
                 "physical line is {} bytes: {physical:?}",
                 physical.len()
             );
         }
-        assert_eq!(unfold(&format!("{folded}\r\n"))[0], line);
+        assert_eq!(parse_vcards(&doc)[0].notes, c.notes);
+    }
+
+    #[test]
+    fn quoted_type_lists_yield_clean_labels() {
+        // RFC 6350's own example quotes the TYPE list.
+        let vcf = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Q\r\nTEL;VALUE=uri;PREF=1;TYPE=\"voice,home\":tel:+1-555-555-5555\r\nEMAIL;TYPE=\"work\":q@example.com\r\nEND:VCARD\r\n";
+        let back = parse_vcards(vcf);
+        assert_eq!(back[0].phones[0].label, "home");
+        assert_eq!(back[0].phones[0].value, "+1-555-555-5555");
+        assert_eq!(back[0].emails[0].label, "work");
+    }
+
+    #[test]
+    fn quoted_parameters_with_colons_keep_the_value_intact() {
+        let vcf = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Label\r\nADR;LABEL=\"1 Main St\\nSpringfield: IL\";TYPE=home:;;1 Main St;Springfield;IL;62701;US\r\nEND:VCARD\r\n";
+        let back = parse_vcards(vcf);
+        assert_eq!(back[0].addresses[0].street, "1 Main St");
+        assert_eq!(back[0].addresses[0].city, "Springfield");
+        assert_eq!(back[0].addresses[0].label, "home");
+    }
+
+    #[test]
+    fn free_text_labels_cannot_break_the_content_line() {
+        let mut c = sample();
+        c.phones = vec![Labeled::new("desk; ext: 12", "+1 555 0100")];
+        let doc = to_vcard(&c, VCardVersion::V4);
+        assert!(
+            doc.contains("TEL;TYPE=\"desk; ext: 12\":+1 555 0100"),
+            "{doc}"
+        );
+        let back = parse_vcards(&doc);
+        assert_eq!(back[0].phones[0].value, "+1 555 0100");
+        assert_eq!(back[0].phones[0].label, "desk; ext: 12");
+    }
+
+    #[test]
+    fn urls_are_written_without_text_escaping() {
+        let mut c = sample();
+        c.website = "https://example.com/a,b;c".into();
+        let doc = to_vcard(&c, VCardVersion::V4);
+        assert!(doc.contains("URL:https://example.com/a,b;c\r\n"), "{doc}");
+        assert_eq!(parse_vcards(&doc)[0].website, c.website);
+    }
+
+    #[test]
+    fn continuations_of_an_oversized_property_cannot_smuggle_data() {
+        let input = format!(
+            "BEGIN:VCARD\r\nFN:Safe name\r\nNOTE:{}\r\n EMAIL:smuggled@example.com\r\nEND:VCARD\r\n",
+            "x".repeat(MAX_VCARD_LOGICAL_LINE_BYTES)
+        );
+        let report = parse_vcards_report(&input);
+        assert!(report.contacts.is_empty());
+        assert_eq!(report.skipped_cards, 1);
     }
 
     #[test]
