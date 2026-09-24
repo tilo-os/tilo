@@ -36,6 +36,19 @@ class TransformTests(unittest.TestCase):
         self.assertEqual(args[args.index('--omit-drivers') + 1], 'ext4 xfs')
         self.assertEqual(args[args.index('--compress') + 1], 'zstd')
 
+    def test_lenovo_83ed_omits_unrelated_gpu_drivers_only(self):
+        board = transform.create_arguments(IMAGE, '7.2.5', 123, Path('/private/hooks'),
+                                           'lenovo-83ed')
+        generic = transform.create_arguments(IMAGE, '7.2.5', 123, Path('/private/hooks'),
+                                             'generic')
+        self.assertEqual(board[board.index('--omit-drivers') + 1].split(),
+                         ['amdgpu', 'nouveau', 'xe', 'xfs'])
+        self.assertEqual(generic[generic.index('--omit-drivers') + 1], 'xfs')
+        self.assertEqual(transform.omitted_drivers('lenovo-83ed'),
+                         ['amdgpu', 'nouveau', 'xe', 'xfs'])
+        self.assertNotIn('msm', transform.omitted_drivers('lenovo-83ed'))
+        self.assertEqual(board[board.index('--add-drivers') + 1], 'ext4')
+
     def test_rejects_mutable_image_kernel_escape_and_invalid_epoch(self):
         for image, kernel, epoch in [('latest', '6.1', 0), (IMAGE, '../escape', 0),
                                      (IMAGE, '-foo', 0), (IMAGE, 'a;echo x', 0),
