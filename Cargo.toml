@@ -213,6 +213,7 @@ members = [
     "crates/system/xdg-paths",
 
     # Text
+    "crates/text/pim-lines",
     "crates/text/spellcheck",
 
     # Windows
