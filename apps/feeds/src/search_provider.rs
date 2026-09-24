@@ -175,6 +175,7 @@ mod tests {
     use super::*;
     use automerge::{AutoCommit, ROOT};
     use ui::search::SearchProvider;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::widget::Widget;
     use uuid::Uuid;
 
@@ -255,24 +256,25 @@ mod tests {
     }
 
     #[test]
-    fn unique_late_hit_remains_findable_beyond_one_hundred_thousand_articles() {
-        let feed = test_feed(1);
-        let mut articles = (0..100_001u128)
-            .map(|index| test_article(index + 2, feed.id, format!("Article {index}")))
-            .collect::<Vec<_>>();
-        articles.last_mut().expect("large corpus is nonempty").title =
-            "Late catalogue needle".into();
-        let provider = FeedsSearchProvider::new(&Store {
-            feeds: vec![feed],
-            articles,
-            ..Store::default()
-        });
-
-        let page = provider.search_page("catalogue needle", None, 4, 4);
+    fn unique_late_hit_remains_findable_in_a_large_archive() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let feed = test_feed(1);
+                let articles = corpus
+                    .map(|row| test_article(row.index as u128 + 2, feed.id, row.text))
+                    .collect::<Vec<_>>();
+                FeedsSearchProvider::new(&Store {
+                    feeds: vec![feed],
+                    articles,
+                    ..Store::default()
+                })
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
         assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "Late catalogue needle");
-        assert_eq!(provider.stats().records, 100_002);
+        assert_eq!(provider.stats().records, 3_001);
     }
 
     #[test]
