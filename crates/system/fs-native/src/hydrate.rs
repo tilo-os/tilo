@@ -41,6 +41,24 @@ pub const RESIDENCY_XATTR: &str = "trusted.tilo.residency";
 /// renamed into place once complete and are never captured.
 pub const STAGING_PREFIX: &str = ".tilo-staging-";
 
+/// How a gated file treats a process that has it open for writing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteGate {
+    /// Refuse with this errno (`EBUSY` while another device holds the
+    /// file's write lease).
+    Deny(i32),
+    /// Ask the [`WritePolicy`], which may grant the write (acquiring a
+    /// lease) or refuse it.
+    Ask,
+}
+
+/// Decides writes to files gated with [`WriteGate::Ask`].
+pub trait WritePolicy: Send + Sync + 'static {
+    /// Called on the first access by a writer of `file` (`(st_dev, st_ino)`)
+    /// while it is gated. `Err(errno)` refuses the access with that errno.
+    fn admit_writer(&self, file: (u64, u64)) -> Result<(), i32>;
+}
+
 /// Supplies content bytes for placeholders.
 pub trait Fetcher: Send + Sync + 'static {
     /// Returns exactly `len` bytes of `content` starting at `offset`.
@@ -152,8 +170,9 @@ struct Shared {
     group: Group,
     fetcher: Arc<dyn Fetcher>,
     files: Mutex<HashMap<(u64, u64), FileState>>,
-    /// Files whose writers are refused, with the errno they get.
-    gates: Mutex<HashMap<(u64, u64), i32>>,
+    /// Files whose writers are refused or must be admitted first.
+    gates: Mutex<HashMap<(u64, u64), WriteGate>>,
+    policy: Mutex<Option<Arc<dyn WritePolicy>>>,
     /// Descriptors this process holds for events and read-ahead. They are
     /// open read-write on the files they name and must not make this
     /// process look like a writer.
@@ -254,8 +273,19 @@ fn write_all_at(fd: BorrowedFd<'_>, mut data: &[u8], mut offset: u64) -> io::Res
 }
 
 impl Shared {
-    fn gated(&self, key: (u64, u64)) -> Option<i32> {
+    fn gated(&self, key: (u64, u64)) -> Option<WriteGate> {
         self.gates.lock().ok()?.get(&key).copied()
+    }
+
+    /// The verdict for a writer of a gated file.
+    fn admit(&self, gate: WriteGate, key: (u64, u64)) -> Result<(), i32> {
+        match gate {
+            WriteGate::Deny(errno) => Err(errno),
+            WriteGate::Ask => {
+                let policy = self.policy.lock().ok().and_then(|p| p.clone());
+                policy.map_or(Ok(()), |p| p.admit_writer(key))
+            }
+        }
     }
 
     fn own_fd(&self, fd: i32, held: bool) {
@@ -324,8 +354,9 @@ impl Shared {
         let Ok(key) = key_of(fd) else {
             return fan::FAN_ALLOW;
         };
-        if let Some(errno) = self.gated(key)
+        if let Some(gate) = self.gated(key)
             && self.process_writes(pid, key)
+            && let Err(errno) = self.admit(gate, key)
         {
             self.stats.gated_denials.fetch_add(1, Ordering::Relaxed);
             return fan::deny_errno(errno);
@@ -610,6 +641,7 @@ impl Hydrator {
             fetcher,
             files: Mutex::new(HashMap::new()),
             gates: Mutex::new(HashMap::new()),
+            policy: Mutex::new(None),
             own_fds: Mutex::new(std::collections::HashSet::new()),
             changed: Condvar::new(),
             stop: AtomicBool::new(false),
@@ -796,6 +828,24 @@ impl Hydrator {
     /// reading; a process that has the file open for writing gets `errno`
     /// from the access that needs the bytes, `mmap` included.
     pub fn gate_writes(&self, path: &Path, errno: i32) -> io::Result<()> {
+        self.gate(path, WriteGate::Deny(errno)).map(|_| ())
+    }
+
+    /// Installs the policy asked about files gated with [`WriteGate::Ask`].
+    pub fn set_write_policy(&self, policy: Arc<dyn WritePolicy>) {
+        if let Ok(mut slot) = self.shared.policy.lock() {
+            *slot = Some(policy);
+        }
+    }
+
+    /// The `(st_dev, st_ino)` a [`WritePolicy`] is asked about for `path`.
+    pub fn file_key(path: &Path) -> io::Result<(u64, u64)> {
+        let meta = fs::symlink_metadata(path)?;
+        Ok((meta.dev(), meta.ino()))
+    }
+
+    /// Gates writers of the file at `path`. Returns its key.
+    pub fn gate(&self, path: &Path, gate: WriteGate) -> io::Result<(u64, u64)> {
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
@@ -805,12 +855,13 @@ impl Hydrator {
             .gates
             .lock()
             .map_err(|_| io::Error::other("hydrator state poisoned"))?
-            .insert(key, errno);
+            .insert(key, gate);
         self.shared.group.mark_fd(
             fan::FAN_MARK_ADD | fan::FAN_MARK_INODE,
             fan::FAN_PRE_ACCESS,
             file.as_fd(),
-        )
+        )?;
+        Ok(key)
     }
 
     /// Lets writers of `path` through again.
