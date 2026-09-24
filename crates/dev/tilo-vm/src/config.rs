@@ -87,6 +87,22 @@ pub struct VmEntry {
     /// created: the one beside the adapter's own tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qemu_img: Option<String>,
+    /// A host-built kernel the VM boots directly instead of its disk's boot
+    /// loader (`tilo-vm swap kernel --direct`; libvirt). Cleared by
+    /// `tilo-vm rollback --slot vm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_kernel: Option<DirectKernel>,
+}
+
+/// Direct kernel boot: files on the host, and the command line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectKernel {
+    pub kernel: String,
+    pub initrd: String,
+    pub cmdline: String,
+    /// `uname -r` the kernel reports.
+    #[serde(default)]
+    pub kver: String,
 }
 
 pub const DEFAULT_MIN_FREE_GB: u64 = 5;
