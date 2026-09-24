@@ -2137,6 +2137,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud-source-icloud"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "cloud-source",
+ "cloud-source-icloud",
+ "getrandom 0.4.1",
+ "hex",
+ "num-bigint 0.5.1",
+ "pbkdf2",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "thiserror 2.0.18",
+ "tilo-net",
+ "unicode-normalization",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "cloud-source-onedrive"
 version = "0.1.0"
 dependencies = [
