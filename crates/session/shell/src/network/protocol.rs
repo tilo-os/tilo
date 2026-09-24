@@ -262,13 +262,13 @@ mod tests {
     /// Syntactically valid but unsigned; only the postcard framing needs to
     /// round-trip.
     fn dummy_envelope() -> Box<collab_types::SignedOp> {
-        use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
         use std::time::SystemTime;
         Box::new(SignedOp::new_unsigned(
             vec![0xDE, 0xAD, 0xBE, 0xEF],
-            ArtifactId::new(),
+            artifact(0x11),
             Ed25519PublicKey::from_bytes([7u8; 32]),
-            AttestationId::new(),
+            AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
             OpClass::Splice,
             SystemTime::UNIX_EPOCH,
             42,
@@ -277,6 +277,23 @@ mod tests {
 
     /// Room id shared by every fixture that names one.
     const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+
+    /// Fixed artifact ids keep the golden encodings reproducible.
+    fn artifact(fill: u8) -> collab_types::ArtifactId {
+        collab_types::ArtifactId(uuid::Uuid::from_bytes([fill; 16]))
+    }
+
+    fn device_cert() -> Box<tilo_user_identity::DeviceCert> {
+        Box::new(tilo_user_identity::DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "Laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 10,
+            expires_at_ns: None,
+            signature: [3; 64],
+        })
+    }
 
     /// Every [`NeighbourMsg`] variant, split into thematic groups so no one
     /// function runs long — the round-trip test below exercises the
@@ -411,15 +428,22 @@ mod tests {
             (
                 "identity hello",
                 NeighbourMsg::IdentityHello {
-                    cert: Box::new(tilo_user_identity::DeviceCert {
-                        user_public_key: [1; 32],
-                        device_public_key: [2; 32],
-                        device_label: "Laptop".into(),
-                        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-                        issued_at_ns: 10,
-                        expires_at_ns: None,
-                        signature: [3; 64],
-                    }),
+                    cert: device_cert(),
+                    revocations: Vec::new(),
+                },
+            ),
+            (
+                "identity announcement",
+                NeighbourMsg::IdentityAnnouncement {
+                    room: ROOM.into(),
+                    device_cert: device_cert(),
+                },
+            ),
+            (
+                "identity announcement v2",
+                NeighbourMsg::IdentityAnnouncementV2 {
+                    room: ROOM.into(),
+                    device_cert: device_cert(),
                     revocations: Vec::new(),
                 },
             ),
@@ -442,7 +466,7 @@ mod tests {
     }
 
     fn fixtures_app_crdt_and_scrollback() -> Vec<(&'static str, NeighbourMsg)> {
-        use collab_types::{ArtifactId, PeerPresence, PeerPresencePayload};
+        use collab_types::{PeerPresence, PeerPresencePayload};
 
         vec![
             (
@@ -470,7 +494,7 @@ mod tests {
             (
                 "scrollback request",
                 NeighbourMsg::ScrollbackRequest {
-                    artifact: ArtifactId::new(),
+                    artifact: artifact(0x33),
                     before_seq: 42,
                     max: 50,
                     requester: 0x00AB_CDEF,
@@ -479,7 +503,7 @@ mod tests {
             (
                 "scrollback response",
                 NeighbourMsg::ScrollbackResponse {
-                    artifact: ArtifactId::new(),
+                    artifact: artifact(0x44),
                     ops: vec![dummy_envelope(), dummy_envelope()],
                     responder: 0x123_456,
                 },
@@ -496,5 +520,199 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{case} failed to decode: {error}"));
             assert_eq!(message, decoded, "{case} changed in transit");
         }
+    }
+
+    /// Names every variant through an exhaustive match, so adding a variant
+    /// fails to compile until it has a fixture and a golden encoding.
+    fn variant(message: &NeighbourMsg) -> &'static str {
+        match message {
+            NeighbourMsg::SyncReq { .. } => "SyncReq",
+            NeighbourMsg::SyncResp { .. } => "SyncResp",
+            NeighbourMsg::PresenceMoved { .. } => "PresenceMoved",
+            NeighbourMsg::PresenceCleared { .. } => "PresenceCleared",
+            NeighbourMsg::SurfaceFrame { .. } => "SurfaceFrame",
+            NeighbourMsg::SurfaceStreamStart { .. } => "SurfaceStreamStart",
+            NeighbourMsg::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
+            NeighbourMsg::RemoteInput { .. } => "RemoteInput",
+            NeighbourMsg::PermissionRequest { .. } => "PermissionRequest",
+            NeighbourMsg::PermissionGrant { .. } => "PermissionGrant",
+            NeighbourMsg::Heartbeat { .. } => "Heartbeat",
+            NeighbourMsg::IdentityHello { .. } => "IdentityHello",
+            NeighbourMsg::AppDocument { .. } => "AppDocument",
+            NeighbourMsg::AppPresenceV2 { .. } => "AppPresenceV2",
+            NeighbourMsg::ScrollbackRequest { .. } => "ScrollbackRequest",
+            NeighbourMsg::ScrollbackResponse { .. } => "ScrollbackResponse",
+            NeighbourMsg::IdentityAnnouncement { .. } => "IdentityAnnouncement",
+            NeighbourMsg::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
+            NeighbourMsg::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
+            NeighbourMsg::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
+        }
+    }
+
+    const VARIANT_COUNT: usize = 20;
+
+    fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write;
+        bytes.iter().fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+    }
+
+    /// Postcard encodings pinned byte for byte. Peers running older builds
+    /// decode these frames, so a change here is a wire break, not a refactor.
+    const GOLDEN: &[(&str, &str)] = &[
+        (
+            "sync request",
+            concat!(
+                "00030102032436623366396131302d303030302d343030302d383030302d3030",
+                "3030303030303030306301090909090909090909090909090909090909090909",
+                "0909090909090909090909",
+            ),
+        ),
+        (
+            "sync response",
+            concat!(
+                "010202aabb01cc2436623366396131302d303030302d343030302d383030302d",
+                "303030303030303030303063",
+            ),
+        ),
+        (
+            "presence moved",
+            concat!(
+                "022a03626f6206637572736f7200000000000029400000000000000ac080e2cf",
+                "aa06",
+            ),
+        ),
+        ("presence cleared", "032a06637572736f72"),
+        ("surface frame", "0407cdd70205000000016781e2cfaa06"),
+        (
+            "SDR stream start",
+            concat!(
+                "0507cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e",
+                "6578616d706c652e456469746f72",
+            ),
+        ),
+        (
+            "HDR stream start",
+            concat!(
+                "0508cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa0601",
+                "0101010001c894028872b442aab7029633fc11937ac2800180ade204f4030000",
+                "0a156f72672e6578616d706c652e486472456469746f72",
+            ),
+        ),
+        ("stream end", "0607cdd70284e2cfaa06"),
+        ("remote input", "07030704deadbeef"),
+        ("permission request", "08050c73686172652d73637265656e"),
+        ("permission grant", "09050c73686172652d73637265656e"),
+        ("heartbeat", "0aeffdb6f50d85e2cfaa06"),
+        (
+            "identity hello",
+            concat!(
+                "0b01010101010101010101010101010101010101010101010101010101010101",
+                "0102020202020202020202020202020202020202020202020202020202020202",
+                "02064c6170746f70010000000a00400303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303030303030303030300",
+            ),
+        ),
+        (
+            "identity announcement",
+            concat!(
+                "102436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030630101010101010101010101010101010101010101010101010101",
+                "0101010101010202020202020202020202020202020202020202020202020202",
+                "020202020202064c6170746f70010000000a0040030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303",
+            ),
+        ),
+        (
+            "identity announcement v2",
+            concat!(
+                "112436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030630101010101010101010101010101010101010101010101010101",
+                "0101010101010202020202020202020202020202020202020202020202020202",
+                "020202020202064c6170746f70010000000a0040030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "030303030303030303030303030303030303030300",
+            ),
+        ),
+        (
+            "personal continuity request",
+            concat!(
+                "1207070707070707070707070707070707070707070707070707070707070707",
+                "07ef9baf05",
+            ),
+        ),
+        (
+            "personal continuity checkpoint",
+            concat!(
+                "1307070707070707070707070707070707070707070707070707070707070707",
+                "07ef9baf0503010203",
+            ),
+        ),
+        (
+            "signed app document",
+            concat!(
+                "0cef9baf05056e6f7465732436623366396131302d303030302d343030302d38",
+                "3030302d30303030303030303030306309757569643a3163326604deadbeef10",
+                "1111111111111111111111111111111107070707070707070707070707070707",
+                "0707070707070707070707070707070710222222222222222222222222222222",
+                "220000002a004000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "00000000000000",
+            ),
+        ),
+        (
+            "app presence",
+            concat!(
+                "0def9baf05056e6f7465732436623366396131302d303030302d343030302d38",
+                "3030302d303030303030303030303063020405020308",
+            ),
+        ),
+        (
+            "scrollback request",
+            "0e10333333333333333333333333333333332a32ef9baf05",
+        ),
+        (
+            "scrollback response",
+            concat!(
+                "0f10444444444444444444444444444444440204deadbeef1011111111111111",
+                "1111111111111111110707070707070707070707070707070707070707070707",
+                "07070707070707070710222222222222222222222222222222220000002a0040",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "04deadbeef101111111111111111111111111111111107070707070707070707",
+                "0707070707070707070707070707070707070707070710222222222222222222",
+                "222222222222220000002a004000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "00000000000000000000000000d6e848",
+            ),
+        ),
+    ];
+
+    #[test]
+    fn every_variant_encodes_to_its_pinned_bytes() {
+        let fixtures = fixtures();
+        let covered: std::collections::BTreeSet<_> = fixtures
+            .iter()
+            .map(|(_, message)| variant(message))
+            .collect();
+        assert_eq!(
+            covered.len(),
+            VARIANT_COUNT,
+            "every variant needs a fixture"
+        );
+        let mut actual = Vec::new();
+        for (case, message) in &fixtures {
+            let bytes = postcard::to_allocvec(message).expect("fixture encodes");
+            actual.push((*case, hex(&bytes)));
+        }
+        let expected: Vec<_> = GOLDEN
+            .iter()
+            .map(|(case, bytes)| (*case, (*bytes).to_owned()))
+            .collect();
+        assert_eq!(actual, expected);
     }
 }
