@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use fs_native::capture::{CaptureConfig, ChangeOp, EpochCapture, EpochScheduler};
-use fs_native::journal::{ChangeJournal, JournalBatch, JournalConfig, JournalEntry};
+use fs_native::journal::{ChangeJournal, JournalConfig};
 
 use crate::support::fanotify_scratch;
 
@@ -150,30 +150,23 @@ fn spawn_capturer(
         );
         // Objects published so far, in application order.
         let mut published: HashSet<PathBuf> = HashSet::new();
-        // Entries wait here until the scheduler cuts an epoch.
-        let mut carry: Vec<JournalEntry> = Vec::new();
-        let mut rescan = None;
+        // Journal entries already shown to the scheduler.
+        let mut seen = 0usize;
         let mut last = false;
         loop {
             let finishing = stop.load(Ordering::Relaxed);
             journal.pump(Some(Duration::from_millis(20))).unwrap();
             let now = Instant::now();
-            let pending = journal.take();
-            for e in &pending.entries {
+            for e in journal.pending().iter().skip(seen) {
                 scheduler.observe(now, &e.op, e.path.as_deref(), e.is_dir);
             }
-            carry.extend(pending.entries);
-            rescan = rescan.or(pending.rescan);
+            seen = journal.pending().len();
             if !(scheduler.due(Instant::now()) || finishing) {
                 continue;
             }
-            let entries = std::mem::take(&mut carry);
-            let batch = JournalBatch {
-                through: entries.last().map_or(0, |e| e.seq),
-                entries,
-                rescan: rescan.take(),
-            };
-            let cs = capture.capture(&batch).unwrap();
+            // git keeps committing while the epoch is cut.
+            let cs = capture.capture_from(&mut journal).unwrap();
+            seen = journal.pending().len();
             scheduler.cut();
             let snap = capture.last_snapshot().unwrap().to_path_buf();
             let mut obs = observed.lock().unwrap();
