@@ -421,7 +421,8 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
     start_pair_with(store_a, store_b, seed, &[], &[])
 }
 
-/// [`start_pair`] with extra daemon arguments and environment for both.
+/// [`start_pair`] with extra arguments for the host (the always-on device)
+/// and extra environment for both.
 fn start_pair_with(
     store_a: &Path,
     store_b: &Path,
@@ -431,6 +432,8 @@ fn start_pair_with(
 ) -> Pair {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
+    // Owner-only, as the daemons require of their control sockets' parent.
+    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let person = [seed; 32];
     install_identity(
         &dir.join("host-identity"),
@@ -462,10 +465,7 @@ fn start_pair_with(
     );
     let ticket = host.wait_ticket();
     host.wait_serving();
-    let peer_args: Vec<&str> = ["mount", "--ticket", ticket.as_str()]
-        .into_iter()
-        .chain(extra.iter().copied())
-        .collect();
+    let peer_args = ["mount", "--ticket", ticket.as_str()];
     let mut peer = Daemon::spawn_env(
         "peer",
         "peer",
@@ -1352,5 +1352,248 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
     assert!(
         !pair.host.mount.join("app.db-journal").exists(),
         "no journal reached the host"
+    );
+}
+
+/// Asks a daemon's transport partition gate to `partition` or `reconnect`.
+fn gate(socket: &Path, command: &str) {
+    use std::io::Write as _;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.write_all(format!("{command}\n").as_bytes()).unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    assert!(
+        !answer.is_empty(),
+        "{command}: no answer from {}",
+        socket.display()
+    );
+}
+
+/// Makes `name` lease-class on both devices of `pair`: written once,
+/// modified in place on the host, then held and released by the host.
+fn lease_class_file(pair: &mut Pair, name: &str, content: &[u8]) {
+    use std::os::unix::fs::FileExt as _;
+    let f1 = pair.host.mount.join(name);
+    let f2 = pair.peer.mount.join(name);
+    std::fs::write(&f1, content).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the file on the peer",
+        || (std::fs::read(&f2).ok()? == content).then_some(()),
+    );
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&f1)
+        .unwrap()
+        .write_all_at(&content[..8], 0)
+        .unwrap();
+    pair.host.wait_line(&format!("{name} is modified in place"));
+    // The write gate is placed at the next lease tick; a descriptor opened
+    // before it is not watched by the kernel.
+    std::thread::sleep(Duration::from_millis(1500));
+    let session = SameBytes::start(&f1);
+    pair.host
+        .wait_line(&format!("took the write lease of {name}"));
+    pair.peer.wait_line(&format!("{name} is read-only here"));
+    session.end();
+    // Released: the peer opens it for writing again.
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the lease released",
+        || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&f2)
+                .ok()
+                .map(|_| ())
+        },
+    );
+}
+
+/// From a thread that opens `path` read-write and waits at `start`, writes
+/// `bytes` at offset 0 and keeps rewriting them for `hold`.
+fn contend(
+    path: PathBuf,
+    bytes: Vec<u8>,
+    start: Arc<std::sync::Barrier>,
+    hold: Duration,
+) -> std::thread::JoinHandle<Result<(), i32>> {
+    std::thread::spawn(move || {
+        use std::os::unix::fs::FileExt as _;
+        let errno = |e: std::io::Error| e.raw_os_error().unwrap_or(0);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path);
+        start.wait();
+        let file = file.map_err(errno)?;
+        file.write_all_at(&bytes, 0).map_err(errno)?;
+        let until = Instant::now() + hold;
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(200));
+            file.write_all_at(&bytes, 0).map_err(errno)?;
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once() {
+    let Some((a, b)) = stores("native_authority") else {
+        return;
+    };
+    let mut pair = start_pair_with(&a, &b, 0x91, &["--lease-authority"], &[]);
+    assert_eq!(pair.host.log_count("arbitrating write leases"), 1);
+    assert_eq!(pair.peer.log_count("arbitrating write leases"), 0);
+    let content = pattern(9, 64 * 1024);
+    lease_class_file(&mut pair, "shared.db", &content);
+    let f1 = pair.host.mount.join("shared.db");
+    let f2 = pair.peer.mount.join("shared.db");
+    let mut winners = Vec::new();
+    for round in 0..3u8 {
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let host = contend(
+            f1.clone(),
+            vec![b'h', round],
+            Arc::clone(&start),
+            Duration::from_secs(2),
+        );
+        let peer = contend(
+            f2.clone(),
+            vec![b'p', round],
+            Arc::clone(&start),
+            Duration::from_secs(2),
+        );
+        let (host, peer) = (host.join().unwrap(), peer.join().unwrap());
+        eprintln!("round {round}: host {host:?}, peer {peer:?}");
+        assert!(
+            host.is_ok() != peer.is_ok(),
+            "exactly one device writes: host {host:?}, peer {peer:?}"
+        );
+        let loser = if host.is_ok() { peer } else { host };
+        assert_eq!(loser, Err(libc::EBUSY), "the other is refused at once");
+        let winner = if host.is_ok() { b'h' } else { b'p' };
+        winners.push(winner);
+        // Both converge on the winner's bytes.
+        wait_for(
+            &mut [&mut pair.host, &mut pair.peer],
+            "both devices on the winner's version",
+            || {
+                std::thread::sleep(Duration::from_millis(100));
+                let want = [winner, round];
+                (std::fs::read(&f1).ok()?[..2] == want && std::fs::read(&f2).ok()?[..2] == want)
+                    .then_some(())
+            },
+        );
+        // The winner lets go; the next round starts from a free lease.
+        wait_for(
+            &mut [&mut pair.host, &mut pair.peer],
+            "the lease released on both",
+            || {
+                std::thread::sleep(Duration::from_millis(100));
+                (std::fs::OpenOptions::new().write(true).open(&f1).is_ok()
+                    && std::fs::OpenOptions::new().write(true).open(&f2).is_ok())
+                .then_some(())
+            },
+        );
+    }
+    eprintln!("winners: {:?}", String::from_utf8_lossy(&winners));
+    // Alone, the peer asks the authority and is granted the lease.
+    let start = Arc::new(std::sync::Barrier::new(1));
+    let t = Instant::now();
+    let peer = contend(f2.clone(), b"pz".to_vec(), start, Duration::ZERO);
+    assert_eq!(peer.join().unwrap(), Ok(()));
+    eprintln!("the peer's first write waited {:?} for the grant", t.elapsed());
+    pair.peer.wait_line("granted by the lease authority");
+    assert!(pair.host.log_count("granted the write lease of shared.db to device") >= 1);
+    for daemon in [&pair.host, &pair.peer] {
+        assert_eq!(daemon.log_count("fenced version"), 0, "no conflict");
+        assert_eq!(daemon.log_count("tenancy its author did not hold"), 0);
+    }
+}
+
+#[test]
+fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_never_applied() {
+    let Some((a, b)) = stores("native_fencing") else {
+        return;
+    };
+    let mut pair = start_pair_with(
+        &a,
+        &b,
+        0xa1,
+        &["--lease-authority"],
+        &[("TILO_FS_TRANSPORT_GATE_SOCKET", "{profile}-gate.sock")],
+    );
+    let host_gate = pair.dir.join("host-gate.sock");
+    let peer_gate = pair.dir.join("peer-gate.sock");
+    let content = pattern(10, 64 * 1024);
+    lease_class_file(&mut pair, "data.db", &content);
+    let f1 = pair.host.mount.join("data.db");
+    let f2 = pair.peer.mount.join("data.db");
+
+    // Cut off from each other, both devices write the free file: the host
+    // is the lease authority and grants itself the lease; the peer cannot
+    // reach it and takes the same epoch optimistically.
+    gate(&host_gate, "partition");
+    gate(&peer_gate, "partition");
+    let start = Arc::new(std::sync::Barrier::new(2));
+    let host_bytes = b"HOST-TENANCY".to_vec();
+    let peer_bytes = b"PEER-OPTIMIS".to_vec();
+    let host = contend(
+        f1.clone(),
+        host_bytes.clone(),
+        Arc::clone(&start),
+        Duration::from_millis(500),
+    );
+    let peer = contend(
+        f2.clone(),
+        peer_bytes.clone(),
+        Arc::clone(&start),
+        Duration::from_millis(500),
+    );
+    assert_eq!(host.join().unwrap(), Ok(()));
+    assert_eq!(peer.join().unwrap(), Ok(()));
+    pair.peer
+        .wait_line("optimistically: the lease authority did not answer");
+    // Each publishes its version while still cut off.
+    std::thread::sleep(Duration::from_secs(8));
+    gate(&host_gate, "reconnect");
+    gate(&peer_gate, "reconnect");
+
+    // The granted tenancy wins. The host never shows the peer's bytes; both
+    // end on the host's version, and the peer's version is kept beside it
+    // as a conflict copy on both devices.
+    let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
+    let t = Instant::now();
+    let copy = wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "convergence on the host's version with the peer's kept",
+        || {
+            std::thread::sleep(Duration::from_millis(100));
+            let on_host = std::fs::read(&f1).ok()?;
+            assert!(
+                on_host[..12] != peer_bytes[..],
+                "the host never applies a version from a tenancy its author did not hold"
+            );
+            let on_peer = std::fs::read(&f2).ok()?;
+            if on_host[..12] != host_bytes[..] || on_peer[..12] != host_bytes[..] {
+                return None;
+            }
+            let copy = std::fs::read_dir(&m1)
+                .ok()?
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| n.starts_with("data.db.sync-conflict-"))?;
+            let on_peer_copy = std::fs::read(m2.join(&copy)).ok()?;
+            let on_host_copy = std::fs::read(m1.join(&copy)).ok()?;
+            (on_host_copy[..12] == peer_bytes[..] && on_peer_copy[..12] == peer_bytes[..])
+                .then_some(copy)
+        },
+    );
+    eprintln!(
+        "converged {:?} after reconnecting; conflict copy {copy}",
+        t.elapsed()
     );
 }

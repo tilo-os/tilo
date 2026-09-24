@@ -339,6 +339,9 @@ struct DataPlaneArgs {
     /// Remote files up to this many bytes are fetched before they appear; larger ones start as placeholders.
     #[arg(long, value_name = "BYTES", default_value_t = 1024 * 1024)]
     native_eager_bytes: u64,
+    /// Arbitrate the workspace's write leases: grant a free lease to one device at a time (the always-on host).
+    #[arg(long)]
+    lease_authority: bool,
 }
 
 impl Default for DataPlaneArgs {
@@ -348,6 +351,7 @@ impl Default for DataPlaneArgs {
             store: PathBuf::from("/var/lib/tilo/store"),
             native_owner: None,
             native_eager_bytes: 1024 * 1024,
+            lease_authority: false,
         }
     }
 }
@@ -3399,6 +3403,7 @@ fn native_config(
     );
     cfg.owner = args.native_owner.as_deref().map(parse_owner).transpose()?;
     cfg.eager_bytes = args.native_eager_bytes;
+    cfg.lease_authority = args.lease_authority;
     Ok(Some(cfg))
 }
 

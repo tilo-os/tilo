@@ -40,7 +40,7 @@ mod changesets;
 mod leases;
 mod posix;
 pub use changesets::ChangesetMark;
-pub use leases::WriteLease;
+pub use leases::{LeaseRequest, VersionFence, WriteLease};
 pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
