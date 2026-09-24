@@ -42,6 +42,8 @@ taffy.workspace = true
 # method produced a precomposed or decomposed spelling.  Keeping this local to
 # Contacts avoids widening the public SDK for an app-level matching policy.
 unicode-normalization = "0.1.25"
+# RFC 6350 content lines: folding, parameter quoting and TEXT escaping.
+pim-lines = { path = "../../crates/text/pim-lines" }
 
 # --- Host-native file open/save (XDG Desktop Portal) ------------------
 # Import (open) and Export (save) go through
