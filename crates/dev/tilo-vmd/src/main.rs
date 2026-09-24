@@ -37,6 +37,12 @@ enum Command {
         #[command(flatten)]
         state: State,
     },
+    /// Bring every slot back after boot: re-create headful seats and start
+    /// each slot's session (run once by tilo-vm-restore.service).
+    Restore {
+        #[command(flatten)]
+        state: State,
+    },
     /// Own a seat's uinput keyboard and pointer and serve input requests
     /// (run by tilo-vmd itself as a transient unit).
     InputServe {
@@ -132,6 +138,20 @@ fn main() -> ExitCode {
                 std::io::stdout().lock(),
                 |job: CiJob| daemon.ci_job(&job),
             ))
+        }
+        Command::Restore { state } => {
+            let issues = state.daemon().restore();
+            for issue in &issues {
+                eprintln!(
+                    "tilo-vmd: slot {}: {} ({})",
+                    issue.slot, issue.problem, issue.hint
+                );
+            }
+            if issues.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
         }
         Command::InputServe { seat, socket } => match input::serve(&seat, &socket) {
             Ok(()) => ExitCode::SUCCESS,

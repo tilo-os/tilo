@@ -97,6 +97,31 @@ pub fn reconcile_seats(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) 
     issues
 }
 
+/// Bring every slot back after the VM boots: re-create headful slots' vkms
+/// seats, then start each slot's session on its current generation. Run
+/// once at boot by `tilo-vm-restore.service`; a slot that cannot come back
+/// is reported, and the others still start.
+pub fn restore_slots(slots: &SlotStore, locks: &Locks, apply: &mut dyn Apply) -> Vec<Issue> {
+    let mut issues = reconcile_seats(slots, locks, apply);
+    let failed: BTreeSet<String> = issues.iter().map(|i| i.slot.clone()).collect();
+    for record in slots.list().unwrap_or_default() {
+        if record.user().is_none() || failed.contains(&record.name) {
+            continue;
+        }
+        if let Err(error) = apply.start_unit(&session_unit(&record.name)) {
+            issues.push(Issue {
+                slot: record.name.clone(),
+                problem: format!("its session did not start at boot: {error}"),
+                hint: format!(
+                    "tilo-vm logs {}   then   tilo-vm slot restart {}",
+                    record.name, record.name
+                ),
+            });
+        }
+    }
+    issues
+}
+
 /// `installed: <id> <version>` from tilo-install's output.
 pub fn parse_installed(output: &str) -> (Option<String>, Option<String>) {
     output
@@ -293,6 +318,13 @@ impl Daemon {
     ///
     /// # Errors
     /// Whatever the method reports; see [`DaemonError::hint`].
+    /// Bring every slot back after the VM boots; see [`restore_slots`].
+    pub fn restore(&mut self) -> Vec<Issue> {
+        let issues = restore_slots(&self.slots, &self.locks, self.apply.as_mut());
+        self.seat_issues = Some(issues.clone());
+        issues
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one arm per method, each a line or three"
@@ -1093,6 +1125,30 @@ mod tests {
         assert!(reconcile_seats(&slots, &locks, &mut apply).is_empty());
         assert_eq!(apply.calls, ["allocate_seat a"]);
         drop(busy);
+    }
+
+    #[test]
+    fn restore_brings_back_seats_then_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slots = SlotStore::new(tmp.path());
+        let locks = Locks::new(tmp.path());
+        for (name, kind) in [("a", SlotKind::Headful), ("b", SlotKind::Headless)] {
+            let (mut record, _) = slots.create(name, kind, Owner::default()).unwrap();
+            if kind == SlotKind::Headful {
+                record.seat = Some(format!("seat-{name}"));
+                slots.save(&record).unwrap();
+            }
+        }
+        let mut apply = RecordingApply::default();
+        assert!(restore_slots(&slots, &locks, &mut apply).is_empty());
+        let calls = &apply.calls;
+        let seat = calls.iter().position(|c| c == "allocate_seat a").unwrap();
+        let session = calls
+            .iter()
+            .position(|c| c == &format!("start {}", session_unit("a")))
+            .unwrap();
+        assert!(seat < session, "{calls:?}");
+        assert!(calls.contains(&format!("start {}", session_unit("b"))), "{calls:?}");
     }
 
     #[test]

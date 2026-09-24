@@ -30,8 +30,26 @@ pub fn target_dir(metadata: &Value) -> String {
         .map_or_else(|| "target".to_owned(), str::to_owned)
 }
 
+/// The cargo host builds run: `TILO_VM_CARGO` if set, else `rcargo` (a
+/// drop-in that builds remotely and hands back the outputs) when it is on
+/// PATH, else `cargo`.
+pub fn cargo_program() -> String {
+    cargo_program_from(
+        std::env::var("TILO_VM_CARGO").ok(),
+        !crate::host::which_all("rcargo").is_empty(),
+    )
+}
+
+fn cargo_program_from(explicit: Option<String>, rcargo_on_path: bool) -> String {
+    match explicit.filter(|c| !c.trim().is_empty()) {
+        Some(program) => program,
+        None if rcargo_on_path => "rcargo".into(),
+        None => "cargo".into(),
+    }
+}
+
 pub fn cargo_build(component: &Component, extra_features: &[String]) -> CommandLine {
-    let mut command = CommandLine::new("cargo", &[]);
+    let mut command = CommandLine::new(&cargo_program(), &[]);
     command.args = component.cargo_args(extra_features);
     command
 }
@@ -47,7 +65,7 @@ pub fn install(component: &Component, target_dir: &str, dest: &Path) -> CommandL
 /// that packages `apps/<dir>` as a self-signed `.tapp` at `out`.
 pub fn app_package(target_dir: &str, dir: &str, out: &Path) -> [CommandLine; 2] {
     let tools = CommandLine::new(
-        "cargo",
+        &cargo_program(),
         &[
             "build",
             "--locked",
@@ -228,6 +246,19 @@ mod tests {
 
     use super::*;
 
+    /// The command as plain cargo would run it, whichever cargo this host picks.
+    fn as_cargo(command: &CommandLine) -> String {
+        format!("cargo {}", command.args.join(" "))
+    }
+
+    #[test]
+    fn host_builds_prefer_an_explicit_cargo_then_rcargo() {
+        assert_eq!(cargo_program_from(Some("my-cargo".into()), true), "my-cargo");
+        assert_eq!(cargo_program_from(Some(" ".into()), true), "rcargo");
+        assert_eq!(cargo_program_from(None, true), "rcargo");
+        assert_eq!(cargo_program_from(None, false), "cargo");
+    }
+
     fn component(text: &str) -> Component {
         Manifest::parse(text)
             .unwrap()
@@ -249,13 +280,13 @@ mod tests {
         let extra = dev_features(&metadata, &shell.packages);
         assert_eq!(extra, ["browser/dev-overrides"]);
         assert_eq!(
-            cargo_build(&shell, &extra).display(),
+            as_cargo(&cargo_build(&shell, &extra)),
             "cargo build --locked --profile release -p browser -p helper --features browser/wpe,browser/dev-overrides"
         );
         let plain =
             component("[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n");
         assert_eq!(
-            cargo_build(&plain, &[]).display(),
+            as_cargo(&cargo_build(&plain, &[])),
             "cargo build --locked --profile thin-app -p x"
         );
     }
@@ -275,7 +306,7 @@ mod tests {
     fn apps_package_with_their_own_tools() {
         let [tools, package] = app_package("target", "notes", Path::new("/w/notes.tapp"));
         assert_eq!(
-            tools.display(),
+            as_cargo(&tools),
             "cargo build --locked --release -p tilo-app-cli -p tilo-app-package-cli"
         );
         assert_eq!(

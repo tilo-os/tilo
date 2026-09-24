@@ -181,6 +181,7 @@ COPY --from=dev-component-files /image/ /
 COPY os/components.toml /usr/share/tilo/components.toml
 COPY crates/dev/tilo-vmd/data/72-vkms-seat.rules crates/dev/tilo-vmd/data/73-uinput-seat.rules /usr/lib/udev/rules.d/
 COPY crates/dev/tilo-vmd/data/tilo-vm-session@.service /usr/lib/systemd/system/tilo-vm-session@.service
+COPY crates/dev/tilo-vmd/data/tilo-vm-restore.service /usr/lib/systemd/system/tilo-vm-restore.service
 COPY crates/dev/tilo-vmd/data/tilo-vm-vkms.conf /usr/lib/modprobe.d/tilo-vm-vkms.conf
 COPY os/dev-image/ /
 
@@ -194,7 +195,7 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --base-image "$BASE_IMAGE" --base-digest "$TILO_BASE_DIGEST" \
       --base-created "$TILO_BASE_CREATED" \
       --cargo-lock /run/tilo-dev/Cargo.lock \
-    && systemctl enable sshd.service systemd-sysext.service \
+    && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
     && /usr/bin/tilo-vmd --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
