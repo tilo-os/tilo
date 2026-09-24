@@ -2042,7 +2042,7 @@ pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentAuthorityPres
     let mut all_read = true;
     for cap in &ws.capabilities {
         if cap.effect != Effect::Grant
-            || !cap.is_live_at(Some(crate::shell::state::now_unix()))
+            || !cap.is_live_at(Some(tilo_clock::unix_now()))
             || cap.is_room_membership()
             || !subject_is_agent(&cap.subject, agent)
         {

@@ -6,6 +6,7 @@
 
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_clock::try_unix_now;
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -42,9 +43,7 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(NOW, |d| d.as_secs() as i64)
+    try_unix_now().map_or(NOW, |secs| secs as i64)
 }
 
 struct EventDispatch<'a> {

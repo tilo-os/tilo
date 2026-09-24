@@ -31,6 +31,7 @@ use std::thread;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -69,7 +70,6 @@ use crate::local_library::LocalLibrary;
 use crate::model::{
     AnnoKind, Annotation, AnnotationAnchor, Book, ColorScheme, CompositionStyle, FontEntry,
     FontKind, HiColor, Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
-    now_ms,
 };
 use crate::paginate::{
     ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
@@ -1931,7 +1931,7 @@ impl BooksApp {
                     chapter: 0,
                     page: (f * 6.0) as usize,
                     fraction: f,
-                    opened: now_ms() - (i as u64) * 3_600_000,
+                    opened: unix_now_ms() - (i as u64) * 3_600_000,
                 },
             );
         }
@@ -2253,7 +2253,7 @@ impl BooksApp {
         let nchap = self.num_chapters().saturating_sub(1);
         self.chapter = p.chapter.min(nchap);
         self.page = p.page;
-        p.opened = now_ms();
+        p.opened = unix_now_ms();
         self.perform_action(doc, &crate::actions::set_progress_action(&id, p));
         self.clear_selection();
         self.composing = None;
@@ -4137,7 +4137,7 @@ impl BooksApp {
         };
         self.perform_action(
             doc,
-            &crate::actions::finalize_annotation_action(id, created.max(now_ms())),
+            &crate::actions::finalize_annotation_action(id, created.max(unix_now_ms())),
         );
         true
     }
@@ -4951,7 +4951,7 @@ impl Widget for BooksApp {
                 cm.start = hl.start;
                 cm.end = hl.end;
                 cm.note = text.to_string();
-                cm.created = now_ms() + i as u64;
+                cm.created = unix_now_ms() + i as u64;
                 BooksDoc::upsert_annotation(doc, &cm);
             }
             self.comment_overlay.open(group);
@@ -4975,7 +4975,7 @@ impl Widget for BooksApp {
                 } else {
                     format!("Reading note {} — a durable, shared thought.", index + 1)
                 };
-                annotation.created = now_ms().saturating_add(index as u64);
+                annotation.created = unix_now_ms().saturating_add(index as u64);
                 if index == 25 {
                     self.notes_scroll_to_annotation = Some(annotation.id);
                 }

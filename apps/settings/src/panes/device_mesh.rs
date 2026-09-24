@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
+use tilo_clock::unix_now;
 use ui::doc::{read_bool, read_str};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
@@ -329,12 +330,6 @@ fn personal_device_key(action: &str, device: &[u8; 32]) -> String {
 
 fn continuity_key(capability: Capability) -> String {
     format!("device_mesh.continuity.{}", capability.key())
-}
-
-fn unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }
 
 fn origin_summary(origin: &Origin) -> String {
@@ -687,7 +682,7 @@ impl DeviceMeshPane {
                     "compute" => self.config.services.compute = *enabled,
                     "continuity.enabled" => {
                         self.continuity.enabled = *enabled;
-                        self.continuity.record(None, *enabled, unix_seconds());
+                        self.continuity.record(None, *enabled, unix_now());
                         self.save_continuity();
                     }
                     service if service.starts_with("continuity.") => {
@@ -704,7 +699,7 @@ impl DeviceMeshPane {
                         };
                         self.continuity.set_allowed(capability, *enabled);
                         self.continuity
-                            .record(Some(capability), *enabled, unix_seconds());
+                            .record(Some(capability), *enabled, unix_now());
                         self.save_continuity();
                     }
                     _ => {

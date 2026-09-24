@@ -19,9 +19,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 #[cfg(test)]
 use tilo_actions::EncodedAction;
+use tilo_clock::unix_now_i64;
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -2471,9 +2472,7 @@ fn now_secs() -> i64 {
     {
         return now.max(0);
     }
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+    unix_now_i64()
 }
 
 fn fmt_dur(ms: i64) -> String {

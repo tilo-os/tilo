@@ -6,9 +6,9 @@
 //! remain the authority for what the currently attached hardware can do.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now_ms;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -195,7 +195,7 @@ impl DisplayTransaction {
     ///
     /// Returns an error if the transaction can't be serialised or written.
     pub fn request(candidate: DisplayConfig) -> std::io::Result<Self> {
-        let now = unix_ms();
+        let now = unix_now_ms();
         let transaction = Self {
             id: now,
             state: DisplayTransactionState::Requested,
@@ -274,15 +274,6 @@ impl DisplayTransaction {
 /// capabilities shown by Settings.
 pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
     xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
-}
-
-pub fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 // Four independent, user-facing toggles (Enabled, Primary, HDR, VRR), not a state

@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use collab_types::Ed25519PublicKey;
+use tilo_clock::try_unix_now_ns;
 use tilo_user_identity::{
     MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,
     MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TrustedIdentityProjectionV1,
@@ -153,7 +154,7 @@ impl TrustedHumanDirectory {
     ///
     /// Returns an error when the governed projection fails validation.
     pub fn from_projection_v2(projection: TrustedIdentityProjectionV2) -> Result<Self, String> {
-        Self::from_projection_v2_at(projection, unix_now_ns())
+        Self::from_projection_v2_at(projection, try_unix_now_ns().unwrap_or(u64::MAX))
     }
 
     fn from_projection_v2_at(
@@ -210,14 +211,6 @@ impl TrustedHumanDirectory {
         self.display_name(person)
             .map_or_else(|| fingerprint(person.as_bytes()), str::to_string)
     }
-}
-
-fn unix_now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(u64::MAX, |duration| {
-            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-        })
 }
 
 pub fn fingerprint(key: &[u8; 32]) -> String {

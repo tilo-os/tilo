@@ -11,7 +11,7 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, mpsc};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use getrandom::{
     SysRng,
@@ -19,6 +19,7 @@ use getrandom::{
 };
 use rand_core::Rng;
 use serde_json::{Map, Value};
+use tilo_clock::unix_now_ms;
 
 use crate::network::actor::{PersonalMediaTransferStatus, PersonalNearbyTransferFrame};
 use crate::notifications::{
@@ -528,7 +529,7 @@ fn with_nearby_transfer_store<T>(
             .ok_or_else(|| "nearby transfer state directory is unavailable".to_string())?;
         *guard = Some(crate::shell::nearby_transfer::NearbyTransferStore::open(
             root,
-            unix_millis(),
+            unix_now_ms(),
         )?);
     }
     operation(
@@ -547,7 +548,7 @@ fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
             return Vec::new();
         };
         let Ok(store) =
-            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_millis())
+            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_now_ms())
         else {
             return Vec::new();
         };
@@ -567,7 +568,7 @@ fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
             return Vec::new();
         };
         let Ok(store) =
-            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_millis())
+            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_now_ms())
         else {
             return Vec::new();
         };
@@ -576,14 +577,6 @@ fn try_inbox_entries() -> Vec<crate::shell::nearby_transfer::InboxEntry> {
     guard
         .as_ref()
         .map_or_else(Vec::new, |store| store.inbox().to_vec())
-}
-
-fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 struct NearbyStagingResult {
@@ -1455,7 +1448,7 @@ impl DeviceFabricRuntime {
         self.tethering.pump(
             network,
             policy.permits(ContinuityCapability::WifiSettings),
-            unix_ms(),
+            unix_now_ms(),
         );
         pump_device_health(network, policy);
         self.remote_capture.pump(network, policy);
@@ -1536,12 +1529,12 @@ impl DeviceFabricRuntime {
             if fingerprint == self.local_fingerprint {
                 if let Some(mut heartbeat) = previous {
                     heartbeat.presence.stamp = tentative_stamp;
-                    heartbeat.presence.last_seen_unix_ms = unix_ms();
+                    heartbeat.presence.last_seen_unix_ms = unix_now_ms();
                     candidate = heartbeat;
                 }
             } else {
                 candidate.presence.stamp = tentative_stamp;
-                candidate.presence.last_seen_unix_ms = unix_ms();
+                candidate.presence.last_seen_unix_ms = unix_now_ms();
             }
             if network.upsert_local_device_fabric(candidate).is_ok() {
                 self.local_fingerprint = fingerprint;
@@ -1683,6 +1676,10 @@ impl DeviceFabricRuntime {
             .collect();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each received action is admitted by route and policy once, then offered to its handlers in one priority order"
+    )]
     fn handle_fabric_actions(&mut self, network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
         prune_spatial_leases(network);
         self.remote_capture.drain_pending_actions(network);
@@ -1702,7 +1699,10 @@ impl DeviceFabricRuntime {
             if handle_device_health_action(network, &envelope) {
                 continue;
             }
-            if self.tethering.handle_action(network, &envelope, unix_ms()) {
+            if self
+                .tethering
+                .handle_action(network, &envelope, unix_now_ms())
+            {
                 continue;
             }
             if remote_capture::RemoteCaptureIntegration::handles(&envelope.action) {
@@ -2292,7 +2292,7 @@ impl DeviceFabricRuntime {
                 &envelope.target,
                 signal,
                 Instant::now(),
-                unix_ms(),
+                unix_now_ms(),
             );
         }
         true
@@ -2378,7 +2378,7 @@ impl DeviceFabricRuntime {
                     envelope.source.as_str(),
                     &source_label,
                     notification.clone(),
-                    unix_ms(),
+                    unix_now_ms(),
                 );
             }
             PersonalFabricAction::NotificationRetire { id } => {
@@ -2390,7 +2390,7 @@ impl DeviceFabricRuntime {
                 let _ = self.notification_bridge.apply_continuity_command(
                     *id,
                     &ContinuityNotificationCommand::Dismiss,
-                    unix_ms(),
+                    unix_now_ms(),
                 );
             }
             PersonalFabricAction::NotificationInvoke { id, action_key } => {
@@ -2399,7 +2399,7 @@ impl DeviceFabricRuntime {
                     &ContinuityNotificationCommand::Invoke {
                         action_key: action_key.clone(),
                     },
-                    unix_ms(),
+                    unix_now_ms(),
                 );
             }
             _ => return false,
@@ -2908,7 +2908,7 @@ fn prune_spatial_leases(network: &ShellNetwork) {
         let fabric = network.device_fabric();
         prune_spatial_state(
             &mut spatial,
-            unix_ms(),
+            unix_now_ms(),
             &network.peer_departures(),
             |device| {
                 fabric
@@ -3267,7 +3267,7 @@ fn handle_spatial_action(
             spatial.placement_stream_source = Some(source);
         }
         PersonalFabricAction::InputLeaseGranted { lease } => {
-            if lease.validate_at(unix_ms()).is_ok() {
+            if lease.validate_at(unix_now_ms()).is_ok() {
                 spatial.outbound.retain(|input| input.target != source);
                 spatial.received.insert(source, lease);
             }
@@ -3283,7 +3283,7 @@ fn handle_spatial_action(
         PersonalFabricAction::Input { lease_nonce, event } => {
             let accepted = spatial.issued.get(&lease_nonce).is_some_and(|lease| {
                 lease.binds(&source, target)
-                    && lease.validate_at(unix_ms()).is_ok()
+                    && lease.validate_at(unix_now_ms()).is_ok()
                     && match event {
                         FabricInputEvent::PointerMotion { .. }
                         | FabricInputEvent::PointerButton { .. }
@@ -4547,7 +4547,7 @@ pub fn request_nearby_drop(
                         .stage_with_id(
                             &source,
                             worker_target.as_str().to_string(),
-                            unix_millis(),
+                            unix_now_ms(),
                             transfer_id,
                         )
                         .map(|_| ())
@@ -4648,7 +4648,7 @@ pub fn request_nearby_drop_secure(
                         .stage_secure_with_id(
                             source,
                             worker_target.as_str().to_string(),
-                            unix_millis(),
+                            unix_now_ms(),
                             transfer_id,
                         )
                         .map(|_| ())
@@ -4783,7 +4783,7 @@ pub fn decide_nearby_transfer_at(
                 entry.kind,
                 entry.total_bytes,
                 entry.content_hash,
-                unix_millis(),
+                unix_now_ms(),
             )?;
             Ok((entry, committed_offset, prefix_hash))
         })?;
@@ -4888,7 +4888,7 @@ pub fn decide_nearby_transfer_at(
                     kind,
                     pending.total_bytes,
                     content_hash,
-                    unix_millis(),
+                    unix_now_ms(),
                 )
             })?;
             let destination =
@@ -5323,7 +5323,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         .local_device_fabric_identity()
         .map(|(device, _)| device);
     let (issued_to, received_from) = if policy.permits(ContinuityCapability::DisplayInput) {
-        active_spatial_control_devices(unix_ms())
+        active_spatial_control_devices(unix_now_ms())
     } else {
         (Vec::new(), Vec::new())
     };
@@ -5436,7 +5436,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
             }
         }
         let now = Instant::now();
-        let now_unix_ms = unix_ms();
+        let now_unix_ms = unix_now_ms();
         let observations = device_health_state().lock().map_or_else(
             |_| Vec::new(),
             |state| {
@@ -5580,7 +5580,7 @@ fn spatial_calibration_proposals(
     };
     spatial_calibration_state().lock().map_or_else(
         |_| Vec::new(),
-        |state| state.proposals(&local, &calibration_devices(network), unix_ms()),
+        |state| state.proposals(&local, &calibration_devices(network), unix_now_ms()),
     )
 }
 
@@ -5765,7 +5765,7 @@ pub fn grant_input_control(
     if nonce == [0; 16] {
         return Err("secure randomness returned an invalid lease nonce".into());
     }
-    let now = unix_ms();
+    let now = unix_now_ms();
     let lease = InputLease {
         controller: controller.clone(),
         target,
@@ -5859,7 +5859,7 @@ pub fn send_spatial_input(
         .cloned()
         .ok_or_else(|| "that device has not granted control".to_string())?;
     lease
-        .validate_at(unix_ms())
+        .validate_at(unix_now_ms())
         .map_err(|error| error.to_string())?;
     let allowed = match event {
         FabricInputEvent::PointerMotion { .. }
@@ -6635,7 +6635,7 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     source: local.clone(),
                     target,
                     profile: session.profile,
-                    issued_unix_ms: unix_ms(),
+                    issued_unix_ms: unix_now_ms(),
                 },
             ));
         }
@@ -6663,7 +6663,7 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
                     source: local.clone(),
                     target: target.clone(),
                     profile: session.profile,
-                    issued_unix_ms: unix_ms(),
+                    issued_unix_ms: unix_now_ms(),
                 },
             ));
         }
@@ -7149,7 +7149,7 @@ fn publish_roaming_provenance(
     if fingerprint == *previous_fingerprint {
         return Ok(false);
     }
-    projection.generated_unix_ms = unix_ms();
+    projection.generated_unix_ms = unix_now_ms();
     match path {
         Some(path) => projection.save_at(path)?,
         None => projection.save()?,
@@ -7592,14 +7592,6 @@ fn tear_down_nearby_transfers(network: &ShellNetwork) {
         state.destinations.clear();
         state.history.clear();
     }
-}
-
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
 }
 
 #[cfg(test)]

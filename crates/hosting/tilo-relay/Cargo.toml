@@ -55,6 +55,7 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
+tilo-clock = { path = "../../system/tilo-clock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 # Exclusive, owner-only publication of the relay's node secret.

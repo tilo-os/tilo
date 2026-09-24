@@ -19,10 +19,11 @@ use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
 use tilo_actions::Action;
+use tilo_clock::unix_now_ms;
 
 use crate::doc::BooksDoc;
 use crate::epub::{MAX_EPUB_BYTES, content_id, parse_epub};
-use crate::model::{Book, Chapter, LibraryEntry, now_ms};
+use crate::model::{Book, Chapter, LibraryEntry};
 use crate::xhtml::parse_xhtml;
 
 /// The bundled EPUB, parsed by the real container reader. Used only by the
@@ -209,7 +210,7 @@ pub fn prepare_imported_book(path: &Path, mut book: Book) -> (Book, LibraryEntry
         title: book.title.clone(),
         author: book.author.clone(),
         subject: book.subject.clone(),
-        added: now_ms(),
+        added: unix_now_ms(),
     };
     (book, entry)
 }

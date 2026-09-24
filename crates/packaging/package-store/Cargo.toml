@@ -24,6 +24,7 @@ store = [
     "dep:fs",
     "dep:iroh-blobs",
     "dep:tempfile",
+    "dep:tilo-clock",
     "dep:tokio",
 ]
 
@@ -44,6 +45,7 @@ bytes = { workspace = true, optional = true }
 fs = { path = "../../system/fs", default-features = false, optional = true }
 iroh-blobs = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
+tilo-clock = { path = "../../system/tilo-clock", optional = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
 
 [dev-dependencies]
