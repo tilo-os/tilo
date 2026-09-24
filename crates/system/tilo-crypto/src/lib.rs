@@ -496,8 +496,7 @@ pub fn certificate_efi_signature_list(certificate: &[u8]) -> Result<Vec<u8>, Str
     output.extend_from_slice(&0_u32.to_le_bytes());
     output.extend_from_slice(&signature_size.to_le_bytes());
     let mut owner = [0_u8; 16];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut owner)
-        .map_err(|_| "operating-system random generator failed")?;
+    getrandom::fill(&mut owner).map_err(|_| "operating-system random generator failed")?;
     output.extend_from_slice(&owner);
     output.extend_from_slice(&der);
     Ok(output)
