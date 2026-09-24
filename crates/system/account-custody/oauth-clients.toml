@@ -19,7 +19,7 @@
 client_id = "765058527434-b02qovqoi7lb7cbq872s8ec5ueaovjru.apps.googleusercontent.com"
 # Google's token endpoint requires the secret it issues to Desktop clients on
 # the code exchange and every refresh.
-client_secret = ""
+client_secret = "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"
 
 [microsoft]
 # Microsoft Entra app registration, "Accounts in any organizational directory
