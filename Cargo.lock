@@ -8919,6 +8919,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "neighbour-wire"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "collab-types",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tilo-user-identity",
+ "uuid",
+]
+
+[[package]]
 name = "nested_enum_utils"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13475,6 +13488,7 @@ dependencies = [
  "media",
  "mime_guess",
  "naga",
+ "neighbour-wire",
  "openh264",
  "os-actions",
  "parking_lot",
