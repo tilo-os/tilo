@@ -205,6 +205,7 @@ members = [
     "crates/system/cloud-source-gdrive",
     "crates/system/cloud-source-dropbox",
     "crates/system/cloud-source-onedrive",
+    "crates/system/cloud-source-icloud",
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
@@ -392,6 +393,9 @@ rand_chacha = "0.10"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 sha2 = "0.11"
 hmac = "0.13"
+# SRP-6a for the iCloud sign-in (cloud-source-icloud).
+pbkdf2 = "0.13"
+num-bigint = "0.5"
 blake3 = "1.8.5"
 # Raw AEAD and password-KDF crates are for `crates/system/tilo-seal` only;
 # `tools/policy/check_crypto_dependencies.py` rejects any other direct user.
