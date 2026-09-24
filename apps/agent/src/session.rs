@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use tilo_actions::remote::RemoteActionMessage;
 use ui::collaboration::{
     CertifiedEndpointIdentity, CollabEvent, CollabRequest, DocumentMutation, PresencePayload,
     RouteSpec,
@@ -21,7 +22,8 @@ use crate::providers::default_selection;
 use crate::surface::{self, AppContract, View};
 use crate::wire::Link;
 
-const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
+/// How long a fetched catalogue is trusted before acting fetches it again.
+const CATALOGUE_FRESH_FOR: Duration = Duration::from_secs(1);
 const TASK_ACTION_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,10 +258,13 @@ pub struct Session {
     /// How the last instruction was decided. The record that keeps a run on
     /// the fallback from being indistinguishable from a live one afterwards.
     last_route: Option<Route>,
-    /// Complete, permission-filtered live action directory supplied by the
-    /// broker. This is the planner's application catalogue; local document
-    /// contracts remain only for the agent's own editorial state/tools.
-    broker_surfaces: Vec<ui::collaboration::BrokerActionSurface>,
+    /// Complete, permission-filtered live action catalogue the session's
+    /// action host offers this agent. This is the planner's application
+    /// catalogue; local document contracts remain only for the agent's own
+    /// editorial state/tools.
+    broker_catalogue: tilo_actions::remote::Catalogue,
+    /// When [`Self::broker_catalogue`] was last fetched.
+    catalogue_fetched: Option<Instant>,
     next_broker_request: u64,
     active_run: Option<ActiveRun>,
 }
@@ -357,7 +362,8 @@ impl Session {
             chooser,
             last_route: None,
             asked_at: Instant::now(),
-            broker_surfaces: Vec::new(),
+            broker_catalogue: tilo_actions::remote::Catalogue::default(),
+            catalogue_fetched: None,
             next_broker_request: 1,
             active_run: None,
         })
@@ -418,12 +424,8 @@ impl Session {
     pub fn run_task_runs(&mut self) -> Result<()> {
         tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
         loop {
-            match self.link.recv(Duration::from_millis(100))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
-                }
-                Some(CollabEvent::TaskRun(run)) => self.run_task(&run)?,
-                Some(_) | None => {}
+            if let Some(CollabEvent::TaskRun(run)) = self.link.recv(Duration::from_millis(100))? {
+                self.run_task(&run)?;
             }
         }
     }
@@ -515,25 +517,8 @@ impl Session {
     }
 
     fn wait_for_task_catalogue(&mut self) -> Result<()> {
-        if !self.broker_surfaces.is_empty() {
-            return Ok(());
-        }
-        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
-        let mut deferred = Vec::new();
-        while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
-                    self.link.defer(deferred);
-                    return Ok(());
-                }
-                Some(event) => deferred.push(event),
-                None => {}
-            }
-        }
-        self.link.defer(deferred);
-        Ok(())
+        // A task plans against what the host offers at the moment it starts.
+        self.refresh_catalogue()
     }
 
     fn task_cancelled(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<bool> {
@@ -568,7 +553,6 @@ impl Session {
                     self.link.defer(deferred);
                     return result.map_err(anyhow::Error::msg);
                 }
-                Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
                 Some(event) => deferred.push(event),
                 None => {}
             }
@@ -576,7 +560,7 @@ impl Session {
     }
 
     fn plan_task(&self, run: &runtime_collab::TaskRunEnvelope) -> Result<Vec<TaskAction>, String> {
-        let offers = surface::broker_offers(&self.broker_surfaces)
+        let offers = surface::broker_offers(&self.broker_catalogue)
             .into_iter()
             .filter(|offer| {
                 offer.broker_peer_id.is_some()
@@ -652,8 +636,10 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<Result<StepOutcome, TaskActionStop>> {
         let request_id = self.next_request_id();
+        let invocation = tilo_actions::InvocationId::new();
         self.link.send(&CollabRequest::InvokeTaskAction {
             request_id,
+            invocation,
             run_id: run.run_id,
             lease: run.lease.clone(),
             peer_id: action.peer_id,
@@ -661,8 +647,8 @@ impl Session {
             action: action.action.clone(),
             arguments: arguments.clone(),
         })?;
-        let (id, mut update) = match self.wait_for_task_action_result(request_id)? {
-            Ok(result) => result,
+        let mut update = match self.wait_for_task_action_result(request_id)? {
+            Ok((_, update)) => update,
             Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
         };
         let mut interaction_sequence = 0_u64;
@@ -670,12 +656,16 @@ impl Session {
         let deadline = Instant::now() + TASK_ACTION_WAIT;
         while !update.is_terminal() && Instant::now() < deadline {
             if self.task_cancelled(run)? {
-                let cancel_request = self.next_request_id();
-                self.link.send(&CollabRequest::CancelPublishedInvocation {
-                    request_id: cancel_request,
-                    id,
+                self.link.send(&CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Cancel { invocation },
                 })?;
-                let _ = self.wait_for_broker_result(cancel_request)?;
+                let _ = self.wait_for_remote_answer(|message| {
+                    matches!(
+                        message,
+                        RemoteActionMessage::CancelResponse { invocation: answered, .. }
+                            if *answered == invocation
+                    )
+                })?;
                 interaction_sequence = interaction_sequence.saturating_add(1);
                 let cancelled = tilo_actions::InvocationUpdate::Cancelled {
                     invocation: update.invocation(),
@@ -685,11 +675,8 @@ impl Session {
                 return Ok(Err(TaskActionStop::Cancelled));
             }
             std::thread::sleep(Duration::from_millis(50));
-            let request_id = self.next_request_id();
-            self.link
-                .send(&CollabRequest::PublishedInvocationStatus { request_id, id })?;
-            update = match self.wait_for_broker_result(request_id)? {
-                Ok((_, update)) => update,
+            update = match self.observe(invocation)? {
+                Ok(update) => update,
                 Err(error) => return Ok(Err(TaskActionStop::Failed(error))),
             };
             interaction_sequence = interaction_sequence.saturating_add(1);
@@ -838,7 +825,6 @@ impl Session {
                     self.link.defer(deferred);
                     return Ok(result);
                 }
-                Some(CollabEvent::ActionCatalogue { surfaces }) => self.broker_surfaces = surfaces,
                 Some(event @ CollabEvent::Document { .. }) => {
                     match event
                         .document_mutation()
@@ -942,22 +928,12 @@ impl Session {
                         .send_to_route(route, &CollabRequest::document_snapshot(full))?;
                 }
             }
-            Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                self.broker_surfaces = surfaces;
-                tracing::debug!(
-                    actions = self
-                        .broker_surfaces
-                        .iter()
-                        .map(|s| s.actions.len())
-                        .sum::<usize>(),
-                    "updated broker action catalogue"
-                );
-            }
             Some(_) | None => {}
         }
         if !changed {
             return Ok(false);
         }
+        self.refresh_stale_catalogue()?;
         self.act()
     }
 
@@ -1080,7 +1056,8 @@ impl Session {
         held: &[(&'static AppContract, &automerge::AutoCommit)],
         view: &View,
     ) -> Vec<surface::Offer> {
-        let mut offers = Self::document_broker_offers(&self.broker_surfaces, &self.cfg.permissions);
+        let mut offers =
+            Self::document_broker_offers(&self.broker_catalogue, &self.cfg.permissions);
         for local in surface::offers(held, view, &self.cfg.permissions) {
             if !offers
                 .iter()
@@ -1098,10 +1075,10 @@ impl Session {
     /// intersection so a stale or narrower launch grant cannot be widened by
     /// a broader workspace catalogue.
     fn document_broker_offers(
-        surfaces: &[ui::collaboration::BrokerActionSurface],
+        catalogue: &tilo_actions::remote::Catalogue,
         permissions: &PermissionContext,
     ) -> Vec<surface::Offer> {
-        surface::broker_offers(surfaces)
+        surface::broker_offers(catalogue)
             .into_iter()
             .filter(|offer| surface::permitted_descriptor(permissions, &offer.descriptor))
             .collect()
@@ -1142,11 +1119,10 @@ impl Session {
         self.perform_local(id, arguments, confirmation)
     }
 
-    /// Give the broker's independently delivered catalogue stream a chance
-    /// to catch up with the document stream before falling back to local
-    /// execution. An app publishes its actions before its snapshot, but the
-    /// two replies travel on separate Cap'n Proto streams and therefore have
-    /// no cross-stream ordering guarantee.
+    /// Find the host offer `id` names, fetching a fresh catalogue once if
+    /// the one held does not name it: an app publishes its actions before
+    /// its document reaches this agent, but the agent's catalogue may be
+    /// older than both.
     fn wait_for_broker_offer(&mut self, id: &str) -> Result<Option<surface::Offer>> {
         // A broker-prefixed id pins an exact live publisher. Only a local
         // compatibility offer may be upgraded to the matching broker route;
@@ -1155,36 +1131,121 @@ impl Session {
             .then(|| surface::decode_address(id))
             .flatten();
         let permissions = self.cfg.permissions.clone();
-        let find = |surfaces: &[ui::collaboration::BrokerActionSurface]| {
-            let offers = Self::document_broker_offers(surfaces, &permissions);
+        let find = |catalogue: &tilo_actions::remote::Catalogue| {
+            let offers = Self::document_broker_offers(catalogue, &permissions);
             surface::find(&offers, id).cloned().or_else(|| {
                 wanted
                     .as_ref()
                     .and_then(|address| offers.into_iter().find(|offer| offer.address() == address))
             })
         };
-        if let Some(offer) = find(&self.broker_surfaces) {
+        if let Some(offer) = find(&self.broker_catalogue) {
             return Ok(Some(offer));
         }
-        let deadline = Instant::now() + TASK_CATALOGUE_WAIT;
-        let mut deferred = Vec::new();
-        let mut found = None;
-        while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.link.recv(remaining.min(Duration::from_millis(100)))? {
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
-                    if let Some(offer) = find(&self.broker_surfaces) {
-                        found = Some(offer);
-                        break;
-                    }
-                }
-                Some(event) => deferred.push(event),
-                None => {}
+        self.refresh_catalogue()?;
+        Ok(find(&self.broker_catalogue))
+    }
+
+    /// Fetch the catalogue unless the one held is fresh.
+    fn refresh_stale_catalogue(&mut self) -> Result<()> {
+        if self
+            .catalogue_fetched
+            .is_some_and(|at| at.elapsed() < CATALOGUE_FRESH_FOR)
+        {
+            return Ok(());
+        }
+        self.refresh_catalogue()
+    }
+
+    /// Ask the session's action host what it offers this agent now.
+    fn refresh_catalogue(&mut self) -> Result<()> {
+        let correlation = self.next_request_id();
+        self.link.send(&CollabRequest::RemoteAction {
+            message: RemoteActionMessage::CatalogueRequest { correlation },
+        })?;
+        match self.wait_for_remote_answer(|message| {
+            matches!(
+                message,
+                RemoteActionMessage::CatalogueResponse { correlation: answered, .. }
+                    if *answered == correlation
+            )
+        })? {
+            Some(RemoteActionMessage::CatalogueResponse {
+                result: Ok(catalogue),
+                ..
+            }) => {
+                tracing::debug!(
+                    actions = catalogue.entries.len(),
+                    "fetched the action catalogue"
+                );
+                self.broker_catalogue = catalogue;
+                self.catalogue_fetched = Some(Instant::now());
+            }
+            Some(RemoteActionMessage::CatalogueResponse {
+                result: Err(error), ..
+            }) => tracing::warn!(%error, "the action host refused the catalogue"),
+            _ => tracing::warn!("the action host did not answer the catalogue request"),
+        }
+        Ok(())
+    }
+
+    /// The provider token the host issued for `offer`.
+    fn provider_for(&self, offer: &surface::Offer) -> Option<String> {
+        match offer.broker_peer_id? {
+            0 => self
+                .broker_catalogue
+                .entries
+                .iter()
+                .find(|entry| {
+                    tilo_actions::remote::workspace_provider_room(&entry.provider).is_some()
+                        && entry.descriptor.address == offer.descriptor.address
+                })
+                .map(|entry| entry.provider.clone()),
+            peer => Some(peer.to_string()),
+        }
+    }
+
+    /// Observe `invocation` until it is terminal or `deadline` passes,
+    /// starting from `update`.
+    fn follow_invocation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        mut update: tilo_actions::InvocationUpdate,
+        deadline: Instant,
+    ) -> Result<Result<tilo_actions::InvocationUpdate, String>> {
+        while !update.is_terminal() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            match self.observe(invocation)? {
+                Ok(latest) => update = latest,
+                Err(error) => return Ok(Err(error)),
             }
         }
-        self.link.defer(deferred);
-        Ok(found)
+        Ok(Ok(update))
+    }
+
+    /// The latest state of an invocation this agent started.
+    fn observe(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Result<tilo_actions::InvocationUpdate, String>> {
+        self.link.send(&CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Observe { invocation },
+        })?;
+        Ok(
+            match self.wait_for_remote_answer(|message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::Update { invocation: answered, .. }
+                        if *answered == invocation
+                )
+            })? {
+                Some(RemoteActionMessage::Update {
+                    state: Some(state), ..
+                }) => Ok(state.update),
+                Some(_) => Err("the action host no longer knows that invocation".into()),
+                None => Err("the action host did not answer".into()),
+            },
+        )
     }
 
     fn perform_broker(
@@ -1194,7 +1255,7 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmation: &ConfirmationEvidence,
     ) -> Result<Result<StepOutcome, String>> {
-        let Some(peer_id) = offer.broker_peer_id else {
+        let Some(provider) = self.provider_for(offer) else {
             return Ok(Err(
                 "that operation is local-only and cannot be brokered".to_string()
             ));
@@ -1206,54 +1267,67 @@ impl Session {
         if let Err(error) = tilo_actions::ActionArgs::bind_json(&descriptor.params, arguments) {
             return Ok(Err(format!("I couldn't do that - {error}")));
         }
-        let confirmation_json = match confirmation {
-            ConfirmationEvidence::None => serde_json::json!({}),
-            ConfirmationEvidence::Confirm => serde_json::json!({"confirm": true}),
-            ConfirmationEvidence::Phrase(phrase) => {
-                serde_json::json!({"confirmation_phrase": phrase})
+        let invocation = tilo_actions::InvocationId::new();
+        self.link.send(&CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
+                invocation,
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider,
+                    address: descriptor.address,
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
+                context: None,
+                confirmation: match confirmation {
+                    ConfirmationEvidence::None => None,
+                    ConfirmationEvidence::Confirm => {
+                        Some(tilo_actions::remote::Confirmation::Confirmed)
+                    }
+                    ConfirmationEvidence::Phrase(phrase) => {
+                        Some(tilo_actions::remote::Confirmation::Phrase(phrase.clone()))
+                    }
+                },
+            }),
+        })?;
+        let Some(RemoteActionMessage::Receipt(receipt)) =
+            self.wait_for_remote_answer(|message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation
+                )
+            })?
+        else {
+            return Ok(Err(
+                "I couldn't do that - the action host did not answer".to_string()
+            ));
+        };
+        let update = match receipt.status {
+            tilo_actions::remote::ReceiptStatus::Rejected { error } => {
+                return Ok(Err(format!("I couldn't do that - {error}")));
+            }
+            tilo_actions::remote::ReceiptStatus::Accepted => {
+                tilo_actions::InvocationUpdate::Accepted { invocation }
+            }
+            tilo_actions::remote::ReceiptStatus::Completed { output } => {
+                tilo_actions::InvocationUpdate::Succeeded { invocation, output }
+            }
+            tilo_actions::remote::ReceiptStatus::Failed { error } => {
+                tilo_actions::InvocationUpdate::Failed { invocation, error }
+            }
+            tilo_actions::remote::ReceiptStatus::Cancelled { message } => {
+                tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message,
+                }
             }
         };
-        let request_id = self.next_request_id();
-        if descriptor.resource_kind == surface::APPLICATION_KIND
-            && descriptor.address.action == surface::OPEN_ACTION
-        {
-            self.link.send(&CollabRequest::LaunchPublishedApplication {
-                request_id,
-                app_id: offer.app.clone(),
-                content_hash: None,
-            })?;
-        } else {
-            self.link.send(&CollabRequest::InvokePublishedAction {
-                request_id,
-                peer_id,
-                resource: descriptor.address.resource.clone(),
-                action: descriptor.address.action,
-                arguments: arguments.clone(),
-                confirmation: confirmation_json,
-            })?;
-        }
-        let (invocation_id, mut update) = match self.wait_for_broker_result(request_id)? {
-            Ok(receipt) => receipt,
-            Err(error) => return Ok(Err(format!("I couldn't do that - {error}"))),
+        let update = match self.follow_invocation(
+            invocation,
+            update,
+            Instant::now() + Duration::from_secs(30),
+        )? {
+            Ok(update) => update,
+            Err(error) => return Ok(Err(format!("I couldn't observe that action - {error}"))),
         };
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !update.is_terminal() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-            let request_id = self.next_request_id();
-            self.link.send(&CollabRequest::PublishedInvocationStatus {
-                request_id,
-                id: invocation_id,
-            })?;
-            match self.wait_for_broker_result(request_id)? {
-                Ok((_, latest)) => update = latest,
-                Err(error) => return Ok(Err(format!("I couldn't observe that action - {error}"))),
-            }
-        }
-        if !update.is_terminal() {
-            return Ok(Err(format!(
-                "action {invocation_id} was admitted but did not reach a terminal state in time"
-            )));
-        }
         match update {
             tilo_actions::InvocationUpdate::Failed { error, .. } => {
                 Ok(Err(format!("I couldn't do that - {}", error.message)))
@@ -1264,16 +1338,17 @@ impl Session {
                 })))
             }
             tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
-                tracing::info!(%id, invocation_id, ?output, "broker action completed");
+                tracing::info!(%id, invocation = %invocation.0, ?output, "broker action completed");
                 std::thread::sleep(self.cfg.pace);
                 Ok(Ok(StepOutcome {
                     output,
                     product: None,
                 }))
             }
-            _ => Ok(Err(
-                "the broker returned an invalid nonterminal result".to_string()
-            )),
+            _ => Ok(Err(format!(
+                "action {} was admitted but did not reach a terminal state in time",
+                invocation.0
+            ))),
         }
     }
 
@@ -1364,33 +1439,27 @@ impl Session {
         id
     }
 
-    fn wait_for_broker_result(
+    /// Wait for the answer `wanted` picks out, absorbing document traffic
+    /// that arrives meanwhile and keeping every other event for later.
+    fn wait_for_remote_answer(
         &mut self,
-        request_id: u64,
-    ) -> Result<Result<(u64, tilo_actions::InvocationUpdate), String>> {
+        wanted: impl Fn(&RemoteActionMessage) -> bool,
+    ) -> Result<Option<RemoteActionMessage>> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut deferred = Vec::new();
         loop {
             let now = Instant::now();
             if now >= deadline {
                 self.link.defer(deferred);
-                return Ok(Err(
-                    "the broker did not answer the action request".to_string()
-                ));
+                return Ok(None);
             }
             match self
                 .link
                 .recv((deadline - now).min(Duration::from_millis(100)))?
             {
-                Some(CollabEvent::PublishedInvocationResult {
-                    request_id: received,
-                    result,
-                }) if received == request_id => {
+                Some(CollabEvent::RemoteAction { message }) if wanted(&message) => {
                     self.link.defer(deferred);
-                    return Ok(result);
-                }
-                Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
+                    return Ok(Some(message));
                 }
                 Some(event @ CollabEvent::Document { .. }) => {
                     match event
@@ -2575,13 +2644,9 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(5);
             let offers = loop {
                 assert!(Instant::now() < deadline, "both app catalogues must arrive");
-                if let Some(CollabEvent::ActionCatalogue { surfaces }) =
-                    session.link.recv(Duration::from_millis(50)).unwrap()
-                {
-                    session.broker_surfaces = surfaces;
-                }
+                session.refresh_catalogue().unwrap();
                 let offers = Session::document_broker_offers(
-                    &session.broker_surfaces,
+                    &session.broker_catalogue,
                     &session.cfg.permissions,
                 );
                 if [PRODUCE, "view", "place-image"]

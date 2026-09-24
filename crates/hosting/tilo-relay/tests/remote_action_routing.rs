@@ -79,6 +79,7 @@ fn invoke(invocation: InvocationId) -> RemoteActionMessage {
         },
         argument: InvokeArgument::None,
         context: None,
+        confirmation: None,
     })
 }
 

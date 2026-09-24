@@ -47,41 +47,108 @@ pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
 /// Default number of invocations an [`InvocationLedger`] remembers.
 pub const DEFAULT_LEDGER_CAPACITY: usize = 1024;
 
-/// The authenticated principal behind a remote request.
+/// Who a request is from, as the host's policy knows them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CallerPrincipal {
+    /// A person, by their policy principal id. For a remote device this is
+    /// the hex encoding of the user root its certificate chains to, so two
+    /// devices of one person are the same principal.
+    Person(String),
+    /// A delegated agent, by its agent id.
+    Agent(String),
+}
+
+/// The authenticated principal behind a request.
 ///
-/// Built only by the transport, from the certificate chain it verified for
-/// the connection: the user root the device chains to, and the device key
-/// itself. It is deliberately not `Deserialize` — a payload cannot assert
-/// who sent it.
+/// Built only by the transport that authenticated the connection — from the
+/// certificate chain a peer presented, or from the admitted identity of a
+/// local connection. It is deliberately not `Deserialize`: a payload cannot
+/// assert who sent it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Caller {
-    user_public_key: [u8; 32],
-    device_public_key: [u8; 32],
+    principal: CallerPrincipal,
+    user_public_key: Option<[u8; 32]>,
+    device_public_key: Option<[u8; 32]>,
+    room: Option<String>,
 }
 
 impl Caller {
-    /// A caller whose device certificate the transport has verified to chain
-    /// to `user_public_key`.
+    /// A remote device whose certificate the transport verified to chain to
+    /// `user_public_key`.
     #[must_use]
-    pub const fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
+    pub fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
         Self {
-            user_public_key,
-            device_public_key,
+            principal: CallerPrincipal::Person(hex(&user_public_key)),
+            user_public_key: Some(user_public_key),
+            device_public_key: Some(device_public_key),
+            room: None,
         }
     }
 
-    /// The user root the calling device chains to. Authority is decided on
-    /// this: two devices of one person are the same principal.
+    /// A person on a connection the host admitted itself, by the policy
+    /// principal id that admission established.
     #[must_use]
-    pub const fn user_public_key(&self) -> &[u8; 32] {
-        &self.user_public_key
+    pub fn local_person(principal: impl Into<String>) -> Self {
+        Self {
+            principal: CallerPrincipal::Person(principal.into()),
+            user_public_key: None,
+            device_public_key: None,
+            room: None,
+        }
     }
 
-    /// The device that sent the request.
+    /// A delegated agent on a connection the host admitted itself.
     #[must_use]
-    pub const fn device_public_key(&self) -> &[u8; 32] {
-        &self.device_public_key
+    pub fn local_agent(agent_id: impl Into<String>) -> Self {
+        Self {
+            principal: CallerPrincipal::Agent(agent_id.into()),
+            user_public_key: None,
+            device_public_key: None,
+            room: None,
+        }
     }
+
+    /// Confine the caller to one room: the connection was admitted to that
+    /// room only, so nothing outside it is offered or reachable.
+    #[must_use]
+    pub fn in_room(mut self, room: impl Into<String>) -> Self {
+        self.room = Some(room.into());
+        self
+    }
+
+    #[must_use]
+    pub const fn principal(&self) -> &CallerPrincipal {
+        &self.principal
+    }
+
+    /// The room this caller is confined to, if any.
+    #[must_use]
+    pub fn room(&self) -> Option<&str> {
+        self.room.as_deref()
+    }
+
+    /// The user root a remote device chains to.
+    #[must_use]
+    pub const fn user_public_key(&self) -> Option<&[u8; 32]> {
+        self.user_public_key.as_ref()
+    }
+
+    /// The remote device that sent the request.
+    #[must_use]
+    pub const fn device_public_key(&self) -> Option<&[u8; 32]> {
+        self.device_public_key.as_ref()
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(
+        String::with_capacity(bytes.len().saturating_mul(2)),
+        |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        },
+    )
 }
 
 /// Which published action an invocation names on the host.
@@ -166,6 +233,62 @@ pub struct InvokeRequest {
     /// Human provenance carried into history. It never grants authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ActionContext>,
+    /// The caller's explicit confirmation, for an action whose contract
+    /// requires one. The host checks it against the contract; it is
+    /// evidence, not authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<Confirmation>,
+}
+
+/// Explicit confirmation carried with an invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Confirmation {
+    /// The caller confirmed the action.
+    Confirmed,
+    /// The caller typed the phrase the contract asks for.
+    Phrase(String),
+}
+
+/// Provider token naming the calling application's own connection, for an
+/// app that routes one of its own actions through the host.
+pub const OWN_PROVIDER: &str = "self";
+
+/// Prefix of the provider token for actions a workspace itself offers
+/// rather than an application; see [`workspace_provider`].
+pub const WORKSPACE_PROVIDER: &str = "workspace";
+
+/// Resource prefix of a workspace's "open this application" actions.
+pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
+
+/// Action id that opens an application into a workspace.
+pub const APPLICATION_OPEN_ACTION: &str = "open";
+
+/// The provider token for the actions workspace `room` itself offers.
+#[must_use]
+pub fn workspace_provider(room: &str) -> String {
+    format!("{WORKSPACE_PROVIDER}:{room}")
+}
+
+/// The room a workspace provider token names, or `None` for an application
+/// provider.
+#[must_use]
+pub fn workspace_provider_room(provider: &str) -> Option<&str> {
+    provider
+        .strip_prefix(WORKSPACE_PROVIDER)
+        .and_then(|rest| rest.strip_prefix(':'))
+}
+
+/// The target that opens `app_id` into workspace `room`. An invocation may
+/// carry the content hash of bytes to open read-only as its text argument.
+#[must_use]
+pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: workspace_provider(room),
+        address: ActionAddress::new(
+            format!("{APPLICATION_RESOURCE_PREFIX}{app_id}"),
+            APPLICATION_OPEN_ACTION,
+        ),
+    }
 }
 
 /// Where an invocation stands, as reported to its caller.
@@ -507,6 +630,40 @@ pub fn serve<H: ActionHost + ?Sized>(
     })
 }
 
+/// The answer that refuses request `message` with `error` — for a host that
+/// cannot be reached or is not running. Returns `None` for a message that
+/// is not a request.
+#[must_use]
+pub fn refuse(
+    message: &RemoteActionMessage,
+    error: ActionHostError,
+) -> Option<RemoteActionMessage> {
+    Some(match message {
+        RemoteActionMessage::CatalogueRequest { correlation } => {
+            RemoteActionMessage::CatalogueResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::Invoke(request) => RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Rejected { error },
+        }),
+        RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+            invocation: *invocation,
+            state: None,
+        },
+        RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
+            invocation: *invocation,
+            result: Err(error),
+        },
+        RemoteActionMessage::CatalogueResponse { .. }
+        | RemoteActionMessage::Receipt(_)
+        | RemoteActionMessage::Update { .. }
+        | RemoteActionMessage::CancelResponse { .. } => return None,
+    })
+}
+
 struct LedgerEntry<T> {
     caller: Caller,
     request: InvokeRequest,
@@ -733,6 +890,7 @@ mod tests {
             },
             argument: InvokeArgument::None,
             context: None,
+            confirmation: None,
         }
     }
 
@@ -770,6 +928,10 @@ mod tests {
             }),
             RemoteActionMessage::Invoke(InvokeRequest {
                 argument: InvokeArgument::Text("hello".into()),
+                ..archive(invocation)
+            }),
+            RemoteActionMessage::Invoke(InvokeRequest {
+                confirmation: Some(Confirmation::Phrase("delete it".into())),
                 ..archive(invocation)
             }),
             RemoteActionMessage::Receipt(InvocationReceipt {
@@ -1009,5 +1171,61 @@ mod tests {
             InvokeArgument::Json(object).to_slot(),
             Some(format!("{ARGUMENTS_JSON_PREFIX}{{\"n\":2}}"))
         );
+    }
+
+    #[test]
+    fn a_remote_device_is_the_person_its_root_names() {
+        let caller = Caller::authenticated([0xAB; 32], [1; 32]);
+        assert_eq!(
+            caller.principal(),
+            &CallerPrincipal::Person("ab".repeat(32)),
+            "every device of one person is the same principal"
+        );
+        assert_eq!(caller.room(), None);
+        let agent = Caller::local_agent("helper").in_room("room-1");
+        assert_eq!(agent.principal(), &CallerPrincipal::Agent("helper".into()));
+        assert_eq!(agent.room(), Some("room-1"));
+        assert_eq!(agent.device_public_key(), None);
+    }
+
+    #[test]
+    fn a_refusal_answers_every_request_and_nothing_else() {
+        let error = ActionHostError::Unavailable {
+            reason: "down".into(),
+        };
+        let id = InvocationId::new();
+        assert_eq!(
+            refuse(&invoke_message(id), error.clone()),
+            Some(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: id,
+                status: ReceiptStatus::Rejected {
+                    error: error.clone()
+                },
+            }))
+        );
+        assert_eq!(
+            refuse(
+                &RemoteActionMessage::Observe { invocation: id },
+                error.clone()
+            ),
+            Some(RemoteActionMessage::Update {
+                invocation: id,
+                state: None
+            })
+        );
+        assert_eq!(
+            refuse(
+                &RemoteActionMessage::Update {
+                    invocation: id,
+                    state: None
+                },
+                error
+            ),
+            None
+        );
+    }
+
+    fn invoke_message(id: InvocationId) -> RemoteActionMessage {
+        RemoteActionMessage::Invoke(archive(id))
     }
 }

@@ -53,7 +53,7 @@ state assertions. No such adapter is implemented in these proof-only files.
 
 ## Durable receipt output redaction
 
-The native proof captures the live `PublishedInvocationStatus` result and
+The native proof captures the live `Observe` result and
 explicitly labels it as different from a durable receipt. It does **not** assert
 receipt redaction or persistence.
 

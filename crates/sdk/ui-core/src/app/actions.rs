@@ -1588,17 +1588,39 @@ impl App {
         argument: Option<&str>,
         confirmation_evidence: Option<&serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let broker_requests = &mut self.actions.broker_requests;
+        let manager = &mut self.collaboration.manager;
         Self::dispatch_broker_request(
             &mut self.actions.next_broker_request_id,
-            self.collaboration.manager.is_connected(),
+            manager.is_connected(),
             address,
             typed_arguments,
             argument,
             confirmation_evidence,
-            |request| {
-                self.collaboration.manager.send(request);
+            |request_id, request| {
+                broker_requests.insert(BrokerReply::Receipt(request.invocation), request_id);
+                manager.send(CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                });
             },
         )
+    }
+
+    /// The confirmation an app's legacy evidence object expresses.
+    fn broker_confirmation(
+        evidence: Option<&serde_json::Value>,
+    ) -> Option<tilo_actions::remote::Confirmation> {
+        let evidence = evidence?;
+        if let Some(phrase) = evidence
+            .get("confirmation_phrase")
+            .and_then(serde_json::Value::as_str)
+        {
+            return Some(tilo_actions::remote::Confirmation::Phrase(
+                phrase.to_string(),
+            ));
+        }
+        (evidence.get("confirm").and_then(serde_json::Value::as_bool) == Some(true))
+            .then_some(tilo_actions::remote::Confirmation::Confirmed)
     }
 
     fn dispatch_broker_request(
@@ -1608,7 +1630,7 @@ impl App {
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         confirmation_evidence: Option<&serde_json::Value>,
-        send: impl FnOnce(CollabRequest),
+        send: impl FnOnce(u64, tilo_actions::remote::InvokeRequest),
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         if !connected {
             return Err(tilo_actions::DoorError::Unavailable {
@@ -1627,16 +1649,19 @@ impl App {
             }
             arguments
         });
-        send(CollabRequest::InvokePublishedAction {
+        send(
             request_id,
-            peer_id: crate::collaboration::CURRENT_CONNECTION_PEER_ID,
-            resource: address.resource.clone(),
-            action: address.action.clone(),
-            arguments,
-            confirmation: confirmation_evidence
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({})),
-        });
+            tilo_actions::remote::InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::OWN_PROVIDER.into(),
+                    address: address.clone(),
+                },
+                argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+                context: None,
+                confirmation: Self::broker_confirmation(confirmation_evidence),
+            },
+        );
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }
 
@@ -1792,6 +1817,7 @@ impl App {
         let address =
             tilo_actions::ActionAddress::new(alias, target.address.address.action.clone());
         if let Some(send) = broker_delivery {
+            let broker_requests = &mut self.actions.broker_requests;
             return Self::dispatch_broker_request(
                 &mut self.actions.next_broker_request_id,
                 true,
@@ -1799,7 +1825,12 @@ impl App {
                 arguments,
                 argument,
                 evidence,
-                send,
+                |request_id, request| {
+                    broker_requests.insert(BrokerReply::Receipt(request.invocation), request_id);
+                    send(CollabRequest::RemoteAction {
+                        message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
+                    });
+                },
             );
         }
         self.publish_action_surface();
@@ -2024,6 +2055,17 @@ impl App {
                     reason: "Opening staged media requires the workspace action broker".into(),
                 });
             }
+            let Some(room) = self
+                .collaboration
+                .manager
+                .primary_route()
+                .map(|witness| witness.route.cluster_id.to_string())
+            else {
+                return Err(tilo_actions::DoorError::Unavailable {
+                    code: "authoritative_host_unavailable".into(),
+                    reason: "Opening staged media requires an admitted workspace route".into(),
+                });
+            };
             let request_id = self.take_broker_request_id()?;
             let Some(invocation) = invocation else {
                 return Err(tilo_actions::DoorError::Failed(
@@ -2031,12 +2073,20 @@ impl App {
                 ));
             };
             self.admit_application_launch(request_id, invocation)?;
+            let request = tilo_actions::remote::InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: tilo_actions::remote::application_open_target(&room, &launch.app_id),
+                argument: tilo_actions::remote::InvokeArgument::Text(launch.content_hash),
+                context: None,
+                confirmation: None,
+            };
+            self.actions
+                .broker_requests
+                .insert(BrokerReply::Receipt(request.invocation), request_id);
             self.collaboration
                 .manager
-                .send(CollabRequest::LaunchPublishedApplication {
-                    request_id,
-                    app_id: launch.app_id,
-                    content_hash: Some(launch.content_hash),
+                .send(CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
                 });
             return Ok(crate::widget::ResourceOperationStart::Accepted);
         }
