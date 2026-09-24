@@ -26,29 +26,13 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{Album, Artist, Library, Playback, Playlist, Track};
 
 const ORDER_STEP: i64 = 1_048_576;
 
 // ---- small scalar readers -------------------------------------------------
-
-fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn get_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64(),
-        _ => None,
-    }
-}
 
 fn get_map(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(obj, key) {
@@ -94,13 +78,6 @@ fn list_strings(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
     out
 }
 
-fn map_bool(doc: &AutoCommit, map: &ObjId, key: &str) -> bool {
-    matches!(
-        doc.get(map, key),
-        Ok(Some((Value::Scalar(value), _))) if value.as_ref() == &ScalarValue::Boolean(true)
-    )
-}
-
 fn membership_entries(doc: &AutoCommit, playlist: &ObjId) -> Vec<(String, i64)> {
     let Some(membership) = get_map(doc, playlist, "track_membership") else {
         // Backward compatibility for documents written before stable keyed
@@ -122,11 +99,11 @@ fn membership_entries(doc: &AutoCommit, playlist: &ObjId) -> Vec<(String, i64)> 
     let order = get_map(doc, playlist, "track_order");
     let mut entries = doc
         .keys(&membership)
-        .filter(|id| map_bool(doc, &membership, id))
+        .filter(|id| read_bool(doc, &membership, id).unwrap_or(false))
         .map(|id| {
             let rank = order
                 .as_ref()
-                .and_then(|order| get_i64(doc, order, &id))
+                .and_then(|order| read_i64_coerced(doc, order, &id))
                 .unwrap_or(0);
             (id, rank)
         })
@@ -359,7 +336,7 @@ fn find_playlist_obj(doc: &AutoCommit, playlist_id: &str) -> Option<ObjId> {
     let n = doc.length(&playlists);
     for i in 0..n {
         if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i)
-            && get_str(doc, &pm, "id").as_deref() == Some(playlist_id)
+            && read_str(doc, &pm, "id").as_deref() == Some(playlist_id)
         {
             return Some(pm);
         }
@@ -475,7 +452,7 @@ pub fn set_track_rank(doc: &mut AutoCommit, playlist_id: &str, track_id: &str, r
     let Some((membership, order)) = ensure_membership_maps(doc, &pm) else {
         return;
     };
-    if !map_bool(doc, &membership, track_id) {
+    if !read_bool(doc, &membership, track_id).unwrap_or(false) {
         return;
     }
     let _ = doc.put(&order, track_id, rank);
@@ -503,7 +480,7 @@ pub fn delete_playlist(doc: &mut AutoCommit, playlist_id: &str) {
     let n = doc.length(&playlists);
     for i in 0..n {
         if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i)
-            && get_str(doc, &pm, "id").as_deref() == Some(playlist_id)
+            && read_str(doc, &pm, "id").as_deref() == Some(playlist_id)
         {
             let _ = doc.delete(&playlists, i);
             return;
@@ -530,7 +507,7 @@ fn ensure_bool_map(doc: &mut AutoCommit, key: &str) -> Option<ObjId> {
 fn load_bool_set(doc: &AutoCommit, key: &str) -> std::collections::BTreeSet<String> {
     if let Some(map) = get_map(doc, &ROOT, key) {
         doc.keys(&map)
-            .filter(|id| map_bool(doc, &map, id))
+            .filter(|id| read_bool(doc, &map, id).unwrap_or(false))
             .collect()
     } else {
         get_list(doc, &ROOT, key)
@@ -544,7 +521,7 @@ pub fn toggle_liked(doc: &mut AutoCommit, track_id: &str) -> bool {
     let Some(map) = ensure_bool_map(doc, "liked") else {
         return false;
     };
-    let liked = !map_bool(doc, &map, track_id);
+    let liked = !read_bool(doc, &map, track_id).unwrap_or(false);
     let _ = doc.put(&map, track_id, liked);
     liked
 }
@@ -564,7 +541,7 @@ pub fn toggle_saved_album(doc: &mut AutoCommit, album_id: &str) -> bool {
     let Some(map) = ensure_bool_map(doc, "saved_albums") else {
         return false;
     };
-    let saved = !map_bool(doc, &map, album_id);
+    let saved = !read_bool(doc, &map, album_id).unwrap_or(false);
     let _ = doc.put(&map, album_id, saved);
     saved
 }
@@ -582,7 +559,7 @@ pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
     let Some(map) = ensure_bool_map(doc, "followed_artists") else {
         return false;
     };
-    let followed = !map_bool(doc, &map, artist_id);
+    let followed = !read_bool(doc, &map, artist_id).unwrap_or(false);
     let _ = doc.put(&map, artist_id, followed);
     followed
 }
@@ -654,10 +631,10 @@ pub fn load_library(doc: &AutoCommit) -> Library {
                     key.clone(),
                     Artist {
                         id: key,
-                        name: get_str(doc, &m, "name").unwrap_or_default(),
-                        genre: get_str(doc, &m, "genre").unwrap_or_default(),
-                        monthly_listeners: get_i64(doc, &m, "monthly_listeners").unwrap_or(0)
-                            as u64,
+                        name: read_str(doc, &m, "name").unwrap_or_default(),
+                        genre: read_str(doc, &m, "genre").unwrap_or_default(),
+                        monthly_listeners: read_i64_coerced(doc, &m, "monthly_listeners")
+                            .unwrap_or(0) as u64,
                     },
                 );
             }
@@ -671,9 +648,9 @@ pub fn load_library(doc: &AutoCommit) -> Library {
                     key.clone(),
                     Album {
                         id: key,
-                        title: get_str(doc, &m, "title").unwrap_or_default(),
-                        artist_id: get_str(doc, &m, "artist_id").unwrap_or_default(),
-                        year: get_i64(doc, &m, "year").unwrap_or(0) as u32,
+                        title: read_str(doc, &m, "title").unwrap_or_default(),
+                        artist_id: read_str(doc, &m, "artist_id").unwrap_or_default(),
+                        year: read_i64_coerced(doc, &m, "year").unwrap_or(0) as u32,
                     },
                 );
             }
@@ -687,13 +664,13 @@ pub fn load_library(doc: &AutoCommit) -> Library {
                     key.clone(),
                     Track {
                         id: key,
-                        title: get_str(doc, &m, "title").unwrap_or_default(),
-                        album_id: get_str(doc, &m, "album_id").unwrap_or_default(),
-                        artist_id: get_str(doc, &m, "artist_id").unwrap_or_default(),
-                        track_no: get_i64(doc, &m, "track_no").unwrap_or(0) as u32,
-                        duration_s: get_i64(doc, &m, "duration_s").unwrap_or(0) as u32,
-                        yt_id: get_str(doc, &m, "yt_id").unwrap_or_default(),
-                        plays: get_i64(doc, &m, "plays").unwrap_or(0) as u64,
+                        title: read_str(doc, &m, "title").unwrap_or_default(),
+                        album_id: read_str(doc, &m, "album_id").unwrap_or_default(),
+                        artist_id: read_str(doc, &m, "artist_id").unwrap_or_default(),
+                        track_no: read_i64_coerced(doc, &m, "track_no").unwrap_or(0) as u32,
+                        duration_s: read_i64_coerced(doc, &m, "duration_s").unwrap_or(0) as u32,
+                        yt_id: read_str(doc, &m, "yt_id").unwrap_or_default(),
+                        plays: read_i64_coerced(doc, &m, "plays").unwrap_or(0) as u64,
                     },
                 );
             }
@@ -704,7 +681,7 @@ pub fn load_library(doc: &AutoCommit) -> Library {
         let n = doc.length(&playlists);
         for i in 0..n {
             if let Ok(Some((Value::Object(ObjType::Map), pm))) = doc.get(&playlists, i) {
-                let id = get_str(doc, &pm, "id").unwrap_or_default();
+                let id = read_str(doc, &pm, "id").unwrap_or_default();
                 if id.is_empty() || playlist_is_tombstoned(doc, &id) {
                     continue;
                 }
@@ -713,11 +690,11 @@ pub fn load_library(doc: &AutoCommit) -> Library {
                 let track_ranks = entries.into_iter().collect();
                 lib.playlists.push(Playlist {
                     id,
-                    name: get_str(doc, &pm, "name").unwrap_or_default(),
-                    description: get_str(doc, &pm, "description").unwrap_or_default(),
+                    name: read_str(doc, &pm, "name").unwrap_or_default(),
+                    description: read_str(doc, &pm, "description").unwrap_or_default(),
                     track_ids: tracks,
                     track_ranks,
-                    cover: get_str(doc, &pm, "cover").unwrap_or_default(),
+                    cover: read_str(doc, &pm, "cover").unwrap_or_default(),
                 });
             }
         }

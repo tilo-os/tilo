@@ -18,6 +18,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use sha2::{Digest, Sha256};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 #[cfg(test)]
 use crate::model::NodeId;
@@ -119,38 +120,6 @@ impl EditorDoc {
         }
     }
 
-    fn string(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Str(value) => value.to_string(),
-                _ => String::new(),
-            },
-            _ => String::new(),
-        }
-    }
-
-    fn number(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
-        doc.get(obj, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(value) => value.to_i64(),
-                Value::Object(_) => None,
-            })
-            .unwrap_or_default()
-    }
-
-    fn flag(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-        doc.get(obj, key)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| match value {
-                Value::Scalar(value) => value.to_bool(),
-                Value::Object(_) => None,
-            })
-            .unwrap_or(false)
-    }
-
     fn derived_path(doc: &AutoCommit, parent: &str, name: &str) -> String {
         if parent.is_empty() {
             return name.to_string();
@@ -169,21 +138,24 @@ impl EditorDoc {
         let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&files, id) else {
             return None;
         };
-        let parent = Self::string(doc, &item, "parent");
-        let name = Self::string(doc, &item, "name");
+        let parent = read_str(doc, &item, "parent").unwrap_or_default();
+        let name = read_str(doc, &item, "name").unwrap_or_default();
         Some(CollaborativeFile {
             id: id.to_string(),
-            kind: Self::string(doc, &item, "kind"),
+            kind: read_str(doc, &item, "kind").unwrap_or_default(),
             path: Self::derived_path(doc, &parent, &name),
             name,
             parent: (!parent.is_empty()).then_some(parent),
-            language: Self::string(doc, &item, "language"),
-            order: Self::number(doc, &item, "order"),
-            deleted: Self::flag(doc, &item, "deleted"),
-            name_revision: Self::number(doc, &item, "name_revision"),
-            structure_revision: Self::number(doc, &item, "structure_revision"),
-            language_revision: Self::number(doc, &item, "language_revision"),
-            deletion_revision: Self::number(doc, &item, "deletion_revision"),
+            language: read_str(doc, &item, "language").unwrap_or_default(),
+            order: read_i64_coerced(doc, &item, "order").unwrap_or_default(),
+            deleted: read_bool(doc, &item, "deleted").unwrap_or(false),
+            name_revision: read_i64_coerced(doc, &item, "name_revision").unwrap_or_default(),
+            structure_revision: read_i64_coerced(doc, &item, "structure_revision")
+                .unwrap_or_default(),
+            language_revision: read_i64_coerced(doc, &item, "language_revision")
+                .unwrap_or_default(),
+            deletion_revision: read_i64_coerced(doc, &item, "deletion_revision")
+                .unwrap_or_default(),
         })
     }
 
@@ -258,7 +230,8 @@ impl EditorDoc {
         // any field instead.
         let next_revision = match patch.revision_field {
             Some(field) => Some(
-                Self::number(doc, &item, field)
+                read_i64_coerced(doc, &item, field)
+                    .unwrap_or_default()
                     .checked_add(1)
                     .filter(|next| *next >= 0)?,
             ),

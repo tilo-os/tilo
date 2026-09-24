@@ -139,8 +139,10 @@ pub fn ensure_dir(dir: &Path) -> Result<()> {
 /// state" and "which packages have any" are different questions — the
 /// second is what lets a surface enumerate everything stored.
 pub fn data_home() -> PathBuf {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(xdg);
+    // An empty or relative XDG_DATA_HOME is invalid by the spec, not a path
+    // to resolve against the working directory.
+    if let Some(xdg) = xdg_paths::env_dir("XDG_DATA_HOME") {
+        return xdg;
     }
     #[cfg(windows)]
     {
@@ -151,8 +153,8 @@ pub fn data_home() -> PathBuf {
             return Path::new(&profile).join("AppData/Local");
         }
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join(".local/share");
+    if let Some(home) = xdg_paths::home() {
+        return home.join(".local/share");
     }
     // Temporary storage is not persistent and is used when the platform's
     // home/data environment is unavailable.

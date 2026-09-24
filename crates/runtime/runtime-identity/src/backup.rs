@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
+use getrandom::{SysRng, rand_core::TryRng as _};
 use zeroize::{Zeroize, Zeroizing};
 
 use super::{IdentityLock, MAX_RECORD_BYTES, identity_from_record};
@@ -348,8 +349,8 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
     validate_passphrase(passphrase)?;
     let mut salt = [0_u8; SALT_LEN];
     let mut nonce = [0_u8; NONCE_LEN];
-    getrandom::getrandom(&mut salt).map_err(random_error)?;
-    getrandom::getrandom(&mut nonce).map_err(random_error)?;
+    SysRng.try_fill_bytes(&mut salt).map_err(random_error)?;
+    SysRng.try_fill_bytes(&mut nonce).map_err(random_error)?;
 
     let mut key = derive_key(
         passphrase,
@@ -369,7 +370,7 @@ fn seal_record(record: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>
         .map_err(|_| io::Error::other("could not initialize portable backup encryption"))?;
     let ciphertext = cipher
         .encrypt(
-            XNonce::from_slice(&nonce),
+            <&XNonce>::from(&nonce),
             Payload {
                 msg: record,
                 aad: &header,
@@ -407,7 +408,7 @@ fn open_record(blob: &[u8], passphrase: &[u8]) -> io::Result<Zeroizing<Vec<u8>>>
     let cipher = XChaCha20Poly1305::new_from_slice(key.as_slice()).map_err(|_| invalid_backup())?;
     let plaintext = cipher
         .decrypt(
-            XNonce::from_slice(&header.nonce),
+            <&XNonce>::from(&header.nonce),
             Payload {
                 msg: ciphertext,
                 aad: authenticated_header,
@@ -587,7 +588,7 @@ fn remove_exact_new_backup(destination: &Path, expected: &[u8]) -> io::Result<()
 fn new_temp_path(parent: &Path) -> io::Result<PathBuf> {
     for _ in 0..16 {
         let mut nonce = [0_u8; 16];
-        getrandom::getrandom(&mut nonce).map_err(random_error)?;
+        SysRng.try_fill_bytes(&mut nonce).map_err(random_error)?;
         let candidate = parent.join(format!(".tilo-identity-backup-{}.tmp", hex::encode(nonce)));
         if !candidate.exists() {
             return Ok(candidate);
@@ -753,6 +754,47 @@ mod tests {
         let provider = super::super::BrokerFileProvider::new(dir);
         super::super::import_identity_with_provider(dir, id, &bytes, &provider).expect("import");
         dir.join(format!("{id}.json"))
+    }
+
+    /// A v1 portable backup written before a crypto-stack upgrade. Backups
+    /// outlive builds, so Argon2id and XChaCha20-Poly1305 must keep opening it.
+    const KAT_BACKUP_V1: &str = "544c4f49424b000101004c00000200000001000000778b97c29ae8858d705c7e\
+        d1f0c67ac52e53e66db0040e72285076d6c2bb869433c84f1633e562604c9859\
+        e9ae53ccf2cdf1c4082d44c551dff6f5d09cafc811d936148ffe418157ab2890\
+        dd8c108e08bd0154e12c15bfc96ff9b5af170b989c5997effe646104909bb425\
+        856f269ecd36fa219cb89f86bfb30c8929959bdb618186a9e90ce59765c7a9bc\
+        ead39de0816fdb0bee39e639f9a74afb82aacc5641d5d759e635306d54d40e92\
+        9188b66802bcea15a6a4beb8aadfe41de45821f188c281ac436d9d37063879f4\
+        386caccf1dd5bcd2267e1e424d958a64e53267ca4811b3f850167f0b10de7fb7\
+        54c557692f4f1739cecf9cd72d19b2d6a23f51aef2ebdc66a53206ffa4d7b277\
+        8c1ea996d2bfb196597185f094a25aa5fb0c7a695aba8dc8268fff1cdabe9721\
+        cae74046999298ce4682b949b41a57b7ffe6d31da0991578b7ca375a59a0b816\
+        e5996780a19a1136385e2e92dfc1dcd3871ae309b2022b19e8666aee8f35bcd4\
+        9b6d03c1657a247bafaad71923a7614f561ee5b83ca8d3b832d3d57d290a85fb\
+        3ce6612f85db52d7c7cae40edf625111359e932942d84c81961b53b09d92de4c\
+        92b56906537ac00fad9a7e033a817a277955b882d5e38925f1a5ca9c81de8bca\
+        aed24e9b967e735952eccf446b86a804859ceca6e18887e2c154199b319617f8\
+        66c063f345fb17a9fb6775d6";
+
+    #[test]
+    fn v1_backup_from_an_earlier_build_still_opens() {
+        let passphrase = b"correct horse battery staple";
+        let key = derive_key(
+            passphrase,
+            &[1; SALT_LEN],
+            ARGON_MEMORY_KIB,
+            ARGON_ITERATIONS,
+            ARGON_LANES,
+        )
+        .unwrap();
+        assert_eq!(
+            hex::encode(*key),
+            "eb641d1b946edf14c62d7dca0578e4dc9236cb4aaf2bfe103e9751bc8ac66242"
+        );
+        let blob = hex::decode(KAT_BACKUP_V1).unwrap();
+        let record = open_record(&blob, passphrase).unwrap();
+        assert_eq!(record.as_slice(), record_bytes("Ada", 71).as_slice());
+        assert!(open_record(&blob, b"wrong horse battery staple").is_err());
     }
 
     #[test]

@@ -19,8 +19,9 @@
 )]
 
 use std::collections::HashMap;
+use ui::doc::read_bool;
 
-use automerge::{AutoCommit, ReadDoc, Value};
+use automerge::{AutoCommit, ReadDoc};
 use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
@@ -185,16 +186,6 @@ fn navigate(
     lay_out(app)
 }
 
-fn read_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
-    match doc.get(&automerge::ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// The narrow content screen's back-arrow button, clicked through the
 /// production event path, navigates back to the standalone list screen (the
 /// only way back — there is no overlay or floating sidebar).
@@ -244,7 +235,14 @@ fn network_wifi_toggle_drives_state() {
     let heads = doc.get_heads();
     app.sync(&mut doc, &root);
     assert_eq!(doc.get_heads(), heads);
-    assert!(read_bool(&doc, settings::panes::network::WIFI_ENABLED_KEY).is_none());
+    assert!(
+        read_bool(
+            &doc,
+            &automerge::ROOT,
+            settings::panes::network::WIFI_ENABLED_KEY
+        )
+        .is_none()
+    );
 }
 
 /// Every category is reachable by a real click and renders a non-empty

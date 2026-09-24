@@ -415,7 +415,7 @@ fn narrow_frame_resolves_single_pane_push() {
     assert!(app.narrow, "a narrow viewport resolves to single-pane push");
     assert_eq!(
         app.push.pane(),
-        Pane::List,
+        PushPane::Master,
         "a fresh narrow frame opens to the list"
     );
 }
@@ -492,7 +492,7 @@ fn narrow_selection_pushes_detail_then_back_returns_to_list() {
     // Snap the push to the detail pane (as a row selection would) and
     // confirm the pushed-detail frame renders without panicking.
     app.shots_show_detail();
-    assert_eq!(app.push.pane(), Pane::Detail);
+    assert_eq!(app.push.pane(), PushPane::Detail);
     drive_frame(&mut app, 480, 860);
     // The Back affordance must be laid out (hittable) in the pushed pane.
     assert!(
@@ -988,13 +988,13 @@ impl Harness {
 fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
     let mut h = Harness::new(460, 880);
     assert!(h.app.narrow);
-    assert_eq!(h.app.push.pane(), Pane::List);
+    assert_eq!(h.app.push.pane(), PushPane::Master);
     // Press a list row → the detail pane is pushed in.
     let row = h.row_center(1);
     assert!(h.press_left(row));
     assert_eq!(
         h.app.push.pane(),
-        Pane::Detail,
+        PushPane::Detail,
         "selecting pushes the detail in"
     );
     h.relayout();
@@ -1007,7 +1007,7 @@ fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
     assert!(h.press_left(back));
     assert_eq!(
         h.app.push.pane(),
-        Pane::List,
+        PushPane::Master,
         "Back returns to the full-width list"
     );
 }
@@ -1267,22 +1267,16 @@ fn website_renders_via_the_link_widget() {
 #[test]
 fn clicking_the_website_opens_it_through_the_link_widget() {
     // Drive the whole click path (press → hit-test → Link::activate) and
-    // confirm the contact's URL is what gets opened. The Link's `on_open`
-    // sink records the URL instead of spawning the OS browser (its
-    // documented test hook), so this exercises the production click path
-    // hermetically — no xdg-open side effect.
+    // confirm the contact's URL is what gets opened. A recording host
+    // captures the URL instead of spawning the OS browser, so this exercises
+    // the production click path hermetically — no xdg-open side effect.
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
     let mut h = Harness::new(1280, 800);
     let id = h.app.selected.unwrap();
     let url = h.app.store.get(id).unwrap().website.clone();
     assert!(!url.is_empty(), "the selected seed has a website");
 
-    let recorded = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
-    let sink = recorded.clone();
-    // Same URL as the contact, so the detail draw preserves this instance
-    // (it only rebuilds the link when the URL changes) and lays it out.
-    h.app.website_link = Some(Link::new(&url).with_font_size(14.0).on_open(move |u| {
-        *sink.borrow_mut() = Some(u.to_string());
-    }));
     h.relayout();
     let rect = h.app.website_link.as_ref().unwrap().get_rect();
     assert!(
@@ -1295,8 +1289,8 @@ fn clicking_the_website_opens_it_through_the_link_widget() {
         "clicking the website link is handled"
     );
     assert_eq!(
-        recorded.borrow().as_deref(),
-        Some(url.as_str()),
+        recorder.opened_uris(),
+        [url],
         "the click opened the contact's website via the Link widget",
     );
     assert_eq!(
@@ -1372,13 +1366,13 @@ fn keyboard_context_menu_keys_open_selected_contacts_canonical_actions() {
 fn enter_opens_the_selected_contact_in_narrow_push_navigation() {
     let mut h = Harness::new(420, 800);
     assert!(h.app.narrow, "phone width uses push navigation");
-    assert_eq!(h.app.push.pane(), Pane::List);
+    assert_eq!(h.app.push.pane(), PushPane::Master);
 
     assert!(
         h.press_named(NamedKey::Enter),
         "Enter opens the selected contact"
     );
-    assert_eq!(h.app.push.pane(), Pane::Detail);
+    assert_eq!(h.app.push.pane(), PushPane::Detail);
 }
 
 /// The context-menu Favorite item flips the contact's flag, persists it to
@@ -2448,6 +2442,11 @@ fn export_selection_parks_then_save_portal_path_writes_the_vcf() {
 
     // Export 3.0 → closes the dialog and parks the selection for the Save
     // dialog. It must NOT write anything before the user chooses a path.
+    // A recording host stands in for the desktop and will answer the Save
+    // dialog with `vcf`.
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick(ExportOutcome::Opened(vcf.clone()));
+    let _host = ui::host::enter(&services);
     let g = h
         .app
         .export_dialog
@@ -2468,11 +2467,12 @@ fn export_selection_parks_then_save_portal_path_writes_the_vcf() {
         "nothing is written until a destination is chosen"
     );
 
-    // Deliver the destination the Save portal would return, then drain it
-    // through one real frame's sync — which writes the file.
-    h.app.export_rx = Some(ui::portal::inject_for_test(ExportOutcome::Opened(
-        vcf.clone(),
-    )));
+    let picks = recorder.pick_requests();
+    assert_eq!(picks.len(), 1, "exactly one Save dialog was requested");
+    assert_eq!(picks[0].title(), "Export contacts");
+
+    // Drain the destination the Save dialog returned through one real
+    // frame's sync — which writes the file.
     h.app.sync(&mut h.doc, &ROOT);
     assert!(
         h.app.pending_export.is_none(),
@@ -2787,6 +2787,18 @@ fn scratch_book() -> (PathBuf, PathBuf) {
     ));
     let path = dir.join("addressbook.automerge");
     (dir, path)
+}
+
+/// Run the live Import action under a recording host whose multi-select
+/// chooser answers `outcome`, and check the app asked for that chooser.
+fn import_with(app: &mut ContactsApp, outcome: ImportOutcome) {
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick_multiple(outcome);
+    ui::host::scoped(&services, || app.request_import());
+    let picks = recorder.pick_requests();
+    assert_eq!(picks.len(), 1, "one file chooser was requested");
+    assert_eq!(picks[0].title(), "Import contacts");
+    assert!(picks[0].is_multiple(), "Import picks several files at once");
 }
 
 #[test]
@@ -3182,7 +3194,8 @@ fn import_drain_merges_selected_files_through_sync() {
     // The live plumbing end to end: an ImportOutcome::Selected on the
     // channel is drained by `sync` (the per-frame drain) and merged into
     // the book — exactly what the portal worker feeds after the user picks
-    // files. Only the picker is bypassed; the drain + parse + merge is real.
+    // files. Only the host dialog is stood in for by a recording host; the
+    // request, drain, parse and merge are real.
     let (dir, path) = scratch_book();
     std::fs::create_dir_all(&dir).unwrap();
     let vcf = dir.join("incoming.vcf");
@@ -3198,11 +3211,9 @@ fn import_drain_merges_selected_files_through_sync() {
     app.sync(&mut doc, &ROOT);
     assert!(app.store.is_empty());
 
-    // Install the outcome the portal worker would deliver, then run one
-    // real frame's sync — which drains it.
-    app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
-        vec![vcf],
-    )));
+    // Run the live Import action with the host's chooser picking `vcf`,
+    // then run one real frame's sync — which drains it.
+    import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
     assert!(
         app.portal_in_flight(),
         "a request is in flight until drained"
@@ -3434,9 +3445,7 @@ fn exhausted_parser_generation_refuses_a_new_import_and_settles_the_job() {
     let invocation = tilo_actions::InvocationId::new();
     app.resource_invocation = Some(invocation);
     app.import_generation = u64::MAX;
-    app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
-        vec![vcf],
-    )));
+    import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
 
     app.sync(&mut doc, &ROOT);
     assert!(
@@ -3518,7 +3527,7 @@ fn import_of_nothing_is_a_clean_noop() {
     // Empty selection.
     assert!(!app.import_paths(&mut doc, &[]).completed());
     // A cancelled picker drained through the real path.
-    app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Cancelled));
+    import_with(&mut app, ImportOutcome::Cancelled);
     app.sync(&mut doc, &ROOT);
 
     assert!(app.store.is_empty(), "import of nothing adds nothing");

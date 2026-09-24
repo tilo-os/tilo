@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -29,10 +30,6 @@ use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{
@@ -51,9 +48,9 @@ use crate::charts::{self, Series, ts, with_alpha};
 use crate::layout;
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo, Ring, fmt_rate, fmt_uptime};
 use crate::prefs::Prefs;
-use crate::responsive::{ProcPane, ProcPush};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
+use ui::widget::{PushNav, PushPane};
 
 /// A row action chosen from the right-click context menu. The menu's action
 /// callbacks are `Fn()` with no access to `&mut self`, so they record the
@@ -520,40 +517,16 @@ impl MonitorProcessSearchProvider {
     }
 }
 
-impl SearchProvider for MonitorProcessSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for MonitorProcessSearchProvider {
+    fn provider_name(&self) -> &'static str {
         "Processes"
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         (address.action == "inspect")
             .then(|| {
                 self.snapshot
@@ -806,7 +779,7 @@ pub struct MonitorApp {
 
     // responsive layout
     /// The Processes master-detail push flow used only when narrow.
-    proc_push: ProcPush,
+    proc_push: PushNav,
     /// One shared delayed tooltip controller for the icon-only narrow header
     /// controls. Wide layouts keep their text labels visible instead.
     tooltips: TooltipHost,
@@ -933,7 +906,7 @@ impl MonitorApp {
             interval_hold_opened: false,
             interval_popover_seed: false,
             proc_cpu_hist: HashMap::new(),
-            proc_push: ProcPush::default(),
+            proc_push: PushNav::default(),
             tooltips: TooltipHost::new(),
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -1014,7 +987,7 @@ impl MonitorApp {
         }) {
             self.selected_pid = None;
             if self.is_narrow() {
-                self.proc_push.show_table();
+                self.proc_push.show_master();
             }
         }
     }
@@ -1112,7 +1085,7 @@ impl MonitorApp {
         if !self.visible_rows().iter().any(|row| row.pid == pid) {
             self.selected_pid = None;
             if self.is_narrow() {
-                self.proc_push.show_table();
+                self.proc_push.show_master();
             }
         }
     }
@@ -1670,7 +1643,7 @@ impl MonitorApp {
     ///   core and the whole view becoming vertically scrollable.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
-            "detail" => self.proc_push.snap(ProcPane::Detail),
+            "detail" => self.proc_push.snap(PushPane::Detail),
             // Open the refresh-interval option popover (anchored under the pill,
             // which isn't positioned until `draw_header` runs, so defer it).
             "interval-popover" => self.interval_popover_seed = true,
@@ -2546,7 +2519,7 @@ impl MonitorApp {
     /// a **full-width** process table — the table is the content. Wide: the
     /// selected process's detail strip stacks below the table. Narrow:
     /// single-pane push — the strip+toolbar+table OR the detail, sliding
-    /// horizontally as one swaps for the other (driven by [`ProcPush`]).
+    /// horizontally as one swaps for the other (driven by [`PushNav`]).
     /// Selecting a row pushes the detail in with a Back affordance; Back (or
     /// Esc) slides the table back.
     fn draw_processes(
@@ -4740,7 +4713,7 @@ impl MonitorApp {
     fn click_nav_chrome(&mut self, p: Point, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
-            self.proc_push.show_table();
+            self.proc_push.show_master();
             return true;
         }
 
@@ -5011,8 +4984,8 @@ impl MonitorApp {
         match key {
             // Esc pops a pushed detail pane back to the table (narrow).
             Key::Named(NamedKey::Escape) => {
-                if self.is_narrow() && self.proc_push.pane() == ProcPane::Detail {
-                    self.proc_push.show_table();
+                if self.is_narrow() && self.proc_push.pane() == PushPane::Detail {
+                    self.proc_push.show_master();
                     *handled = true;
                 }
             }
@@ -5698,7 +5671,7 @@ impl Widget for MonitorApp {
             "monitor.search" => return self.search_input.perform_action(action, state, path),
             "monitor.tab.processes" if activated => self.tab = Tab::Processes,
             "monitor.tab.resources" if activated => self.tab = Tab::Resources,
-            "monitor.detail-back" if activated => self.proc_push.show_table(),
+            "monitor.detail-back" if activated => self.proc_push.show_master(),
             "monitor.interval" if matches!(action, Action::Activate | Action::Expand) => {
                 self.open_interval_popover();
             }
@@ -7699,7 +7672,7 @@ mod tests {
     #[test]
     fn detail_kill_button_sits_in_reserved_action_bar() {
         let mut a = app();
-        a.proc_push.snap(ProcPane::Detail);
+        a.proc_push.snap(PushPane::Detail);
         draw_at(&mut a, 480.0, 820.0);
         let kill = a.hit.kill_btn;
         let stop = a.hit.stop_btn;
@@ -7945,7 +7918,7 @@ mod tests {
     }
 
     /// On a narrow window, selecting a row through the real click path pushes
-    /// the detail pane (the app-level wiring of `ProcPush`, not the unit).
+    /// the detail pane (the app-level wiring of `PushNav`, not the unit).
     #[test]
     fn narrow_selecting_row_pushes_detail_pane() {
         let mut a = app();
@@ -7961,7 +7934,7 @@ mod tests {
         assert_eq!(a.selected_pid, Some(pid));
         assert_eq!(
             a.proc_push.pane(),
-            ProcPane::Detail,
+            PushPane::Detail,
             "selecting a row pushes the detail pane"
         );
     }
@@ -7973,7 +7946,7 @@ mod tests {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 520.0, 900.0);
         assert!(a.is_narrow());
-        a.proc_push.snap(ProcPane::Detail);
+        a.proc_push.snap(PushPane::Detail);
         a.hit.detail_back = Rect::new(0.0, 0.0, 120.0, 32.0);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -7982,11 +7955,11 @@ mod tests {
         assert!(h);
         assert_eq!(
             a.proc_push.pane(),
-            ProcPane::Table,
+            PushPane::Master,
             "Back chip returns to the table"
         );
 
-        a.proc_push.snap(ProcPane::Detail);
+        a.proc_push.snap(PushPane::Detail);
         let mut he = false;
         a.on_key(
             &Key::Named(NamedKey::Escape),
@@ -7999,7 +7972,7 @@ mod tests {
         assert!(he);
         assert_eq!(
             a.proc_push.pane(),
-            ProcPane::Table,
+            PushPane::Master,
             "Esc pops the pushed detail"
         );
     }
@@ -8074,7 +8047,7 @@ mod tests {
         assert_eq!(a.selected_pid, Some(pid));
         assert_eq!(
             a.proc_push.pane(),
-            ProcPane::Detail,
+            PushPane::Detail,
             "Show details pushes the detail pane"
         );
     }

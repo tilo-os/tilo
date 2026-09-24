@@ -9,6 +9,7 @@ description = "Self-contained English spelling engine for Tilo: tokenize, check,
 # No external dependencies: tokenization, dictionary loading, and suggestions
 # are implemented in-crate.
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 
 [dev-dependencies]
 

@@ -115,13 +115,7 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     };
     let path = std::path::Path::new(&dir).join(format!("{name}.png"));
     std::fs::create_dir_all(&dir).ok();
-    let file = std::fs::File::create(&path).expect("create screenshot png");
-    let mut bw = std::io::BufWriter::new(file);
-    let mut enc = png::Encoder::new(&mut bw, w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().expect("png header");
-    writer.write_image_data(rgba).expect("png write");
+    tilo_ui::png::write_rgba8(&path, w, h, rgba).expect("write screenshot png");
     eprintln!("wrote {} to {}", name, path.display());
 }
 

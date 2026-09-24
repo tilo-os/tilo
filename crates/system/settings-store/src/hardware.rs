@@ -273,10 +273,7 @@ impl DisplayTransaction {
 /// accepted: falling back to `/tmp` would let another user forge display
 /// capabilities shown by Settings.
 pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|path| path.join("tilo/display-state.json"))
+    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
 pub fn unix_ms() -> u64 {

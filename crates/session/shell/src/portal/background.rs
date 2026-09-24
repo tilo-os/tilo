@@ -7,9 +7,6 @@
 //! unsafe autostart mechanism.
 
 use std::collections::{BTreeSet, HashMap};
-use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -153,10 +150,7 @@ impl ShellBackgroundService {
 
     pub fn at_path(dialogs: PortalDialogQueue, path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let state = atomic_file::json::load_or_default(&path);
         Self {
             dialogs,
             state: Arc::new(Mutex::new(state)),
@@ -210,51 +204,10 @@ impl ShellBackgroundService {
     }
 
     fn commit(&self, state: &AutostartFile) -> PortalResult<()> {
-        let Some(parent) = self.path.parent() else {
-            return PortalResult::Failed("background state path has no parent".into());
-        };
-        if let Err(error) = fs::create_dir_all(parent) {
-            return PortalResult::Failed(format!(
-                "cannot create background state directory: {error}"
-            ));
+        match atomic_file::json::write_private(&self.path, state) {
+            Ok(()) => PortalResult::Success(()),
+            Err(error) => PortalResult::Failed(format!("cannot commit background state: {error}")),
         }
-        if let Err(error) = fs::set_permissions(parent, fs::Permissions::from_mode(0o700)) {
-            return PortalResult::Failed(format!(
-                "cannot protect background state directory: {error}"
-            ));
-        }
-        let encoded = match serde_json::to_vec(state) {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                return PortalResult::Failed(format!("cannot encode background state: {error}"));
-            }
-        };
-        let temporary = self.path.with_extension("tmp");
-        let mut file = match fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)
-        {
-            Ok(file) => file,
-            Err(error) => {
-                return PortalResult::Failed(format!("cannot create background state: {error}"));
-            }
-        };
-        if let Err(error) = file.set_permissions(fs::Permissions::from_mode(0o600)) {
-            return PortalResult::Failed(format!("cannot protect background state: {error}"));
-        }
-        if let Err(error) = file.write_all(&encoded).and_then(|()| file.sync_all()) {
-            return PortalResult::Failed(format!("cannot write background state: {error}"));
-        }
-        if let Err(error) = fs::rename(&temporary, self.path.as_ref()) {
-            return PortalResult::Failed(format!("cannot commit background state: {error}"));
-        }
-        if let Err(error) = fs::File::open(parent).and_then(|directory| directory.sync_all()) {
-            return PortalResult::Failed(format!("cannot sync background state: {error}"));
-        }
-        PortalResult::Success(())
     }
 }
 
@@ -309,10 +262,7 @@ impl BackgroundService for ShellBackgroundService {
             PortalResult::Cancelled => PortalResult::Cancelled,
             PortalResult::Unavailable(error) => PortalResult::Unavailable(error),
             PortalResult::Failed(error) => {
-                *state = fs::read(self.path.as_ref())
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                    .unwrap_or_default();
+                *state = atomic_file::json::load_or_default(&self.path);
                 PortalResult::Failed(error)
             }
         }
@@ -616,7 +566,7 @@ impl BackgroundBackend {
 
     #[zbus(signal)]
     async fn running_applications_changed(
-        ctxt: &zbus::object_server::SignalContext<'_>,
+        ctxt: &zbus::object_server::SignalEmitter<'_>,
     ) -> zbus::Result<()>;
 }
 
@@ -633,7 +583,7 @@ pub fn spawn_running_monitor(connection: zbus::Connection, backend: BackgroundBa
                     if !backend.sync_running_apps() {
                         continue;
                     }
-                    let Ok(context) = zbus::object_server::SignalContext::new(
+                    let Ok(context) = zbus::object_server::SignalEmitter::new(
                         &task_connection,
                         super::OBJECT_PATH,
                     ) else {
@@ -694,6 +644,8 @@ fn default_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn state_is_bounded_and_values_are_validated() {

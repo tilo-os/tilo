@@ -29,9 +29,9 @@ mod provider;
 mod registry;
 
 pub use provider::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
-    MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, SearchCatalog, SearchCatalogError,
-    SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchResult, SearchTextIndex,
-    SearchTextPage, fuzzy_score, normalize_search_text,
+    CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_INDEX_LIMIT,
+    DEFAULT_SEARCH_RESULT_LIMIT, MAX_SEARCH_QUERY_SCALARS, OpenResourceSearch, SearchCatalog,
+    SearchCatalogError, SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchResult,
+    SearchTextIndex, SearchTextPage, fuzzy_score, normalize_search_text,
 };
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};

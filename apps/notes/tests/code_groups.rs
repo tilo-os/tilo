@@ -395,8 +395,8 @@ fn closing_a_fence_in_the_middle_keeps_both_copy_buttons_addressable() {
         }
     }
     let clipboard = std::sync::Arc::new(Clipboard::default());
-    let previous_clipboard = ui::clipboard::clipboard_backend();
-    ui::clipboard::install_clipboard_backend(clipboard.clone());
+    let services = ui::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = ui::host::enter(&services);
     for (target, expected) in targets
         .iter()
         .zip(["first()\nsecond()", "third()\nfourth()"])
@@ -481,7 +481,4 @@ fn closing_a_fence_in_the_middle_keeps_both_copy_buttons_addressable() {
         .join("../../target/notes-review/split-code-copy-light-large.png");
     live.render_window_png(&output);
     close_driver(&mut live);
-    if let Some(previous) = previous_clipboard {
-        ui::clipboard::install_clipboard_backend(previous);
-    }
 }

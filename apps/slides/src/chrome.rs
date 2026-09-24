@@ -3,25 +3,12 @@
 //! caller (the theme), nothing is hard-coded.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-
-pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
-}
-
-pub fn stroke_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color, w: f64) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(w), t, color, None, &shape);
-}
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
 
 /// A crisp 1 px horizontal rule covering the pixel row that starts at `y`.
 /// A 1 px *stroke* centred on an integer coordinate straddles two rows and
@@ -53,7 +40,7 @@ pub fn hairline_v(scene: &mut Scene, t: Affine, x: f64, y0: f64, y1: f64, color:
 /// literal black shadow.
 pub fn panel(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64) {
     ui::chrome::panel_shadow(scene, t, rect, radius, theme, 1.0);
-    fill_rrect(scene, t, rect, radius, ui::chrome::panel_ground(theme));
+    fill_round(scene, t, rect, radius, ui::chrome::panel_ground(theme));
     scene.stroke(
         &Stroke::new(1.0),
         t,

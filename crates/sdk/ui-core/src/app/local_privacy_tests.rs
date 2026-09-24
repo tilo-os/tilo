@@ -175,7 +175,7 @@ fn assert_local_app_behavior() {
     ));
     assert_eq!(operations.get(), 1, "local Effect must actually execute");
     let wake = wake_rx
-        .recv_timeout(std::time::Duration::from_secs(1))
+        .recv_timeout(crate::time::Duration::from_secs(1))
         .unwrap();
     app.needs_sync = false;
     assert!(

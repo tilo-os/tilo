@@ -319,29 +319,29 @@ mod tests {
     }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path)
-    /// so callers waiting on socket existence see it, then installs a
-    /// SIGTERM trap and sleeps. Returns the path to the mock script
-    /// (marked executable).
+    /// so callers waiting on socket existence see it, then becomes a
+    /// `sleep` that the guard's SIGTERM ends. Removing the marker is left
+    /// to the guard, which is what production relies on. Returns the path
+    /// to the mock script (marked executable).
     fn write_mock_proxy(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let script = dir.join("mock-xdg-dbus-proxy");
         // Absolute paths for coreutils — bwrap-adjacent test envs sometimes
-        // have a minimal PATH lacking /usr/bin. `sleep infinity` blocks until
-        // SIGTERM interrupts it and the trap fires.
+        // have a minimal PATH lacking /usr/bin.
         std::fs::write(
             &script,
             r#"#!/bin/sh
 # args: SOURCE DEST [filter args...]
 : >"$2"
-trap 'rm -f "$2"; exit 0' TERM
+# exec, not a backgrounded child: the guard signals and reaps this pid,
+# and a child of a shell it killed would be orphaned, never reaped.
 if [ -x /usr/bin/sleep ]; then
-    /usr/bin/sleep infinity &
-elif [ -x /bin/sleep ]; then
-    /bin/sleep infinity &
-else
-    exit 1
+    exec /usr/bin/sleep infinity
 fi
-wait $!
+if [ -x /bin/sleep ]; then
+    exec /bin/sleep infinity
+fi
+exit 1
 "#,
         )
         .unwrap();

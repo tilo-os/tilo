@@ -36,7 +36,10 @@ import time
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELL = REPO / "target" / "debug" / "shell"
 SHIM = REPO / "scripts" / "tilo-mcp-server.py"
-SOCKET = "/tmp/tilo-mcp-live-proof.sock"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from _control import runtime_socket_path  # noqa: E402
+
+SOCKET = runtime_socket_path("mcp-live-proof.sock")
 PROTOCOL = "2025-06-18"
 
 failures: list[str] = []

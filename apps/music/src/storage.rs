@@ -100,7 +100,7 @@ fn object_matches_entry(path: &Path, entry: &MediaCacheEntry) -> bool {
         };
         hash.update(chunk);
     }
-    format!("{:x}", hash.finalize()) == entry.content_id
+    hex::encode(hash.finalize()) == entry.content_id
 }
 
 fn now_ms() -> u64 {
@@ -173,7 +173,7 @@ impl MediaCache {
             ));
         }
         std::fs::create_dir_all(root.join("objects"))?;
-        let content_id = format!("{:x}", Sha256::digest(bytes));
+        let content_id = hex::encode(Sha256::digest(bytes));
         let object = media_object_path(root, &content_id);
         if !object.exists() {
             atomic_file::write(&object, bytes)?;
@@ -228,7 +228,7 @@ impl MediaCache {
             ));
         }
         std::fs::create_dir_all(root.join("objects"))?;
-        let content_id = format!("{:x}", hash.finalize());
+        let content_id = hex::encode(hash.finalize());
         let object = media_object_path(root, &content_id);
         if object.exists() {
             let _ = std::fs::remove_file(partial);

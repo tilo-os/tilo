@@ -685,7 +685,7 @@ impl Presentation {
                 frame.images,
             );
             // A frame on the raised notes panel: its derived edge.
-            chrome::stroke_rrect(
+            chrome::stroke_round(
                 scene,
                 transform,
                 preview,
@@ -979,7 +979,7 @@ fn draw_presenter_current(
         area.x1,
         area.y1,
     ));
-    chrome::fill_rrect(
+    chrome::fill_round(
         scene,
         transform,
         (destination + Vec2::new(0.0, 6.0)).inflate(2.0, 2.0),
@@ -1001,7 +1001,7 @@ fn draw_presenter_current(
     }
     // The slide frame is the stage's derived edge (the presenter stage is
     // painted `Color::BLACK`, see `draw_presenter`).
-    chrome::stroke_rrect(
+    chrome::stroke_round(
         scene,
         transform,
         destination,
@@ -1054,7 +1054,7 @@ fn draw_presenter_next(
             8.0,
             frame.images,
         );
-        chrome::stroke_rrect(
+        chrome::stroke_round(
             scene,
             transform,
             destination,

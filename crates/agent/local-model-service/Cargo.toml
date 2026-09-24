@@ -15,6 +15,7 @@ name = "tilo-model-manager"
 path = "src/main.rs"
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 agent-provider-config = { path = "../provider-config" }
 system-extension = { path = "../../system/system-extension" }
 atomic-file = { path = "../../system/atomic-file" }
@@ -24,7 +25,8 @@ serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 clap.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true

@@ -1,0 +1,1013 @@
+//! Using another peer's actions: a transport-neutral vocabulary.
+//!
+//! A peer that hosts live apps (a desktop session, a headless app-serving
+//! host) can let an authenticated remote caller list the actions it
+//! publishes, invoke one, follow its progress, and cancel it. This module is
+//! the whole contract between the two sides:
+//!
+//! - [`RemoteActionMessage`] — requests and their answers, wrapped in a
+//!   versioned [`RemoteActionFrame`] that any transport carries as opaque
+//!   bytes.
+//! - [`ActionHost`] — what a peer implements to answer them, and [`serve`],
+//!   which maps one request frame onto a host.
+//! - [`InvocationLedger`] — the idempotency rule every host shares: an
+//!   invocation is keyed by its caller-chosen [`InvocationId`], so a retry
+//!   after a lost reply observes the original invocation instead of running
+//!   the action twice.
+//!
+//! Who is calling is never read from a payload. The transport that
+//! authenticated the connection constructs the [`Caller`] and hands it to the
+//! host beside the message; nothing in a frame can name or change it.
+//!
+//! Descriptors, addresses, arguments, outputs and lifecycle updates are the
+//! same types the local action surface already uses ([`ActionDescriptor`],
+//! [`ActionAddress`], [`InvocationUpdate`], [`ActionOutput`],
+//! [`ActionFailure`]), so a remote caller sees exactly what a local one does.
+
+use std::collections::{HashMap, VecDeque};
+
+use serde::{Deserialize, Serialize};
+
+use crate::context::ActionContext;
+use crate::door::{ActionAddress, ActionDescriptor};
+use crate::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
+use crate::params::ARGUMENTS_JSON_PREFIX;
+
+/// Version of the [`RemoteActionFrame`] schema this build speaks.
+///
+/// Additive changes (a new optional field) keep the version; a change an
+/// older peer would misread bumps it, and [`RemoteActionFrame::decode`]
+/// refuses a version it does not know instead of guessing.
+pub const REMOTE_ACTIONS_VERSION: u16 = 1;
+
+/// Upper bound on one encoded frame. Catalogues are the largest messages;
+/// a host that needs more pages them rather than raising this.
+pub const MAX_REMOTE_ACTION_FRAME_BYTES: usize = 1024 * 1024;
+
+/// Default number of invocations an [`InvocationLedger`] remembers.
+pub const DEFAULT_LEDGER_CAPACITY: usize = 1024;
+
+/// The authenticated principal behind a remote request.
+///
+/// Built only by the transport, from the certificate chain it verified for
+/// the connection: the user root the device chains to, and the device key
+/// itself. It is deliberately not `Deserialize` — a payload cannot assert
+/// who sent it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Caller {
+    user_public_key: [u8; 32],
+    device_public_key: [u8; 32],
+}
+
+impl Caller {
+    /// A caller whose device certificate the transport has verified to chain
+    /// to `user_public_key`.
+    #[must_use]
+    pub const fn authenticated(user_public_key: [u8; 32], device_public_key: [u8; 32]) -> Self {
+        Self {
+            user_public_key,
+            device_public_key,
+        }
+    }
+
+    /// The user root the calling device chains to. Authority is decided on
+    /// this: two devices of one person are the same principal.
+    #[must_use]
+    pub const fn user_public_key(&self) -> &[u8; 32] {
+        &self.user_public_key
+    }
+
+    /// The device that sent the request.
+    #[must_use]
+    pub const fn device_public_key(&self) -> &[u8; 32] {
+        &self.device_public_key
+    }
+}
+
+/// Which published action an invocation names on the host.
+///
+/// `provider` is an opaque token the host issued in its [`Catalogue`] (which
+/// live app published the action); `address` is the app's own stable
+/// resource/action pair. A caller copies both from a catalogue entry and
+/// never constructs a provider itself.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RemoteActionTarget {
+    pub provider: String,
+    pub address: ActionAddress,
+}
+
+/// One action a host offers to this caller.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CatalogueEntry {
+    /// Host-issued token naming the publishing app instance.
+    pub provider: String,
+    /// Stable id of the publishing app.
+    pub app_id: String,
+    pub descriptor: ActionDescriptor,
+}
+
+impl CatalogueEntry {
+    /// The target an invocation of this entry names.
+    #[must_use]
+    pub fn target(&self) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: self.provider.clone(),
+            address: self.descriptor.address.clone(),
+        }
+    }
+}
+
+/// The actions a host offers one caller at one revision. An action the
+/// caller may not invoke is absent, not flagged.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Catalogue {
+    /// Opaque host revision; changes whenever the offered set may have.
+    pub revision: String,
+    pub entries: Vec<CatalogueEntry>,
+}
+
+/// What an invocation carries for the action's declared input.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum InvokeArgument {
+    /// The action takes nothing.
+    #[default]
+    None,
+    /// The single text input a prompted action collects.
+    Text(String),
+    /// The typed argument object checked against the action's parameters.
+    Json(serde_json::Map<String, serde_json::Value>),
+}
+
+impl InvokeArgument {
+    /// The single-slot form the local invocation path accepts: text as is,
+    /// a typed object behind [`ARGUMENTS_JSON_PREFIX`].
+    #[must_use]
+    pub fn to_slot(&self) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Text(text) => Some(text.clone()),
+            Self::Json(object) => Some(format!(
+                "{ARGUMENTS_JSON_PREFIX}{}",
+                serde_json::Value::Object(object.clone())
+            )),
+        }
+    }
+}
+
+/// A request to run one published action.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InvokeRequest {
+    /// Chosen by the caller and reused verbatim on retry; the host runs the
+    /// action at most once per id.
+    pub invocation: InvocationId,
+    pub target: RemoteActionTarget,
+    #[serde(default)]
+    pub argument: InvokeArgument,
+    /// Human provenance carried into history. It never grants authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ActionContext>,
+}
+
+/// Where an invocation stands, as reported to its caller.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ReceiptStatus {
+    /// Admitted and running; follow it with `Observe`.
+    Accepted,
+    /// Finished and produced `output`.
+    Completed { output: ActionOutput },
+    /// Ran and failed.
+    Failed { error: ActionFailure },
+    /// Never admitted: nothing ran.
+    Rejected { error: ActionHostError },
+    /// Stopped at the caller's request.
+    Cancelled { message: Option<String> },
+}
+
+impl ReceiptStatus {
+    /// Whether the invocation can no longer change.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        !matches!(self, Self::Accepted)
+    }
+}
+
+/// The host's answer to an [`InvokeRequest`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InvocationReceipt {
+    pub invocation: InvocationId,
+    pub status: ReceiptStatus,
+}
+
+/// The latest lifecycle update of one invocation, carrying the caller's
+/// [`InvocationId`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InvocationState {
+    pub update: InvocationUpdate,
+}
+
+impl InvocationState {
+    /// Wrap a host-side update, rebinding it to the caller's invocation id.
+    #[must_use]
+    pub fn new(invocation: InvocationId, update: InvocationUpdate) -> Self {
+        Self {
+            update: update.with_invocation(invocation),
+        }
+    }
+
+    #[must_use]
+    pub fn invocation(&self) -> InvocationId {
+        self.update.invocation()
+    }
+
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        self.update.is_terminal()
+    }
+
+    /// The receipt this state amounts to: accepted while running, the
+    /// outcome once terminal.
+    #[must_use]
+    pub fn receipt(&self) -> InvocationReceipt {
+        let status = match &self.update {
+            InvocationUpdate::Accepted { .. }
+            | InvocationUpdate::Progress { .. }
+            | InvocationUpdate::Item { .. } => ReceiptStatus::Accepted,
+            InvocationUpdate::Succeeded { output, .. } => ReceiptStatus::Completed {
+                output: output.clone(),
+            },
+            InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed {
+                error: error.clone(),
+            },
+            InvocationUpdate::Cancelled { message, .. } => ReceiptStatus::Cancelled {
+                message: message.clone(),
+            },
+        };
+        InvocationReceipt {
+            invocation: self.invocation(),
+            status,
+        }
+    }
+}
+
+/// Why a host would not do what was asked. Every variant means nothing ran.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum ActionHostError {
+    /// The host serves no actions right now (no live apps, service off).
+    #[error("remote actions are unavailable: {reason}")]
+    Unavailable { reason: String },
+    /// The target is not offered to this caller — unknown and forbidden are
+    /// deliberately the same answer.
+    #[error("no such action is offered")]
+    UnknownAction,
+    /// The caller's authority does not cover the action.
+    #[error("the caller may not invoke this action")]
+    NotPermitted,
+    /// The action requires a confirmation step this request did not carry.
+    #[error("the action requires confirmation")]
+    ConfirmationRequired,
+    /// The request is malformed for this action (arguments, input).
+    #[error("invalid request: {reason}")]
+    InvalidRequest { reason: String },
+    /// The invocation id is unknown to this caller.
+    #[error("no such invocation")]
+    UnknownInvocation,
+    /// The invocation id was already used for a different request.
+    #[error("the invocation id was already used for a different request")]
+    InvocationConflict,
+    /// The invocation cannot be cancelled (finished, or never cancellable).
+    #[error("the invocation cannot be cancelled: {reason}")]
+    NotCancellable { reason: String },
+    /// The host refused for a reason of its own.
+    #[error("refused: {reason}")]
+    Refused { reason: String },
+}
+
+impl ActionHostError {
+    /// Stable machine-readable code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Unavailable { .. } => "remote_actions_unavailable",
+            Self::UnknownAction => "unknown_action",
+            Self::NotPermitted => "not_permitted",
+            Self::ConfirmationRequired => "action_confirmation_required",
+            Self::InvalidRequest { .. } => "invalid_arguments",
+            Self::UnknownInvocation => "unknown_invocation",
+            Self::InvocationConflict => "invocation_conflict",
+            Self::NotCancellable { .. } => "not_cancellable",
+            Self::Refused { .. } => "refused",
+        }
+    }
+}
+
+/// A peer that runs actions on behalf of authenticated remote callers.
+///
+/// Implementations resolve authority from `caller` alone and must be
+/// idempotent per [`InvocationId`]: invoking an id again with the same
+/// request reports the original invocation, with a different request fails
+/// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
+/// implements that rule.
+pub trait ActionHost {
+    /// The actions offered to `caller`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionHostError::Unavailable`] when the host cannot serve
+    /// actions at all.
+    fn catalogue(&self, caller: &Caller) -> Result<Catalogue, ActionHostError>;
+
+    /// Admit and start one invocation, or report the one already admitted
+    /// under the same id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ActionHostError`] when the invocation was not admitted.
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Result<InvocationReceipt, ActionHostError>;
+
+    /// The latest state of an invocation `caller` started, or `None` for an
+    /// id this caller does not own.
+    fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState>;
+
+    /// Ask a running invocation to stop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionHostError::UnknownInvocation`] for an id this caller
+    /// does not own, or [`ActionHostError::NotCancellable`].
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError>;
+}
+
+/// Everything that crosses the wire for remote action use.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a message is built, encoded once and dropped; boxing would only add noise to every constructor and match"
+)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum RemoteActionMessage {
+    /// Ask for the actions offered to the caller.
+    CatalogueRequest { correlation: u64 },
+    /// Answer to a [`Self::CatalogueRequest`] with the same correlation.
+    CatalogueResponse {
+        correlation: u64,
+        result: Result<Catalogue, ActionHostError>,
+    },
+    /// Run one action.
+    Invoke(InvokeRequest),
+    /// Answer to [`Self::Invoke`]; a refusal is [`ReceiptStatus::Rejected`].
+    Receipt(InvocationReceipt),
+    /// Ask for an invocation's latest state.
+    Observe { invocation: InvocationId },
+    /// Answer to [`Self::Observe`]; `None` for an id the caller does not own.
+    /// A host may also push this unprompted as an invocation progresses.
+    Update {
+        invocation: InvocationId,
+        state: Option<InvocationState>,
+    },
+    /// Ask a running invocation to stop.
+    Cancel { invocation: InvocationId },
+    /// Answer to [`Self::Cancel`].
+    CancelResponse {
+        invocation: InvocationId,
+        result: Result<(), ActionHostError>,
+    },
+}
+
+impl RemoteActionMessage {
+    /// Whether a host answers this message (as opposed to a caller
+    /// receiving it).
+    #[must_use]
+    pub const fn is_request(&self) -> bool {
+        matches!(
+            self,
+            Self::CatalogueRequest { .. }
+                | Self::Invoke(_)
+                | Self::Observe { .. }
+                | Self::Cancel { .. }
+        )
+    }
+}
+
+/// A versioned [`RemoteActionMessage`], the unit a transport carries.
+///
+/// The encoding is self-describing JSON: action arguments and outputs are
+/// open JSON values, and a relay forwarding the bytes need not understand
+/// them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RemoteActionFrame {
+    pub version: u16,
+    pub message: RemoteActionMessage,
+}
+
+/// Why bytes are not a usable [`RemoteActionFrame`].
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RemoteFrameError {
+    #[error("remote action frame of {len} bytes exceeds the limit")]
+    TooLarge { len: usize },
+    #[error("remote action frame version {version} is not supported")]
+    UnsupportedVersion { version: u16 },
+    #[error("malformed remote action frame: {0}")]
+    Malformed(String),
+}
+
+impl RemoteActionFrame {
+    /// Wrap `message` at this build's [`REMOTE_ACTIONS_VERSION`].
+    #[must_use]
+    pub const fn new(message: RemoteActionMessage) -> Self {
+        Self {
+            version: REMOTE_ACTIONS_VERSION,
+            message,
+        }
+    }
+
+    /// Encode for a transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RemoteFrameError::TooLarge`] past
+    /// [`MAX_REMOTE_ACTION_FRAME_BYTES`], or `Malformed` if a value cannot
+    /// be encoded.
+    pub fn encode(&self) -> Result<Vec<u8>, RemoteFrameError> {
+        let bytes = serde_json::to_vec(self)
+            .map_err(|error| RemoteFrameError::Malformed(error.to_string()))?;
+        if bytes.len() > MAX_REMOTE_ACTION_FRAME_BYTES {
+            return Err(RemoteFrameError::TooLarge { len: bytes.len() });
+        }
+        Ok(bytes)
+    }
+
+    /// Decode bytes from a transport. The version is checked before the
+    /// message, so a frame from a newer peer is refused by version rather
+    /// than misread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RemoteFrameError`] for oversized, unknown-version or
+    /// malformed input.
+    pub fn decode(bytes: &[u8]) -> Result<Self, RemoteFrameError> {
+        #[derive(Deserialize)]
+        struct Version {
+            version: u16,
+        }
+        if bytes.len() > MAX_REMOTE_ACTION_FRAME_BYTES {
+            return Err(RemoteFrameError::TooLarge { len: bytes.len() });
+        }
+        let Version { version } = serde_json::from_slice(bytes)
+            .map_err(|error| RemoteFrameError::Malformed(error.to_string()))?;
+        if version != REMOTE_ACTIONS_VERSION {
+            return Err(RemoteFrameError::UnsupportedVersion { version });
+        }
+        serde_json::from_slice(bytes)
+            .map_err(|error| RemoteFrameError::Malformed(error.to_string()))
+    }
+}
+
+/// Answer one request from `caller` against `host`.
+///
+/// Returns `None` for a message that is not a request (a response arriving
+/// at a host is dropped, never answered). A refused invocation becomes a
+/// [`ReceiptStatus::Rejected`] receipt so the caller always learns the fate
+/// of the id it chose.
+pub fn serve<H: ActionHost + ?Sized>(
+    host: &H,
+    caller: &Caller,
+    message: RemoteActionMessage,
+) -> Option<RemoteActionMessage> {
+    Some(match message {
+        RemoteActionMessage::CatalogueRequest { correlation } => {
+            RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result: host.catalogue(caller),
+            }
+        }
+        RemoteActionMessage::Invoke(request) => {
+            let invocation = request.invocation;
+            RemoteActionMessage::Receipt(host.invoke(caller, request).unwrap_or_else(|error| {
+                InvocationReceipt {
+                    invocation,
+                    status: ReceiptStatus::Rejected { error },
+                }
+            }))
+        }
+        RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+            invocation,
+            state: host.observe(caller, &invocation),
+        },
+        RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
+            invocation,
+            result: host.cancel(caller, &invocation),
+        },
+        RemoteActionMessage::CatalogueResponse { .. }
+        | RemoteActionMessage::Receipt(_)
+        | RemoteActionMessage::Update { .. }
+        | RemoteActionMessage::CancelResponse { .. } => return None,
+    })
+}
+
+struct LedgerEntry<T> {
+    caller: Caller,
+    request: InvokeRequest,
+    handle: T,
+}
+
+/// The idempotency ledger behind [`ActionHost::invoke`].
+///
+/// Maps each admitted [`InvocationId`] to the caller and request that
+/// admitted it and to the host's own handle for the running job. A retry
+/// with the same caller and request returns the existing handle without
+/// starting anything; any other reuse of the id is a conflict. Only admitted
+/// invocations are remembered — a refused one ran nothing, so retrying it
+/// may be admitted later. The oldest entries are forgotten past `capacity`.
+pub struct InvocationLedger<T> {
+    entries: HashMap<InvocationId, LedgerEntry<T>>,
+    order: VecDeque<InvocationId>,
+    capacity: usize,
+}
+
+impl<T> Default for InvocationLedger<T> {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_LEDGER_CAPACITY)
+    }
+}
+
+/// Whether [`InvocationLedger::admit`] started a job or found one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    Started,
+    Retried,
+}
+
+impl<T> InvocationLedger<T> {
+    /// A ledger remembering at most `capacity` invocations (at least one).
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: VecDeque::new(),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// Admit `request` for `caller`, calling `start` only if the id is new.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ActionHostError::InvocationConflict`] when the id was
+    /// admitted for another caller or request, or whatever `start` returns.
+    pub fn admit(
+        &mut self,
+        caller: &Caller,
+        request: &InvokeRequest,
+        start: impl FnOnce() -> Result<T, ActionHostError>,
+    ) -> Result<(&T, Admission), ActionHostError> {
+        let id = request.invocation;
+        if let Some(entry) = self.entries.get(&id) {
+            if entry.caller != *caller || entry.request != *request {
+                return Err(ActionHostError::InvocationConflict);
+            }
+        } else {
+            let handle = start()?;
+            while self.order.len() >= self.capacity {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                }
+            }
+            self.order.push_back(id);
+            self.entries.insert(
+                id,
+                LedgerEntry {
+                    caller: caller.clone(),
+                    request: request.clone(),
+                    handle,
+                },
+            );
+            return self
+                .entries
+                .get(&id)
+                .map(|entry| (&entry.handle, Admission::Started))
+                .ok_or(ActionHostError::UnknownInvocation);
+        }
+        self.entries
+            .get(&id)
+            .map(|entry| (&entry.handle, Admission::Retried))
+            .ok_or(ActionHostError::UnknownInvocation)
+    }
+
+    /// The handle for an invocation `caller` admitted.
+    #[must_use]
+    pub fn get(&self, caller: &Caller, id: &InvocationId) -> Option<&T> {
+        self.entries
+            .get(id)
+            .filter(|entry| entry.caller == *caller)
+            .map(|entry| &entry.handle)
+    }
+
+    /// Mutable access to the handle for an invocation `caller` admitted.
+    pub fn get_mut(&mut self, caller: &Caller, id: &InvocationId) -> Option<&mut T> {
+        self.entries
+            .get_mut(id)
+            .filter(|entry| entry.caller == *caller)
+            .map(|entry| &mut entry.handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::{Cell, RefCell};
+
+    use super::*;
+    use crate::{ActionContract, ExecutionLocus, InputSpec, OperationKind};
+
+    fn alice() -> Caller {
+        Caller::authenticated([1; 32], [2; 32])
+    }
+
+    fn mallory() -> Caller {
+        Caller::authenticated([9; 32], [8; 32])
+    }
+
+    fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
+        ActionDescriptor {
+            address: ActionAddress::new(resource, action),
+            resource_kind: "notes.note".into(),
+            resource_label: "Groceries".into(),
+            action_label: "Archive".into(),
+            description: Some("Move the note to the archive".into()),
+            locus: ExecutionLocus::ClientLocal,
+            kind: OperationKind::Document,
+            contract: ActionContract::default(),
+            input: InputSpec::None,
+            params: Vec::new(),
+        }
+    }
+
+    /// A host with one action whose runs are counted, so a test can prove
+    /// how many times the action actually started.
+    struct CountingHost {
+        runs: Cell<u32>,
+        ledger: RefCell<InvocationLedger<RefCell<InvocationUpdate>>>,
+    }
+
+    impl CountingHost {
+        fn new() -> Self {
+            Self {
+                runs: Cell::new(0),
+                ledger: RefCell::new(InvocationLedger::default()),
+            }
+        }
+
+        fn finish(&self, caller: &Caller, id: &InvocationId) {
+            if let Some(update) = self.ledger.borrow().get(caller, id) {
+                *update.borrow_mut() = InvocationUpdate::Succeeded {
+                    invocation: *id,
+                    output: ActionOutput::default(),
+                };
+            }
+        }
+    }
+
+    impl ActionHost for CountingHost {
+        fn catalogue(&self, _caller: &Caller) -> Result<Catalogue, ActionHostError> {
+            Ok(Catalogue {
+                revision: "1".into(),
+                entries: vec![CatalogueEntry {
+                    provider: "7".into(),
+                    app_id: "notes".into(),
+                    descriptor: descriptor("note:1", "archive"),
+                }],
+            })
+        }
+
+        fn invoke(
+            &self,
+            caller: &Caller,
+            request: InvokeRequest,
+        ) -> Result<InvocationReceipt, ActionHostError> {
+            if request.target.address != ActionAddress::new("note:1", "archive") {
+                return Err(ActionHostError::UnknownAction);
+            }
+            let mut ledger = self.ledger.borrow_mut();
+            let (update, _) = ledger.admit(caller, &request, || {
+                self.runs.set(self.runs.get().saturating_add(1));
+                Ok(RefCell::new(InvocationUpdate::Accepted {
+                    invocation: request.invocation,
+                }))
+            })?;
+            Ok(InvocationState::new(request.invocation, update.borrow().clone()).receipt())
+        }
+
+        fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+            self.ledger
+                .borrow()
+                .get(caller, id)
+                .map(|update| InvocationState::new(*id, update.borrow().clone()))
+        }
+
+        fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+            let ledger = self.ledger.borrow();
+            let update = ledger
+                .get(caller, id)
+                .ok_or(ActionHostError::UnknownInvocation)?;
+            if update.borrow().is_terminal() {
+                return Err(ActionHostError::NotCancellable {
+                    reason: "finished".into(),
+                });
+            }
+            *update.borrow_mut() = InvocationUpdate::Cancelled {
+                invocation: *id,
+                message: None,
+            };
+            Ok(())
+        }
+    }
+
+    fn archive(invocation: InvocationId) -> InvokeRequest {
+        InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: "7".into(),
+                address: ActionAddress::new("note:1", "archive"),
+            },
+            argument: InvokeArgument::None,
+            context: None,
+        }
+    }
+
+    fn round_trip(message: RemoteActionMessage) -> RemoteActionMessage {
+        let bytes = RemoteActionFrame::new(message).encode().unwrap();
+        RemoteActionFrame::decode(&bytes).unwrap().message
+    }
+
+    #[test]
+    fn every_message_round_trips_through_a_frame() {
+        let invocation = InvocationId(uuid::Uuid::from_u128(7));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("title".into(), serde_json::json!("Weekly"));
+        let messages = vec![
+            RemoteActionMessage::CatalogueRequest { correlation: 3 },
+            RemoteActionMessage::CatalogueResponse {
+                correlation: 3,
+                result: CountingHost::new().catalogue(&alice()),
+            },
+            RemoteActionMessage::CatalogueResponse {
+                correlation: 4,
+                result: Err(ActionHostError::Unavailable {
+                    reason: "no apps".into(),
+                }),
+            },
+            RemoteActionMessage::Invoke(InvokeRequest {
+                argument: InvokeArgument::Json(arguments),
+                context: Some(ActionContext::for_resource(
+                    "Archive",
+                    "note:1",
+                    "notes.note",
+                    "Groceries",
+                )),
+                ..archive(invocation)
+            }),
+            RemoteActionMessage::Invoke(InvokeRequest {
+                argument: InvokeArgument::Text("hello".into()),
+                ..archive(invocation)
+            }),
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Completed {
+                    output: ActionOutput {
+                        value: Some(serde_json::json!({"archived": true})),
+                        resources: vec!["notes.note:1".into()],
+                    },
+                },
+            }),
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Failed {
+                    error: ActionFailure {
+                        code: "disk_full".into(),
+                        message: "no space".into(),
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            }),
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionHostError::InvocationConflict,
+                },
+            }),
+            RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation,
+                status: ReceiptStatus::Cancelled {
+                    message: Some("stopped".into()),
+                },
+            }),
+            RemoteActionMessage::Observe { invocation },
+            RemoteActionMessage::Update {
+                invocation,
+                state: Some(InvocationState::new(
+                    invocation,
+                    InvocationUpdate::Progress {
+                        invocation,
+                        sequence: 2,
+                        phase: "copying".into(),
+                        completed: Some(1),
+                        total: Some(4),
+                        message: None,
+                    },
+                )),
+            },
+            RemoteActionMessage::Update {
+                invocation,
+                state: None,
+            },
+            RemoteActionMessage::Cancel { invocation },
+            RemoteActionMessage::CancelResponse {
+                invocation,
+                result: Err(ActionHostError::NotCancellable {
+                    reason: "finished".into(),
+                }),
+            },
+        ];
+        for message in messages {
+            assert_eq!(round_trip(message.clone()), message);
+        }
+    }
+
+    #[test]
+    fn frames_from_another_version_are_refused_not_misread() {
+        let mut frame = serde_json::to_value(RemoteActionFrame::new(
+            RemoteActionMessage::CatalogueRequest { correlation: 1 },
+        ))
+        .unwrap();
+        frame["version"] = serde_json::json!(REMOTE_ACTIONS_VERSION + 1);
+        // A newer peer may also use a message this build has never seen.
+        frame["message"] = serde_json::json!({"Subscribe": {"topic": 1}});
+        let bytes = serde_json::to_vec(&frame).unwrap();
+        assert_eq!(
+            RemoteActionFrame::decode(&bytes),
+            Err(RemoteFrameError::UnsupportedVersion {
+                version: REMOTE_ACTIONS_VERSION + 1
+            })
+        );
+        assert!(matches!(
+            RemoteActionFrame::decode(b"{\"version\":1,\"message\":{\"Subscribe\":{}}}"),
+            Err(RemoteFrameError::Malformed(_))
+        ));
+        assert!(matches!(
+            RemoteActionFrame::decode(&vec![b' '; MAX_REMOTE_ACTION_FRAME_BYTES + 1]),
+            Err(RemoteFrameError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn the_wire_names_versions_and_messages_explicitly() {
+        let bytes = RemoteActionFrame::new(RemoteActionMessage::Cancel {
+            invocation: InvocationId(uuid::Uuid::nil()),
+        })
+        .encode()
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            r#"{"version":1,"message":{"Cancel":{"invocation":"00000000-0000-0000-0000-000000000000"}}}"#
+        );
+    }
+
+    #[test]
+    fn a_retried_invocation_reports_the_original_and_runs_once() {
+        let host = CountingHost::new();
+        let id = InvocationId::new();
+        let first = host.invoke(&alice(), archive(id)).unwrap();
+        assert_eq!(first.status, ReceiptStatus::Accepted);
+        let retry = host.invoke(&alice(), archive(id)).unwrap();
+        assert_eq!(retry, first);
+        assert_eq!(host.runs.get(), 1, "a retry never starts a second run");
+
+        host.finish(&alice(), &id);
+        let after = host.invoke(&alice(), archive(id)).unwrap();
+        assert!(matches!(after.status, ReceiptStatus::Completed { .. }));
+        assert_eq!(host.runs.get(), 1, "a retry after completion reports it");
+    }
+
+    #[test]
+    fn an_invocation_id_cannot_be_reused_or_borrowed() {
+        let host = CountingHost::new();
+        let id = InvocationId::new();
+        host.invoke(&alice(), archive(id)).unwrap();
+
+        let mut different = archive(id);
+        different.argument = InvokeArgument::Text("other".into());
+        assert_eq!(
+            host.invoke(&alice(), different),
+            Err(ActionHostError::InvocationConflict)
+        );
+        assert_eq!(
+            host.invoke(&mallory(), archive(id)),
+            Err(ActionHostError::InvocationConflict),
+            "another principal cannot attach to someone else's invocation"
+        );
+        assert_eq!(host.observe(&mallory(), &id), None);
+        assert_eq!(
+            host.cancel(&mallory(), &id),
+            Err(ActionHostError::UnknownInvocation)
+        );
+        assert_eq!(host.runs.get(), 1);
+    }
+
+    #[test]
+    fn a_refused_invocation_is_not_remembered() {
+        let mut ledger = InvocationLedger::<u32>::default();
+        let request = archive(InvocationId::new());
+        assert_eq!(
+            ledger.admit(&alice(), &request, || Err(ActionHostError::NotPermitted)),
+            Err(ActionHostError::NotPermitted)
+        );
+        let (handle, admission) = ledger.admit(&alice(), &request, || Ok(5)).unwrap();
+        assert_eq!((*handle, admission), (5, Admission::Started));
+    }
+
+    #[test]
+    fn the_ledger_forgets_oldest_invocations_past_capacity() {
+        let mut ledger = InvocationLedger::<u32>::with_capacity(2);
+        let requests: Vec<_> = (0..3).map(|_| archive(InvocationId::new())).collect();
+        for (n, request) in (0u32..).zip(&requests) {
+            ledger.admit(&alice(), request, || Ok(n)).unwrap();
+        }
+        assert_eq!(ledger.get(&alice(), &requests[0].invocation), None);
+        assert_eq!(ledger.get(&alice(), &requests[2].invocation), Some(&2));
+    }
+
+    #[test]
+    fn serve_answers_requests_and_ignores_responses() {
+        let host = CountingHost::new();
+        let id = InvocationId::new();
+        let Some(RemoteActionMessage::Receipt(receipt)) =
+            serve(&host, &alice(), RemoteActionMessage::Invoke(archive(id)))
+        else {
+            panic!("an invoke is answered with a receipt");
+        };
+        assert_eq!(receipt.status, ReceiptStatus::Accepted);
+
+        let mut unknown = archive(InvocationId::new());
+        unknown.target.address = ActionAddress::new("note:2", "delete");
+        assert_eq!(
+            serve(
+                &host,
+                &alice(),
+                RemoteActionMessage::Invoke(unknown.clone())
+            ),
+            Some(RemoteActionMessage::Receipt(InvocationReceipt {
+                invocation: unknown.invocation,
+                status: ReceiptStatus::Rejected {
+                    error: ActionHostError::UnknownAction
+                },
+            }))
+        );
+        assert_eq!(
+            serve(
+                &host,
+                &alice(),
+                RemoteActionMessage::Cancel { invocation: id }
+            ),
+            Some(RemoteActionMessage::CancelResponse {
+                invocation: id,
+                result: Ok(()),
+            })
+        );
+        let Some(RemoteActionMessage::Update {
+            state: Some(state), ..
+        }) = serve(
+            &host,
+            &alice(),
+            RemoteActionMessage::Observe { invocation: id },
+        )
+        else {
+            panic!("an observe is answered with the invocation state");
+        };
+        assert!(matches!(
+            state.receipt().status,
+            ReceiptStatus::Cancelled { .. }
+        ));
+        assert_eq!(
+            serve(&host, &alice(), RemoteActionMessage::Receipt(receipt)),
+            None
+        );
+    }
+
+    #[test]
+    fn typed_arguments_use_the_local_invocation_slot() {
+        let mut object = serde_json::Map::new();
+        object.insert("n".into(), serde_json::json!(2));
+        assert_eq!(InvokeArgument::None.to_slot(), None);
+        assert_eq!(
+            InvokeArgument::Text("hi".into()).to_slot().as_deref(),
+            Some("hi")
+        );
+        assert_eq!(
+            InvokeArgument::Json(object).to_slot(),
+            Some(format!("{ARGUMENTS_JSON_PREFIX}{{\"n\":2}}"))
+        );
+    }
+}

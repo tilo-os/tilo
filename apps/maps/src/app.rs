@@ -46,7 +46,6 @@ use crate::doc::MapsDoc;
 use crate::draw;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
 use crate::geo::{self, Projection};
-use crate::location::{self, LocationChannel, LocationOutcome};
 use crate::map_controls::{MapControlAction, MapControls};
 use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{
@@ -58,6 +57,7 @@ use crate::sample::{self, Basemap};
 use crate::search_box::{SearchBox, SearchEffect, SearchHit, SearchKeyEffect, SearchOverlay};
 use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
+use ui::location::{self, LocationChannel, LocationOutcome};
 
 mod interaction;
 
@@ -533,7 +533,7 @@ impl MapsApp {
             theme.text_dim
         };
         if self.navigation_end_hovered {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 visual,
                 end,
@@ -553,7 +553,7 @@ impl MapsApp {
             // (a contrast step on both themes) with its derived edge.
             draw::edged(scene, visual, end, 10.0, c.surfaces.base);
         }
-        draw::fill_rrect(
+        draw::fill_round(
             scene,
             visual,
             Rect::new(
@@ -3026,7 +3026,7 @@ impl MapsApp {
         self.click_targets.push((card, Hit::Consume));
 
         // Category colour bar down the leading edge.
-        draw::fill_rrect(
+        draw::fill_round(
             scene,
             t,
             Rect::new(card.x0, card.y0, card.x0 + 5.0, card.y1),
@@ -3058,7 +3058,7 @@ impl MapsApp {
             theme.text_dim,
         );
         self.click_targets.push((close, Hit::ClosePoi));
-        let name = draw::ellipsize(tr, &poi.name, 18.0, close.x0 - s2 - x);
+        let name = tr.elide_to_width(&poi.name, 18.0, ui::num::f32_of_f64(close.x0 - s2 - x));
         draw::text_w(
             scene,
             tr,
@@ -3238,7 +3238,7 @@ impl MapsApp {
         y += header_h;
         for level in Congestion::ALL {
             let sw = Rect::new(x, y + 3.0, x + 18.0, y + 3.0 + 6.0);
-            draw::fill_rrect(scene, t, sw, 3.0, canvas::traffic_color(&pal, level));
+            draw::fill_round(scene, t, sw, 3.0, canvas::traffic_color(&pal, level));
             draw::text(
                 scene,
                 tr,
@@ -3597,14 +3597,15 @@ impl MapsApp {
             draw::edged(scene, t, cr, 12.0, c.surfaces.base);
             // Accent identifies the current selection. Category is written
             // directly below, so it does not need a competing colour stripe.
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 Rect::new(cr.x0, cr.y0, cr.x0 + 5.0, cr.y1),
                 12.0,
                 theme.accent_primary,
             );
-            let name = draw::ellipsize(tr, &sel.name, 18.0, right - x - 2.0 * s4);
+            let name =
+                tr.elide_to_width(&sel.name, 18.0, ui::num::f32_of_f64(right - x - 2.0 * s4));
             draw::text_w(
                 scene,
                 tr,
@@ -3663,7 +3664,7 @@ impl MapsApp {
                     // Chosen state is a lift with a derived edge, not an
                     // accent wash (HIG §9.3).
                     let tier = selection_tier(theme, SelectionState::active(true));
-                    draw::fill_rrect(scene, t, br, 8.0, tier.fill);
+                    draw::fill_round(scene, t, br, 8.0, tier.fill);
                     if let Some(border) = tier.border {
                         draw::stroke_rrect(scene, t, br, 8.0, 1.0, border);
                     }
@@ -4033,7 +4034,7 @@ impl MapsApp {
             // A translucent accent wash: the surface the eye sees is the
             // panel beneath it, so the edge derives from that ground, not
             // from the wash's accent RGB (which would vanish on light).
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 loc_r,
@@ -4111,7 +4112,7 @@ impl MapsApp {
             let seg = Rect::new(sx, mode_rect.y0, sx + seg_w, mode_rect.y1);
             let active = self.model.mode == *m;
             if active {
-                draw::fill_rrect(
+                draw::fill_round(
                     scene,
                     t,
                     seg.inflate(-seg_inset, -seg_inset),
@@ -4386,7 +4387,7 @@ impl MapsApp {
             let active = tt.mode == *m;
             if active {
                 let active_rect = seg.inflate(-s1, -s1);
-                draw::fill_rrect(
+                draw::fill_round(
                     scene,
                     t,
                     active_rect,
@@ -4555,7 +4556,7 @@ impl MapsApp {
             // derives from the panel it sits on (the surface actually seen),
             // then the accent ring.
             if selected {
-                draw::fill_rrect(scene, t, jr, 10.0, draw::alpha(theme.accent_primary, 0.12));
+                draw::fill_round(scene, t, jr, 10.0, draw::alpha(theme.accent_primary, 0.12));
                 scene.stroke(
                     &Stroke::new(1.0),
                     t,
@@ -4637,7 +4638,7 @@ impl MapsApp {
                     };
                     let w = draw::measure_w(tr, &lbl, 12.0) + 16.0;
                     let pill = Rect::new(px, py, px + w, py + 22.0);
-                    draw::fill_rrect(scene, t, pill, 6.0, col);
+                    draw::fill_round(scene, t, pill, 6.0, col);
                     draw::text_center(
                         scene,
                         tr,
@@ -5965,6 +5966,17 @@ impl Widget for MapsApp {
     }
 }
 
+/// A location request answered by a recording host with `outcome` — the
+/// production request path, without the device's location service.
+#[cfg(test)]
+fn host_location(outcome: LocationOutcome) -> LocationChannel {
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_location(outcome);
+    let channel = ui::host::scoped(&services, location::request_location);
+    assert_eq!(recorder.location_requests(), 1);
+    channel
+}
+
 #[cfg(test)]
 mod local_layout_tests {
     use super::*;
@@ -6312,9 +6324,9 @@ mod local_layout_tests {
 
         let invocation = InvocationId::default();
         app.location_invocation = Some(invocation);
-        app.location_rx = Some(crate::location::inject_for_test(
-            LocationOutcome::Unavailable("permission denied".into()),
-        ));
+        app.location_rx = Some(host_location(LocationOutcome::Unavailable(
+            "permission denied".into(),
+        )));
         app.drain_location();
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &state.doc, &state.root),
@@ -7743,7 +7755,7 @@ mod local_layout_tests {
 
     // --- Location services -------------------------------------------------
 
-    /// The "use my location" success path: a mocked portal fix becomes the route
+    /// The "use my location" success path: a host-provided fix becomes the route
     /// origin and the journey re-plans from it. The real coordinates depend on
     /// the host location service + user permission (unverifiable headlessly);
     /// this proves the result *handling* around the portal.
@@ -7754,7 +7766,7 @@ mod local_layout_tests {
         a.enter_directions();
 
         a.locating = true;
-        a.location_rx = Some(location::inject_for_test(LocationOutcome::Located {
+        a.location_rx = Some(host_location(LocationOutcome::Located {
             lat: 48.11,
             lon: 11.53,
             accuracy_m: 8.0,
@@ -7789,7 +7801,7 @@ mod local_layout_tests {
         let mut a = app_at(1280.0, 800.0);
         let before = a.model.origin;
         a.locating = true;
-        a.location_rx = Some(location::inject_for_test(LocationOutcome::Unavailable(
+        a.location_rx = Some(host_location(LocationOutcome::Unavailable(
             "permission denied".into(),
         )));
         a.drain_location();

@@ -23,6 +23,7 @@
     )
 )]
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
@@ -374,7 +375,7 @@ impl Identity {
 
     /// Generate a fresh random identity; used by tests and the CLI's `key generate`.
     pub fn generate() -> Self {
-        let mut rng = rand::rngs::OsRng;
+        let mut rng = UnwrapErr(SysRng);
         Self {
             signing_key: ed25519_dalek::SigningKey::generate(&mut rng),
         }

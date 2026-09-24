@@ -28,21 +28,7 @@ Invite tokens are signed ed25519 blobs scoped to a workspace; see `docs/architec
 
 ## Sandbox: Bubblewrap profile
 
-Every app launched into a workspace runs through `bwrap`, whose argv is built by `tilo-launcher` (`crates/packaging/launcher`) from the package manifest and the capability grants the shell hands it. `SandboxProfile` (`crates/session/shell/src/sandbox/profile.rs`) is the compositor-side *model* of that sandbox — the bind/env/uid shape and the seccomp + Landlock plumbing points. It is a value type, and nothing spawns an app through it:
-
-```rust
-pub struct SandboxProfile {
-    pub workspace_id:    WorkspaceId,
-    pub binds_ro:        Vec<(PathBuf, PathBuf)>,
-    pub binds_rw:        Vec<(PathBuf, PathBuf)>,
-    pub env:             HashMap<String, String>,
-    pub uid: u32,  pub gid: u32,
-    pub seccomp:         Option<PathBuf>,
-    pub wayland_socket:  PathBuf,   // per-workspace bridge
-    pub dbus_socket:     Option<PathBuf>,
-    pub net_isolated:    bool,
-}
-```
+Every app launched into a workspace runs through `bwrap`, whose argv is built by `tilo-launcher` (`crates/packaging/launcher`) from the package manifest and the capability grants the shell hands it. The compositor never builds a sandbox: it execs `tilo-launcher` (`shell::shell::launcher`), which is the single enforcement point. Inside the new mount namespace the launcher re-execs itself as `__sandbox-exec` to install Landlock before the app takes over. Landlock ruleset construction and seccomp compilation live in `crates/system/sandbox-core`, a leaf crate the launcher and the `ush` runtime share, so the launcher still depends on nothing in the compositor.
 
 What a sandboxed app is actually presented with. It names none of this; the launcher decides all of it, and the read side is identical for every package:
 
@@ -52,19 +38,22 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 - Private DBus session bus per workspace.
 - `unshare(CLONE_NEWNET)` if `net_isolated`. Default: invited peers run isolated; the owner's session runs without isolation unless overridden.
 
-Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch. `SandboxProfile::apply_grants` mirrors the launcher's rules so the compositor can reason about the same shape; a disagreement between the two is a bug in the mirror.
+Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
 
 ## Seccomp-bpf blocklist
 
-A per-workspace BPF blob is compiled via the `seccompiler` crate and cached at `/var/cache/tilo-fs/<ws_id>/seccomp.bpf`. v1 blocks:
+`tilo-launcher` compiles the filter for every launch with the `seccompiler` crate (`sandbox_core::seccomp`) and hands it to `bwrap --seccomp <fd>`. It is a default-allow deny-list answering `EPERM`, derived from Flatpak's profile:
 
 ```
-ptrace, mount, umount2, pivot_root, chroot,
-clone3 (with namespace flags), unshare, setns,
-socket(AF_PACKET, …), bpf, keyctl
+ptrace, mount, umount2, pivot_root, chroot, unshare, setns,
+clone (with any namespace flag), socket(AF_PACKET, …), bpf, keyctl,
+kexec_load, {init,finit,delete}_module, reboot, swapon, swapoff,
+userfaultfd, perf_event_open, open_by_handle_at, process_vm_{readv,writev},
+pidfd_getfd, fanotify_init, fsopen, fspick, fsconfig, fsmount, move_mount,
+mount_setattr, quotactl, acct
 ```
 
-The blocklist is conservative and expands as we learn. It is applied via `bwrap --seccomp <fd>`.
+The default profile, `tilo-default`, also refuses any `mmap`/`mprotect`/`pkey_mprotect` asking for writable and executable memory at once. `tilo-jit` drops only that rule, and a manifest's request for it is honoured only for packages the image entitles (`/usr/lib/tilo/jit-entitled.conf`; `launcher::seccomp::resolve_profile`). The compiled programs are pinned byte for byte by the launcher's tests, so any change to the filter is reviewed as a policy change.
 
 ## Per-workspace Wayland bridge socket
 
@@ -140,7 +129,7 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 - An app names no path. `crates/packaging/launcher` binds a fixed system read profile (`launcher::profile`: loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data) plus one read-write directory per room per package at `/run/tilo/app` (`launcher::appdir`), and nothing else. The `[sandbox.fs]` manifest block is retired; a package that still declares one is refused at install and at launch.
 - `FileChooser` returns `file://` URIs because `org.freedesktop.impl.portal.FileChooser` answers `OpenFile`/`SaveFile`/`SaveFiles` with a `uris` key rather than file descriptors.
 - **The dialog is the prompt.** Choosing a file in the compositor-owned dialog is the act of authorisation, and the grant names exactly the path chosen: read-only for `OpenFile`, read-write for `SaveFile`, session-scoped. A separate prompt must not grant a broad path before the user chooses one.
-- A path outside the profile is reachable only through a capability the user grants, which becomes a bind at the next launch of that app (`launcher::capabilities`). `SandboxProfile::apply_grants` mirrors the same rules compositor-side; the launcher is the enforcement point and a disagreement between the two is a bug in the mirror.
+- A path outside the profile is reachable only through a capability the user grants, which becomes a bind at the next launch of that app (`launcher::capabilities`, the enforcement point).
 
   **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `crates/session/shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The shipped store is `HostPathStore`, which is correct for callers sharing the compositor's namespace and reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
 
@@ -230,11 +219,11 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 |----------------------------|---------------------------------------------------------|------------------------------------|
 | Unauthorised peer connect  | Ed25519 invite token + authenticated Iroh endpoint      | `network/invite.rs`, Iroh          |
 | File exfil from sandbox    | bwrap mount namespace + fixed system read profile + one per-room app dir | `packaging/launcher/{profile,appdir}.rs` |
-| Hardware exfil (cam/mic)   | Default-deny binds + portal-mediated grant              | `sandbox/profile.rs`, `portal/`    |
+| Hardware exfil (cam/mic)   | Default-deny binds + portal-mediated grant              | `packaging/launcher/capabilities.rs`, `portal/` |
 | Cross-workspace input leak | Bridge tag + per-workspace seat routing                 | `compositor/bridge.rs`             |
 | Clipboard data leak        | `wl_data_device` blocked at bridge v1                   | `compositor/bridge.rs`             |
 | Input injection (remote)   | Region + Z-order + scrubber + rate limit                | `network/input_firewall.rs`, driven from `compositor/state.rs::review_remote_input` |
-| Sandbox escape via syscall | seccomp-bpf blocklist                                   | `sandbox/seccomp.rs`               |
+| Sandbox escape via syscall | seccomp-bpf blocklist + Landlock                        | `system/sandbox-core`, `packaging/launcher/landlock_shim.rs` |
 | Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
 | Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `crates/session/shell/src/shell/state.rs::Workspace.grants` |
@@ -245,7 +234,8 @@ Steps 3-6 live in `crates/session/shell/src/network/input_firewall.rs`. Every on
 
 ## Where to read first
 
-- `crates/session/shell/src/sandbox/{mod.rs, profile.rs, spawn.rs, seccomp.rs}` — the bwrap profile + seccomp blob.
+- `crates/packaging/launcher/src/{sandbox.rs, run.rs, capabilities.rs, landlock_shim.rs, seccomp.rs}` — the bwrap argv, grants, Landlock shim and seccomp profile choice.
+- `crates/system/sandbox-core/src/{landlock.rs, seccomp.rs}` — Landlock ruleset construction and seccomp compilation.
 - `crates/session/shell/src/compositor/bridge.rs` — the per-workspace Wayland bridge socket.
 - `crates/session/shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, screencast_pipewire.rs, remote_desktop.rs, camera.rs}` — D-Bus impls.
 - `crates/session/shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.

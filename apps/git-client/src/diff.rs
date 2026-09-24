@@ -1,13 +1,9 @@
-//! Unified-diff parsing and a lightweight, language-agnostic syntax
-//! tokenizer.
+//! Unified-diff parsing.
 //!
 //! [`parse_unified`] turns standard `git diff` text into a structured
 //! [`FileDiff`] with per-line old/new numbering and hunk boundaries, so
 //! both the unified and side-by-side renderers can address lines without
-//! re-scanning the raw text. The tokenizer is intentionally small: it
-//! classifies spans as keyword / string / comment / number / punctuation
-//! so the diff pane can colour code without pulling a multi-megabyte
-//! grammar set. It errs toward "good enough to read", not perfect parsing.
+//! re-scanning the raw text.
 
 use crate::model::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 
@@ -199,245 +195,14 @@ fn parse_hunk_header(line: &str) -> (u32, u32, String) {
     (old_start.max(1), new_start.max(1), header)
 }
 
-/// Map a file extension to a coarse language label the tokenizer keys off.
+/// The grammar token the diff pane highlights `path` with: its extension, or
+/// the file name itself for extensionless files such as `Dockerfile`.
 pub fn language_for(path: &str) -> String {
-    let ext = path.rsplit('.').next().unwrap_or("");
-    match ext {
-        "rs" => "rust",
-        "toml" => "toml",
-        "md" | "markdown" => "markdown",
-        "json" => "json",
-        "js" | "ts" | "jsx" | "tsx" => "js",
-        "py" => "python",
-        "c" | "h" | "cpp" | "hpp" | "cc" => "c",
-        "sh" | "bash" => "shell",
-        "yaml" | "yml" => "yaml",
-        _ => "text",
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => ext.to_ascii_lowercase(),
+        _ => name.to_string(),
     }
-    .to_string()
-}
-
-// === Lightweight syntax tokenizer =====================================
-
-/// A classified span of a source line. The renderer maps each class to a
-/// theme colour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenClass {
-    Plain,
-    Keyword,
-    Str,
-    Comment,
-    Number,
-    Type,
-    Punct,
-}
-
-#[derive(Clone, Debug)]
-pub struct Token {
-    pub text: String,
-    pub class: TokenClass,
-}
-
-const RUST_KEYWORDS: &[&str] = &[
-    "fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait", "for", "while",
-    "loop", "if", "else", "match", "return", "self", "Self", "crate", "super", "as", "in", "ref",
-    "where", "const", "static", "move", "async", "await", "dyn", "type", "unsafe", "extern",
-    "true", "false", "continue", "break", "default",
-];
-
-const GENERIC_KEYWORDS: &[&str] = &[
-    "function", "var", "const", "let", "return", "if", "else", "for", "while", "class", "import",
-    "from", "export", "def", "elif", "try", "except", "True", "False", "None", "null", "true",
-    "false", "new", "this", "public", "private", "static", "void", "int", "string", "bool",
-    "double",
-];
-
-/// Punctuation / operator characters, coalesced into runs by the tokenizer.
-const PUNCT_CHARS: &str = "+-*/%=<>!&|^~?:;,.(){}[]@#";
-
-/// Tokenize one source line. Comment detection is single-line only (`//`,
-/// `#`); block comments are treated as plain to avoid carrying state across
-/// lines (the diff pane shows discontiguous slices anyway).
-pub fn tokenize(line: &str, language: &str) -> Vec<Token> {
-    let keywords: &[&str] = match language {
-        "rust" => RUST_KEYWORDS,
-        _ => GENERIC_KEYWORDS,
-    };
-    let comment_lead: &[&str] = match language {
-        "python" | "shell" | "yaml" | "toml" => &["#"],
-        _ => &["//", "#"],
-    };
-
-    let mut out: Vec<Token> = Vec::new();
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = 0;
-
-    while let Some(&c) = chars.get(i) {
-        // Single-line comment to end of line.
-        if let Some(rest) = comment_at(&chars, i, comment_lead) {
-            out.push(Token {
-                text: rest,
-                class: TokenClass::Comment,
-            });
-            break;
-        }
-
-        // String literal (single or double quoted).
-        if c == '"' || c == '\'' {
-            let (text, next) = read_string_literal(&chars, i, c);
-            i = next;
-            out.push(Token {
-                text,
-                class: TokenClass::Str,
-            });
-            continue;
-        }
-
-        // Number.
-        if c.is_ascii_digit() {
-            let (text, next) = read_number(&chars, i);
-            i = next;
-            out.push(Token {
-                text,
-                class: TokenClass::Number,
-            });
-            continue;
-        }
-
-        // Identifier / keyword / type.
-        if c.is_alphabetic() || c == '_' {
-            let (text, next) = read_identifier(&chars, i);
-            i = next;
-            let class = if keywords.contains(&text.as_str()) {
-                TokenClass::Keyword
-            } else if text.chars().next().is_some_and(char::is_uppercase) {
-                TokenClass::Type
-            } else {
-                TokenClass::Plain
-            };
-            out.push(Token { text, class });
-            continue;
-        }
-
-        // Punctuation / operators — coalesce runs of symbol chars.
-        if PUNCT_CHARS.contains(c) {
-            let (text, next) = read_punct(&chars, i, comment_lead);
-            i = next;
-            out.push(Token {
-                text,
-                class: TokenClass::Punct,
-            });
-            continue;
-        }
-
-        // Whitespace and everything else — pass through as plain.
-        let (text, next) = read_plain(&chars, i);
-        i = next;
-        out.push(Token {
-            text,
-            class: TokenClass::Plain,
-        });
-    }
-
-    out
-}
-
-/// If a single-line comment starts at `i`, return the rest of the line as
-/// its text.
-fn comment_at(chars: &[char], i: usize, comment_lead: &[&str]) -> Option<String> {
-    let rest: String = chars.get(i..).unwrap_or_default().iter().collect();
-    comment_lead
-        .iter()
-        .any(|p| rest.starts_with(p))
-        .then_some(rest)
-}
-
-/// Consume a quoted string literal starting at `i` (the opening quote).
-/// Returns the literal text (quotes included) and the index just past it.
-fn read_string_literal(chars: &[char], start: usize, quote: char) -> (String, usize) {
-    let mut s = String::new();
-    s.push(quote);
-    let mut i = start + 1;
-    while let Some(&ch) = chars.get(i) {
-        s.push(ch);
-        let escaped = i.checked_sub(1).and_then(|p| chars.get(p)) == Some(&'\\');
-        i += 1;
-        if ch == quote && !escaped {
-            break;
-        }
-    }
-    (s, i)
-}
-
-/// Consume a run of digits/`.`/`_` starting at `i`.
-fn read_number(chars: &[char], start: usize) -> (String, usize) {
-    let mut s = String::new();
-    let mut i = start;
-    while let Some(&ch) = chars.get(i) {
-        if !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '_') {
-            break;
-        }
-        s.push(ch);
-        i += 1;
-    }
-    (s, i)
-}
-
-/// Consume an identifier (alphanumeric/`_`) starting at `i`.
-fn read_identifier(chars: &[char], start: usize) -> (String, usize) {
-    let mut s = String::new();
-    let mut i = start;
-    while let Some(&ch) = chars.get(i) {
-        if !(ch.is_alphanumeric() || ch == '_') {
-            break;
-        }
-        s.push(ch);
-        i += 1;
-    }
-    (s, i)
-}
-
-/// Consume a run of punctuation/operator characters starting at `i`,
-/// stopping before a comment lead-in that begins mid-run.
-fn read_punct(chars: &[char], start: usize, comment_lead: &[&str]) -> (String, usize) {
-    let mut s = String::new();
-    let mut i = start;
-    while let Some(&ch) = chars.get(i) {
-        if !PUNCT_CHARS.contains(ch) {
-            break;
-        }
-        let look: String = chars.get(i..).unwrap_or_default().iter().collect();
-        if !s.is_empty() && comment_lead.iter().any(|p| look.starts_with(p)) {
-            break;
-        }
-        s.push(ch);
-        i += 1;
-    }
-    (s, i)
-}
-
-/// Consume a run of characters that are none of alphanumeric/`_`/quote/
-/// punctuation — plain whitespace and stray symbols. Always advances by at
-/// least one character.
-fn read_plain(chars: &[char], start: usize) -> (String, usize) {
-    let mut s = String::new();
-    let mut i = start;
-    while let Some(&ch) = chars.get(i) {
-        if ch.is_alphanumeric() || ch == '_' || ch == '"' || ch == '\'' || PUNCT_CHARS.contains(ch)
-        {
-            break;
-        }
-        s.push(ch);
-        i += 1;
-    }
-    if s.is_empty() {
-        // Safety: ensure progress even if none of the above ever matched.
-        if let Some(&ch) = chars.get(i) {
-            s.push(ch);
-            i += 1;
-        }
-    }
-    (s, i)
 }
 
 #[cfg(test)]
@@ -484,23 +249,11 @@ mod tests {
     }
 
     #[test]
-    fn tokenizer_classifies_rust() {
-        let toks = tokenize("    let x = \"hi\"; // note", "rust");
-        assert!(
-            toks.iter()
-                .any(|t| t.text == "let" && t.class == TokenClass::Keyword)
-        );
-        assert!(
-            toks.iter()
-                .any(|t| t.class == TokenClass::Str && t.text.contains("hi"))
-        );
-        assert!(toks.iter().any(|t| t.class == TokenClass::Comment));
-    }
-
-    #[test]
     fn language_detection() {
-        assert_eq!(language_for("src/main.rs"), "rust");
+        assert_eq!(language_for("src/main.rs"), "rs");
         assert_eq!(language_for("Cargo.toml"), "toml");
-        assert_eq!(language_for("README.md"), "markdown");
+        assert_eq!(language_for("docs/README.MD"), "md");
+        assert_eq!(language_for("os/Dockerfile"), "Dockerfile");
+        assert_eq!(language_for(".gitignore"), ".gitignore");
     }
 }

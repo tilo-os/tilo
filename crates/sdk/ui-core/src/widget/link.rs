@@ -2,13 +2,12 @@
 //! URL when clicked, activated by keyboard (Enter / Space), or triggered by
 //! an assistive-technology `Activate`.
 //!
-//! Opening is pluggable. By default activation hands the URL to the current
-//! host's [`crate::host::UriOpener`] (on the native desktop, xdg-open / the
-//! desktop portal on Linux); a host routes external opens through its own
-//! opener, and a single link — or a test that wants to observe the URL
-//! without spawning a browser — can override it with [`Link::on_open`]. Either
-//! way the most-recently-activated URL is recorded on
-//! [`Link::last_activated`] so a parent or test can confirm the link fired.
+//! Activation hands the URL to the current host's [`crate::host::UriOpener`]
+//! (on the native desktop, xdg-open / the desktop portal on Linux). A host
+//! routes external opens through its own opener; a test observes them with
+//! [`crate::host::HostServices::recording`]. The most-recently-activated URL
+//! is also recorded on [`Link::last_activated`] so a parent can confirm the
+//! link fired.
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -45,9 +44,6 @@ pub fn try_os_open(url: &str) -> std::io::Result<()> {
     crate::host::current().opener.open(url)
 }
 
-/// Test/host hook overriding [`os_open`] on activation; see `opener` below.
-type Opener = Box<dyn FnMut(&str)>;
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent widget-configuration or ephemeral-UI-state flag (hover/press/focus/enabled), not a state machine; grouping them would misrepresent orthogonal concerns and ripple through every accessor in this file"
@@ -63,9 +59,6 @@ pub struct Link {
     is_pressed: bool,
     is_focused: bool,
     enabled: bool,
-    /// When set, activation calls this instead of the host opener — tests
-    /// record the URL, hosts route through a portal.
-    opener: Option<Opener>,
     /// Lets a parent or test observe that the link fired without intercepting the opener.
     last_activated: Option<String>,
     dirty: bool,
@@ -84,7 +77,6 @@ impl Link {
             is_pressed: false,
             is_focused: false,
             enabled: true,
-            opener: None,
             last_activated: None,
             dirty: true,
             last_state: (false, false, false),
@@ -101,12 +93,6 @@ impl Link {
     #[must_use]
     pub fn with_font_size(mut self, size: f32) -> Self {
         self.font_size = size;
-        self
-    }
-
-    #[must_use]
-    pub fn on_open<F: FnMut(&str) + 'static>(mut self, f: F) -> Self {
-        self.opener = Some(Box::new(f));
         self
     }
 
@@ -150,10 +136,7 @@ impl Link {
             return;
         }
         self.last_activated = Some(self.url.clone());
-        match &mut self.opener {
-            Some(cb) => cb(&self.url),
-            None => os_open(&self.url),
-        }
+        os_open(&self.url);
     }
 }
 
@@ -402,8 +385,6 @@ impl Widget for Link {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
     #[test]
@@ -434,12 +415,9 @@ mod tests {
 
     #[test]
     fn click_opens_url_through_the_opener_with_the_right_url() {
-        let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-        let mut link = {
-            let opened = opened.clone();
-            Link::new("https://example.com/page")
-                .on_open(move |u| opened.borrow_mut().push(u.to_string()))
-        };
+        let (services, recorder) = crate::host::HostServices::recording();
+        let _host = crate::host::enter(&services);
+        let mut link = Link::new("https://example.com/page");
         let (tree, node) = laid_out(&mut link);
 
         let device: DeviceId = unsafe { std::mem::zeroed() };
@@ -477,7 +455,10 @@ mod tests {
                 button: MouseButton::Left,
             },
         );
-        assert!(opened.borrow().is_empty(), "does not open until release");
+        assert!(
+            recorder.opened_uris().is_empty(),
+            "does not open until release"
+        );
         dispatch(
             &mut link,
             WindowEvent::MouseInput {
@@ -488,8 +469,8 @@ mod tests {
         );
 
         assert_eq!(
-            opened.borrow().as_slice(),
-            &["https://example.com/page".to_string()],
+            recorder.opened_uris(),
+            ["https://example.com/page"],
             "opened exactly the link's URL on release"
         );
         assert_eq!(link.last_activated(), Some("https://example.com/page"));
@@ -497,16 +478,14 @@ mod tests {
 
     #[test]
     fn keyboard_activate_opens_url() {
-        let opened: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
-        let mut link = {
-            let opened = opened.clone();
-            Link::new("https://w3.org").on_open(move |u| opened.borrow_mut().push(u.to_string()))
-        };
+        let (services, recorder) = crate::host::HostServices::recording();
+        let mut link = Link::new("https://w3.org");
         let mut doc = AutoCommit::new();
-        let handled =
-            link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT);
+        let handled = crate::host::scoped(&services, || {
+            link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT)
+        });
         assert!(handled, "Activate is handled");
-        assert_eq!(opened.borrow().as_slice(), &["https://w3.org".to_string()]);
+        assert_eq!(recorder.opened_uris(), ["https://w3.org"]);
     }
 
     #[test]

@@ -20,8 +20,9 @@
 //! probes. No form draft or credential is written to collaborative state.
 
 use std::collections::HashMap;
+use ui::doc::read_bool;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -1228,7 +1229,7 @@ impl AccountsPane {
             AccountKind::Nextcloud,
         ] {
             let key = add_key(kind);
-            if read_bool(state, root, key) {
+            if read_bool(state, root, key).unwrap_or(false) {
                 let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
                 if self.form_kind.is_none() {
                     self.form_kind = Some(kind);
@@ -1254,7 +1255,7 @@ impl AccountsPane {
         ] {
             for view in self.dir.views_of(kind) {
                 let key = edit_key(&view.id);
-                if !read_bool(state, root, &key) {
+                if !read_bool(state, root, &key).unwrap_or(false) {
                     continue;
                 }
                 let _ = state.put(root, key, false);
@@ -1265,7 +1266,7 @@ impl AccountsPane {
     }
 
     fn handle_form_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.form_cancel || read_bool(state, root, FORM_CANCEL_KEY) {
+        if self.form_cancel || read_bool(state, root, FORM_CANCEL_KEY).unwrap_or(false) {
             self.form_cancel = false;
             let _ = state.put(
                 root,
@@ -1289,7 +1290,7 @@ impl AccountsPane {
     /// metadata or credential is persisted until [`Self::poll_form_probe`]
     /// receives success.
     fn handle_form_save(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.form_submit || read_bool(state, root, FORM_SAVE_KEY) {
+        if self.form_submit || read_bool(state, root, FORM_SAVE_KEY).unwrap_or(false) {
             self.form_submit = false;
             let _ = state.put(root, FORM_SAVE_KEY, automerge::ScalarValue::Boolean(false));
             let name = self.form_name.with(Clone::clone);
@@ -1413,7 +1414,7 @@ impl AccountsPane {
                 continue;
             }
             let key = reauth_key(&view.id);
-            if read_bool(state, root, &key) {
+            if read_bool(state, root, &key).unwrap_or(false) {
                 let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
                 self.reauth_id = Some(view.id);
                 self.reauth_error = None;
@@ -1424,7 +1425,7 @@ impl AccountsPane {
     }
 
     fn handle_reauth_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.reauth_cancel || read_bool(state, root, REAUTH_CANCEL_KEY) {
+        if self.reauth_cancel || read_bool(state, root, REAUTH_CANCEL_KEY).unwrap_or(false) {
             self.reauth_cancel = false;
             let _ = state.put(
                 root,
@@ -1441,7 +1442,7 @@ impl AccountsPane {
     }
 
     fn handle_reauth_save(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.reauth_submit || read_bool(state, root, REAUTH_SAVE_KEY) {
+        if self.reauth_submit || read_bool(state, root, REAUTH_SAVE_KEY).unwrap_or(false) {
             self.reauth_submit = false;
             let _ = state.put(
                 root,
@@ -1515,7 +1516,7 @@ impl AccountsPane {
     }
 
     fn handle_remove_cancel(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, REMOVE_CANCEL_KEY) {
+        if read_bool(state, root, REMOVE_CANCEL_KEY).unwrap_or(false) {
             let _ = state.put(
                 root,
                 REMOVE_CANCEL_KEY,
@@ -1527,7 +1528,7 @@ impl AccountsPane {
     }
 
     fn handle_remove_confirm(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, REMOVE_CONFIRM_KEY) {
+        if read_bool(state, root, REMOVE_CONFIRM_KEY).unwrap_or(false) {
             let _ = state.put(
                 root,
                 REMOVE_CONFIRM_KEY,
@@ -1570,7 +1571,7 @@ impl AccountsPane {
         })
         .collect();
         for (kind, id, key) in targets {
-            if !read_bool(state, root, &key) || self.removed.contains(&id) {
+            if !read_bool(state, root, &key).unwrap_or(false) || self.removed.contains(&id) {
                 continue;
             }
             let _ = state.put(root, key.as_str(), automerge::ScalarValue::Boolean(false));
@@ -1818,13 +1819,6 @@ impl Widget for AccountsPane {
     }
 }
 
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
-    matches!(
-        state.get(root, key),
-        Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
-    )
-}
-
 fn add_key(kind: AccountKind) -> &'static str {
     match kind {
         AccountKind::Mail => ADD_MAIL_KEY,
@@ -1838,6 +1832,7 @@ fn add_key(kind: AccountKind) -> &'static str {
 mod tests {
     use super::*;
     use crate::accounts::sample_directory;
+    use automerge::ReadDoc;
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
     use ui::Theme;
@@ -2140,12 +2135,15 @@ mod tests {
         pane.set_reauth_password_for_test("candidate-password");
         commands.set(Some(AccountViewCommand::SubmitReauthentication));
         pane.sync(&mut doc, &automerge::ROOT);
-        for _ in 0..100 {
+        // The probe answers on a background thread; give it a generous
+        // deadline so a loaded test runner cannot outrun it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
             pane.sync(&mut doc, &automerge::ROOT);
             if pane.reauth_error_for_test() == Some("server rejected candidate") {
                 break;
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(
             pane.reauth_error_for_test(),
@@ -2179,12 +2177,15 @@ mod tests {
         pane.set_form_password_for_test("candidate-password");
         commands.set(Some(AccountViewCommand::Submit));
         pane.sync(&mut doc, &automerge::ROOT);
-        for _ in 0..100 {
+        // The probe answers on a background thread; give it a generous
+        // deadline so a loaded test runner cannot outrun it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
             pane.sync(&mut doc, &automerge::ROOT);
             if pane.form_error.as_deref() == Some("server rejected candidate") {
                 break;
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(
             pane.form_error.as_deref(),

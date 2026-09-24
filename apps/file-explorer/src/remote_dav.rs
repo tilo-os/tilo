@@ -99,7 +99,7 @@ impl DavConnection {
             return Err(DavError::SignInRequired);
         }
         let origin = origin_of(&root).ok_or(DavError::InvalidConfiguration)?;
-        let client = Client::builder()
+        let client = tilo_net::http::blocking_client()
             .timeout(Duration::from_secs(20))
             .connect_timeout(Duration::from_secs(8))
             .redirect(reqwest::redirect::Policy::none())
@@ -638,7 +638,7 @@ mod tests {
             root,
             username: "u".into(),
             password: Zeroizing::new("p".into()),
-            client: Client::builder()
+            client: tilo_net::http::blocking_client()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap(),

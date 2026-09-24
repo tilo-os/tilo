@@ -6,13 +6,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use automerge::AutoCommit;
 use tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 use ui::tilo_actions::ActionAddress;
 
 use crate::app::catalog_resource_id;
@@ -584,56 +581,26 @@ pub struct DbSearchProvider {
     index: DbSearchIndex,
 }
 
-impl SearchProvider for DbSearchProvider {
-    fn name(&self) -> &'static str {
+impl CatalogSearchProvider for DbSearchProvider {
+    fn provider_name(&self) -> &str {
         KIND
     }
-    fn action_directory_generation(&self) -> Option<u64> {
+
+    fn catalog(&self) -> Option<SearchCatalog> {
         self.index
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .catalog
-            .as_ref()
-            .map(|catalog| catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .is_some_and(|catalog| catalog.cursor_is_current(cursor))
-    }
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        self.search_page(query, None, limit, limit).results
-    }
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
-        self.index
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .as_ref()
-            .map_or_else(
-                || SearchCatalog::new(KIND).query_page(query, cursor, work_budget, result_limit),
-                |catalog| catalog.query_page(query, cursor, work_budget, result_limit),
-            )
+            .clone()
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn limited_work_budget(&self, limit: usize) -> usize {
+        // A one-shot query inspects no more candidates than results it asked for.
+        limit
+    }
+
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         self.index.resource(&address.resource).filter(|resource| {
             resource
                 .actions
@@ -718,6 +685,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use tilo_actions::Action;
+    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
     // Two adversarial 100k fixtures are intentionally large enough to prove
     // bounded query work. Serialising only those fixtures keeps the normal

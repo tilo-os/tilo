@@ -2,11 +2,11 @@
 //! sessions, and a host-acknowledged cache for hosts that commit elsewhere.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{Durability, Lease, Revision, StorageKey, StoreError, Stored, WriteOp};
+use crate::{Durability, Lease, Revision, SharedLease, StorageKey, StoreError, Stored, WriteOp};
 
 /// One write a host must commit, coalescing everything accepted for its key
 /// since the previous [`MemoryStore::drain`].
@@ -31,7 +31,16 @@ pub struct MemoryStore {
     namespace: String,
     queued: bool,
     state: RefCell<State>,
-    leases: Rc<RefCell<BTreeSet<StorageKey>>>,
+    leases: Rc<RefCell<BTreeMap<StorageKey, Held>>>,
+    claims: RefCell<BTreeMap<StorageKey, String>>,
+}
+
+/// Who holds one key: an exclusive owner, or shared writers.
+#[derive(Default)]
+struct Held {
+    exclusive: bool,
+    shared: usize,
+    primary: bool,
 }
 
 #[derive(Default)]
@@ -77,13 +86,30 @@ impl Batch {
 
 struct MemoryLease {
     key: StorageKey,
-    leases: Weak<RefCell<BTreeSet<StorageKey>>>,
+    shared: bool,
+    primary: bool,
+    leases: Weak<RefCell<BTreeMap<StorageKey, Held>>>,
 }
 
 impl Drop for MemoryLease {
     fn drop(&mut self) {
-        if let Some(leases) = self.leases.upgrade() {
-            leases.borrow_mut().remove(&self.key);
+        let Some(leases) = self.leases.upgrade() else {
+            return;
+        };
+        let mut leases = leases.borrow_mut();
+        let Some(held) = leases.get_mut(&self.key) else {
+            return;
+        };
+        if self.shared {
+            held.shared = held.shared.saturating_sub(1);
+            if self.primary {
+                held.primary = false;
+            }
+        } else {
+            held.exclusive = false;
+        }
+        if !held.exclusive && held.shared == 0 {
+            leases.remove(&self.key);
         }
     }
 }
@@ -118,6 +144,7 @@ impl MemoryStore {
             queued,
             state: RefCell::new(State::default()),
             leases: Rc::default(),
+            claims: RefCell::default(),
         }
     }
 
@@ -313,13 +340,48 @@ impl crate::DurableStore for MemoryStore {
     }
 
     fn lease(&self, key: &StorageKey) -> Result<Lease, StoreError> {
-        if !self.leases.borrow_mut().insert(key.clone()) {
+        let mut leases = self.leases.borrow_mut();
+        let held = leases.entry(key.clone()).or_default();
+        if held.exclusive || held.shared > 0 {
             return Err(StoreError::Busy(key.to_string()));
         }
+        held.exclusive = true;
+        drop(leases);
         Ok(Box::new(MemoryLease {
             key: key.clone(),
+            shared: false,
+            primary: false,
             leases: Rc::downgrade(&self.leases),
         }))
+    }
+
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError> {
+        let mut claims = self.claims.borrow_mut();
+        let owner = claims
+            .entry(key.clone())
+            .or_insert_with(|| claimant.to_owned());
+        Ok(owner == claimant)
+    }
+
+    fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError> {
+        let mut leases = self.leases.borrow_mut();
+        let held = leases.entry(key.clone()).or_default();
+        if held.exclusive {
+            return Err(StoreError::Busy(key.to_string()));
+        }
+        held.shared = held.shared.saturating_add(1);
+        let primary = !held.primary;
+        held.primary = true;
+        drop(leases);
+        Ok(SharedLease {
+            lease: Box::new(MemoryLease {
+                key: key.clone(),
+                shared: true,
+                primary,
+                leases: Rc::downgrade(&self.leases),
+            }),
+            primary,
+        })
     }
 }
 

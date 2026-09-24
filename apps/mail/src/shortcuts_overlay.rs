@@ -166,7 +166,7 @@ impl MailShortcutsOverlay {
                 y + 17.0 * scale,
             );
             fill_round(scene, t, chip, 6.0 * scale, colors.lift(0.72));
-            stroke_round(scene, t, chip, 6.0 * scale, 1.0, colors.border_standard);
+            stroke_round(scene, t, chip, 6.0 * scale, colors.border_standard, 1.0);
             tr.draw_text_weighted(
                 scene,
                 key,

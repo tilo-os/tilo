@@ -24,6 +24,7 @@
 
 use std::any::Any;
 use std::fmt;
+use std::path::PathBuf;
 
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
@@ -43,6 +44,13 @@ pub enum StorageKey {
         workspace: String,
         record: String,
     },
+    /// A package's own document, outside any workspace.
+    Package { package: String },
+    /// The index of records one workspace holds for a package.
+    RoomIndex { package: String, workspace: String },
+    /// A record from before records were scoped to a workspace. Kept as a
+    /// read source for importing it into one workspace.
+    PackageRecord { package: String, record: String },
     /// One application instance's local presentation on one device.
     View {
         device: String,
@@ -64,6 +72,37 @@ impl StorageKey {
         }
     }
 
+    pub fn package(package: impl Into<String>) -> Self {
+        Self::Package {
+            package: package.into(),
+        }
+    }
+
+    pub fn room_index(package: impl Into<String>, workspace: impl Into<String>) -> Self {
+        Self::RoomIndex {
+            package: package.into(),
+            workspace: workspace.into(),
+        }
+    }
+
+    pub fn package_record(package: impl Into<String>, record: impl Into<String>) -> Self {
+        Self::PackageRecord {
+            package: package.into(),
+            record: record.into(),
+        }
+    }
+
+    /// The package owning this key's data, when it has one.
+    pub fn package_id(&self) -> Option<&str> {
+        match self {
+            Self::Record { package, .. }
+            | Self::Package { package }
+            | Self::RoomIndex { package, .. }
+            | Self::PackageRecord { package, .. } => Some(package),
+            Self::View { .. } => None,
+        }
+    }
+
     pub fn view(device: impl Into<String>, workspace: impl Into<String>, instance: u64) -> Self {
         Self::View {
             device: device.into(),
@@ -81,6 +120,11 @@ impl fmt::Display for StorageKey {
                 workspace,
                 record,
             } => write!(f, "record {package}/{workspace}/{record}"),
+            Self::Package { package } => write!(f, "package {package}"),
+            Self::RoomIndex { package, workspace } => write!(f, "room {package}/{workspace}"),
+            Self::PackageRecord { package, record } => {
+                write!(f, "package record {package}/{record}")
+            }
             Self::View {
                 device,
                 workspace,
@@ -176,8 +220,17 @@ pub enum StoreError {
     Failed { context: String, message: String },
 }
 
-/// Exclusive ownership of one key, held for as long as the value lives.
+/// Ownership of one key, held for as long as the value lives.
 pub type Lease = Box<dyn Any>;
+
+/// A non-exclusive claim on one key, for documents several processes may
+/// write at once because readers merge what each appends. `primary` is true
+/// for the one holder entitled to continue the stored writer identity; every
+/// other holder must write under an identity of its own.
+pub struct SharedLease {
+    pub lease: Lease,
+    pub primary: bool,
+}
 
 /// Keyed, ordered, honestly-acknowledged storage.
 ///
@@ -228,6 +281,28 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] when another owner, in this process or another,
     /// already holds the key.
     fn lease(&self, key: &StorageKey) -> Result<Lease, StoreError>;
+
+    /// Join the key's shared writers. Shared holders coexist with each other
+    /// and exclude an exclusive [lease](Self::lease), and it them.
+    ///
+    /// # Errors
+    /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
+    fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
+
+    /// Grant custody of `key` to exactly one `claimant`, durably: the first
+    /// claim wins, and the same claimant may claim again (to resume after a
+    /// crash). Used to import a retained source into exactly one workspace.
+    /// `true` when `claimant` holds custody.
+    ///
+    /// # Errors
+    /// A key the store cannot claim, or a failure recording the claim.
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError>;
+
+    /// Where a host that keeps the key in a local file keeps it. Only for
+    /// diagnostics and tools that work on that file; `None` elsewhere.
+    fn local_path(&self, _key: &StorageKey) -> Option<PathBuf> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -265,6 +340,15 @@ mod tests {
         assert_eq!(
             StorageKey::view("dev", "room", 7).to_string(),
             "view dev/room/7"
+        );
+        assert_eq!(StorageKey::package("pkg").to_string(), "package pkg");
+        assert_eq!(
+            StorageKey::room_index("pkg", "room").to_string(),
+            "room pkg/room"
+        );
+        assert_eq!(
+            StorageKey::package_record("pkg", "rec").to_string(),
+            "package record pkg/rec"
         );
     }
 }

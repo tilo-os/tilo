@@ -1,17 +1,43 @@
-use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 use winit::{
-    application::ApplicationHandler,
     dpi::PhysicalPosition,
     event::{ElementState, MouseButton, WindowEvent},
+};
+// The native event-loop runner (`app/native_runner.rs`) reaches these through
+// `use super::*`.
+#[cfg(feature = "native")]
+use crate::gpu::RenderContext;
+#[cfg(feature = "native")]
+use crate::render_thread::RenderThreadHandle;
+#[cfg(feature = "native")]
+use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
+#[cfg(feature = "native")]
+use crate::render_thread::{FrameOutcome, RenderRequest, spawn_render_thread};
+#[cfg(feature = "native")]
+use crate::widget::AudiencePresentationWidgetExt as _;
+#[cfg(feature = "native")]
+use crate::widget::{FloatingSurfaceWidgetExt as _, FullscreenWidgetExt as _};
+#[cfg(feature = "native")]
+use std::sync::{Arc, mpsc};
+#[cfg(feature = "native")]
+use taffy::AvailableSpace;
+#[cfg(feature = "native")]
+use vello::{Renderer, RendererOptions, peniko::Color};
+#[cfg(feature = "native")]
+use vello::{Scene, kurbo::Affine, kurbo::Point};
+#[cfg(feature = "native")]
+use winit::{
+    application::ApplicationHandler,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
 use std::cell::Cell;
 
+#[cfg(feature = "native")]
 #[path = "profiling/native_input_isolation.rs"]
 mod native_input_isolation;
 
+#[cfg(feature = "native")]
 #[path = "animation_schedule.rs"]
 mod animation_schedule;
 
@@ -32,6 +58,10 @@ include!("app/accessibility.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");
 include!("app/host.rs");
+#[cfg(feature = "native")]
+mod native_runner;
+#[cfg(all(windows, feature = "native"))]
+pub(crate) use native_runner::prepare_native_renderer;
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -132,9 +162,11 @@ pub enum UserEvent {
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),
     /// No `WindowEvent` analogue, so accesskit events get their own variant.
+    #[cfg(feature = "native")]
     AccessKit(accesskit_winit::WindowEvent),
 }
 
+#[cfg(feature = "native")]
 impl From<accesskit_winit::Event> for UserEvent {
     fn from(e: accesskit_winit::Event) -> Self {
         UserEvent::AccessKit(e.window_event)
@@ -143,45 +175,44 @@ impl From<accesskit_winit::Event> for UserEvent {
 use crate::collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PresencePayload,
 };
-use crate::gpu::RenderContext;
 use crate::permissions::PermissionContext;
 use crate::presence::{PresenceCtx, PresenceKey};
-use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spawn_render_thread};
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{
-    AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, FullscreenWidgetExt as _,
-    Widget,
-};
-use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
-use taffy::{AvailableSpace, NodeId, TaffyTree};
-use vello::{
-    Renderer, RendererOptions, Scene, kurbo::Affine, kurbo::Point, kurbo::Rect as KurboRect,
-    peniko::Color,
-};
+use crate::time::{Duration, Instant};
+use crate::widget::Widget;
+use taffy::{NodeId, TaffyTree};
+use vello::kurbo::Rect as KurboRect;
 
-/// Cached `QUICK_UI_PERF=1` check, so the per-frame read is cheap.
+/// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
+/// (`QUICK_UI_PERF=1` natively), so the per-frame read is cheap.
+#[cfg(feature = "native")]
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_PERF").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| crate::host::environment().diagnostics.perf_log)
 }
 
 /// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
 /// forcing a full `compute_layout` on every `layout_dirty` frame — a safety
 /// valve if a subtree ever needs a re-solve without reporting
 /// `layout_needs_measure`.
+#[cfg(feature = "native")]
 fn scroll_opt_disabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_NO_SCROLL_OPT").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| {
+        crate::host::environment()
+            .diagnostics
+            .disable_scroll_fast_path
+    })
 }
 
 /// Whether an animation request should keep the event loop on its 60 Hz pump.
 /// Reduced-motion widgets paint their settled state without an animation
 /// redraw, so their raw demand must not keep an otherwise-idle app awake.
+#[cfg(feature = "native")]
 const fn animation_pump_needed(needs_frame: bool, reduce_motion: bool) -> bool {
     needs_frame && !reduce_motion
 }
@@ -223,6 +254,7 @@ mod animation_pump_tests {
     }
 }
 
+#[cfg(feature = "native")]
 fn next_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -236,6 +268,7 @@ fn next_boundary(s: &str, byte: usize) -> usize {
     }
 }
 
+#[cfg(feature = "native")]
 fn prev_boundary(s: &str, byte: usize) -> usize {
     let mut b = byte.min(s.len());
     loop {
@@ -250,6 +283,7 @@ fn prev_boundary(s: &str, byte: usize) -> usize {
 }
 
 /// `None` when the caret is in whitespace / at a gap with no adjacent word.
+#[cfg(feature = "native")]
 fn word_at(s: &str, byte: usize) -> Option<String> {
     let b = byte.min(s.len());
     // On a boundary (between words or at the end), prefer the word to the
@@ -295,6 +329,7 @@ fn word_at(s: &str, byte: usize) -> Option<String> {
 /// milliseconds. Winit delivers `CursorMoved` at up to 120 Hz (~8 ms/delta),
 /// which would saturate the Unix socket for no visual gain; 33 ms caps the
 /// wire rate at ~30 Hz, fluid enough without becoming the bottleneck.
+#[cfg(feature = "native")]
 pub(crate) const POINTER_BROADCAST_MIN_GAP_MS: u64 = 33;
 
 #[derive(Clone, Copy, Debug)]
@@ -305,6 +340,7 @@ struct DirectedInvocation {
 
 /// Public-in-crate so the throttle decision is unit-testable without a real
 /// event loop.
+#[cfg(feature = "native")]
 pub(crate) fn pointer_broadcast_allowed(
     last: Option<Instant>,
     now: Instant,
@@ -319,6 +355,7 @@ pub(crate) fn pointer_broadcast_allowed(
 /// Free function so the fullscreen reconcile decision is unit-testable
 /// without a live winit window (real OS fullscreen can't be exercised
 /// headlessly).
+#[cfg(feature = "native")]
 pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -> Option<bool> {
     match want {
         Some(w) if w != requested => Some(w),
@@ -328,6 +365,7 @@ pub(crate) fn fullscreen_request_decision(requested: bool, want: Option<bool>) -
 
 /// Lets a nested settings/appearance pane drive the app's global appearance
 /// without a back-channel.
+#[cfg(feature = "native")]
 fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceIntent> {
     let _entry = crate::bound_dispatch::enter_widget(w).ok()?;
     if let Some(intent) = w.appearance_intent() {
@@ -436,9 +474,16 @@ pub struct ActionUiRoute {
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
 )]
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub struct App {
-    #[cfg(windows)]
-    startup_renderer: Option<RendererPreparation>,
+    #[cfg(all(windows, feature = "native"))]
+    startup_renderer: Option<native_runner::RendererPreparation>,
     wake_scope: Option<crate::wake::WakeScope>,
     state: State,
     root_widget: Box<dyn Widget>,
@@ -475,7 +520,7 @@ pub struct App {
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made by Theme
     /// Studio. Throttled so the render loop does not stat the file per frame.
-    theme_store_stamp: Option<std::time::SystemTime>,
+    theme_store_stamp: Option<crate::time::SystemTime>,
     last_theme_store_check: Instant,
     input: InputRuntime,
 
@@ -548,7 +593,7 @@ struct AppConstructionInputs {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<std::time::SystemTime>,
+    theme_store_stamp: fn() -> Option<crate::time::SystemTime>,
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
@@ -627,6 +672,7 @@ impl AppConstructionInputs {
     fn production(collab_manager: CollaborationManager) -> Self {
         // The screen reader below speaks through the host's services, so a
         // process that never installed any gets the native desktop's.
+        #[cfg(feature = "native")]
         crate::host::native::install_default_if_unset(None);
         Self {
             collab_manager,
@@ -637,7 +683,9 @@ impl AppConstructionInputs {
                 field: crate::widget::SearchField::new,
             },
             watch_system_settings: true,
-            debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
+            debug_mode: || {
+                cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
+            },
             theme_store_stamp: || {
                 settings_store::settings_path()
                     .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
@@ -645,7 +693,7 @@ impl AppConstructionInputs {
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
-                if App::screen_reader_env_enabled()
+                if crate::host::environment().accessibility.screen_reader
                     || App::persisted_accessibility_bool("screen_reader")
                 {
                     Some(App::configured_screen_reader())
@@ -653,10 +701,20 @@ impl AppConstructionInputs {
                     None
                 }
             },
-            high_contrast: App::high_contrast_env_enabled,
-            reduce_motion: App::reduce_motion_env_enabled,
-            text_scale: || App::text_scale_env().unwrap_or(1.0),
-            ui_scale: || App::ui_scale_env().unwrap_or(1.0),
+            high_contrast: || crate::host::environment().accessibility.high_contrast,
+            reduce_motion: || crate::host::environment().accessibility.reduce_motion,
+            text_scale: || {
+                crate::host::environment()
+                    .accessibility
+                    .text_scale
+                    .unwrap_or(1.0)
+            },
+            ui_scale: || {
+                crate::host::environment()
+                    .accessibility
+                    .ui_scale
+                    .unwrap_or(1.0)
+            },
             pending_continuation_restore: crate::collaboration::continuation_restore_env,
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
@@ -666,7 +724,7 @@ impl AppConstructionInputs {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
     fn controlled() -> Self {
         Self {
             collab_manager: CollaborationManager::disabled(),
@@ -709,6 +767,7 @@ impl App {
         self.native_input_probe = Some(Box::new(probe));
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn native_input_snapshot(&self) -> Option<serde_json::Value> {
         self.native_input_probe
             .as_ref()
@@ -787,14 +846,15 @@ impl App {
     }
 
     pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
+        let accessibility = crate::host::environment().accessibility;
         let theme = Theme::configured().with_a11y(
             &crate::a11y::A11ySettings {
-                high_contrast: Self::high_contrast_env_enabled(),
-                reduce_motion: Self::reduce_motion_env_enabled(),
+                high_contrast: accessibility.high_contrast,
+                reduce_motion: accessibility.reduce_motion,
                 ..Default::default()
             },
-            Self::text_scale_env().unwrap_or(1.0),
-            Self::ui_scale_env().unwrap_or(1.0),
+            accessibility.text_scale.unwrap_or(1.0),
+            accessibility.ui_scale.unwrap_or(1.0),
         );
         let mut text_renderer = TextRenderer::new();
         text_renderer.set_text_scale(theme.text_scale);
@@ -815,6 +875,7 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
     }
+    #[cfg(feature = "native")]
     fn close_native_content(&mut self) {
         self.close_components();
         crate::widget::unmount_native_views(self.root_widget.as_mut());
@@ -1103,7 +1164,7 @@ impl App {
         Self::with_parts(Some(wake_scope), state, root_widget, inputs())
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, all(feature = "native", feature = "test-support")))]
     pub(crate) fn from_scoped_parts_with_controlled_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
@@ -1141,6 +1202,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn accept_wake(&mut self, event: &crate::wake::WakeEvent) -> bool {
         if !self
             .wake_scope
@@ -1169,7 +1231,7 @@ impl App {
         );
         let configured_theme = inputs.configured_theme.resolve();
         let mut app = Self {
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "native"))]
             startup_renderer: None,
             wake_scope,
             state,
@@ -1197,7 +1259,7 @@ impl App {
             autofocus_on_structure_change: false,
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
-            last_theme_store_check: Instant::now(),
+            last_theme_store_check: crate::time::now(),
             focus_history: HistoryRuntime::new(),
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
@@ -1483,7 +1545,7 @@ impl App {
         if !self.collaboration.manager.is_connected() {
             return;
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         if self
             .last_playback_publish
             .is_some_and(|last| now.duration_since(last) < Duration::from_millis(500))
@@ -1515,6 +1577,7 @@ impl App {
     /// `fullscreen_intent` to the window on change) and compositor-driven
     /// (read the actual state back and notify the root on a transition, e.g.
     /// a global un-fullscreen keybind or a denied request).
+    #[cfg(feature = "native")]
     fn reconcile_fullscreen(&mut self, window: &Window) -> bool {
         let mut changed = false;
 
@@ -1557,6 +1620,7 @@ impl App {
 
     /// Split from [`Self::reconcile_fullscreen`] so the App→root notification
     /// wiring is unit-testable without a live winit window.
+    #[cfg(feature = "native")]
     fn note_actual_fullscreen(&mut self, actual: bool) -> bool {
         if actual == self.window.fullscreen_active {
             return false;
@@ -1569,6 +1633,7 @@ impl App {
     }
 
     /// Level-triggered: a no-op once the user's choice is caught up.
+    #[cfg(feature = "native")]
     pub(crate) fn reconcile_appearance(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         if !self.appearance_reconcile {
@@ -1606,9 +1671,10 @@ impl App {
         changed
     }
 
+    #[cfg(feature = "native")]
     fn reconcile_configured_theme(&mut self) -> bool {
         self.reconcile_configured_theme_with(
-            Instant::now(),
+            crate::time::now(),
             || {
                 settings_store::settings_path()
                     .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
@@ -1617,10 +1683,11 @@ impl App {
         )
     }
 
+    #[cfg(feature = "native")]
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<std::time::SystemTime>,
+        stamp: impl FnOnce() -> Option<crate::time::SystemTime>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         // Only an explicitly native service host watches process settings.
@@ -1643,13 +1710,14 @@ impl App {
         true
     }
 
+    #[cfg(feature = "native")]
     fn apply_configured_theme(&mut self) {
         self.accessibility.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
-            || Self::screen_reader_env_enabled();
+            || crate::host::environment().accessibility.screen_reader;
         self.set_screen_reader_enabled(configured_reader);
         if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             Self::configure_screen_reader(reader);
@@ -1661,6 +1729,7 @@ impl App {
     /// enclosing container. Works off `node_map` rather than walking
     /// `children` so it still reaches widgets nested under containers with
     /// private child storage.
+    #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
         let mut best: Option<(f64, CursorIcon)> = None;
         for &node in self.layout.node_map.keys() {
@@ -1684,6 +1753,7 @@ impl App {
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
+    #[cfg(feature = "native")]
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
         if !self.input.interaction.supports_hover() {
             return None;
@@ -1986,9 +2056,11 @@ impl App {
         clippy::expect_used,
         reason = "storage identity must fail closed rather than wrap and admit an old owner"
     )]
+    #[cfg(feature = "native")]
     pub(crate) fn history_storage_generation(&self) -> u64 {
         self.autosave_generation
     }
+    #[cfg(feature = "native")]
     pub(crate) fn install_app_state_history(
         &mut self,
         definition: &'static crate::history_mode::HistoryDefinition,
@@ -2044,115 +2116,6 @@ impl App {
     pub fn resolved_window_title(&self) -> String {
         resolve_window_title(self.window.title.as_deref())
     }
-
-    /// Run this application on the platform event loop.
-    pub fn run(self) {
-        self.run_with_setup(|_| {});
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn with_startup_renderer(mut self, renderer: Option<RendererPreparation>) -> Self {
-        self.startup_renderer = renderer;
-        self
-    }
-
-    /// Like [`App::run`] but exposes the winit [`EventLoopProxy`] before the
-    /// loop starts, so callers can spawn threads that inject [`UserEvent`]s.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the platform windowing system can't create the event loop.
-    /// Once running, a Wayland compositor disconnect is a normal application
-    /// shutdown boundary (session logout, compositor restart), so an
-    /// `ExitFailure` is logged and returned rather than converted into a panic.
-    #[allow(
-        clippy::expect_used,
-        clippy::unwrap_used,
-        reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
-    )]
-    pub fn run_with_setup<F>(mut self, setup: F)
-    where
-        F: FnOnce(EventLoopProxy<UserEvent>),
-    {
-        assert!(
-            self.wake_scope.is_some(),
-            "live App requires from_factory, try_from_factory, or from_scoped_parts"
-        );
-        if self.history.is_none() {
-            self.enable_document_history_chrome();
-        }
-        crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
-        let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
-        #[cfg(target_os = "macos")]
-        if std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1") {
-            use winit::platform::macos::EventLoopBuilderExtMacOS;
-            // Native scripted input does not need to take the user's keyboard.
-            // Keep normal launches unchanged; this is an opt-in profiling mode.
-            event_loop_builder.with_activate_ignoring_other_apps(false);
-        }
-        let event_loop = event_loop_builder.build().unwrap();
-        let proxy = event_loop.create_proxy();
-        let wake_proxy = proxy.clone();
-        self.wake_scope
-            .as_mut()
-            .unwrap()
-            .bind(move |event| {
-                let _ = wake_proxy.send_event(UserEvent::Wake(event));
-            })
-            .expect("App wake scope must be open and unbound at native startup");
-        // The AccessKit adapter routes events back through this as
-        // `UserEvent::AccessKit`.
-        let a11y_proxy = proxy.clone();
-        #[allow(
-            clippy::panic,
-            reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"
-        )]
-        let native_scenario = crate::native_scenario::load_from_env()
-            .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
-        assert!(
-            native_scenario.is_none() || self.profiler.is_some(),
-            "native performance scenarios require QOS_PROFILE_OUT or QOS_PROFILE"
-        );
-        {
-            let _entry = self.enter_wake_scope();
-            setup(proxy);
-            self.init_layout();
-        }
-
-        let mut handler = AppHandler {
-            app: self,
-            window: None,
-            render: None,
-            audience_presentation: None,
-            floating_windows: Vec::new(),
-            a11y_adapter: None,
-            a11y_proxy,
-            ime_state: None,
-            primary_frames_sent: 0,
-            primary_frames_completed: 0,
-            last_primary_frame_presented: 0,
-            primary_retry: crate::render_thread::retry::RenderRetryState::default(),
-            floating_source_clear_frames: std::collections::HashMap::new(),
-            floating_destination_present_frames: std::collections::HashMap::new(),
-            touch_pointer: crate::interaction::TouchPointerEmulator::default(),
-            dispatching_touch_pointer: false,
-            native_scenario,
-            native_input_ids: Vec::new(),
-            native_input_origin: None,
-            native_input_pointer_passthrough: false,
-            native_input_route_isolation: false,
-            animation_schedule: animation_schedule::AnimationSchedule::default(),
-        };
-        match event_loop.run_app(&mut handler) {
-            Ok(()) => {}
-            Err(winit::error::EventLoopError::ExitFailure(status)) => {
-                tracing::debug!(status, "window system disconnected; application exiting");
-            }
-            Err(error) => {
-                tracing::error!(%error, "application event loop failed; application exiting");
-            }
-        }
-    }
 }
 
 impl Drop for App {
@@ -2169,6 +2132,7 @@ impl Drop for App {
     }
 }
 
+#[cfg(feature = "native")]
 fn native_floating_logical_size(rect: KurboRect) -> winit::dpi::LogicalSize<f64> {
     winit::dpi::LogicalSize::new(
         rect.width().round().max(1.0),
@@ -2176,6 +2140,7 @@ fn native_floating_logical_size(rect: KurboRect) -> winit::dpi::LogicalSize<f64>
     )
 }
 
+#[cfg(feature = "native")]
 fn generic_floating_ids_to_dismiss(
     previous: &std::collections::HashSet<String>,
     current: &std::collections::HashSet<String>,
@@ -2192,6 +2157,7 @@ fn generic_floating_ids_to_dismiss(
         .collect()
 }
 
+#[cfg(feature = "native")]
 fn completed_primary_frame_gates(
     gates: &std::collections::HashMap<String, Option<u64>>,
     last_presented: u64,
@@ -2222,7 +2188,7 @@ mod occlusion_probe_event_tests {
             "ordinary pointer motion adds no redraw"
         );
         retry.admitted();
-        retry.observe(FrameOutcome::Occluded, Instant::now());
+        retry.observe(FrameOutcome::Occluded, crate::time::now());
         assert!(
             retry.request_probe(),
             "pointer interaction wakes a blocked surface"
@@ -2247,6 +2213,7 @@ mod occlusion_probe_event_tests {
     }
 }
 
+#[cfg(feature = "native")]
 fn render_probe_event(event: &WindowEvent) -> bool {
     matches!(
         event,
@@ -2264,9 +2231,10 @@ fn render_probe_event(event: &WindowEvent) -> bool {
     )
 }
 
+#[cfg(feature = "native")]
 fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
     render.is_none_or(|render| {
-        !render.buffers.redraw_deferred() && render.retry.allows(Instant::now())
+        !render.buffers.redraw_deferred() && render.retry.allows(crate::time::now())
     })
 }
 
@@ -2284,6 +2252,7 @@ fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant>
 /// callback exists yet to trigger the redraw that can consume that result.
 /// Pump only until one primary frame is actually presented; steady-state apps
 /// remain event-driven and idle at zero wakeups.
+#[cfg(feature = "native")]
 const fn primary_startup_pump_needed(frames_sent: u64, last_presented: u64) -> bool {
     frames_sent > 0 && last_presented == 0
 }
@@ -2355,8 +2324,9 @@ mod generic_floating_activity_tests {
 
 /// See [`resolve_title_from`] for the precedence.
 fn resolve_window_title(explicit: Option<&str>) -> String {
-    let app_name = std::env::var("TILO_APP_NAME").ok();
-    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+    let environment = crate::host::environment();
+    let app_name = environment.identity.app_name.clone();
+    let package_id = environment.identity.package_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -2373,7 +2343,7 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
-    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+    let package_id = crate::host::environment().identity.package_id.clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -2518,7 +2488,7 @@ mod render_retry_tests {
     use super::*;
     #[test]
     fn unavailable_surface_retries_wait_one_frame_instead_of_spinning() {
-        let now = Instant::now();
+        let now = crate::time::now();
         for outcome in [FrameOutcome::Skipped, FrameOutcome::Reconfigured] {
             let deadline = render_retry_deadline(outcome, now).unwrap();
             assert_eq!(
@@ -2794,7 +2764,7 @@ mod legacy_owner_routing_tests {
         let inputs = crate::launch::LegacyLaunchInputs::new(
             State::new(),
             Box::new(probe),
-            crate::persist::Autosave::disabled("fixture owns storage"),
+            crate::persist::DocWriter::disabled("fixture owns storage"),
         )
         .with_widget_owned_persistence();
         assert_eq!(

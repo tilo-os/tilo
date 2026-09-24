@@ -55,8 +55,7 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -64,7 +63,6 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -1670,7 +1668,6 @@ fn render_shot_to_png(
     viewport: (u32, u32),
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
     // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
     // theme-driven chrome can be proven across palettes; defaults to dark.
     let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
@@ -1678,46 +1675,9 @@ fn render_shot_to_png(
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut frame = ShotFrame::new(viewport, theme).with_layout(ShotLayout::Measured);
+    frame.sync(widget.as_mut());
+    frame.layout(widget.as_mut())?;
 
     // Lazy image widgets (thumbnails, avatars, banners) resolve their decoded
     // image in `sync`, but the FIRST sync above ran before `build_layout`, when
@@ -1726,23 +1686,10 @@ fn render_shot_to_png(
     // in on a later frame; a single-frame shot must sync the now-built tree once
     // more so a prewarmed thumbnail/avatar actually paints instead of the
     // gradient/initials fallback.
-    widget.sync(&mut state.doc, &state.root);
+    frame.sync(widget.as_mut());
 
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let scene = frame.draw(widget.as_mut());
+    frame.write_png(&scene, out);
     println!("tube: wrote shot to {}", out.display());
     Ok(())
 }

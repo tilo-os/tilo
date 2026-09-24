@@ -213,7 +213,7 @@ impl Client {
                     return Err(bad());
                 }
                 let bytes: Vec<u8> = m.upcase.iter().flat_map(|u| u.to_le_bytes()).collect();
-                if format!("{:x}", Sha256::digest(bytes)) != self.identity.upcase {
+                if hex::encode(Sha256::digest(bytes)) != self.identity.upcase {
                     return Err(bad());
                 }
                 let mut tokens = std::collections::BTreeSet::new();
@@ -284,7 +284,7 @@ impl Client {
                 } => {
                     if actual != length
                         || bytes.len() != length as usize
-                        || format!("{:x}", Sha256::digest(&bytes)) != sha256
+                        || hex::encode(Sha256::digest(&bytes)) != sha256
                     {
                         return Err(bad());
                     }

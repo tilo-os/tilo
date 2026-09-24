@@ -442,9 +442,9 @@ fn media_preview_uses_only_digest_recorded_in_immutable_selected_snapshot() {
     use sha2::{Digest, Sha256};
     use std::{collections::BTreeMap, sync::Arc};
     let historical: Arc<[u8]> = Arc::from(b"historical photograph".as_slice());
-    let digest = format!("{:x}", Sha256::digest(&historical));
+    let digest = hex::encode(Sha256::digest(&historical));
     let current: Arc<[u8]> = Arc::from(b"current photograph".as_slice());
-    let current_digest = format!("{:x}", Sha256::digest(&current));
+    let current_digest = hex::encode(Sha256::digest(&current));
     let provider = std::rc::Rc::new(DeferredMedia::default());
     let mut state = State::new();
     state.doc.put(ROOT, "media", digest.clone()).unwrap();
@@ -1415,16 +1415,16 @@ fn legacy_ui_restore_schedules_only_target_and_reopens_durable_result() {
             .unwrap(),
         "old"
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = crate::time::now() + crate::time::Duration::from_secs(3);
     while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
-        && std::time::Instant::now() < deadline
+        && crate::time::now() < deadline
     {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(crate::time::Duration::from_millis(10));
     }
     assert_eq!(
         store.save_status(&first.id).unwrap(),
         crate::record::RecordSaveStatus::Saved,
-        "normal target Autosave acknowledges restore without sweep/flush"
+        "normal target DocWriter acknowledges restore without sweep/flush"
     );
     assert_eq!(
         store

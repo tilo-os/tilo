@@ -8,14 +8,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// Set by the launcher only when the capability plan bound a path containing it —
-/// presence means "you can read this", not merely "this is where it would be".
+/// The host's [`crate::host::HostPaths::user_home`]. The launcher sets it only
+/// when the capability plan bound a path containing it — presence means "you
+/// can read this", not merely "this is where it would be".
 pub fn user_home_override() -> Option<PathBuf> {
-    let raw = std::env::var_os("TILO_USER_HOME")?;
-    if raw.is_empty() {
-        return None;
-    }
-    let path = PathBuf::from(raw);
+    let path = crate::host::environment().paths.user_home.clone()?;
     // Fall through to `HOME` rather than open on a directory that doesn't exist.
     path.is_dir().then_some(path)
 }

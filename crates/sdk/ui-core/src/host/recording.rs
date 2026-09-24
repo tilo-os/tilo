@@ -1,13 +1,18 @@
-//! Host services that record every effect instead of performing it, for tests.
+//! Host services that record every effect instead of performing it — for
+//! tests, and for any host that must observe an app without letting it reach
+//! the desktop.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{
-    FilePicker, HostServices, MediaSession, MediaSessionFactory, MediaSessionPublisher,
-    Notification, Notifier, NotifyError, SpeechFactory, UriOpener, answered,
+    FilePicker, HostServices, LocationProvider, MediaSession, MediaSessionFactory,
+    MediaSessionPublisher, Notification, Notifier, NotifyError, ScreenCaptureProvider,
+    SpeechFactory, UriOpener, answered,
 };
+use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRequest};
 use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
 use crate::portal::{
     LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome, OpenFileChannel,
@@ -22,17 +27,25 @@ struct Log {
     launch_requests: Vec<LaunchRequest>,
     pick_outcomes: VecDeque<PortalOutcome>,
     multi_outcomes: VecDeque<MultiOutcome>,
+    open_file_outcomes: VecDeque<OpenFileOutcome>,
+    launch_outcomes: VecDeque<LaunchOutcome>,
     utterances: Vec<tts::Utterance>,
     notifications: Vec<Notification>,
     media_sessions: Vec<MprisConfig>,
+    location_requests: usize,
+    screen_capture_requests: Vec<ScreenCaptureRequest>,
+    screen_capture_outcomes: VecDeque<ScreenCaptureOutcome>,
+    location_outcomes: VecDeque<LocationOutcome>,
     published: Vec<PlayerSnapshot>,
 }
 
 /// What a [`HostServices::recording`] host was asked to do, and the answers
 /// it will give.
 ///
-/// Copies round-trip through an in-process clipboard; pickers answer queued
-/// outcomes and then `Cancelled`; launches report `Opened`; URIs, utterances
+/// Copies round-trip through an in-process clipboard; pickers and launches
+/// answer queued outcomes, then `Cancelled` (launches: `Opened`); location
+/// requests answer queued fixes, then `Unavailable`; screen-capture requests
+/// answer queued outcomes, then `Cancelled`; URIs, utterances
 /// and notifications are recorded; media sessions start and record what the
 /// player publishes.
 #[derive(Clone, Default)]
@@ -77,6 +90,36 @@ impl HostRecorder {
         self.log().multi_outcomes.push_back(outcome);
     }
 
+    /// Answer the next descriptor-retaining chooser with `outcome`.
+    pub fn respond_to_open_file(&self, outcome: OpenFileOutcome) {
+        self.log().open_file_outcomes.push_back(outcome);
+    }
+
+    /// Answer the next desktop-open request with `outcome`.
+    pub fn respond_to_launch(&self, outcome: LaunchOutcome) {
+        self.log().launch_outcomes.push_back(outcome);
+    }
+
+    /// Answer the next location request with `outcome`.
+    pub fn respond_to_location(&self, outcome: LocationOutcome) {
+        self.log().location_outcomes.push_back(outcome);
+    }
+
+    /// How many location fixes were requested.
+    pub fn location_requests(&self) -> usize {
+        self.log().location_requests
+    }
+
+    /// Answer the next screen-capture request with `outcome`.
+    pub fn respond_to_screen_capture(&self, outcome: ScreenCaptureOutcome) {
+        self.log().screen_capture_outcomes.push_back(outcome);
+    }
+
+    /// Every screen-capture request, in order.
+    pub fn screen_capture_requests(&self) -> Vec<ScreenCaptureRequest> {
+        self.log().screen_capture_requests.clone()
+    }
+
     /// Everything the screen reader was asked to say, in order.
     pub fn utterances(&self) -> Vec<tts::Utterance> {
         self.log().utterances.clone()
@@ -112,6 +155,8 @@ impl HostServices {
             speech: Arc::new(recorder.clone()),
             notifications: Arc::new(recorder.clone()),
             media_session: Arc::new(recorder.clone()),
+            location: Arc::new(recorder.clone()),
+            screen_capture: Arc::new(recorder.clone()),
         };
         (services, recorder)
     }
@@ -159,13 +204,23 @@ impl FilePicker for HostRecorder {
     }
 
     fn open_file(&self, request: PickRequest) -> OpenFileChannel {
-        self.log().pick_requests.push(request);
-        answered(OpenFileOutcome::Cancelled)
+        let mut log = self.log();
+        log.pick_requests.push(request);
+        answered(
+            log.open_file_outcomes
+                .pop_front()
+                .unwrap_or(OpenFileOutcome::Cancelled),
+        )
     }
 
     fn launch(&self, request: LaunchRequest) -> LaunchChannel {
-        self.log().launch_requests.push(request);
-        answered(LaunchOutcome::Opened)
+        let mut log = self.log();
+        log.launch_requests.push(request);
+        answered(
+            log.launch_outcomes
+                .pop_front()
+                .unwrap_or(LaunchOutcome::Opened),
+        )
     }
 }
 
@@ -235,6 +290,30 @@ impl MediaSessionFactory for HostRecorder {
             commands: receiver,
             publisher: Box::new(self.clone()),
         })
+    }
+}
+
+impl LocationProvider for HostRecorder {
+    fn locate(&self) -> LocationChannel {
+        let mut log = self.log();
+        log.location_requests += 1;
+        answered(
+            log.location_outcomes
+                .pop_front()
+                .unwrap_or_else(|| LocationOutcome::Unavailable("no location queued".to_string())),
+        )
+    }
+}
+
+impl ScreenCaptureProvider for HostRecorder {
+    fn request(&self, request: ScreenCaptureRequest) -> ScreenCaptureChannel {
+        let mut log = self.log();
+        log.screen_capture_requests.push(request);
+        answered(
+            log.screen_capture_outcomes
+                .pop_front()
+                .unwrap_or(ScreenCaptureOutcome::Cancelled),
+        )
     }
 }
 
