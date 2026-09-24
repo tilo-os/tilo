@@ -104,6 +104,16 @@ FROM ${BASE_REF} AS offline-check
 ARG PACKAGES
 COPY --from=repository /repo /repo
 RUN --network=none dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
+# os/Containerfile erases these base-installed packages once the compositor's
+# development specs resolve, and later stages (Wine's mingw64-libxslt) need them
+# again. Replay the same erase and prove the complete package set still
+# resolves offline, so the snapshot carries every package the image removes
+# together with its dependencies. The erase list must match os/Containerfile's.
+RUN --network=none rpm -qa --qf '%{NAME}\n' \
+      | awk '/^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$/' \
+      | xargs -r rpm -e --nodeps \
+ && ! rpm -qa --qf '%{NAME}\n' | grep -Eq '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
+ && dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
 
 # The published artifact contains only the repository.
 FROM scratch

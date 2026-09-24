@@ -103,6 +103,33 @@ has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --he
   'snapshot pin updates reject build-input changes while allowing unrelated commits'
 has "$workflow" 'git checkout --detach FETCH_HEAD' \
   'snapshot promotion applies its pin on the current branch tip'
+# Protected main refuses direct pushes; the pin lands through a digest-named
+# automation branch and a PR opened by the CI account (whose PRs run checks).
+promotion_step="$(sed -n '/- name: Propose the frozen snapshot pin through protected main/,/^      - name: /p' "$workflow")"
+if grep -Fq 'branch="automation/rpm-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
+   && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' <<<"$promotion_step" \
+   && grep -Fq 'python3 os/dev/open-snapshot-pr.py' <<<"$promotion_step" \
+   && grep -Fq 'rpms --rpms-ref "$ref"' <<<"$promotion_step" \
+   && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}' <<<"$promotion_step" \
+   && ! grep -Fq 'github.token' <<<"$promotion_step" \
+   && ! grep -Eq 'git push [^|]*HEAD:(main|\$\{?GITHUB_REF_NAME)' "$workflow"; then
+  ok 'snapshot pin lands through a CI-account PR, never a direct push to main'
+else
+  bad 'snapshot pin promotion pushes to main or bypasses the CI-account PR'
+fi
+if grep -Fq 'Forgejo refused the snapshot pin push to $branch' <<<"$promotion_step" \
+   && ! grep -Fq 'branch races' "$workflow"; then
+  ok 'a refused snapshot pin push is reported as refused'
+else
+  bad 'a refused snapshot pin push can be misreported'
+fi
+# Kernel provenance binds RPMS_REF, so an OS build can only verify once the
+# new RPM pin and the kernel rebuilt against it have both merged.
+if grep -Fq 'actions/workflows/build-image.yml/dispatches' "$workflow"; then
+  bad 'snapshot promotion dispatches an image build before its pin and kernel land'
+else
+  ok 'snapshot promotion leaves image builds to the merged RPM and kernel pins'
+fi
 has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
