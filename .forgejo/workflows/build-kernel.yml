@@ -21,7 +21,7 @@ on:
       - "os/dev/cache-github-assets.sh"
       - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
-      - "os/dev/open-kernel-snapshot-pr.py"
+      - "os/dev/open-snapshot-pr.py"
       - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
@@ -39,7 +39,7 @@ on:
       - "os/dev/cache-github-assets.sh"
       - "os/dev/derive-rpm-package-set.py"
       - "os/dev/install-cached-cosign.sh"
-      - "os/dev/open-kernel-snapshot-pr.py"
+      - "os/dev/open-snapshot-pr.py"
       - "os/dev/login-registry-with-retry.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
@@ -544,7 +544,7 @@ jobs:
         os/rpms-snapshot.env
         os/dev/assert-native-arch.sh
         os/dev/derive-rpm-package-set.py
-        os/dev/open-kernel-snapshot-pr.py
+        os/dev/open-snapshot-pr.py
         os/dev/login-registry-with-retry.sh
         .forgejo/workflows/build-kernel.yml
     steps:
@@ -606,8 +606,8 @@ jobs:
           remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
           git push --force-with-lease="refs/heads/$branch:$remote_tip" \
             origin "HEAD:refs/heads/$branch"
-          python3 os/dev/open-kernel-snapshot-pr.py \
+          python3 os/dev/open-snapshot-pr.py \
             --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
             --branch "$branch" --snapshot-digest "$snapshot_digest" \
-            --x86-ref "$KERNEL_RPMS_X86_64_REF" \
+            kernel --x86-ref "$KERNEL_RPMS_X86_64_REF" \
             --arm-ref "$KERNEL_RPMS_AARCH64_REF"
