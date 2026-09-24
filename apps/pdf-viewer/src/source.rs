@@ -854,14 +854,15 @@ impl RasterBackend {
         }
         let t = Instant::now();
         let source = self.sources.get(slot.source)?;
-        let page_size = source.doc.page_size(slot.page)?;
-        let bitmap = source
-            .doc
-            .render(
-                slot.page,
-                &tilo_pdf::RenderOptions::fit_width(page_size, bucket),
+        let extra = tilo_pdf::Rotation::from_degrees(rotation).unwrap_or_default();
+        let options = tilo_pdf::RenderOptions {
+            rotation: extra,
+            ..tilo_pdf::RenderOptions::fit_width(
+                extra.apply_size(source.doc.page_size(slot.page)?),
+                bucket,
             )
-            .ok()?;
+        };
+        let bitmap = source.doc.render(slot.page, &options).ok()?;
         if profiling() {
             eprintln!(
                 "[pdf-profile]   render page {} @ {}px: {:.1}ms",

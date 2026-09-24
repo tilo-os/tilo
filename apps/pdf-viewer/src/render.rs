@@ -927,8 +927,15 @@ fn draw_thumbnail_raster(
     let rr = RoundedRect::from_rect(rect, 2.0);
     if img.width > 0 && img.height > 0 {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &rr);
-        let sx = rect.width() / f64::from(img.width);
-        let tf = base * Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sx);
+        // Same fit as the page itself, so a rotated page's miniature keeps
+        // its aspect.
+        let (iw, ih) = (f64::from(img.width), f64::from(img.height));
+        let s = crate::model::fit_scale(rect.width(), rect.height(), iw, ih);
+        let dx = ((rect.width() - iw * s) / 2.0).max(0.0);
+        let dy = ((rect.height() - ih * s) / 2.0).max(0.0);
+        let tf = base
+            * Affine::translate((rect.x0 + dx, rect.y0 + dy))
+            * Affine::scale_non_uniform(s, s);
         scene.draw_image(img, tf);
         scene.pop_layer();
     }
