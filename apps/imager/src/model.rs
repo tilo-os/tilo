@@ -1159,26 +1159,13 @@ pub fn sample_recent_sources() -> Vec<Source> {
 // Formatting helpers.
 // ---------------------------------------------------------------------------
 
-/// Format a byte count as a short decimal-SI string (vendors use powers of
-/// 1000), e.g. `931.5 GB`, `512 MB`, `16.0 GB`.
+/// Format a byte count with SI decimal units, the way drive and image
+/// vendors label capacities (`931.5 GB`). Zero means "unknown" and reads `—`.
 pub fn fmt_size(bytes: u64) -> String {
-    const KB: f64 = 1_000.0;
-    const MB: f64 = 1_000_000.0;
-    const GB: f64 = 1_000_000_000.0;
-    const TB: f64 = 1_000_000_000_000.0;
-    let b = bytes as f64;
     if bytes == 0 {
         "—".to_string()
-    } else if b >= TB {
-        format!("{:.2} TB", b / TB)
-    } else if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.0} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.0} kB", b / KB)
     } else {
-        format!("{bytes} B")
+        ui::format::bytes_si(bytes)
     }
 }
 
@@ -1381,7 +1368,7 @@ mod tests {
     fn fmt_size_picks_sane_units() {
         assert_eq!(fmt_size(0), "—");
         assert_eq!(fmt_size(512), "512 B");
-        assert_eq!(fmt_size(1_000_000_000_000), "1.00 TB");
+        assert_eq!(fmt_size(1_000_000_000_000), "1.0 TB");
         assert!(fmt_size(2_415_919_104).ends_with("GB"));
     }
 

@@ -28,14 +28,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// Socket path is under `/tmp`, keyed by the test process's pid to avoid
-/// collisions in parallel runs.
-fn spawn_with_control() -> (Child, PathBuf) {
-    let socket_path = PathBuf::from(format!(
-        "/tmp/tilo-test-control-{}.sock",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&socket_path);
+/// The socket lives in a private per-test directory, returned so it
+/// outlives the child; a shared `/tmp` name could be bound by anyone first.
+fn spawn_with_control() -> (Child, PathBuf, tempfile::TempDir) {
+    let control_dir = tempfile::tempdir().expect("control socket directory");
+    let socket_path = control_dir.path().join("control.sock");
 
     let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
@@ -100,7 +97,7 @@ fn spawn_with_control() -> (Child, PathBuf) {
     });
 
     if let Ok(()) = rx.recv_timeout(Duration::from_secs(15)) {
-        (child, socket_path)
+        (child, socket_path, control_dir)
     } else {
         let _ = child.kill();
         let _ = child.wait();
@@ -142,7 +139,7 @@ fn round_trip_with_timeout(
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn list_targets_returns_widget_registry() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -180,7 +177,7 @@ fn list_targets_returns_widget_registry() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn unknown_command_returns_parse_error() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -200,7 +197,7 @@ fn unknown_command_returns_parse_error() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn click_at_returns_ok_response() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -222,7 +219,7 @@ fn click_at_returns_ok_response() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn click_named_known_target_grows_workspace_registry() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -267,7 +264,7 @@ fn click_named_known_target_grows_workspace_registry() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn click_named_unknown_target_returns_structured_error() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -290,7 +287,7 @@ fn click_named_unknown_target_returns_structured_error() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn drag_smoke_completes_round_trip() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -314,7 +311,7 @@ fn drag_smoke_completes_round_trip() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn type_text_into_palette_when_open() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -354,14 +351,10 @@ fn type_text_into_palette_when_open() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn snapshot_writes_png_at_requested_path() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, control_dir) = spawn_with_control();
 
-    // Pid-scoped path so a flaky run from a parallel test doesn't
-    // collide with this one. Cleaned up at the end.
-    let png_path = PathBuf::from(format!(
-        "/tmp/tilo-test-snapshot-{}.png",
-        std::process::id()
-    ));
+    // Inside the test's private directory, so nothing else can plant it.
+    let png_path = control_dir.path().join("snapshot.png");
     let _ = std::fs::remove_file(&png_path);
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
@@ -408,7 +401,7 @@ fn snapshot_writes_png_at_requested_path() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn state_dump_returns_workspace_id_and_chrome() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
@@ -446,7 +439,7 @@ fn state_dump_returns_workspace_id_and_chrome() {
 #[test]
 #[ignore = "requires a Wayland/X11 display server; opt in with --ignored"]
 fn modifiers_alone_returns_ok() {
-    let (mut child, socket_path) = spawn_with_control();
+    let (mut child, socket_path, _control_dir) = spawn_with_control();
 
     let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 

@@ -564,6 +564,42 @@ impl AppActionBroker {
             .start_invocation(peer_id, resource, action, argument, actor)
     }
 
+    /// Start a published action for a person, carrying their provenance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the action is unavailable or cannot be dispatched.
+    pub fn start_with_context(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        person: &str,
+        context: Option<tilo_actions::ActionContext>,
+    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
+        self.state
+            .start_invocation_with_context(peer_id, resource, action, argument, person, context)
+    }
+
+    /// Live surfaces offered to `person` as a member of the hosted
+    /// workspaces, filtered by what their role may invoke.
+    pub fn surfaces_offered_to_member(
+        &self,
+        person: &str,
+    ) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
+        self.state.surfaces_offered_to_member(person)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_invocations_for_test(
+        &self,
+        peer_id: u64,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>
+    {
+        self.state.capture_invocations_for_test(peer_id)
+    }
+
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.state.invocation_status(id)
     }

@@ -225,8 +225,15 @@ mod tests {
         // Debug form is redacted. FROST requires min_signers ≥ 2, so 2-of-2
         // even though only one share needs inspecting.
         use frost_ed25519::keys::{IdentifierList, generate_with_dealer};
-        let rng = rand::rngs::OsRng;
-        let (shares, _pubkeys) = generate_with_dealer(2, 2, IdentifierList::Default, rng).unwrap();
+        use rand_core::SeedableRng as _;
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([0x5a; 32]);
+        let (shares, _pubkeys) = generate_with_dealer(
+            2,
+            2,
+            IdentifierList::Default,
+            crate::rng::FrostRng(&mut rng),
+        )
+        .unwrap();
         let (_id, share) = shares.into_iter().next().unwrap();
         let kp: KeyPackage = share.try_into().unwrap();
         let wrapped = SecretShare::from_key_package(kp);

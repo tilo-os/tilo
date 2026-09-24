@@ -25,6 +25,7 @@ impl App {
         self.presence.pointer_space = Some(space);
     }
 
+    #[cfg(feature = "native")]
     fn local_pointer_key(&self) -> PresenceKey {
         match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
@@ -228,6 +229,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn broadcast_focus_presence(&mut self) {
         use crate::collaboration::PresencePayload;
         let current = self.focused_node.and_then(|id| {
@@ -264,6 +266,7 @@ impl App {
 
     /// Unlike focus presence, this is polled on the root regardless of
     /// focus.
+    #[cfg(feature = "native")]
     fn broadcast_location_presence(&mut self) {
         let current = self.root_widget.presence_payload();
         if current != self.presence.last_location {
@@ -279,6 +282,7 @@ impl App {
     /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key with an
     /// inert paired payload; the receiver recognises the key and decodes the
     /// subset instead.
+    #[cfg(feature = "native")]
     fn broadcast_view_presence(&mut self) {
         if !self.collaboration.manager.is_connected() && self.presence.broadcast_sink.is_none() {
             return;

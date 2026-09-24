@@ -7,13 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 
 use crate::actions::{
     CalendarCollectionResource, calendar_resource_id, event_resource_id, project_resource_id,
@@ -321,44 +318,16 @@ impl CalendarSearchProvider {
     }
 }
 
-impl SearchProvider for CalendarSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for CalendarSearchProvider {
+    fn provider_name(&self) -> &str {
         CALENDAR_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog.query_page(
-            query,
-            cursor,
-            work_budget,
-            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         if address.action != "open" {
             return None;
         }
@@ -381,6 +350,7 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use ui::search::SearchRegistry;
+    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
     fn seeded() -> Model {
         crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap())

@@ -132,9 +132,9 @@ impl MapsApp {
         } else {
             theme.text_dim
         };
-        draw::fill_rrect(scene, visual, end, 10.0, end_fill);
+        draw::fill_round(scene, visual, end, 10.0, end_fill);
         draw::stroke_rrect(scene, visual, end, 10.0, 1.0, end_stroke);
-        draw::fill_rrect(
+        draw::fill_round(
             scene,
             visual,
             Rect::new(

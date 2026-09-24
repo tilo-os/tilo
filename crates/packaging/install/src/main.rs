@@ -447,12 +447,9 @@ fn payloads_root() -> Result<PathBuf, Error> {
 /// [`data_root`]: this follows `XDG_DATA_HOME` like the launcher does,
 /// not `TILO_APPS_DATA_DIR` — using the wrong one silently loses "remove data".
 fn data_home_root() -> Result<PathBuf, Error> {
-    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
-        && !dir.is_empty()
-    {
-        return Ok(PathBuf::from(dir));
-    }
-    dirs::data_dir().ok_or(Error::NoDataDir)
+    xdg_paths::env_dir("XDG_DATA_HOME")
+        .or_else(xdg_paths::data_dir)
+        .ok_or(Error::NoDataDir)
 }
 
 fn trusted_attestors_path() -> Result<PathBuf, Error> {
@@ -513,7 +510,7 @@ fn validate_registry_constraints(
                 decoded.len()
             )));
         }
-        let found = hex_of(pkg_id.as_bytes());
+        let found = hex::encode(pkg_id.as_bytes());
         if !required.eq_ignore_ascii_case(&found) {
             return Err(Error::PackageRootMismatch {
                 required: required.to_ascii_lowercase(),
@@ -533,8 +530,8 @@ fn validate_registry_constraints(
         .ok_or_else(|| Error::Verify("signed root has no publisher key".to_string()))?;
     if found != required {
         return Err(Error::PublisherMismatch {
-            required: hex_of(&required),
-            found: hex_of(&found),
+            required: hex::encode(required),
+            found: hex::encode(found),
         });
     }
     Ok(vec![required])
@@ -568,7 +565,7 @@ fn verify_and_gate(
                 });
             }
             let pub_key_hex = extract_publisher_key(&pkg_id, store)
-                .map(|k| hex_of(&k))
+                .map(hex::encode)
                 .unwrap_or_default();
             Ok((manifest, pub_key_hex, attestor))
         }
@@ -583,27 +580,27 @@ fn verify_and_gate(
                 // fallback: --allow-self-signed permits this
                 eprintln!(
                     "tilo-install: --require-attestor {required:?} unmatched; --allow-self-signed permits self-signed publisher ed25519:{}",
-                    hex_of(&identity)
+                    hex::encode(identity)
                 );
             } else if !trust.allow_self_signed {
                 // Default (current) behavior: warn and proceed.
                 eprintln!(
                     "tilo-install: WARN — package self-signed by ed25519:{} (no trusted-attestor signature); use --require-attestor <id> to demand an attestation",
-                    hex_of(&identity)
+                    hex::encode(identity)
                 );
             }
-            Ok((manifest, hex_of(&identity), String::new()))
+            Ok((manifest, hex::encode(identity), String::new()))
         }
         Verification::Revoked { reason, pubkey, .. } => {
             eprintln!(
                 "tilo-install: REFUSED — publisher ed25519:{} is revoked: {reason}",
-                hex_of(&pubkey)
+                hex::encode(pubkey)
             );
             Err(Error::Revoked { reason })
         }
         Verification::Trusted { manifest } => {
             let pub_key_hex = extract_publisher_key(&pkg_id, store)
-                .map(|k| hex_of(&k))
+                .map(hex::encode)
                 .unwrap_or_default();
             if let Some(required) = &trust.require_attestor {
                 // Trusted-key path bypasses the attestor chain; --require-attestor is
@@ -882,7 +879,7 @@ fn install(
     reg.entry.push(RegistryEntry {
         id: id_field.clone(),
         version: version_field.clone(),
-        package_id_hex: hex_of(ingested.pkg_id.as_bytes()),
+        package_id_hex: hex::encode(ingested.pkg_id.as_bytes()),
         payload_root: dest.clone(),
         manifest_path,
         publisher_key_hex: ingested.publisher_key_hex.clone(),
@@ -1124,7 +1121,7 @@ fn update_one(
         UpdateIntent {
             package_id: entry.id.clone(),
             owner_pid: std::process::id(),
-            new_package_id_hex: hex_of(ingested.pkg_id.as_bytes()),
+            new_package_id_hex: hex::encode(ingested.pkg_id.as_bytes()),
             payload_live: layout.payload_live.clone(),
             payload_staging: layout.payload_staging.clone(),
             payload_retired: layout.payload_retired.clone(),
@@ -1187,7 +1184,7 @@ fn update_one(
         return Err(Error::NotInstalled(entry.id.clone()));
     };
     slot.version = ingested.version().to_string();
-    slot.package_id_hex = hex_of(ingested.pkg_id.as_bytes());
+    slot.package_id_hex = hex::encode(ingested.pkg_id.as_bytes());
     slot.publisher_key_hex
         .clone_from(&ingested.publisher_key_hex);
     slot.attested_by.clone_from(&ingested.attested_by);
@@ -2480,16 +2477,6 @@ fn extract_publisher_key(id: &PackageId, store: &MemoryBlobStore) -> Option<[u8;
         .flatten()?;
     let signed = tilo_app_package::signed::SignedRoot::decode(&blob).ok()?;
     Some(signed.publisher_identity)
-}
-
-fn hex_of(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        // String's `Write` impl never actually fails.
-        let _ = write!(out, "{b:02x}");
-    }
-    out
 }
 
 fn decode_hex_32(s: &str) -> Result<[u8; 32], String> {

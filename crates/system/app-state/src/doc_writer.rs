@@ -1,19 +1,20 @@
-//! Canonical Automerge documents persisted through a [`DurableStore`].
+//! Automerge documents persisted through a [`DurableStore`].
 //!
-//! [`DocOwner`] is a key's single owner: it leases the key, decodes and
-//! validates what is stored without publishing anything, and accepts a
-//! candidate only once its exact source bytes are still current. [`DocWriter`]
-//! then persists the live document the way [`crate::Autosave`] does —
+//! [`DocOwner`] owns one key, exclusively or as one of its shared writers:
+//! it leases the key, decodes and validates what is stored without
+//! publishing anything, and accepts a candidate only once its exact source
+//! bytes are still current. [`DocWriter`] then persists the live document:
 //! `save_after(sent_heads)` appends until the appended volume outgrows the
-//! compacted base, then one full save — but it never blocks and owns no
-//! thread: the store accepts each write at once, and the writer maps store
-//! revisions back to document heads to report what is actually durable.
+//! compacted base, then one full save. It never blocks and owns no thread:
+//! the store accepts each write at once, and the writer maps store revisions
+//! back to document heads to report what is actually durable.
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, ROOT};
@@ -21,11 +22,26 @@ use durable_store::{
     Durability, DurableStore, Lease, Revision, StorageKey, StoreError as SeamError, WriteOp,
 };
 
-use crate::autosave::MIN_COMPACT_BYTES;
 use crate::{
-    DurabilitySnapshot, SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical,
-    validate_canonical_schema_of,
+    SCHEMA_VERSION, SCHEMA_VERSION_KEY, StoreError, decode_canonical, validate_canonical_schema_of,
 };
+
+/// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
+/// enough to swallow a burst of keystrokes, short enough that a `kill` a
+/// moment later still finds the edit stored.
+pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// Below this, compaction isn't worth it — a small document rewrites in
+/// microseconds and the append bookkeeping would dominate.
+const MIN_COMPACT_BYTES: usize = 64 * 1024;
+
+/// What a writer knows is durable, and any outstanding failure. Reading it
+/// never commits document operations.
+#[derive(Clone, Debug, Default)]
+pub struct DurabilitySnapshot {
+    pub durable_heads: Option<Vec<ChangeHash>>,
+    pub error: Option<String>,
+}
 
 impl From<SeamError> for StoreError {
     fn from(error: SeamError) -> Self {
@@ -58,7 +74,8 @@ struct Accepted {
     pending: Option<InFlight>,
 }
 
-/// The exclusive owner of one canonical document key.
+/// The owner of one document key: its exclusive owner, or one of its
+/// shared writers (see [`DocOwner::acquire_shared`]).
 pub struct DocOwner {
     store: Rc<dyn DurableStore>,
     key: StorageKey,
@@ -68,6 +85,7 @@ pub struct DocOwner {
     accepted: RefCell<Option<Accepted>>,
     identity: Rc<()>,
     writer_claimed: Cell<bool>,
+    primary: bool,
     _lease: Lease,
 }
 
@@ -95,13 +113,45 @@ impl DocOwner {
     /// failure reading the stored identity.
     pub fn acquire(store: Rc<dyn DurableStore>, key: StorageKey) -> Result<Self, StoreError> {
         let lease = store.lease(&key)?;
-        let stored = store
-            .read(&key)?
-            .and_then(|stored| stored.writer)
-            .filter(|writer| !writer.is_empty());
-        let actor_stored = stored.is_some();
+        Self::with_lease(store, key, lease, true)
+    }
+
+    /// Join the key's shared writers, for documents several processes may
+    /// have open at once: their appends interleave and every load merges
+    /// them. Only the primary writer continues the stored actor; the others
+    /// write under a fresh actor that is never stored.
+    ///
+    /// # Errors
+    /// [`StoreError::WriterBusy`] while an exclusive owner holds the key; any
+    /// failure reading the stored identity.
+    pub fn acquire_shared(
+        store: Rc<dyn DurableStore>,
+        key: StorageKey,
+    ) -> Result<Self, StoreError> {
+        let shared = store.lease_shared(&key)?;
+        Self::with_lease(store, key, shared.lease, shared.primary)
+    }
+
+    fn with_lease(
+        store: Rc<dyn DurableStore>,
+        key: StorageKey,
+        lease: Lease,
+        primary: bool,
+    ) -> Result<Self, StoreError> {
+        let stored = if primary {
+            store
+                .read(&key)?
+                .and_then(|stored| stored.writer)
+                .filter(|writer| !writer.is_empty())
+        } else {
+            None
+        };
+        // A secondary writer's actor is its own for this session only.
+        let actor_stored = stored.is_some() || !primary;
         let actor = stored.map_or_else(ActorId::random, ActorId::from);
-        let label = PathBuf::from(format!("{} {key}", store.namespace()));
+        let label = store
+            .local_path(&key)
+            .unwrap_or_else(|| PathBuf::from(format!("{} {key}", store.namespace())));
         Ok(Self {
             store,
             key,
@@ -111,6 +161,7 @@ impl DocOwner {
             accepted: RefCell::new(None),
             identity: Rc::new(()),
             writer_claimed: Cell::new(false),
+            primary,
             _lease: lease,
         })
     }
@@ -123,9 +174,51 @@ impl DocOwner {
         &self.store
     }
 
-    /// Names this document in errors and logs.
+    /// Names this document in errors and logs: its local file where the
+    /// store keeps one, else the store namespace and key.
     pub fn label(&self) -> &Path {
         &self.label
+    }
+
+    /// Whether this owner continues the stored writer identity: always for
+    /// an exclusive owner, for one shared writer at a time.
+    pub fn is_primary(&self) -> bool {
+        self.primary
+    }
+
+    /// The actor bytes to store with the next write, until one carrying them
+    /// has committed.
+    pub(crate) fn unstored_writer(&self) -> Option<Vec<u8>> {
+        (!self.actor_stored.get()).then(|| self.actor.to_bytes().to_vec())
+    }
+
+    pub(crate) fn note_writer_stored(&self) {
+        self.actor_stored.set(true);
+    }
+
+    /// The package owning this document, when its key names one.
+    pub fn package_id(&self) -> &str {
+        self.key.package_id().unwrap_or_default()
+    }
+
+    /// The key's stored value, including accepted writes not yet durable.
+    ///
+    /// # Errors
+    /// A failure reading the store.
+    pub fn stored(&self) -> Result<Option<durable_store::Stored>, StoreError> {
+        Ok(self.store.read(&self.key)?)
+    }
+
+    /// Record that `heads` are exactly what the store durably holds, in
+    /// `base` bytes, so a [`DocWriter`] started next continues from them
+    /// rather than rewriting them.
+    pub fn adopt(&self, heads: Vec<ChangeHash>, base: usize) {
+        *self.accepted.borrow_mut() = Some(Accepted {
+            heads: heads.clone(),
+            base,
+            durable: Some(heads),
+            pending: None,
+        });
     }
 
     /// The Automerge actor every write of this document is attributed to.
@@ -266,13 +359,23 @@ impl DocOwner {
 /// Persists one owner's live document; see the module docs. Failures are
 /// sticky: after one, [`DocWriter::request`] sends nothing until a
 /// [`DocWriter::request_checkpoint`] full save becomes durable.
+///
+/// A [disabled](Self::disabled) writer persists nothing and reports why, so
+/// an app without usable storage runs on the same code path.
 pub struct DocWriter {
-    owner: Rc<DocOwner>,
+    owner: Option<Rc<DocOwner>>,
     sent: Vec<ChangeHash>,
     appended: usize,
     base: usize,
     full_writes: usize,
     appends: usize,
+    progress: RefCell<Progress>,
+}
+
+/// What the writer knows about submitted writes. Interior so status and
+/// flush work through a shared reference.
+#[derive(Default)]
+struct Progress {
     inflight: VecDeque<InFlight>,
     durable: Option<Vec<ChangeHash>>,
     error: Option<String>,
@@ -301,15 +404,17 @@ impl DocWriter {
             None => (Vec::new(), 0, None, VecDeque::new()),
         };
         Ok(Self {
-            owner: Rc::clone(owner),
+            owner: Some(Rc::clone(owner)),
             sent,
             appended: 0,
             base,
             full_writes: 0,
             appends: 0,
-            inflight,
-            durable,
-            error: None,
+            progress: RefCell::new(Progress {
+                inflight,
+                durable,
+                error: None,
+            }),
         })
     }
 
@@ -325,8 +430,57 @@ impl DocWriter {
         Ok(writer)
     }
 
-    pub fn owner(&self) -> &DocOwner {
-        &self.owner
+    /// A writer that persists nothing; [`Self::last_error`] carries `reason`.
+    pub fn disabled(reason: impl Into<String>) -> Self {
+        Self {
+            owner: None,
+            sent: Vec::new(),
+            appended: 0,
+            base: 0,
+            full_writes: 0,
+            appends: 0,
+            progress: RefCell::new(Progress {
+                error: Some(reason.into()),
+                ..Progress::default()
+            }),
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.owner.is_some()
+    }
+
+    /// The owner this writer persists through; `None` when disabled.
+    pub fn owner(&self) -> Option<&DocOwner> {
+        self.owner.as_deref()
+    }
+
+    /// The package whose document this is; empty when disabled.
+    pub fn package_id(&self) -> &str {
+        self.owner.as_deref().map_or("", DocOwner::package_id)
+    }
+
+    /// See [`DocOwner::label`]; empty when disabled.
+    pub fn document_path(&self) -> &Path {
+        self.owner
+            .as_deref()
+            .map_or_else(|| Path::new(""), DocOwner::label)
+    }
+
+    /// Treat `doc` as exactly what is already stored: its heads are durable
+    /// and later requests append only what follows them.
+    pub fn seed(&mut self, doc: &mut AutoCommit) {
+        let Some(owner) = &self.owner else {
+            return;
+        };
+        self.sent = doc.get_heads();
+        self.base = owner
+            .stored()
+            .ok()
+            .flatten()
+            .map_or(0, |stored| stored.bytes.len());
+        self.appended = 0;
+        self.progress.get_mut().durable = Some(self.sent.clone());
     }
 
     /// Submit the changes `doc` has beyond what was last submitted. Cheap when
@@ -334,7 +488,7 @@ impl DocWriter {
     /// failed writer never closes the caller's typing transaction.
     pub fn request(&mut self, doc: &mut AutoCommit) {
         self.settle();
-        if self.error.is_some() {
+        if self.owner.is_none() || self.progress.get_mut().error.is_some() {
             return;
         }
         let heads = doc.get_heads();
@@ -360,6 +514,9 @@ impl DocWriter {
     /// before — the one write that clears an outstanding failure.
     pub fn request_checkpoint(&mut self, doc: &mut AutoCommit) {
         self.settle();
+        if self.owner.is_none() {
+            return;
+        }
         let heads = doc.get_heads();
         if let Err(error) = self.send_full(doc, heads) {
             self.refuse(&error);
@@ -376,8 +533,8 @@ impl DocWriter {
     }
 
     fn refuse(&mut self, error: &StoreError) {
-        tracing::error!(document = %self.owner.label.display(), %error, "app state write refused");
-        self.error = Some(error.to_string());
+        tracing::error!(document = %self.document_path().display(), %error, "app state write refused");
+        self.progress.get_mut().error = Some(error.to_string());
     }
 
     fn send_full(
@@ -395,14 +552,15 @@ impl DocWriter {
     }
 
     fn submit(&mut self, op: WriteOp, heads: Vec<ChangeHash>) -> Result<(), StoreError> {
-        let writer = !self.owner.actor_stored.get();
+        let Some(owner) = &self.owner else {
+            return Ok(());
+        };
+        let writer = !owner.actor_stored.get();
         let replace = op.is_replace();
-        let revision = self.owner.store.write(
-            &self.owner.key,
-            op,
-            writer.then(|| self.owner.actor.to_bytes()),
-        )?;
-        self.inflight.push_back(InFlight {
+        let revision = owner
+            .store
+            .write(&owner.key, op, writer.then(|| owner.actor.to_bytes()))?;
+        self.progress.get_mut().inflight.push_back(InFlight {
             revision,
             heads: heads.clone(),
             replace,
@@ -413,25 +571,29 @@ impl DocWriter {
     }
 
     /// Fold resolved writes into the durable heads and sticky error.
-    fn settle(&mut self) {
-        while let Some(front) = self.inflight.front() {
-            match self.owner.store.durability(&self.owner.key, front.revision) {
+    fn settle(&self) {
+        let Some(owner) = &self.owner else {
+            return;
+        };
+        let mut progress = self.progress.borrow_mut();
+        while let Some(front) = progress.inflight.front() {
+            match owner.store.durability(&owner.key, front.revision) {
                 Durability::Pending => break,
                 Durability::Durable => {
-                    let Some(done) = self.inflight.pop_front() else {
+                    let Some(done) = progress.inflight.pop_front() else {
                         break;
                     };
                     if done.writer {
-                        self.owner.actor_stored.set(true);
+                        owner.actor_stored.set(true);
                     }
                     if done.replace {
-                        self.error = None;
+                        progress.error = None;
                     }
-                    self.durable = Some(done.heads);
+                    progress.durable = Some(done.heads);
                 }
                 Durability::Failed(message) => {
-                    self.inflight.pop_front();
-                    self.error = Some(message);
+                    progress.inflight.pop_front();
+                    progress.error = Some(message);
                 }
             }
         }
@@ -440,12 +602,16 @@ impl DocWriter {
     /// What is durable and whether a failure is outstanding, without
     /// submitting or closing anything.
     pub fn durability_snapshot(&self) -> DurabilitySnapshot {
+        let progress = self.progress.borrow();
         let mut snapshot = DurabilitySnapshot {
-            durable_heads: self.durable.clone(),
-            error: self.error.clone(),
+            durable_heads: progress.durable.clone(),
+            error: progress.error.clone(),
         };
-        for write in &self.inflight {
-            match self.owner.store.durability(&self.owner.key, write.revision) {
+        let Some(owner) = &self.owner else {
+            return snapshot;
+        };
+        for write in &progress.inflight {
+            match owner.store.durability(&owner.key, write.revision) {
                 Durability::Pending => break,
                 Durability::Durable => {
                     snapshot.durable_heads = Some(write.heads.clone());
@@ -467,20 +633,40 @@ impl DocWriter {
     ///
     /// # Errors
     /// The outstanding failure, or writes the store could not yet commit.
-    pub fn try_flush(&mut self) -> Result<(), String> {
-        let flushed = self.owner.store.flush(Some(&self.owner.key));
+    pub fn try_flush(&self) -> Result<(), String> {
+        let Some(owner) = &self.owner else {
+            return Err(self
+                .progress
+                .borrow()
+                .error
+                .clone()
+                .unwrap_or_else(|| "writer disabled".to_owned()));
+        };
+        let flushed = owner.store.flush(Some(&owner.key));
         self.settle();
-        if let Some(error) = &self.error {
+        let progress = self.progress.borrow();
+        if let Some(error) = &progress.error {
             return Err(error.clone());
         }
         flushed.map_err(|error| error.to_string())?;
-        if self.inflight.is_empty() {
+        if progress.inflight.is_empty() {
             Ok(())
         } else {
             Err(format!(
                 "{} still has uncommitted writes",
-                self.owner.label.display()
+                owner.label.display()
             ))
+        }
+    }
+
+    /// [`Self::try_flush`], logging a failure instead of returning it. Does
+    /// nothing for a disabled writer.
+    pub fn flush(&self) {
+        if self.owner.is_none() {
+            return;
+        }
+        if let Err(error) = self.try_flush() {
+            tracing::error!(document = %self.document_path().display(), %error, "app state write failed");
         }
     }
 
@@ -495,10 +681,13 @@ impl DocWriter {
 
 impl Drop for DocWriter {
     fn drop(&mut self) {
-        if let Err(error) = self.owner.store.flush(Some(&self.owner.key)) {
-            tracing::debug!(document = %self.owner.label.display(), %error, "writes outstanding at close");
+        let Some(owner) = &self.owner else {
+            return;
+        };
+        if let Err(error) = owner.store.flush(Some(&owner.key)) {
+            tracing::debug!(document = %owner.label.display(), %error, "writes outstanding at close");
         }
-        self.owner.writer_claimed.set(false);
+        owner.writer_claimed.set(false);
     }
 }
 
@@ -562,7 +751,7 @@ mod tests {
             self.pump_with(&Ok(()));
         }
 
-        fn flush(&self, writer: &mut DocWriter) -> Result<(), String> {
+        fn flush(&self, writer: &DocWriter) -> Result<(), String> {
             self.pump();
             writer.try_flush()
         }
@@ -600,7 +789,7 @@ mod tests {
                 doc.splice_text(&body, i, 0, &ch.to_string()).unwrap();
                 writer.request(&mut doc);
             }
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             assert_eq!(
                 writer.durability_snapshot().durable_heads,
                 Some(doc.get_heads()),
@@ -623,12 +812,12 @@ mod tests {
             let body = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
             doc.splice_text(&body, 0, 0, "seed").unwrap();
             let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             for i in 0..50 {
                 doc.splice_text(&body, 4 + i, 0, "y").unwrap();
                 writer.request(&mut doc);
             }
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             assert_eq!(writer.full_writes(), 1, "{}", subject.name);
             assert_eq!(writer.appends(), 50, "{}", subject.name);
             // Each single-character change is about a hundred bytes, so this
@@ -637,7 +826,7 @@ mod tests {
                 doc.splice_text(&body, 54 + i, 0, "z").unwrap();
                 writer.request(&mut doc);
             }
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             assert!(writer.full_writes() >= 2, "{}", subject.name);
             drop((writer, owner));
             assert_eq!(
@@ -655,11 +844,11 @@ mod tests {
             let owner = subject.owner("status");
             let mut doc = owner.new_document().unwrap();
             let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             doc.put(ROOT, "value", 1_u64).unwrap();
             writer.request(&mut doc);
             let older = doc.get_heads();
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             doc.put(ROOT, "value", 2_u64).unwrap();
             writer.request(&mut doc);
             if subject.name != "memory" {
@@ -670,7 +859,7 @@ mod tests {
                     subject.name
                 );
             }
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             assert_eq!(
                 writer.durability_snapshot().durable_heads,
                 Some(doc.get_heads()),
@@ -690,7 +879,7 @@ mod tests {
             let mut doc = owner.new_document().unwrap();
             doc.put(ROOT, "body", "original").unwrap();
             let mut writer = DocWriter::start_new(&owner, &mut doc).unwrap();
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             let acknowledged = writer.durability_snapshot().durable_heads;
             if let Some(fs) = &subject.faults {
                 fs.faults().append_prefix = Some(8);
@@ -706,7 +895,7 @@ mod tests {
             assert_eq!(doc.pending_ops(), pending, "{}", subject.name);
             assert!(writer.try_flush().is_err(), "{}", subject.name);
             writer.save(&mut doc);
-            subject.flush(&mut writer).unwrap();
+            subject.flush(&writer).unwrap();
             assert_eq!(writer.last_error(), None, "{}", subject.name);
             assert_eq!(
                 writer.durability_snapshot().durable_heads,
@@ -742,6 +931,15 @@ mod tests {
             .unwrap();
         subject.pump();
         subject.store.flush(Some(&key)).unwrap();
+    }
+
+    fn store_raw_leased(subject: &Subject, owner: &DocOwner, bytes: Vec<u8>) {
+        subject
+            .store
+            .write(owner.key(), WriteOp::Replace(bytes), None)
+            .unwrap();
+        subject.pump();
+        subject.store.flush(Some(owner.key())).unwrap();
     }
 
     #[test]
@@ -790,8 +988,8 @@ mod tests {
             let loaded = owner.load().unwrap().unwrap();
             let mut accepted = owner.accept(loaded).unwrap();
             subject.pump();
-            let mut writer = DocWriter::try_start(&owner).unwrap();
-            subject.flush(&mut writer).unwrap();
+            let writer = DocWriter::try_start(&owner).unwrap();
+            subject.flush(&writer).unwrap();
             assert_eq!(
                 writer.durability_snapshot().durable_heads,
                 Some(accepted.get_heads())
@@ -839,6 +1037,63 @@ mod tests {
             ));
             drop(writer);
             assert!(DocWriter::try_start(&owner).is_ok());
+        }
+    }
+
+    #[test]
+    fn only_the_primary_shared_writer_continues_the_stored_actor() {
+        for subject in Subject::all() {
+            let key = StorageKey::package("so.tilo.shared");
+            let primary =
+                Rc::new(DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap());
+            let mut doc = primary.new_document().unwrap();
+            let writer = DocWriter::start_new(&primary, &mut doc).unwrap();
+            subject.flush(&writer).unwrap();
+            let secondary =
+                Rc::new(DocOwner::acquire_shared(Rc::clone(&subject.store), key.clone()).unwrap());
+            assert_ne!(secondary.actor(), primary.actor(), "{}", subject.name);
+            let mut other = secondary.new_document().unwrap();
+            other.put(ROOT, "from", "secondary").unwrap();
+            let second = DocWriter::start_new(&secondary, &mut other).unwrap();
+            subject.flush(&second).unwrap();
+            let actor = primary.actor().clone();
+            drop((writer, second, primary, secondary));
+            let reopened = DocOwner::acquire_shared(Rc::clone(&subject.store), key).unwrap();
+            assert_eq!(reopened.actor(), &actor, "{}", subject.name);
+        }
+    }
+
+    #[test]
+    fn a_disabled_writer_reports_why_and_persists_nothing() {
+        let mut writer = DocWriter::disabled("no storage");
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "k", "v").unwrap();
+        writer.request(&mut doc);
+        writer.request_checkpoint(&mut doc);
+        assert!(!writer.is_enabled());
+        assert_eq!(writer.last_error().as_deref(), Some("no storage"));
+        assert!(writer.try_flush().is_err());
+        assert_eq!(writer.document_path(), Path::new(""));
+    }
+
+    #[test]
+    fn a_seeded_writer_appends_only_what_follows_the_stored_document() {
+        for subject in Subject::all() {
+            let owner = subject.owner("seeded");
+            let mut doc = owner.new_document().unwrap();
+            doc.put(ROOT, "body", "stored").unwrap();
+            store_raw_leased(&subject, &owner, doc.save());
+            let mut writer = DocWriter::try_start(&owner).unwrap();
+            writer.seed(&mut doc);
+            doc.put(ROOT, "body", "edited").unwrap();
+            writer.request(&mut doc);
+            subject.flush(&writer).unwrap();
+            assert_eq!(
+                (writer.full_writes(), writer.appends()),
+                (0, 1),
+                "{}",
+                subject.name
+            );
         }
     }
 

@@ -6,8 +6,8 @@
 //! deliberately local and transient; only the resulting short status is fit
 //! for publication, and a manual status always wins.
 
+use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
 
 use crate::permissions::UserId;
 

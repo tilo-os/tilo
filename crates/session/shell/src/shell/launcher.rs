@@ -415,7 +415,6 @@ pub(crate) fn verified_package_for_descendant(pid: u32) -> Option<String> {
 
 const FILES_PACKAGE_ID: &str = "so.tilo.file-explorer";
 const TRUSTED_IDENTITIES_FILE: &str = "trusted-identities.json";
-static PROJECTION_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TRUSTED_IDENTITY_PROJECTIONS: LazyLock<
     Mutex<std::collections::HashMap<RoomId, tilo_user_identity::TrustedIdentityProjectionV2>>,
 > = LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
@@ -897,9 +896,6 @@ pub fn write_trusted_identities_projection(
     room: RoomId,
     projection: &tilo_user_identity::TrustedIdentityProjectionV2,
 ) -> std::io::Result<PathBuf> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-
     if let Err(error) = projection.validate() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -919,39 +915,13 @@ pub fn write_trusted_identities_projection(
         ));
     }
 
-    let directory = trusted_identities_dir().join(room.to_string());
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&directory)?;
-    // Tighten a pre-existing directory as well; create_dir_all's mode applies
-    // only to newly-created components.
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
-
-    let final_path = directory.join(TRUSTED_IDENTITIES_FILE);
-    let sequence = PROJECTION_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let temp_path = directory.join(format!(
-        ".{TRUSTED_IDENTITIES_FILE}.{}.{}.tmp",
-        std::process::id(),
-        sequence
-    ));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp_path)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temp_path, &final_path)?;
-        std::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(0o600))?;
-        std::fs::File::open(&directory)?.sync_all()?;
-        Ok(final_path.clone())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp_path);
-    }
-    result
+    // Owner-only room directory (tightened when it already exists) and a
+    // 0600 file that is never visible at its final name with wider access.
+    let final_path = trusted_identities_dir()
+        .join(room.to_string())
+        .join(TRUSTED_IDENTITIES_FILE);
+    atomic_file::write_private(&final_path, &bytes)?;
+    Ok(final_path)
 }
 
 /// Publish a complete accepted room-governance projection for later Files

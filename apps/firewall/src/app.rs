@@ -3053,7 +3053,7 @@ impl FirewallApp {
         let is_default = kind == self.config.default_zone;
         if selected {
             let (fill, edge) = selected_face;
-            paint::fill_rrect(scene, t, rect, 8.0, fill);
+            paint::fill_round(scene, t, rect, 8.0, fill);
             if let Some(edge) = edge {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
@@ -3538,7 +3538,7 @@ impl FirewallApp {
             // sits on, with a derived ring — not an accent ring, and not
             // `selection_tier`'s lift, which is the card's own colour on light.
             let (fill, edge) = selected_on(theme.tokens.colors.surfaces.raised);
-            paint::fill_rrect(scene, t, row.rect, 8.0, fill);
+            paint::fill_round(scene, t, row.rect, 8.0, fill);
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 t,
@@ -3757,7 +3757,7 @@ impl FirewallApp {
 
         // Delete (×) drawn as two strokes inside a soft danger button.
         let d = row.delete;
-        paint::fill_rrect(
+        paint::fill_round(
             scene,
             t,
             d,
@@ -3768,7 +3768,7 @@ impl FirewallApp {
             ),
         );
         if delete_armed {
-            paint::stroke_rrect(scene, t, d, 6.0, theme.tokens.colors.semantic.danger, 1.0);
+            paint::stroke_round(scene, t, d, 6.0, theme.tokens.colors.semantic.danger, 1.0);
         }
         let m = 8.0;
         let dc = theme.tokens.colors.semantic.danger;

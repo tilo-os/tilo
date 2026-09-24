@@ -8,8 +8,8 @@
 //! tracks the OS theme like every other system app.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::peniko::Color;
 
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -17,6 +17,7 @@ use ui::theme::Theme;
 use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::model::ChangeKind;
+pub use ui::paint::{fill_rect, fill_round};
 
 /// The mutable resources shared by one immediate-mode paint pass.
 ///
@@ -42,17 +43,6 @@ impl<'a> PaintCtx<'a> {
     pub fn parts(&mut self) -> (&mut Scene, &mut TextRenderer, Affine) {
         (self.scene, self.text, self.transform)
     }
-}
-
-/// Fill a plain rectangle.
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-/// Fill a rounded rectangle.
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let r = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &r);
 }
 
 /// A card, row or control face with its derived rest edge (HIG §9.5): the
@@ -228,41 +218,6 @@ pub fn pill_height(tr: &mut TextRenderer, size: f32) -> f64 {
 pub fn pill_width(tr: &mut TextRenderer, label: &str, size: f32) -> f64 {
     let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Medium);
     f64::from(tw) + pill_pad() * 2.0
-}
-
-/// Truncate monospace `s` to fit `max_width` at `size`, appending an ellipsis
-/// when anything was dropped — the mono counterpart of
-/// [`TextRenderer::elide_to_width`], measured with the same styled path
-/// [`mono`] paints with.
-pub fn elide_mono(tr: &mut TextRenderer, s: &str, size: f32, max_width: f64) -> String {
-    const ELLIPSIS: &str = "\u{2026}";
-    if s.is_empty() || max_width <= 0.0 {
-        return String::new();
-    }
-    if f64::from(mono_width(tr, s, size)) <= max_width {
-        return s.to_string();
-    }
-    let ell_w = f64::from(mono_width(tr, ELLIPSIS, size));
-    if ell_w > max_width {
-        return ELLIPSIS.to_string();
-    }
-    let budget = max_width - ell_w;
-    let mut best = String::new();
-    let mut candidate = String::new();
-    for ch in s.chars() {
-        candidate.push(ch);
-        if f64::from(mono_width(tr, &candidate, size)) <= budget {
-            best.push(ch);
-        } else {
-            break;
-        }
-    }
-    // Trim the space before the ellipsis, as the toolkit's sans-serif
-    // elision does, so `impl Scene …` and `impl Scene…` never sit side by side.
-    let trimmed = best.trim_end().len();
-    best.truncate(trimmed);
-    best.push_str(ELLIPSIS);
-    best
 }
 
 /// How a [`pill`] closes its edge (HIG §9.5 rest edges).

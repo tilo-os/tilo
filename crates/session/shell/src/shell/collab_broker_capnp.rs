@@ -31,7 +31,8 @@ use std::time::{Duration, Instant};
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
@@ -123,7 +124,7 @@ impl NearbyTargetRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyTargetHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -214,7 +215,7 @@ impl NearbyDestinationRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyDestinationHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -304,7 +305,7 @@ impl NearbyTransferRegistry {
         }
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let handle = runtime_collab::NearbyTransferHandle::from_issued_bytes(bytes);
             if handle.valid() && !self.bindings.contains_key(&handle) {
                 self.bindings.insert(
@@ -539,10 +540,22 @@ impl AdmittedJoinIdentity {
     }
 }
 
-fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
+pub(crate) fn principal_id_for_root(user_public_key: [u8; 32]) -> String {
     match Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(user_public_key)) {
         Principal::Person(id) => id,
         _ => hex::encode(user_public_key),
+    }
+}
+
+/// The capability verb an action's declared permission requires, if any.
+fn permission_verb(requirement: tilo_actions::PermissionRequirement) -> Option<Verb> {
+    match requirement {
+        tilo_actions::PermissionRequirement::None => None,
+        tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+        tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+        tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+        tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+        tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
     }
 }
 
@@ -773,7 +786,7 @@ pub struct PublishedSurface {
 }
 
 #[derive(Clone, Debug)]
-struct InvocationEnvelope {
+pub(crate) struct InvocationEnvelope {
     id: u64,
     resource: String,
     action: String,
@@ -1436,7 +1449,7 @@ impl RealtimeBridge {
     fn new_token(&self) -> String {
         loop {
             let mut bytes = [0_u8; 16];
-            OsRng.fill_bytes(&mut bytes);
+            UnwrapErr(SysRng).fill_bytes(&mut bytes);
             let token = hex::encode(bytes);
             if !self.sessions.contains_key(&token) {
                 return token;
@@ -2590,6 +2603,34 @@ impl CapnpBrokerState {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_broker_with_membership(
+        membership: crate::shell::state::WorkspaceTreeHandle,
+    ) -> crate::shell::collab_broker::AppActionBroker {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = Self::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership),
+            None,
+        );
+        crate::shell::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    /// Stand in for an application's invocation stream on `peer_id`.
+    #[cfg(test)]
+    pub(crate) fn capture_invocations_for_test(
+        &self,
+        peer_id: u64,
+    ) -> mpsc::UnboundedReceiver<InvocationEnvelope> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
+            subscribers.insert(peer_id, tx);
+        }
+        rx
+    }
+
+    #[cfg(test)]
     pub(crate) fn replace_action_directory_roots_for_test(&self, roots: Vec<ActionDirectoryRoot>) {
         if let Ok(mut registered) = self.action_directory_roots.lock() {
             registered.clear();
@@ -3197,6 +3238,46 @@ impl CapnpBrokerState {
         Ok(allowed)
     }
 
+    /// Live surfaces in every hosted workspace where `person` is a member,
+    /// keeping only the actions that person's role may invoke.
+    ///
+    /// This is the offer made to a caller who is not at this desk: unlike the
+    /// local session, membership itself is required, so an action that needs
+    /// no permission is still not offered outside the caller's workspaces.
+    pub fn surfaces_offered_to_member(&self, person: &str) -> Vec<PublishedSurface> {
+        let Some(membership) = self.membership.as_ref() else {
+            return Vec::new();
+        };
+        let person = person.to_string();
+        let tree = membership.read();
+        let member_of = |cluster_id: &str| {
+            tree.workspaces.iter().find(|workspace| {
+                workspace.room.to_string() == cluster_id && workspace.role_of(&person).is_some()
+            })
+        };
+        self.published_surfaces()
+            .into_iter()
+            .filter(|surface| surface.live)
+            .filter_map(|mut surface| {
+                let workspace = member_of(&surface.route.cluster_id)?;
+                let caller = workspace.actor_for_person(&person);
+                surface.actions.retain(|action| {
+                    permission_verb(action.contract.permission).is_none_or(|verb| {
+                        workspace.decide(
+                            &caller,
+                            &ResourceRef::Action {
+                                app: surface.app_id.clone(),
+                                action: action.action.clone(),
+                            },
+                            verb,
+                        ) == CapDecision::Allow
+                    })
+                });
+                (!surface.actions.is_empty()).then_some(surface)
+            })
+            .collect()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "catalogue projection applies one ordered authorization and serialization pass"
@@ -3741,6 +3822,35 @@ impl CapnpBrokerState {
             },
             confirmation_token,
             None,
+        )
+    }
+
+    /// Start an unconfirmed invocation for a person, carrying the caller's
+    /// provenance into the receipt and the app's history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when admission, authorization or delivery fails.
+    pub fn start_invocation_with_context(
+        &self,
+        peer_id: u64,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        person: &str,
+        context: Option<tilo_actions::ActionContext>,
+    ) -> Result<InvocationJob, String> {
+        self.start_invocation_confirmed_for(
+            peer_id,
+            resource,
+            action,
+            argument,
+            &BrokerActor {
+                id: person.to_string(),
+                is_agent: false,
+            },
+            None,
+            context,
         )
     }
 

@@ -2,7 +2,7 @@
 //! (toolkit widgets AND shell chrome) animates against, so same-class
 //! gestures share a feel.
 
-use std::time::Duration;
+use crate::time::Duration;
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpringParams {

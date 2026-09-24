@@ -17,8 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use launcher::netgate::{Destination, EgressPolicy, connect_upstream};
-use rand::RngCore as _;
+use rand::Rng as _;
 use thiserror::Error;
 
 /// Tilo's immutable host-only gateway. This is not an internet route.
@@ -90,7 +91,7 @@ impl GuestNetworkProxy {
         let listener = TcpListener::bind(address).map_err(GuestNetworkError::Bind)?;
         let endpoint = listener.local_addr().map_err(GuestNetworkError::Bind)?;
         let mut random = [0_u8; 32];
-        rand::rngs::OsRng.fill_bytes(&mut random);
+        UnwrapErr(SysRng).fill_bytes(&mut random);
         let token = hex::encode(random);
         random.fill(0);
         let binding = GuestNetworkBinding { endpoint, token };

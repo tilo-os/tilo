@@ -38,11 +38,9 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
-use ui::ColorCompat;
+use ui::paint::with_alpha;
 use ui::permissions::PermissionContext;
-#[cfg(target_os = "linux")]
-use ui::portal::{FileFilter, PickRequest};
-use ui::portal::{PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_metrics::{centered_text_top, line_height_px, renderer_type_size};
@@ -1459,9 +1457,6 @@ fn live_probe_enabled() -> bool {
 }
 
 // ---- theme-derived colour helpers --------------------------------------
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 fn source_color(theme: &Theme, kind: SourceKind) -> Color {
     let c = &theme.tokens.colors;
@@ -4442,25 +4437,18 @@ impl ImagerApp {
     }
 
     fn open_file_picker(&mut self, state: &AutoCommit) {
-        #[cfg(target_os = "linux")]
-        {
-            self.portal_rx = Some(
-                PickRequest::open("Choose a disk image", "Choose")
-                    .filter(
-                        FileFilter::new("Disk images")
-                            .glob("*.iso")
-                            .glob("*.img")
-                            .glob("*.raw")
-                            .mimetype("application/x-iso9660-image"),
-                    )
-                    .thread_name("imager-portal")
-                    .send(),
-            );
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            self.portal_rx = Some(crate::probe::pick_image_native());
-        }
+        self.portal_rx = Some(
+            PickRequest::open("Choose a disk image", "Choose")
+                .filter(
+                    FileFilter::new("Disk images")
+                        .glob("*.iso")
+                        .glob("*.img")
+                        .glob("*.raw")
+                        .mimetype("application/x-iso9660-image"),
+                )
+                .thread_name("imager-portal")
+                .send(),
+        );
         self.set_status(state, "Opening the file picker…");
         self.dirty = true;
     }
@@ -7059,12 +7047,14 @@ mod tests {
     #[test]
     fn portal_open_selects_inspected_source() {
         let (mut app, mut doc) = seeded_app();
-        // Simulate the portal returning a real Tilo-looking image.
+        // The recording host answers with a real Tilo-looking image.
         let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
         std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
-        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            f.path().to_path_buf(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(PortalOutcome::Opened(f.path().to_path_buf()));
+        app.open_file_picker(&doc);
+        assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
         app.drain_portal(&mut doc);
         // A `.iso` file → a valid source is selected.
         assert!(app.source.is_some());

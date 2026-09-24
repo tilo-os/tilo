@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 #[cfg(not(feature = "hdr-decode"))]
 use std::fs::File;
+#[cfg(not(feature = "hdr-decode"))]
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -2003,50 +2004,17 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create screenshot folder {}: {error}", parent.display()))?;
     }
-    let file = std::fs::File::create(path)
-        .map_err(|error| format!("create screenshot {}: {error}", path.display()))?;
-    let mut writer = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(&mut writer, width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png = encoder
-        .write_header()
-        .map_err(|error| format!("write screenshot header {}: {error}", path.display()))?;
-    png.write_image_data(rgba)
-        .map_err(|error| format!("write screenshot pixels {}: {error}", path.display()))?;
-    drop(png);
-    writer
-        .flush()
-        .map_err(|error| format!("flush screenshot {}: {error}", path.display()))
+    ui::png::write_rgba8(path, width, height, rgba)
+        .map_err(|error| format!("write screenshot {}: {error}", path.display()))
 }
 
 /// Read back one of our RGBA8 screenshot artifacts for receipt actions. This
 /// preserves the exact captured pixels while keeping large, off-screen app and
 /// strip captures out of the shell's steady-state memory footprint.
 fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let mut reader = decoder
-        .read_info()
-        .map_err(|error| format!("read screenshot header {}: {error}", path.display()))?;
-    let size = reader
-        .output_buffer_size()
-        .ok_or_else(|| format!("screenshot is too large to decode: {}", path.display()))?;
-    let mut rgba = vec![0; size];
-    let info = reader
-        .next_frame(&mut rgba)
-        .map_err(|error| format!("read screenshot pixels {}: {error}", path.display()))?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return Err(format!(
-            "saved screenshot has unsupported format {:?}/{:?}: {}",
-            info.color_type,
-            info.bit_depth,
-            path.display()
-        ));
-    }
-    rgba.truncate(info.buffer_size());
-    Ok((info.width, info.height, rgba))
+    let decoded = ui::png::read_rgba8(path)
+        .map_err(|error| format!("read screenshot {}: {error}", path.display()))?;
+    Ok((decoded.width, decoded.height, decoded.rgba))
 }
 
 #[cfg(test)]

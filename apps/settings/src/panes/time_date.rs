@@ -31,8 +31,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use ui::doc::read_str_or_text;
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -323,7 +324,7 @@ impl Widget for TimeZoneMap {
         if self.action.is_some() {
             return;
         }
-        if let Some(value) = read_text_setting(state, root, TIMEZONE_KEY) {
+        if let Some(value) = read_str_or_text(state, root, TIMEZONE_KEY) {
             self.selected = value;
             if self.cursor.is_none() {
                 self.cursor = self.selected_index();
@@ -687,20 +688,6 @@ fn timezone() -> String {
         }
     }
     "Europe/Amsterdam".to_string()
-}
-
-/// Dropdowns use Automerge text objects while map clicks use a scalar string;
-/// accepting both keeps the two views over one setting instead of coupling
-/// the pane to either widget's storage representation.
-fn read_text_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key).ok().flatten() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            automerge::ScalarValue::Str(value) => Some(value.to_string()),
-            _ => None,
-        },
-        Some((Value::Object(ObjType::Text), object)) => state.text(&object).ok(),
-        _ => None,
-    }
 }
 
 /// Time & Date pane. Stateful so it can drive `set-ntp` on toggle and
@@ -1072,6 +1059,7 @@ impl Widget for TimeDatePane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ObjType;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use taffy::prelude::TaffyMaxContent;
@@ -1180,7 +1168,7 @@ mod tests {
             &root,
         ));
         assert_eq!(
-            read_text_setting(&doc, &root, &draft_key(TIMEZONE_KEY)).as_deref(),
+            read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
             Some("Europe/Berlin")
         );
         assert!(map.needs_commit(), "a real timezone choice is durable");

@@ -602,15 +602,15 @@ fn dbus_proxy_wires_up_when_manifest_declares_via_host_portal() {
         &mock,
         r#"#!/bin/sh
 : >"$2"
-trap 'rm -f "$2"; exit 0' TERM
+# exec, not a backgrounded child: the guard signals and reaps this pid,
+# and a child of a shell it killed would be orphaned, never reaped.
 if [ -x /usr/bin/sleep ]; then
-    /usr/bin/sleep infinity &
-elif [ -x /bin/sleep ]; then
-    /bin/sleep infinity &
-else
-    exit 1
+    exec /usr/bin/sleep infinity
 fi
-wait $!
+if [ -x /bin/sleep ]; then
+    exec /bin/sleep infinity
+fi
+exit 1
 "#,
     )
     .unwrap();

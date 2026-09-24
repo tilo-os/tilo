@@ -11,9 +11,9 @@ use super::{
 use crate::collaboration::CollaborationManager;
 use crate::presence::PresenceKey;
 use crate::theme::Theme;
+use crate::time::Instant;
 use crate::widget::Widget;
 use std::cell::{Cell, RefCell};
-use std::time::Instant;
 use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
@@ -48,6 +48,13 @@ impl LayoutRuntime {
 }
 
 /// Input modality, gesture, cursor, and tooltip state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
     pub(super) interaction: crate::interaction::InteractionEnvironment,
@@ -189,7 +196,7 @@ impl AccessibilityRuntime {
 
 /// Persistence and record-checkout state.
 pub(super) struct PersistenceRuntime {
-    pub(super) autosave: Option<crate::persist::Autosave>,
+    pub(super) autosave: Option<crate::persist::DocWriter>,
     /// The live document belongs to the record selected by the root widget.
     pub(super) records: Option<crate::record::RecordSet>,
     pub(super) room_index: Option<crate::state::DocumentReplica>,
@@ -246,6 +253,13 @@ impl CollaborationRuntime {
 }
 
 /// Presence publication, follow, and frame-pump state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
     pub(super) pointer_space: Option<crate::presence::PointerSpace>,
@@ -290,6 +304,13 @@ impl HistoryRuntime {
 }
 
 /// Host window identity and fullscreen reconciliation state.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct WindowRuntime {
     pub(super) fullscreen_requested: bool,
     pub(super) fullscreen_active: bool,

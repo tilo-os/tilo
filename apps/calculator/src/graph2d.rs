@@ -493,7 +493,7 @@ impl Graph2dScreen {
         if let Some(p) = trace {
             self.draw_trace(scene, t, tr, theme, model, (p, view));
         }
-        draw::stroke_rrect(
+        draw::stroke_round(
             scene,
             t,
             self.canvas,
@@ -598,14 +598,14 @@ impl Graph2dScreen {
             };
             let active = i == model.active_fn;
             if active {
-                draw::fill_rrect(
+                draw::fill_round(
                     scene,
                     t,
                     r,
                     8.0,
                     draw::mix(c.surfaces.raised, c.accent[5], 0.18),
                 );
-                draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+                draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
             } else if self.hovered_row == Some(i) {
                 ui::surface::card(scene, t, r, 8.0, c.surfaces.raised);
             }
@@ -617,7 +617,7 @@ impl Graph2dScreen {
                 r.center().y + 7.0,
             );
             let col = series_color(theme, i);
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 sw,
@@ -684,10 +684,10 @@ impl Graph2dScreen {
             );
             // visibility dot
             let vis_col = if f.visible { col } else { c.neutral[3] };
-            draw::stroke_rrect(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
+            draw::stroke_round(scene, t, vr, vr.height() / 2.0, vis_col, 2.0);
             if f.visible {
                 let inner = Rect::new(vr.x0 + 5.0, vr.y0 + 5.0, vr.x1 - 5.0, vr.y1 - 5.0);
-                draw::fill_rrect(scene, t, inner, inner.height() / 2.0, vis_col);
+                draw::fill_round(scene, t, inner, inner.height() / 2.0, vis_col);
             }
         }
     }
@@ -823,14 +823,14 @@ impl Graph2dScreen {
                 TextWeight::Semibold,
             );
         } else {
-            draw::fill_rrect(
+            draw::fill_round(
                 scene,
                 t,
                 r,
                 8.0,
                 draw::mix(c.surfaces.raised, c.accent[5], 0.20),
             );
-            draw::stroke_rrect(scene, t, r, 8.0, c.accent[5], 1.0);
+            draw::stroke_round(scene, t, r, 8.0, c.accent[5], 1.0);
             draw::text_in(
                 scene,
                 tr,
@@ -1217,8 +1217,8 @@ impl Graph2dScreen {
             if dot.y >= self.canvas.y0 && dot.y <= self.canvas.y1 {
                 let col = series_color(theme, model.active_fn);
                 let dot_r = Rect::new(dot.x - 5.0, dot.y - 5.0, dot.x + 5.0, dot.y + 5.0);
-                draw::fill_rrect(scene, t, dot_r, 5.0, col);
-                draw::stroke_rrect(
+                draw::fill_round(scene, t, dot_r, 5.0, col);
+                draw::stroke_round(
                     scene,
                     t,
                     dot_r,

@@ -6,14 +6,14 @@
 //! accepting that discovery surface is unnecessary. This compatible subset
 //! reads only the Tilo bundle path. Process environment cannot redirect trust.
 
-use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::CertificateDer;
+use rustls_pki_types::pem::PemObject;
 use std::error::Error as StdError;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const TILO_CA_BUNDLE: &str = "/etc/pki/tls/certs/ca-bundle.crt";
+const TILO_CA_BUNDLE: &str = "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem";
 
 /// Load certificates from Tilo's single system trust bundle.
 pub fn load_native_certs() -> CertificateResult {

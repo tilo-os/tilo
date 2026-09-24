@@ -133,6 +133,37 @@ class AppResourceActionContractTests(unittest.TestCase):
         violations, _ = contract.audit(root)
         self.assertTrue(any("calls unbounded search" in item.reason for item in violations))
 
+    def test_catalog_backed_provider_passes_search_gate(self):
+        root = self.fixture(
+            "use tilo_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl ui::search::CatalogSearchProvider for Corpus {\n"
+            " fn provider_name(&self) -> &str { \"Corpus\" }\n"
+            " fn catalog(&self) -> Option<SearchCatalog> { Some(self.catalog.clone()) }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        reasons = "\n".join(item.reason for item in violations)
+        self.assertNotIn("search_limited", reasons)
+        self.assertNotIn("search_page", reasons)
+        self.assertNotIn("catalogue per query", reasons)
+
+    def test_catalog_backed_provider_cannot_rebuild_its_catalogue_per_query(self):
+        root = self.fixture(
+            "use tilo_actions::ActionSpec;\n"
+            "fn resources(&self) {}\n"
+            "impl CatalogSearchProvider for Corpus {\n"
+            " fn provider_name(&self) -> &str { \"Corpus\" }\n"
+            " fn catalog(&self) -> Option<SearchCatalog> {\n"
+            "   let catalog = SearchCatalog::new(\"Corpus\");\n"
+            "   let _ = catalog.replace_all(self.rows());\n"
+            "   Some(catalog)\n"
+            " }\n"
+            "}\n"
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("catalogue per query" in item.reason for item in violations))
+
     def test_durable_provider_cannot_truncate_index_before_query(self):
         root = self.fixture(
             "use tilo_actions::ActionSpec;\n"

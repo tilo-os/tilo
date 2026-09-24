@@ -364,9 +364,21 @@ pub fn tree_hash(root: &Path) -> Result<String, DaemonError> {
 }
 
 fn file_digest(path: &Path) -> Result<String, DaemonError> {
-    let mut file = fs::File::open(path).map_err(DaemonError::io("read layer file"))?;
+    use std::io::BufRead as _;
+    let file = fs::File::open(path).map_err(DaemonError::io("read layer file"))?;
+    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).map_err(DaemonError::io("read layer file"))?;
+    loop {
+        let chunk = reader
+            .fill_buf()
+            .map_err(DaemonError::io("read layer file"))?;
+        if chunk.is_empty() {
+            break;
+        }
+        hasher.update(chunk);
+        let read = chunk.len();
+        reader.consume(read);
+    }
     Ok(hex::encode(hasher.finalize()))
 }
 

@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::model::ContainerStatus;
+pub use ui::paint::with_alpha;
 
 /// Semantic accent for a container status — used for the status dot/pill.
 pub fn status_color(theme: &Theme, status: ContainerStatus) -> Color {
@@ -36,11 +37,6 @@ pub fn mix(a: Color, b: Color, t: f32) -> Color {
         lerp(a.b(), b.b()),
         a.a(),
     )
-}
-
-/// Apply an explicit alpha (0..=255) to a colour.
-pub fn with_alpha(c: Color, alpha: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), alpha)
 }
 
 /// The base transform every helper composes onto. Set once per frame from the

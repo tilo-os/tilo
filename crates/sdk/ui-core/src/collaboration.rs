@@ -14,7 +14,6 @@
 //!
 //! The default transport (feature `broker-transport`) delegates to the
 //! `runtime-collab` Cap'n Proto broker on a worker thread it owns.
-//!
 
 use uuid::Uuid;
 
@@ -77,14 +76,21 @@ pub struct ContinuationMetadata {
     pub bytes: Vec<u8>,
 }
 
-/// Decode the launcher-only resume payload. Invalid input is ignored so an
-/// app outside Tilo or an older sender opens normally.
+/// The launcher-only resume payload the host passed this window
+/// ([`crate::host::HostIdentity::continuity_resume`]).
 pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
-    let bytes = hex::decode(std::env::var("TILO_CONTINUITY_RESUME_HEX").ok()?).ok()?;
-    let schema_version = std::env::var("TILO_CONTINUITY_RESUME_SCHEMA")
-        .ok()?
-        .parse()
-        .ok()?;
+    crate::host::environment()
+        .identity
+        .continuity_resume
+        .clone()
+}
+
+/// Decode a hex resume payload and its schema version. Invalid input is
+/// ignored so an app outside Tilo or an older sender opens normally.
+#[cfg(feature = "native")]
+pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<ContinuationMetadata> {
+    let bytes = hex::decode(hex).ok()?;
+    let schema_version = schema.parse().ok()?;
     (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(ContinuationMetadata {
         schema_version,
         bytes,
@@ -665,7 +671,7 @@ impl SigningIdentity {
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
-        let timestamp = std::time::SystemTime::now();
+        let timestamp = crate::time::wall();
         let sequence = self
             .seq
             .checked_add(1)
@@ -781,8 +787,8 @@ impl CollaborationManager {
 /// broker can retain multiple Browser windows in one workspace without
 /// conflating their continuation metadata.
 fn continuation_instance_env() -> Option<String> {
-    let value = std::env::var("TILO_CONTINUITY_INSTANCE").ok()?;
-    let value = value.trim();
+    let environment = crate::host::environment();
+    let value = environment.identity.continuity_instance.as_deref()?.trim();
     (!value.is_empty() && value.len() <= 256 && !value.contains(['/', '\\']))
         .then(|| value.to_owned())
 }
@@ -1030,9 +1036,11 @@ impl CollaborationManager {
 /// The presence handle announced on `Hello`. `TILO_PRESENCE_HANDLE` wins,
 /// then `TILO_USER_ID`; absent both, the broker's synthetic name.
 pub fn presence_handle_env() -> Option<String> {
-    ["TILO_PRESENCE_HANDLE", "TILO_USER_ID"]
-        .iter()
-        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+    let environment = crate::host::environment();
+    let identity = &environment.identity;
+    [&identity.presence_handle, &identity.user_id]
+        .into_iter()
+        .find_map(|handle| handle.clone().filter(|v| !v.trim().is_empty()))
 }
 
 /// The routing key one connection names on the capnp transport.
@@ -1183,7 +1191,8 @@ pub fn local_user_id() -> crate::permissions::UserId {
 }
 
 fn resolve_local_user_id() -> String {
-    if let Some(v) = non_empty_env("TILO_USER_ID") {
+    let environment = crate::host::environment();
+    if let Some(v) = environment.identity.user_id.clone() {
         return v;
     }
     #[cfg(unix)]
@@ -1199,17 +1208,18 @@ fn resolve_local_user_id() -> String {
     {
         return person_id_from_key(key);
     }
-    non_empty_env("USER").unwrap_or_else(|| "local".to_string())
+    environment
+        .identity
+        .account_name
+        .clone()
+        .unwrap_or_else(|| "local".to_string())
 }
 
 /// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
 /// `$HOME/.config/tilo/identity/primary.json`.
 #[cfg(unix)]
 fn config_identity_path() -> Option<std::path::PathBuf> {
-    let base = match non_empty_env("XDG_CONFIG_HOME") {
-        Some(v) => std::path::PathBuf::from(v),
-        None => std::path::PathBuf::from(non_empty_env("HOME")?).join(".config"),
-    };
+    let base = crate::host::environment().paths.config_dir()?;
     let p = base.join("tilo").join("identity").join("primary.json");
     p.is_file().then_some(p)
 }
@@ -1227,12 +1237,7 @@ fn person_id_from_key(key: [u8; 32]) -> String {
     {
         id
     } else {
-        use std::fmt::Write as _;
-        let mut s = String::with_capacity(64);
-        for b in &key {
-            let _ = write!(s, "{b:02x}");
-        }
-        s
+        hex::encode(key)
     }
 }
 
@@ -1261,15 +1266,21 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     // collaboration test does this).
     static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-    let app_id = non_empty_env("TILO_PACKAGE_ID")
-        .or_else(|| non_empty_env("QUICK_APP_ID"))
+    let environment = crate::host::environment();
+    let identity = &environment.identity;
+    let app_id = identity
+        .package_id
+        .clone()
+        .or_else(|| identity.development_app_id.clone())
         .unwrap_or_else(|| {
             FALLBACK_APP_ID
                 .get_or_init(|| Uuid::new_v4().to_string())
                 .clone()
         });
 
-    let cluster_id = non_empty_env("TILO_WORKSPACE_ID")
+    let cluster_id = identity
+        .workspace_id
+        .clone()
         .and_then(|s| {
             if let Ok(id) = Uuid::parse_str(&s) {
                 Some(id)
@@ -1281,17 +1292,15 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
                 None
             }
         })
-        .or_else(|| non_empty_env("QUICK_CLUSTER_ID").and_then(|s| Uuid::parse_str(&s).ok()))
+        .or_else(|| {
+            identity
+                .cluster_id
+                .as_deref()
+                .and_then(|s| Uuid::parse_str(s).ok())
+        })
         .unwrap_or_else(Uuid::nil);
 
     (app_id, cluster_id)
-}
-
-/// `std::env::var` with empty treated as unset — an explicit `""` is
-/// the shape an unset forwarded shell variable produces, and taking it
-/// literally would put every such app in the same (empty-id) room.
-fn non_empty_env(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
 #[cfg(test)]

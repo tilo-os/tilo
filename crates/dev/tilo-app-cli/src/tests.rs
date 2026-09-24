@@ -2695,7 +2695,7 @@ fn doctor_finds_tilo_app_sdk_in_target_specific_dependencies() {
             [target.'cfg(unix)'.dependencies]
             ui = { package = "tilo-app", path = "../sdk" }
         "#
-    .parse::<toml::Value>()
+    .parse::<toml::Table>()
     .expect("target-specific manifest");
     let mut checks = Vec::new();
     check_ui_dependency(&app, &manifest, &mut checks);
@@ -2717,7 +2717,7 @@ fn doctor_rejects_one_invalid_target_specific_ui_dependency() {
             [target.'cfg(windows)'.dependencies]
             ui = { package = "tilo-app", version = "1" }
         "#
-    .parse::<toml::Value>()
+    .parse::<toml::Table>()
     .expect("target-specific manifest");
     let mut checks = Vec::new();
     check_ui_dependency(temp.path(), &manifest, &mut checks);

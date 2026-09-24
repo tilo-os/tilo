@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
+use ui::doc::{read_bool, read_str};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tilo_relay::{DeviceRole, RelayConfig, ReplicationIntent};
 use tilo_user_identity::RevocationReason;
@@ -1399,26 +1400,6 @@ impl DeviceMeshPane {
         cards(sections)
     }
 
-    fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                automerge::ScalarValue::Boolean(value) => Some(*value),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn persist(&mut self) {
         if self.config_path == std::path::Path::new(DEFAULT_CONFIG) {
             if self.apply_child.is_some() {
@@ -1852,13 +1833,13 @@ impl Widget for DeviceMeshPane {
         // Device role, relay services, and workspace residency never enter
         // the collaborative document. Their controls emit typed local effect
         // operations and `apply_command` persists directly to RelayConfig.
-        if Self::read_bool(state, root, APPROVE_ENROLLMENT_KEY) == Some(true) {
+        if read_bool(state, root, APPROVE_ENROLLMENT_KEY) == Some(true) {
             let _ = state.put(root, APPROVE_ENROLLMENT_KEY, false);
             if self.pairing_child.is_none() {
                 self.approve_enrollment(PairingTarget::HomePeer);
             }
         }
-        if Self::read_bool(state, root, APPROVE_PERSONAL_DEVICE_KEY) == Some(true) {
+        if read_bool(state, root, APPROVE_PERSONAL_DEVICE_KEY) == Some(true) {
             let _ = state.put(root, APPROVE_PERSONAL_DEVICE_KEY, false);
             if self.pairing_child.is_none() {
                 self.approve_enrollment(PairingTarget::PersonalDevice);
@@ -1867,17 +1848,16 @@ impl Widget for DeviceMeshPane {
         for device in self.personal_devices.clone() {
             let revoke_key = personal_device_key("revoke", &device.key);
             let cancel_key = personal_device_key("cancel", &device.key);
-            if Self::read_bool(state, root, &cancel_key) == Some(true) {
+            if read_bool(state, root, &cancel_key) == Some(true) {
                 let _ = state.put(root, &cancel_key, false);
                 self.personal_remove_armed.remove(&device.key);
                 self.structure_dirty = true;
             }
-            if Self::read_bool(state, root, &revoke_key) == Some(true) {
+            if read_bool(state, root, &revoke_key) == Some(true) {
                 let _ = state.put(root, &revoke_key, false);
                 if self.personal_remove_armed.remove(&device.key) {
-                    let reason =
-                        Self::read_str(state, root, &personal_device_key("reason", &device.key))
-                            .map_or(RevocationReason::Retired, |label| revocation_reason(&label));
+                    let reason = read_str(state, root, personal_device_key("reason", &device.key))
+                        .map_or(RevocationReason::Retired, |label| revocation_reason(&label));
                     match crate::device_fleet::revoke(device.key, reason) {
                         Ok(()) => {
                             self.personal_devices = crate::device_fleet::list().unwrap_or_default();
@@ -1897,10 +1877,9 @@ impl Widget for DeviceMeshPane {
         }
         for peer in self.home_peers.clone() {
             let rename_key = peer_key("rename", &peer.device_node_id);
-            if Self::read_bool(state, root, &rename_key) == Some(true) {
+            if read_bool(state, root, &rename_key) == Some(true) {
                 let _ = state.put(root, &rename_key, false);
-                if let Some(label) =
-                    Self::read_str(state, root, &peer_key("name", &peer.device_node_id))
+                if let Some(label) = read_str(state, root, peer_key("name", &peer.device_node_id))
                     && tilo_relay::valid_home_peer_label(&label)
                 {
                     self.start_home_peer_command(&peer, "home-peer-rename", Some(label.trim()));
@@ -1908,12 +1887,12 @@ impl Widget for DeviceMeshPane {
             }
             let remove_key = peer_key("remove", &peer.device_node_id);
             let cancel_remove_key = peer_key("cancel_remove", &peer.device_node_id);
-            if Self::read_bool(state, root, &cancel_remove_key) == Some(true) {
+            if read_bool(state, root, &cancel_remove_key) == Some(true) {
                 let _ = state.put(root, &cancel_remove_key, false);
                 self.remove_armed.remove(&peer.device_node_id);
                 self.structure_dirty = true;
             }
-            if Self::read_bool(state, root, &remove_key) == Some(true) {
+            if read_bool(state, root, &remove_key) == Some(true) {
                 let _ = state.put(root, &remove_key, false);
                 if self.remove_armed.remove(&peer.device_node_id) {
                     self.start_home_peer_command(&peer, "home-peer-remove", None);
@@ -2435,8 +2414,7 @@ mod tests {
 
         assert!(pane.personal_remove_armed.contains(&key));
         assert_eq!(
-            DeviceMeshPane::read_str(&doc, &automerge::ROOT, &personal_device_key("reason", &key))
-                .as_deref(),
+            read_str(&doc, &automerge::ROOT, personal_device_key("reason", &key)).as_deref(),
             Some("Retired")
         );
     }
