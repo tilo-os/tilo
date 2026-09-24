@@ -1,0 +1,745 @@
+//! Peer-sync wire protocol: a single tagged enum ([`NeighbourMsg`]) carrying
+//! every cross-host payload (CRDT sync, presence, surface frames, remote
+//! input, capability negotiation). Transport bindings (gossip, a durable
+//! host, an in-process hub) operate on it without inspecting the payload.
+//!
+//! The encoding is postcard over serde's default externally tagged enum
+//! representation, so the variant order is the wire discriminant: new
+//! variants are appended, never inserted, and new fields go last with
+//! `#[serde(default)]`. The golden-byte tests in this crate pin every
+//! variant so a peer running an older build keeps decoding what this one
+//! sends.
+//!
+//! The crate is pure data plus pure helpers ([`retention`]); it owns no
+//! transport, runtime or state machine.
+
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::panic,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
+pub mod colorimetry;
+pub mod hdr_metadata;
+pub mod retention;
+
+pub use retention::{Retention, retention};
+
+use serde::{Deserialize, Serialize};
+
+/// Peer identifier — opaque numeric handle assigned per session.
+pub type PeerId = u64;
+
+/// Continuation is portable metadata, never an application backup. Keep this
+/// limit at the wire boundary so every transport (direct or store-forward)
+/// applies the same bound before decoding or retaining it.
+pub const MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
+
+/// Wayland surface identifier — local handle used for streaming/input routing.
+pub type SurfaceId = u64;
+
+/// Presence channel key — namespaces presence updates (e.g. cursor, selection).
+pub type PresenceKey = String;
+
+/// Tagged envelope for everything that crosses the neighbour boundary.
+///
+/// `f64` lives inside [`NeighbourMsg::PresenceMoved`] so we cannot derive
+/// [`Eq`]; [`PartialEq`] is sufficient for tests and dispatch logic.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub enum NeighbourMsg {
+    /// Request: replay every Automerge change to `room` after the included clock.
+    ///
+    /// `room` is the workspace room uuid string that scopes the
+    /// answer — an empty/unparseable value names no room (not a wildcard) and gets
+    /// no document back. The transport emits one on peer-join, before it knows
+    /// what room the peer is in.
+    SyncReq {
+        since: Vec<u8>,
+        room: String,
+        /// Hash of the exact signed bearer invite being redeemed. Ordinary
+        /// anti-entropy requests omit it; an authority uses it once to bind
+        /// the authenticated transport identity to that invite's role.
+        #[serde(default)]
+        invite_id: Option<[u8; 32]>,
+    },
+    /// Response: a batch of opaque Automerge change blobs for `room`. The blobs
+    /// carry the room identity too; the receiver checks the two agree before
+    /// merging.
+    SyncResp { changes: Vec<Vec<u8>>, room: String },
+    /// Peer's presence cursor moved within `key`'s coordinate space.
+    ///
+    /// `peer` identifies the publishing **session** — all windows under one
+    /// session share one cursor, and the receiver's own per-connection ids never
+    /// leave the host that minted them. `user` is the session's claim of who is
+    /// there (the sender's local user id), not something the
+    /// receiver infers; empty falls back to showing the session handle.
+    PresenceMoved {
+        peer: PeerId,
+        user: String,
+        key: PresenceKey,
+        point: (f64, f64),
+        ts: u64,
+    },
+    /// Peer's presence cursor disappeared from `key`'s coordinate space.
+    PresenceCleared { peer: PeerId, key: PresenceKey },
+    /// Encoded H.264 frame for a shared surface.
+    ///
+    /// `ts` is the owner's monotonic-clock timestamp in nanoseconds; receivers
+    /// diff against their own monotonic-now for motion-to-photon latency, since
+    /// wall-clock (`SystemTime`) would drift under NTP on the WAN case.
+    SurfaceFrame {
+        surface: SurfaceId,
+        /// Hashed Iroh endpoint of the stream owner. Bound to the
+        /// authenticated publisher before encoded bytes are dispatched.
+        #[serde(default)]
+        source_peer: PeerId,
+        encoded_h264: Vec<u8>,
+        ts: u64,
+    },
+    /// Explicit start-of-stream announcement for a shared surface.
+    ///
+    /// Distinct from `SurfaceFrame` so late joiners can size a decoder /
+    /// receive-side view before the first NALU arrives,
+    /// avoiding a dropped frame. Codec is negotiated up front (`"h264"` in v1,
+    /// room left for `"av1"`/`"h265"`).
+    SurfaceStreamStart {
+        surface: SurfaceId,
+        /// Hashed Iroh `PeerId` of the owner; distinguishes concurrent shares in the
+        /// same workspace.
+        source_peer: PeerId,
+        width: u32,
+        height: u32,
+        /// Codec label (`"h264"` in v1); unrecognised codecs are ignored + logged.
+        codec: String,
+        ts: u64,
+        /// Sender's monotonic-clock reading when the message left the encode task
+        /// (same origin as [`Self::SurfaceFrame::ts`]).
+        ///
+        /// The receiver computes `offset = receiver_now_ns - sender_monotonic_ns_at_send`
+        /// on decode and applies it to every later `ts` via
+        /// the receiver's latency metrics to get
+        /// real cross-host motion-to-photon numbers despite unrelated monotonic
+        /// origins.
+        ///
+        /// A value of `0` means the sender cannot provide a clock offset;
+        /// the receiver then skips
+        /// cross-host latency instead of reporting a bogus value.
+        sender_monotonic_ns_at_send: u64,
+        /// Colorimetry tag; `None` means the receiver assumes SDR BT.709.
+        colorimetry: Option<crate::colorimetry::Colorimetry>,
+        /// HDR10 static metadata (SMPTE ST 2086 + CTA-861.3) for HDR pipelines;
+        /// `None` on SDR streams. Used by the receiver's tone-mapper to size
+        /// compression correctly on SDR displays.
+        hdr_static_metadata: Option<crate::hdr_metadata::Hdr10Metadata>,
+        /// Codec target bit depth; `0` means unspecified — receivers infer 8-bit
+        /// from `codec = "h264"`, else 8 or 10 (HEVC Main10).
+        bit_depth: u8,
+        /// Desktop app-id of the shared legacy window. Kept last so the
+        /// serde default accepts pre-field postcard payloads.
+        #[serde(default)]
+        app_id: String,
+    },
+    /// Explicit end-of-stream (owner tore down the share, or the surface
+    /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
+    /// waiting out the 15s heartbeat-eviction path that implicit end-of-stream
+    /// (owner vanishes from gossip) still relies on.
+    SurfaceStreamEnd {
+        surface: SurfaceId,
+        source_peer: PeerId,
+        ts: u64,
+    },
+    /// Serialized input event from `peer` targeting `surface`.
+    RemoteInput {
+        peer: PeerId,
+        surface: SurfaceId,
+        event: Vec<u8>,
+    },
+    /// `peer` would like permission `capability`.
+    PermissionRequest { peer: PeerId, capability: String },
+    /// `peer` was granted permission `capability`.
+    PermissionGrant { peer: PeerId, capability: String },
+    /// Periodic liveness beacon — Actor publishes one per joined workspace every
+    /// 5s; direct peers are evicted after 15s without any traffic. `peer` is the hashed Iroh
+    /// `PeerId`; `ts` is unix-millis.
+    Heartbeat { peer: PeerId, ts: u64 },
+    /// Authenticated identity chain for the transport peer on this workspace.
+    ///
+    /// The certificate binds the Iroh endpoint/device key to a user root. The
+    /// additive, root-signed revocations let receivers reject a lost device
+    /// before any of its collaboration payload reaches an app or replica.
+    IdentityHello {
+        cert: Box<tilo_user_identity::DeviceCert>,
+        #[serde(default)]
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+    },
+    /// One typed, signed document mutation crossing the Iroh boundary.
+    /// Recipients authenticate the transport device, validate the envelope and
+    /// decode its [`collab_types::DocumentMutation`] before local fan-out.
+    /// Boxed so this variant does not bloat `NeighbourMsg`'s stack size.
+    AppDocument {
+        /// Hashed Iroh `PeerId` of the publisher; used to filter self-published
+        /// gossip echoes.
+        peer: PeerId,
+        /// App-id of the originating app, first routing-key component.
+        app_id: String,
+        /// Cluster id — second half of the routing key.
+        cluster_id: String,
+        /// Record id of the originating document — third routing-key component;
+        /// empty means the sender announced no record.
+        record_id: String,
+        /// The signed-op envelope; the receiving shell's validator decides whether
+        /// to fan it to local apps or drop it with an audit-log entry.
+        envelope: Box<collab_types::SignedOp>,
+    },
+    /// App-level presence crossing the host boundary. Presence is cluster scoped,
+    /// so a participant remains visible while moving between apps in one room.
+    AppPresenceV2 {
+        peer: PeerId,
+        app_id: String,
+        cluster_id: String,
+        presence: collab_types::PeerPresence,
+    },
+    /// Cooperative scrollback request, broadcast over gossip when a peer's
+    /// local broker has no in-memory scrollback for a range an app asked for.
+    /// Any peer holding the range replies with
+    /// [`NeighbourMsg::ScrollbackResponse`].
+    ///
+    /// `requester` is the local peer hash used to target the response
+    /// (`ScrollbackResponse::responder`). v1 doesn't dedupe concurrent identical
+    /// requests — the case is rare/single-shot, so amplification isn't a
+    /// concern.
+    ScrollbackRequest {
+        /// The artifact whose log to fetch.
+        artifact: collab_types::ArtifactId,
+        /// Exclusive upper bound on `seq`, same semantics as
+        /// `CollabRequest::FetchScrollback::before_seq`.
+        before_seq: u64,
+        /// Page size cap, matching `CollabRequest::FetchScrollback::max` so the
+        /// cooperative path doesn't re-cap.
+        max: u16,
+        /// Hashed Iroh peer id of the requester; receivers use it to skip their
+        /// own echoed requests.
+        requester: PeerId,
+    },
+    /// Response to a [`NeighbourMsg::ScrollbackRequest`]: the responding broker
+    /// forwards `ops` from its local op log; the requester delivers them via
+    /// `CollabEvent::ScrollbackBatch`.
+    ///
+    /// `responder` is for audit/replay diagnostics only — it plays no role in
+    /// validation, since every envelope in `ops` is independently signed.
+    ScrollbackResponse {
+        /// Same as the request's `artifact`, repeated so the receiver can route
+        /// without matching on a request-id.
+        artifact: collab_types::ArtifactId,
+        /// The page of validated ops the responder is sharing; empty means "I don't
+        /// have the range either" and is treated as a non-answer.
+        ops: Vec<Box<collab_types::SignedOp>>,
+        /// Hashed Iroh peer id of the answering broker.
+        responder: PeerId,
+    },
+    /// Root-signed device certificate announced on one room. Appended to the
+    /// enum to preserve every existing Postcard discriminant. The receiver
+    /// binds it to the transport-authenticated sender endpoint and only the
+    /// room governor may promote it into replicated governance.
+    IdentityAnnouncement {
+        room: String,
+        device_cert: Box<tilo_user_identity::DeviceCert>,
+    },
+    /// V2 identity announcement carrying additive root-signed revocations.
+    /// Appended rather than changing V1's Postcard payload layout.
+    IdentityAnnouncementV2 {
+        room: String,
+        device_cert: Box<tilo_user_identity::DeviceCert>,
+        /// Additive root-signed revocations for the certificate's human root.
+        /// The room governor verifies and retains them independently of the
+        /// announcing device, so omission can never resurrect a device.
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+    },
+    /// Ask another certified device of the same person for its latest
+    /// continuation checkpoints. This rides a user-root-derived topic, never
+    /// a collaboration room: personal session state must not become visible to
+    /// collaborators merely because they share a workspace.
+    ///
+    /// Appended to preserve all existing Postcard discriminants.
+    PersonalContinuityRequest {
+        user_public_key: [u8; 32],
+        requester: PeerId,
+    },
+    /// A bounded, validated aggregate of per-device
+    /// personal continuity snapshots.
+    /// The receiving shell accepts it only when the authenticated transport
+    /// certificate has `user_public_key`. Certified devices may relay the
+    /// aggregate so an always-on peer retains the latest state for all of them.
+    PersonalContinuityCheckpoint {
+        user_public_key: [u8; 32],
+        publisher: PeerId,
+        snapshot: Vec<u8>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Syntactically valid but unsigned; only the postcard framing needs to
+    /// round-trip.
+    fn dummy_envelope() -> Box<collab_types::SignedOp> {
+        use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use std::time::SystemTime;
+        Box::new(SignedOp::new_unsigned(
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            artifact(0x11),
+            Ed25519PublicKey::from_bytes([7u8; 32]),
+            AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
+            OpClass::Splice,
+            SystemTime::UNIX_EPOCH,
+            42,
+        ))
+    }
+
+    /// Room id shared by every fixture that names one.
+    const ROOM: &str = "6b3f9a10-0000-4000-8000-00000000000c";
+
+    /// Fixed artifact ids keep the golden encodings reproducible.
+    fn artifact(fill: u8) -> collab_types::ArtifactId {
+        collab_types::ArtifactId(uuid::Uuid::from_bytes([fill; 16]))
+    }
+
+    fn device_cert() -> Box<tilo_user_identity::DeviceCert> {
+        Box::new(tilo_user_identity::DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "Laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 10,
+            expires_at_ns: None,
+            signature: [3; 64],
+        })
+    }
+
+    /// Every [`NeighbourMsg`] variant, split into thematic groups so no one
+    /// function runs long — the round-trip test below exercises the
+    /// concatenation.
+    fn fixtures() -> Vec<(&'static str, NeighbourMsg)> {
+        let mut all = fixtures_sync_presence_and_streams();
+        all.extend(fixtures_input_permissions_and_identity());
+        all.extend(fixtures_app_crdt_and_scrollback());
+        all
+    }
+
+    fn fixtures_sync_presence_and_streams() -> Vec<(&'static str, NeighbourMsg)> {
+        use crate::colorimetry::Colorimetry;
+        use crate::hdr_metadata::Hdr10Metadata;
+
+        vec![
+            (
+                "sync request",
+                NeighbourMsg::SyncReq {
+                    since: vec![1, 2, 3],
+                    room: ROOM.into(),
+                    invite_id: Some([9; 32]),
+                },
+            ),
+            (
+                "sync response",
+                NeighbourMsg::SyncResp {
+                    changes: vec![vec![0xAA, 0xBB], vec![0xCC]],
+                    room: ROOM.into(),
+                },
+            ),
+            (
+                "presence moved",
+                NeighbourMsg::PresenceMoved {
+                    peer: 42,
+                    user: "bob".into(),
+                    key: "cursor".into(),
+                    point: (12.5, -3.25),
+                    ts: 1_700_000_000,
+                },
+            ),
+            (
+                "presence cleared",
+                NeighbourMsg::PresenceCleared {
+                    peer: 42,
+                    key: "cursor".into(),
+                },
+            ),
+            (
+                "surface frame",
+                NeighbourMsg::SurfaceFrame {
+                    surface: 7,
+                    source_peer: 0xABCD,
+                    encoded_h264: vec![0, 0, 0, 1, 0x67],
+                    ts: 1_700_000_001,
+                },
+            ),
+            (
+                "SDR stream start",
+                NeighbourMsg::SurfaceStreamStart {
+                    surface: 7,
+                    source_peer: 0xABCD,
+                    app_id: "org.example.Editor".into(),
+                    width: 1280,
+                    height: 720,
+                    codec: "h264".into(),
+                    ts: 1_700_000_002,
+                    sender_monotonic_ns_at_send: 1_700_000_002,
+                    colorimetry: None,
+                    hdr_static_metadata: None,
+                    bit_depth: 0,
+                },
+            ),
+            (
+                "HDR stream start",
+                NeighbourMsg::SurfaceStreamStart {
+                    surface: 8,
+                    source_peer: 0xABCD,
+                    app_id: "org.example.HdrEditor".into(),
+                    width: 1920,
+                    height: 1080,
+                    codec: "hevc-main10".into(),
+                    ts: 1_700_000_003,
+                    sender_monotonic_ns_at_send: 1_700_000_003,
+                    colorimetry: Some(Colorimetry::hdr10()),
+                    hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
+                    bit_depth: 10,
+                },
+            ),
+            (
+                "stream end",
+                NeighbourMsg::SurfaceStreamEnd {
+                    surface: 7,
+                    source_peer: 0xABCD,
+                    ts: 1_700_000_004,
+                },
+            ),
+        ]
+    }
+
+    fn fixtures_input_permissions_and_identity() -> Vec<(&'static str, NeighbourMsg)> {
+        vec![
+            (
+                "remote input",
+                NeighbourMsg::RemoteInput {
+                    peer: 3,
+                    surface: 7,
+                    event: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                },
+            ),
+            (
+                "permission request",
+                NeighbourMsg::PermissionRequest {
+                    peer: 5,
+                    capability: "share-screen".into(),
+                },
+            ),
+            (
+                "permission grant",
+                NeighbourMsg::PermissionGrant {
+                    peer: 5,
+                    capability: "share-screen".into(),
+                },
+            ),
+            (
+                "heartbeat",
+                NeighbourMsg::Heartbeat {
+                    peer: 0xDEAD_BEEF,
+                    ts: 1_700_000_005,
+                },
+            ),
+            (
+                "identity hello",
+                NeighbourMsg::IdentityHello {
+                    cert: device_cert(),
+                    revocations: Vec::new(),
+                },
+            ),
+            (
+                "identity announcement",
+                NeighbourMsg::IdentityAnnouncement {
+                    room: ROOM.into(),
+                    device_cert: device_cert(),
+                },
+            ),
+            (
+                "identity announcement v2",
+                NeighbourMsg::IdentityAnnouncementV2 {
+                    room: ROOM.into(),
+                    device_cert: device_cert(),
+                    revocations: Vec::new(),
+                },
+            ),
+            (
+                "personal continuity request",
+                NeighbourMsg::PersonalContinuityRequest {
+                    user_public_key: [7; 32],
+                    requester: 0x00AB_CDEF,
+                },
+            ),
+            (
+                "personal continuity checkpoint",
+                NeighbourMsg::PersonalContinuityCheckpoint {
+                    user_public_key: [7; 32],
+                    publisher: 0x00AB_CDEF,
+                    snapshot: vec![1, 2, 3],
+                },
+            ),
+        ]
+    }
+
+    fn fixtures_app_crdt_and_scrollback() -> Vec<(&'static str, NeighbourMsg)> {
+        use collab_types::{PeerPresence, PeerPresencePayload};
+
+        vec![
+            (
+                "signed app document",
+                NeighbourMsg::AppDocument {
+                    peer: 0x00AB_CDEF,
+                    app_id: "notes".into(),
+                    cluster_id: ROOM.into(),
+                    record_id: "uuid:1c2f".into(),
+                    envelope: dummy_envelope(),
+                },
+            ),
+            (
+                "app presence",
+                NeighbourMsg::AppPresenceV2 {
+                    peer: 0x00AB_CDEF,
+                    app_id: "notes".into(),
+                    cluster_id: ROOM.into(),
+                    presence: PeerPresence {
+                        key: vec![4, 5],
+                        payload: PeerPresencePayload::Selection { start: 3, end: 8 },
+                    },
+                },
+            ),
+            (
+                "scrollback request",
+                NeighbourMsg::ScrollbackRequest {
+                    artifact: artifact(0x33),
+                    before_seq: 42,
+                    max: 50,
+                    requester: 0x00AB_CDEF,
+                },
+            ),
+            (
+                "scrollback response",
+                NeighbourMsg::ScrollbackResponse {
+                    artifact: artifact(0x44),
+                    ops: vec![dummy_envelope(), dummy_envelope()],
+                    responder: 0x123_456,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_message_round_trips_over_the_production_codec() {
+        for (case, message) in fixtures() {
+            let bytes = postcard::to_allocvec(&message)
+                .unwrap_or_else(|error| panic!("{case} failed to encode: {error}"));
+            let decoded: NeighbourMsg = postcard::from_bytes(&bytes)
+                .unwrap_or_else(|error| panic!("{case} failed to decode: {error}"));
+            assert_eq!(message, decoded, "{case} changed in transit");
+        }
+    }
+
+    /// Names every variant through an exhaustive match, so adding a variant
+    /// fails to compile until it has a fixture and a golden encoding.
+    fn variant(message: &NeighbourMsg) -> &'static str {
+        match message {
+            NeighbourMsg::SyncReq { .. } => "SyncReq",
+            NeighbourMsg::SyncResp { .. } => "SyncResp",
+            NeighbourMsg::PresenceMoved { .. } => "PresenceMoved",
+            NeighbourMsg::PresenceCleared { .. } => "PresenceCleared",
+            NeighbourMsg::SurfaceFrame { .. } => "SurfaceFrame",
+            NeighbourMsg::SurfaceStreamStart { .. } => "SurfaceStreamStart",
+            NeighbourMsg::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
+            NeighbourMsg::RemoteInput { .. } => "RemoteInput",
+            NeighbourMsg::PermissionRequest { .. } => "PermissionRequest",
+            NeighbourMsg::PermissionGrant { .. } => "PermissionGrant",
+            NeighbourMsg::Heartbeat { .. } => "Heartbeat",
+            NeighbourMsg::IdentityHello { .. } => "IdentityHello",
+            NeighbourMsg::AppDocument { .. } => "AppDocument",
+            NeighbourMsg::AppPresenceV2 { .. } => "AppPresenceV2",
+            NeighbourMsg::ScrollbackRequest { .. } => "ScrollbackRequest",
+            NeighbourMsg::ScrollbackResponse { .. } => "ScrollbackResponse",
+            NeighbourMsg::IdentityAnnouncement { .. } => "IdentityAnnouncement",
+            NeighbourMsg::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
+            NeighbourMsg::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
+            NeighbourMsg::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
+        }
+    }
+
+    const VARIANT_COUNT: usize = 20;
+
+    fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write;
+        bytes.iter().fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+    }
+
+    /// Postcard encodings pinned byte for byte. Peers running older builds
+    /// decode these frames, so a change here is a wire break, not a refactor.
+    const GOLDEN: &[(&str, &str)] = &[
+        (
+            "sync request",
+            concat!(
+                "00030102032436623366396131302d303030302d343030302d383030302d3030",
+                "3030303030303030306301090909090909090909090909090909090909090909",
+                "0909090909090909090909",
+            ),
+        ),
+        (
+            "sync response",
+            concat!(
+                "010202aabb01cc2436623366396131302d303030302d343030302d383030302d",
+                "303030303030303030303063",
+            ),
+        ),
+        (
+            "presence moved",
+            concat!(
+                "022a03626f6206637572736f7200000000000029400000000000000ac080e2cf",
+                "aa06",
+            ),
+        ),
+        ("presence cleared", "032a06637572736f72"),
+        ("surface frame", "0407cdd70205000000016781e2cfaa06"),
+        (
+            "SDR stream start",
+            concat!(
+                "0507cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e",
+                "6578616d706c652e456469746f72",
+            ),
+        ),
+        (
+            "HDR stream start",
+            concat!(
+                "0508cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa0601",
+                "0101010001c894028872b442aab7029633fc11937ac2800180ade204f4030000",
+                "0a156f72672e6578616d706c652e486472456469746f72",
+            ),
+        ),
+        ("stream end", "0607cdd70284e2cfaa06"),
+        ("remote input", "07030704deadbeef"),
+        ("permission request", "08050c73686172652d73637265656e"),
+        ("permission grant", "09050c73686172652d73637265656e"),
+        ("heartbeat", "0aeffdb6f50d85e2cfaa06"),
+        (
+            "identity hello",
+            concat!(
+                "0b01010101010101010101010101010101010101010101010101010101010101",
+                "0102020202020202020202020202020202020202020202020202020202020202",
+                "02064c6170746f70010000000a00400303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303030303030303030300",
+            ),
+        ),
+        (
+            "identity announcement",
+            concat!(
+                "102436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030630101010101010101010101010101010101010101010101010101",
+                "0101010101010202020202020202020202020202020202020202020202020202",
+                "020202020202064c6170746f70010000000a0040030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303",
+            ),
+        ),
+        (
+            "identity announcement v2",
+            concat!(
+                "112436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030630101010101010101010101010101010101010101010101010101",
+                "0101010101010202020202020202020202020202020202020202020202020202",
+                "020202020202064c6170746f70010000000a0040030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "030303030303030303030303030303030303030300",
+            ),
+        ),
+        (
+            "personal continuity request",
+            concat!(
+                "1207070707070707070707070707070707070707070707070707070707070707",
+                "07ef9baf05",
+            ),
+        ),
+        (
+            "personal continuity checkpoint",
+            concat!(
+                "1307070707070707070707070707070707070707070707070707070707070707",
+                "07ef9baf0503010203",
+            ),
+        ),
+        (
+            "signed app document",
+            concat!(
+                "0cef9baf05056e6f7465732436623366396131302d303030302d343030302d38",
+                "3030302d30303030303030303030306309757569643a3163326604deadbeef10",
+                "1111111111111111111111111111111107070707070707070707070707070707",
+                "0707070707070707070707070707070710222222222222222222222222222222",
+                "220000002a004000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "00000000000000",
+            ),
+        ),
+        (
+            "app presence",
+            concat!(
+                "0def9baf05056e6f7465732436623366396131302d303030302d343030302d38",
+                "3030302d303030303030303030303063020405020308",
+            ),
+        ),
+        (
+            "scrollback request",
+            "0e10333333333333333333333333333333332a32ef9baf05",
+        ),
+        (
+            "scrollback response",
+            concat!(
+                "0f10444444444444444444444444444444440204deadbeef1011111111111111",
+                "1111111111111111110707070707070707070707070707070707070707070707",
+                "07070707070707070710222222222222222222222222222222220000002a0040",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "04deadbeef101111111111111111111111111111111107070707070707070707",
+                "0707070707070707070707070707070707070707070710222222222222222222",
+                "222222222222220000002a004000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "00000000000000000000000000d6e848",
+            ),
+        ),
+    ];
+
+    #[test]
+    fn every_variant_encodes_to_its_pinned_bytes() {
+        let fixtures = fixtures();
+        let covered: std::collections::BTreeSet<_> = fixtures
+            .iter()
+            .map(|(_, message)| variant(message))
+            .collect();
+        assert_eq!(
+            covered.len(),
+            VARIANT_COUNT,
+            "every variant needs a fixture"
+        );
+        let mut actual = Vec::new();
+        for (case, message) in &fixtures {
+            let bytes = postcard::to_allocvec(message).expect("fixture encodes");
+            actual.push((*case, hex(&bytes)));
+        }
+        let expected: Vec<_> = GOLDEN
+            .iter()
+            .map(|(case, bytes)| (*case, (*bytes).to_owned()))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+}
