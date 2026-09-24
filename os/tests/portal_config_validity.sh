@@ -135,6 +135,12 @@ if [[ -f "$CONTAINERFILE" ]]; then
     # shellcheck source=lib/containerfile.sh
     . "$OS_ROOT/tests/lib/containerfile.sh"
     if ! containerfile_has_copy "$CONTAINERFILE" \
+        'os/usr/share/xdg-desktop-portal/portals/tilo.portal' \
+        '/usr/share/xdg-desktop-portal/portals/tilo.portal'; then
+        echo "FAIL: $CONTAINERFILE does not install the Tilo portal definition" >&2
+        fail=1
+    fi
+    if ! containerfile_has_copy "$CONTAINERFILE" \
         'os/usr/share/xdg-desktop-portal/tilo-portals.conf' \
         '/usr/share/xdg-desktop-portal/tilo-portals.conf'; then
         echo "FAIL: $CONTAINERFILE does not install the Tilo portal preference" >&2
