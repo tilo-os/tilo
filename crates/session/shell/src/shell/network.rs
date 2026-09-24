@@ -1163,6 +1163,9 @@ pub struct ShellNetwork {
     /// Inbound signed document envelopes pushed by [`Self::tick`]. The
     /// broker validates and decodes each before local fan-out.
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
+    /// Local record ids behind the sealed wire names this device publishes
+    /// and accepts; path-bearing record ids never leave the device.
+    wire_records: Mutex<crate::network::wire_record::WireRecordIds>,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
@@ -1528,6 +1531,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
+            wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
@@ -2061,14 +2065,16 @@ impl ShellNetwork {
         Arc::clone(&self.inbound_documents)
     }
 
-    /// Publish one validated signed document mutation.
+    /// Publish one validated signed document mutation. A record id that
+    /// embeds a local path is replaced by its sealed, room-scoped wire name.
     pub fn publish_document(
         &self,
         app_id: String,
         cluster_id: String,
-        record_id: String,
+        record_id: &str,
         envelope: collab_types::SignedOp,
     ) {
+        let record_id = self.register_local_record(&app_id, &cluster_id, record_id);
         let msg = NeighbourMsg::AppDocument {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -2077,6 +2083,30 @@ impl ShellNetwork {
             envelope: Box::new(envelope),
         };
         let _ = self.publish_message(msg);
+    }
+
+    /// Remember that a local app holds `record_id`, so peers' traffic for
+    /// its sealed wire name can be routed to it. Returns the wire name.
+    pub fn register_local_record(&self, app_id: &str, cluster_id: &str, record_id: &str) -> String {
+        match self.wire_records.lock() {
+            Ok(mut records) => records.register(cluster_id, app_id, record_id),
+            Err(_) => crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
+        }
+    }
+
+    /// The local record id an inbound wire record id names, if this device
+    /// holds that record.
+    fn local_record_for_wire(&self, app_id: &str, cluster_id: &str, wire: &str) -> Option<String> {
+        if crate::network::wire_record::embeds_local_path(wire) {
+            // A current peer never sends a path; refuse one that does rather
+            // than route by a leaked name.
+            tracing::warn!(app_id, "peer document names a local path; dropping");
+            return None;
+        }
+        self.wire_records
+            .lock()
+            .ok()?
+            .resolve(cluster_id, app_id, wire)
     }
 
     /// Queue a received signed document for the broker's drainer.
@@ -4899,6 +4929,14 @@ impl ShellNetwork {
                 record_id,
                 envelope,
             } => {
+                let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id)
+                else {
+                    tracing::debug!(
+                        app_id,
+                        "peer document for a record no local app holds; dropping"
+                    );
+                    return;
+                };
                 let role = if self.require_peer_identity {
                     self.peer_document_role(&origin, &cluster_id, &app_id, &record_id, &envelope)
                 } else {
@@ -5780,6 +5818,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
+        wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
@@ -9173,8 +9212,20 @@ mod tests {
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
+        app_document_event_for(cluster_id, "note-1", "note-1", from_peer_hash, peer, device)
+    }
+
+    /// As [`app_document_event`], for a local record id sent under
+    /// `wire_record_id`.
+    fn app_document_event_for(
+        cluster_id: &str,
+        record_id: &str,
+        wire_record_id: &str,
+        from_peer_hash: u64,
+        peer: iroh::PublicKey,
+        device: &ed25519_dalek::SigningKey,
+    ) -> NetEvent {
         let app_id = "so.tilo.notes";
-        let record_id = "note-1";
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
                 .encode()
@@ -9197,18 +9248,19 @@ mod tests {
                 peer: from_peer_hash,
                 app_id: app_id.to_string(),
                 cluster_id: cluster_id.to_string(),
-                record_id: record_id.to_string(),
+                record_id: wire_record_id.to_string(),
                 envelope: Box::new(envelope),
             },
         }
     }
 
-    /// A peer's app document reaches local apps only for a room this
-    /// machine is in. Driven through the real receive path (`tick`),
-    /// not the helper directly, with a positive control so the two
-    /// refusals prove something rather than just "nothing arrives".
-    #[test]
-    fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
+    /// A shell whose room has admitted one certified peer device.
+    fn network_with_admitted_peer() -> (
+        ShellNetwork,
+        crate::shell::state::RoomId,
+        iroh::SecretKey,
+        ed25519_dalek::SigningKey,
+    ) {
         let mut tree = WorkspaceTree::default();
         let local = tree.append_empty_workspace("Mine");
         let our_room = tree.room_of(local).expect("a minted room");
@@ -9218,11 +9270,7 @@ mod tests {
             .find(|workspace| workspace.id == local)
             .expect("workspace")
             .set_owner(crate::shell::state::local_user_id_for_room(&our_room));
-        let handle = tree.shared();
-        let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
-
-        // Documents are accepted only after the sender has proven an
-        // identity-to-device chain and received membership.
+        let (net, _cmd_rx) = shell_network_for_test(tree.shared(), 0xAAAAu64);
         let root = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
         let device = iroh::SecretKey::from_bytes(&[72; 32]);
         let device_signing = ed25519_dalek::SigningKey::from_bytes(&[72; 32]);
@@ -9265,6 +9313,129 @@ mod tests {
             .expect("queue identity proof");
         net.tick();
         net.redeem_invited_identity(room_topic_id(our_room), [3; 32], &device.public(), &cert);
+        (net, our_room, device, device_signing)
+    }
+
+    /// The SDK guide promises a path-bearing record id never leaves the
+    /// device. Check the exact bytes the actor would put on gossip and the
+    /// host link, for a file record and a record derived from one.
+    #[test]
+    fn file_backed_records_never_put_a_path_on_the_wire() {
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
+        // Same routing as `publish_document_emits_a_publish_command`.
+        let room = "cluster-7".to_string();
+        let secret = "/home/alice/Secret Plans/merger-2026.odt";
+        for record_id in [
+            format!("file:{secret}"),
+            format!("derived:annotations@file:{secret}"),
+        ] {
+            let envelope = collab_types::SignedOp::new_unsigned(
+                collab_types::DocumentMutation::Incremental(vec![7; 32])
+                    .encode()
+                    .expect("typed mutation"),
+                collab_types::document_artifact_id("so.tilo.writer", &room, &record_id),
+                collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                collab_types::document_attestation_id("so.tilo.writer", &room, &record_id),
+                collab_types::OpClass::Splice,
+                std::time::SystemTime::UNIX_EPOCH,
+                1,
+            );
+            net.publish_document("so.tilo.writer".into(), room.clone(), &record_id, envelope);
+            let Ok(NetCmd::Publish { msg, .. }) = cmd_rx.try_recv() else {
+                panic!("publish_document must enqueue a publish");
+            };
+            let NeighbourMsg::AppDocument {
+                record_id: wire, ..
+            } = &msg
+            else {
+                panic!("expected AppDocument, got {msg:?}");
+            };
+            assert!(crate::network::wire_record::is_sealed(wire), "{wire}");
+            let encoded = postcard::to_allocvec(&msg).expect("wire encoding");
+            for needle in [secret.as_bytes(), b"/home/alice", b"file:", b"Secret"] {
+                assert!(
+                    !encoded.windows(needle.len()).any(|window| window == needle),
+                    "{:?} leaked onto the wire for {record_id}",
+                    String::from_utf8_lossy(needle)
+                );
+            }
+        }
+    }
+
+    /// A peer holding the same file record in the same room still meets
+    /// this device on one route: its sealed name resolves to the local id
+    /// of the record a local app joined, and the envelope validates against
+    /// that id. A sealed name nobody here holds is refused.
+    #[test]
+    fn a_sealed_record_name_reaches_the_local_app_holding_that_record() {
+        let (net, room, device, device_signing) = network_with_admitted_peer();
+        let cluster = room.to_string();
+        let local = "file:/var/workspace/shared/report.odt";
+        let wire = crate::network::wire_record::wire_record_id(&cluster, "so.tilo.notes", local);
+
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                &wire,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        assert!(
+            net.inbound_documents_handle().lock().unwrap().is_empty(),
+            "no local app holds the record yet, so its sealed name cannot be routed"
+        );
+
+        net.register_local_record("so.tilo.notes", &cluster, local);
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                &wire,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        let inbound = net.inbound_documents_handle();
+        let delivered = inbound.lock().unwrap();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(
+            delivered[0].record_id, local,
+            "the local app sees its own record id"
+        );
+        drop(delivered);
+
+        net.event_tx
+            .try_send(app_document_event_for(
+                &cluster,
+                local,
+                local,
+                0xBBBB,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the publish");
+        net.tick();
+        assert_eq!(
+            net.inbound_documents_handle().lock().unwrap().len(),
+            1,
+            "a peer that names a raw path is refused"
+        );
+    }
+
+    /// A peer's app document reaches local apps only for a room this
+    /// machine is in. Driven through the real receive path (`tick`),
+    /// not the helper directly, with a positive control so the two
+    /// refusals prove something rather than just "nothing arrives".
+    #[test]
+    fn app_document_from_a_room_we_are_not_in_never_reaches_the_broker() {
+        let (net, our_room, device, device_signing) = network_with_admitted_peer();
 
         let stranger_room = crate::shell::state::RoomId::new();
         assert_ne!(stranger_room, our_room);
@@ -9640,7 +9811,7 @@ mod tests {
         net.publish_document(
             "notes".to_string(),
             "cluster-7".to_string(),
-            "uuid:9f".to_string(),
+            "uuid:9f",
             envelope.clone(),
         );
         let cmd = cmd_rx
