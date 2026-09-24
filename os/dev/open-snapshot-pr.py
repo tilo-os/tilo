@@ -5,6 +5,11 @@ Snapshot workflows cannot push to protected main. They commit the canonical pin
 file to an automation branch named after the file's SHA-256 and call this
 script, which checks that branch, digest and references agree before opening
 (or re-finding) the pull request.
+
+FORGEJO_TOKEN must be able to read and create pull requests on the repository;
+the workflows pass secrets.RELEASE_TOKEN. The token that pushes the branch
+(REGISTRY_TOKEN or the job token) is not enough: Forgejo answers its
+pull-request API calls with 404.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 
@@ -21,6 +27,14 @@ import urllib.request
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 KERNEL_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-kernel@sha256:([0-9a-f]{64})$")
 RPMS_REF = re.compile(r"^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$")
+# Forgejo reports a repository the token cannot see as 404, not 403.
+ACCESS_DENIED = (401, 403, 404)
+TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
+              "with read and pull-request write access to this repository")
+
+
+class PromotionError(RuntimeError):
+    """A failure the workflow reports as one clear error line."""
 
 
 def kernel_contents(x86_ref: str, arm_ref: str) -> str:
@@ -90,9 +104,19 @@ def request(server: str, repository: str, token: str, path: str,
 def find_open(server: str, repository: str, token: str, branch: str):
     page = 1
     while True:
-        pulls = request(server, repository, token, f"/pulls?state=open&limit=50&page={page}")
+        try:
+            pulls = request(server, repository, token, f"/pulls?state=open&limit=50&page={page}")
+        except urllib.error.HTTPError as error:
+            if error.code in ACCESS_DENIED:
+                raise PromotionError(
+                    f"token cannot read pull requests on {repository} "
+                    f"(HTTP {error.code}); {TOKEN_HINT}"
+                ) from error
+            raise PromotionError(
+                f"Forgejo failed to list pull requests on {repository} (HTTP {error.code})"
+            ) from error
         if not isinstance(pulls, list):
-            raise RuntimeError("Forgejo returned an invalid pull-request listing")
+            raise PromotionError("Forgejo returned an invalid pull-request listing")
         for pull in pulls:
             if (pull.get("head", {}).get("ref") == branch
                     and pull.get("head", {}).get("repo", {}).get("full_name") == repository
@@ -103,7 +127,7 @@ def find_open(server: str, repository: str, token: str, branch: str):
         page += 1
 
 
-def main() -> int:
+def promote() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--server", required=True)
     parser.add_argument("--repository", required=True)
@@ -121,7 +145,7 @@ def main() -> int:
 
     token = os.environ.get("FORGEJO_TOKEN", "")
     if not token:
-        parser.error("FORGEJO_TOKEN is required")
+        parser.error(f"FORGEJO_TOKEN is empty; {TOKEN_HINT}")
     if not SHA256.fullmatch(args.snapshot_digest):
         parser.error("--snapshot-digest must be 64 lowercase hexadecimal characters")
     contents, kind = args.snapshot(args, parser)
@@ -150,15 +174,25 @@ def main() -> int:
             # open set once; fail closed for every other API error.
             pull = find_open(args.server, args.repository, token, args.branch)
             if pull is None:
-                raise RuntimeError(
-                    f"Forgejo refused {args.kind} snapshot pull-request creation ({error.code})"
+                hint = f"; {TOKEN_HINT}" if error.code in ACCESS_DENIED else ""
+                raise PromotionError(
+                    f"Forgejo refused {args.kind} snapshot pull-request creation "
+                    f"(HTTP {error.code}){hint}"
                 ) from error
     url = pull.get("html_url")
     number = pull.get("number")
     if not isinstance(url, str) or not isinstance(number, int):
-        raise RuntimeError("Forgejo returned an invalid pull-request record")
+        raise PromotionError("Forgejo returned an invalid pull-request record")
     print(f"{kind['label']} snapshot promotion PR #{number}: {url}")
     return 0
+
+
+def main() -> int:
+    try:
+        return promote()
+    except PromotionError as error:
+        print(f"::error::{error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
