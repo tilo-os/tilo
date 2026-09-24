@@ -27,7 +27,7 @@
 //! Naming a version is a change like any other, but is deliberately not
 //! given its own row in the history surfaces — see [`is_group_marker`].
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::time::{Duration, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, PatchAction, Prop, ReadDoc, ScalarValue, Value};
@@ -101,7 +101,7 @@ pub fn name_range(
     let key = format!("{GROUPS_KEY}{}", hex16(start));
     let label: String = label.trim().chars().take(MAX_LABEL_LEN).collect();
     let by = doc.get_actor().to_hex_string();
-    let at = SystemTime::now()
+    let at = crate::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
     // Replacing the whole record rather than patching fields keeps a rename and
@@ -210,7 +210,10 @@ pub fn move_named_boundary(
 /// projections. Missing records are materialized with the titles and bounds
 /// the person saw, then the bordering action is moved in the same document
 /// transaction. The atomic history entries themselves are never rewritten.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a seam names both sessions' records, bounds and labels plus the moved boundary"
+)]
 pub fn materialize_and_move_boundary(
     doc: &mut AutoCommit,
     left_record: Option<&str>,

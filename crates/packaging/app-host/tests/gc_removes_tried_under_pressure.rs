@@ -1,5 +1,5 @@
 //! GC sweep removes LRU-Tried entries under size pressure and preserves
-//! Pinned ones. Uses .qpkg installs so both the payload tree and
+//! Pinned ones. Uses .tapp installs so both the payload tree and
 //! the blob store contribute to reported disk usage.
 
 #![allow(
@@ -14,7 +14,7 @@
 
 use crate::common;
 use app_host::gc;
-use app_host::install::install_qpkg;
+use app_host::install::install_tapp;
 use app_host::registry::Pinning;
 use app_host::store::Store;
 
@@ -24,17 +24,18 @@ fn sweep_evicts_tried_and_preserves_pinned() {
     let store = Store::open(dir.path()).unwrap();
 
     // Install one Pinned + three Tried, each with ~8 KiB payload.
-    let (pinned_bytes, pinned_id) = common::build_qpkg(8);
-    install_qpkg(&store, &pinned_bytes, Pinning::Pinned).unwrap();
+    let (pinned_bytes, pinned_id) = common::build_tapp(8);
+    install_tapp(&store, &pinned_bytes, Pinning::Pinned).unwrap();
 
     let mut tried_ids = Vec::new();
-    for _ in 0..3 {
-        let (bytes, id) = common::build_qpkg(8);
-        install_qpkg(&store, &bytes, Pinning::Tried).unwrap();
+    for last_used_unix in [1_000, 2_000, 3_000] {
+        let (bytes, id) = common::build_tapp(8);
+        install_tapp(&store, &bytes, Pinning::Tried).unwrap();
         tried_ids.push(id);
-        // Force distinct last_used timestamps for LRU ordering.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        store.mark_used(id).unwrap();
+        // Distinct last-used times give the LRU order a defined answer.
+        let mut entry = store.resolve(id).unwrap();
+        entry.last_used_unix = last_used_unix;
+        store.put_entry(entry).unwrap();
     }
 
     let before = store.total_bytes_for_gc().unwrap();
@@ -56,13 +57,13 @@ fn sweep_evicts_tried_and_preserves_pinned() {
         store.resolve(pinned_id).is_ok(),
         "Pinned package must survive gc"
     );
-    // All evicted ids must be Tried.
-    for evicted in &report.removed {
-        assert!(
-            tried_ids.contains(evicted),
-            "gc removed an id that wasn't Tried: {evicted}"
-        );
-    }
+    // Eviction runs least recently used first: whatever was removed is
+    // the oldest Tried packages, in order.
+    assert_eq!(
+        report.removed,
+        tried_ids[..report.removed.len()],
+        "gc must evict the least recently used Tried packages first"
+    );
     // Non-decreasing tally: freed_bytes > 0 since we actually removed
     // payload trees.
     assert!(report.freed_bytes > 0);
@@ -76,10 +77,10 @@ fn sweep_evicts_tried_and_preserves_pinned() {
 fn removing_one_package_preserves_shared_and_pinned_content_graphs() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let (pinned_bytes, pinned_id) = common::build_qpkg(8);
-    let (tried_bytes, tried_id) = common::build_qpkg(16);
-    install_qpkg(&store, &pinned_bytes, Pinning::Pinned).unwrap();
-    install_qpkg(&store, &tried_bytes, Pinning::Tried).unwrap();
+    let (pinned_bytes, pinned_id) = common::build_tapp(8);
+    let (tried_bytes, tried_id) = common::build_tapp(16);
+    install_tapp(&store, &pinned_bytes, Pinning::Pinned).unwrap();
+    install_tapp(&store, &tried_bytes, Pinning::Tried).unwrap();
 
     let before_blobs = store.disk_usage().unwrap().store_bytes;
     store.remove(tried_id).unwrap();
@@ -93,8 +94,8 @@ fn removing_one_package_preserves_shared_and_pinned_content_graphs() {
 fn sweep_disabled_when_cap_is_zero() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    let (bytes, _) = common::build_qpkg(2);
-    install_qpkg(&store, &bytes, Pinning::Tried).unwrap();
+    let (bytes, _) = common::build_tapp(2);
+    install_tapp(&store, &bytes, Pinning::Tried).unwrap();
     let r = gc::sweep(&store, 0).unwrap();
     assert!(!r.touched());
 }

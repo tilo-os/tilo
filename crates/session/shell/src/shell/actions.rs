@@ -13,6 +13,7 @@
 //! *denied* action is never confirmed — [`ActionOutcome`] keeps the two
 //! strictly ordered.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
 use crate::shell::state::{Actor, CapDecision, ResourceRef, Verb, Workspace};
@@ -161,6 +162,7 @@ pub fn permitted_actions<'r>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{CapOverride, Principal, Scope, Subject, WorkspaceId};
 
     fn room() -> Workspace {

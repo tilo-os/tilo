@@ -503,18 +503,18 @@ pub fn transparency_event_hash(event: &ModerationEvent) -> Result<String, Modera
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     #[test]
     fn signature_binds_role_expiry_and_body() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let mut request = sign_moderation_mutation(
             "request-1".into(),
             10,
             20,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "security".into(),
                 summary: "Unexpected network access".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -532,14 +532,14 @@ mod tests {
 
     #[test]
     fn transparency_chain_detects_edit() {
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let request = sign_moderation_mutation(
             "r".into(),
             1,
             20,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "quality".into(),
                 summary: "broken application".into(),
                 evidence_digest_hex: "bb".repeat(32),
@@ -550,7 +550,7 @@ mod tests {
         let mut event = ModerationEvent {
             sequence: 1,
             case_id: "case".into(),
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             publisher_pubkey_hex: "dd".repeat(32),
             recorded_at_unix: 1,
             actor_role: ModerationActorRole::Reporter,
@@ -583,7 +583,7 @@ mod tests {
             20,
             ModerationActorRole::Reporter,
             ModerationMutation::FileReport {
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 category: "security".into(),
                 summary: "unexpected network".into(),
                 evidence_digest_hex: "aa".repeat(32),
@@ -594,7 +594,7 @@ mod tests {
         let mut first = ModerationEvent {
             sequence: 1,
             case_id: "case-one".into(),
-            package_id: "dev.tilo.notes".into(),
+            package_id: "so.tilo.notes".into(),
             publisher_pubkey_hex: "44".repeat(32),
             recorded_at_unix: 11,
             actor_role: report.actor_role,
@@ -631,7 +631,7 @@ mod tests {
             let mut event = ModerationEvent {
                 sequence: 2,
                 case_id: "case-one".into(),
-                package_id: "dev.tilo.notes".into(),
+                package_id: "so.tilo.notes".into(),
                 publisher_pubkey_hex: "44".repeat(32),
                 recorded_at_unix: 13,
                 actor_role: request.actor_role,

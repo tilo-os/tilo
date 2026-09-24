@@ -10,10 +10,10 @@
 //! or cancel *other users'* jobs — trading the whole sandbox for one
 //! feature. So the app gets only a file descriptor for bytes and a
 //! prompt asking where to send them; everything else is decided here.
-//! [`Capability::Print`] has **no arm** in `SandboxProfile::apply_grants`
-//! for the same reason: granting it adds no bind mount, so nothing ever
-//! puts the CUPS socket inside the sandbox (enforced by construction —
-//! see `print_grant_never_binds_the_cups_socket` in `tests/portal_test.rs`).
+//! For the same reason [`Capability::Print`] never becomes a bind mount:
+//! `tilo-launcher` turns a workspace's grants into sandbox binds in
+//! `launcher::capabilities`, which binds only filesystem paths, devices and
+//! network access, so no grant puts the CUPS socket inside the sandbox.
 //!
 //! **Both** methods go through [`flow::resolve`], including
 //! `PreparePrint`: the printer list is itself the disclosure an app
@@ -37,7 +37,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 
@@ -47,7 +47,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 #[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::{OwnedValue, Value};
 
@@ -363,7 +364,7 @@ impl PrintBackend {
 }
 
 impl PreparedPrintJobs {
-    /// Mint a token for `job` and return it, from `OsRng` — never a counter,
+    /// Mint a token for `job` and return it, from `UnwrapErr(SysRng)` — never a counter,
     /// hash, or clock. The portal spec types it as a `u`, so 32 bits is the
     /// whole budget; [`Self::redeem_token`] also requires the redeemer to be
     /// the app it was minted for, and single use plus a TTL keep the guessing window small.
@@ -420,7 +421,7 @@ impl PreparedPrintJobs {
 
 fn random_token() -> u32 {
     let mut bytes = [0u8; 4];
-    OsRng.fill_bytes(&mut bytes);
+    UnwrapErr(SysRng).fill_bytes(&mut bytes);
     u32::from_le_bytes(bytes)
 }
 
@@ -443,7 +444,7 @@ impl PrintBackend {
     )]
     async fn prepare_print(
         &self,
-        #[zbus(signal_context)] _sig: SignalContext<'_>,
+        #[zbus(signal_emitter)] _sig: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -511,7 +512,7 @@ impl PrintBackend {
     )]
     async fn print(
         &self,
-        #[zbus(signal_context)] _sig: SignalContext<'_>,
+        #[zbus(signal_emitter)] _sig: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -801,7 +802,7 @@ mod tests {
         app: &str,
     ) -> (PortalContext, WorkspaceId) {
         let (store, ws_id) =
-            GrantStoreHandle::test_with_workspace(Workspace::test_default(WorkspaceId(90), "pr"));
+            GrantStoreHandle::test_with_workspace(Workspace::new(WorkspaceId(90), "pr"));
         let map = CallerMap::new();
         map.force_caller_for_tests(PortalCaller::new(ws_id, app));
         let mut ctx =

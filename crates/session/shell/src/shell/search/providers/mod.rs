@@ -16,7 +16,7 @@ pub mod session_actions;
 pub mod text_app;
 
 pub use actions::ActionsProvider;
-pub use applications::ApplicationsProvider;
+pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
 pub use continuity::{CallContinuityActionsProvider, DeviceContinuityActionsProvider};
 pub use desktop_windows::DesktopWindowsProvider;
 pub use editor::EditorProvider;

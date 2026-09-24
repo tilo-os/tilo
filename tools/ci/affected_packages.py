@@ -3,9 +3,11 @@
 
 The selector works from Cargo metadata rather than a hand-maintained package
 list.  A package is selected when its own files change, or when it transitively
-depends on a changed workspace package.  Repository-wide build inputs fall back
-to the complete workspace. Ordinary feedback checks the closure on x86 and tests
-changed packages plus contract suites; --full qualifies both native architectures.
+depends on a changed workspace package.  Root Cargo.toml and Cargo.lock changes
+are attributed to the packages they reach when the difference can be proved;
+other repository-wide build inputs fall back to the complete workspace.
+Ordinary feedback checks the closure on x86 and tests changed packages plus
+contract suites; --full qualifies both native architectures.
 The emitted matrix is consumed directly by Forgejo Actions.
 """
 
@@ -19,14 +21,15 @@ import re
 import subprocess
 import sys
 import tomllib
+from typing import NamedTuple
 
 # Direct CLI execution and importlib-based policy tests both load the same graph.
 TOOLS = Path(__file__).resolve().parents[1]
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 from ci.workspace_graph import (
-    cargo_metadata, changed_files, closure, comparison_merge_base,
-    owner_for, package_maps, reverse_dependencies, run,
+    cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
+    lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
 
 
@@ -73,6 +76,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
+    "tools/policy/check_ui_clock_contract.py": "tools/tests/test_ui_clock_contract.py",
 }
 # Control-plane files are validated by tests that read or execute the production
 # file in the mandatory repository-policy suite. A file missing from this exact
@@ -88,6 +92,10 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     ".forgejo/workflows/build-kernel.yml": (
         "tools/tests/test_workflow_applicability.py",
+        "os/tests/workflow_dependency_invariants.sh",
+    ),
+    ".forgejo/workflows/dev-disk.yml": (
+        "tools/tests/test_dev_disk_workflow.py",
         "os/tests/workflow_dependency_invariants.sh",
     ),
     ".forgejo/workflows/check.yml": (
@@ -203,6 +211,142 @@ def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) 
     )
 
 
+class ResolvedInput(NamedTuple):
+    """A root manifest/lockfile change attributed to specific workspace packages.
+
+    ``seeds`` are checked with their reverse dependencies and tested; ``checked``
+    are additionally type-checked. ``native`` reports whether the change reaches
+    the vendored native dependency contract.
+    """
+    seeds: frozenset[str]
+    checked: frozenset[str]
+    native: bool
+    detail: str
+
+
+# Workspace tables whose semantic difference maps to specific packages. Every
+# other root manifest key (lints, workspace.package, exclude, default-members,
+# resolver, metadata, profile, patch, replace, a root package, ...) keeps the
+# complete workspace.
+ATTRIBUTABLE_WORKSPACE_KEYS = {"members", "dependencies"}
+NATIVE_CONTRACT_PACKAGE = "openh264-sys2"
+
+
+def resolve_lockfile(before: bytes | None, after: bytes | None, metadata: dict) -> ResolvedInput | None:
+    packages = {package["name"] for package in metadata["packages"]}
+    change = lockfile_change(before, after, packages)
+    if change is None:
+        return None
+    try:
+        locked_local = {
+            entry["name"] for entry in tomllib.loads(after.decode("utf-8")).get("package", [])
+            if "source" not in entry
+        }
+    except (KeyError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    # Attribution relies on every workspace member being a lockfile node.
+    if not packages <= locked_local:
+        return None
+    return ResolvedInput(
+        seeds=change.seeds,
+        checked=frozenset(change.reached & packages),
+        native=NATIVE_CONTRACT_PACKAGE in change.reached,
+        detail=f"Cargo.lock reaches {len(change.seeds)} packages directly",
+    )
+
+
+def _dependency_names(entry: object, key: str) -> set[str]:
+    names = {key}
+    if isinstance(entry, dict) and isinstance(entry.get("package"), str):
+        names.add(entry["package"])
+    return names
+
+
+def resolve_root_manifest(
+    before: bytes | None, after: bytes | None, metadata: dict, root: Path
+) -> ResolvedInput | None:
+    """Attribute workspace member and shared dependency edits to their users."""
+    if before is None or after is None:
+        return None
+    try:
+        old = tomllib.loads(before.decode("utf-8"))
+        new = tomllib.loads(after.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    if {key: value for key, value in old.items() if key != "workspace"} != {
+        key: value for key, value in new.items() if key != "workspace"
+    }:
+        return None
+    old_ws, new_ws = old.get("workspace"), new.get("workspace")
+    if not isinstance(old_ws, dict) or not isinstance(new_ws, dict):
+        return None
+    changed_keys = {key for key in old_ws.keys() | new_ws.keys() if old_ws.get(key) != new_ws.get(key)}
+    if not changed_keys <= ATTRIBUTABLE_WORKSPACE_KEYS:
+        return None
+
+    packages, by_dir = package_maps(metadata, root)
+    seeds: set[str] = set()
+    details = []
+    if "members" in changed_keys:
+        old_members, new_members = old_ws.get("members", []), new_ws.get("members", [])
+        if not all(
+            isinstance(members, list)
+            and all(isinstance(member, str) and not re.search(r"[*?\[]", member) for member in members)
+            for members in (old_members, new_members)
+        ):
+            return None
+        added = set(new_members) - set(old_members)
+        removed = set(old_members) - set(new_members)
+        for member in added:
+            owner = by_dir.get(Path(os.path.normpath(member)))
+            if owner is None:
+                return None
+            seeds.add(owner)
+        removed_dirs = {(root / member).resolve() for member in removed}
+        seeds.update(
+            name for name, package in packages.items()
+            if any(dependency.get("path") and Path(dependency["path"]).resolve() in removed_dirs
+                   for dependency in package.get("dependencies", []))
+        )
+        details.append(f"{len(added)} added and {len(removed)} removed members")
+    if "dependencies" in changed_keys:
+        old_deps, new_deps = old_ws.get("dependencies", {}), new_ws.get("dependencies", {})
+        if not isinstance(old_deps, dict) or not isinstance(new_deps, dict):
+            return None
+        names: set[str] = set()
+        changed_deps = {key for key in old_deps.keys() | new_deps.keys() if old_deps.get(key) != new_deps.get(key)}
+        for key in changed_deps:
+            names |= _dependency_names(old_deps.get(key), key) | _dependency_names(new_deps.get(key), key)
+        # Match both the dependency package and its local rename. Direct,
+        # non-inherited uses of the same crate can over-select, never omit.
+        seeds.update(
+            name for name, package in packages.items()
+            if any(dependency.get("name") in names or dependency.get("rename") in names
+                   for dependency in package.get("dependencies", []))
+        )
+        details.append(f"{len(changed_deps)} shared dependencies")
+    return ResolvedInput(frozenset(seeds), frozenset(), False,
+                         "Cargo.toml changes " + " and ".join(details))
+
+
+def resolve_manifest_inputs(
+    root: Path, base: str | None, head: str, metadata: dict, changes: list[str]
+) -> dict[str, ResolvedInput]:
+    """Return the root manifest/lockfile changes that can be attributed exactly."""
+    resolvers = {"Cargo.lock": resolve_lockfile,
+                 "Cargo.toml": lambda old, new, meta: resolve_root_manifest(old, new, meta, root)}
+    wanted = [path for path in resolvers if path in changes]
+    if not wanted:
+        return {}
+    merge_base = comparison_merge_base(root, base, head)
+    resolved = {}
+    for path in wanted:
+        result = resolvers[path](file_at(root, merge_base, path), file_at(root, head, path), metadata)
+        if result is not None:
+            resolved[path] = result
+    return resolved
+
+
 def package_cost(pkg: dict) -> int:
     """Stable relative cost used only to balance shards.
 
@@ -246,8 +390,17 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
-def native_dependencies_required(root: Path, changes: list[str], force_full: bool = False) -> bool:
-    """Select a declared native dependency contract without hiding missing payloads."""
+def native_dependencies_required(
+    root: Path,
+    changes: list[str],
+    force_full: bool = False,
+    resolved_inputs: dict[str, ResolvedInput] | None = None,
+) -> bool:
+    """Select a declared native dependency contract without hiding missing payloads.
+
+    A root manifest or lockfile change that was attributed exactly selects the
+    contract only when it reaches the vendored native crate's locked graph.
+    """
     manifest = tomllib.loads((root / "Cargo.toml").read_text())
     declared = "openh264-sys2" in manifest.get("patch", {}).get("crates-io", {})
     # Introduction/deletion of native sources must be checked even if the patch
@@ -261,7 +414,12 @@ def native_dependencies_required(root: Path, changes: list[str], force_full: boo
              "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/tests/test_ci_select.py",
              "tools/tests/test_ci_check_aggregate.py"}
     prefixes = (".cargo/", ".forgejo/actions/prepare-rust-build/")
-    return force_full or any(path in files or path.startswith(prefixes) for path in changes)
+    resolved_inputs = resolved_inputs or {}
+    return force_full or any(
+        resolved_inputs[path].native if path in resolved_inputs
+        else path in files or path.startswith(prefixes)
+        for path in changes
+    )
 
 
 def make_plan(
@@ -273,14 +431,22 @@ def make_plan(
     force_full: bool = False,
     builder_only_external_assets: bool = False,
     allow_security_skip: bool = False,
+    resolved_inputs: dict[str, ResolvedInput] | None = None,
 ) -> dict:
     packages, by_dir = package_maps(metadata, root)
+    resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
+                       if path in changes}
     seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
+    checked: set[str] = set()
+    for resolved in resolved_inputs.values():
+        seeds.update(resolved.seeds & packages.keys())
+        checked.update(resolved.checked & packages.keys())
     projected_quality_paths = (
         {EXTERNAL_ASSET_MANIFEST} if builder_only_external_assets else set()
     )
     global_change = any(
-        (path in GLOBAL_FILES and path not in projected_quality_paths)
+        (path in GLOBAL_FILES and path not in projected_quality_paths
+         and path not in resolved_inputs)
         or path.startswith(GLOBAL_PREFIXES)
         for path in changes
     )
@@ -348,9 +514,11 @@ def make_plan(
                   "repository-wide build input changed" if global_change else "workspace path has no package owner")
         full = True
     else:
-        selected = closure(seeds, reverse_dependencies(packages, root))
+        selected = closure(seeds | checked, reverse_dependencies(packages, root))
         selected.update(ALWAYS_PACKAGES & packages.keys())
         reason = f"{len(seeds)} changed packages, their reverse dependencies, and contract packages"
+        if resolved_inputs:
+            reason += " (" + "; ".join(item.detail for _, item in sorted(resolved_inputs.items())) + ")"
         full = False
     # Ordinary feedback type-checks the entire reverse-dependency closure once
     # on x86, but links tests only for changed crates and the existing contract
@@ -370,13 +538,14 @@ def make_plan(
                 if arch == "x86_64" and LARGE_X86_TEST_PACKAGES.intersection(test_names)
                 else runner
             )
-            matrix.append({**shard, "arch": arch, "runner": selected_runner,
+            matrix.append({**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
                            "test_packages": " ".join(f"-p {name}" for name in test_names)})
     return {
         "full": full,
         "rust_required": bool(selected),
         "security_required": not security_not_applicable,
-        "native_dependencies_required": native_dependencies_required(root, changes, force_full),
+        "native_dependencies_required": native_dependencies_required(
+            root, changes, force_full, resolved_inputs),
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -388,6 +557,9 @@ def make_plan(
         "requested_shards": shard_count,
         "shard_count": effective_shards,
         "matrix": {"include": matrix},
+        # Clippy's lint result is architecture-independent; lint each package
+        # set once, on x86_64.
+        "clippy_matrix": {"include": [row for row in matrix if row["arch"] == "x86_64"]},
     }
 
 
@@ -395,6 +567,8 @@ def emit_github(plan: dict, output: Path) -> None:
     compact_matrix = json.dumps(plan["matrix"], separators=(",", ":"))
     with output.open("a", encoding="utf-8") as handle:
         handle.write(f"matrix={compact_matrix}\n")
+        compact_clippy_matrix = json.dumps(plan["clippy_matrix"], separators=(",", ":"))
+        handle.write(f"clippy_matrix={compact_clippy_matrix}\n")
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
@@ -429,6 +603,10 @@ def main() -> int:
         and EXTERNAL_ASSET_MANIFEST in changes
         and builder_only_asset_manifest_change(root, args.base, args.head)
     )
+    resolved_inputs = (
+        resolve_manifest_inputs(root, args.base, args.head, metadata, changes)
+        if args.changes is None and not args.full else {}
+    )
     plan = make_plan(
         metadata,
         root,
@@ -437,6 +615,7 @@ def main() -> int:
         force_full=args.full,
         builder_only_external_assets=builder_only_external_assets,
         allow_security_skip=args.allow_security_skip,
+        resolved_inputs=resolved_inputs,
     )
     print(json.dumps(plan, indent=2))
     if args.github_output:

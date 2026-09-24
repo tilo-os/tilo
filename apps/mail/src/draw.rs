@@ -7,7 +7,7 @@
 //! a coloured initials disc.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
 
 use ui::ImageStore;
@@ -16,6 +16,7 @@ use ui::theme::Theme;
 use ui::widget::Avatar;
 
 use crate::model::Addr;
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 
 pub struct AvatarPaintContext<'a> {
     pub scene: &'a mut Scene,
@@ -45,29 +46,11 @@ pub const CHIP_CLEARANCE: f64 = 52.0;
 /// Horizontal room the `NavShell` "Back" chip needs (chevron + label).
 pub const BACK_CLEARANCE: f64 = 118.0;
 
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, color: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
-}
-
-pub fn stroke_round(scene: &mut Scene, t: Affine, rect: Rect, r: f64, w: f64, color: Color) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        color,
-        None,
-        &RoundedRect::from_rect(rect, r),
-    );
-}
+// Rounded fills and edged surfaces go through the toolkit — `ui::surface::pill`
+// for a plain rounded fill (or one with a semantic border such as focus) and
+// `ui::surface::card` for a surface with its derived rest edge — so every
+// pane's chips, rows and buttons share the toolkit's edge rule (HIG §9.5)
+// instead of a private `fill_round` + `stroke_round(border_standard)` pair.
 
 /// Truncate `text` with a trailing ellipsis so it fits within `max_w` pixels
 /// at the given size/weight.
@@ -81,20 +64,7 @@ pub fn elide(
     if max_w <= 1.0 {
         return String::new();
     }
-    let (w, _) = tr.measure_weighted(text, size, None, weight);
-    if f64::from(w) <= max_w {
-        return text.to_string();
-    }
-    let mut chars: Vec<char> = text.chars().collect();
-    while !chars.is_empty() {
-        chars.pop();
-        let cand = format!("{}…", chars.iter().collect::<String>().trim_end());
-        let (cw, _) = tr.measure_weighted(&cand, size, None, weight);
-        if f64::from(cw) <= max_w {
-            return cand;
-        }
-    }
-    "…".to_string()
+    tr.elide_to_width_weighted(text, size, ui::num::f32_of_f64(max_w), weight)
 }
 
 /// Deterministic accent colour for an address' initials disc.

@@ -29,22 +29,14 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use greeter::GreeterApp;
 use greeter::greeter_app::AuthScenario;
-use taffy::prelude::*;
 use ui::app::UserEvent;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{ShotFrame, ShotLayout};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 use winit::event_loop::EventLoopProxy;
 
 /// Default offscreen viewport for `--shots`.
@@ -83,7 +75,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Slot the event loop populates once it starts; the greeter reads it to
     // spawn the background auth worker.
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
-    let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
+    let console = console_control::ConsoleServer::new();
+    let widget = GreeterApp::new()
+        .with_proxy_slot(proxy_slot.clone())
+        .with_console(console.clone());
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
     // On a personal machine with one unambiguous interactive account, the
@@ -100,9 +95,32 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // focusable at all.
     app.autofocus_on_structure_change = true;
     app.run_with_setup(move |proxy| {
+        serve_console(&console, proxy.clone());
         let _ = proxy_slot.set(proxy);
     });
     Ok(())
+}
+
+/// Start the console endpoints that exist here: the greeter user's private
+/// runtime socket, and the virtio port only a hypervisor can attach.
+fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy<UserEvent>) {
+    let proxy = std::sync::Mutex::new(proxy);
+    let waker: console_control::server::Waker = Arc::new(move || {
+        if let Ok(proxy) = proxy.lock() {
+            let _ = proxy.send_event(UserEvent::External(
+                greeter::greeter_app::CONSOLE_WAKE.to_owned(),
+            ));
+        }
+    });
+    let endpoints = console_control::Endpoint::discover(greeter::greeter_app::CONSOLE_PROVIDER);
+    let failed = console.serve_all(&endpoints, &waker);
+    for endpoint in &endpoints {
+        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
+            tracing::warn!(?endpoint, %error, "greeter console endpoint unavailable");
+        } else {
+            tracing::info!(?endpoint, "greeter console listening");
+        }
+    }
 }
 
 /// Returns the optional logical-pixel viewport supplied to the headless
@@ -198,11 +216,21 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
     match scenario {
         // The first frame anyone ever sees: both fields empty.
         AuthScenario::Form | AuthScenario::Personal | AuthScenario::PersonalNoFingerprint => None,
-        // The whole point of the hint state is the *missing* password.
+        // Hint/error states deliberately show the missing passcode. Busy
+        // states do too, for a more important reason: the live submit path
+        // moves the passcode into a zeroizing worker value before entering
+        // either busy phase, while fingerprint submission scrubs any typed
+        // passcode outright. Keep visual evidence honest; it must never imply
+        // that a secret remains in the disabled field after submission.
         AuthScenario::Hint
         | AuthScenario::Error
         | AuthScenario::PersonalHint
-        | AuthScenario::PersonalError => Some(("ada", "")),
+        | AuthScenario::PersonalError
+        | AuthScenario::Authenticating
+        | AuthScenario::Fingerprint
+        | AuthScenario::Starting
+        | AuthScenario::PersonalAuthenticating
+        | AuthScenario::PersonalStarting => Some(("ada", "")),
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
@@ -211,15 +239,14 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
-/// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
+/// resulting RGBA to `out` as a PNG.
 ///
 /// `username` pre-populates the non-secret username CRDT object. The caller
 /// seeds representative passcode text through `GreeterApp`'s process-local
-/// buffer, never the document. Because the composed
-/// children are only created *inside* `build_layout`, we sync a second time
-/// afterwards so those children (the `TextInputs`) pull their values from the
-/// document — the live App achieves the same via its per-frame sync.
+/// buffer, never the document. Because the composed children are only
+/// created *inside* `build_layout`, the frame syncs a second time afterwards
+/// so those children (the `TextInputs`) pull their values from the document
+/// — the live App achieves the same via its per-frame sync.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -229,83 +256,24 @@ fn render_shot_to_png(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use automerge::{ObjType, transaction::Transactable};
 
-    let (w, h) = viewport;
-    // Viewport dimensions are screen/image sizes (1280x800 by default),
-    // always far under f32's 24-bit mantissa — never enough to lose precision.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "viewport dimensions are screen/image sizes, always far under 2^24"
-    )]
-    let (wf, hf) = (w as f32, h as f32);
     let theme = text_scale.map_or_else(Theme::dark, |scale| Theme::dark().with_text_scale(scale));
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
+    let mut frame = ShotFrame::new(viewport, theme)
+        .with_unscaled_text()
+        .with_layout(ShotLayout::Measured)
+        .with_resync_after_build();
 
     if let Some(username) = username {
+        let state = &mut frame.state;
         let uobj = state
             .doc
             .put_object(&state.root, "greeter.username", ObjType::Text)?;
         let _ = state.doc.splice_text(&uobj, 0, 0, username);
     }
 
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-
-    // Second sync so the freshly-composed children pull from the doc.
-    widget.sync(&mut state.doc, &state.root);
-
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(wf),
-                height: Dimension::length(hf),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(wf),
-                height: AvailableSpace::Definite(hf),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    frame.sync(widget.as_mut());
+    frame.layout(widget.as_mut())?;
+    let scene = frame.draw(widget.as_mut());
+    frame.write_png(&scene, out);
     println!("tilo-greeter: wrote shot to {}", out.display());
     Ok(())
 }
@@ -370,6 +338,23 @@ mod tests {
             assert_eq!(
                 parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
                 Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn busy_shots_do_not_retain_representative_passcodes() {
+        for scenario in [
+            AuthScenario::Authenticating,
+            AuthScenario::Fingerprint,
+            AuthScenario::Starting,
+            AuthScenario::PersonalAuthenticating,
+            AuthScenario::PersonalStarting,
+        ] {
+            assert_eq!(
+                shot_credentials(scenario).map(|(_, passcode)| passcode),
+                Some(""),
+                "{scenario:?} must mirror the live path after secret handoff"
             );
         }
     }

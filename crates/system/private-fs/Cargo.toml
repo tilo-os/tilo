@@ -6,6 +6,9 @@ publish.workspace = true
 license.workspace = true
 description = "User-owned private files with native ownership and access checks"
 
+[dependencies]
+atomic-file = { path = "../atomic-file" }
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

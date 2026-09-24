@@ -4,9 +4,9 @@
 //! `pending_detach`, splices the tab + `TileHost` into a matching sibling.
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
+use crate::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -30,6 +30,33 @@ const SNAP_ANIM_MS: u32 = 200;
 /// matches `window_group.rs`'s spawn fade (420ms cubic-out), which runs
 /// at the same moment, so the two read as one event.
 const MAKE_SPACE_ANIM_MS: u32 = 420;
+
+/// A tab dragged over a window body gets a generous before/after target at
+/// each outer edge. The target follows the window size, but stays useful on a
+/// compact window and does not consume an absurd amount of an ultrawide one.
+const TAB_GROUP_EDGE_FRAC: f64 = 0.25;
+const TAB_GROUP_EDGE_MIN_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64;
+const TAB_GROUP_EDGE_MAX_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64 * 3.0;
+const TAB_GROUP_EDGE_MAX_FRAC: f64 = 0.32;
+/// Keep a resolved target through a few pixels of boundary jitter. Release
+/// commits the retained preview verbatim, so the window cannot land somewhere
+/// other than the place the indicator showed.
+const TAB_DROP_HYSTERESIS_PX: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+
+fn tab_group_edge_width(group_width: f64) -> f64 {
+    (group_width * TAB_GROUP_EDGE_FRAC)
+        .clamp(TAB_GROUP_EDGE_MIN_PX, TAB_GROUP_EDGE_MAX_PX)
+        // Degenerate test/layout sizes must still retain an interior.
+        .min(group_width * TAB_GROUP_EDGE_MAX_FRAC)
+}
+
+/// Empty canvas kept after the final group at the legal end of a strip.
+/// A fifth of the viewport is enough breathing room to make the end legible
+/// without letting the focused app feel abandoned in the middle of the screen.
+const TRAILING_REVEAL_FRAC: f64 = 0.20;
+/// Maximum *additional* visual give while a three-finger pan pulls beyond a
+/// legal end. The shared rubber-band curve approaches this asymptotically.
+const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
@@ -107,8 +134,18 @@ struct GroupDrag {
     src_idx: usize,
     group_id: u64,
     start: Point,
+    lifted_at: Instant,
     moved: bool,
 }
+
+/// The one spatial answer to a tab drag within a strip — the desktop
+/// model's drop target, so what the row previews is exactly what the
+/// model applies.
+///
+/// Both hover feedback and release consume this value. A target in an
+/// existing group names the exact tab-list insertion point; a group gap names
+/// the slot where a new window group will be made.
+pub use tilo_desktop_model::DropTarget as TabDropTarget;
 
 /// Payload published when a tab drag ends outside the row's own band; the
 /// shell hit-tests the release point against other strips and delivers it
@@ -156,12 +193,20 @@ pub struct GroupRow {
     last_cursor: Point,
     /// Set on structural mutation; App's tick handler polls & rebuilds taffy.
     structure_dirty: bool,
-    /// Gap index the cursor hovers during a child drag; `draw` paints
-    /// "drop here" here. Cleared on release or when no child is dragging.
-    hover_gap_idx: Option<usize>,
+    /// The exact target currently previewed for a child tab drag. Release
+    /// consumes this value rather than hit-testing a second time.
+    tab_drop_target: Option<TabDropTarget>,
+    /// Target previewed in this row for a tab whose gesture belongs to a
+    /// different strip. Kept separate so the shell can clear cross-strip
+    /// routing without disturbing compositor-owned content drag feedback.
+    cross_strip_drop_target: Option<TabDropTarget>,
     /// Horizontal scroll offset (px): each child renders at `-scroll_x`.
-    /// Clamped to `[0, max(0, content_w - viewport_w)]` after each layout.
+    /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active direct
+    /// gesture may hold a resisted transient value just outside either end.
     scroll_x: f64,
+    /// Scroll offset at the start of the current direct-manipulation gesture.
+    /// Gesture updates carry total travel, so this remains fixed until End.
+    strip_pan_origin: Option<f64>,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
     content_w: f64,
@@ -306,8 +351,10 @@ impl GroupRow {
             node_ids: Vec::new(),
             last_cursor: Point::ZERO,
             structure_dirty: false,
-            hover_gap_idx: None,
+            tab_drop_target: None,
+            cross_strip_drop_target: None,
             scroll_x: 0.0,
+            strip_pan_origin: None,
             content_w: 0.0,
             group_left_edges: Vec::new(),
             last_wheel_at: None,
@@ -582,6 +629,80 @@ impl GroupRow {
 
     pub fn max_scroll_x(&self) -> f64 {
         (self.content_w - self.rect.width()).max(0.0)
+    }
+
+    /// Furthest legal resting offset for direct strip panning. Unlike the
+    /// content-tight focus bound, this leaves a deliberate glimpse of canvas
+    /// after the final app. Content which already fits stays pinned at home.
+    pub fn pan_max_scroll_x(&self) -> f64 {
+        let viewport = self.rect.width().max(1.0);
+        (self.content_w + viewport * TRAILING_REVEAL_FRAC - viewport).max(0.0)
+    }
+
+    /// Rebase total-travel updates onto the strip's current visual position.
+    /// A fresh axis lock calls this even if a prior stream lost its End at a
+    /// lock/session boundary, preventing stale gesture state from jumping.
+    pub fn begin_strip_pan(&mut self) {
+        self.strip_pan_origin = Some(self.scroll_x);
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+    }
+
+    /// Track a three-finger horizontal gesture in direct-manipulation space.
+    /// `travel` is total signed scroll travel since Begin (positive moves
+    /// toward later groups). Legal canvas tracks 1:1; beyond either end the
+    /// shared iOS-style curve supplies continuously increasing resistance.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the shared rubber-band token accepts f32 screen-pixel distances; viewport-sized \
+                  f64 values are safely representable at sub-pixel precision and the result is \
+                  immediately widened back into the row's f64 geometry"
+    )]
+    pub fn update_strip_pan(&mut self, travel: f64) -> bool {
+        let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
+        let requested = origin + travel;
+        let max = self.pan_max_scroll_x();
+        let reach = self.rect.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC;
+        let next = if requested < 0.0 {
+            -f64::from(crate::tokens::rubber_band(
+                (-requested) as f32,
+                reach as f32,
+            ))
+        } else if requested > max {
+            max + f64::from(crate::tokens::rubber_band(
+                (requested - max) as f32,
+                reach as f32,
+            ))
+        } else {
+            requested
+        };
+        if (next - self.scroll_x).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.scroll_x = next;
+        self.scroll_dirty = true;
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+        true
+    }
+
+    /// Release/cancel direct manipulation. In-range positions remain exactly
+    /// where the fingers left them; only elastic overpull settles to an end.
+    pub fn end_strip_pan(&mut self, now: Instant) -> bool {
+        self.strip_pan_origin = None;
+        let target = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
+        if (target - self.scroll_x).abs() <= 0.5 {
+            self.scroll_x = target;
+            return false;
+        }
+        self.snap_anim = Some(SnapAnim {
+            from: self.scroll_x,
+            to: target,
+            started: now,
+        });
+        self.last_wheel_at = None;
+        self.scroll_dirty = true;
+        true
     }
 
     /// A group focused the same frame it was spliced in hasn't been
@@ -1087,6 +1208,181 @@ impl GroupRow {
         self.group_reorder_target
     }
 
+    /// The target whose indicator is currently on screen for a tab drag.
+    pub fn tab_drop_target(&self) -> Option<TabDropTarget> {
+        self.tab_drop_target
+    }
+
+    /// Whether one of this row's own tab bars currently owns a drag.
+    pub fn tab_drag_active(&self) -> bool {
+        self.groups.iter().any(WindowGroup::drag_in_flight)
+    }
+
+    /// The exact destination currently painted for a tab from another strip.
+    pub fn cross_strip_drop_target(&self) -> Option<TabDropTarget> {
+        self.cross_strip_drop_target
+    }
+
+    /// Preview a tab arriving from another strip. The stored enum is later
+    /// consumed verbatim by the shell's cross-strip commit path.
+    pub fn set_cross_strip_tab_drag_hover(&mut self, cursor: Option<Point>) {
+        let was_active = self.cross_strip_drop_target.is_some();
+        self.cross_strip_drop_target = cursor.and_then(|p| {
+            self.last_cursor = p;
+            self.tab_drop_target_with_previous(p, self.cross_strip_drop_target)
+        });
+        // A no-op clear must not erase a compositor-owned content-drop line,
+        // which shares the tab bar's external-hover paint primitive.
+        if cursor.is_none() && !was_active {
+            return;
+        }
+        for group in &mut self.groups {
+            let hover = match self.cross_strip_drop_target {
+                Some(TabDropTarget::ExistingGroup { group_id, .. }) if group.id == group_id => {
+                    cursor
+                }
+                _ => None,
+            };
+            group.set_external_drag_hover(hover);
+        }
+    }
+
+    /// Drive the same preview for content carried by the compositor rather
+    /// than by one of this row's tabs. `None` retires the indicator when the
+    /// protocol drag leaves or finishes.
+    pub fn set_external_content_drag_hover(&mut self, cursor: Option<Point>) {
+        self.tab_drop_target = cursor.and_then(|p| {
+            self.last_cursor = p;
+            self.tab_drop_target_with_hysteresis(p)
+        });
+        for group in &mut self.groups {
+            let hover = match self.tab_drop_target {
+                Some(TabDropTarget::ExistingGroup { group_id, .. }) if group.id == group_id => {
+                    cursor
+                }
+                _ => None,
+            };
+            group.set_external_drag_hover(hover);
+        }
+    }
+
+    /// Resolve one pointer position into the strip's complete tab-drop
+    /// grammar. The tab bar wins and keeps its precise pill-gap insertion.
+    /// In the body, adaptive outer bands make a new group while the remaining
+    /// interior prepends/appends to the existing group's tab list. Only space
+    /// outside every group can otherwise produce a new group.
+    pub fn tab_drop_target_at(&self, p: Point) -> Option<TabDropTarget> {
+        for (group_idx, group) in self.groups.iter().enumerate() {
+            let rect = group.get_rect();
+            if !rect.contains(p) {
+                continue;
+            }
+            if group.is_closing() {
+                // Preserve the existing closing-bar escape hatch: the fading
+                // group cannot safely adopt a tab, so its former bar resolves
+                // to the gap immediately before it. Its content is no target.
+                return group
+                    .bar_rect()
+                    .contains(p)
+                    .then_some(TabDropTarget::GroupGap {
+                        gap_index: group_idx,
+                    });
+            }
+            if group.bar_rect().contains(p) {
+                return Some(TabDropTarget::ExistingGroup {
+                    group_id: group.id,
+                    tab_index: group.drop_index_for(p),
+                });
+            }
+
+            let edge = tab_group_edge_width(rect.width());
+            if p.x < rect.x0 + edge {
+                return Some(TabDropTarget::GroupGap {
+                    gap_index: group_idx,
+                });
+            }
+            if p.x > rect.x1 - edge {
+                return Some(TabDropTarget::GroupGap {
+                    gap_index: group_idx.saturating_add(1),
+                });
+            }
+            return Some(TabDropTarget::ExistingGroup {
+                group_id: group.id,
+                tab_index: if p.x < rect.center().x {
+                    0
+                } else {
+                    group.tabs().len()
+                },
+            });
+        }
+
+        self.gap_index_for(p)
+            .map(|gap_index| TabDropTarget::GroupGap { gap_index })
+    }
+
+    /// Retain the previous target for a small band around any boundary. The
+    /// resolver itself stays pure and directly testable; hysteresis is only a
+    /// presentation policy for successive pointer samples.
+    fn tab_drop_target_with_hysteresis(&self, p: Point) -> Option<TabDropTarget> {
+        self.tab_drop_target_with_previous(p, self.tab_drop_target)
+    }
+
+    fn tab_drop_target_with_previous(
+        &self,
+        p: Point,
+        previous: Option<TabDropTarget>,
+    ) -> Option<TabDropTarget> {
+        let next = self.tab_drop_target_at(p);
+        let Some(previous) = previous else {
+            return next;
+        };
+        if next == Some(previous) {
+            return next;
+        }
+        let near_samples = [
+            Point::new(p.x - TAB_DROP_HYSTERESIS_PX, p.y),
+            Point::new(p.x + TAB_DROP_HYSTERESIS_PX, p.y),
+            Point::new(p.x, p.y - TAB_DROP_HYSTERESIS_PX),
+            Point::new(p.x, p.y + TAB_DROP_HYSTERESIS_PX),
+        ];
+        if near_samples
+            .into_iter()
+            .any(|sample| self.tab_drop_target_at(sample) == Some(previous))
+        {
+            Some(previous)
+        } else {
+            next
+        }
+    }
+
+    fn refresh_tab_drop_preview(&mut self) {
+        let any_drag = self
+            .groups
+            .iter()
+            .any(super::window_group::WindowGroup::drag_in_flight);
+        self.tab_drop_target = if any_drag && self.rect.contains(self.last_cursor) {
+            self.tab_drop_target_with_hysteresis(self.last_cursor)
+        } else {
+            None
+        };
+        for group in &mut self.groups {
+            let cursor = match self.tab_drop_target {
+                Some(TabDropTarget::ExistingGroup { group_id, .. }) if group.id == group_id => {
+                    Some(self.last_cursor)
+                }
+                _ => None,
+            };
+            group.set_external_drag_hover(cursor);
+        }
+    }
+
+    fn clear_tab_drop_preview(&mut self) {
+        self.tab_drop_target = None;
+        for group in &mut self.groups {
+            group.set_external_drag_hover(None);
+        }
+    }
+
     /// Slot before the first group whose centre sits right of the
     /// cursor. Centre-based so nudging past a neighbour's midpoint
     /// commits the swap, matching tab-reorder feel.
@@ -1162,6 +1458,7 @@ impl GroupRow {
                         src_idx: idx,
                         group_id,
                         start: self.last_cursor,
+                        lifted_at: crate::time::now(),
                         moved: false,
                     });
                 }
@@ -1208,26 +1505,44 @@ impl GroupRow {
         }
     }
 
-    /// Splices the tab into a brand-new [`WindowGroup`] at the gap
-    /// nearest `drop_pos`. Also used for the "no strip matched, return
-    /// to sender" recovery path, called on the source row.
+    /// Apply the exact target already previewed by this destination row.
+    /// Returns `false` for a stale group id so the shell can restore the
+    /// detached payload to its source without losing its live host.
     pub fn accept_cross_strip_drop(
         &mut self,
         new_id: u64,
         desc: TabDescriptor,
         host: TileHost,
-        drop_pos: Point,
-    ) -> usize {
-        let mut new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
-        new_group.start_spawn_animation();
-        // `gap_index_for` returns `None` when `drop_pos` falls inside an
-        // existing group's rect; default to "append at end" so the tab
-        // can't be silently lost.
-        let gap_idx = self.gap_index_for(drop_pos).unwrap_or(self.groups.len());
-        let clamped = gap_idx.min(self.groups.len());
-        self.groups.insert(clamped, new_group);
+        target: TabDropTarget,
+    ) -> bool {
+        match target {
+            TabDropTarget::ExistingGroup {
+                group_id,
+                tab_index,
+            } => {
+                let Some(group) = self
+                    .groups
+                    .iter_mut()
+                    .find(|group| group.id == group_id && !group.is_closing())
+                else {
+                    return false;
+                };
+                group.insert_detached_tab(tab_index, desc, host);
+            }
+            TabDropTarget::GroupGap { gap_index } => {
+                let mut new_group =
+                    WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
+                new_group.start_spawn_animation();
+                self.groups
+                    .insert(gap_index.min(self.groups.len()), new_group);
+            }
+        }
+        self.cross_strip_drop_target = None;
+        for group in &mut self.groups {
+            group.set_external_drag_hover(None);
+        }
         self.structure_dirty = true;
-        clamped
+        true
     }
 
     /// Restore a detach whose durable cross-strip transaction was refused.
@@ -1516,24 +1831,19 @@ impl Widget for GroupRow {
         if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
             self.shift_anim = None;
         }
-        // Same widened upper bound the wheel handler uses (max_scroll_x
-        // OR three viewports past the rightmost group) — clamping to
-        // `max_scroll_x` alone would reset scroll every frame on a
-        // single-group strip, killing the "scroll into empty space" feel.
-        let viewport = self.rect.width().max(1.0);
-        let upper = self.max_scroll_x().max(viewport * 3.0);
-        if self.scroll_x > upper {
-            self.scroll_x = upper;
-        }
-        if self.scroll_x < 0.0 {
-            self.scroll_x = 0.0;
+        // Preserve transient rubber-band travel while fingers are down or a
+        // release settle is in flight. At rest, geometry changes clamp to the
+        // deliberate trailing allowance instead of the old three-viewports
+        // of unbounded empty canvas.
+        if self.strip_pan_origin.is_none() && self.snap_anim.is_none() {
+            self.scroll_x = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
         }
         if spans_aligned {
             self.reframe_on_geometry_change(spans);
         }
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased.
-        self.tick_snap_at(Instant::now());
+        self.tick_snap_at(crate::time::now());
         // Panning stays in lock-step with the wheel-disc's own
         // `-scroll_x` shift in `ShellOverlayHost::apply_layout`. A
         // fullscreen-promoted group drops the leading gutter and any
@@ -1586,6 +1896,7 @@ impl Widget for GroupRow {
             .or_else(|| self.groups.iter().position(|g| g.maximized));
         self.draw_groups(scene, transform, tr, theme, presence, maximized_idx);
         self.draw_handles(scene, transform, tr, theme, presence, maximized_idx);
+        self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
 
         scene.pop_layer();
@@ -1607,41 +1918,7 @@ impl Widget for GroupRow {
         // sibling bars even after a child has swallowed the event.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-            // Gate on an active drag so the "drop here" indicator never
-            // shows for idle cursor motion.
-            let any_drag = self
-                .groups
-                .iter()
-                .any(super::window_group::WindowGroup::drag_in_flight);
-            self.hover_gap_idx = if any_drag {
-                self.gap_index_for(self.last_cursor)
-            } else {
-                None
-            };
-            // Push the cursor into every sibling bar so its drop-line
-            // paints at the correct gap; the source bar drives its own
-            // target internally. The setter no-ops on a bar's own
-            // in-flight drag, so visiting it last in the fan-out can't
-            // wipe it.
-            let cursor_for_external = if any_drag {
-                Some(self.last_cursor)
-            } else {
-                None
-            };
-            for g in &mut self.groups {
-                g.set_external_drag_hover(cursor_for_external);
-            }
-        }
-
-        // Drop is resolved on release; leaving the indicator set would
-        // let a stale gap highlight persist into the next frame.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Released,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            self.hover_gap_idx = None;
+            self.refresh_tab_drop_preview();
         }
 
         // Runs before resize-handle/per-child dispatch so, once past
@@ -1656,29 +1933,87 @@ impl Widget for GroupRow {
         // A bare wheel NEVER moves the strip — that only happens via
         // `scroll_group_into_view_animated`, not this event path.
 
-        self.dispatch_to_handles(
+        // A clipped group's trailing `+` can overlap the invisible resize
+        // seam at the viewport edge. The exact painted control owns both the
+        // cursor update and the press; otherwise the seam keeps its usual
+        // first refusal. Forwarding the move matters because button events
+        // carry no coordinates and the child bar hit-tests its cursor cache.
+        let new_tab_owned = matches!(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            taffy,
-        );
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput {
+                    button: MouseButton::Left,
+                    ..
+                }
+        ) && self
+            .groups
+            .iter()
+            .any(|group| group.new_tab_hit(self.last_cursor));
+        let cursor = self.last_cursor;
+        let direct_new_tab = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self
+            .groups
+            .iter_mut()
+            .find(|group| group.new_tab_hit(cursor))
+            .is_some_and(|group| group.request_new_tab_if_hit(cursor));
+        if direct_new_tab {
+            *handled = true;
+        }
+        if new_tab_owned && !direct_new_tab {
+            self.dispatch_to_groups(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
+        if !*handled {
+            self.dispatch_to_handles(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
         self.apply_pending_handle_resizes();
-        self.dispatch_to_groups(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            root,
-            handled,
-            focus_target,
-            taffy,
-        );
+        if !new_tab_owned {
+            self.dispatch_to_groups(
+                event,
+                scale_factor,
+                *modifiers,
+                state,
+                root,
+                handled,
+                focus_target,
+                taffy,
+            );
+        }
         self.prune_closed_groups();
         self.resolve_tab_detaches(handled);
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            self.clear_tab_drop_preview();
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -1823,6 +2158,7 @@ impl Widget for GroupRow {
         // otherwise never reach the shell's overlay host.
         self.snap_in_flight()
             || self.shift_in_flight()
+            || self.group_drag_active()
             || self.groups.iter().any(super::Widget::needs_animation_frame)
     }
 
@@ -1865,7 +2201,7 @@ impl GroupRow {
                 })
                 .collect();
             self.shift_anim = (!offsets.is_empty()).then(|| ShiftAnim {
-                started: Instant::now(),
+                started: crate::time::now(),
                 offsets,
             });
         }
@@ -1965,8 +2301,72 @@ impl GroupRow {
             } else {
                 transform
             };
+            let source_is_lifted = self
+                .group_drag
+                .is_some_and(|drag| drag.moved && drag.group_id == g.id);
+            if source_is_lifted {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    0.18,
+                    t,
+                    &g.get_rect().inflate(160.0, 160.0),
+                );
+            }
             g.draw(scene, t, tr, theme, presence);
+            if source_is_lifted {
+                scene.pop_layer();
+            }
         }
+    }
+
+    /// Paint the window group being reordered as the same kind of lifted,
+    /// translucent object as a carried tab: the pointer keeps its original
+    /// grab offset, content settles slightly smaller beneath the handle, and
+    /// the source remains as a dim vacancy. Hit-testing and layout stay at the
+    /// source geometry until release.
+    fn draw_group_drag_preview(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let Some(drag) = self.group_drag.filter(|drag| drag.moved) else {
+            return;
+        };
+        let Some(group) = self
+            .groups
+            .iter_mut()
+            .find(|group| group.id == drag.group_id)
+        else {
+            return;
+        };
+        let progress = if theme.reduce_motion {
+            1.0
+        } else {
+            let duration = theme.tokens.motion.durations.fast().as_secs_f64();
+            if duration <= f64::EPSILON {
+                1.0
+            } else {
+                crate::ease_out((drag.lifted_at.elapsed().as_secs_f64() / duration).clamp(0.0, 1.0))
+            }
+        };
+        let scale = 1.0 - 0.04 * progress;
+        let rect = group.get_rect();
+        let anchor = Point::new(rect.center().x, rect.y0);
+        let dx = self.last_cursor.x - drag.start.x;
+        let dy = self.last_cursor.y - drag.start.y;
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine multiplication composes finite floating-point transforms"
+        )]
+        let preview_transform = transform
+            * Affine::translate((dx + anchor.x, dy + anchor.y))
+            * Affine::scale(scale)
+            * Affine::translate((-anchor.x, -anchor.y));
+        group.draw_group_drag_visual(scene, preview_transform, tr, theme, presence);
     }
 
     /// Painted after the groups so the accent rule sits on top. Skipped
@@ -2025,21 +2425,41 @@ impl GroupRow {
         }
     }
 
-    /// Painted only while a group drag is past its threshold.
+    /// One full-height group-gap indicator shared by whole-group reorder and
+    /// tab splitting. Sharing this geometry is what makes an edge-band target
+    /// and a literal seam communicate the same resulting structure.
     fn draw_reorder_capsule(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let (Some(_), Some(ins)) = (
-            self.group_drag.filter(|d| d.moved),
-            self.group_reorder_target,
-        ) else {
+        let ins = self
+            .group_drag
+            .filter(|drag| drag.moved)
+            .and(self.group_reorder_target)
+            .or(match self.tab_drop_target {
+                Some(TabDropTarget::GroupGap { gap_index }) => Some(gap_index),
+                _ => None,
+            })
+            .or(match self.cross_strip_drop_target {
+                Some(TabDropTarget::GroupGap { gap_index }) => Some(gap_index),
+                _ => None,
+            });
+        let Some(ins) = ins else {
             return;
         };
         if self.groups.is_empty() {
             return;
         }
+        // At either end the capsule sits where the next inter-group gap
+        // would open — half a handle slot outside the outermost card — so
+        // an end insertion is marked at the same distance from its
+        // neighbour as a middle one.
+        let end_offset = HANDLE_SLOT_PX / 2.0;
         let gap_x = if ins == 0 {
-            self.groups.first().map_or(0.0, |g| g.get_rect().x0 - 5.0)
+            self.groups
+                .first()
+                .map_or(0.0, |g| g.get_rect().x0 - end_offset)
         } else if ins >= self.groups.len() {
-            self.groups.last().map_or(0.0, |g| g.get_rect().x1 + 5.0)
+            self.groups
+                .last()
+                .map_or(0.0, |g| g.get_rect().x1 + end_offset)
         } else {
             let left = self
                 .groups
@@ -2054,7 +2474,9 @@ impl GroupRow {
         if y1 <= y0 {
             return;
         }
-        let thickness = 4.0;
+        // Twice the idle handle rule, so the insertion mark reads as the
+        // gap "opening" rather than as another handle.
+        let thickness = 2.0 * super::resize_handle::HANDLE_VISIBLE_PX;
         let capsule = RoundedRect::from_rect(
             Rect::new(gap_x - thickness / 2.0, y0, gap_x + thickness / 2.0, y1),
             thickness / 2.0,
@@ -2159,9 +2581,37 @@ impl GroupRow {
         focus_target: &mut Option<NodeId>,
         taffy: &TaffyTree<()>,
     ) {
-        for (i, g) in self.groups.iter_mut().enumerate() {
+        // Mouse buttons carry no position, so dispatch the group that owns the
+        // remembered cursor (or an active capture) before siblings. Keep every
+        // sibling in the fallback order: synthetic and keyboard-adjacent test
+        // paths can legitimately lack a preceding cursor move.
+        let preferred = matches!(event, WindowEvent::MouseInput { .. }).then(|| {
+            self.groups
+                .iter()
+                .position(|group| group.new_tab_hit(self.last_cursor))
+                .or_else(|| {
+                    self.groups
+                        .iter()
+                        .position(|group| group.wants_pointer_capture())
+                })
+                .or_else(|| {
+                    self.groups
+                        .iter()
+                        .position(|group| group.get_rect().contains(self.last_cursor))
+                })
+        });
+        let preferred = preferred.flatten();
+        let mut order = Vec::with_capacity(self.groups.len());
+        if let Some(i) = preferred {
+            order.push(i);
+        }
+        order.extend((0..self.groups.len()).filter(|i| Some(*i) != preferred));
+        for i in order {
+            let Some(g) = self.groups.get_mut(i) else {
+                continue;
+            };
             let Some(&node_id) = self.node_ids.get(i) else {
-                break;
+                continue;
             };
             g.handle_event(
                 event,
@@ -2222,18 +2672,6 @@ impl GroupRow {
     /// model dragging two tabs at once. Remaining in-row detaches are
     /// resolved by [`Self::resolve_one_tab_detach`].
     fn resolve_tab_detaches(&mut self, handled: &mut bool) {
-        // CursorMoved only reclassifies on motion, so a child that
-        // dropped its `pending_drag` internally could otherwise leave
-        // this stuck once every drag has cleared.
-        if self.hover_gap_idx.is_some()
-            && !self
-                .groups
-                .iter()
-                .any(super::window_group::WindowGroup::drag_in_flight)
-        {
-            self.hover_gap_idx = None;
-        }
-
         let mut detaches: Vec<(usize, u64, Point)> = Vec::new();
         for (i, g) in self.groups.iter_mut().enumerate() {
             if let Some((tab_id, release_point)) = g.take_tab_detach() {
@@ -2280,8 +2718,8 @@ impl GroupRow {
             detaches.remove(skip_idx);
         }
 
-        for (src_idx, tab_id, release_point) in detaches {
-            self.resolve_one_tab_detach(src_idx, tab_id, release_point, handled);
+        for (src_idx, tab_id, _release_point) in detaches {
+            self.resolve_one_tab_detach(src_idx, tab_id, self.tab_drop_target, handled);
         }
     }
 
@@ -2294,25 +2732,23 @@ impl GroupRow {
         &mut self,
         src_idx: usize,
         tab_id: u64,
-        release_point: Point,
+        target: Option<TabDropTarget>,
         handled: &mut bool,
     ) {
-        if self.try_drop_on_sibling_bar(src_idx, tab_id, release_point, handled) {
-            return;
-        }
-        if self.try_drop_in_tile_area(src_idx, tab_id, release_point, handled) {
-            return;
-        }
-        if self.try_drop_on_closing_sibling_gap(src_idx, tab_id, release_point, handled) {
-            return;
-        }
-        // Deliberately does NOT refuse a single-tab source dropped into
-        // an adjacent gap: with one group, gap_idx is always 0 or 1, so
-        // refusing would block every drag-out from a single-tab row
-        // even though the flow produces correct state.
-        if let Some(gap_idx) = self.gap_index_for(release_point)
-            && self.split_tab_into_new_group(src_idx, tab_id, gap_idx)
-        {
+        let committed = match target {
+            Some(TabDropTarget::ExistingGroup {
+                group_id,
+                tab_index,
+            }) => self.move_tab_into_group(src_idx, tab_id, group_id, tab_index),
+            // Deliberately does NOT refuse a single-tab source dropped into
+            // an adjacent gap: replacing its now-empty source with the new
+            // group is still the faithful result of the gesture.
+            Some(TabDropTarget::GroupGap { gap_index }) => {
+                self.split_tab_into_new_group(src_idx, tab_id, gap_index)
+            }
+            None => false,
+        };
+        if committed {
             *handled = true;
             return;
         }
@@ -2335,140 +2771,43 @@ impl GroupRow {
         }
     }
 
-    /// First [`Self::resolve_one_tab_detach`] landing spot: an existing
-    /// sibling's tab bar. Closing groups excluded: `insert_detached_tab`
-    /// doesn't clear `closing_at`, so a spliced tab would be pruned with it
-    /// at fade-end. Falls through (returns `false`) to the next path
-    /// instead. Returns `true` once a bar-rect target is found, whether or
-    /// not the drop itself completed — the caller commits to this path
-    /// either way.
-    fn try_drop_on_sibling_bar(
+    /// Apply an [`TabDropTarget::ExistingGroup`] without resolving geometry
+    /// again. Same-group body drops become ordinary first/last reorders;
+    /// sibling drops transfer the descriptor and live host together.
+    fn move_tab_into_group(
         &mut self,
         src_idx: usize,
         tab_id: u64,
-        release_point: Point,
-        handled: &mut bool,
+        target_group_id: u64,
+        tab_index: usize,
     ) -> bool {
-        let target_idx = self
+        let Some(dst_idx) = self
             .groups
             .iter()
-            .enumerate()
-            .find(|(i, g)| *i != src_idx && !g.is_closing() && g.bar_rect().contains(release_point))
-            .map(|(i, _)| i);
-        let Some(tgt_idx) = target_idx else {
-            return false;
-        };
-        let Some(drop_idx) = self
-            .groups
-            .get(tgt_idx)
-            .map(|g| g.drop_index_for(release_point))
+            .position(|group| group.id == target_group_id && !group.is_closing())
         else {
-            return true;
-        };
-        let Some(src_group) = self.groups.get_mut(src_idx) else {
-            return true;
-        };
-        let moved_tab = src_group.detach_tab(tab_id);
-        if let Some((desc, host)) = moved_tab
-            && let Some(tgt) = self.groups.get_mut(tgt_idx)
-        {
-            tgt.insert_detached_tab(drop_idx, desc, host);
-            self.prune_empty_group_after_transfer(src_idx);
-            self.pending_topology_change = true;
-            *handled = true;
-        }
-        true
-    }
-
-    /// Second [`Self::resolve_one_tab_detach`] landing spot: three
-    /// horizontal bands across a sibling's tile area. Edge bands (25% of
-    /// width, capped at 48px — the gap alone is too thin to hit) create a
-    /// new group to that side; the centre band splices into the sibling's
-    /// tab list. Same "found means committed" return convention as
-    /// [`Self::try_drop_on_sibling_bar`].
-    fn try_drop_in_tile_area(
-        &mut self,
-        src_idx: usize,
-        tab_id: u64,
-        release_point: Point,
-        handled: &mut bool,
-    ) -> bool {
-        let tile_target_idx = self
-            .groups
-            .iter()
-            .enumerate()
-            .find(|(i, g)| {
-                *i != src_idx
-                    && !g.is_closing()
-                    && g.get_rect().contains(release_point)
-                    && !g.bar_rect().contains(release_point)
-            })
-            .map(|(i, _)| i);
-        let Some(tgt_idx) = tile_target_idx else {
             return false;
         };
-        let Some(tgt_rect) = self.groups.get(tgt_idx).map(WindowGroup::get_rect) else {
-            return true;
-        };
-        let edge_band = (tgt_rect.width() * 0.25).min(48.0);
-        let in_left_band = release_point.x < tgt_rect.x0 + edge_band;
-        let in_right_band = release_point.x > tgt_rect.x1 - edge_band;
-        if in_left_band || in_right_band {
-            let gap_idx = if in_left_band {
-                tgt_idx
-            } else {
-                tgt_idx.saturating_add(1)
+        if src_idx == dst_idx {
+            let Some(group) = self.groups.get_mut(src_idx) else {
+                return false;
             };
-            if self.split_tab_into_new_group(src_idx, tab_id, gap_idx) {
-                *handled = true;
+            let Some(from) = group.tabs().iter().position(|tab| tab.id == tab_id) else {
+                return false;
+            };
+            let to = if tab_index > from {
+                tab_index.saturating_sub(1)
+            } else {
+                tab_index
             }
-            return true;
-        }
-        let drop_idx = if release_point.x < tgt_rect.center().x {
-            0
-        } else {
-            self.groups.get(tgt_idx).map_or(0, |g| g.tabs().len())
-        };
-        let Some(src_group) = self.groups.get_mut(src_idx) else {
-            return true;
-        };
-        let moved_tab = src_group.detach_tab(tab_id);
-        if let Some((desc, host)) = moved_tab
-            && let Some(tgt) = self.groups.get_mut(tgt_idx)
-        {
-            tgt.insert_detached_tab(drop_idx, desc, host);
-            self.prune_empty_group_after_transfer(src_idx);
+            .min(group.tab_count().saturating_sub(1));
+            if to == from || !group.reorder_tab(from, to) {
+                return false;
+            }
             self.pending_topology_change = true;
-            *handled = true;
+            return true;
         }
-        true
-    }
-
-    /// Third [`Self::resolve_one_tab_detach`] landing spot: a *closing*
-    /// sibling's bar rect still exists geometrically, so `gap_index_for`
-    /// returns `None`; this is the fallback to the left-of-closing-group
-    /// gap instead of dropping the tab. Same "found means committed"
-    /// return convention as [`Self::try_drop_on_sibling_bar`].
-    fn try_drop_on_closing_sibling_gap(
-        &mut self,
-        src_idx: usize,
-        tab_id: u64,
-        release_point: Point,
-        handled: &mut bool,
-    ) -> bool {
-        let closing_target = self
-            .groups
-            .iter()
-            .enumerate()
-            .find(|(i, g)| *i != src_idx && g.is_closing() && g.bar_rect().contains(release_point))
-            .map(|(i, _)| i);
-        let Some(tgt_idx) = closing_target else {
-            return false;
-        };
-        if self.split_tab_into_new_group(src_idx, tab_id, tgt_idx) {
-            *handled = true;
-        }
-        true
+        self.transfer_tab(src_idx, dst_idx, tab_id, tab_index)
     }
 }
 
@@ -2762,6 +3101,150 @@ mod tests {
             let mid = f64::midpoint(r0.x1, r1.x0);
             assert_eq!(row.gap_index_for(Point::new(mid, y)), Some(1));
         }
+    }
+
+    fn assert_unified_tab_targets_at_width(usable: f64) {
+        let row = make_row_with_groups_on_display(&[&[1, 2], &[10, 11, 12]], usable, 2000.0).0;
+        let group = &row.groups[1];
+        let rect = group.get_rect();
+        let bar = group.bar_rect();
+        let body_y = f64::midpoint(bar.y1, rect.y1);
+        let edge = tab_group_edge_width(rect.width());
+        assert!(
+            edge * 2.0 <= rect.width() * (TAB_GROUP_EDGE_MAX_FRAC * 2.0 + f64::EPSILON),
+            "edge targets must leave at least 36% of a compact body for tab insertion"
+        );
+
+        assert_eq!(
+            row.tab_drop_target_at(Point::new(rect.x0 + edge - 1.0, body_y)),
+            Some(TabDropTarget::GroupGap { gap_index: 1 }),
+            "the full left border band creates a group before the window (width {})",
+            rect.width(),
+        );
+        assert_eq!(
+            row.tab_drop_target_at(Point::new(rect.x0 + edge, body_y)),
+            Some(TabDropTarget::ExistingGroup {
+                group_id: group.id,
+                tab_index: 0,
+            }),
+            "the border's inner boundary belongs continuously to the left interior",
+        );
+        assert_eq!(
+            row.tab_drop_target_at(Point::new(rect.center().x - 1.0, body_y)),
+            Some(TabDropTarget::ExistingGroup {
+                group_id: group.id,
+                tab_index: 0,
+            }),
+        );
+        assert_eq!(
+            row.tab_drop_target_at(Point::new(rect.center().x, body_y)),
+            Some(TabDropTarget::ExistingGroup {
+                group_id: group.id,
+                tab_index: group.tabs().len(),
+            }),
+            "the exact centre starts the append half",
+        );
+        assert_eq!(
+            row.tab_drop_target_at(Point::new(rect.x1 - edge, body_y)),
+            Some(TabDropTarget::ExistingGroup {
+                group_id: group.id,
+                tab_index: group.tabs().len(),
+            }),
+            "the border's inner boundary still belongs to the right interior",
+        );
+        assert_eq!(
+            row.tab_drop_target_at(Point::new(rect.x1 - edge + 1.0, body_y)),
+            Some(TabDropTarget::GroupGap { gap_index: 2 }),
+            "the full right border band creates a group after the window",
+        );
+
+        let pills = group.tab_rects();
+        let between_first_two = f64::midpoint(pills[0].x1, pills[1].x0);
+        assert_eq!(
+            row.tab_drop_target_at(Point::new(between_first_two, bar.center().y)),
+            Some(TabDropTarget::ExistingGroup {
+                group_id: group.id,
+                tab_index: 1,
+            }),
+            "the top bar keeps exact pill-gap insertion instead of body zones",
+        );
+    }
+
+    #[test]
+    fn unified_tab_targets_cover_normal_and_compact_windows() {
+        assert_unified_tab_targets_at_width(FIXTURE_USABLE_PX);
+        assert_unified_tab_targets_at_width(480.0);
+    }
+
+    #[test]
+    fn tab_target_hysteresis_retains_preview_then_crosses_cleanly() {
+        let mut row = make_row_with_groups_on_display(&[&[1, 2], &[10, 11]], 1200.0, 2000.0).0;
+        let rect = row.groups[1].get_rect();
+        let body_y = f64::midpoint(row.groups[1].bar_rect().y1, rect.y1);
+        let boundary = rect.x0 + tab_group_edge_width(rect.width());
+        row.tab_drop_target = Some(TabDropTarget::GroupGap { gap_index: 1 });
+
+        assert_eq!(
+            row.tab_drop_target_with_hysteresis(Point::new(boundary + 2.0, body_y)),
+            row.tab_drop_target,
+            "two pixels of boundary jitter must retain the indicator the user saw",
+        );
+        assert!(matches!(
+            row.tab_drop_target_with_hysteresis(Point::new(
+                boundary + TAB_DROP_HYSTERESIS_PX + 2.0,
+                body_y,
+            )),
+            Some(TabDropTarget::ExistingGroup { tab_index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn cross_strip_accept_consumes_exact_existing_group_target() {
+        let mut row = make_row_with_groups_on_display(&[&[1, 2]], 1200.0, 2000.0).0;
+        let mut source = make_group(900, &[9]);
+        let (desc, host) = source.detach_tab(9).expect("detached source tab");
+        let target = TabDropTarget::ExistingGroup {
+            group_id: row.groups[0].id,
+            tab_index: 1,
+        };
+        row.cross_strip_drop_target = Some(target);
+
+        assert!(row.accept_cross_strip_drop(901, desc, host, target));
+        assert_eq!(
+            row.groups[0]
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![1, 9, 2]
+        );
+        assert_eq!(row.cross_strip_drop_target(), None);
+    }
+
+    #[test]
+    fn stale_cross_strip_existing_group_target_is_refused_without_mutation() {
+        let mut row = make_row_with_groups_on_display(&[&[1, 2]], 1200.0, 2000.0).0;
+        let mut source = make_group(900, &[9]);
+        let (desc, host) = source.detach_tab(9).expect("detached source tab");
+
+        assert!(!row.accept_cross_strip_drop(
+            901,
+            desc,
+            host,
+            TabDropTarget::ExistingGroup {
+                group_id: u64::MAX,
+                tab_index: 0,
+            },
+        ));
+        assert_eq!(row.groups.len(), 1);
+        assert_eq!(
+            row.groups[0]
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 
     /// 1200 puts the width tiers on whole hundreds (Narrow 400 / Normal
@@ -3098,7 +3581,7 @@ mod tests {
         let expected = plain.scroll_x();
         assert!(expected > 0.0);
 
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         assert!(
             anim.scroll_group_into_view_animated(target_id, t0),
             "an off-screen group must start an animated pan"
@@ -3127,7 +3610,7 @@ mod tests {
         // Fixture's full 2000px viewport: first group is fully inside.
         let (mut row, _taffy, _root) =
             make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
-        assert!(!row.scroll_group_into_view_animated(100, Instant::now()));
+        assert!(!row.scroll_group_into_view_animated(100, crate::time::now()));
         assert_eq!(row.scroll_x(), 0.0);
         assert!(
             !row.needs_animation_frame(),
@@ -3190,17 +3673,19 @@ mod tests {
         let g0_rect = row.groups[0].get_rect();
         let release = Point::new(g0_rect.x1 + 10.0, f64::midpoint(g0_rect.y0, g0_rect.y1));
         // Mimics what `TabBar::handle_event` does on an out-of-rect release.
+        row.tab_drop_target = row.tab_drop_target_at(release);
         row.groups[0].bar_mut().pending_detach = Some((7, release));
 
-        // A no-op event that still triggers the sweep.
+        // The release triggers the same post-child detach sweep as production.
         let mut doc = AutoCommit::new();
         let doc_root = automerge::ROOT.clone();
         let modifiers = Modifiers::default();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
-        let event = WindowEvent::CursorMoved {
+        let event = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(release.x, release.y),
+            state: ElementState::Released,
+            button: MouseButton::Left,
         };
         row.handle_event(
             &event,
@@ -3300,9 +3785,9 @@ mod tests {
         fire_cursor_moved(&mut row, &taffy, root, mid_gap);
 
         assert_eq!(
-            row.hover_gap_idx,
-            Some(1),
-            "cursor in the gap between groups 0 and 1 must set hover_gap_idx = Some(1)"
+            row.tab_drop_target,
+            Some(TabDropTarget::GroupGap { gap_index: 1 }),
+            "cursor in the gap must preview that exact group gap"
         );
     }
 
@@ -3316,7 +3801,7 @@ mod tests {
         let mid_gap = Point::new(f64::midpoint(r0.x1, r1.x0), mid_y);
         fire_cursor_moved(&mut row, &taffy, root, mid_gap);
         assert!(
-            row.hover_gap_idx.is_some(),
+            row.tab_drop_target.is_some(),
             "precondition: drag tracked the gap"
         );
 
@@ -3343,19 +3828,18 @@ mod tests {
         );
 
         assert_eq!(
-            row.hover_gap_idx, None,
-            "MouseInput::Released must clear hover_gap_idx so no ghost indicator persists"
+            row.tab_drop_target, None,
+            "MouseInput::Released must clear the preview so no ghost indicator persists"
         );
     }
 
     #[test]
     fn group_pruned_after_close_fade_completes() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         // Already-elapsed timestamp: ready-to-prune on the very next tick.
-        row.groups[0].set_closing_at_for_tests(earlier(Instant::now(), 200));
+        row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 200));
         assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
         let event = WindowEvent::CursorMoved {
@@ -3393,11 +3877,10 @@ mod tests {
     /// Mirror of the prune test above.
     #[test]
     fn group_retained_during_close_fade() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        row.groups[0].set_closing_at_for_tests(Instant::now());
+        row.groups[0].set_closing_at_for_tests(crate::time::now());
         assert!(row.groups[0].is_closing());
         assert!(!row.groups[0].close_complete());
 
@@ -3431,7 +3914,6 @@ mod tests {
 
     #[test]
     fn drop_onto_closing_group_creates_new_group_instead() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         // Two multi-tab groups so neither gets pruned by the
@@ -3440,7 +3922,7 @@ mod tests {
 
         // B (index 1) is fresh-latched closing, so the prune sweep won't
         // touch it this tick.
-        row.groups[1].set_closing_at_for_tests(Instant::now());
+        row.groups[1].set_closing_at_for_tests(crate::time::now());
         assert!(row.groups[1].is_closing());
         assert!(!row.groups[1].close_complete());
         let b_tabs_before: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
@@ -3451,6 +3933,7 @@ mod tests {
             f64::midpoint(b_bar.x0, b_bar.x1),
             f64::midpoint(b_bar.y0, b_bar.y1),
         );
+        row.tab_drop_target = row.tab_drop_target_at(release);
         row.groups[0].bar_mut().pending_detach = Some((1, release));
 
         let mut doc = AutoCommit::new();
@@ -3458,9 +3941,10 @@ mod tests {
         let modifiers = Modifiers::default();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
-        let event = WindowEvent::CursorMoved {
+        let event = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(release.x, release.y),
+            state: ElementState::Released,
+            button: MouseButton::Left,
         };
         row.handle_event(
             &event,
@@ -3528,6 +4012,7 @@ mod tests {
         assert!(!b_bar.contains(release_left));
         assert!(release_left.x < b_rect.center().x);
 
+        row.tab_drop_target = row.tab_drop_target_at(release_left);
         row.groups[0].bar_mut().pending_detach = Some((1, release_left));
         let mut doc = AutoCommit::new();
         let doc_root = automerge::ROOT.clone();
@@ -3576,6 +4061,7 @@ mod tests {
         assert!(!b_bar.contains(release_right));
         assert!(release_right.x > b_rect.center().x);
 
+        row.tab_drop_target = row.tab_drop_target_at(release_right);
         row.groups[0].bar_mut().pending_detach = Some((1, release_right));
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
@@ -3599,19 +4085,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn release_commits_the_previewed_target_without_resolving_again() {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
+        let target_id = row.groups[1].id;
+        let misleading_release = Point::new(
+            row.groups[1].get_rect().x1 - 1.0,
+            row.groups[1].get_rect().center().y,
+        );
+        assert!(matches!(
+            row.tab_drop_target_at(misleading_release),
+            Some(TabDropTarget::GroupGap { .. })
+        ));
+        row.tab_drop_target = Some(TabDropTarget::ExistingGroup {
+            group_id: target_id,
+            tab_index: 0,
+        });
+        row.groups[0].bar_mut().pending_detach = Some((1, misleading_release));
+
+        let mut doc = AutoCommit::new();
+        let doc_root = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus = None;
+        row.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &doc_root,
+            &mut handled,
+            &mut focus,
+            root,
+            &taffy,
+        );
+
+        assert_eq!(
+            row.groups.len(),
+            2,
+            "release must not create an unpreviewed group"
+        );
+        assert_eq!(
+            row.groups[1]
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![1, 10, 11],
+        );
+        assert_eq!(
+            row.tab_drop_target(),
+            None,
+            "release clears the consumed preview"
+        );
+    }
+
     /// A release in a *closing* sibling's content area falls through
     /// every resolution branch (`gap_index_for` also returns `None` since
     /// it's inside a group's rect). Pins the fallback: no valid target
     /// means the tab stays in source.
     #[test]
     fn cross_group_drop_into_closing_content_area_keeps_tab_in_source() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         // B (index 1) is fresh-latched closing so the prune sweep won't
         // reap it this tick.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
-        row.groups[1].set_closing_at_for_tests(Instant::now());
+        row.groups[1].set_closing_at_for_tests(crate::time::now());
         assert!(row.groups[1].is_closing());
         assert!(!row.groups[1].close_complete());
 
@@ -3639,6 +4182,7 @@ mod tests {
         // Pre-stage the detach marker instead of replaying press →
         // drag-past-threshold: `press_origin` is private.
         let a_tabs_before: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
+        row.tab_drop_target = row.tab_drop_target_at(release);
         row.groups[0].bar_mut().pending_detach = Some((1, release));
 
         let mut doc = AutoCommit::new();
@@ -3701,8 +4245,8 @@ mod tests {
         fire_cursor_moved(&mut row, &taffy, root, mid_gap);
 
         assert_eq!(
-            row.hover_gap_idx, None,
-            "cursor motion without an active drag must not publish a hover_gap_idx"
+            row.tab_drop_target, None,
+            "cursor motion without an active drag must not publish a drop preview"
         );
     }
 
@@ -3713,14 +4257,13 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn group_prune_keeps_node_ids_aligned_in_debug() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         // Non-adjacent prune indices (0, 2) verify the
         // highest-index-first sort doesn't shift slots under the loop.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-        row.groups[0].set_closing_at_for_tests(earlier(Instant::now(), 500));
-        row.groups[2].set_closing_at_for_tests(earlier(Instant::now(), 500));
+        row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 500));
+        row.groups[2].set_closing_at_for_tests(earlier(crate::time::now(), 500));
 
         let groups_pre = row.groups.len();
         let node_ids_pre = row.node_ids.len();
@@ -4151,7 +4694,7 @@ mod tests {
             );
             assert!(!handled, "a bare wheel must be left unclaimed by the strip");
             // Lets any wrongly-started eased travel show itself.
-            row.tick_snap_at(Instant::now() + Duration::from_millis(400));
+            row.tick_snap_at(crate::time::now() + Duration::from_millis(400));
             assert_eq!(row.scroll_x(), 0.0, "a bare wheel must not move the strip");
             row.apply_layout(&taffy, root, Point::ORIGIN);
             assert_eq!(
@@ -4160,6 +4703,92 @@ mod tests {
                 "group rects must not shift after a bare wheel"
             );
         }
+    }
+
+    #[test]
+    fn direct_pan_keeps_a_fifth_viewport_after_the_last_app() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+
+        assert_eq!(
+            row.max_scroll_x(),
+            1200.0,
+            "focus-follow stays content-tight"
+        );
+        assert_eq!(
+            row.pan_max_scroll_x(),
+            1400.0,
+            "direct pan reveals 20% of the viewport beyond the last app"
+        );
+
+        row.set_content_w_for_test(700.0);
+        assert_eq!(
+            row.pan_max_scroll_x(),
+            0.0,
+            "a strip which already fits must not drift into empty canvas"
+        );
+    }
+
+    #[test]
+    fn direct_pan_tracks_reversals_and_only_settles_elastic_overpull() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+
+        assert!(row.update_strip_pan(450.0));
+        assert!((row.scroll_x() - 450.0).abs() < 0.01);
+        assert!(row.update_strip_pan(320.0));
+        assert!(
+            (row.scroll_x() - 320.0).abs() < 0.01,
+            "total gesture travel must reverse without rebasing its origin"
+        );
+        assert!(
+            !row.end_strip_pan(crate::time::now()),
+            "an in-range release must not snap away from the fingers"
+        );
+        assert!((row.scroll_x() - 320.0).abs() < 0.01);
+
+        // A new physical stream explicitly rebases, so a missing End at a
+        // lock/session boundary cannot carry old total travel into it.
+        row.begin_strip_pan();
+        assert!(row.update_strip_pan(10.0));
+        assert!((row.scroll_x() - 330.0).abs() < 0.01);
+        let _ = row.end_strip_pan(crate::time::now());
+    }
+
+    #[test]
+    fn direct_pan_overpull_has_diminishing_gain_and_returns_to_resting_end() {
+        let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+        row.set_content_w_for_test(2200.0);
+        let end = row.pan_max_scroll_x();
+
+        assert!(row.update_strip_pan(end));
+        let mut previous = row.scroll_x();
+        let mut previous_gain = f64::INFINITY;
+        for extra in [100.0, 200.0, 300.0, 400.0] {
+            assert!(row.update_strip_pan(end + extra));
+            let gain = row.scroll_x() - previous;
+            assert!(
+                gain > 0.0 && gain < previous_gain,
+                "each equal pull must still move, but less than the one before: {gain} >= {previous_gain}"
+            );
+            assert!(
+                row.scroll_x() < end + 280.0,
+                "the 28%-viewport asymptote is never crossed"
+            );
+            previous = row.scroll_x();
+            previous_gain = gain;
+        }
+
+        let now = crate::time::now();
+        assert!(row.end_strip_pan(now));
+        row.tick_snap_at(now + Duration::from_millis(u64::from(SNAP_ANIM_MS) + 1));
+        assert!(
+            (row.scroll_x() - end).abs() < 0.01,
+            "release must return exactly to the legal trailing rest"
+        );
     }
 
     #[test]
@@ -4172,7 +4801,7 @@ mod tests {
         row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
         // 400 is closer to 608 than to 0: exercises the second group's edge.
         row.set_scroll_x_for_test(400.0);
-        let base = Instant::now();
+        let base = crate::time::now();
         row.set_last_wheel_at_for_test(earlier(base, 250));
 
         // First tick after idle: snap kicks off and advances ~25% of the
@@ -4205,7 +4834,7 @@ mod tests {
         row.set_content_w_for_test(1816.0);
         row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
         row.set_scroll_x_for_test(400.0);
-        let base = Instant::now();
+        let base = crate::time::now();
         // Only 100 ms since the last wheel — inside the idle window.
         row.set_last_wheel_at_for_test(earlier(base, 100));
 
@@ -4225,7 +4854,7 @@ mod tests {
         let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
         // Stage an in-flight snap directly to skip a real idle window.
         row.set_scroll_x_for_test(300.0);
-        let base = Instant::now();
+        let base = crate::time::now();
         row.set_last_wheel_at_for_test(earlier(base, 250));
         row.tick_snap_at(base);
         assert!(
@@ -4287,7 +4916,7 @@ mod tests {
              ({expected}); got {}",
             anim.to
         );
-        row.tick_snap_at(Instant::now() + Duration::from_millis(400));
+        row.tick_snap_at(crate::time::now() + Duration::from_millis(400));
         assert!(
             (row.scroll_x() - expected).abs() < 0.5,
             "the snap must settle on its original target ({expected}); \
@@ -4342,6 +4971,7 @@ mod tests {
         // DROP #1: tab 4 dropped right of the only group's bar → 2nd group.
         let g0_rect = row.groups[0].get_rect();
         let release_1 = Point::new(g0_rect.x1 + 30.0, g0_rect.y0 + 6.0);
+        row.tab_drop_target = row.tab_drop_target_at(release_1);
         row.groups[0].bar_mut_for_tests().pending_detach = Some((4, release_1));
 
         let modifiers = winit::event::Modifiers::default();
@@ -4386,6 +5016,7 @@ mod tests {
             "  gap_index_for(release_2)={:?}",
             row.gap_index_for(release_2)
         );
+        row.tab_drop_target = row.tab_drop_target_at(release_2);
         row.groups[0].bar_mut_for_tests().pending_detach = Some((3, release_2));
 
         let mut handled2 = false;
@@ -4778,55 +5409,61 @@ mod tests {
         let modifiers = Modifiers::default();
         let mut state = AutoCommit::new();
         let path = automerge::ROOT.clone();
-        let mut handled = false;
         let mut focus: Option<NodeId> = None;
 
-        row.handle_event(
+        dispatch_row(
+            &mut row,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(cx, cy),
             },
-            1.0,
-            &modifiers,
+            modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
         );
-        row.handle_event(
+        assert!(
+            row.handle_at(0).unwrap().is_hovered(),
+            "cursor over handle must engage hover before the press",
+        );
+        let handled = dispatch_row(
+            &mut row,
             &WindowEvent::MouseInput {
                 device_id: dev,
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &modifiers,
+            modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
+        );
+        assert!(handled, "press on handle must claim its own event");
+        assert!(
+            row.handle_at(0).unwrap().is_dragging(),
+            "press must start the resize before clamp behavior is exercised",
         );
         // Drag 500px left: 400 - 500 = -100, below `min_group_px(1200) =
         // 240`. Clamp pins left at 240; ordinary infinite-strip resize
         // leaves the right neighbour at 400.
-        row.handle_event(
+        let handled = dispatch_row(
+            &mut row,
             &WindowEvent::CursorMoved {
                 device_id: dev,
                 position: PhysicalPosition::new(cx - 500.0, cy),
             },
-            1.0,
-            &modifiers,
+            modifiers,
             &mut state,
             &path,
-            &mut handled,
             &mut focus,
             root,
             &taffy,
         );
+        assert!(handled, "active resize must claim drag motion");
         let min = min_group_px(FIXTURE_USABLE_PX);
         assert_eq!(
             row.groups[0].resolved_width_px(),

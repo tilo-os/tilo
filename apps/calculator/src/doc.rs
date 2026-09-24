@@ -6,7 +6,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use ui::doc::{put_if_changed, put_text_diffed};
+use ui::doc::{put_if_changed, put_text_diffed, read_bool, read_scalar, read_str_or_text};
 
 use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
@@ -15,26 +15,11 @@ pub const FUNCS: &str = "funcs";
 pub const SURFACES: &str = "surfaces";
 const SCHEMA: &str = "calculator_resources_v2";
 
-fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-    match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(v), _)) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        Some((Value::Object(ObjType::Text), id)) => doc.text(&id).ok(),
-        _ => None,
-    }
-}
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-    matches!(doc.get(obj, key).ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(true)))
-}
+/// An `Int`, or a `Uint` saturated to `i64::MAX`; 0 when absent.
 fn get_i64(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
-    match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(v), _)) => match v.as_ref() {
-            ScalarValue::Int(n) => *n,
-            ScalarValue::Uint(n) => i64::try_from(*n).unwrap_or(i64::MAX),
-            _ => 0,
-        },
+    match read_scalar(doc, obj, key) {
+        Some(ScalarValue::Int(n)) => n,
+        Some(ScalarValue::Uint(n)) => i64::try_from(n).unwrap_or(i64::MAX),
         _ => 0,
     }
 }
@@ -67,7 +52,8 @@ pub fn visible_ids(doc: &AutoCommit, collection: &str) -> Vec<String> {
             else {
                 return None;
             };
-            (!get_bool(doc, &row, "deleted")).then(|| (get_i64(doc, &row, "rank"), id))
+            (!read_bool(doc, &row, "deleted").unwrap_or(false))
+                .then(|| (get_i64(doc, &row, "rank"), id))
         })
         .collect();
     if collection == HISTORY {
@@ -87,7 +73,7 @@ pub fn row_id_at(doc: &AutoCommit, collection: &str, index: usize) -> Option<Str
     visible_ids(doc, collection).get(index).cloned()
 }
 
-fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
+pub(crate) fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
     let Some(rows) = map_at(doc, HISTORY) else {
         return Vec::new();
     };
@@ -99,28 +85,28 @@ fn load_history(doc: &AutoCommit) -> Vec<HistoryEntry> {
                 return None;
             };
             Some(HistoryEntry {
-                expr: get_str(doc, &row, "expr").unwrap_or_default(),
-                result: get_str(doc, &row, "result").unwrap_or_default(),
+                expr: read_str_or_text(doc, &row, "expr").unwrap_or_default(),
+                result: read_str_or_text(doc, &row, "result").unwrap_or_default(),
             })
         })
         .collect()
 }
-fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
+pub(crate) fn load_graph(doc: &AutoCommit, collection: &str) -> Vec<PlotFn> {
     let Some(rows) = map_at(doc, collection) else {
         return Vec::new();
     };
     visible_ids(doc, collection).into_iter().filter_map(|id| {
         let Some((Value::Object(ObjType::Map), row)) = doc.get(&rows, &id).ok().flatten() else { return None };
-        Some(PlotFn { expr: get_str(doc, &row, "expr").unwrap_or_default(), visible: !matches!(doc.get(&row, "visible").ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(false))) })
+        Some(PlotFn { expr: read_str_or_text(doc, &row, "expr").unwrap_or_default(), visible: !matches!(doc.get(&row, "visible").ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(false))) })
     }).collect()
 }
-fn legacy_rows(doc: &AutoCommit, key: &str) -> Vec<(String, String, bool)> {
+pub(crate) fn legacy_rows(doc: &AutoCommit, key: &str) -> Vec<(String, String, bool)> {
     let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, key) else {
         return Vec::new();
     };
     (0..doc.length(&list)).filter_map(|i| {
         let Some((Value::Object(ObjType::Map), row)) = doc.get(&list, i).ok().flatten() else { return None };
-        Some((get_str(doc, &row, "expr").unwrap_or_default(), get_str(doc, &row, "result").unwrap_or_default(), !matches!(doc.get(&row, "visible").ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(false)))))
+        Some((read_str_or_text(doc, &row, "expr").unwrap_or_default(), read_str_or_text(doc, &row, "result").unwrap_or_default(), !matches!(doc.get(&row, "visible").ok().flatten(), Some((Value::Scalar(v), _)) if matches!(v.as_ref(), ScalarValue::Boolean(false)))))
     }).collect()
 }
 fn legacy_id(collection: &str, rank: usize) -> String {

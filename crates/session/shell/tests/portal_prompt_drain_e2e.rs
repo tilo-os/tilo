@@ -32,6 +32,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,14 +52,14 @@ use zbus::zvariant::{ObjectPath, OwnedValue};
 use zbus::{Connection, Proxy};
 
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
-const APP: &str = "dev.tilo.camera";
+const APP: &str = "so.tilo.camera";
 
 fn host_with_portal(
     prompts: PromptQueueHandle,
 ) -> (ShellOverlayHost, GrantStoreHandle, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
-    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.desktop.workspaces.push(Workspace::new(id, "demo"));
     tree.set_active(id);
     let handle = tree.shared();
     {
@@ -245,6 +246,7 @@ async fn denying_a_prompt_releases_the_portal_call_too() {
     let tree = grants.tree_handle();
     let guard = tree.read();
     let caps = guard
+        .desktop
         .workspaces
         .iter()
         .find(|w| w.id == ws)
@@ -278,6 +280,7 @@ async fn a_session_grant_answers_and_persists() {
     let has_replicated_camera = {
         let guard = tree.read();
         guard
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws)
@@ -305,7 +308,7 @@ async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
     let grants = {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::from(1);
-        tree.workspaces.push(Workspace::new(id, "demo"));
+        tree.desktop.workspaces.push(Workspace::new(id, "demo"));
         tree.set_active(id);
         GrantStoreHandle::new(tree.shared())
     };

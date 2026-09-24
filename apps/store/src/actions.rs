@@ -38,19 +38,19 @@ impl ActionOutcome {
     }
 }
 
-/// The staging directory for downloaded `.qpkg`s. Lives under the
+/// The staging directory for downloaded `.tapp`s. Lives under the
 /// store's cache dir so a container-mounted read-only home isn't a
 /// problem. Best-effort creation.
-pub fn qpkg_staging_dir() -> Option<PathBuf> {
+pub fn tapp_staging_dir() -> Option<PathBuf> {
     let base = crate::config::cache_dir()?;
-    let staged = base.join("staged-qpkg");
+    let staged = base.join("staged-tapp");
     let _ = std::fs::create_dir_all(&staged);
     Some(staged)
 }
 
 // ---- download ------------------------------------------------------
 
-/// HTTP-download a `.qpkg` to `dest`. Blocking — runs on the worker
+/// HTTP-download a `.tapp` to `dest`. Blocking — runs on the worker
 /// thread. The bytes are *not* trusted here: app-host
 /// re-verifies the content hash + publisher signature before it
 /// extracts anything, so a truncated or tampered download fails
@@ -61,7 +61,7 @@ pub fn qpkg_staging_dir() -> Option<PathBuf> {
 /// Returns an error message if the HTTP client can't be built, the request
 /// fails or comes back with a non-success status or an empty body, or `dest`
 /// (or its parent directory) can't be written.
-pub fn download_qpkg(url: &str, dest: &Path, expected_size: u64) -> Result<u64, String> {
+pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, String> {
     const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
     if expected_size == 0 || expected_size > MAX_PACKAGE_BYTES {
         return Err(format!(
@@ -76,7 +76,7 @@ pub fn download_qpkg(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     {
         return Err("package URL must be HTTPS without credentials or a fragment".into());
     }
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("tilo-store/0.1")
         .timeout(Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::none())
@@ -119,8 +119,8 @@ pub fn download_qpkg(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
 // ---- orchestration -------------------------------------------------
 
 /// Execute a card action end-to-end. `staging_dir` is where a
-/// downloaded `.qpkg` is written before install; pass
-/// [`qpkg_staging_dir`] in production.
+/// downloaded `.tapp` is written before install; pass
+/// [`tapp_staging_dir`] in production.
 ///
 /// For `Open`/`Update` on an uncached Tilo app this is: download →
 /// app-host verified install → app-host launch
@@ -232,8 +232,8 @@ fn open_tilo(
         else {
             return ActionOutcome::fail("registry entry has an invalid package root");
         };
-        let dest = staging_dir.join(format!("{root}.qpkg"));
-        if let Err(e) = download_qpkg(&url, &dest, version.size_bytes) {
+        let dest = staging_dir.join(format!("{root}.tapp"));
+        if let Err(e) = download_tapp(&url, &dest, version.size_bytes) {
             return ActionOutcome::fail(format!("{}: {e}", item.name));
         }
         let bytes = match std::fs::read(&dest) {
@@ -248,7 +248,7 @@ fn open_tilo(
         let Some(publisher) = item.publisher_pubkey_hex.as_deref() else {
             return ActionOutcome::fail("registry entry has no publisher identity");
         };
-        let expected = match (format!("qpkg:{root}").parse(), hex::decode(publisher)) {
+        let expected = match (format!("tapp:{root}").parse(), hex::decode(publisher)) {
             (Ok(package_root), Ok(key)) if key.len() == 32 => {
                 let mut publisher = [0u8; 32];
                 publisher.copy_from_slice(&key);
@@ -326,9 +326,11 @@ mod tests {
 
     fn tilo_item(name: &str, installed: InstalledState) -> StoreItem {
         StoreItem {
-            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
+            id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: String::new(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec![],
             icon_url: None,
             screenshot_urls: Vec::new(),
@@ -342,7 +344,7 @@ mod tests {
             versions: vec![StoreItemVersion {
                 version: "0.1.0".into(),
                 released_at_unix: 0,
-                download_url: Some("https://x/y.qpkg".into()),
+                download_url: Some("https://x/y.tapp".into()),
                 root_hash_hex: Some("de".repeat(32)),
                 size_bytes: 0,
             }],
@@ -356,6 +358,8 @@ mod tests {
             id: format!("org.example.{name}"),
             name: name.into(),
             description: String::new(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec![],
             icon_url: None,
             screenshot_urls: Vec::new(),

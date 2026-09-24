@@ -94,6 +94,9 @@ pub struct ClientInput {
     /// Persistence fsyncs both the replacement file and its directory, so it
     /// must run after latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
+    /// Whether this module currently owns a content-drop indicator in the
+    /// retained chrome. Prevents cleanup from touching an ordinary tab drag.
+    content_drop_hover_active: bool,
 }
 
 impl ClientInput {
@@ -724,7 +727,7 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
     let placement = state.client_input.placement(surface_id).or_else(|| {
         let chrome = fb.chrome();
         let tree = chrome.tree();
-        tree.workspaces.iter().find_map(|workspace| {
+        tree.desktop.workspaces.iter().find_map(|workspace| {
             workspace.strips.iter().find_map(|strip| {
                 strip.window_groups.iter().find_map(|group| {
                     group
@@ -1017,7 +1020,27 @@ fn route_cursor_moved(
 ) -> bool {
     state.client_input.cursor = Some((position.x, position.y));
     // Withheld from the chrome's own dispatch below (belongs to the client) — without this the chrome's pointer idea freezes at its last chrome-side position.
-    let hit = current_pointer_target(state, fb, captured);
+    // During a client-originated content drag, tiled window chrome/body is a
+    // shell placement target rather than an offer to the app currently under
+    // it. Withdrawing pointer focus here makes Smithay report `target: None`
+    // on release, which is the protocol boundary used by the shell drop pump.
+    let point = vello::kurbo::Point::new(position.x, position.y);
+    fb.host_mut().note_pointer(point);
+    let shell_content_target =
+        state.selection.dnd_active && fb.host().has_content_drop_target(point);
+    if state.selection.dnd_active {
+        fb.host_mut()
+            .set_content_drop_hover(shell_content_target.then_some(point));
+        state.selection.shell_drop_placement = shell_content_target
+            .then(|| fb.host().content_drop_placement(point))
+            .flatten();
+        state.client_input.content_drop_hover_active = shell_content_target;
+    }
+    let hit = if shell_content_target {
+        None
+    } else {
+        current_pointer_target(state, fb, captured)
+    };
     deliver_pointer(state, hit);
     // During a chrome drag the file manager keeps drawing the ghost under the cursor, so it sees every move even over a client.
     // A captured move must continue to `FrameBuilder::dispatch_event` so
@@ -1297,13 +1320,48 @@ fn route_keyboard_input(
 /// Called every tick: once the chrome's in-process drag gesture has the
 /// pointer over a foreign tile, the compositor claims it, starts smithay's
 /// server-side drag offering the file, and delivers the enter. From then on `current_pointer_target` hit-tests normally so the client under the pointer receives `wl_data_device` enter/motion/drop; the release is the drop — Files does not act on the release itself.
-pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the hand-off is one ordered drag state-machine transition"
+)]
+pub fn pump_chrome_drag(state: &mut State, fb: &mut FrameBuilder) {
     if state.selection.chrome_drag.is_some() || state.selection.dnd_active {
         return;
     }
     let Some(pending) = file_explorer::external_drag::unclaimed() else {
+        if state.client_input.content_drop_hover_active {
+            fb.host_mut().set_content_drop_hover(None);
+            state.client_input.content_drop_hover_active = false;
+        }
         return;
     };
+    // Files is hosted in-process, so its drag does not pass through the
+    // Wayland data-device callbacks which normally populate the compositor's
+    // carried-content visual. Prime that visual as soon as the host can see
+    // the gesture; it is then the same preview whether the eventual target is
+    // another client or shell chrome.
+    let label = crate::compositor::drag_feedback::label_for_paths(&pending.paths);
+    if state.selection.dnd_label.get().as_deref() != Some(label.as_str()) {
+        state.selection.dnd_label.set(Some(label));
+        crate::compositor::selection::request_path_drag_preview(
+            &pending.paths,
+            state.selection.dnd_label.clone(),
+        );
+    }
+    let (x, y) = state.client_input.cursor();
+    let at = vello::kurbo::Point::new(x, y);
+    if fb.host().has_content_drop_target(at) {
+        // Shell placement wins over offering the payload to the app beneath
+        // the pointer. Keep the hosted drag unclaimed until button-up so
+        // `finish_chrome_drag_into_shell` can commit this exact target.
+        fb.host_mut().set_content_drop_hover(Some(at));
+        state.client_input.content_drop_hover_active = true;
+        return;
+    }
+    if state.client_input.content_drop_hover_active {
+        fb.host_mut().set_content_drop_hover(None);
+        state.client_input.content_drop_hover_active = false;
+    }
     tracing::debug!(
         target: "shell::selection",
         grab = ?state.client_input.grab,
@@ -1356,6 +1414,10 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
         .set(Some(crate::compositor::drag_feedback::label_for_paths(
             &drag.paths,
         )));
+    crate::compositor::selection::request_path_drag_preview(
+        &drag.paths,
+        state.selection.dnd_label.clone(),
+    );
     state.selection.chrome_drag = Some(drag);
     let serial = mint_serial(state);
     let location = SmithayPoint::from(state.client_input.cursor());
@@ -1377,6 +1439,64 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
         metadata,
     );
     deliver_pointer(state, Some(hit));
+}
+
+/// Finish a hosted Files drag on shell-owned window chrome/content.
+///
+/// This runs before the release is dispatched back into Files. Claiming the
+/// process-global drag first makes Files cancel its own folder move, while the
+/// paths are opened through the exact same retained-geometry resolver used by
+/// client `DnD` and `WindowEvent::DroppedFile`.
+pub fn finish_chrome_drag_into_shell(
+    state: &mut State,
+    fb: &mut FrameBuilder,
+    event: &WindowEvent,
+) -> bool {
+    if !matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        }
+    ) || state.selection.chrome_drag.is_some()
+        || state.selection.dnd_active
+    {
+        return false;
+    }
+    let Some(pending) = file_explorer::external_drag::unclaimed() else {
+        return false;
+    };
+    let (x, y) = state.client_input.cursor();
+    let at = vello::kurbo::Point::new(x, y);
+    let Some(placement) = fb.host().content_drop_placement(at) else {
+        return false;
+    };
+    let Some(drag) = file_explorer::external_drag::hand_off() else {
+        return false;
+    };
+    debug_assert_eq!(drag.paths, pending.paths);
+    let changed = drag
+        .paths
+        .iter()
+        .enumerate()
+        .fold(false, |changed, (offset, path)| {
+            let placement = match placement {
+                crate::shell::tab_binding::Placement::TabAt(group, index) => {
+                    crate::shell::tab_binding::Placement::TabAt(group, index.saturating_add(offset))
+                }
+                crate::shell::tab_binding::Placement::GroupAt(strip, index) => {
+                    crate::shell::tab_binding::Placement::GroupAt(
+                        strip,
+                        index.saturating_add(offset),
+                    )
+                }
+                other => other,
+            };
+            fb.host().open_dropped_path_with_placement(path, placement) || changed
+        });
+    state.selection.dnd_label.set(None);
+    changed
 }
 
 /// Where the pointer should be focused right now: the foreign tile under the cursor, or the implicit grab's owner while a button is held.
@@ -1549,12 +1669,12 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
     fb.with_chrome(|chrome| {
         {
             let mut tree = chrome.tree_mut();
-            let workspace = tree.active;
-            changed = tree.active_strip.get(&workspace).copied() != Some(strip)
-                || tree.active_group_for(strip) != Some(group);
+            let workspace = tree.desktop.active;
+            changed = tree.desktop.active_strip.get(&workspace).copied() != Some(strip)
+                || tree.desktop.active_group_for(strip) != Some(group);
             if changed {
-                tree.active_strip.insert(workspace, strip);
-                tree.set_active_group(strip, group);
+                tree.desktop.active_strip.insert(workspace, strip);
+                tree.desktop.set_active_group(strip, group);
             }
         }
         if changed {
@@ -1651,7 +1771,7 @@ mod tests {
             let (_, second_group) =
                 insert_foreign_group(&mut tree, 710_002, Some("org.example.second"))
                     .expect("second foreign group");
-            tree.set_active_group(strip_id, first_group);
+            tree.desktop.set_active_group(strip_id, first_group);
             tree.flush_to_disk();
             (strip_id, first_group, second_group)
         };
@@ -1660,7 +1780,7 @@ mod tests {
 
         let before_flush = persist::load_tree_from(&state_path).expect("reload old layout");
         assert_eq!(
-            before_flush.active_group_for(strip_id),
+            before_flush.desktop.active_group_for(strip_id),
             Some(first_group),
             "durable I/O must not run in the pointer-to-focus critical path"
         );
@@ -1670,17 +1790,21 @@ mod tests {
 
         let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
         assert_eq!(
-            restarted.active_group_for(strip_id),
+            restarted.desktop.active_group_for(strip_id),
             Some(second_group),
             "the window focused by a click must remain selected after restart"
         );
         assert_eq!(
-            restarted.active_strip.get(&restarted.active).copied(),
+            restarted
+                .desktop
+                .active_strip
+                .get(&restarted.desktop.active)
+                .copied(),
             Some(strip_id),
             "the clicked group's strip is part of the durable focus address"
         );
         assert_ne!(
-            restarted.active_group_for(strip_id),
+            restarted.desktop.active_group_for(strip_id),
             Some(first_group),
             "restart must not restore the group focused before the click"
         );
@@ -1715,7 +1839,7 @@ mod tests {
             let (_, second_group) =
                 insert_foreign_group(&mut tree, 720_002, Some("org.example.second"))
                     .expect("second foreign group");
-            tree.set_active_group(strip_id, first_group);
+            tree.desktop.set_active_group(strip_id, first_group);
             (strip_id, first_group, second_group, 720_002)
         };
         let event_loop: EventLoop<'static, crate::compositor::state::State> =
@@ -1732,12 +1856,12 @@ mod tests {
 
         let chrome = fb.chrome();
         assert_eq!(
-            chrome.tree().active_group_for(strip_id),
+            chrome.tree().desktop.active_group_for(strip_id),
             Some(second_group),
             "direct touch must focus the tiled group under the finger"
         );
         assert_ne!(
-            chrome.tree().active_group_for(strip_id),
+            chrome.tree().desktop.active_group_for(strip_id),
             Some(first_group),
             "touch must not leave keyboard focus attached to the previous tiled app"
         );

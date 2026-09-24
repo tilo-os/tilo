@@ -34,7 +34,7 @@ use collab_types::{DocumentMutation, Ed25519PublicKey, OpClass, Signature, Signe
 /// Root key the probe reads and writes. One flat string is enough because the
 /// probe proves delivery, not a document model.
 const FIELD: &str = "text";
-const APP_ID: &str = "dev.tilo.collab-probe";
+const APP_ID: &str = "so.tilo.collab-probe";
 const RECORD_ID: &str = "";
 
 fn usage() -> ExitCode {
@@ -223,7 +223,7 @@ fn apply_signed_document(
         }
     }
     doc.get(&ROOT, FIELD)
-        .map(|value| value.map(|(value, _)| value.to_str().unwrap_or_default().to_string()))
+        .map(|value| value.map(|(value, _)| value.as_str().unwrap_or_default().to_string()))
         .map_err(|error| format!("document field could not be read: {error}"))
 }
 

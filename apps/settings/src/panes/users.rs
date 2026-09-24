@@ -9,8 +9,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::sync::{Arc, Mutex};
+use ui::doc::{read_bool, read_str_or_text};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use runtime_identity::{IdentitySummary, KeyProtection};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
@@ -583,8 +584,8 @@ impl UsersPane {
             self.structure_dirty = true;
         }
         if take_bool(state, root, SAVE_KEY) {
-            let full = read_text(state, root, FULL_NAME_KEY);
-            let username = read_text(state, root, USERNAME_KEY);
+            let full = read_str_or_text(state, root, FULL_NAME_KEY).unwrap_or_default();
+            let username = read_str_or_text(state, root, USERNAME_KEY).unwrap_or_default();
             let password = Zeroizing::new(
                 self.password_buffer
                     .lock()
@@ -681,29 +682,12 @@ pub fn build() -> Box<dyn Widget> {
     Box::new(UsersPane::new())
 }
 
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
-    matches!(state.get(root, key), Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), automerge::ScalarValue::Boolean(true)))
-}
-
 fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
-    let value = read_bool(state, root, key);
+    let value = read_bool(state, root, key).unwrap_or(false);
     if value {
         let _ = state.put(root, key, false);
     }
     value
-}
-
-fn read_text(state: &AutoCommit, root: &ObjId, key: &str) -> String {
-    match state.get(root, key) {
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => {
-            state.text(&obj).unwrap_or_default()
-        }
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            automerge::ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
 }
 
 fn seed_form(state: &mut AutoCommit, root: &ObjId) {
@@ -911,6 +895,7 @@ impl Widget for UsersPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use std::sync::Mutex;
 
     #[derive(Default)]

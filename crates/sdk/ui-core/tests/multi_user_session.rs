@@ -340,29 +340,33 @@ fn peer_caret_in_text_input_renders_on_remote_app() {
 }
 
 #[test]
-fn crdt_incremental_deltas_replay_on_remote_peer() {
+fn crdt_incremental_deltas_replay_on_remote_state() {
     use automerge::ReadDoc;
 
     // Alice makes a concrete CRDT mutation, serializes the delta via
-    // `save_incremental`, and fires it through the relay; bob's app must
-    // apply the bytes to his own doc so they converge.
+    // `save_incremental`, and fires it through the relay; Bob's receiving
+    // State applies the bytes through the same API used by the routed App.
     let mut relay = MemoryRelay::new();
     let alice_peer = relay.attach("alice");
     let bob_peer = relay.attach("bob");
-    let (mut alice_app, _) = headless_app("alice", alice_peer.clone());
-    let (mut bob_app, _) = headless_app("bob", bob_peer.clone());
+    let mut alice_state = tilo_ui::state::State::new();
+
+    // Establish the shared document history first. An incremental change
+    // cannot be applied until the normal snapshot handshake has run.
+    let snapshot = alice_state.save();
+    let mut bob_state = tilo_ui::state::State::load(&snapshot).expect("shared base loads");
+    let _ = alice_state.save_incremental();
 
     // In production a widget would mutate the doc as part of event
     // handling — done directly here to keep the test self-contained.
     {
         use automerge::transaction::Transactable;
-        let state = alice_app.state_mut_for_test();
-        state
+        alice_state
             .doc
             .put(automerge::ROOT, "hello", "from alice")
             .expect("put scalar");
     }
-    let delta = alice_app.state_mut_for_test().save_incremental();
+    let delta = alice_state.save_incremental();
     assert!(
         !delta.is_empty(),
         "save_incremental must emit non-empty bytes after a mutation"
@@ -375,18 +379,16 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
     let events = bob_peer.poll();
     let mut applied = false;
     for ev in events {
-        if matches!(
-            document_mutation(&ev),
-            Some(collab_types::DocumentMutation::Incremental(_))
-        ) {
+        if let Some(collab_types::DocumentMutation::Incremental(data)) = document_mutation(&ev) {
+            bob_state
+                .load_incremental(&data)
+                .expect("remote state accepts a delta from its shared base");
             applied = true;
         }
-        bob_app.apply_collab_event_for_test(ev);
     }
     assert!(applied, "bob must receive the incremental document event");
 
-    let state = bob_app.state_mut_for_test();
-    let got = state
+    let got = bob_state
         .doc
         .get(automerge::ROOT, "hello")
         .expect("read back")

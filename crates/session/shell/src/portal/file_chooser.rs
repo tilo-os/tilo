@@ -28,7 +28,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 
@@ -68,7 +68,7 @@ impl FileChooserBackend {
     )]
     async fn open_file(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -87,10 +87,7 @@ impl FileChooserBackend {
             return (2, HashMap::new());
         };
         let caller = auth.caller;
-        let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ false)
-            .multiple(opt_bool(&options, "multiple").unwrap_or(false))
-            .accept_label(opt_string(&options, "accept_label"))
-            .filters(filters_from_options(&options));
+        let opts = decode_open_options(caller.clone(), title, &options);
         pick_and_grant(&self.ctx.file_picker, opts, FsMode::Read).await
     }
 
@@ -101,7 +98,7 @@ impl FileChooserBackend {
     )]
     async fn save_file(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -137,7 +134,7 @@ impl FileChooserBackend {
     )]
     async fn save_files(
         &self,
-        #[zbus(signal_context)] _ctx: SignalContext<'_>,
+        #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
         app_id: String,
@@ -205,7 +202,7 @@ pub async fn pick_and_grant(
 ///
 /// A malformed entry is skipped rather than failing the call — filters
 /// are a display convenience, and refusing to open a dialog over one bad filter would turn a cosmetic problem into an unusable Open menu.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(super) fn filters_from_options(
     options: &HashMap<String, OwnedValue>,
 ) -> Vec<super::PickerFilter> {
@@ -221,16 +218,29 @@ pub(super) fn filters_from_options(
         .collect()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     let v = options.get(key)?.try_clone().ok()?;
     bool::try_from(v).ok()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     let v = options.get(key)?.try_clone().ok()?;
     String::try_from(v).ok().filter(|s| !s.is_empty())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn decode_open_options(
+    caller: super::PortalCaller,
+    title: String,
+    options: &HashMap<String, OwnedValue>,
+) -> FilePickerOptions {
+    FilePickerOptions::new(caller, title, /*save=*/ false)
+        .directory(opt_bool(options, "directory").unwrap_or(false))
+        .multiple(opt_bool(options, "multiple").unwrap_or(false))
+        .accept_label(opt_string(options, "accept_label"))
+        .filters(filters_from_options(options))
 }
 
 /// Translate a real user-selected path list into the
@@ -288,12 +298,49 @@ pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::portal::{GrantStoreHandle, MockFilePickerSpawner};
+    use crate::shell::state::WorkspaceAuthority as _;
     use crate::shell::state::{Workspace, WorkspaceId};
 
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "fc")
+        Workspace::new(WorkspaceId(id), "fc")
+    }
+
+    #[test]
+    fn open_options_default_to_file_selection() {
+        let opts = decode_open_options(
+            PortalCaller::new(WorkspaceId(30), "org.example"),
+            "Open".into(),
+            &HashMap::new(),
+        );
+        assert!(!opts.directory);
+        assert!(!opts.multiple);
+    }
+
+    #[test]
+    fn open_options_decode_directory_independently_of_multiple_and_label() {
+        let mut options = HashMap::new();
+        options.insert(
+            "directory".into(),
+            OwnedValue::try_from(Value::Bool(true)).unwrap(),
+        );
+        options.insert(
+            "multiple".into(),
+            OwnedValue::try_from(Value::Bool(true)).unwrap(),
+        );
+        options.insert(
+            "accept_label".into(),
+            OwnedValue::try_from(Value::new("Attach folder".to_string())).unwrap(),
+        );
+        let opts = decode_open_options(
+            PortalCaller::new(WorkspaceId(31), "org.example"),
+            "Choose".into(),
+            &options,
+        );
+        assert!(opts.directory);
+        assert!(opts.multiple);
+        assert_eq!(opts.accept_label.as_deref(), Some("Attach folder"));
     }
 
     #[test]
@@ -409,6 +456,7 @@ mod tests {
         let grant_count = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
@@ -448,6 +496,7 @@ mod tests {
         let granted_fs = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)

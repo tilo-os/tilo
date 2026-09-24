@@ -18,6 +18,68 @@ use winit::event::WindowEvent;
 type DynamicTextSource = Box<dyn FnMut() -> Option<String>>;
 type DocumentTextSource = Box<dyn FnMut(&AutoCommit, &ObjId) -> String>;
 
+/// Top edge of one text line centred in a band — the shared rule from
+/// [`crate::text_metrics`], re-exported here because [`super::Button`] and
+/// the other controls learned it from this module. Pass the `.1` of
+/// [`TextRenderer::measure`] / [`TextRenderer::measure_style`], never the
+/// font size.
+pub use crate::text_metrics::centered_text_top;
+
+/// Test helper shared by the widgets that centre a line with
+/// [`centered_text_top`]: asserts that glyph run `run_index` of `scene` sits
+/// where `text` at `size` lands when its *measured* line is centred in the
+/// band `band_y0 ..= band_y0 + band_height`. The expectation is a reference
+/// `draw_text` at the computed top rather than an assumed baseline offset, so
+/// the check follows the renderer's own line metrics.
+#[cfg(test)]
+pub(crate) fn assert_glyph_run_centred_in_band(
+    scene: &Scene,
+    run_index: usize,
+    text: &str,
+    size: f32,
+    band_y0: f64,
+    band_height: f64,
+    renderer: &mut TextRenderer,
+    color: vello::peniko::Color,
+) {
+    let (_, measured_h) = renderer.measure(text, size, None);
+    let measured_h = f64::from(measured_h);
+    assert!(
+        measured_h > f64::from(size),
+        "{text:?}: the measured line ({measured_h}) must exceed the font size ({size}); \
+         otherwise font-size centring could not drift"
+    );
+    let expected_top = centered_text_top(band_y0, band_height, measured_h);
+    let band_centre = band_y0 + band_height / 2.0;
+    assert!(
+        (expected_top + measured_h / 2.0 - band_centre).abs() < 1e-9,
+        "{text:?}: line centre must be the band centre {band_centre}"
+    );
+    let mut reference = Scene::new();
+    renderer.draw_text(
+        &mut reference,
+        text,
+        size,
+        color,
+        Affine::translate((0.0, expected_top)),
+        None,
+    );
+    let reference = &reference.encoding().resources.glyph_runs[0];
+    let runs = &scene.encoding().resources.glyph_runs;
+    let run = runs.get(run_index).unwrap_or_else(|| {
+        panic!(
+            "{text:?}: glyph run {run_index} missing ({} runs painted)",
+            runs.len()
+        )
+    });
+    assert_eq!(
+        run.transform.translation[1],
+        reference.transform.translation[1],
+        "{text:?} is not centred on its measured line in band {band_y0}..{}",
+        band_y0 + band_height
+    );
+}
+
 enum TextSource {
     Local(DynamicTextSource),
     Document(DocumentTextSource),
@@ -373,11 +435,16 @@ impl Text {
     }
 
     fn renderer_input_style(&self, renderer: &TextRenderer) -> TextStyle {
-        let mut style = self.style.clone();
         if self.follows_role_style || self.scales_with_theme || self.has_fixed_size {
-            style.size /= renderer.text_scale();
+            let mut style = renderer.renderer_input_style(&self.style);
+            // Text's public modifiers have always defined pixel spacing as a
+            // renderer-relative value, including fixed-size text. Preserve
+            // that contract while sharing the resolved font-size boundary.
+            style.letter_spacing = self.style.letter_spacing;
+            style
+        } else {
+            self.style.clone()
         }
-        style
     }
 
     fn observe_renderer_text_scale(&mut self, renderer: &TextRenderer) {
@@ -999,6 +1066,42 @@ impl Widget for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centered_text_top_splits_the_slack_evenly() {
+        // 18 px band, 15 px measured line: 1.5 px above and below.
+        assert!((centered_text_top(100.0, 18.0, 15.0) - 101.5).abs() < f64::EPSILON);
+        // Zero slack sits flush with the band.
+        assert!((centered_text_top(7.0, 15.0, 15.0) - 7.0).abs() < f64::EPSILON);
+        // A line taller than its band overhangs symmetrically instead of pinning to the top.
+        assert!((centered_text_top(0.0, 10.0, 14.0) - (-2.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn centered_text_top_uses_the_measured_line_not_the_font_size() {
+        // The defect this helper retires: centring on the 12 px font size
+        // instead of the 15 px line the renderer actually lays out puts the
+        // glyphs 1.5 px lower than the band's centre.
+        let mut renderer = TextRenderer::new();
+        let (_, measured) = renderer.measure("Home", 12.0, None);
+        let measured = f64::from(measured);
+        assert!(
+            measured > 12.0,
+            "cosmic-text line box exceeds the font size: {measured}"
+        );
+        let band = (0.0, 18.0);
+        let correct = centered_text_top(band.0, band.1, measured);
+        let drifted = band.0 + (band.1 - 12.0) / 2.0;
+        let line_centre = correct + measured / 2.0;
+        assert!(
+            (line_centre - 9.0).abs() < 1e-9,
+            "line centre {line_centre} != band centre 9"
+        );
+        assert!(
+            drifted > correct,
+            "font-size centring drifts downward ({drifted} vs {correct})"
+        );
+    }
 
     struct RecordingEngine {
         measures: std::rc::Rc<std::cell::Cell<u32>>,

@@ -11,6 +11,7 @@ type Sink = Arc<dyn Fn(WakeEvent) + Send + Sync>;
 struct Destination {
     sink: Option<Sink>,
     pending: bool,
+    pending_sync: bool,
 }
 
 struct Route {
@@ -93,7 +94,7 @@ impl WakeScope {
         &mut self,
         sink: impl Fn(WakeEvent) + Send + Sync + 'static,
     ) -> Result<(), WakeBindError> {
-        let pending = {
+        let (pending, requires_sync) = {
             let mut destination = self
                 .route
                 .destination
@@ -106,10 +107,13 @@ impl WakeScope {
                 return Err(WakeBindError::AlreadyBound);
             }
             destination.sink = Some(Arc::new(sink));
-            std::mem::take(&mut destination.pending)
+            (
+                std::mem::take(&mut destination.pending),
+                std::mem::take(&mut destination.pending_sync),
+            )
         };
         if pending {
-            self.handle().wake();
+            self.handle().send_wake(requires_sync);
         }
         Ok(())
     }
@@ -139,7 +143,7 @@ impl Drop for WakeScope {
 /// A thread-affine construction/dispatch guard, independent of an App borrow.
 ///
 /// ```compile_fail
-/// let scope = ui::wake::WakeScope::new();
+/// let scope = tilo_ui::wake::WakeScope::new();
 /// let guard = scope.enter();
 /// std::thread::spawn(move || drop(guard));
 /// ```
@@ -158,8 +162,23 @@ impl Drop for WakeScopeGuard {
 
 /// A weak identity for a queued wake; it never owns an app or its scope.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub struct WakeEvent {
     route: Weak<Route>,
+    requires_sync: bool,
+}
+
+impl WakeEvent {
+    #[cfg(feature = "native")]
+    pub(crate) const fn requires_sync(&self) -> bool {
+        self.requires_sync
+    }
 }
 
 /// Captures one scope, or remains detached forever. Unlike a closed scope,
@@ -232,6 +251,16 @@ impl WakeHandle {
     }
 
     pub fn wake(&self) {
+        self.send_wake(true);
+    }
+
+    /// Wake the owner to drain an event queue. The queue consumer determines
+    /// whether the model changed; receiving a notification alone does not.
+    pub(crate) fn notify_events(&self) {
+        self.send_wake(false);
+    }
+
+    fn send_wake(&self, requires_sync: bool) {
         if !self.authorize_publication() {
             return;
         }
@@ -253,12 +282,14 @@ impl WakeHandle {
                 Some(Arc::clone(sink))
             } else {
                 destination.pending = true;
+                destination.pending_sync |= requires_sync;
                 None
             }
         };
         if let Some(sink) = sink {
             sink(WakeEvent {
                 route: weak.clone(),
+                requires_sync,
             });
         }
     }
@@ -268,6 +299,27 @@ impl WakeHandle {
 mod tests {
     use super::*;
     use std::sync::mpsc::{self, Receiver, TryRecvError};
+
+    #[test]
+    fn queue_notifications_preserve_model_dirty_wakes_before_binding() {
+        for model_changed in [false, true] {
+            let mut scope = WakeScope::new();
+            scope.handle().notify_events();
+            if model_changed {
+                scope.handle().wake();
+            }
+            scope.handle().notify_events();
+            let (tx, rx) = mpsc::channel();
+            scope
+                .bind(move |event| {
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            let event = rx.try_recv().unwrap();
+            assert_eq!(event.requires_sync(), model_changed);
+            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+        }
+    }
 
     fn bound_scope() -> (WakeScope, Receiver<WakeEvent>) {
         let (tx, rx) = mpsc::channel();

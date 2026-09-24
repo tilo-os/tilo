@@ -5,7 +5,7 @@
 //! the widget is cheap to keep alive. Opts into [`Widget::needs_animation_frame`]
 //! permanently so the host keeps redrawing while any spinner is visible.
 
-use std::time::Instant;
+use crate::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -57,7 +57,7 @@ impl Spinner {
     pub fn with_size(size: f32) -> Self {
         Self {
             size,
-            start: Instant::now(),
+            start: crate::time::now(),
             rect: Rect::ZERO,
             reduce_motion: false,
         }
@@ -102,6 +102,8 @@ impl Widget for Spinner {
                 width: Dimension::length(self.size),
                 height: Dimension::length(self.size),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -321,14 +323,14 @@ mod tests {
     /// the reduced-motion path, not a no-op).
     #[test]
     fn reduce_motion_freezes_the_orbit_at_phase_zero() {
-        use std::time::Duration;
+        use crate::time::Duration;
         let half_period = Duration::from_secs_f64(ROTATION_PERIOD_MS / 1000.0 / 2.0);
         // `half_period` is ~750ms, so this can only underflow on a machine
         // whose monotonic clock started under a second ago; fall back to
         // "now" (untested edge case) instead of panicking the test.
-        let backdate = Instant::now()
+        let backdate = crate::time::now()
             .checked_sub(half_period)
-            .unwrap_or_else(Instant::now);
+            .unwrap_or_else(crate::time::now);
 
         let mut fresh = Spinner::new();
         let fresh_geo = draw_path_data(&mut fresh, true);

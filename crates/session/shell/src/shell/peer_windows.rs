@@ -11,6 +11,7 @@
 //! the decision made, so a refusal or launch is not re-run on every sync.
 
 use crate::shell::launcher;
+use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
     GroupId, ResourceRef, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
 };
@@ -54,7 +55,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         if started.iter().any(|a| a.eq_ignore_ascii_case(&item.app_id)) {
             continue;
         }
-        let Some(workspace) = tree.workspaces.get(item.workspace) else {
+        let Some(workspace) = tree.desktop.workspaces.get(item.workspace) else {
             continue;
         };
         // A same-identity continuation can discover the room before its
@@ -96,7 +97,7 @@ pub(crate) fn mark_failed_host_restore(tree: &mut WorkspaceTree, desktop_id: &st
         return false;
     };
     let mut changed = false;
-    for ws in &mut tree.workspaces {
+    for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -158,7 +159,7 @@ pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: 
 /// Every peer window with no note on it yet.
 fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     let mut out = Vec::new();
-    for (idx, ws) in tree.workspaces.iter().enumerate() {
+    for (idx, ws) in tree.desktop.workspaces.iter().enumerate() {
         for strip in &ws.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
@@ -223,7 +224,7 @@ enum OpenResult {
 }
 
 fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, String> {
-    let Some(ws) = tree.workspaces.get(item.workspace) else {
+    let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
     let ws_id = ws.id;
@@ -252,7 +253,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
             &item.app_id,
         );
     }
-    let Some(ws) = tree.workspaces.get(item.workspace) else {
+    let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
     // Before the launch, or a note written after races the window's toplevel.
@@ -329,7 +330,7 @@ fn admits(ws: &Workspace, app_id: &str) -> Result<(), String> {
 /// `false` if the tab went away, or stopped being a peer window, while the
 /// decision was being made.
 fn set_note(tree: &mut WorkspaceTree, tab: TabId, note: String) -> bool {
-    for ws in &mut tree.workspaces {
+    for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
                 for t in &mut group.tabs {
@@ -399,15 +400,15 @@ mod tests {
         WindowWidth, Workspace, WorkspaceId, WorkspaceTree, next_id,
     };
 
-    const APP: &str = "dev.tilo.word-processor";
+    const APP: &str = "so.tilo.word-processor";
 
     fn room_owned_by(owner: &str) -> Workspace {
-        let mut ws = Workspace::test_default(WorkspaceId::from(next_id()), "shared");
+        let mut ws = Workspace::new(WorkspaceId::from(next_id()), "shared");
         ws.owner = Some(owner.to_string());
         ws
     }
 
-    const FILES: &str = "dev.tilo.file-explorer";
+    const FILES: &str = "so.tilo.file-explorer";
 
     fn tree_with_local_app(app_id: &str) -> (WorkspaceTree, TabId) {
         let mut ws = room_owned_by("ada");
@@ -434,8 +435,11 @@ mod tests {
         let ws_id = ws.id;
         (
             WorkspaceTree {
-                workspaces: vec![ws],
-                active: ws_id,
+                desktop: crate::shell::state::DesktopTree {
+                    workspaces: vec![ws],
+                    active: ws_id,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             tab_id,
@@ -443,7 +447,8 @@ mod tests {
     }
 
     fn local_app_note(tree: &WorkspaceTree, tab_id: TabId) -> &str {
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
             .flat_map(|strip| strip.window_groups.iter())
@@ -485,8 +490,11 @@ mod tests {
         ws.strips = vec![strip];
         let ws_id = ws.id;
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, tab_id)
@@ -514,7 +522,7 @@ mod tests {
         let (mut tree, _tab) = tree_with_peer_window_for(room_owned_by("ada"), FILES);
 
         assert!(
-            !may_read(&tree.workspaces[0], FILES, &home),
+            !may_read(&tree.desktop.workspaces[0], FILES, &home),
             "fixture sanity: the file manager must start with no grant on the home, \
              or this test cannot tell a granted one from a pre-granted one"
         );
@@ -522,7 +530,7 @@ mod tests {
         let _ = examine(&mut tree);
 
         assert!(
-            may_read(&tree.workspaces[0], FILES, &home),
+            may_read(&tree.desktop.workspaces[0], FILES, &home),
             "a file manager started on the room's behalf must be able to read the \
              user's home; without it the window opens on its sandbox directory and \
              says the folder is empty"
@@ -538,7 +546,7 @@ mod tests {
         let _ = examine(&mut tree);
 
         assert!(
-            !may_read(&tree.workspaces[0], APP, &home),
+            !may_read(&tree.desktop.workspaces[0], APP, &home),
             "only the file manager gets the user's home; the word processor must not"
         );
     }
@@ -554,7 +562,7 @@ mod tests {
         let _ = examine(&mut tree);
 
         assert!(
-            !may_read(&tree.workspaces[0], FILES, &home),
+            !may_read(&tree.desktop.workspaces[0], FILES, &home),
             "a room that authorises no launch must not hand out the home either"
         );
     }
@@ -590,7 +598,7 @@ mod tests {
              found, or the launch opens a second one beside it"
         );
         assert!(
-            opened_for_the_room(&ws, "dev.tilo.terminal", 0).is_none(),
+            opened_for_the_room(&ws, "so.tilo.terminal", 0).is_none(),
             "a different app is not this one"
         );
     }
@@ -602,7 +610,7 @@ mod tests {
             id: next_id(),
             title: "Terminal".into(),
             tile: TileContent::Foreign {
-                app_id: "dev.tilo.terminal".into(),
+                app_id: "so.tilo.terminal".into(),
                 surface_id: 99,
             },
         };
@@ -620,7 +628,7 @@ mod tests {
 
         let salt = crate::shell::state::peer_salt_of(tab_id);
         assert!(
-            opened_for_the_room(&ws, "dev.tilo.terminal", salt).is_none(),
+            opened_for_the_room(&ws, "so.tilo.terminal", salt).is_none(),
             "a second terminal is an ordinary thing to want; a window this person \
              opened must not swallow the next launch of the same app"
         );
@@ -630,7 +638,7 @@ mod tests {
     fn an_unanswered_card_is_not_a_window_to_return_to() {
         let (tree, _tab) = tree_with_peer_window(room_owned_by("ada"));
         assert!(
-            opened_for_the_room(&tree.workspaces[0], APP, 0).is_none(),
+            opened_for_the_room(&tree.desktop.workspaces[0], APP, 0).is_none(),
             "an unexamined peer window has no instance behind it yet"
         );
     }
@@ -673,7 +681,7 @@ mod tests {
         );
         // The restriction is about this app, not about the room: another
         // app in the same room is still admitted.
-        assert_eq!(admits(&ws, "dev.tilo.terminal"), Ok(()));
+        assert_eq!(admits(&ws, "so.tilo.terminal"), Ok(()));
     }
 
     #[test]
@@ -749,7 +757,7 @@ mod tests {
             "missing authority is transient and must not become a permanent refusal"
         );
         assert!(any_pending(&tree), "the next authority sync must retry it");
-        let note = tree.workspaces[0].strips[0].window_groups[0]
+        let note = tree.desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
             .find(|t| t.id == tab)
@@ -775,10 +783,8 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Legacy App\nExec=/bin/true\nStartupWMClass=LegacyWindow\n",
         )
         .expect("desktop entry");
-        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
-        // SAFETY: `serial(process_env)` keeps other environment-mutating
-        // tests out until the original value is restored below.
-        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", data.path());
         crate::shell::host_apps::invalidate_cache();
         crate::shell::host_apps::set_x11_starting();
         crate::shell::host_apps::set_x11_session(None);
@@ -809,13 +815,6 @@ mod tests {
         crate::shell::host_apps::invalidate_cache();
         crate::shell::launcher::clear_pending_placements();
         crate::shell::host_apps::set_x11_unavailable();
-        unsafe {
-            if let Some(previous) = previous_data_home {
-                std::env::set_var("XDG_DATA_HOME", previous);
-            } else {
-                std::env::remove_var("XDG_DATA_HOME");
-            }
-        }
     }
 
     #[test]

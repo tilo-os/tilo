@@ -5,8 +5,9 @@
 //! host relay is selected above the mesh threshold — see [`crate::model::CallSession`]).
 //! Microphone capture/playback and the Opus audio codec go through **`GStreamer`**
 //! elements ([`crate::audio`]); camera + screen video use the in-tree **openh264**
-//! codec ([`crate::video`]); screen capture is requested from the
-//! **xdg-desktop-portal `ScreenCast`** API via ashpd. None of ALSA / `PulseAudio` /
+//! codec ([`crate::video`]); screen capture is requested from the host's
+//! screen-capture service (natively the **xdg-desktop-portal `ScreenCast`**
+//! API, see `ui::capture`). None of ALSA / `PulseAudio` /
 //! ffmpeg / the `opus` crate are used — only `GStreamer`, the portal, and openh264,
 //! matching the Tilo build env.
 //!
@@ -343,21 +344,6 @@ impl Default for MediaEngine {
     }
 }
 
-/// Request a screen-share source via the xdg-desktop-portal `ScreenCast` API.
-/// Returns the `PipeWire` node id to consume, or `None` when the portal is
-/// unavailable (always, headless). Gated: the real ashpd call only compiles
-/// under `live-media`.
-pub fn request_screencast() -> Option<u32> {
-    #[cfg(feature = "live-media")]
-    {
-        live::request_screencast()
-    }
-    #[cfg(not(feature = "live-media"))]
-    {
-        None
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Live engine — compiled only under `live-media`.
 // ---------------------------------------------------------------------------
@@ -611,60 +597,6 @@ mod live {
             out
         }
     }
-
-    /// Real `ScreenCast` request via the xdg-desktop-portal, using ashpd. Opens a
-    /// `ScreenCast` session, asks the portal to let the user pick a monitor or
-    /// window (embedded cursor), starts the cast and returns the first stream's
-    /// `PipeWire` node id — which [`crate::video::ScreenCapture`] then consumes
-    /// via `pipewiresrc`. Runs on a short-lived current-thread runtime so it can
-    /// be called from the synchronous app loop. Returns `None` when there is no
-    /// portal (headless), when the user cancels, or on any portal error — never
-    /// panics.
-    pub fn request_screencast() -> Option<u32> {
-        use ashpd::WindowIdentifier;
-        use ashpd::desktop::PersistMode;
-        use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?;
-        rt.block_on(async {
-            // Bound the whole handshake so an unresponsive portal (or a user who
-            // never answers the picker) can't wedge the caller forever.
-            let flow = async {
-                let proxy = Screencast::new().await.ok()?;
-                let session = proxy.create_session().await.ok()?;
-                proxy
-                    .select_sources(
-                        &session,
-                        CursorMode::Embedded,
-                        SourceType::Monitor | SourceType::Window,
-                        false,
-                        None,
-                        PersistMode::DoNot,
-                    )
-                    .await
-                    .ok()?;
-                // No parent window handle from this surface: pass the default
-                // (empty) identifier, letting the portal parent the chooser.
-                let response = proxy
-                    .start(&session, &WindowIdentifier::default())
-                    .await
-                    .ok()?
-                    .response()
-                    .ok()?;
-                response
-                    .streams()
-                    .first()
-                    .map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)
-            };
-            tokio::time::timeout(std::time::Duration::from_secs(120), flow)
-                .await
-                .ok()
-                .flatten()
-        })
-    }
 }
 
 #[cfg(test)]
@@ -784,7 +716,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(feature = "live-media"))]
     #[test]
     fn engine_construction_never_binds_live_transport() {
         // The app constructor runs before the window's first frame. Even when
@@ -793,14 +724,6 @@ mod tests {
         let e = MediaEngine::new();
         assert!(!e.is_live());
         assert_eq!(e.description(), "simulated (local)");
-    }
-
-    #[test]
-    fn screencast_is_none_without_portal() {
-        // With portal support absent at compile time, a share request yields no
-        // node id and never panics. Under `live-media` this would open the real
-        // system picker, so that build intentionally has no unit-test analogue.
-        assert!(request_screencast().is_none());
     }
 
     #[test]

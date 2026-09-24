@@ -11,7 +11,7 @@
 //! ```toml
 //! [[registry]]
 //! name = "central"
-//! base-url = "https://registry.tilo.dev"
+//! base-url = "https://apps.tilo.so"
 //! trust = "ed25519:2f1c…"     # pin the operator key (fail-closed)
 //! priority = 0                # lower sorts first, default 0
 //! ```
@@ -160,7 +160,7 @@ impl RegistriesConfig {
     pub fn default_central() -> RegistryRef {
         RegistryRef {
             name: "central".to_string(),
-            base_url: "https://registry.tilo.dev".to_string(),
+            base_url: "https://apps.tilo.so".to_string(),
             // Placeholder key (all-zero is not a valid ed25519 point,
             // so an unconfigured central registry fails closed until
             // the operator pins the real key).
@@ -299,7 +299,7 @@ mod tests {
         let cfg = RegistriesConfig::from_registries(vec![
             RegistryRef {
                 name: "central".into(),
-                base_url: "https://registry.tilo.dev".into(),
+                base_url: "https://apps.tilo.so".into(),
                 trust: RegistryTrust::Key([9u8; 32]),
                 priority: 0,
             },
@@ -330,7 +330,7 @@ mod tests {
             r#"
 [[registry]]
 name = "central"
-base-url = "https://registry.tilo.dev"
+base-url = "https://apps.tilo.so"
 trust = "ed25519:0303030303030303030303030303030303030303030303030303030303030303"
 priority = 0
 "#,

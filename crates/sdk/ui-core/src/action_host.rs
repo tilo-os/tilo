@@ -4,7 +4,7 @@
 //! bookkeeping so an app declares only its own action domain.
 //!
 //! ```ignore
-//! struct MyApp { actions: ui::ActionHost, /* … */ }
+//! struct MyApp { actions: tilo_ui::ActionHost, /* … */ }
 //!
 //! // At every affordance that mutates shared state:
 //! self.actions.dispatch(doc, MY_ACTION_TYPE, &action);
@@ -288,7 +288,7 @@ mod tests {
             },
         );
         assert_eq!(
-            doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
+            doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
             Some(42)
         );
     }
@@ -468,7 +468,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            doc.get(&ROOT, "score").unwrap().unwrap().0.to_i64(),
+            doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
             Some(42),
             "the UI reads the optimistic value before a reply"
         );

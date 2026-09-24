@@ -29,19 +29,9 @@
     )
 )]
 
-use std::collections::HashMap;
-
 use disks::DisksApp;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::taffy::prelude::*;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
-use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point};
-use ui::vello::peniko::Color;
 use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
@@ -49,6 +39,12 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// the app's 900px breakpoint the drive list collapses to an overlay.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (640, 800);
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the --shots handler runs on the main thread before the offscreen harness \
+              or any app thread exists; the app reads DISKS_LIVE on this thread while \
+              it is constructed"
+)]
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args
         .shots
@@ -81,10 +77,23 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         pending: args.value("--pending").map(str::to_owned),
         status: args.value("--status").map(str::to_owned),
     };
-    render_shot_to_png(DisksApp::new(), viewport, narrow, &preset, out)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_shot_to_png(
+        DisksApp::new(),
+        viewport,
+        ui::launch::shot_theme(args),
+        narrow,
+        &preset,
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the launch spec calls the root factory on the main thread before the \
+              window, event loop or any app worker thread exists; the app reads \
+              DISKS_LIVE on this thread while it is constructed"
+)]
 fn live_root() -> Box<dyn Widget> {
     // Live mode: probe the real system (lsblk + smartctl). The `--shots`
     // path above never sets this, so the screenshot stays on the curated
@@ -101,7 +110,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.disks", live_root)
+        &LaunchSpec::new("so.tilo.disks", live_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--live", "--narrow"])
             .allowed_options(&["--drive", "--part", "--tab", "--pending", "--status"]),
@@ -123,32 +132,18 @@ struct Preset {
 }
 
 /// Run one offscreen frame against the app and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 /// `narrow` snaps the drive-list flap open *after* layout so the collapsed
 /// overlay is captured settled rather than mid-animation.
 fn render_shot_to_png(
     mut widget: DisksApp,
     viewport: (u32, u32),
+    theme: Theme,
     narrow: bool,
     preset: &Preset,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(&mut widget);
     // Apply any pinned selection, then re-sync so the widget adopts it.
     if preset.drive.is_some()
         || preset.part.is_some()
@@ -156,76 +151,32 @@ fn render_shot_to_png(
         || preset.pending.is_some()
         || preset.status.is_some()
     {
+        let doc = &mut frame.state.doc;
         if let Some(d) = preset.drive {
-            disks::doc::DisksDoc::set_selected(&mut state.doc, d);
+            disks::doc::DisksDoc::set_selected(doc, d);
         }
         if let Some(p) = preset.part {
-            disks::doc::DisksDoc::set_selected_part(&mut state.doc, Some(p));
+            disks::doc::DisksDoc::set_selected_part(doc, Some(p));
         }
         if let Some(t) = &preset.tab {
-            disks::doc::DisksDoc::set_tab(&mut state.doc, t);
+            disks::doc::DisksDoc::set_tab(doc, t);
         }
         if let Some(p) = &preset.pending {
-            disks::doc::DisksDoc::set_pending(&mut state.doc, p);
+            disks::doc::DisksDoc::set_pending(doc, p);
         }
         if let Some(status) = &preset.status {
-            disks::doc::DisksDoc::set_status(&mut state.doc, status);
+            disks::doc::DisksDoc::set_status(doc, status);
         }
-        widget.sync(&mut state.doc, &state.root);
+        frame.sync(&mut widget);
     }
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            ui::taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    ui::taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    frame.layout(&mut widget)?;
     // After layout the width (hence the docked/overlay split) is settled, so
     // snapping the flap here lands a fully-revealed overlay for the capture.
     if narrow {
         widget.snap_sidebar(true);
     }
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let scene = frame.draw(&mut widget);
+    frame.write_png(&scene, out);
     println!("disks: wrote shot to {}", out.display());
     Ok(())
 }

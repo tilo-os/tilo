@@ -2,14 +2,11 @@
 //! Keeps the per-widget `draw` code declarative instead of repeating the
 //! `Fill::NonZero` / `Affine` boilerplate everywhere.
 
+pub use ui::paint::fill_rect;
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, PathEl, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
 
 pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
     let shape = RoundedRect::from_rect(rect, radius.max(0.0));
@@ -48,7 +45,10 @@ pub fn line(scene: &mut Scene, t: Affine, a: Point, b: Point, color: Color, widt
 }
 
 /// Left-aligned text whose baseline-ish top sits at (x, y).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text paint helper takes the scene, renderer, transform, text, position, size and colour, each chosen per call"
+)]
 pub fn text(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -63,7 +63,10 @@ pub fn text(
 }
 
 /// Weighted variant of [`text`].
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text paint helper takes the scene, renderer, transform, text, position, size and colour, each chosen per call"
+)]
 pub fn text_w(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -89,7 +92,10 @@ pub fn text_w(
 /// Left-aligned text shaped in an explicit [`FontChoice`] family, so the
 /// preview can render its specimen in the theme's chosen typeface. Baseline-
 /// ish top sits at (x, y).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text paint helper takes the scene, renderer, transform, text, position, size and colour, each chosen per call"
+)]
 pub fn text_font(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -116,7 +122,10 @@ pub fn text_font(
 }
 
 /// Text vertically centred in `[y0, y1]` at left edge `x`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text paint helper takes the scene, renderer, transform, text, position, size and colour, each chosen per call"
+)]
 pub fn text_vcenter(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -134,7 +143,10 @@ pub fn text_vcenter(
 }
 
 /// Right-aligned text ending at `x_right`, vertically centred in `[y0,y1]`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text paint helper takes the scene, renderer, transform, text, position, size and colour, each chosen per call"
+)]
 pub fn text_right(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -152,7 +164,10 @@ pub fn text_right(
 }
 
 /// Horizontally centred text in `[x0, x1]`, vertically centred in `[y0,y1]`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a text paint helper takes the scene, renderer, transform, text, position, size and colour, each chosen per call"
+)]
 #[allow(
     clippy::many_single_char_names,
     reason = "t/s/w/x/y are the standard graphics convention: transform, string, measured width, position"

@@ -15,10 +15,10 @@
     reason = "bounded usize index arithmetic and finite pixel sums are the core of this geometry index"
 )]
 
+use crate::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Range;
-use std::time::Duration;
 
 const PAGE_FRACTION: f64 = 0.9;
 const DRAG_SCROLL_THRESHOLD: f64 = 4.0;
@@ -133,7 +133,7 @@ struct DragGesture {
     start_axis: f64,
     start_offset: f64,
     last_axis: f64,
-    last_at: std::time::Instant,
+    last_at: crate::time::Instant,
     velocity: f64,
     active: bool,
 }
@@ -144,7 +144,7 @@ impl DragScroller {
         Self::default()
     }
 
-    pub fn begin(&mut self, axis: f64, offset: f64, now: std::time::Instant) {
+    pub fn begin(&mut self, axis: f64, offset: f64, now: crate::time::Instant) {
         self.gesture = Some(DragGesture {
             start_axis: finite_or_zero(axis),
             start_offset: finite_or_zero(offset),
@@ -155,7 +155,7 @@ impl DragScroller {
         });
     }
 
-    pub fn update(&mut self, axis: f64, now: std::time::Instant) -> Option<DragScrollUpdate> {
+    pub fn update(&mut self, axis: f64, now: crate::time::Instant) -> Option<DragScrollUpdate> {
         let gesture = self.gesture.as_mut()?;
         let axis = finite_or_zero(axis);
         let distance = axis - gesture.start_axis;
@@ -183,7 +183,7 @@ impl DragScroller {
         })
     }
 
-    pub fn finish(&mut self, now: std::time::Instant) -> Option<DragScrollFinish> {
+    pub fn finish(&mut self, now: crate::time::Instant) -> Option<DragScrollFinish> {
         let gesture = self.gesture.take()?;
         let idle = now.saturating_duration_since(gesture.last_at).as_secs_f64();
         let release_velocity = if idle >= 0.12 {
@@ -1105,7 +1105,7 @@ mod tests {
 
     #[test]
     fn drag_scroller_preserves_clicks_then_reports_content_offset_and_velocity() {
-        let start = std::time::Instant::now();
+        let start = crate::time::now();
         let mut drag = DragScroller::new();
         drag.begin(100.0, 250.0, start);
         assert_eq!(
@@ -1136,7 +1136,7 @@ mod tests {
 
     #[test]
     fn drag_scroller_release_before_threshold_is_an_ordinary_click() {
-        let now = std::time::Instant::now();
+        let now = crate::time::now();
         let mut drag = DragScroller::new();
         drag.begin(20.0, 80.0, now);
         drag.update(22.0, now + Duration::from_millis(16));
@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn drag_scroller_does_not_fling_after_the_pointer_has_stopped() {
-        let start = std::time::Instant::now();
+        let start = crate::time::now();
         let mut drag = DragScroller::new();
         drag.begin(100.0, 100.0, start);
         drag.update(80.0, start + Duration::from_millis(16));

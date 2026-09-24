@@ -38,7 +38,7 @@
 
 pub use accounts;
 pub use agent_provider_config;
-pub use app_catalogue;
+pub use app_cli;
 pub use app_host;
 pub use atomic_file;
 pub use chrono_tz;
@@ -71,6 +71,7 @@ pub use tilo_user_identity;
 pub use tiny_skia;
 pub use typst;
 pub use typst_assets;
+pub use typst_layout;
 pub use typst_pdf;
 pub use typst_render;
 pub use ui;

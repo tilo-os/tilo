@@ -3887,36 +3887,16 @@ fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
         .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)
         .with_context(|| format!("creating {description} directory {}", parent.display()))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .with_context(|| format!("creating temporary {description} in {}", parent.display()))?;
-    let existing_permissions = std::fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
+    // Keep a regenerated file's existing permissions; new files are 0644.
     #[cfg(unix)]
-    let permissions = existing_permissions.or_else(|| Some(std::fs::Permissions::from_mode(0o644)));
+    let written = {
+        let mode = std::fs::metadata(path)
+            .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
+        atomic_file::write_with_mode(path, source, mode)
+    };
     #[cfg(not(unix))]
-    let permissions = existing_permissions;
-    if let Some(permissions) = permissions {
-        temporary
-            .as_file()
-            .set_permissions(permissions)
-            .with_context(|| format!("setting {description} permissions for {}", path.display()))?;
-    }
-    temporary
-        .write_all(source)
-        .with_context(|| format!("writing temporary {description} for {}", path.display()))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .with_context(|| format!("syncing temporary {description} for {}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("publishing {description} {}", path.display()))?;
-    std::fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .with_context(|| format!("syncing {description} directory {}", parent.display()))?;
-    Ok(())
+    let written = atomic_file::write(path, source);
+    written.with_context(|| format!("publishing {description} {}", path.display()))
 }
 
 impl CargoPlan {
@@ -4108,9 +4088,14 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     let code = rust_code_only(&source);
     let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
         || code.contains("ui::widget::resource_actions::background(")
-        || code.contains("ui::widget::resource_actions::form(");
+        || code.contains("ui::widget::resource_actions::form(")
+        || code.contains("resource_actions::immediate(")
+        || code.contains("resource_actions::background(")
+        || code.contains("resource_actions::form(");
     let toolkit_descriptor = code.contains("ui::widget::resource_actions::resource(")
         || code.contains("ui::widget::resource_actions::typed_resource(")
+        || code.contains("resource_actions::resource(")
+        || code.contains("resource_actions::typed_resource(")
         || code.contains("ActionForm::new(")
         || code.contains("ui::widget::resource_actions::ActionForm::new(");
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
@@ -4615,7 +4600,7 @@ struct AppPackageSpec {
 }
 
 /// Build an app's declared entrypoints, assemble its payload, sign it through
-/// `tilo-pkg`, verify the result, and publish the completed `.qpkg` atomically.
+/// `tilo-app-package`, verify the result, and publish the completed `.tapp` atomically.
 ///
 /// An app-local `payload/` directory is copied into the package before the
 /// freshly built binaries are placed at their manifest paths. Relative output
@@ -4637,7 +4622,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         || {
             spec.app_dir
                 .join("dist")
-                .join(format!("{}.qpkg", spec.cargo_package))
+                .join(format!("{}.tapp", spec.cargo_package))
         },
         |path| absolute_from(&spec.app_dir, path),
     );
@@ -4689,7 +4674,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         std::fs::set_permissions(&destination, permissions)?;
     }
 
-    let staged_package = staging.path().join("package.qpkg");
+    let staged_package = staging.path().join("package.tapp");
     let identity = request
         .identity
         .as_ref()
@@ -4709,7 +4694,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
     let cargo_path = app_dir.join("Cargo.toml");
     let cargo_source = std::fs::read_to_string(&cargo_path)
         .with_context(|| format!("reading {}", cargo_path.display()))?;
-    let cargo: toml::Value = cargo_source
+    let cargo: toml::Table = cargo_source
         .parse()
         .with_context(|| format!("parsing {}", cargo_path.display()))?;
     let cargo_package = cargo
@@ -4722,7 +4707,7 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
     let manifest_path = app_dir.join("tilo-app.toml");
     let manifest_source = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
-    let manifest = pkg::Manifest::from_toml_str(&manifest_source)
+    let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_source)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
     let entrypoint = manifest
         .entrypoint
@@ -4873,7 +4858,8 @@ fn run_tilo_pkg_pack(
     output: &Path,
     identity: Option<&Path>,
 ) -> Result<()> {
-    let program = std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-pkg"));
+    let program =
+        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
     let mut command = ProcessCommand::new(&program);
     command
         .arg("pack")
@@ -4888,14 +4874,15 @@ fn run_tilo_pkg_pack(
         command.arg("--identity").arg(identity);
     } else {
         eprintln!(
-            "[tilo-app] no --identity supplied; tilo-pkg will use an ephemeral self-signing key"
+            "[tilo-app] no --identity supplied; tilo-app-package will use an ephemeral self-signing key"
         );
     }
     run_package_command(&mut command, &program, "pack")
 }
 
 fn run_tilo_pkg_verify(app_dir: &Path, package: &Path) -> Result<()> {
-    let program = std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-pkg"));
+    let program =
+        std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-app-package"));
     let mut command = ProcessCommand::new(&program);
     command.arg("verify").arg(package).current_dir(app_dir);
     run_package_command(&mut command, &program, "verify")
@@ -4908,7 +4895,7 @@ fn run_package_command(
 ) -> Result<()> {
     let status = command.status().with_context(|| {
         format!(
-            "starting {} {operation}; install/build tilo-pkg or set TILO_PKG",
+            "starting {} {operation}; install/build tilo-app-package or set TILO_PKG",
             program.to_string_lossy()
         )
     })?;
@@ -5142,7 +5129,7 @@ fn dev_binary_name(manifest: &Path) -> Result<String> {
     let source = std::fs::read_to_string(manifest)
         .with_context(|| format!("reading {}", manifest.display()))?;
     let value = source
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest.display()))?;
     let package = value
         .get("package")
@@ -5160,7 +5147,7 @@ fn cargo_package_name(manifest: &Path) -> Result<String> {
     let source = std::fs::read_to_string(manifest)
         .with_context(|| format!("reading {}", manifest.display()))?;
     let value = source
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest.display()))?;
     value
         .get("package")
@@ -5198,7 +5185,7 @@ fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<Path
     let source = std::fs::read_to_string(&manifest_path)
         .with_context(|| format!("reading {}", manifest_path.display()))?;
     let manifest = source
-        .parse::<toml::Value>()
+        .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
     let Some(path) = manifest
         .get("dependencies")
@@ -5552,7 +5539,7 @@ fn check_cargo_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Option
             return None;
         }
     };
-    let manifest = match source.parse::<toml::Value>() {
+    let manifest = match source.parse::<toml::Table>() {
         Ok(manifest) => manifest,
         Err(error) => {
             checks.push(DoctorCheck {
@@ -5597,7 +5584,7 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
             return None;
         }
     };
-    let manifest = match pkg::Manifest::from_toml_str(&source) {
+    let manifest = match tilo_app_package::Manifest::from_toml_str(&source) {
         Ok(manifest) => manifest,
         Err(error) => {
             checks.push(DoctorCheck {
@@ -5608,7 +5595,7 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
             return None;
         }
     };
-    if let Err(error) = pkg::validate_manifest(&manifest) {
+    if let Err(error) = tilo_app_package::validate_manifest(&manifest) {
         checks.push(DoctorCheck {
             status: DoctorStatus::Fail,
             label: "Tilo manifest",
@@ -5624,7 +5611,7 @@ fn check_package_manifest(app_dir: &Path, checks: &mut Vec<DoctorCheck>) -> Opti
     Some(manifest.package.id)
 }
 
-fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<DoctorCheck>) {
+fn check_ui_dependency(app_dir: &Path, manifest: &toml::Table, checks: &mut Vec<DoctorCheck>) {
     let direct_dependency = manifest
         .get("dependencies")
         .and_then(|table| table.get("ui"))
@@ -5633,7 +5620,7 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<
         .get("target")
         .and_then(toml::Value::as_table)
         .into_iter()
-        .flat_map(toml::map::Map::values)
+        .flat_map(toml::Table::values)
         .filter_map(|target| target.get("dependencies").and_then(|table| table.get("ui")));
     let evaluate = |ui: &toml::Value| {
         let package = ui.get("package").and_then(toml::Value::as_str);
@@ -5647,7 +5634,7 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Value, checks: &mut Vec<
                 let resolved = app_dir.join(path);
                 let sdk_manifest = std::fs::read_to_string(resolved.join("Cargo.toml"))
                     .ok()
-                    .and_then(|source| source.parse::<toml::Value>().ok());
+                    .and_then(|source| source.parse::<toml::Table>().ok());
                 let is_sdk = sdk_manifest.as_ref().is_some_and(|manifest| {
                     manifest
                         .get("package")
@@ -6486,7 +6473,7 @@ fn create_app_interactive_from(
         request.title = Some(prompt(input, output, "App title", Some(&default_title))?);
     }
     if request.app_id.is_none() && full_wizard {
-        let default_id = format!("dev.tilo.{}", name.replace('-', "."));
+        let default_id = format!("so.tilo.{}", name.replace('-', "."));
         request.app_id = Some(prompt_validated(
             input,
             output,
@@ -6575,7 +6562,7 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
 
     let app_id = request
         .app_id
-        .unwrap_or_else(|| format!("dev.tilo.{}", package_name.replace('-', ".")));
+        .unwrap_or_else(|| format!("so.tilo.{}", package_name.replace('-', ".")));
     validate_app_id(&app_id)?;
     let title = request
         .title
@@ -7200,10 +7187,11 @@ fn cargo_toml(spec: &AppSpec) -> String {
     } else {
         let repo = checkout_root_for_ui(&spec.ui_path);
         format!(
-            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\n",
+            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\nvello_shaders = {{ path = {:?} }}\n",
             repo.join("vendor/winit").to_string_lossy(),
             repo.join("vendor/vello_encoding").to_string_lossy(),
             repo.join("vendor/vello").to_string_lossy(),
+            repo.join("vendor/vello_shaders").to_string_lossy(),
         )
     };
     let extras = format!("{lints}{patches}");
@@ -7262,6 +7250,7 @@ fn app_lib(spec: &AppSpec) -> String {
 fn source_catalog() -> String {
     String::from(
         "starter-title = Your first Tilo app\n\
+starter-profile-title = Profile\n\
 starter-name-label = Your name\n\
 starter-name-placeholder = Type your name\n\
 starter-updates-label = Receive updates\n\
@@ -7349,6 +7338,14 @@ fn app_responds_to_semantic_input() {{
         {crate_name}::app_root(),
         (800, 500),
     );
+
+    let inspection = app.inspection();
+    fn contains_widget(node: &ui::headless::InspectionNode, name: &str) -> bool {{
+        node.widget == name || node.children.iter().any(|child| contains_widget(child, name))
+    }}
+    assert!(contains_widget(&inspection.root, "FormPage"));
+    assert!(contains_widget(&inspection.root, "Form"));
+    app.resize((340, 700)).expect("automatic starter resizes");
 
     app.perform_named("name-input", &Action::SetValue("Ada".into()))
         .expect("the generated input remains addressable");

@@ -96,14 +96,16 @@ fn rendered_names(app: &SettingsApp) -> Vec<String> {
 
 #[test]
 fn app_title_is_exposed_only_through_app_widget() {
+    let config = crate::support::ScratchConfig::new();
     // The sanctioned channel: the OS pill reads this. Present and correct.
-    let app = SettingsApp::new();
+    let app = config.app();
     assert_eq!(app.app_title(), "Personal Settings");
     assert!(matches!(app.app_icon(), IconDescriptor::Glyph(_)));
 }
 
 #[test]
 fn no_pane_draws_the_app_name_but_each_page_names_its_destination() {
+    let config = crate::support::ScratchConfig::new();
     // Across a representative set of categories, the app must never paint its
     // own name. It must paint the selected destination and its explanatory
     // subtitle so the detail pane stands on its own outside the sidebar.
@@ -113,7 +115,7 @@ fn no_pane_draws_the_app_name_but_each_page_names_its_destination() {
         Category::RegionFormats,
         Category::About,
     ] {
-        let mut app = SettingsApp::with_selected(cat);
+        let mut app = config.app().with_category(cat);
         lay_out(&mut app);
         let names = rendered_names(&app);
 

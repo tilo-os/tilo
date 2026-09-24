@@ -8,7 +8,7 @@ use ui::widget::IconDescriptor;
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
     std::sync::LazyLock::new(|| ApplicationDefinition {
-        app_id: "dev.tilo.notes",
+        app_id: "so.tilo.notes",
         title: "Notes",
         icon: IconDescriptor::Named("notes".into()),
         record_kind: RecordKind::new("notes.notebook"),
@@ -45,5 +45,9 @@ fn create_component(
     }
     let mut registry = tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
-    Ok(AppComponent::new(context, Box::new(root), registry))
+    let mut component = AppComponent::new(context, Box::new(root), registry);
+    component
+        .register_document_history(&crate::framework_history::HISTORY)
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    Ok(component)
 }

@@ -1,0 +1,30 @@
+{
+  "cef_version": "152.0.6+g708dc14+chromium-152.0.7977.83",
+  "chromium_version": "152.0.7977.83",
+  "platforms": {
+    "macosarm64": {
+      "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_macosarm64_minimal.tar.bz2",
+      "size": 131064528,
+      "sha1": "426836139b0ea7b7278aa0915cfae90eb460551f",
+      "sha256": "b0f277f1025dcedd690f59dfe3d1ec5e2f7f90564d0e5de997e6fc3c1febfa48"
+    },
+    "macosx64": {
+      "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_macosx64_minimal.tar.bz2",
+      "size": 137177951,
+      "sha1": "fed74cac2af95dec716000e9a35ebed8eb4f9a25",
+      "sha256": "a31e10da6eba49da1b29fd0266d784f489839f27a644ed86275fe1dabf8c300d"
+    },
+    "linux64": {
+      "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linux64_minimal.tar.bz2",
+      "size": 321503907,
+      "sha1": "9711b86c105fb590da576fe5a829802f1a79d520",
+      "sha256": "daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd"
+    },
+    "linuxarm64": {
+      "name": "cef_binary_152.0.6+g708dc14+chromium-152.0.7977.83_linuxarm64_minimal.tar.bz2",
+      "size": 413399972,
+      "sha1": "d05e22542515b1022820651c75ba0c91fb9d8ad2",
+      "sha256": "6a2448eccce01ab2495131f754a1c75a49333aa1678a95cb794dfe166cc477d2"
+    }
+  }
+}

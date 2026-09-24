@@ -21,6 +21,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::AccentChip;
@@ -38,10 +39,19 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
+/// Default pill height: the dense control step (HIG §9.6, 28 px). Hosts that
+/// lay a chip out taller get a proportionally larger label via
+/// [`Chip::label_size_for_height`].
 const HEIGHT: f64 = 28.0;
+/// Horizontal inset, `spacing.s3` at 1× — the same inset a button uses, so a
+/// chip and a button in one row start their content on the same line.
 const PAD_X: f64 = 12.0;
+/// Lead-to-label and label-to-dismiss gap; 6 px like the button's icon gap,
+/// between `s1` (crowds the glyph) and `s2` (splits the pill into two marks).
 const GAP: f64 = 6.0;
+/// Status dot diameter, `spacing.s2` at 1×.
 const DOT_D: f64 = 8.0;
+/// Dismiss glyph edge: the label's cap height plus a hit margin.
 const X_D: f64 = 14.0;
 
 #[allow(
@@ -63,10 +73,23 @@ pub struct Chip {
     x_rect: Rect,
     last_cursor: Point,
     label_w: f64,
-    /// Effective logical font size captured during `build_layout`. `measure`
-    /// has no theme parameter, so retaining it prevents large-text chips from
-    /// falling back to the default palette's 100% metrics.
-    layout_font_size: f32,
+    /// The theme's `typography.scale.sm`, captured in `build_layout` for
+    /// `measure` and `adjust_layout_with_measure`, which have no theme of
+    /// their own (the old `measure` reached for `Theme::dark()` instead).
+    label_size: f32,
+    /// Vertical inset between the measured label line and the pill edge
+    /// when the line outgrows [`HEIGHT`] (`spacing.s1` a side).
+    pad_y: f64,
+    /// `metrics.min_pointer_target`: the hit rect grows to this even though
+    /// the painted pill stays at the 28 px selector height.
+    min_target: f64,
+    /// Pointer precision; a coarse pointer raises the target past the
+    /// theme's metric (48 px), as it does for every other control.
+    interaction: crate::interaction::InteractionEnvironment,
+    /// Settled pill size — real measured width, height following the label
+    /// line — seeding the next `build_layout` so a stable label costs no
+    /// extra pass. Cleared when the theme's label size changes.
+    footprint: Option<taffy::Size<f32>>,
 }
 
 impl Chip {
@@ -83,8 +106,42 @@ impl Chip {
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             label_w: 0.0,
-            layout_font_size: 14.0,
+            label_size: crate::tokens::TypeScale::default().sm,
+            pad_y: f64::from(crate::tokens::Spacing::BASE.s1),
+            min_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            interaction: crate::interaction::InteractionEnvironment::default(),
+            footprint: None,
         }
+    }
+
+    /// The larger of the theme's metric and the interaction environment's
+    /// minimum (48 px for a coarse pointer).
+    fn pointer_target(&self) -> f64 {
+        self.min_target
+            .max(f64::from(self.interaction.minimum_target()))
+    }
+
+    /// The pointer target: the pill's rect grown vertically to the minimum
+    /// pointer target. A chip paints at the 28 px selector height (HIG §9.6)
+    /// but no target is smaller than 32 px, so the 2 px above and below the
+    /// pill belong to it as well.
+    pub fn hit_rect(&self) -> Rect {
+        Self::grown_to_target(self.rect, self.pointer_target())
+    }
+
+    /// The "×" target, grown vertically like [`Chip::hit_rect`]. Only
+    /// vertically: sideways it would reach under the last letters of the
+    /// label and turn a body click into a removal.
+    pub fn remove_hit_rect(&self) -> Rect {
+        if self.x_rect.is_zero_area() {
+            return self.x_rect;
+        }
+        Self::grown_to_target(self.x_rect, self.pointer_target())
+    }
+
+    fn grown_to_target(rect: Rect, target: f64) -> Rect {
+        let slack = ((target - rect.height()) / 2.0).max(0.0);
+        rect.inflate(0.0, slack)
     }
 
     /// Make the chip a toggle (a filter). Clicking the body flips selection.
@@ -141,13 +198,18 @@ impl Chip {
         self.x_rect
     }
 
-    fn measured_label(&self, text_renderer: &mut TextRenderer) -> (f32, f32) {
-        let size = self.layout_font_size / text_renderer.text_scale();
-        text_renderer.measure(&self.label, size, None)
-    }
-
-    fn intrinsic_width(&self, text_renderer: &mut TextRenderer) -> f64 {
-        let (w, _) = self.measured_label(text_renderer);
+    /// Measured pill size: padding + lead + label + dismiss across, and the
+    /// selector height unless the label's measured line (plus `pad_y` a
+    /// side) needs more — at 1× a 12 px label shapes a 15 px line and the
+    /// pill stays 28; at 2× text the 30 px line lifts it to 42 instead of
+    /// spilling over the pill's top and bottom.
+    fn intrinsic_size(&self, text_renderer: &mut TextRenderer) -> (f64, f64) {
+        // `label_size` is the theme's resolved step (text scale included);
+        // the size-based renderer APIs scale again, so hand them the
+        // renderer-relative twin — one multiplier, not two. (`draw` still
+        // feeds the raw step to the renderer; that expression is X1's.)
+        let size = renderer_type_size(text_renderer, self.label_size);
+        let (w, lh) = text_renderer.measure(&self.label, size, None);
         let mut total = PAD_X * 2.0 + f64::from(w);
         if self.dot.is_some() {
             total += DOT_D + GAP;
@@ -155,7 +217,20 @@ impl Chip {
         if self.removable {
             total += GAP + X_D;
         }
-        total
+        let height = HEIGHT.max(f64::from(lh) + self.pad_y * 2.0);
+        (total, height)
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "pill dimensions are small pixel counts well within f32's exact-integer range; taffy's Size requires f32"
+    )]
+    fn measured_footprint(&self, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
+        let (width, height) = self.intrinsic_size(text_renderer);
+        taffy::Size {
+            width: width.ceil() as f32,
+            height: height.ceil() as f32,
+        }
     }
 }
 
@@ -263,18 +338,23 @@ impl ChipStyle {
 
 impl Chip {
     /// Text size a chip of `height` px paints its label at. The widget's
-    /// own [`HEIGHT`] maps to `typography.scale.sm`, and anything taller or
-    /// shorter scales with it, so a caller that wants a bigger pill gets
-    /// proportionally bigger type instead of a lonely small label floating
-    /// in a tall capsule.
+    /// own [`HEIGHT`] maps to `typography.scale.sm`, whether the caller passes
+    /// authored geometry or geometry already grown by the responsive layout.
+    /// Anything intentionally taller or shorter scales with it, while the
+    /// already-scaled type token is still applied exactly once.
     #[allow(
         clippy::cast_possible_truncation,
         reason = "clamped to 0.75..=1.6 just above, so the f32 cast can't \
                   truncate anything that matters for a UI scale factor"
     )]
     pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
-        let scaled_height = HEIGHT * f64::from(theme.text_scale);
-        theme.tokens.typography.scale.sm * (height / scaled_height).clamp(0.75, 1.6) as f32
+        let resolved_height = HEIGHT * theme.responsive_scale();
+        let relative_height = if height >= resolved_height {
+            height / resolved_height
+        } else {
+            height / HEIGHT
+        };
+        theme.tokens.typography.scale.sm * relative_height.clamp(0.75, 1.6) as f32
     }
 
     /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]
@@ -286,7 +366,7 @@ impl Chip {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) -> f64 {
-        let size = Self::label_size_for_height(height, theme) / text_renderer.text_scale();
+        let size = renderer_type_size(text_renderer, Self::label_size_for_height(height, theme));
         let (w, _) = text_renderer.measure(label, size, None);
         let lead_w = match lead {
             ChipLead::None => 0.0,
@@ -306,7 +386,10 @@ impl Chip {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate chip painting combines scene, transform, theme and text renderer with bounds, label, lead and style"
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -333,7 +416,12 @@ impl Chip {
         // 0.18 fill / full-strength border the selected widget state uses,
         // so a rail of these reads identically to a row of real Chips.
         if !style.bare {
-            let quiet = (colors.surface_white_5, colors.border_standard);
+            // Quiet chip: the raised tier with an edge derived from it (HIG
+            // §9.5) — a white veneer over a light card was invisible.
+            let quiet = (
+                colors.surfaces.raised,
+                crate::surface::edge_on(colors.surfaces.raised),
+            );
             let (bg, border) = if style.ghost {
                 quiet
             } else if let Some(c) = style.resolved {
@@ -396,7 +484,10 @@ impl Chip {
         }
 
         // Label, truncated to the space actually left inside the pill.
-        let size = Self::label_size_for_height(rect.height(), theme) / text_renderer.text_scale();
+        let size = renderer_type_size(
+            text_renderer,
+            Self::label_size_for_height(rect.height(), theme),
+        );
         let avail = rect.x1 - PAD_X - x;
         if avail <= 1.0 {
             return;
@@ -433,29 +524,22 @@ fn truncate_to_width(
     avail: f64,
     text_renderer: &mut TextRenderer,
 ) -> String {
-    let (full, _) = text_renderer.measure(label, size, None);
-    if f64::from(full) <= avail {
-        return label.to_string();
+    let out = text_renderer.elide_to_width(label, size, crate::num::f32_of_f64(avail));
+    if out != label && out.starts_with(crate::text_render::ELLIPSIS) {
+        String::new()
+    } else {
+        out
     }
-    let chars: Vec<char> = label.chars().collect();
-    // Walk down from the full string; the first prefix that fits wins.
-    // Labels here are workspace names — short enough that a linear scan
-    // costs less than the branchy binary search it would replace.
-    for take in (1..chars.len()).rev() {
-        let Some(prefix) = chars.get(..take) else {
-            continue;
-        };
-        let mut cand: String = prefix.iter().collect();
-        cand.push('…');
-        let (w, _) = text_renderer.measure(&cand, size, None);
-        if f64::from(w) <= avail {
-            return cand;
-        }
-    }
-    String::new()
 }
 
 impl Widget for Chip {
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.interaction = environment;
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     #[allow(
@@ -469,18 +553,41 @@ impl Widget for Chip {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_font_size = theme.tokens.typography.scale.sm;
-        // Approximate width from a fixed advance; measure() refines it.
-        let char_count = u32::try_from(self.label.chars().count()).unwrap_or(u32::MAX);
-        let approx = PAD_X * 2.0
-            + f64::from(char_count) * (f64::from(self.layout_font_size) * 0.6)
-            + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
-            + if self.removable { GAP + X_D } else { 0.0 };
+        let label_size = theme.tokens.typography.scale.sm;
+        let pad_y = f64::from(theme.tokens.spacing.s1);
+        if label_size.to_bits() != self.label_size.to_bits()
+            || pad_y.to_bits() != self.pad_y.to_bits()
+        {
+            // A new type step re-shapes the label and a new spacing scale
+            // moves the pill's inset; the settled pill no longer describes
+            // either (a relayout-only host such as `FrameHarness::set_theme`
+            // never rebuilds the widget, so this is the only invalidation).
+            self.footprint = None;
+        }
+        self.label_size = label_size;
+        self.pad_y = pad_y;
+        self.min_target = f64::from(theme.tokens.metrics.min_pointer_target);
+        // Both axes are pinned as `length`, so taffy never asks `measure`
+        // for this leaf; the settled footprint seeds the pass and
+        // `adjust_layout_with_measure` corrects it from the real label.
+        // Before the first settlement, estimate from a fixed advance.
+        let size = self.footprint.unwrap_or_else(|| {
+            let char_count = u32::try_from(self.label.chars().count()).unwrap_or(u32::MAX);
+            let approx = PAD_X * 2.0
+                + f64::from(char_count) * (f64::from(label_size) * 0.6)
+                + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
+                + if self.removable { GAP + X_D } else { 0.0 };
+            let estimated_line_height = crate::text_metrics::line_height_px(label_size, 1.0);
+            taffy::Size {
+                width: approx as f32,
+                height: HEIGHT.max(estimated_line_height + pad_y * 2.0) as f32,
+            }
+        });
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
-                width: length(approx as f32),
-                height: length((HEIGHT.max(f64::from(self.layout_font_size) * 1.25 + 12.0)) as f32),
+                width: length(size.width),
+                height: length(size.height),
             },
             ..Default::default()
         });
@@ -488,21 +595,52 @@ impl Widget for Chip {
         node
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "intrinsic_width()/HEIGHT are small pixel dimensions well \
-                  within f32's exact-integer range; taffy's Size requires f32"
-    )]
+    /// Replace the advance estimate with the measured pill (see
+    /// [`Chip::intrinsic_size`]) — the estimate was all the retained chip
+    /// ever laid out with, since a `length × length` leaf skips `measure`.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text_renderer: &mut TextRenderer,
+    ) -> bool {
+        let footprint = if let Some(footprint) = self.footprint {
+            footprint
+        } else {
+            let footprint = self.measured_footprint(text_renderer);
+            self.footprint = Some(footprint);
+            footprint
+        };
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        let size = taffy::Size {
+            width: length(footprint.width),
+            height: length(footprint.height),
+        };
+        if current.size == size {
+            return false;
+        }
+        let mut style = current.clone();
+        style.size = size;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    /// Not reached while both axes are pinned (see `build_layout`); kept so a
+    /// host that lays the chip out `auto` gets the same settled pill from the
+    /// same cache rather than the trait's zero default.
     fn measure(
         &mut self,
         _k: taffy::Size<Option<f32>>,
         _a: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let (_, label_h) = self.measured_label(text_renderer);
-        taffy::Size {
-            width: self.intrinsic_width(text_renderer) as f32,
-            height: (HEIGHT.max(f64::from(label_h) + 12.0)) as f32,
+        if let Some(footprint) = self.footprint {
+            footprint
+        } else {
+            let footprint = self.measured_footprint(text_renderer);
+            self.footprint = Some(footprint);
+            footprint
         }
     }
 
@@ -531,18 +669,33 @@ impl Widget for Chip {
         let selected = self.selectable && self.selected;
 
         let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
-        let bg = if selected {
-            accent.with_alpha_factor(0.18)
+        // Quiet chip: the raised tier with an edge derived from it (HIG
+        // §9.5); selected keeps its accent tint and accent edge.
+        let radius = f64::from(theme.tokens.radii.full);
+        if selected {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                accent.with_alpha_factor(0.18),
+                None,
+                &pill,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                accent,
+                None,
+                &crate::surface::edge_outline(self.rect, radius),
+            );
         } else {
-            theme.tokens.colors.surface_white_5
-        };
-        let border = if selected {
-            accent
-        } else {
-            theme.border_standard
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &pill);
-        scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
+            crate::surface::card(
+                scene,
+                transform,
+                self.rect,
+                radius,
+                theme.tokens.colors.surfaces.raised,
+            );
+        }
 
         let mut x = self.rect.x0 + PAD_X;
         let cy = self.rect.center().y;
@@ -558,7 +711,7 @@ impl Widget for Chip {
             x += DOT_D + GAP;
         }
 
-        let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (lw, lh) = text_renderer.measure(&self.label, size, None);
         self.label_w = f64::from(lw);
         let label_col = if selected { accent } else { theme.text_primary };
@@ -576,7 +729,10 @@ impl Widget for Chip {
             x += GAP;
             let xr = Rect::from_center_size(Point::new(x + X_D / 2.0, cy), (X_D, X_D));
             self.x_rect = xr;
-            let hovered = xr.contains(self.last_cursor);
+            // Highlight over the same grown rect the press handler and
+            // `cursor_shape` test, so feedback and behaviour agree in the
+            // bands above and below the glyph.
+            let hovered = self.remove_hit_rect().contains(self.last_cursor);
             let col = if hovered {
                 theme.text_primary
             } else {
@@ -609,10 +765,10 @@ impl Widget for Chip {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.removable && self.x_rect.contains(self.last_cursor) {
+                if self.removable && self.remove_hit_rect().contains(self.last_cursor) {
                     self.removed = true;
                     *handled = true;
-                } else if self.selectable && self.rect.contains(self.last_cursor) {
+                } else if self.selectable && self.hit_rect().contains(self.last_cursor) {
                     self.selected = !self.selected;
                     self.toggled = true;
                     *handled = true;
@@ -623,7 +779,7 @@ impl Widget for Chip {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if (self.selectable || self.removable) && self.rect.contains(point) {
+        if (self.selectable || self.removable) && self.hit_rect().contains(point) {
             Some(winit::window::CursorIcon::Pointer)
         } else {
             None
@@ -700,8 +856,9 @@ mod tests {
             "200% label width must be measured rather than painted outside a 100% chip"
         );
         assert!(
-            large.get_rect().height() >= 40.0,
-            "200% chip must grow its pointer target with its line, got {:?}",
+            large.get_rect().height() > normal.get_rect().height()
+                && large.hit_rect().height() >= large.get_rect().height(),
+            "200% chip and its pointer target must grow with its measured line, got {:?}",
             large.get_rect()
         );
     }
@@ -806,6 +963,94 @@ mod tests {
         assert!(c.take_removed(), "× removes");
         assert!(!c.take_toggled(), "× does not also toggle selection");
         assert!(!c.is_selected());
+    }
+
+    /// Lay a chip out through the shared solver (the `App` / `FrameHarness`
+    /// path), which runs `adjust_layout_with_measure`; the raw
+    /// `compute_layout_with_measure` in `lay_out` above never does.
+    fn settled_chip_rect(chip: Chip, text_scale: f32) -> Rect {
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(chip))),
+            (600, 200),
+            Theme::dark().with_text_scale(text_scale),
+        );
+        let rect = harness.inspection().root.children[0].rect;
+        Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+    }
+
+    /// The retained chip pinned both axes as `length`, so taffy never asked
+    /// `measure` and every chip was laid out at a 0.6 em-per-character
+    /// estimate. The settled width is now the measured pill.
+    #[test]
+    fn chip_width_is_measured_not_estimated() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let (label_w, _) = text.measure("Rust", theme.tokens.typography.scale.sm, None);
+        let expected = (PAD_X * 2.0 + f64::from(label_w)).ceil();
+        let rect = settled_chip_rect(Chip::new("Rust"), 1.0);
+        assert!(
+            (rect.width() - expected).abs() < 1e-6,
+            "settled width {} should be the measured pill {expected}",
+            rect.width()
+        );
+        assert_eq!(
+            rect.height(),
+            HEIGHT,
+            "1× pill keeps the 28 px selector height"
+        );
+    }
+
+    /// The pill height follows the label's measured line once that line
+    /// outgrows the 28 px selector height: the 12 px step is 24 px at 2×,
+    /// its line 30 px, so the pill is 38 — measured once, at the
+    /// renderer-relative size, not the doubled 60 px line the raw step
+    /// would shape.
+    #[test]
+    fn pill_is_28_at_one_x_and_follows_its_measured_label_at_two_x() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let size = crate::text_metrics::renderer_type_size(&text, theme.tokens.typography.scale.sm);
+        let (_, line_h) = text.measure("Filter", size, None);
+        assert!((line_h - 30.0).abs() < 1e-3, "2× sm line: {line_h}");
+        let expected = (f64::from(line_h) + f64::from(theme.tokens.spacing.s1) * 2.0).ceil();
+        assert!(
+            expected > HEIGHT,
+            "fixture: the 2× line must outgrow the 28 px pill"
+        );
+        let rect = settled_chip_rect(Chip::new("Filter"), 2.0);
+        assert!(
+            (rect.height() - expected).abs() < 1e-6,
+            "2× pill height {} should be the measured line + 2×s1 = {expected}",
+            rect.height()
+        );
+    }
+
+    /// The painted pill is 28 px (a selector), the pointer target 32 px: the
+    /// two pixels above and below the pill belong to the chip, and a click
+    /// there toggles it.
+    #[test]
+    fn hit_rect_meets_the_minimum_pointer_target_while_the_pill_stays_28() {
+        let mut c = Chip::new("Rust").selectable();
+        lay_out(&mut c);
+        draw(&mut c);
+        assert_eq!(c.get_rect().height(), HEIGHT);
+        let hit = c.hit_rect();
+        assert_eq!(
+            hit.height(),
+            f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            "hit rect grows to the pointer target"
+        );
+        assert_eq!(hit.width(), c.get_rect().width(), "and not sideways");
+        let just_above = Point::new(c.get_rect().center().x, c.get_rect().y0 - 1.0);
+        assert!(!c.get_rect().contains(just_above) && hit.contains(just_above));
+        dispatch(&mut c, &cursor(just_above));
+        assert!(
+            dispatch(&mut c, &press()),
+            "a click in the grown target is consumed"
+        );
+        assert!(c.is_selected());
     }
 
     #[test]

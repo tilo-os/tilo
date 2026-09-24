@@ -44,7 +44,7 @@ use ui::webview::{SharedEngine, WebViewCommand};
 /// first-party document/scripts during load, blanking it. They also churn
 /// daily, so a fresh compile can regress unpredictably. `EasyList` + uBO
 /// already cover the same targets through WebKit-safe rules.
-const LISTS: &[(&str, &str)] = &[
+pub(crate) const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
     (
         "easyprivacy.txt",
@@ -95,26 +95,36 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(604_800);
 /// process is out of resources), ad blocking is simply left disabled for
 /// this session rather than taking the whole app down with it.
 pub fn spawn_filter_loader(engine: SharedEngine) {
+    if engine.supports_native_filtering() {
+        crate::native_blocker::start(engine);
+        return;
+    }
     let spawned = std::thread::Builder::new()
         .name("filter-loader".into())
-        .spawn(move || match load_and_compile() {
-            Ok((version, filter)) => {
-                tracing::info!(
-                    rules = filter.rule_count,
-                    chunks = filter.chunks.len(),
-                    skipped = filter.skipped,
-                    "content filter compiled"
-                );
-                // Installed as several filters — the full rule set exceeds
-                // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`). The
-                // `version` (hash of the source lists) lets the engine reuse
-                // previously compiled filters when the lists are unchanged.
-                engine.send(WebViewCommand::SetContentFilters {
-                    version,
-                    chunks: std::sync::Arc::new(filter.chunks),
-                });
+        .spawn(move || {
+            match load_and_compile() {
+                Ok((version, filter)) => {
+                    tracing::info!(
+                        rules = filter.rule_count,
+                        chunks = filter.chunks.len(),
+                        skipped = filter.skipped,
+                        "content filter compiled"
+                    );
+                    // Installed as several filters — the full rule set exceeds
+                    // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`). The
+                    // `version` (hash of the source lists) lets the engine reuse
+                    // previously compiled filters when the lists are unchanged.
+                    engine.send(WebViewCommand::SetContentFilters {
+                        version,
+                        chunks: std::sync::Arc::new(filter.chunks),
+                    });
+                }
+                Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
             }
-            Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
+            #[cfg(test)]
+            if let Some(path) = std::env::var_os("QOS_TEST_FILTER_LOADER_DONE") {
+                let _ = std::fs::write(path, b"done\n");
+            }
         });
     if let Err(err) = spawned {
         tracing::warn!("ad blocking unavailable: could not spawn filter-loader thread: {err}");
@@ -276,13 +286,24 @@ fn generic_ad_cosmetic_script() -> &'static str {
 "#
 }
 
-fn cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join("tilo-browser").join("filters"))
+pub(crate) fn cache_dir() -> Option<PathBuf> {
+    crate::storage::cache_dir().map(|d| d.join("filters"))
+}
+
+pub(crate) fn read_cached_list(path: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() <= 8 * 1024 * 1024).then_some(text)
 }
 
 /// Return the list text: fresh cache if young enough, otherwise fetch
 /// (updating the cache), otherwise a stale cache beats nothing.
-fn load_list(name: &str, url: &str) -> Option<String> {
+pub(crate) fn load_list(name: &str, url: &str) -> Option<String> {
     let path = cache_dir().map(|d| d.join(name));
 
     if let Some(p) = &path
@@ -293,33 +314,57 @@ fn load_list(name: &str, url: &str) -> Option<String> {
             .ok()
             .and_then(|m| m.elapsed().ok())
             .is_some_and(|age| age < CACHE_MAX_AGE);
-        if fresh && let Ok(text) = std::fs::read_to_string(p) {
+        if fresh && let Some(text) = read_cached_list(p) {
             return Some(text);
         }
     }
 
-    match reqwest::blocking::get(url)
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-    {
+    let fetch = || -> Result<String, Box<dyn std::error::Error>> {
+        use std::io::Read as _;
+        let client = tilo_net::http::blocking_client()
+            .timeout(Duration::from_secs(15))
+            .build()?;
+        let response = client.get(url).send()?.error_for_status()?;
+        let mut text = String::new();
+        response
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_string(&mut text)?;
+        if text.len() > 8 * 1024 * 1024 {
+            return Err("filter list exceeds 8 MiB".into());
+        }
+        Ok(text)
+    };
+    match fetch() {
         Ok(text) => {
-            if let Some(p) = &path {
-                if let Some(dir) = p.parent() {
-                    std::fs::create_dir_all(dir).ok();
+            if let Some(p) = &path
+                && let Some(dir) = p.parent()
+            {
+                match crate::storage::private_root_write_guard(dir) {
+                    Ok(_private_write) => {
+                        let _ = atomic_file::write_creating_parent(p, text.as_bytes());
+                    }
+                    Err(error) => tracing::warn!(%error, "filter cache is unavailable"),
                 }
-                std::fs::write(p, &text).ok();
             }
             Some(text)
         }
         Err(err) => {
             tracing::warn!("fetching {url} failed: {err}");
-            path.and_then(|p| std::fs::read_to_string(p).ok())
+            path.and_then(|p| read_cached_list(&p))
         }
     }
 }
 
 fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), String> {
-    let texts: Vec<String> = LISTS
+    #[cfg(test)]
+    let override_list = std::env::var("QOS_TEST_FILTER_LIST_URL").ok();
+    #[cfg(test)]
+    let lists: Vec<(&str, &str)> = override_list
+        .as_deref()
+        .map_or_else(|| LISTS.to_vec(), |url| vec![("fixture.txt", url)]);
+    #[cfg(not(test))]
+    let lists = LISTS;
+    let texts: Vec<String> = lists
         .iter()
         .filter_map(|(name, url)| load_list(name, url))
         .collect();

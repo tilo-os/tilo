@@ -461,7 +461,10 @@ fn theme_contract() -> ActionContract {
 ///
 /// Panics only if a validated catalog id cannot be JSON-encoded for the
 /// external apply-operation envelope.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one resource tree lists every catalog action beside the theme it acts on"
+)]
 #[allow(
     clippy::expect_used,
     reason = "Theme ids admitted by doc::load_catalog are bounded UTF-8 strings and always serialize"
@@ -935,7 +938,7 @@ mod tests {
         let mut tx = LocalTransport::new();
         tilo_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
         assert_eq!(
-            doc::get_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
+            ui::doc::read_str(&doc, &ROOT, doc::KEY_ACTIVE).as_deref(),
             Some("dracula")
         );
     }

@@ -7,13 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 
 use crate::actions::{
     CalendarCollectionResource, calendar_resource_id, event_resource_id, project_resource_id,
@@ -321,44 +318,16 @@ impl CalendarSearchProvider {
     }
 }
 
-impl SearchProvider for CalendarSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for CalendarSearchProvider {
+    fn provider_name(&self) -> &str {
         CALENDAR_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog.query_page(
-            query,
-            cursor,
-            work_budget,
-            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         if address.action != "open" {
             return None;
         }
@@ -381,6 +350,8 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use ui::search::SearchRegistry;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
+    use ui::search::{DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
     fn seeded() -> Model {
         crate::model::seed_demo(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap())
@@ -434,21 +405,26 @@ mod tests {
 
     #[test]
     fn unique_late_record_is_findable_without_a_corpus_scan() {
-        let mut model = seeded();
-        let template = model.events[0].clone();
-        model.events.extend((0..100_001u128).map(|index| {
-            let mut event = template.clone();
-            event.id = uuid::Uuid::from_u128(index + 1);
-            event.title = format!("ordinary event {index}");
-            event
-        }));
-        model.events.last_mut().unwrap().title = "late calendar needle".into();
-        let provider = CalendarSearchProvider::new(&model);
-        let page = provider.search_page("calendar needle", None, 4, 4);
+        let mut records = 0;
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let mut model = seeded();
+                let template = model.events[0].clone();
+                model.events.extend(corpus.map(|row| {
+                    let mut event = template.clone();
+                    event.id = uuid::Uuid::from_u128(row.index as u128 + 1);
+                    event.title = row.text;
+                    event
+                }));
+                records = model.projects.len() + model.events.len() + model.tasks.len();
+                CalendarSearchProvider::new(&model)
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
         assert_eq!(page.inspected, 1);
-        assert_eq!(page.results.len(), 1);
-        assert_eq!(page.results[0].title, "late calendar needle");
-        let address = page.results[0]
+        let address = hit
             .action_address()
             .expect("a late hit retains its canonical address");
         let resource = provider
@@ -459,10 +435,7 @@ mod tests {
             tilo_actions::door::resolve(&[resource], &address).is_some(),
             "the exact open action exists without constructing the resource tree"
         );
-        assert_eq!(
-            provider.stats().records,
-            model.projects.len() + model.events.len() + model.tasks.len()
-        );
+        assert_eq!(provider.stats().records, records);
     }
 
     #[test]

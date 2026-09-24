@@ -92,6 +92,16 @@ else
   bad 'VM lifecycle helpers cannot distinguish logout, crash, and forced VM termination'
 fi
 
+if grep -Fq 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0' "$common" \
+  && [ "$(grep -Fc '$(console_qemu_args)' "$vm")" -eq 2 ] \
+  && grep -Fq 'rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"' "$vm" \
+  && grep -Fq 'if [ "$s" = "-" ]; then IFS= read -r s || true; fi' "$vm" \
+  && ! grep -Fq 'org.tilo.console.0' "$repo/os/Containerfile.installer"; then
+  ok 'only the installer and target boots attach the console port, and secrets can be typed from stdin'
+else
+  bad 'the console channel is attached outside the scenario boots or unlock secrets must travel on argv'
+fi
+
 [ "$(grep -Fc 'serial=tilo-install-target' "$vm")" -ge 3 ] \
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'
@@ -182,7 +192,7 @@ if result="$(
   PATH="$tmp/bin:$PATH" \
   TILO_DISTROBOX='' \
   TILO_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
-  TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+  TILO_PUBLISH_REPO='registry.invalid/qos/qos' \
   TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
   TILO_TEST_ARGS="$tmp/args" \
   TILO_TEST_AUTH_PATH="$tmp/auth-path" \
@@ -191,7 +201,7 @@ if result="$(
 )" \
   && [ "$result" = 1 ] \
   && ! grep -Fq 'do-not-leak-token' "$tmp/args" \
-  && grep -Fq 'registry.invalid/tilo/tilo' "$tmp/args" \
+  && grep -Fq 'registry.invalid/qos/qos' "$tmp/args" \
   && grep -Fq 'Y2ktdXNlcjpkby1ub3QtbGVhay10b2tlbg==' "$tmp/auth-copy" \
   && [ ! -e "$(cat "$tmp/auth-path")" ]; then
   ok 'generation lookup securely materializes and removes explicit credentials'
@@ -201,7 +211,7 @@ fi
 
 if ! PATH="$tmp/bin:$PATH" \
     TILO_DISTROBOX='' \
-    TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+    TILO_PUBLISH_REPO='registry.invalid/qos/qos' \
     TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
     TILO_TEST_ARGS="$tmp/fail-args" \
     TILO_TEST_AUTH_PATH="$tmp/fail-auth-path" \
@@ -219,7 +229,7 @@ if result="$(
   PATH="$tmp/bin:$PATH" \
   TILO_DISTROBOX='' \
   TILO_GENERATION_VERIFY_KEY="$tmp/unused.pub" \
-  TILO_PUBLISH_REPO='registry.invalid/tilo/tilo' \
+  TILO_PUBLISH_REPO='registry.invalid/qos/qos' \
   TILO_REGISTRY_CREDS='ci-user:do-not-leak-token' \
   TILO_ALLOW_EMPTY_SERIES=1 \
   TILO_TEST_ARGS="$tmp/bootstrap-args" \

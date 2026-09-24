@@ -35,6 +35,10 @@ pub trait PeerPublishSink: Send + Sync {
 
     /// Ask the room whether anyone still holds a range of history.
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
+
+    /// A local app joined this route, so peers' documents for it must be
+    /// routable here even before this device publishes on it.
+    fn local_route(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
 }
 
 impl PeerPublishSink for ShellNetwork {
@@ -45,7 +49,7 @@ impl PeerPublishSink for ShellNetwork {
         record_id: String,
         envelope: SignedOp,
     ) {
-        self.publish_document(app_id, cluster_id, record_id, envelope);
+        self.publish_document(app_id, cluster_id, &record_id, envelope);
     }
 
     fn app_presence(&self, app_id: String, cluster_id: String, presence: PeerPresence) {
@@ -54,6 +58,10 @@ impl PeerPublishSink for ShellNetwork {
 
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16) {
         self.publish_scrollback_request(artifact, before_seq, max);
+    }
+
+    fn local_route(&self, app_id: &str, cluster_id: &str, record_id: &str) {
+        let _ = self.register_local_record(app_id, cluster_id, record_id);
     }
 }
 
@@ -110,6 +118,16 @@ impl PeerPublisher {
     /// Whether this publisher can reach the network at all.
     pub fn is_wired(&self) -> bool {
         self.sink.is_some()
+    }
+
+    /// Tell the network a local app holds `route`, so inbound documents
+    /// addressed to the route's wire name reach it.
+    pub fn local_route(&self, route: &CrdtRoute) {
+        if let Some(sink) = self.sink.as_ref()
+            && !route.record_id.is_empty()
+        {
+            sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
+        }
     }
 
     /// The remote broker validates against its own channel state before

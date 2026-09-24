@@ -47,22 +47,11 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
-const APP_ID: &str = "dev.tilo.sheets";
+const APP_ID: &str = "so.tilo.sheets";
 const SCENARIOS: &[&str] = &[
     "file",
     "format",
@@ -142,7 +131,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("charts" | "comments") => Box::new(sheets::SheetsApp::shots_seed_charts_and_comments),
         _ => Box::new(|_a, _d| {}),
     };
-    render_shot_to_png(app, viewport, args.text_scale, out, setup)
+    render_shot_to_png(app, viewport, ui::launch::shot_theme(args), out, setup)
         .map_err(|error| LaunchError::Operation(format!("Sheets screenshot failed: {error}")))
 }
 
@@ -151,7 +140,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 type ShotSetup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
 
 /// Run one offscreen frame against `app` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 ///
 /// # Errors
 ///
@@ -159,93 +147,24 @@ type ShotSetup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoComm
 fn render_shot_to_png(
     mut app: sheets::SheetsApp,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: Theme,
     out: &std::path::Path,
     setup: ShotSetup,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme;
-    // defaults to dark.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
-    let presence = PresenceCtx::empty();
-    let permission_ctx = PermissionContext::permissive();
     // `Theme::with_text_scale` has already expanded every token size.  The
     // custom Sheets canvas passes those token sizes directly to the renderer,
     // so applying the multiplier a second time here would turn a requested
     // 2× accessibility size into 4× text and make the interactive chrome
     // unusable.  (Toolkit widgets hand the renderer their unscaled base
     // sizes, which is why their harness sets this separately.)
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    let mut frame = ShotFrame::new(viewport, theme).with_unscaled_text();
+    frame.sync(&mut app);
     // Apply the scenario hook now that the document is seeded; fill/paste
     // scenarios dispatch actions against the document.
-    setup(&mut app, &mut state.doc);
-    let widget: &mut dyn Widget = &mut app;
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission_ctx,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    setup(&mut app, &mut frame.state.doc);
+    frame.layout(&mut app)?;
+    let scene = frame.draw(&mut app);
+    frame.write_png(&scene, out);
     println!("sheets: wrote shot to {}", out.display());
     Ok(())
 }

@@ -121,6 +121,10 @@ pub struct Dropdown {
     is_focused: bool,
     is_hovered: bool,
     last_cursor: Point,
+    /// The host viewport from the latest paint, so the open list can flip
+    /// above the control instead of running off the bottom of the window.
+    /// `None` until a paint has reported one (bare harnesses never do).
+    viewport: Option<Rect>,
 
     /// When `false`: skipped by focus, rejects input, renders dimmed.
     /// Default `true`.
@@ -156,6 +160,7 @@ impl Dropdown {
             is_focused: false,
             is_hovered: false,
             last_cursor: Point::ZERO,
+            viewport: None,
             enabled: true,
         }
     }
@@ -255,6 +260,23 @@ impl Dropdown {
         self.open
     }
 
+    /// The bounds the open list must stay inside — normally the window. A
+    /// paint that sees the presence viewport keeps this in sync on its own;
+    /// a host whose tree does not carry it down to the control (`Row` and
+    /// `Column` clear it for their children, and the App pops it before the
+    /// overlay pass) hands it over here so a control near the bottom edge
+    /// still opens upward.
+    pub fn set_viewport(&mut self, viewport: Rect) {
+        self.viewport = Some(viewport);
+    }
+
+    /// Builder form of [`Self::set_viewport`].
+    #[must_use]
+    pub fn with_viewport(mut self, viewport: Rect) -> Self {
+        self.set_viewport(viewport);
+        self
+    }
+
     /// Replace the available options while preserving the current value when
     /// possible. Useful for embedded hosts whose choices are model-derived.
     pub fn set_options(&mut self, options: Vec<String>) {
@@ -341,7 +363,14 @@ impl Dropdown {
     /// External-layout hosts can use this to make a surrounding popover hug
     /// the visible rows without duplicating the dropdown's sizing constants.
     pub fn open_overlay_height(&self) -> f64 {
-        CONTROL_HEIGHT + LIST_GAP + Self::list_box_height(self.visible_count())
+        // The laid-out control height (a `ui_scale`d `metrics.bar_height`)
+        // when there is one; the reference height before the first layout.
+        let control = if self.rect.height() > 0.0 {
+            self.rect.height()
+        } else {
+            CONTROL_HEIGHT
+        };
+        control + LIST_GAP + Self::list_box_height(self.visible_count())
     }
 
     /// Read the value at `value_path` (Text object or scalar string).
@@ -383,10 +412,20 @@ impl Dropdown {
         (count_f64(n.max(1)) * ITEM_HEIGHT).min(MAX_LIST_HEIGHT)
     }
 
-    /// Absolute rect of the open list (drawn below the control).
+    /// Absolute rect of the open list: below the control, or above it when
+    /// opening below would leave the host viewport and there is room above
+    /// — the same flip `ContextMenu`, `Popover` and the tooltip chip make.
+    /// Hit-testing and paint share this, so a flipped list is clickable
+    /// where it is drawn.
     fn list_rect(&self, n: usize) -> Rect {
         let h = Self::list_box_height(n);
-        let y0 = self.rect.y1 + LIST_GAP;
+        let below = self.rect.y1 + LIST_GAP;
+        let y0 = match self.viewport {
+            Some(vp) if below + h > vp.y1 && self.rect.y0 - LIST_GAP - h >= vp.y0 => {
+                self.rect.y0 - LIST_GAP - h
+            }
+            _ => below,
+        };
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + h)
     }
 
@@ -493,11 +532,11 @@ impl Dropdown {
     /// following the highlight to the row under the pointer.
     fn on_cursor_moved(&mut self, pos: Point, handled: &mut bool) {
         self.last_cursor = pos;
-        let hover = self.rect.contains(pos);
-        if hover != self.is_hovered {
-            self.is_hovered = hover;
-            *handled = true;
-        }
+        // A hover change is a repaint, not consumed input (see `Button`): a
+        // parent that stops at the first handled child would otherwise never
+        // deliver this move to the sibling the pointer went to, and the
+        // sibling's hover — or this one's — would stick.
+        self.is_hovered = self.rect.contains(pos);
         // While open, hovering a row moves the highlight.
         if self.open {
             let filtered = self.filtered();
@@ -648,17 +687,28 @@ impl Widget for Dropdown {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The open list is intentionally NOT a taffy child: it paints in the
         // overlay pass, so it doesn't reserve layout space.
+        //
+        // A fluid control: it asks for the row's width and is the item that
+        // gives when the row is short of room — like `TextInput`, and unlike
+        // fixed-size leaves such as `Toggle`, which refuse to shrink. With
+        // `flex_shrink: 0` a dropdown claimed the whole row and pushed every
+        // later sibling past the edge to zero width. The floor keeps the
+        // chevron slot and padding so a squeezed control is still a control.
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(px(CONTROL_HEIGHT)),
+                height: Dimension::length(px(f64::from(theme.tokens.metrics.bar_height))),
             },
-            flex_shrink: 0.0,
+            min_size: Size {
+                width: Dimension::length(px(PAD_X + CHEVRON_W)),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 1.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -681,8 +731,11 @@ impl Widget for Dropdown {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
+        if let Some(viewport) = presence.viewport.get() {
+            self.viewport = Some(viewport);
+        }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // Disabled widgets paint their (forced-idle) look under a reduced
         // group opacity so they read as non-interactive.
@@ -702,12 +755,37 @@ impl Widget for Dropdown {
             theme.tokens.colors.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
+        // Resting hover: the quiet veneer over the raised fill. `is_hovered`
+        // was tracked but never painted, so a pointer over the control gave
+        // no feedback at all until it was clicked (HIG §7: hover, press,
+        // focus and disabled must each be visible).
+        if self.is_hovered && !self.open && !self.is_focused && !disabled {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.overlay_subtle,
+                None,
+                &shape,
+            );
+        }
+        // Rest edge derived from the field's raised fill, as a Neutral
+        // button (HIG §9.5); open / focus keep `border_focus`.
         let (bw, bc) = if self.open || self.is_focused {
             (2.0, theme.border_focus)
         } else {
-            (1.0, theme.border_standard)
+            (
+                1.0,
+                crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+            )
         };
-        scene.stroke(&Stroke::new(bw), transform, bc, None, &shape);
+        // Rest edge and focus ring share one half-pixel-inset outline.
+        scene.stroke(
+            &Stroke::new(bw),
+            transform,
+            bc,
+            None,
+            &crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md)),
+        );
 
         if self.open {
             self.filter_composition.draw(
@@ -738,15 +816,20 @@ impl Widget for Dropdown {
             };
             if !label.is_empty() {
                 scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
-                let (_, th) = text_renderer.measure(label, FONT, None);
+                // One line, elided to the room left of the chevron: a max
+                // width handed to `draw_text` wraps instead, and a wrapped
+                // second line lands under the control's bottom edge.
+                let room = px((self.rect.width() - PAD_X - CHEVRON_W).max(0.0));
+                let shown = text_renderer.elide_to_width(label, FONT, room);
+                let (_, th) = text_renderer.measure(&shown, FONT, None);
                 let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
                 text_renderer.draw_text(
                     scene,
-                    label,
+                    &shown,
                     FONT,
                     color,
                     translated(transform, self.rect.x0 + PAD_X, ty),
-                    Some(px(self.rect.width() - PAD_X - CHEVRON_W)),
+                    None,
                 );
                 scene.pop_layer();
             }
@@ -779,35 +862,43 @@ impl Widget for Dropdown {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         if !self.open {
             return;
+        }
+        if let Some(viewport) = presence.viewport.get() {
+            self.viewport = Some(viewport);
         }
         let filtered = self.filtered();
         let list = self.list_rect(filtered.len());
         let shape = RoundedRect::from_rect(list, f64::from(theme.tokens.radii.md));
 
+        // The open list is a Panel (HIG §9.1 / §9.5): panel ground and
+        // panel edge, so it separates from the raised field it drops from.
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(list, f64::from(theme.tokens.radii.md)),
         );
 
         // Clip rows to the rounded list box.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
 
         if filtered.is_empty() {
-            let ty = list.y0 + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
+            // Centre on the measured line, not the font size (the face's
+            // ascent/descent otherwise sits the label low in the row).
+            let (_, hint_h) = text_renderer.measure("No matches", FONT, None);
+            let ty = list.y0 + (ITEM_HEIGHT - f64::from(hint_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -851,14 +942,22 @@ impl Widget for Dropdown {
                 } else {
                     theme.text_primary
                 };
-                let ty = row_top + (ITEM_HEIGHT - f64::from(FONT)) / 2.0;
+                // Rows are one `ITEM_HEIGHT` tall, so a long option elides
+                // rather than wrapping into the row beneath it.
+                let shown = text_renderer.elide_to_width(
+                    opt,
+                    FONT,
+                    px((list.width() - PAD_X * 2.0).max(0.0)),
+                );
+                let (_, opt_h) = text_renderer.measure(&shown, FONT, None);
+                let ty = row_top + (ITEM_HEIGHT - f64::from(opt_h)) / 2.0;
                 text_renderer.draw_text(
                     scene,
-                    opt,
+                    &shown,
                     FONT,
                     color,
                     translated(transform, list.x0 + PAD_X, ty),
-                    Some(px(list.width() - PAD_X * 2.0)),
+                    None,
                 );
             }
         }
@@ -903,6 +1002,11 @@ impl Widget for Dropdown {
             WindowEvent::CursorMoved { position, .. } => {
                 let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.on_cursor_moved(pos, handled);
+            }
+            // The pointer left the window: no `CursorMoved` follows, so the
+            // resting hover veneer would otherwise stay painted.
+            WindowEvent::CursorLeft { .. } => {
+                self.is_hovered = false;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1479,6 +1583,133 @@ mod tests {
         assert!(!dd.wants_pointer_capture());
         dd.do_open();
         assert!(dd.wants_pointer_capture());
+    }
+
+    /// The dropdown is the fluid item in a row (F2-16): laid beside fixed
+    /// controls in a row too narrow for its `percent(100%)`, it gives the
+    /// room back, so its siblings keep their size and the trailing one is
+    /// still on screen instead of being pushed to zero width past the edge.
+    #[test]
+    fn dropdown_in_a_row_yields_width_to_fixed_siblings() {
+        use crate::widget::{Button, Row};
+        let mut row = Row::new()
+            .no_wrap()
+            .push(Box::new(Button::new("left", "Left", None)))
+            .push(Box::new(Dropdown::new(opts(), "tz")))
+            .push(Box::new(Button::new("right", "Right", None)));
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = row.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(600.0),
+                    height: taffy::AvailableSpace::Definite(80.0),
+                },
+            )
+            .unwrap();
+        row.apply_layout(&taffy, node, Point::ZERO);
+        let rects: Vec<Rect> = row.children().iter().map(|c| c.get_rect()).collect();
+        assert_eq!(rects.len(), 3);
+        let (left, dd, right) = (rects[0], rects[1], rects[2]);
+        assert!(
+            (left.width() - right.width()).abs() < 0.5 && left.width() > 0.0,
+            "the fixed buttons keep their size: {left:?} / {right:?}"
+        );
+        assert!(
+            dd.width() >= PAD_X + CHEVRON_W - 0.5,
+            "the dropdown keeps at least its chevron slot: {dd:?}"
+        );
+        assert!(
+            right.x1 <= 600.0 + 0.5,
+            "the trailing button stays inside the 600 px row: {right:?}"
+        );
+        assert!(
+            left.x1 <= dd.x0 + 0.5 && dd.x1 <= right.x0 + 0.5,
+            "row order without overlap: {left:?} {dd:?} {right:?}"
+        );
+        assert!(
+            (dd.height() - f64::from(theme.tokens.metrics.bar_height)).abs() < 0.5,
+            "the control is one bar tall: {dd:?}"
+        );
+    }
+
+    /// Hover is a repaint, not consumed input (the rule `Button` documents):
+    /// the move that changes it is left for siblings, and leaving the window
+    /// clears it because no `CursorMoved` will follow.
+    #[test]
+    fn hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        dd.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+        let (mut doc, root) = doc_with_tz("UTC");
+        let enter = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(20.0, 20.0),
+        };
+        assert!(
+            !feed_key(&mut dd, &enter, &mut doc, &root),
+            "a hover change must not mark the move handled"
+        );
+        assert!(dd.is_hovered, "the pointer is over the control");
+        let leave = WindowEvent::CursorLeft {
+            device_id: unsafe { std::mem::zeroed() },
+        };
+        feed_key(&mut dd, &leave, &mut doc, &root);
+        assert!(!dd.is_hovered, "CursorLeft clears the resting hover");
+    }
+
+    /// The open list flips above the control when opening below would leave
+    /// the host viewport and there is room above; hit-testing shares the
+    /// rect, so the flipped list is clickable where it is painted. The
+    /// viewport arrives either through the presence context at paint or
+    /// from the host via `set_viewport`; both routes are exercised.
+    #[test]
+    fn open_list_flips_above_when_it_would_leave_the_viewport() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        dd.rect = Rect::new(0.0, 700.0, 200.0, 740.0);
+        let n = opts().len();
+        let below = dd.list_rect(n);
+        assert!(
+            below.y0 >= dd.rect.y1,
+            "without a viewport the list opens below"
+        );
+        // Route 1: the paint pass sees the App's pushed window viewport.
+        let presence = PresenceCtx::default();
+        presence
+            .viewport
+            .set(Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
+        let mut scene = Scene::new();
+        dd.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &presence,
+        );
+        assert_eq!(dd.viewport, Some(Rect::new(0.0, 0.0, 800.0, 760.0)));
+        // Route 2: a host inside a Row/Column hands it over explicitly.
+        let mut hosted =
+            Dropdown::new(opts(), "tz").with_viewport(Rect::new(0.0, 0.0, 800.0, 760.0));
+        hosted.rect = dd.rect;
+        assert_eq!(hosted.list_rect(n), dd.list_rect(n));
+        let flipped = dd.list_rect(n);
+        assert!(
+            flipped.y1 <= dd.rect.y0,
+            "the list opens above the control: {flipped:?} vs {:?}",
+            dd.rect
+        );
+        assert!(flipped.y0 >= 0.0, "and stays inside the viewport");
+        assert!((flipped.height() - below.height()).abs() < 1e-6);
+        assert_eq!(
+            dd.row_at(Point::new(10.0, flipped.y0 + ITEM_HEIGHT / 2.0), flipped, n),
+            Some(0),
+            "the first row is hit where it is painted"
+        );
+        // No room above either: stay below rather than run off the top.
+        dd.set_viewport(Rect::new(0.0, 690.0, 800.0, 760.0));
+        assert!((dd.list_rect(n).y0 - below.y0).abs() < 1e-6);
     }
 
     #[test]

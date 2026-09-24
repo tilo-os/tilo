@@ -309,7 +309,7 @@ mod tests {
         let comparison = session.compare_selection(&context).unwrap();
         let after = AutoCommit::load(&comparison.after_document).unwrap();
         assert_eq!(
-            after.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+            after.get(ROOT, "body").unwrap().unwrap().0.as_str(),
             Some("saved")
         );
         assert_eq!(doc.pending_ops(), pending);

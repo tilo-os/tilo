@@ -54,6 +54,7 @@
 pub mod dkg;
 pub mod errors;
 pub mod identity;
+mod rng;
 pub mod shares;
 pub mod signing;
 pub mod transcript;

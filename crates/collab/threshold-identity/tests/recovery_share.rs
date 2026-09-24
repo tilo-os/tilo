@@ -20,8 +20,8 @@ use threshold_identity::{
     signing::SigningRound2Partial,
 };
 
-use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 
 /// Run a 2-of-3 DKG and return the three devices. Share 3 is the
 /// "recovery share" printed to paper; the test discards device C and

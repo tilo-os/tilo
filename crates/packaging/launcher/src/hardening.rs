@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 /// Image-owned list of package ids whose processes parse untrusted
 /// bytes. One entry per line, `#` for a comment, a trailing `*` for a
-/// prefix match (`dev.tilo.*` covers a family).
+/// prefix match (`so.tilo.*` covers a family).
 pub const POLICY_PATH: &str = "/usr/lib/tilo/untrusted-parsers.conf";
 
 /// Fallback when [`POLICY_PATH`] is absent — the packages in this tree
@@ -35,10 +35,11 @@ pub const POLICY_PATH: &str = "/usr/lib/tilo/untrusted-parsers.conf";
 /// browser (a whole web engine, the only package allowed to generate
 /// code), tube/music (container demux and audio/video decode operating
 /// on bytes from the network).
-pub const BUILTIN_HIGH_RISK: &[&str] = &["dev.tilo.browser", "dev.tilo.tube", "dev.tilo.music"];
+pub const BUILTIN_HIGH_RISK: &[&str] = &["so.tilo.browser", "so.tilo.tube", "so.tilo.music"];
 
 /// Environment variable that overrides [`POLICY_PATH`] — for tests to
-/// point at a fixture; production reads the image's file.
+/// point at a fixture; production reads the image's file. Honoured only by
+/// developer builds (see [`crate::dev_env`]).
 pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
 
 /// Image-owned Scudo copy. Tilo retains this DSO without shipping the complete
@@ -146,8 +147,8 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
 
 /// Decide the hardening for a package, reading the image's policy list.
 pub fn for_package(package_id: &str) -> RuntimeHardening {
-    let policy_path =
-        std::env::var_os(POLICY_PATH_ENV).map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
+    let policy_path = crate::dev_env::dev_override(POLICY_PATH_ENV)
+        .map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
     let high_risk = match std::fs::read_to_string(&policy_path) {
         Ok(list) => policy_matches(&list, package_id),
         // No policy file: fall back to the compiled-in set rather than to
@@ -169,52 +170,49 @@ mod tests {
 
     #[test]
     fn an_exact_id_matches_only_itself() {
-        let list = "dev.tilo.browser\n";
-        assert!(policy_matches(list, "dev.tilo.browser"));
-        assert!(!policy_matches(list, "dev.tilo.browserish"));
-        assert!(!policy_matches(list, "dev.tilo.calculator"));
+        let list = "so.tilo.browser\n";
+        assert!(policy_matches(list, "so.tilo.browser"));
+        assert!(!policy_matches(list, "so.tilo.browserish"));
+        assert!(!policy_matches(list, "so.tilo.calculator"));
     }
 
     #[test]
     fn comments_and_blank_lines_are_not_entries() {
-        let list = "\n# dev.tilo.calculator\n   \ndev.tilo.tube  # decodes video\n";
-        assert!(policy_matches(list, "dev.tilo.tube"));
+        let list = "\n# so.tilo.calculator\n   \nso.tilo.tube  # decodes video\n";
+        assert!(policy_matches(list, "so.tilo.tube"));
         assert!(
-            !policy_matches(list, "dev.tilo.calculator"),
+            !policy_matches(list, "so.tilo.calculator"),
             "a commented-out id must not match"
         );
     }
 
     #[test]
     fn a_trailing_star_matches_a_family() {
-        let list = "dev.tilo.media.*\n";
-        assert!(policy_matches(list, "dev.tilo.media.player"));
-        assert!(!policy_matches(list, "dev.tilo.notes"));
+        let list = "so.tilo.media.*\n";
+        assert!(policy_matches(list, "so.tilo.media.player"));
+        assert!(!policy_matches(list, "so.tilo.notes"));
     }
 
     #[test]
     fn an_empty_policy_hardens_nothing() {
-        assert!(!policy_matches("", "dev.tilo.browser"));
+        assert!(!policy_matches("", "so.tilo.browser"));
         assert!(!policy_matches(
             "# everything commented\n",
-            "dev.tilo.browser"
+            "so.tilo.browser"
         ));
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_policy_file_replaces_the_builtin_list() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("untrusted-parsers.conf");
-        std::fs::write(&file, "dev.tilo.notes\n").unwrap();
-        // SAFETY: single-threaded test body; the var is removed before return.
-        unsafe { std::env::set_var(POLICY_PATH_ENV, &file) };
+        std::fs::write(&file, "so.tilo.notes\n").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(POLICY_PATH_ENV, &file);
 
-        let notes = for_package("dev.tilo.notes");
-        let browser = for_package("dev.tilo.browser");
-
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(POLICY_PATH_ENV) };
+        let notes = for_package("so.tilo.notes");
+        let browser = for_package("so.tilo.browser");
+        drop(env);
 
         assert!(
             notes.shadow_stack,
@@ -228,18 +226,15 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn with_no_policy_file_the_builtin_set_still_applies() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does-not-exist.conf");
-        // SAFETY: single-threaded test body; the var is removed before return.
-        unsafe { std::env::set_var(POLICY_PATH_ENV, &missing) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(POLICY_PATH_ENV, &missing);
 
-        let browser = for_package("dev.tilo.browser");
-        let calculator = for_package("dev.tilo.calculator");
-
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(POLICY_PATH_ENV) };
+        let browser = for_package("so.tilo.browser");
+        let calculator = for_package("so.tilo.calculator");
+        drop(env);
 
         assert!(browser.shadow_stack, "fallback list lost the browser");
         assert!(!calculator.is_active(), "a plain app must stay unhardened");

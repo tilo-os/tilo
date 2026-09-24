@@ -19,7 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 # ashpd uses the tokio backend to match the rest of the Tilo runtime stack;
 # default features are disabled to drop async-std.
-ashpd.workspace = true
+ashpd = { workspace = true, features = ["file_chooser", "notification", "open_uri", "screencast", "secret"] }
 # tokio powers the sync wrapper; apps with an existing runtime should use the
 # `*_async` variants.
 tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
@@ -29,6 +29,7 @@ url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

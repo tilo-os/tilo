@@ -1,17 +1,20 @@
 //! Launcher-side Landlock helpers.
 //!
-//! Landlock is layered on top of bwrap + seccomp, the same as the
-//! compositor's per-workspace sandbox. The launcher's job: derive an FS
-//! plan from the manifest (read-only paths get the read access set,
-//! read-write paths get the full access set), then install the ruleset
-//! on the *child* process after bwrap has set up the mount namespace
-//! but before the entrypoint takes over — bwrap itself needs broad FS
-//! access to `mount/bind/pivot_root`, so it can't be Landlocked.
+//! Landlock is layered on top of bwrap + seccomp. The launcher's job:
+//! derive an FS plan (read-only paths get the read access set, read-write
+//! paths get the full access set), then install the ruleset on the *child*
+//! process after bwrap has set up the mount namespace but before the
+//! entrypoint takes over — bwrap itself needs broad FS access to
+//! `mount/bind/pivot_root`, so it can't be Landlocked.
+//!
+//! Ruleset construction itself lives in `sandbox_core::landlock`, shared
+//! with every other confinement path; this module is the launcher's
+//! vocabulary over it.
 //!
 //! Production launches use the in-namespace `__sandbox-exec` path in
 //! [`crate::landlock_shim`]: bwrap creates the mount namespace, execs the
 //! launcher at its private read-only bind, and that shim installs Landlock
-//! before replacing itself with the application. [`apply_plan`] remains the
+//! before replacing itself with the application. [`apply_plan_or_log`] remains the
 //! small in-process primitive used by focused probes and tests.
 //!
 //! Landlock policies are path-based and evaluated against the kernel inode.
@@ -19,93 +22,12 @@
 //! name the sandbox-side mounts the application will actually see, rather than
 //! similarly spelled host paths.
 
-use std::os::fd::{AsFd, AsRawFd};
 use std::path::PathBuf;
 
-use landlock::{
-    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd,
-    RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetError, RulesetStatus,
+pub use sandbox_core::landlock::{
+    FS_ABI, FsRule, LandlockBuildError, LandlockOutcome, NetRestriction, RulesetSpec, TARGET_ABI,
+    access_for_fd, outcome_from_status,
 };
-
-/// Tilo requires ABI 5 so device-node ioctls are policy-controlled. ABI 6 scope
-/// enforcement remains blocked on kernels that cannot attest the relevant
-/// Landlock errata; accepting a `PartiallyEnforced` result would be ambiguous.
-pub const TARGET_ABI: ABI = ABI::V5;
-pub const FS_ABI: ABI = TARGET_ABI;
-
-/// FS plan element. Pure type so `plan_from_manifest` is unit-testable.
-#[derive(Debug, Clone)]
-pub struct FsRule {
-    pub path: PathBuf,
-    pub access: BitFlags<AccessFs>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum LandlockBuildError {
-    #[error(transparent)]
-    Ruleset(#[from] RulesetError),
-    #[error("could not inspect an opened policy object: {0}")]
-    Inspect(#[from] std::io::Error),
-}
-
-/// Remove directory-only rights when a rule names one concrete file. The
-/// Landlock crate's best-effort mode otherwise drops these bits and reports a
-/// partial policy; hard-requirement mode correctly refuses the mismatch. Use
-/// `fstat` on the opened object so a path replacement cannot change the answer.
-///
-/// # Errors
-///
-/// Returns the operating-system error when the already-open policy object
-/// cannot be inspected with `fstat`.
-pub fn access_for_fd(
-    fd: &PathFd,
-    requested: BitFlags<AccessFs>,
-) -> std::io::Result<BitFlags<AccessFs>> {
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: `stat` points to writable storage of the exact libc type and fd
-    // remains live for the syscall.
-    let rc = unsafe { libc::fstat(fd.as_fd().as_raw_fd(), stat.as_mut_ptr()) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: successful fstat initialized the structure.
-    let stat = unsafe { stat.assume_init() };
-    if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
-        Ok(requested)
-    } else {
-        Ok(requested & AccessFs::from_file(FS_ABI))
-    }
-}
-
-/// Outcome enum mirroring the shim's, used for logging.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LandlockOutcome {
-    FullyEnforced,
-    PartiallyEnforced,
-    NotEnforced,
-    Errored,
-}
-
-impl LandlockOutcome {
-    pub fn describe(self) -> &'static str {
-        match self {
-            LandlockOutcome::FullyEnforced => "landlock: fully enforced",
-            LandlockOutcome::PartiallyEnforced => {
-                "landlock: partially enforced (kernel ABI dropped some rights)"
-            }
-            LandlockOutcome::NotEnforced => "landlock: NOT enforced (kernel lacks Landlock)",
-            LandlockOutcome::Errored => "landlock: ruleset construction failed",
-        }
-    }
-}
-
-pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
-    match status {
-        RulesetStatus::FullyEnforced => LandlockOutcome::FullyEnforced,
-        RulesetStatus::PartiallyEnforced => LandlockOutcome::PartiallyEnforced,
-        RulesetStatus::NotEnforced => LandlockOutcome::NotEnforced,
-    }
-}
 
 /// Produce the FS access plan for a read list and a write list.
 ///
@@ -113,70 +35,37 @@ pub(crate) fn outcome_from_status(status: &RulesetStatus) -> LandlockOutcome {
 /// profile ([`crate::profile`]) and the app's own directory
 /// ([`crate::appdir`]). Paths are absolute and literal.
 pub fn plan_from_paths(ro: &[PathBuf], rw: &[PathBuf]) -> Vec<FsRule> {
-    let abi = FS_ABI;
-    let read = AccessFs::from_read(abi);
-    let all = AccessFs::from_all(abi);
-    let mut plan = Vec::with_capacity(ro.len().saturating_add(rw.len()));
-    for p in ro {
-        plan.push(FsRule {
-            path: p.clone(),
-            access: read,
-        });
-    }
-    for p in rw {
-        plan.push(FsRule {
-            path: p.clone(),
-            access: all,
-        });
-    }
-    plan
+    sandbox_core::landlock::access_plan(ro, rw, FS_ABI)
 }
 
-/// Build a ruleset and restrict the calling process to it.
+/// Build a ruleset from `plan`, restrict the calling process to it, and
+/// report the kernel's actual enforcement status.
 ///
 /// `net_restricted` mirrors `sandbox.net.mode == "off"` (deny TCP
-/// bind/connect when set, no-op on ABI < 4).
+/// bind/connect when set).
 ///
 /// **Caveat re: bwrap.** This irreversibly restricts the *current*
-/// process and every descendant. Called from the launcher's parent
-/// before exec, so policy paths must exist on the host root — see
-/// `apply_plan_or_log` for the safe wrapper.
-fn build_and_restrict(
-    plan: &[FsRule],
-    net_restricted: bool,
-) -> Result<RestrictionStatus, LandlockBuildError> {
-    let mut ruleset = Ruleset::default()
-        .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(AccessFs::from_all(FS_ABI))?;
-    if net_restricted {
-        ruleset = ruleset.handle_access(AccessNet::from_all(ABI::V4))?;
-    }
-    let mut created = ruleset.create()?;
-    for rule in plan {
-        match PathFd::new(&rule.path) {
-            Ok(fd) => {
-                let access = access_for_fd(&fd, rule.access)?;
-                created = created.add_rule(PathBeneath::new(fd, access))?;
-            }
-            Err(e) => {
-                tracing::debug!(
-                    "landlock: skipping rule for {} (cannot open: {e})",
-                    rule.path.display()
-                );
-            }
-        }
-    }
-    Ok(created.restrict_self()?)
-}
-
-/// Apply a plan and report the kernel's actual enforcement status.
+/// process and every descendant, so policy paths must exist in the
+/// calling process's mount namespace.
 ///
 /// The in-sandbox shim treats anything short of `FullyEnforced` as a launch
 /// refusal.  Keeping the status as data here makes that fail-closed decision
 /// independently testable and prevents logging from being confused with
 /// enforcement.
 pub fn apply_plan_or_log(plan: &[FsRule], net_restricted: bool) -> LandlockOutcome {
-    match build_and_restrict(plan, net_restricted) {
+    let net = if net_restricted {
+        NetRestriction::DenyAll
+    } else {
+        NetRestriction::Unrestricted
+    };
+    let spec = RulesetSpec::application(plan.to_vec(), net);
+    let restricted = sandbox_core::landlock::restrict_self(&spec, |path, e| {
+        tracing::debug!(
+            "landlock: skipping rule for {} (cannot open: {e})",
+            path.display()
+        );
+    });
+    match restricted {
         Ok(status) => {
             let outcome = outcome_from_status(&status.ruleset);
             tracing::info!(
@@ -196,7 +85,7 @@ pub fn apply_plan_or_log(plan: &[FsRule], net_restricted: bool) -> LandlockOutco
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use landlock::{ABI, Access, AccessFs, AccessNet, CompatLevel, PathFd};
 
     #[test]
     fn plan_maps_ro_to_read_only_access() {
@@ -222,6 +111,58 @@ mod tests {
             "rw is superset of ro"
         );
         assert_eq!(read_write_access, AccessFs::from_all(abi));
+    }
+
+    /// The access sets that make up every launcher ruleset, as raw bits.
+    /// A dependency bump or refactor that changes which rights are handled
+    /// or granted is a policy change and must fail here rather than pass
+    /// through a comparison of two expressions that moved together.
+    // Bits (landlock ABI order): Execute 1, WriteFile 2, ReadFile 4,
+    // ReadDir 8, RemoveDir 16, RemoveFile 32, MakeChar 64, MakeDir 128,
+    // MakeReg 256, MakeSock 512, MakeFifo 1024, MakeBlock 2048,
+    // MakeSym 4096, Refer 8192, Truncate 16384, IoctlDev 32768;
+    // BindTcp 1, ConnectTcp 2.
+    #[test]
+    fn pinned_ruleset_access_sets() {
+        assert_eq!(AccessFs::from_all(FS_ABI).bits(), 0xffff, "handled FS");
+        assert_eq!(AccessNet::from_all(ABI::V4).bits(), 0b11, "handled net");
+        assert_eq!(AccessFs::from_file(FS_ABI).bits(), 0xc007, "file rights");
+
+        let plan = plan_from_paths(
+            &[PathBuf::from("/usr"), PathBuf::from("/etc")],
+            &[PathBuf::from("/app")],
+        );
+        let pinned: Vec<(PathBuf, u64)> = plan
+            .iter()
+            .map(|rule| (rule.path.clone(), rule.access.bits()))
+            .collect();
+        assert_eq!(
+            pinned,
+            vec![
+                (PathBuf::from("/usr"), 0b1101),
+                (PathBuf::from("/etc"), 0b1101),
+                (PathBuf::from("/app"), 0xffff),
+            ]
+        );
+    }
+
+    /// The ruleset [`apply_plan_or_log`] installs: the plan verbatim, every
+    /// ABI-5 filesystem right handled as a hard requirement, file rules
+    /// trimmed to file rights, and TCP handled only when restricted.
+    #[test]
+    fn pinned_in_process_ruleset() {
+        let plan = plan_from_paths(&[PathBuf::from("/usr")], &[PathBuf::from("/app")]);
+        let open = RulesetSpec::application(plan.clone(), NetRestriction::Unrestricted);
+        assert_eq!(open.compat, CompatLevel::HardRequirement);
+        assert_eq!(open.handled_fs.bits(), 0xffff);
+        assert!(open.handled_net.is_empty());
+        assert!(open.connect_ports.is_empty());
+        assert!(open.trim_file_rights);
+        assert_eq!(open.rules, plan);
+
+        let closed = RulesetSpec::application(plan, NetRestriction::DenyAll);
+        assert_eq!(closed.handled_net.bits(), 0b11);
+        assert!(closed.connect_ports.is_empty());
     }
 
     #[test]

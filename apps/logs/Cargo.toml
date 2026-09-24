@@ -33,5 +33,8 @@ winit.workspace = true
 taffy.workspace = true
 blake3.workspace = true
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [lints]
 workspace = true

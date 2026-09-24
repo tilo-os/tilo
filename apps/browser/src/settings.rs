@@ -4,7 +4,7 @@
 //! Two layers live here:
 //!
 //!  * [`Settings`] — a plain serde struct persisted as JSON under
-//!    `dirs::config_dir()/tilo-browser/settings.json`. It holds the
+//!    `xdg_paths::config_dir()/tilo-browser/settings.json`. It holds the
 //!    durable preferences (ad-blocking, clear-on-exit, search engine,
 //!    homepage) and knows how to [`Settings::load`] / [`Settings::save`]
 //!    itself.
@@ -152,10 +152,10 @@ impl Default for Settings {
 
 impl Settings {
     /// Absolute path of the on-disk settings file:
-    /// `dirs::config_dir()/tilo-browser/settings.json`. `None` when the
+    /// `xdg_paths::config_dir()/tilo-browser/settings.json`. `None` when the
     /// platform has no config directory.
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("tilo-browser").join("settings.json"))
+        crate::storage::config_dir().map(|d| d.join("settings.json"))
     }
 
     /// Load the settings from the standard config path. Any failure —
@@ -259,6 +259,7 @@ pub struct SettingsPane {
     /// action. It is deliberately not a CRDT value: other collaborators
     /// cannot diagnose this profile's disk permissions or free space.
     history_clear_error: Option<String>,
+    private_window_request: Option<ui::LocalState<bool>>,
 }
 
 impl SettingsPane {
@@ -275,6 +276,7 @@ impl SettingsPane {
             composed: None,
             actions: SettingsActionBindings::default(),
             history_clear_error: None,
+            private_window_request: None,
         }
     }
 
@@ -297,6 +299,14 @@ impl SettingsPane {
     #[must_use]
     pub fn with_history_clear_error(mut self, error: Option<String>) -> Self {
         self.history_clear_error = error;
+        self
+    }
+
+    /// Keep New Private Window discoverable when compact chrome moves the
+    /// dedicated toolbar button into Settings.
+    #[must_use]
+    pub fn with_private_window_request(mut self, request: ui::LocalState<bool>) -> Self {
+        self.private_window_request = Some(request);
         self
     }
 
@@ -377,13 +387,28 @@ impl SettingsPane {
         }
         let privacy = card("Privacy & Security", rows(privacy_rows));
 
-        let body = Column::new()
+        let mut body = Column::new()
             .with_intrinsic_height()
             .push(Box::new(header))
             .push(vgap(20.0))
             .push(general)
             .push(vgap(CARD_GAP))
             .push(privacy);
+        if let Some(request) = self.private_window_request.clone() {
+            body = body.push(vgap(CARD_GAP)).push(card(
+                "Windows",
+                rows(vec![setting_row_described(
+                    "Private browsing",
+                    "Open a separate private window with memory-only browsing state.",
+                    Box::new(
+                        Button::new("settings.new_private_window", "New Private Window", None)
+                            .with_size(180.0, 36.0)
+                            .on_effect(move || request.set(true)),
+                    ),
+                    large_text,
+                )]),
+            ));
+        }
 
         // Inset from the window edges (a Container's default padding) and
         // scroll if the window is short.

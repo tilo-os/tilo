@@ -583,7 +583,7 @@ impl DeviceContinuationSnapshot {
         let mut redacted_foreign_tabs: u32 = 0;
         let mut workspaces = Vec::new();
 
-        for workspace in &tree.workspaces {
+        for workspace in &tree.desktop.workspaces {
             // A local id is not usable on another device. Until a workspace
             // has its durable room id, keeping it local is the safe outcome.
             if workspace.room.is_nil() {
@@ -606,6 +606,7 @@ impl DeviceContinuationSnapshot {
                             .get(&tab.id)
                             .cloned()
                             .or_else(|| match &tab.tile {
+                                TileContent::WorkspaceActivity => None,
                                 TileContent::AppPlaceholder { kind, .. }
                                 | TileContent::Stub { kind, .. } => {
                                     LaunchIntent::app(kind.app_id()).ok()
@@ -1082,11 +1083,11 @@ fn focus_from_tree(
     tree: &WorkspaceTree,
     workspaces: &[WorkspaceContinuation],
 ) -> Option<DeviceFocus> {
-    let workspace = tree.active_workspace()?;
+    let workspace = tree.desktop.active_workspace()?;
     let room = workspace.room;
     let captured = workspaces.iter().find(|entry| entry.room == room)?;
-    let strip_id = tree.active_strip.get(&workspace.id)?;
-    let group_id = tree.active_group.get(strip_id)?;
+    let strip_id = tree.desktop.active_strip.get(&workspace.id)?;
+    let group_id = tree.desktop.active_group.get(strip_id)?;
     let group = workspace
         .strips
         .iter()
@@ -1166,12 +1167,12 @@ mod tests {
                 group: 0,
                 tab: 0,
             },
-            LaunchIntent::app("dev.tilo.browser").unwrap(),
+            LaunchIntent::app("so.tilo.browser").unwrap(),
             Some(
                 ResumeMetadata::new(
                     1,
                     ResumeSensitivity::Syncable,
-                    br#"{"url":"https://tilo.test/page/4"}"#.to_vec(),
+                    br#"{"url":"https://example.test/page/4"}"#.to_vec(),
                 )
                 .unwrap(),
             ),
@@ -1372,10 +1373,13 @@ mod tests {
         let mut active_group = HashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![workspace],
-            active: workspace_id,
-            active_strip,
-            active_group,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![workspace],
+                active: workspace_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         };
 
@@ -1437,8 +1441,11 @@ mod tests {
             LaunchIntent::file_reference("record:remote-file", Some([7; 32]), None).unwrap(),
         );
         let tree = WorkspaceTree {
-            workspaces: vec![workspace],
-            active: workspace_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![workspace],
+                active: workspace_id,
+                ..Default::default()
+            },
             continuation_tabs,
             continuation_file_references,
             ..WorkspaceTree::default()
@@ -1503,7 +1510,10 @@ mod tests {
         let mut apps = Vec::new();
         for id in 0..100 {
             let mut app = safe_app(id, &device, 1);
-            let url = format!("https://tilo.test/?q={}", "x".repeat(MAX_RESUME_BYTES - 64));
+            let url = format!(
+                "https://example.test/?q={}",
+                "x".repeat(MAX_RESUME_BYTES - 64)
+            );
             app.resume = Some(
                 ResumeMetadata::new(
                     1,
@@ -1538,7 +1548,10 @@ mod tests {
         let mut apps = Vec::new();
         for id in 0..90 {
             let mut app = safe_app(id, &device, 1);
-            let url = format!("https://tilo.test/?q={}", "x".repeat(MAX_RESUME_BYTES - 64));
+            let url = format!(
+                "https://example.test/?q={}",
+                "x".repeat(MAX_RESUME_BYTES - 64)
+            );
             app.resume = Some(
                 ResumeMetadata::new(
                     1,

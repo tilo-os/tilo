@@ -16,7 +16,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -24,14 +23,62 @@ use ui::widget::{SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
 use crate::model::{DiffModel, RowKind};
+use ui::paint::with_alpha;
 
+/// Minimum row pitch; the measured line height of `FONT_SIZE` wins when the
+/// text scale makes it taller (see [`Metrics`]).
 const ROW_H: f64 = 20.0;
+/// Minimum line-number gutter; grows with the measured digit width.
 const GUTTER_W: f64 = 52.0;
 const MINIMAP_W: f64 = 14.0;
+/// Minimum column header band.
 const HEADER_H: f64 = 34.0;
 const FONT_SIZE: f32 = 13.0;
+const HEADER_FONT_SIZE: f32 = 13.0;
+const GUTTER_FONT_SIZE: f32 = 12.0;
 const PAD_X: f64 = 8.0;
 const COMPACT_BREAKPOINT: f64 = 640.0;
+
+/// Row metrics measured from the renderer the panel paints with. Refreshed at
+/// the top of every draw and read by scrolling, block rects (accessibility
+/// bounds), the compact source switcher and the paint, so all of them follow
+/// the same line height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    row_h: f64,
+    header_h: f64,
+    /// Top offset that centres a `FONT_SIZE` line inside `row_h`.
+    text_dy: f64,
+    gutter_w: f64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            row_h: ROW_H,
+            header_h: HEADER_H,
+            text_dy: 2.0,
+            gutter_w: GUTTER_W,
+        }
+    }
+}
+
+impl Metrics {
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let line_h = f64::from(tr.measure("Ag", FONT_SIZE, None).1);
+        let row_h = (line_h + 3.0).max(ROW_H);
+        let header_label_h = f64::from(tr.measure("Ag", HEADER_FONT_SIZE, None).1);
+        let header_h = (header_label_h + 16.0).max(HEADER_H);
+        let gutter_w =
+            (f64::from(tr.measure("0000", GUTTER_FONT_SIZE, None).0) + 16.0).max(GUTTER_W);
+        Self {
+            row_h,
+            header_h,
+            text_dy: (row_h - line_h) / 2.0,
+            gutter_w,
+        }
+    }
+}
 
 /// Build a single-leaf taffy node. `new_leaf` only fails when the tree itself
 /// is corrupted, which cannot happen for a tree we just built in this same
@@ -58,6 +105,8 @@ pub struct DiffView {
     compact_show_right: bool,
     compact_source_hits: [Rect; 2],
     cursor: Point,
+    /// Last measured row metrics (see [`Metrics`]); defaults until the first draw.
+    metrics: Metrics,
 }
 
 impl Default for DiffView {
@@ -80,7 +129,28 @@ impl DiffView {
             compact_show_right: false,
             compact_source_hits: [Rect::ZERO; 2],
             cursor: Point::ZERO,
+            metrics: Metrics::default(),
         }
+    }
+
+    /// Place the panel at `rect` directly (the parent app owns the toolbar
+    /// band above it and re-places the view when that band's measured height
+    /// changes, so paint and layout agree within one frame).
+    pub(crate) fn place(&mut self, rect: Rect) {
+        if rect != self.rect {
+            self.rect = rect;
+            self.scroll_y = self.scroll_y.min(self.max_scroll());
+        }
+    }
+
+    /// `(row_h, header_h, gutter_w)` from the last draw.
+    #[cfg(test)]
+    pub(crate) fn metrics_for_test(&self) -> (f64, f64, f64) {
+        (
+            self.metrics.row_h,
+            self.metrics.header_h,
+            self.metrics.gutter_w,
+        )
     }
 
     pub fn set_inputs(&mut self, left_label: &str, left: &str, right_label: &str, right: &str) {
@@ -163,19 +233,20 @@ impl DiffView {
         let Some(b) = self.model.blocks.get(block) else {
             return;
         };
-        let block_top = b.first_row as f64 * ROW_H;
+        let row_h = self.metrics.row_h;
+        let block_top = b.first_row as f64 * row_h;
         let viewport_h = self.body_height();
         // Centre the block in the viewport where possible.
-        let target = block_top - viewport_h / 2.0 + ROW_H;
+        let target = block_top - viewport_h / 2.0 + row_h;
         self.scroll_y = target.max(0.0).min(self.max_scroll());
     }
 
     fn body_height(&self) -> f64 {
-        (self.rect.height() - HEADER_H).max(0.0)
+        (self.rect.height() - self.metrics.header_h).max(0.0)
     }
 
     fn content_height(&self) -> f64 {
-        self.model.rows.len() as f64 * ROW_H
+        self.model.rows.len() as f64 * self.metrics.row_h
     }
 
     fn max_scroll(&self) -> f64 {
@@ -201,7 +272,7 @@ impl DiffView {
         let add = with_alpha(c.semantic.success, 38);
         let del = with_alpha(c.semantic.danger, 38);
         let modi = with_alpha(c.semantic.warning, 30);
-        let phantom = with_alpha(c.neutral[2], 90);
+        let phantom = with_alpha(c.lift(1.0), 90);
         match kind {
             RowKind::Equal => None,
             RowKind::Insert => {
@@ -257,12 +328,12 @@ impl Widget for DiffView {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
+        self.place(Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        ));
     }
 
     fn draw(
@@ -273,6 +344,13 @@ impl Widget for DiffView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // One metric snapshot per frame: rows, gutter, header and scroll clamp
+        // all follow the renderer's actual line height.
+        let measured = Metrics::measure(tr);
+        if measured != self.metrics {
+            self.metrics = measured;
+            self.scroll_y = self.scroll_y.min(self.max_scroll());
+        }
         let c = &theme.tokens.colors;
         let r = self.rect;
         // Panel background.
@@ -288,8 +366,25 @@ impl Widget for DiffView {
         let right_col = Rect::new(mid_x, r.y0, r.x1 - MINIMAP_W, r.y1);
 
         // --- Column headers ---
-        draw_header(scene, transform, tr, theme, left_col, &self.left_label);
-        draw_header(scene, transform, tr, theme, right_col, &self.right_label);
+        let header_h = self.metrics.header_h;
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            left_col,
+            &self.left_label,
+            header_h,
+        );
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            right_col,
+            &self.right_label,
+            header_h,
+        );
 
         // Divider between columns.
         scene.stroke(
@@ -301,7 +396,7 @@ impl Widget for DiffView {
         );
 
         // --- Body (clipped + scrolled) ---
-        let body_top = r.y0 + HEADER_H;
+        let body_top = r.y0 + header_h;
         let body_clip = Rect::new(r.x0, body_top, r.x1 - MINIMAP_W, r.y1);
         scene.push_layer(
             Fill::NonZero,
@@ -483,12 +578,13 @@ impl DiffView {
     }
 
     fn block_rect(&self, block: &crate::model::ChangeBlock) -> Rect {
-        let top = self.rect.y0 + HEADER_H + block.first_row as f64 * ROW_H - self.scroll_y;
-        let bottom = self.rect.y0 + HEADER_H + block.last_row.saturating_add(1) as f64 * ROW_H
+        let m = self.metrics;
+        let top = self.rect.y0 + m.header_h + block.first_row as f64 * m.row_h - self.scroll_y;
+        let bottom = self.rect.y0 + m.header_h + block.last_row.saturating_add(1) as f64 * m.row_h
             - self.scroll_y;
         Rect::new(
             self.rect.x0,
-            top.max(self.rect.y0 + HEADER_H),
+            top.max(self.rect.y0 + m.header_h),
             self.rect.x1,
             bottom.min(self.rect.y1).max(top),
         )
@@ -507,15 +603,16 @@ impl DiffView {
     ) {
         let c = &theme.tokens.colors;
         let r = self.rect;
+        let m = self.metrics;
         let content_right = r.x1 - MINIMAP_W;
         let mid = r.x0.midpoint(content_right);
         self.compact_source_hits = [
-            Rect::new(r.x0 + 6.0, r.y0 + 4.0, mid - 3.0, r.y0 + HEADER_H - 4.0),
+            Rect::new(r.x0 + 6.0, r.y0 + 4.0, mid - 3.0, r.y0 + m.header_h - 4.0),
             Rect::new(
                 mid + 3.0,
                 r.y0 + 4.0,
                 content_right - 6.0,
-                r.y0 + HEADER_H - 4.0,
+                r.y0 + m.header_h - 4.0,
             ),
         ];
         let labels = ["Left", "Right"];
@@ -536,7 +633,7 @@ impl DiffView {
                     .position(|rect| rect.contains(self.cursor)),
             ),
         );
-        let body_top = r.y0 + HEADER_H;
+        let body_top = r.y0 + m.header_h;
         let clip = Rect::new(r.x0, body_top, content_right, r.y1);
         scene.push_layer(
             Fill::NonZero,
@@ -545,20 +642,20 @@ impl DiffView {
             transform,
             &clip,
         );
-        let first = (self.scroll_y / ROW_H).floor() as usize;
+        let first = (self.scroll_y / m.row_h).floor() as usize;
         let last =
-            (first + (self.body_height() / ROW_H).ceil() as usize + 2).min(self.model.rows.len());
+            (first + (self.body_height() / m.row_h).ceil() as usize + 2).min(self.model.rows.len());
         for index in first..last {
             let Some(row) = self.model.rows.get(index) else {
                 continue;
             };
-            let y = body_top + index as f64 * ROW_H - self.scroll_y;
+            let y = body_top + index as f64 * m.row_h - self.scroll_y;
             let (present, number, text, left) = if self.compact_show_right {
                 (row.right.is_some(), row.right_no, row.right.as_ref(), false)
             } else {
                 (row.left.is_some(), row.left_no, row.left.as_ref(), true)
             };
-            let rect = Rect::new(r.x0, y, content_right, y + ROW_H);
+            let rect = Rect::new(r.x0, y, content_right, y + m.row_h);
             if let Some(tint) = Self::row_tint(row.kind, present, left, theme) {
                 scene.fill(Fill::NonZero, transform, tint, None, &rect);
             }
@@ -568,18 +665,18 @@ impl DiffView {
                     transform,
                     c.accent[5],
                     None,
-                    &Rect::new(r.x0, y, r.x0 + 3.0, y + ROW_H),
+                    &Rect::new(r.x0, y, r.x0 + 3.0, y + m.row_h),
                 );
             }
-            draw_gutter_number(scene, transform, tr, theme, r.x0, y, number);
+            draw_gutter_number(scene, transform, tr, theme, r.x0, y, number, m);
             if let Some(text) = text {
                 draw_code_line(
                     scene,
                     transform,
                     tr,
                     theme,
-                    r.x0 + GUTTER_W + PAD_X,
-                    y,
+                    r.x0 + m.gutter_w + PAD_X,
+                    y + m.text_dy,
                     text,
                 );
             }
@@ -603,20 +700,21 @@ impl DiffView {
     ) {
         let c = &theme.tokens.colors;
         let r = self.rect;
+        let m = self.metrics;
         let (left_col, right_col) = self.column_rects();
-        let body_top = r.y0 + HEADER_H;
+        let body_top = r.y0 + m.header_h;
 
-        let first_row = (self.scroll_y / ROW_H).floor() as usize;
-        let visible_rows = (self.body_height() / ROW_H).ceil() as usize + 2;
+        let first_row = (self.scroll_y / m.row_h).floor() as usize;
+        let visible_rows = (self.body_height() / m.row_h).ceil() as usize + 2;
         let last_row = (first_row + visible_rows).min(self.model.rows.len());
 
         for ri in first_row..last_row {
             let Some(row) = self.model.rows.get(ri) else {
                 continue;
             };
-            let y = body_top + ri as f64 * ROW_H - self.scroll_y;
-            let row_rect_l = Rect::new(left_col.x0, y, left_col.x1, y + ROW_H);
-            let row_rect_r = Rect::new(right_col.x0, y, right_col.x1, y + ROW_H);
+            let y = body_top + ri as f64 * m.row_h - self.scroll_y;
+            let row_rect_l = Rect::new(left_col.x0, y, left_col.x1, y + m.row_h);
+            let row_rect_r = Rect::new(right_col.x0, y, right_col.x1, y + m.row_h);
 
             // Left side tint.
             if let Some(tint) = Self::row_tint(row.kind, row.left.is_some(), true, theme) {
@@ -629,13 +727,22 @@ impl DiffView {
 
             // Active block highlight ring (left edge accent bar).
             if row.block.is_some() && row.block == self.active_block {
-                let bar = Rect::new(r.x0, y, r.x0 + 3.0, y + ROW_H);
+                let bar = Rect::new(r.x0, y, r.x0 + 3.0, y + m.row_h);
                 scene.fill(Fill::NonZero, transform, c.accent[5], None, &bar);
             }
 
             // Gutter numbers.
-            draw_gutter_number(scene, transform, tr, theme, left_col.x0, y, row.left_no);
-            draw_gutter_number(scene, transform, tr, theme, right_col.x0, y, row.right_no);
+            draw_gutter_number(scene, transform, tr, theme, left_col.x0, y, row.left_no, m);
+            draw_gutter_number(
+                scene,
+                transform,
+                tr,
+                theme,
+                right_col.x0,
+                y,
+                row.right_no,
+                m,
+            );
 
             // Change glyph in the left gutter margin between number and text.
             let glyph = match row.kind {
@@ -650,7 +757,7 @@ impl DiffView {
                     g,
                     FONT_SIZE,
                     gc,
-                    transform * Affine::translate((right_col.x0 + 4.0, y + 2.0)),
+                    transform * Affine::translate((right_col.x0 + 4.0, y + m.text_dy)),
                     None,
                 );
             }
@@ -662,8 +769,8 @@ impl DiffView {
                     transform,
                     tr,
                     theme,
-                    left_col.x0 + GUTTER_W + PAD_X,
-                    y,
+                    left_col.x0 + m.gutter_w + PAD_X,
+                    y + m.text_dy,
                     text,
                 );
             }
@@ -673,8 +780,8 @@ impl DiffView {
                     transform,
                     tr,
                     theme,
-                    right_col.x0 + GUTTER_W + PAD_X,
-                    y,
+                    right_col.x0 + m.gutter_w + PAD_X,
+                    y + m.text_dy,
                     text,
                 );
             }
@@ -741,13 +848,13 @@ impl DiffView {
         let c = &theme.tokens.colors;
         let r = self.rect;
         let map_x0 = r.x1 - MINIMAP_W;
-        let map_top = r.y0 + HEADER_H;
+        let map_top = r.y0 + self.metrics.header_h;
         let map_h = (r.y1 - map_top).max(1.0);
         let track = Rect::new(map_x0, map_top, r.x1, r.y1);
         scene.fill(
             Fill::NonZero,
             transform,
-            with_alpha(c.neutral[1], 200),
+            with_alpha(c.surfaces.raised, 200),
             None,
             &track,
         );
@@ -778,6 +885,10 @@ impl DiffView {
 }
 
 /// Draw a column header bar with its label.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "column headers combine paint context with column bounds, label and measured header height"
+)]
 fn draw_header(
     scene: &mut Scene,
     transform: Affine,
@@ -785,32 +896,43 @@ fn draw_header(
     theme: &Theme,
     col: Rect,
     label: &str,
+    header_h: f64,
 ) {
     let c = &theme.tokens.colors;
-    let bar = Rect::new(col.x0, col.y0, col.x1, col.y0 + HEADER_H);
+    let bar = Rect::new(col.x0, col.y0, col.x1, col.y0 + header_h);
     scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &bar);
+    // The header band closes with its own derived edge against the body.
     scene.stroke(
         &Stroke::new(1.0),
         transform,
-        c.border_standard,
+        ui::surface::edge_on(c.surfaces.raised),
         None,
         &Line::new(
-            Point::new(col.x0, col.y0 + HEADER_H),
-            Point::new(col.x1, col.y0 + HEADER_H),
+            Point::new(col.x0, col.y0 + header_h),
+            Point::new(col.x1, col.y0 + header_h),
         ),
     );
     if !label.is_empty() {
+        let (_, lh) = tr.measure(label, HEADER_FONT_SIZE, None);
         tr.draw_text(
             scene,
             label,
-            13.0,
+            HEADER_FONT_SIZE,
             c.text_primary,
-            transform * Affine::translate((col.x0 + PAD_X + 4.0, col.y0 + 9.0)),
+            transform
+                * Affine::translate((
+                    col.x0 + PAD_X + 4.0,
+                    col.y0 + (header_h - f64::from(lh)) / 2.0,
+                )),
             Some((col.width() - 2.0 * PAD_X) as f32),
         );
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "gutter rows combine paint context and position with an optional line number and measured row/gutter dimensions"
+)]
 fn draw_gutter_number(
     scene: &mut Scene,
     transform: Affine,
@@ -819,27 +941,33 @@ fn draw_gutter_number(
     x0: f64,
     y: f64,
     no: Option<usize>,
+    m: Metrics,
 ) {
     let c = &theme.tokens.colors;
     // Gutter background.
-    let g = Rect::new(x0, y, x0 + GUTTER_W, y + ROW_H);
+    let g = Rect::new(x0, y, x0 + m.gutter_w, y + m.row_h);
     scene.fill(
         Fill::NonZero,
         transform,
-        with_alpha(c.neutral[1], 120),
+        with_alpha(c.surfaces.raised, 120),
         None,
         &g,
     );
     if let Some(n) = no {
         let s = n.to_string();
-        // Right-align within the gutter.
-        let approx_w = s.len() as f64 * 7.0;
+        // Right-align on the measured width (a `len * 7` estimate drifted
+        // with digit widths and text scale) and centre on the row.
+        let (nw, nh) = tr.measure(&s, GUTTER_FONT_SIZE, None);
         tr.draw_text(
             scene,
             &s,
-            12.0,
+            GUTTER_FONT_SIZE,
             c.text_dim,
-            transform * Affine::translate((x0 + GUTTER_W - approx_w - 6.0, y + 3.0)),
+            transform
+                * Affine::translate((
+                    x0 + m.gutter_w - f64::from(nw) - 6.0,
+                    y + (m.row_h - f64::from(nh)) / 2.0,
+                )),
             None,
         );
     }
@@ -862,20 +990,16 @@ fn draw_code_line(
         }
         // Tabs/leading spaces are part of the segment text; cosmic-text
         // renders them and advances the cursor. We measure to advance x.
+        // `y` is already the glyph top: callers centre it on the row pitch.
         tr.draw_text(
             scene,
             &seg,
             FONT_SIZE,
             color,
-            transform * Affine::translate((x, y + 2.0)),
+            transform * Affine::translate((x, y)),
             None,
         );
         let (w, _) = tr.measure(&seg, FONT_SIZE, None);
         x += f64::from(w);
     }
-}
-
-/// Apply an explicit 8-bit alpha to a colour.
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }

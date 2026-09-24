@@ -3,8 +3,9 @@
 //! produces distinct pixel output — the regression guard for paint paths
 //! `window_group_test.rs` only reaches through state inspection.
 //!
-//! Skips gracefully (no panic) when no wgpu adapter is available, so
-//! headless CI without llvmpipe stays green.
+//! Fails when no wgpu adapter is available: a check that cannot observe its
+//! subject must fail, not skip (`CLAUDE.md`), or a headless CI without
+//! llvmpipe would report the paint paths green without ever drawing them.
 //!
 //! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
 //! by-eye inspection.
@@ -21,15 +22,16 @@
 
 use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::{AppKind, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
+use tilo_ui::widget::{
+    AppKind, TabDescriptor, TaffyTreeExt, TileContent, Widget, WindowGroup, WindowWidth,
+};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -83,13 +85,42 @@ fn make_window_group() -> WindowGroup {
               representable in f32"
 )]
 fn render_group(renderer: &mut OffscreenRenderer, group: &mut WindowGroup) -> Vec<u8> {
+    render_group_themed(renderer, group, &Theme::dark())
+}
+
+/// The same journey frame under an explicit theme, composited on that
+/// theme's own app background so a light-preset PNG shows the chips on the
+/// ground they really sit on.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "renderer.width/height are small fixed test-canvas dimensions, exactly \
+              representable in f32"
+)]
+fn render_group_themed(
+    renderer: &mut OffscreenRenderer,
+    group: &mut WindowGroup,
+    theme: &Theme,
+) -> Vec<u8> {
     let (w, h) = (renderer.width, renderer.height);
-    let theme = Theme::dark();
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let mut tr = TextRenderer::new();
 
-    let root = group.build_layout(&mut taffy, &theme, &mut node_map);
+    let node = group.build_layout(&mut taffy, theme, &mut node_map);
+    // A maximized group is `width: auto, flex_grow: 1e6`: it fills the strip
+    // it sits in. Give it one — a sized flex parent, as the strip is — or as
+    // a taffy root it collapses to 0 px, its Restore and × chips land off
+    // the canvas, and the "maximized" frame proves nothing about them.
+    let root = taffy.parent_node(
+        Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: Dimension::length(h as f32),
+            },
+            ..Style::default()
+        },
+        &[node],
+    );
     taffy
         .compute_layout_with_measure(
             root,
@@ -106,16 +137,15 @@ fn render_group(renderer: &mut OffscreenRenderer, group: &mut WindowGroup) -> Ve
             },
         )
         .expect("taffy compute_layout");
-    group.apply_layout(&taffy, root, Point::ORIGIN);
+    group.apply_layout(&taffy, node, Point::ORIGIN);
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    group.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    group.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
-    // Dark slate base so overpainted accents / chrome read as distinct
-    // from the desktop background.
-    let bg = Color::from_rgb8(0x0f, 0x17, 0x2a);
-    renderer.render(&scene, bg)
+    // The theme's own app background, so the card edge and the maximized
+    // chips are judged against the ground they really sit on.
+    renderer.render(&scene, theme.bg_app)
 }
 
 /// Cheap 64-bit FNV-1a over the full RGBA buffer — not a golden-image
@@ -136,13 +166,7 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     };
     let path = std::path::Path::new(&dir).join(format!("{name}.png"));
     std::fs::create_dir_all(&dir).ok();
-    let file = std::fs::File::create(&path).expect("create screenshot png");
-    let mut bw = std::io::BufWriter::new(file);
-    let mut enc = png::Encoder::new(&mut bw, w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().expect("png header");
-    writer.write_image_data(rgba).expect("png write");
+    tilo_ui::png::write_rgba8(&path, w, h, rgba).expect("write screenshot png");
     eprintln!("wrote {} to {}", name, path.display());
 }
 
@@ -152,10 +176,8 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
 #[test]
 fn window_group_visual_journey_distinguishes_all_states() {
     let (w, h) = (620u32, 200u32);
-    let Some(mut renderer) = try_new_renderer(w, h) else {
-        eprintln!("offscreen: no wgpu adapter available — skipping window-group journey");
-        return;
-    };
+    let mut renderer = try_new_renderer(w, h)
+        .expect("the window-group journey needs a wgpu adapter to observe its subject");
 
     let mut group = make_window_group();
     let fresh = render_group(&mut renderer, &mut group);
@@ -199,6 +221,58 @@ fn window_group_visual_journey_distinguishes_all_states() {
     assert_ne!(
         fresh_hash, post_close_hash,
         "removing a tab must change the rendered output (one fewer pill)",
+    );
+}
+
+/// The same journey on the **light** preset. The maximized chrome's chips
+/// are the one live consumer of `surface::chip_colors` / `surface::pill`,
+/// whose quiet edge is now derived from the chip fill; a light-theme frame
+/// is where a declared or literal-white edge used to vanish, so the four
+/// states must stay distinct there too. Writes `window_group_<state>_light.png`
+/// under `QUICK_UI_SCREENSHOT_DIR` for by-eye inspection beside the dark set.
+#[test]
+fn window_group_visual_journey_distinguishes_all_states_in_light() {
+    let (w, h) = (620u32, 200u32);
+    let mut renderer = try_new_renderer(w, h)
+        .expect("the light window-group journey needs a wgpu adapter to observe its subject");
+    let theme = Theme::light();
+
+    let mut group = make_window_group();
+    let fresh = render_group_themed(&mut renderer, &mut group, &theme);
+    let fresh_hash = pixel_hash(&fresh);
+    maybe_write_png(&fresh, w, h, "window_group_fresh_light");
+
+    group.search_active = true;
+    let search = render_group_themed(&mut renderer, &mut group, &theme);
+    let search_hash = pixel_hash(&search);
+    maybe_write_png(&search, w, h, "window_group_search_light");
+    assert_ne!(
+        fresh_hash, search_hash,
+        "light: search_active must change the rendered output",
+    );
+
+    group.maximized = true;
+    let maximized = render_group_themed(&mut renderer, &mut group, &theme);
+    let maximized_hash = pixel_hash(&maximized);
+    maybe_write_png(&maximized, w, h, "window_group_maximized_light");
+    assert_ne!(
+        fresh_hash, maximized_hash,
+        "light: maximized must change the rendered output (floating pills)",
+    );
+    assert_ne!(
+        search_hash, maximized_hash,
+        "light: maximized on top of search_active must paint additional chrome",
+    );
+
+    group.maximized = false;
+    group.search_active = false;
+    assert!(group.detach_tab(1).is_some(), "detach_tab(1) must succeed");
+    let post_close = render_group_themed(&mut renderer, &mut group, &theme);
+    let post_close_hash = pixel_hash(&post_close);
+    maybe_write_png(&post_close, w, h, "window_group_post_close_light");
+    assert_ne!(
+        fresh_hash, post_close_hash,
+        "light: removing a tab must change the rendered output",
     );
 }
 

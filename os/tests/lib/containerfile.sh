@@ -46,7 +46,43 @@ containerfile_copy_contract() {
         printf "%s\t%s\t%s\n", stage, $i, effective
       }
     }
-  '
+  ' | containerfile_expand_component_layers "$file"
+}
+
+# `COPY --from=component-files /image/<layer>/ /` installs one layer of
+# os/components.toml. Expand it into the manifest's own entries, as
+#   components.toml<TAB><component>:<from | @link:target><TAB><image path>
+# so contracts and has-copy checks see each file rather than an opaque tree.
+# The manifest sits next to the Containerfile. A manifest that cannot be read
+# yields a row no check can match, so dependent checks fail rather than pass.
+containerfile_expand_component_layers() {
+  local file="$1" os_dir stage source destination layer
+  os_dir="$(cd "$(dirname "$file")" && pwd)"
+  while IFS=$'\t' read -r stage source destination; do
+    if [ "$stage" = component-files ] && [ "$destination" = / ] \
+       && [[ "$source" =~ ^/image/([a-z0-9-]+)/$ ]]; then
+      layer="${BASH_REMATCH[1]}"
+      python3 "$os_dir/scripts/install-components.py" \
+          --manifest "$os_dir/components.toml" \
+          --dry-run --all --layer "$layer" --format contract \
+        || printf 'component-files\tunreadable-manifest:%s\t%s\n' "$layer" "$destination"
+    else
+      printf '%s\t%s\t%s\n' "$stage" "$source" "$destination"
+    fi
+  done
+}
+
+# True when the image installs build output OUTPUT (a name under the builder's
+# /out, or a manifest `from`) at DESTINATION, whether through a direct builder
+# COPY or through os/components.toml.
+containerfile_installs_output() {
+  local file="$1" output="$2" destination="$3"
+  containerfile_expanded_rootfs_copy_contract "$file" |
+    awk -F '\t' -v o="$output" -v d="$destination" '
+      $3 != d { next }
+      $1 == "builder" && $2 == "/out/" o { found=1 }
+      $1 == "components.toml" && substr($2, index($2, ":") + 1) == o { found=1 }
+      END { exit !found }'
 }
 
 # Expand the deliberately narrow whole-tree scratch overlays used by rootfs.

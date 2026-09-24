@@ -34,14 +34,41 @@ use crate::profile::Profile;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Request {
+    /// Update one installed app, or every installed app when absent.
+    AppUpdate {
+        package: Option<String>,
+    },
+    /// Stage the signed system image update.
+    SystemUpdate,
+    /// Update apps and stage the system image, matching `tilo update`.
+    AllUpdates,
+    /// Read-only app discovery operations.
+    AppList {
+        json: bool,
+    },
+    AppSearch {
+        query: String,
+    },
+    AppRepoList,
+    /// Read-only system status.
+    SystemStatus {
+        json: bool,
+    },
     /// `perm trust-dir <dir>` — read and write, for good.
-    TrustDir { path: PathBuf },
+    TrustDir {
+        path: PathBuf,
+    },
     /// `perm list` — the decisions in force.
     ListPerms,
     /// `perm revoke <id>`.
-    Revoke { id: String },
+    Revoke {
+        id: String,
+    },
     /// May this path be read / written? Answers `scan`.
-    Check { path: PathBuf, write: bool },
+    Check {
+        path: PathBuf,
+        write: bool,
+    },
     /// A package transaction happened in the guest. Recorded, and — when it was
     /// `--one-time` — remembered so the session can undo it on the way out.
     PkgRecorded {
@@ -53,7 +80,9 @@ pub enum Request {
     Freeze,
     /// `pkg diff` — what the layer changed relative to the base. Answered on
     /// the host: from inside the guest the two are one merged view.
-    LayerDiff { limit: usize },
+    LayerDiff {
+        limit: usize,
+    },
     /// `pkg burn` — destroy the layer's files, deferred to session end since an
     /// overlay `upperdir` can't be removed from under a live mount.
     Burn,
@@ -74,6 +103,11 @@ pub enum Response {
     },
     Denied {
         reason: String,
+    },
+    Command {
+        code: i32,
+        stdout: String,
+        stderr: String,
     },
     Perms {
         entries: Vec<PermEntry>,
@@ -152,6 +186,42 @@ impl BrokerState {
     /// it can be tested without a socket.
     pub fn handle(&mut self, req: Request) -> Response {
         match req {
+            Request::AppUpdate { package } => {
+                let mut args = vec!["update".to_string()];
+                if let Some(package) = package {
+                    args.push(package);
+                }
+                self.host_command("app-update", "app", &args)
+            }
+            Request::SystemUpdate => self.host_command(
+                "system-update",
+                "tilo",
+                &["system".into(), "update".into(), "--yes".into()],
+            ),
+            Request::AllUpdates => {
+                self.host_command("all-updates", "tilo", &["update".into(), "--yes".into()])
+            }
+            Request::AppList { json } => {
+                let args = if json {
+                    vec!["list".into(), "--json".into()]
+                } else {
+                    vec!["list".into()]
+                };
+                self.host_command("app-list", "app", &args)
+            }
+            Request::AppSearch { query } => {
+                self.host_command("app-search", "app", &["search".into(), query])
+            }
+            Request::AppRepoList => {
+                self.host_command("app-repo-list", "app", &["repo".into(), "list".into()])
+            }
+            Request::SystemStatus { json } => {
+                let mut args = vec!["system".into(), "status".into()];
+                if json {
+                    args.push("--json".into());
+                }
+                self.host_command("system-status", "tilo", &args)
+            }
             Request::TrustDir { path } => self.trust_dir(&path),
             Request::ListPerms => Response::Perms {
                 entries: self.perm_entries(),
@@ -192,6 +262,42 @@ impl BrokerState {
                 self.log("restart", None, true, None);
                 Response::Ok
             }
+        }
+    }
+
+    fn host_command(&self, operation: &str, program: &str, args: &[String]) -> Response {
+        const MAX_ARG_BYTES: usize = 4096;
+        const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+        if args.iter().map(String::len).sum::<usize>() > MAX_ARG_BYTES {
+            let reason = "management command arguments are too large".to_string();
+            self.log(operation, Some(program), false, Some(&reason));
+            return Response::Denied { reason };
+        }
+        let binary = self.base.join("usr/bin").join(program);
+        let output = match std::process::Command::new(&binary).args(args).output() {
+            Ok(output) => output,
+            Err(error) => {
+                let reason = format!("could not run {}: {error}", binary.display());
+                self.log(operation, Some(program), false, Some(&reason));
+                return Response::Denied { reason };
+            }
+        };
+        if output.stdout.len() > MAX_OUTPUT_BYTES || output.stderr.len() > MAX_OUTPUT_BYTES {
+            let reason = "management command produced too much output".to_string();
+            self.log(operation, Some(program), false, Some(&reason));
+            return Response::Denied { reason };
+        }
+        let code = output.status.code().unwrap_or(1);
+        self.log(
+            operation,
+            Some(program),
+            true,
+            Some(&format!("exit {code}")),
+        );
+        Response::Command {
+            code,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }
     }
 
@@ -562,6 +668,94 @@ mod tests {
             layer_kind: "persistent".into(),
             landlock: "not attempted".into(),
         }
+    }
+
+    #[test]
+    fn management_commands_run_on_the_host_base_and_preserve_status() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("base/usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tilo = bin.join("tilo");
+        std::fs::write(&tilo, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 7\n").unwrap();
+        std::fs::set_permissions(&tilo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app = bin.join("app");
+        std::fs::write(&app, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 6\n").unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let response = state(dir.path()).handle(Request::AppUpdate {
+            package: Some("browser".into()),
+        });
+        assert_eq!(
+            response,
+            Response::Command {
+                code: 6,
+                stdout: "update\nbrowser\n".into(),
+                stderr: String::new(),
+            }
+        );
+
+        let response = state(dir.path()).handle(Request::AllUpdates);
+        assert_eq!(
+            response,
+            Response::Command {
+                code: 7,
+                stdout: "update\n--yes\n".into(),
+                stderr: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn signed_host_update_round_trips_over_the_guest_broker_socket() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("base/usr/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tilo = bin.join("tilo");
+        std::fs::write(&tilo, "#!/bin/sh\nprintf 'host:%s\\n' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&tilo, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app = bin.join("app");
+        std::fs::write(&app, "#!/bin/sh\nprintf 'host:%s\\n' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = dir.path().join("broker.sock");
+        let broker = Broker::start(socket.clone(), state(dir.path())).unwrap();
+
+        assert_eq!(
+            ask(
+                &socket,
+                &Request::AppUpdate {
+                    package: Some("browser".into()),
+                }
+            )
+            .unwrap(),
+            Response::Command {
+                code: 0,
+                stdout: "host:update browser\n".into(),
+                stderr: String::new(),
+            }
+        );
+        assert_eq!(
+            ask(&socket, &Request::SystemUpdate).unwrap(),
+            Response::Command {
+                code: 0,
+                stdout: "host:system update --yes\n".into(),
+                stderr: String::new(),
+            }
+        );
+        drop(broker);
+    }
+
+    #[test]
+    fn management_protocol_has_no_arbitrary_program_variant() {
+        assert!(
+            serde_json::from_str::<Request>(
+                r#"{"op":"host-command","program":"sh","args":["-c","touch /tmp/nope"]}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

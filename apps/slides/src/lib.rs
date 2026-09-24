@@ -1,3 +1,13 @@
+#![allow(
+    clippy::many_single_char_names,
+    clippy::redundant_clone,
+    clippy::similar_names,
+    clippy::single_match_else,
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Slides — a CRDT-native presentation app for Tilo, built on the `ui`
 //! toolkit.
 //!
@@ -40,6 +50,7 @@ pub mod app;
 pub mod assets;
 pub mod chrome;
 pub mod doc;
+pub mod framework_history;
 mod help_overlay;
 pub mod model;
 pub mod odp;
@@ -48,6 +59,7 @@ pub mod pptx;
 mod presentation;
 pub mod render;
 pub mod search_provider;
+pub mod strings;
 mod toolbar_tools;
 
 pub use app::{PresentSurface, SlidesApp};
@@ -68,3 +80,6 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_demo(scenario: Option<&str>) -> Box<dyn Widget> {
     Box::new(SlidesApp::demo(scenario))
 }
+
+#[cfg(test)]
+mod framework_history_tests;

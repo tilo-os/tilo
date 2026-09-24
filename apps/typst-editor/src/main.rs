@@ -34,19 +34,9 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -60,25 +50,28 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.typst-editor", typst_editor::app_root)
-            .configure_app(|app| app.set_window_title(Some("Typst".into())))
-            .shot_handler(shot_handler)
-            .allowed_options(&["--theme"])
-            .scenarios(&[
-                "preview",
-                "menu",
-                "problems",
-                "scrolled",
-                "errors",
-                "editor-select",
-                "preview-zoom",
-                "preview-pan",
-                "select",
-                "stale",
-                "status",
-            ]),
-    );
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.typst-editor", typst_editor::app_root)
+        .history(&typst_editor::framework_history::HISTORY)
+        .configure_app(|app| app.set_window_title(Some("Typst".into())))
+        .shot_handler(shot_handler)
+        .allowed_options(&["--theme"])
+        .scenarios(&[
+            "preview",
+            "menu",
+            "problems",
+            "scrolled",
+            "errors",
+            "editor-select",
+            "preview-zoom",
+            "preview-pan",
+            "select",
+            "stale",
+            "status",
+        ])
 }
 
 fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -90,17 +83,18 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .scenario
         .as_deref()
         .map_or_else(typst_editor::demo_root, typst_editor::demo_root_scenario);
-    // Keep the app-specific switch for existing scripts, while matching the
-    // standard Tilo screenshot contract.  In particular, review captures must
-    // be able to exercise the actual high-contrast and motion preferences.
-    let theme_name = args
-        .value("--theme")
-        .map(str::to_owned)
-        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok());
-    let theme = match theme_name.as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
-        Some("dark") | None => Theme::dark(),
+    let shared_theme = ui::launch::shot_theme(args);
+    let theme = match args.value("--theme") {
+        Some("light") => Theme::light()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        Some("dark") => Theme::dark()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        None => shared_theme,
         Some(name) => {
             return Err(LaunchError::Scenario(format!(
                 "unknown screenshot theme {name:?}; expected \"dark\", \"light\", or \"high-contrast\""
@@ -132,71 +126,18 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     theme: &Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    ui::launch::render_widget_png(widget.as_mut(), viewport, theme.clone(), out)?;
     println!("typst_editor: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[test]
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
 }

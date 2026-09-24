@@ -31,19 +31,8 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -97,11 +86,11 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("error") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_error()),
         _ => Box::new(|_: &mut contacts::ContactsApp| {}),
     };
-    render_shot_to_png(app, viewport, args.text_scale.unwrap_or(1.0), out, setup)
+    render_shot_to_png(app, viewport, ui::launch::shot_theme(args), out, setup)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
     // Contacts kept its own address-book file before the shared store
     // existed; import it once so an existing user's book comes across.
     match contacts::storage::default_path() {
@@ -114,119 +103,136 @@ fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
 extern crate runtime_dylib;
 
 pub fn main() {
-    ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.contacts", contacts::app_root)
-            .shot_handler(shot_handler)
-            .allowed_flags(&["--detail"])
-            .scenarios(&[
-                "new",
-                "edit",
-                "editfocus",
-                "edit-lower",
-                "export",
-                "unsaved",
-                "groups",
-                "context",
-                "confirm",
-                "import-conflict",
-                "duplicate-review",
-                "duplicates",
-                "empty",
-                "search",
-                "loading",
-                "error",
-            ])
-            .open_state(open_state)
-            .configure_app(|app| contacts::actions::register(app.action_registry_mut())),
-    );
+    ui::launch::run_or_exit(&launch_spec());
 }
 
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
+/// Run one offscreen frame against `app` and write RGBA to `out` as PNG,
+/// applying the scenario hook once the document is seeded.
 fn render_shot_to_png(
     mut app: contacts::ContactsApp,
     viewport: (u32, u32),
-    text_scale: f32,
+    theme: Theme,
     out: &std::path::Path,
     setup: Box<dyn FnOnce(&mut contacts::ContactsApp)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
-    // theme-driven chrome can be proven across palettes; defaults to dark.
-    // `TILO_SHOTS_REDUCE_MOTION=1` additionally exercises the same theme policy
-    // the live accessibility setting supplies, without making shot output rely
-    // on a host-global preference.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_text_scale(text_scale)
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(&mut app);
     // Apply the scenario hook now that the document is seeded; the hooks
     // (new-contact form, export dialog, …) operate on the live store.
     setup(&mut app);
-    let widget: &mut dyn Widget = &mut app;
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    frame.layout(&mut app)?;
+    let scene = frame.draw(&mut app);
+    frame.write_png(&scene, out);
     println!("contacts: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new("so.tilo.contacts", contacts::app_root)
+        .history(&contacts::framework_history::HISTORY)
+        .shot_handler(shot_handler)
+        .allowed_flags(&["--detail"])
+        .scenarios(&[
+            "new",
+            "edit",
+            "editfocus",
+            "export",
+            "unsaved",
+            "groups",
+            "context",
+            "confirm",
+            "import-conflict",
+            "empty",
+        ])
+        .open_app_global_state(open_state)
+        .configure_app(|app| contacts::actions::register(app.action_registry_mut()))
+}
+
+#[test]
+fn production_launch_registers_history() {
+    launch_spec().validate_history_declaration().unwrap();
+}
+
+#[test]
+fn actual_migrating_opener_keeps_saved_graph() {
+    use automerge::{ReadDoc, transaction::Transactable};
+    const APP: &str = "so.tilo.contacts";
+    if let Ok(stage) = std::env::var("TILO_CONTACTS_HISTORY_STARTUP") {
+        let legacy = contacts::storage::default_path().unwrap();
+        if stage == "write" {
+            let mut doc = automerge::AutoCommit::new();
+            let mut contact = contacts::model::sample_contacts().remove(0);
+            contact.first = "Historical imported contact".into();
+            contacts::doc::ContactsDoc::upsert_contact(&mut doc, &contact);
+            let historical = doc.get_heads()[0];
+            contact.first = "Current imported contact".into();
+            contacts::doc::ContactsDoc::upsert_contact(&mut doc, &contact);
+            let bytes = doc.save();
+            std::fs::write(&legacy, &bytes).unwrap();
+            let (mut state, mut saver) = open_state(APP);
+            assert!(saver.is_enabled());
+            assert!(state.doc.get_change_by_hash(&historical).is_some());
+            assert_eq!(
+                contacts::doc::ContactsDoc::list_contacts(&state.doc)[0].first,
+                "Current imported contact"
+            );
+            let current = state.doc.get_heads();
+            let prepared = ui::history_mode::restore::prepare_content_restore(
+                &state.doc,
+                &contacts::framework_history::SCHEMA,
+                &current,
+                &[historical],
+            )
+            .unwrap();
+            ui::history_mode::restore::apply_prepared_content_restore(&mut state.doc, &prepared)
+                .unwrap();
+            state.commit_action(None, None);
+            saver.request(&mut state.doc);
+            saver.try_flush().unwrap();
+            assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
+            std::fs::write(legacy.with_extension("heads"), historical.to_string()).unwrap();
+        } else {
+            let (state, saver) = open_state(APP);
+            assert!(saver.is_enabled());
+            assert_eq!(
+                contacts::doc::ContactsDoc::list_contacts(&state.doc)[0].first,
+                "Historical imported contact"
+            );
+            let historical = std::fs::read_to_string(legacy.with_extension("heads"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(state.doc.get_change_by_hash(&historical).is_some());
+            assert_eq!(state.doc.pending_ops(), 0);
+            assert!(
+                state
+                    .doc
+                    .get(automerge::ROOT, "contacts")
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for stage in ["write", "read"] {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "actual_migrating_opener_keeps_saved_graph",
+                "--nocapture",
+            ])
+            .env("TILO_CONTACTS_HISTORY_STARTUP", stage)
+            .env("XDG_DATA_HOME", dir.path())
+            .env("TILO_PACKAGE_ID", APP)
+            .env("TILO_CONTACTS_DATA", dir.path().join("legacy.automerge"))
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{stage}: {} {}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 }

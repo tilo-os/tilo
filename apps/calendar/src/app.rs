@@ -51,21 +51,24 @@ use ui::{
 };
 
 use crate::account::AccountStore;
-use crate::agenda::{AgendaAction, AgendaRenderModel, AgendaView};
+use crate::agenda::{AgendaAction, AgendaMetrics, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::doc::CalDoc;
+use crate::draw_util::PaintContext;
 use crate::draw_util::{
-    PaintContext, elide_to_width, fill_rect, fill_round, stroke_line, stroke_round,
+    fill_rect, fill_round, hairline, panel, row_ground, selected_row, selection_fill, stroke_line,
+    stroke_round,
 };
 use crate::event_popovers::{
-    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover, PopoverRenderModel,
+    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
 use crate::ics;
 use crate::input_context::InputContext;
-use crate::mini_month::{MiniMonth, MiniMonthModel, Outcome as MiniMonthOutcome};
+use crate::metrics;
+use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
-use crate::sidebar::{Action as SidebarAction, ChromeModel, Mode as SidebarMode, Sidebar};
+use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
@@ -73,6 +76,9 @@ use crate::timeline_interaction::{
 #[cfg(test)]
 use crate::timeline_viewport::TIMELINE_MIN_HOUR_H;
 use crate::topbar::{Action as TopbarAction, LeadingControl, Topbar};
+use ui::surface::{card, separator};
+use ui::tokens::colors::over;
+use ui::widget::{Button, ButtonFace};
 
 /// Placeholder shown in the empty title field of a new event.
 const TITLE_PLACEHOLDER: &str = "New event";
@@ -109,6 +115,80 @@ const EMPTY_ONBOARDING_HINT: &str = "Click a day to add your first event";
 
 const DETAIL_PAD: f64 = 22.0;
 const NOTES_TOP_OFFSET: f64 = 296.0;
+/// Base label size of a metadata chip (repeat / reminder / colour); the
+/// renderer applies the text scale. The chip's height is the theme's compact
+/// selector height, see `event_form_chip_h`.
+#[cfg(test)]
+const EVENT_FORM_CHIP_TEXT: f32 = 12.0;
+/// Base size of the "EVENT · SAVES AUTOMATICALLY" / "NOTES" section labels.
+const SECTION_LABEL_TEXT: f32 = 11.0;
+/// Authored 1× height of the detail header row that carries the kind label
+/// and the close / delete controls.
+const DETAIL_HEADER_MIN_H: f64 = 22.0;
+
+/// Base size of the month grid's weekday labels and day numbers.
+const MONTH_LABEL_TEXT: f32 = 12.0;
+/// Base size of a month-grid event chip label and the "+N more" line.
+const MONTH_CHIP_TEXT: f32 = 10.0;
+/// Authored 1× weekday header height; grows with the measured label line.
+const MONTH_HEADER_MIN_H: f64 = 28.0;
+/// Authored 1× today-pill radius; grows with the measured day-number line.
+const MONTH_TODAY_PILL_R: f64 = 12.0;
+/// Authored 1× event chip height; grows with the measured chip label line.
+const MONTH_CHIP_MIN_H: f64 = 17.0;
+/// Top of the day-number band inside a cell. Deliberately off the spacing
+/// scale (`s1 + 2`): the band is sized by the today pill, and `s2` would push
+/// the first chip a row further down than the 1× design allows.
+const MONTH_NUM_TOP: f64 = 6.0;
+/// Horizontal inset of event chips and the today pill inside a cell.
+/// Deliberately off-scale (`s1 + 2`) — the authored 1× chip width.
+const MONTH_CHIP_INSET: f64 = 6.0;
+/// Month-grid geometry for the current text scale, derived once per frame in
+/// [`CalendarApp::draw_month`] and shared by the weekday header, the day
+/// cells, their chips and the hit rects pushed alongside them — one geometry
+/// description for paint and pointer alike.
+struct MonthMetrics {
+    /// Weekday header row height.
+    header_h: f64,
+    /// Line height of a weekday label / day number.
+    label_h: f64,
+    /// Radius of the today pill; every day number is centred on its axis.
+    pill_r: f64,
+    /// Top of the first event chip inside a cell (also the `OpenDay` strip).
+    chips_top: f64,
+    /// Event chip height and stacking pitch.
+    chip_h: f64,
+    chip_pitch: f64,
+    /// Line height of a chip label.
+    chip_text_h: f64,
+}
+
+impl MonthMetrics {
+    fn new(theme: &Theme, text_scale: f32) -> Self {
+        let sp = &theme.tokens.spacing;
+        let label_h = metrics::line_h(MONTH_LABEL_TEXT, text_scale);
+        let chip_text_h = metrics::line_h(MONTH_CHIP_TEXT, text_scale);
+        // Every band is the authored 1× height, or its measured line plus the
+        // same theme gap the painter leaves — rounded up — once scaled type
+        // needs more; at 1× the design is reproduced exactly and every value
+        // is a whole pixel at every scale.
+        let header_h = metrics::at_least_whole(MONTH_HEADER_MIN_H, label_h + f64::from(sp.s3));
+        let pill_r = metrics::at_least_whole(MONTH_TODAY_PILL_R, label_h / 2.0 + f64::from(sp.s1));
+        // The first chip starts an `s1` below the day-number band (6 + 24 + 4
+        // = 34 at 1×), the gap the painter keeps between pill and chip.
+        let chips_top = MONTH_NUM_TOP + 2.0 * pill_r + f64::from(sp.s1);
+        let chip_h = metrics::at_least_whole(MONTH_CHIP_MIN_H, chip_text_h + f64::from(sp.s1));
+        Self {
+            header_h,
+            label_h,
+            pill_r,
+            chips_top,
+            chip_h,
+            chip_pitch: chip_h + f64::from(sp.s1),
+            chip_text_h,
+        }
+    }
+}
 
 /// Hour the timeline first scrolls to when the day doesn't fit — the start of a
 /// typical work day, rather than opening at midnight.
@@ -431,6 +511,13 @@ pub struct CalendarApp {
     /// Cached from the current theme during layout so bespoke geometry can
     /// make the same accessibility breakpoints as text painting.
     text_scale: f32,
+    /// The theme's spacing scale, cached alongside `text_scale` so the
+    /// renderer-less layout pass reads the same tokens paint does.
+    spacing: ui::tokens::spacing::Spacing,
+    /// The theme's density metrics (selector / control heights), cached in
+    /// `build_layout` so the renderer-less layout pass reads the same tokens
+    /// the painters do.
+    tokens_metrics: ui::tokens::Metrics,
     /// Which narrow screen is showing (only meaningful when the editor is
     /// full-screen, i.e. below [`EDITOR_OVERLAY_MIN`]).
     narrow_screen: NarrowScreen,
@@ -714,6 +801,8 @@ impl CalendarApp {
             sidebar: Sidebar::new(),
             topbar: Topbar::new(),
             text_scale: 1.0,
+            spacing: ui::tokens::spacing::Spacing::default(),
+            tokens_metrics: ui::tokens::Metrics::BASE,
             narrow_screen: if detail_open {
                 NarrowScreen::Detail
             } else {
@@ -872,6 +961,14 @@ impl CalendarApp {
     pub fn shots_open_date_popover(&mut self) {
         self.shots_pending_new_event = true;
         self.shots_pending_popover = Some(FormPopover::StartDate);
+        self.dirty = true;
+    }
+
+    /// Open the start-time spinner popover over the New-Event form for a
+    /// screenshot.
+    pub fn shots_open_time_popover(&mut self) {
+        self.shots_pending_new_event = true;
+        self.shots_pending_popover = Some(FormPopover::StartTime);
         self.dirty = true;
     }
 
@@ -3201,6 +3298,7 @@ impl CalendarApp {
                         self.anchor,
                         &hidden,
                         self.calendar_filter.as_deref(),
+                        &AgendaMetrics::new(&self.spacing, self.text_scale),
                     );
                 }
                 View::Month => {}
@@ -3323,102 +3421,6 @@ impl CalendarApp {
         )
     }
 
-    fn draw_detail_scrollbar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        viewport: Rect,
-    ) {
-        let track = Rect::new(
-            self.detail_rect.x1 - 7.0,
-            viewport.y0 + 6.0,
-            self.detail_rect.x1 - 3.0,
-            viewport.y1 - 6.0,
-        );
-        let content_height = viewport.height() + self.detail_scroll_max;
-        let thumb_height =
-            (viewport.height() / content_height * track.height()).clamp(36.0, track.height());
-        let travel = (track.height() - thumb_height).max(0.0);
-        let progress = (self.detail_scroll_y / self.detail_scroll_max).clamp(0.0, 1.0);
-        let thumb_y = track.y0 + travel * progress;
-        fill_round(scene, transform, theme.tokens.colors.neutral[3], track, 2.0);
-        fill_round(
-            scene,
-            transform,
-            theme.tokens.colors.neutral[7],
-            Rect::new(track.x0, thumb_y, track.x1, thumb_y + thumb_height),
-            2.0,
-        );
-    }
-
-    fn redraw_narrow_sticky_header(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !matches!(self.detail_mode, DetailMode::FullScreen) {
-            return;
-        }
-        let header = Rect::new(
-            self.detail_rect.x0,
-            self.detail_rect.y0,
-            self.detail_rect.x1,
-            self.detail_rect.y0 + 80.0,
-        );
-        fill_rect(
-            scene,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            header,
-        );
-        let mut ignored_hits = Vec::new();
-        {
-            let mut paint = PaintContext {
-                scene,
-                transform,
-                text,
-                theme,
-            };
-            let _ = self.draw_detail_back_button(&mut paint, self.detail_rect, &mut ignored_hits);
-            self.draw_detail_header_controls(
-                &mut paint,
-                self.detail_rect,
-                false,
-                &mut ignored_hits,
-            );
-        }
-        // Once content has moved under the sticky bar, keep the bar to the
-        // actual navigation controls. At 200% text the event eyebrow's ascent
-        // otherwise reaches into the Back label even though the body itself is
-        // clipped correctly. The eyebrow remains visible at the top of the
-        // sheet, where it provides useful context without competing with Back.
-        if self.detail_scroll_y <= f64::EPSILON
-            && let Some(Sel::Event(id)) = self.selection
-            && let Some(event) = self.model.event(id)
-        {
-            let x = self.detail_rect.x0 + DETAIL_PAD;
-            let y = self.detail_rect.y0 + 52.0;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                event.color.color(theme),
-                None,
-                &Circle::new(Point::new(x + 6.0, y + 8.0), 6.0),
-            );
-            text.draw_text(
-                scene,
-                "EVENT · SAVES AUTOMATICALLY",
-                11.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 20.0, y + 2.0)),
-                None,
-            );
-        }
-    }
-
     /// Names of locally-known events that overlap the edited event's first
     /// occurrence. Calendar does not have a free/busy endpoint, so this is
     /// intentionally limited to the events already saved in this device's
@@ -3534,10 +3536,12 @@ impl CalendarApp {
         let w = self.detail_body_w();
         let fullscreen = matches!(self.detail_mode, DetailMode::FullScreen);
         // Header: 18px top pad, plus a back bar in the full-screen pushed page,
-        // plus the "EVENT" kind label row.
+        // plus the "EVENT" kind label row, whose height follows the measured
+        // label line so scaled type never runs into the title field.
         let top = r.y0 + 18.0 + if fullscreen { 34.0 } else { 0.0 };
-        f.header_bottom = top + 22.0;
-        let mut y = top + 30.0;
+        let s2 = f64::from(self.spacing.s2);
+        f.header_bottom = top + self.detail_header_h();
+        let mut y = f.header_bottom + s2;
 
         let large_text = self.text_scale >= LARGE_TEXT_SCALE;
         let field_h = if large_text { 52.0 } else { 40.0 };
@@ -3604,7 +3608,12 @@ impl CalendarApp {
         // those rows in the same breakpoint domain as the painter so NOTES
         // never collides with a wrapped reminder/colour/timezone control.
         let chip_rows = if w < 440.0 {
-            if large_text { 4.0 } else { 3.0 }
+            // At 200% each of the six metadata controls can require its own
+            // row. Reserve the worst case; the detail pane scrolls when the
+            // resulting form is taller than the phone viewport.
+            if large_text { 6.0 } else { 3.0 }
+        } else if large_text {
+            3.0
         } else {
             2.0
         };
@@ -3652,6 +3661,16 @@ impl CalendarApp {
         } else {
             NOTES_TOP_OFFSET
         }
+    }
+
+    /// Height of the detail header row (kind label + close / delete controls):
+    /// the authored 22px at 1×, or the measured label line plus a token gap
+    /// once scaled type needs more. Layout and paint both read this.
+    fn detail_header_h(&self) -> f64 {
+        metrics::at_least_whole(
+            DETAIL_HEADER_MIN_H,
+            metrics::line_h(SECTION_LABEL_TEXT, self.text_scale) + f64::from(self.spacing.s2),
+        )
     }
 
     #[allow(
@@ -4265,22 +4284,17 @@ impl CalendarApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) -> Vec<(Rect, Action)> {
-        let mut paint = PaintContext {
-            scene,
-            transform: t,
-            text: tr,
-            theme,
-        };
         let Some(chrome) = self.sidebar.draw_chrome(
-            &mut paint,
-            ChromeModel {
-                window: self.rect,
-                content: self.content_rect,
-                detail: self.detail_rect,
-                switcher_in_topbar: self.topbar.switcher_visible(),
-                view: self.view,
-                pointer: self.last_mouse,
-            },
+            scene,
+            t,
+            tr,
+            theme,
+            self.rect,
+            self.content_rect,
+            self.detail_rect,
+            self.topbar.switcher_visible(),
+            self.view,
+            self.last_mouse,
         ) else {
             return Vec::new();
         };
@@ -4300,24 +4314,23 @@ impl CalendarApp {
             .collect();
         let r = self.sidebar.rect();
         let pad = 18.0;
-        let y = self.draw_sidebar_lists(&mut paint, r, pad, chrome.body_y, &mut hits);
-        let y = self.draw_sidebar_calendars(&mut paint, r, pad, y, &mut hits);
-        self.draw_sidebar_footer(&mut paint, r, pad, y, &mut hits);
+        let y = self.draw_sidebar_lists(scene, t, tr, theme, r, pad, chrome.body_y, &mut hits);
+        let y = self.draw_sidebar_calendars(scene, t, tr, theme, r, pad, y, &mut hits);
+        self.draw_sidebar_footer(scene, t, tr, theme, r, pad, y, &mut hits);
 
         hits
     }
     fn draw_sidebar_lists(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         r: Rect,
         pad: f64,
         mut y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         // Smart lists.
         let smart = [
@@ -4329,11 +4342,17 @@ impl CalendarApp {
         for (label, sel, accent) in smart {
             let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 34.0);
             let active = self.list_sel == sel;
-            if active {
-                fill_round(scene, t, c.accent[5].with_alpha(0.18), row, 8.0);
-            } else if row.contains(self.last_mouse) {
-                fill_round(scene, t, c.lift(0.35), row, 8.0);
-            }
+            let hover = row.contains(self.last_mouse);
+            selected_row(
+                scene,
+                t,
+                theme,
+                c.surfaces.raised,
+                row,
+                f64::from(theme.tokens.radii.md),
+                active,
+                hover,
+            );
             // bullet
             scene.fill(
                 Fill::NonZero,
@@ -4353,7 +4372,15 @@ impl CalendarApp {
             );
             let count = self.model.open_count(&sel, self.today);
             if count > 0 {
-                draw_count_badge(scene, t, tr, theme, row.x1 - 18.0, row.center().y, count);
+                draw_count_badge(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    Point::new(row.x1 - 18.0, row.center().y),
+                    count,
+                    row_ground(theme, c.surfaces.raised, active, hover),
+                );
             }
             hits.push((row, Action::List(sel)));
             y += 38.0;
@@ -4375,16 +4402,21 @@ impl CalendarApp {
         for p in &self.model.projects {
             let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 34.0);
             let active = self.list_sel == ListSel::Project(p.id);
-            if active {
-                fill_round(scene, t, c.accent[5].with_alpha(0.18), row, 8.0);
-            } else if row.contains(self.last_mouse) {
-                fill_round(scene, t, c.lift(0.35), row, 8.0);
-            }
+            let hover = row.contains(self.last_mouse);
+            selected_row(
+                scene,
+                t,
+                theme,
+                c.surfaces.raised,
+                row,
+                f64::from(theme.tokens.radii.md),
+                active,
+                hover,
+            );
             // colour tag
             fill_round(
                 scene,
                 t,
-                p.color.color(theme),
                 Rect::new(
                     row.x0 + 12.0,
                     row.center().y - 5.0,
@@ -4392,6 +4424,7 @@ impl CalendarApp {
                     row.center().y + 5.0,
                 ),
                 3.0,
+                p.color.color(theme),
             );
             tr.draw_text(
                 scene,
@@ -4408,7 +4441,15 @@ impl CalendarApp {
                 .filter(|tk| tk.project == Some(p.id) && !tk.done && tk.parent.is_none())
                 .count();
             if count > 0 {
-                draw_count_badge(scene, t, tr, theme, row.x1 - 18.0, row.center().y, count);
+                draw_count_badge(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    Point::new(row.x1 - 18.0, row.center().y),
+                    count,
+                    row_ground(theme, c.surfaces.raised, active, hover),
+                );
             }
             hits.push((row, Action::List(ListSel::Project(p.id))));
             y += 38.0;
@@ -4422,16 +4463,15 @@ impl CalendarApp {
     /// [`Self::draw_sidebar`]). Returns the `y` the footer should start at.
     fn draw_sidebar_calendars(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         r: Rect,
         pad: f64,
         mut y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         if !self.accounts.is_empty() {
             y += 14.0;
@@ -4445,7 +4485,7 @@ impl CalendarApp {
             );
             let sync = Rect::new(r.x1 - pad - 44.0, y - 4.0, r.x1 - pad, y + 16.0);
             if sync.contains(self.last_mouse) {
-                fill_round(scene, t, c.lift(0.35), sync, 6.0);
+                fill_round(scene, t, sync, 6.0, c.lift(0.35));
             }
             tr.draw_text(
                 scene,
@@ -4463,7 +4503,7 @@ impl CalendarApp {
                 // account's calendar list (management itself lives in Settings).
                 let header = Rect::new(r.x0 + 10.0, y - 4.0, r.x1 - 10.0, y + 18.0);
                 if header.contains(self.last_mouse) {
-                    fill_round(scene, t, c.lift(0.35), header, 6.0);
+                    fill_round(scene, t, header, 6.0, c.lift(0.35));
                 }
                 draw_caret(
                     scene,
@@ -4488,7 +4528,7 @@ impl CalendarApp {
                 for cal in &acc.calendars {
                     let row = Rect::new(r.x0 + 10.0, y, r.x1 - 10.0, y + 30.0);
                     if row.contains(self.last_mouse) {
-                        fill_round(scene, t, c.lift(0.35), row, 6.0);
+                        fill_round(scene, t, row, 6.0, c.lift(0.35));
                     }
                     // Colour swatch checkbox: filled when visible, hollow when
                     // hidden. The whole row toggles visibility.
@@ -4500,10 +4540,10 @@ impl CalendarApp {
                     );
                     let pc = cal.palette().color(theme);
                     if cal.visible {
-                        fill_round(scene, t, pc, sw, 4.0);
-                        draw_check(scene, t, Color::WHITE, sw);
+                        fill_round(scene, t, sw, 4.0, pc);
+                        draw_check(scene, t, ui::widget::Avatar::initial_ink(pc), sw);
                     } else {
-                        stroke_round(scene, t, pc.with_alpha(0.6), sw, 4.0, 1.4);
+                        stroke_round(scene, t, sw, 4.0, pc.with_alpha(0.6), 1.4);
                     }
                     let txt_color = if cal.visible {
                         c.neutral[8]
@@ -4537,7 +4577,10 @@ impl CalendarApp {
     /// navigator itself (part of [`Self::draw_sidebar`]).
     fn draw_sidebar_footer(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         r: Rect,
         pad: f64,
         y: f64,
@@ -4545,19 +4588,20 @@ impl CalendarApp {
     ) {
         // Reserve the bottom of the sidebar for the mini-month navigator.
         let mini_top = MiniMonth::content_limit(r);
-        let y = self.draw_sidebar_task_rail(paint, r, pad, y, mini_top, hits);
+        let y = self.draw_sidebar_task_rail(scene, t, tr, theme, r, pad, y, mini_top, hits);
         let event_dates = self.mini_month_event_dates();
         hits.extend(
             MiniMonth::draw(
-                paint,
-                &MiniMonthModel {
-                    sidebar: r,
-                    occupied_until: y,
-                    anchor: self.anchor,
-                    today: self.today,
-                    event_dates: &event_dates,
-                    pointer: self.last_mouse,
-                },
+                scene,
+                t,
+                tr,
+                theme,
+                r,
+                y,
+                self.anchor,
+                self.today,
+                &event_dates,
+                self.last_mouse,
             )
             .into_iter()
             .map(|(rect, outcome)| (rect, Action::MiniMonth(outcome))),
@@ -4570,17 +4614,16 @@ impl CalendarApp {
     /// the tasks in full either way) (part of [`Self::draw_sidebar_footer`]).
     fn draw_sidebar_task_rail(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         r: Rect,
         pad: f64,
         mut y: f64,
         mini_top: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let rail_tasks = self.model.tasks_for(&self.list_sel, self.today);
         if !rail_tasks.is_empty() && y + 56.0 < mini_top {
@@ -4592,14 +4635,7 @@ impl CalendarApp {
                 ListSel::Project(_) => "Tasks",
             };
             y += 10.0;
-            stroke_line(
-                scene,
-                t,
-                c.border_standard,
-                Point::new(r.x0 + pad, y),
-                Point::new(r.x1 - pad, y),
-                1.0,
-            );
+            separator(scene, t, r.x0, r.x1, y, pad, c.surfaces.raised);
             y += 14.0;
             tr.draw_text(
                 scene,
@@ -4617,7 +4653,7 @@ impl CalendarApp {
                 }
                 let row = Rect::new(r.x0 + 12.0, y, r.x1 - 12.0, y + 30.0);
                 if row.contains(self.last_mouse) {
-                    fill_round(scene, t, c.lift(0.35), row, 6.0);
+                    fill_round(scene, t, row, 6.0, c.lift(0.35));
                 }
                 // Affordance split: the checkbox AND the label text toggle
                 // completion; the open area to their right selects the task to view
@@ -4695,22 +4731,16 @@ impl CalendarApp {
     ) -> Vec<(Rect, Action)> {
         let c = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(scene, t, c.surfaces.base, area);
+        fill_rect(scene, t, area, c.surfaces.base);
 
-        let header_h = 28.0;
+        let m = MonthMetrics::new(theme, tr.text_scale());
         let cols = 7;
         let rows = 6;
         let cell_w = area.width() / cols as f64;
-        let grid_top = area.y0 + header_h;
-        let cell_h = (area.height() - header_h) / f64::from(rows);
-        let mut paint = PaintContext {
-            scene,
-            transform: t,
-            text: tr,
-            theme,
-        };
+        let grid_top = area.y0 + m.header_h;
+        let cell_h = (area.height() - m.header_h) / f64::from(rows);
 
-        Self::draw_month_header(&mut paint, area, cell_w);
+        Self::draw_month_header(scene, t, tr, theme, area, cell_w, &m);
 
         let grid = date::month_grid(self.anchor);
         for (idx, day) in grid.iter().enumerate() {
@@ -4722,18 +4752,63 @@ impl CalendarApp {
                 area.x0 + cell_w * (col as f64 + 1.0),
                 grid_top + cell_h * (row as f64 + 1.0),
             );
-            self.draw_month_cell(&mut paint, cell, cell_h, *day, &mut hits);
+            self.draw_month_cell(scene, t, tr, theme, cell, cell_h, *day, &m, &mut hits);
+        }
+        // Grid rules once, on top of the cell tints, derived against the
+        // month's own ground (HIG §9.5) — a half-alpha `border_standard` at
+        // half a pixel vanished on the dark preset.
+        for col in 0..=cols {
+            // The closing rule is the last pixel column inside the grid.
+            let x = if col == cols {
+                area.x1 - 1.0
+            } else {
+                area.x0 + cell_w * col as f64
+            };
+            hairline(
+                scene,
+                t,
+                c.surfaces.base,
+                Point::new(x, grid_top),
+                Point::new(x, area.y1),
+            );
+        }
+        for row in 0..=rows {
+            let y = if row == rows {
+                area.y1 - 1.0
+            } else {
+                grid_top + cell_h * f64::from(row)
+            };
+            hairline(
+                scene,
+                t,
+                c.surfaces.base,
+                Point::new(area.x0, y),
+                Point::new(area.x1, y),
+            );
         }
         hits
     }
 
     /// The weekday header row (part of [`Self::draw_month`]).
-    fn draw_month_header(paint: &mut PaintContext<'_>, area: Rect, cell_w: f64) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, c the colour set, m the month metrics and x/y the \
+                  label origin — conventional short names for this draw step"
+    )]
+    fn draw_month_header(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        cell_w: f64,
+        m: &MonthMetrics,
+    ) {
         let c = &theme.tokens.colors;
+        // Labels share the day numbers' left inset and are centred on the
+        // measured header row, so column heads and dates form one left edge.
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let y = area.y0 + (m.header_h - m.label_h) / 2.0;
         for (i, lbl) in date::WEEKDAY_SHORT.iter().enumerate() {
             let weekend = i >= 5;
             let col = if weekend { c.text_dim } else { c.neutral[7] };
@@ -4741,9 +4816,9 @@ impl CalendarApp {
             tr.draw_text(
                 scene,
                 lbl,
-                12.0,
+                MONTH_LABEL_TEXT,
                 col,
-                t * Affine::translate((x + 10.0, area.y0 + 7.0)),
+                t * Affine::translate((x + inset, y)),
                 None,
             );
         }
@@ -4751,29 +4826,37 @@ impl CalendarApp {
 
     /// One day cell: grid line, hit targets, background tint, and the date
     /// number (with a today pill) (part of [`Self::draw_month`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, c the colour set and m the month metrics — \
+                  conventional short names for this draw step"
+    )]
     fn draw_month_cell(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         cell: Rect,
         cell_h: f64,
         day: NaiveDate,
+        m: &MonthMetrics,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
-        // grid lines
-        stroke_round(scene, t, c.border_standard.with_alpha(0.5), cell, 0.0, 0.5);
 
         // Cell-level click targets are pushed FIRST so the event chips
         // drawn below win the reverse (topmost-last) hit-scan — clicking a
         // chip must open that event, not just re-anchor the day. The
-        // date-number strip in turn wins over the empty cell body.
+        // date-number strip in turn wins over the empty cell body; it ends
+        // exactly where the first chip starts, so the two never overlap.
         hits.push((cell, Action::PickDate(day)));
         hits.push((
-            Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + 28.0),
+            Rect::new(cell.x0, cell.y0, cell.x1, cell.y0 + m.chips_top),
             Action::OpenDay(day),
         ));
 
@@ -4782,12 +4865,21 @@ impl CalendarApp {
         let is_anchor = day == self.anchor;
         let weekend = day.weekday().num_days_from_monday() >= 5;
 
-        if is_anchor && !is_today {
-            fill_rect(scene, t, c.lift(0.35), cell);
+        // The cell's own ground: the weekend and anchor tints are opaque
+        // lifts off the month's base (the weekend wash wins where both
+        // apply), and a timed chip's wash below is composited onto whichever
+        // of them is actually under it.
+        let cell_tint = if weekend && in_month {
+            Some(c.lift(0.18))
+        } else if is_anchor && !is_today {
+            Some(c.lift(0.35))
+        } else {
+            None
+        };
+        if let Some(tint) = cell_tint {
+            fill_rect(scene, t, cell, tint);
         }
-        if weekend && in_month {
-            fill_rect(scene, t, c.neutral[1].with_alpha(0.35), cell);
-        }
+        let cell_fill = cell_tint.unwrap_or(c.surfaces.base);
 
         // date number, with a today pill.
         let num = format!("{}", day.day());
@@ -4798,67 +4890,45 @@ impl CalendarApp {
         } else {
             c.neutral[9]
         };
+        // Every date sits on the same centre line as the today pill, so the
+        // highlighted number no longer rides lower than its neighbours.
+        let pill_c = Point::new(
+            cell.x0 + MONTH_CHIP_INSET + m.pill_r,
+            cell.y0 + MONTH_NUM_TOP + m.pill_r,
+        );
         if is_today {
-            let pill = Circle::new(Point::new(cell.x0 + 18.0, cell.y0 + 17.0), 12.0);
+            let pill = Circle::new(pill_c, m.pill_r);
             scene.fill(Fill::NonZero, t, c.accent[5], None, &pill);
             center_text(
                 scene,
                 tr,
                 &num,
-                12.0,
-                Color::WHITE,
-                Rect::new(cell.x0 + 6.0, cell.y0 + 5.0, cell.x0 + 30.0, cell.y0 + 29.0),
+                MONTH_LABEL_TEXT,
+                c.on_accent(4.5),
+                Rect::from_center_size(pill_c, (2.0 * m.pill_r, 2.0 * m.pill_r)),
                 t,
             );
         } else {
             tr.draw_text(
                 scene,
                 &num,
-                12.0,
+                MONTH_LABEL_TEXT,
                 num_color,
-                t * Affine::translate((cell.x0 + 8.0, cell.y0 + 6.0)),
+                t * Affine::translate((
+                    cell.x0 + f64::from(theme.tokens.spacing.s2),
+                    pill_c.y - m.label_h / 2.0,
+                )),
                 None,
             );
         }
 
-        self.draw_month_cell_chips(
-            &mut PaintContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            },
-            cell,
-            cell_h,
-            day,
-            hits,
-        );
+        self.draw_month_cell_chips(scene, t, tr, theme, cell, cell_fill, cell_h, day, m, hits);
     }
 
-    /// The event chips inside one day cell, clipped to it (part of
-    /// [`Self::draw_month_cell`]).
-    fn draw_month_cell_chips(
-        &self,
-        paint: &mut PaintContext<'_>,
-        cell: Rect,
-        cell_h: f64,
-        day: NaiveDate,
-        hits: &mut Vec<(Rect, Action)>,
-    ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
-        let c = &theme.tokens.colors;
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &cell,
-        );
-        let evs: Vec<(Id, String, Palette, bool, NaiveDateTime)> = self
-            .visible_events_on(day)
+    /// The visible events of one month cell as the chip painter needs them:
+    /// id, display title, palette, all-day flag and start.
+    fn month_cell_events(&self, day: NaiveDate) -> Vec<(Id, String, Palette, bool, NaiveDateTime)> {
+        self.visible_events_on(day)
             .iter()
             .map(|e| {
                 (
@@ -4869,57 +4939,137 @@ impl CalendarApp {
                     e.start,
                 )
             })
-            .collect();
-        let max_chips = ((cell_h - 30.0) / 20.0).floor().max(0.0) as usize;
-        let mut cy = cell.y0 + 30.0;
+            .collect()
+    }
+
+    /// The event chips inside one day cell, clipped to it (part of
+    /// [`Self::draw_month_cell`]). `cell_fill` is the opaque ground the cell
+    /// was painted with (base, or its weekend / anchor lift), which a timed
+    /// chip's translucent wash is composited onto.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "internal draw-step split of an over-length function"
+    )]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "t is the paint transform, c the colour set and m the month metrics — \
+                  conventional short names for this draw step"
+    )]
+    fn draw_month_cell_chips(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        cell: Rect,
+        cell_fill: Color,
+        cell_h: f64,
+        day: NaiveDate,
+        m: &MonthMetrics,
+        hits: &mut Vec<(Rect, Action)>,
+    ) {
+        let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &cell,
+        );
+        let evs = self.month_cell_events(day);
+        // Slots that fit below the day number, at most three. When the day
+        // has more events than slots, the last slot carries the "+N more"
+        // line instead of a chip, so the overflow note is never itself
+        // clipped by the cell — but at least one chip is always drawn and
+        // clickable, so a crowded day in a short window still opens its
+        // events from the grid.
+        let slots = (((cell_h - m.chips_top) / m.chip_pitch).floor().max(0.0) as usize).clamp(1, 3);
+        let max_chips = if evs.len() > slots {
+            slots.saturating_sub(1).max(1)
+        } else {
+            evs.len()
+        };
+        let mut cy = cell.y0 + m.chips_top;
+        let radius = f64::from(theme.tokens.radii.sm);
+        let text_y = (m.chip_h - m.chip_text_h) / 2.0;
+        // The timed-event marker scales with the chip label so it stays a dot
+        // beside the text rather than a speck under it.
+        let dot_r = (m.chip_text_h / 4.0).round();
+        let dot_x = f64::from(sp.s2);
+        let timed_text_x = dot_x + 2.0 * dot_r + f64::from(sp.s1);
         for (i, (id, title, color, all_day, start)) in evs.iter().enumerate() {
-            if i >= max_chips.clamp(1, 3) {
+            if i >= max_chips {
                 let more = evs.len() - i;
                 tr.draw_text(
                     scene,
                     &format!("+{more} more"),
-                    10.0,
+                    MONTH_CHIP_TEXT,
                     c.text_dim,
-                    t * Affine::translate((cell.x0 + 8.0, cy)),
+                    t * Affine::translate((cell.x0 + f64::from(sp.s2), cy)),
                     None,
                 );
+                // The overflow line is itself a way into the hidden events:
+                // it opens the day, with the same rect it is painted in.
+                hits.push((
+                    Rect::new(
+                        cell.x0 + MONTH_CHIP_INSET,
+                        cy,
+                        cell.x1 - MONTH_CHIP_INSET,
+                        (cy + m.chip_h).min(cell.y1),
+                    ),
+                    Action::OpenDay(day),
+                ));
                 break;
             }
-            let chip = Rect::new(cell.x0 + 6.0, cy, cell.x1 - 6.0, cy + 17.0);
+            let chip = Rect::new(
+                cell.x0 + MONTH_CHIP_INSET,
+                cy,
+                cell.x1 - MONTH_CHIP_INSET,
+                cy + m.chip_h,
+            );
             let col = color.color(theme);
             if *all_day {
-                fill_round(scene, t, col, chip, 4.0);
-                let line = elide_to_width(tr, title, 10.0, chip.width() - 12.0);
+                card(scene, t, chip, radius, col);
+                let line = tr.elide_to_width(
+                    title,
+                    MONTH_CHIP_TEXT,
+                    ui::num::f32_of_f64(chip.width() - 2.0 * MONTH_CHIP_INSET),
+                );
                 tr.draw_text(
                     scene,
                     &line,
-                    10.0,
-                    Color::WHITE,
-                    t * Affine::translate((chip.x0 + 6.0, chip.y0 + 3.0)),
+                    MONTH_CHIP_TEXT,
+                    ui::widget::Avatar::initial_ink(col),
+                    t * Affine::translate((chip.x0 + MONTH_CHIP_INSET, chip.y0 + text_y)),
                     None,
                 );
             } else {
-                fill_round(scene, t, col.with_alpha(0.18), chip, 4.0);
+                card(scene, t, chip, radius, over(cell_fill, col, 0.18));
                 scene.fill(
                     Fill::NonZero,
                     t,
                     col,
                     None,
-                    &Circle::new(Point::new(chip.x0 + 8.0, chip.center().y), 3.0),
+                    &Circle::new(Point::new(chip.x0 + dot_x + dot_r, chip.center().y), dot_r),
                 );
                 let label = format!("{} {}", date::fmt_time(start), title);
-                let line = elide_to_width(tr, &label, 10.0, chip.width() - 22.0);
+                let line = tr.elide_to_width(
+                    &label,
+                    MONTH_CHIP_TEXT,
+                    ui::num::f32_of_f64(chip.width() - timed_text_x - MONTH_CHIP_INSET),
+                );
                 tr.draw_text(
                     scene,
                     &line,
-                    10.0,
+                    MONTH_CHIP_TEXT,
                     c.neutral[9],
-                    t * Affine::translate((chip.x0 + 16.0, chip.y0 + 3.0)),
+                    t * Affine::translate((chip.x0 + timed_text_x, chip.y0 + text_y)),
                     None,
                 );
             }
             hits.push((chip, Action::OpenEvent(*id)));
-            cy += 20.0;
+            cy += m.chip_pitch;
         }
         scene.pop_layer();
     }
@@ -4984,6 +5134,17 @@ impl CalendarApp {
         events
     }
 
+    /// The surface the detail editor's content sits on: the Panel ground
+    /// when it floats as a modal card, the raised pane otherwise. Every rule
+    /// and chip edge inside the editor is derived against this.
+    fn detail_ground(&self, theme: &Theme) -> Color {
+        if matches!(self.detail_mode, DetailMode::Overlay) {
+            ui::chrome::panel_ground(theme)
+        } else {
+            theme.tokens.colors.surfaces.raised
+        }
+    }
+
     #[allow(
         clippy::many_single_char_names,
         reason = "t is the paint transform and r/x/y/w are the detail card's rect/body \
@@ -4999,14 +5160,8 @@ impl CalendarApp {
         let mut hits = Vec::new();
         let r = self.detail_rect;
         let modal = matches!(self.detail_mode, DetailMode::Overlay);
-        let mut paint = PaintContext {
-            scene,
-            transform: t,
-            text: tr,
-            theme,
-        };
 
-        self.draw_detail_frame(&mut paint, r, modal, &mut hits);
+        self.draw_detail_frame(scene, t, theme, r, modal, &mut hits);
 
         let x = r.x0 + DETAIL_PAD;
         let w = self.notes_w;
@@ -5015,18 +5170,18 @@ impl CalendarApp {
         // The full-screen editor page is its own pushed screen, so it gets a
         // Back affordance top-left instead of a close button.
         if !modal {
-            y += self.draw_detail_back_button(&mut paint, r, &mut hits);
+            y += self.draw_detail_back_button(scene, t, tr, theme, r, &mut hits);
         }
 
         // Header controls, top-right: a Delete (trash) button for the selected
         // item, plus a Close (X) on the modal (the full-screen page uses Back).
-        self.draw_detail_header_controls(&mut paint, r, modal, &mut hits);
+        self.draw_detail_header_controls(scene, t, theme, r, modal, &mut hits);
 
-        self.draw_detail_selection(&mut paint, x, y, w, &mut hits);
+        self.draw_detail_selection(scene, t, tr, theme, x, y, w, &mut hits);
 
         // Notes header (the editor itself is drawn separately in draw()). For
         // an event the notes sit below the form; a task uses the fixed offset.
-        self.draw_detail_notes_header(&mut paint, r, x, w);
+        self.draw_detail_notes_header(scene, t, tr, theme, r, x, w);
 
         hits
     }
@@ -5036,45 +5191,48 @@ impl CalendarApp {
     /// [`Self::draw_detail`]).
     fn draw_detail_frame(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
         r: Rect,
         modal: bool,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
         let c = &theme.tokens.colors;
         if modal {
-            // Dim the calendar behind the card; a click on the dim closes the
-            // editor. `surfaces.overlay` is an opaque token suitable for a
-            // full-screen drawer; here the calendar must remain legible as
-            // context, otherwise a desktop modal reads like it opened into an
-            // empty black window. The card is a floating panel, not a docked
-            // strip.
-            fill_rect(
+            // Dim the calendar behind the card — the shared modal scrim at the
+            // toolkit's modal strength, so the grid stays visible beneath the
+            // editor instead of vanishing under an opaque popover surface. A
+            // click on the dim closes the editor. The card is a floating
+            // panel, not a docked strip.
+            ui::chrome::fill_scrim(
                 scene,
                 t,
-                c.surfaces.overlay.with_alpha(0.58),
                 self.content_rect,
+                ui::widget::modal_frame::MODAL_SCRIM_ALPHA,
+                theme,
             );
             hits.push((self.content_rect, Action::CloseDetail));
-            let shadow = r.inflate(6.0, 10.0);
-            fill_round(scene, t, Color::from_rgba8(0, 0, 0, 90), shadow, 18.0);
-            fill_round(scene, t, c.surfaces.raised, r, 14.0);
-            stroke_round(scene, t, c.border_standard, r, 14.0, 1.0);
+            // Panel role (HIG §9.1): elevation shadow, Panel ground and the
+            // derived Panel border, like every shell flyout.
+            panel(
+                scene,
+                t,
+                theme,
+                r,
+                ui::chrome::ChromeRole::Panel.radius(theme, r.height()),
+            );
             // Backing guard so a press on the card padding is absorbed rather
             // than falling through to the dismiss scrim beneath it.
             hits.push((r, Action::Noop));
         } else {
-            fill_rect(scene, t, c.surfaces.raised, r);
-            stroke_line(
+            fill_rect(scene, t, r, c.surfaces.raised);
+            hairline(
                 scene,
                 t,
-                c.border_standard,
+                c.surfaces.raised,
                 Point::new(r.x0, r.y0),
                 Point::new(r.x0, r.y1),
-                1.0,
             );
         }
     }
@@ -5084,18 +5242,17 @@ impl CalendarApp {
     /// caller should push the detail body down by.
     fn draw_detail_back_button(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         r: Rect,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let back = Rect::new(r.x0 + 12.0, r.y0 + 12.0, r.x0 + 96.0, r.y0 + 44.0);
         if back.contains(self.last_mouse) {
-            fill_round(scene, t, c.lift(0.35), back, 8.0);
+            fill_round(scene, t, back, 8.0, c.lift(0.35));
         }
         draw_back_arrow(
             scene,
@@ -5119,18 +5276,24 @@ impl CalendarApp {
     /// [`Self::draw_detail`]).
     fn draw_detail_header_controls(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
         r: Rect,
         modal: bool,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
         let c = &theme.tokens.colors;
         let mut bx = r.x1 - 14.0;
+        // In the modal card the controls sit on the kind-label header row and
+        // share its centre line; the pushed page keeps them on the back bar.
+        let mid = if modal {
+            r.y0 + 18.0 + self.detail_header_h() / 2.0
+        } else {
+            r.y0 + 25.0
+        };
         if modal {
-            let close = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
+            let close = Rect::new(bx - 22.0, mid - 11.0, bx, mid + 11.0);
             draw_icon_button(scene, t, theme, close, close.contains(self.last_mouse));
             draw_cross(scene, t, c.neutral[8], close.center());
             hits.push((close, Action::CloseDetail));
@@ -5142,7 +5305,7 @@ impl CalendarApp {
             None => None,
         };
         if let Some(action) = del_action {
-            let del = Rect::new(bx - 22.0, r.y0 + 14.0, bx, r.y0 + 36.0);
+            let del = Rect::new(bx - 22.0, mid - 11.0, bx, mid + 11.0);
             let hot = del.contains(self.last_mouse);
             draw_icon_button(scene, t, theme, del, hot);
             let col = if hot { c.semantic.danger } else { c.neutral[8] };
@@ -5162,50 +5325,43 @@ impl CalendarApp {
     )]
     fn draw_detail_selection(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         x: f64,
         y: f64,
         w: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         match self.selection {
             Some(Sel::Event(id)) => {
                 if let Some(e) = self.model.event(id) {
+                    // Dot and kind label share the header row's centre line,
+                    // whatever height the measured label gives that row.
+                    let header_h = self.detail_header_h();
+                    let mid = y + header_h / 2.0;
+                    let label = "EVENT · SAVES AUTOMATICALLY";
+                    let label_h = f64::from(tr.measure(label, SECTION_LABEL_TEXT, None).1);
                     scene.fill(
                         Fill::NonZero,
                         t,
                         e.color.color(theme),
                         None,
-                        &Circle::new(Point::new(x + 6.0, y + 8.0), 6.0),
+                        &Circle::new(Point::new(x + 6.0, mid), 6.0),
                     );
                     tr.draw_text(
                         scene,
-                        "EVENT · SAVES AUTOMATICALLY",
-                        11.0,
+                        label,
+                        SECTION_LABEL_TEXT,
                         c.text_dim,
-                        t * Affine::translate((x + 20.0, y + 2.0)),
+                        t * Affine::translate((x + 20.0, mid - label_h / 2.0)),
                         None,
                     );
                 }
             }
-            Some(Sel::Task(id)) => self.draw_detail_task(
-                &mut PaintContext {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
-                },
-                x,
-                y,
-                w,
-                id,
-                hits,
-            ),
+            Some(Sel::Task(id)) => self.draw_detail_task(scene, t, tr, theme, x, y, w, id, hits),
             None => {}
         }
     }
@@ -5224,17 +5380,16 @@ impl CalendarApp {
     )]
     fn draw_detail_task(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         x: f64,
         mut y: f64,
         w: f64,
         id: Id,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let Some(tk) = self.model.task(id) else {
             return;
@@ -5271,12 +5426,10 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            &FieldButtonFace {
-                rect: due_rect,
-                label: &due,
-                active: due_rect.contains(self.last_mouse),
-                trailing_caret: true,
-            },
+            due_rect,
+            &due,
+            due_rect.contains(self.last_mouse),
+            true,
         );
         hits.push((due_rect, Action::OpenTaskPopover(TaskPopover::Due)));
         y += 40.0;
@@ -5287,12 +5440,10 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            &FieldButtonFace {
-                rect: priority_rect,
-                label: &priority,
-                active: priority_rect.contains(self.last_mouse),
-                trailing_caret: true,
-            },
+            priority_rect,
+            &priority,
+            priority_rect.contains(self.last_mouse),
+            true,
         );
         hits.push((
             priority_rect,
@@ -5312,12 +5463,10 @@ impl CalendarApp {
             t,
             tr,
             theme,
-            &FieldButtonFace {
-                rect: project_rect,
-                label: &project,
-                active: project_rect.contains(self.last_mouse),
-                trailing_caret: true,
-            },
+            project_rect,
+            &project,
+            project_rect.contains(self.last_mouse),
+            true,
         );
         hits.push((project_rect, Action::OpenTaskPopover(TaskPopover::Project)));
         y += 40.0;
@@ -5357,35 +5506,42 @@ impl CalendarApp {
                   position/width, and c is the theme's colour set — conventional short \
                   names for this draw step"
     )]
-    fn draw_detail_notes_header(&self, paint: &mut PaintContext<'_>, r: Rect, x: f64, w: f64) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
+    fn draw_detail_notes_header(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: Rect,
+        x: f64,
+        w: f64,
+    ) {
         let c = &theme.tokens.colors;
         let notes_top = if matches!(self.selection, Some(Sel::Event(_))) {
             self.form.notes_top
         } else {
             self.notes_top_offset()
         };
-        let (_, label_h) = tr.measure("NOTES", 11.0, None);
-        let (notes_label_y, notes_rule_y) =
-            notes_header_positions(r.y0 + notes_top, f64::from(label_h));
+        // Walk back up from the editor origin with the same terms
+        // `notes_header_h` reserved: rule→editor gap, label→rule gap, label
+        // line. The rule can then never cross a scaled label.
+        let label_h = f64::from(tr.measure("NOTES", SECTION_LABEL_TEXT, None).1);
+        let rule_y = r.y0 + notes_top - f64::from(theme.tokens.spacing.s2);
+        let notes_label_y = rule_y - f64::from(theme.tokens.spacing.s1) - label_h;
         tr.draw_text(
             scene,
             "NOTES",
-            11.0,
+            SECTION_LABEL_TEXT,
             c.text_dim,
             t * Affine::translate((x, notes_label_y)),
             None,
         );
-        stroke_line(
+        hairline(
             scene,
             t,
-            c.border_standard,
-            Point::new(x, notes_rule_y),
-            Point::new(x + w, notes_rule_y),
-            1.0,
+            self.detail_ground(theme),
+            Point::new(x, rule_y),
+            Point::new(x + w, rule_y),
         );
     }
 
@@ -5414,30 +5570,19 @@ impl CalendarApp {
         let f = self.form.clone();
         let mouse = self.last_mouse;
         let label_x = f.title.x0;
-        let mut paint = PaintContext {
-            scene,
-            transform: t,
-            text: tr,
-            theme,
-        };
 
         // --- Title (real text input, prominent) -------------------------
-        self.title_input.draw(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            paint.theme,
-            presence,
-        );
+        self.title_input.draw(scene, t, tr, theme, presence);
         hits.push((f.title, Action::FocusField(FormField::Title)));
 
         // --- All-day row: label + pill switch ---------------------------
-        paint.text.draw_text(
-            paint.scene,
+        let all_day_h = f64::from(tr.measure("All day", 14.0, None).1);
+        tr.draw_text(
+            scene,
             "All day",
             14.0,
             c.text_primary,
-            paint.transform * Affine::translate((label_x, f.allday.center().y - 8.0)),
+            t * Affine::translate((label_x, f.allday.center().y - all_day_h / 2.0)),
             None,
         );
         let sw = Rect::new(
@@ -5447,43 +5592,33 @@ impl CalendarApp {
             f.allday.center().y + 12.0,
         );
         Toggle::paint(
-            paint.scene,
-            paint.transform,
-            paint.theme,
+            scene,
+            t,
+            theme,
             &ToggleFace::new(sw, e.all_day).hovered(sw.contains(mouse)),
         );
         hits.push((f.allday, Action::ToggleAllDay));
 
-        self.draw_event_form_dates(&mut paint, &f, &e, mouse, label_x, &mut hits);
-
+        self.draw_event_form_dates(scene, t, tr, theme, &f, &e, mouse, label_x, &mut hits);
         if f.conflict.area() > 0.0 {
             Self::draw_event_conflict_notice(
-                &mut paint,
+                &mut PaintContext {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
                 f.conflict,
                 self.local_schedule_conflicts(&e).len(),
             );
         }
 
         // --- Location (real text input) ---------------------------------
-        self.location_input.draw(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            paint.theme,
-            presence,
-        );
+        self.location_input.draw(scene, t, tr, theme, presence);
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
-        self.draw_event_form_calendar(&mut paint, &f, &e, mouse, &mut hits);
-        self.invite_input.draw(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            paint.theme,
-            presence,
-        );
-        hits.push((f.invite, Action::FocusField(FormField::Invite)));
-        Self::draw_event_form_chips(&mut paint, &f, &e, label_x, &mut hits);
+        self.draw_event_form_calendar(scene, t, tr, theme, &f, &e, mouse, &mut hits);
+        Self::draw_event_form_chips(scene, t, tr, theme, &f, &e, label_x, &mut hits);
 
         hits
     }
@@ -5498,17 +5633,16 @@ impl CalendarApp {
     )]
     fn draw_event_form_dates(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         f: &FormRects,
         e: &Event,
         mouse: Point,
         label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let row = |scene: &mut Scene,
                    tr: &mut TextRenderer,
@@ -5521,42 +5655,21 @@ impl CalendarApp {
                    date_pop: FormPopover,
                    time_pop: FormPopover,
                    popover: FormPopover| {
+            let label_h = f64::from(tr.measure(label, 12.0, None).1);
             tr.draw_text(
                 scene,
                 label,
                 12.0,
                 c.text_dim,
-                t * Affine::translate((label_x, date_rect.center().y - 6.0)),
+                t * Affine::translate((label_x, date_rect.center().y - label_h / 2.0)),
                 None,
             );
             let date_active = date_rect.contains(mouse) || popover == date_pop;
-            draw_field_button(
-                scene,
-                t,
-                tr,
-                theme,
-                &FieldButtonFace {
-                    rect: date_rect,
-                    label: date_str,
-                    active: date_active,
-                    trailing_caret: true,
-                },
-            );
+            draw_field_button(scene, t, tr, theme, date_rect, date_str, date_active, true);
             hits.push((date_rect, Action::OpenPopover(date_pop)));
             if time_rect.area() > 0.0 {
                 let time_active = time_rect.contains(mouse) || popover == time_pop;
-                draw_field_button(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    &FieldButtonFace {
-                        rect: time_rect,
-                        label: time_str,
-                        active: time_active,
-                        trailing_caret: true,
-                    },
-                );
+                draw_field_button(scene, t, tr, theme, time_rect, time_str, time_active, true);
                 hits.push((time_rect, Action::OpenPopover(time_pop)));
             }
         };
@@ -5580,11 +5693,7 @@ impl CalendarApp {
             "Ends",
             f.end_date,
             f.end_time,
-            &date::fmt_day_long(if e.all_day {
-                e.all_day_last_date()
-            } else {
-                e.end.date()
-            }),
+            &date::fmt_day_long(e.end.date()),
             &date::fmt_time(&e.end),
             FormPopover::EndDate,
             FormPopover::EndTime,
@@ -5603,13 +5712,13 @@ impl CalendarApp {
         let theme = paint.theme;
         let c = &theme.tokens.colors;
         let large_text = theme.text_scale >= LARGE_TEXT_SCALE;
-        fill_round(scene, t, c.semantic.warning.with_alpha(0.14), rect, 8.0);
+        fill_round(scene, t, rect, 8.0, c.semantic.warning.with_alpha(0.14));
         stroke_round(
             scene,
             t,
-            c.semantic.warning.with_alpha(0.75),
             rect,
             8.0,
+            c.semantic.warning.with_alpha(0.75),
             1.0,
         );
         scene.fill(
@@ -5661,16 +5770,15 @@ impl CalendarApp {
     )]
     fn draw_event_form_calendar(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         f: &FormRects,
         e: &Event,
         mouse: Point,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let c = &theme.tokens.colors;
         let cal_active =
             f.calendar.contains(mouse) || self.event_popovers.active() == FormPopover::Calendar;
@@ -5681,13 +5789,13 @@ impl CalendarApp {
             } else {
                 c.surfaces.raised
             };
-            fill_round(scene, t, bg, r, 8.0);
-            let (border_w, border) = if cal_active {
-                (2.0, c.border_focus)
+            let radius = f64::from(theme.tokens.radii.md);
+            if cal_active {
+                fill_round(scene, t, r, radius, bg);
+                stroke_round(scene, t, r, radius, c.border_focus, 2.0);
             } else {
-                (1.0, c.border_standard)
-            };
-            stroke_round(scene, t, border, r, 8.0, border_w);
+                card(scene, t, r, radius, bg);
+            }
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -5696,7 +5804,11 @@ impl CalendarApp {
                 &Circle::new(Point::new(r.x0 + 16.0, r.center().y), 5.0),
             );
             let label = self.calendar_label(e.calendar_id.as_ref());
-            let disp = elide_to_width(tr, &label, 14.0, (r.width() - 56.0).max(0.0));
+            let disp = tr.elide_to_width(
+                &label,
+                14.0,
+                ui::num::f32_of_f64((r.width() - 56.0).max(0.0)),
+            );
             tr.draw_text(
                 scene,
                 &disp,
@@ -5723,16 +5835,15 @@ impl CalendarApp {
         reason = "t/f/e and x/y are conventional paint, form, event, and flow geometry names"
     )]
     fn draw_event_form_chips(
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
         f: &FormRects,
         e: &Event,
         label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let t = paint.transform;
-        let theme = paint.theme;
-        let scene = &mut *paint.scene;
-        let tr = &mut *paint.text;
         let mut recurrence_label = if e.recurrence == Recurrence::None {
             "No repeat".to_string()
         } else {
@@ -5775,7 +5886,8 @@ impl CalendarApp {
             } else {
                 ChipLead::None
             };
-            let width = Chip::natural_width_at(&label, height, lead, theme, tr);
+            let width = Chip::natural_width_at(&label, height, lead, theme, tr)
+                .min((max_x - label_x).max(1.0));
             if x > label_x && x + width > max_x {
                 x = label_x;
                 y += event_form_chip_row_pitch(theme.text_scale);
@@ -5804,24 +5916,22 @@ impl CalendarApp {
             _ => None,
         };
         self.event_popovers.draw(
-            &mut PaintContext {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
+            scene,
+            t,
+            tr,
+            theme,
+            presence,
+            self.detail_rect,
+            PopoverAnchors {
+                start_date: self.form.start_date,
+                end_date: self.form.end_date,
+                start_time: self.form.start_time,
+                end_time: self.form.end_time,
+                calendar: self.form.calendar,
             },
-            &PopoverRenderModel {
-                presence,
-                panel: self.detail_rect,
-                anchors: PopoverAnchors {
-                    start_date: self.form.start_date,
-                    end_date: self.form.end_date,
-                    calendar: self.form.calendar,
-                },
-                pointer: self.last_mouse,
-                calendar_options: &options,
-                current_calendar: current,
-            },
+            self.last_mouse,
+            &options,
+            current,
         );
         Vec::new()
     }
@@ -5855,9 +5965,7 @@ impl CalendarApp {
             self.detail_rect.x1 - 24.0,
             self.detail_rect.y0 + 176.0 + popover_height,
         );
-        let c = &theme.tokens.colors;
-        fill_round(scene, t, c.surfaces.raised, r, 12.0);
-        stroke_round(scene, t, c.border_focus, r, 12.0, 1.5);
+        panel(scene, t, theme, r, f64::from(theme.tokens.radii.lg));
         match popover {
             TaskPopover::Due => {
                 let picker_rect = Rect::new(r.x0 + 12.0, r.y0 + 10.0, r.x1 - 12.0, r.y1 - 46.0);
@@ -5879,18 +5987,7 @@ impl CalendarApp {
                     hits.push((rect, action));
                 }
                 let clear = Rect::new(r.x0 + 12.0, r.y1 - 38.0, r.x1 - 12.0, r.y1 - 10.0);
-                draw_field_button(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    &FieldButtonFace {
-                        rect: clear,
-                        label: "Clear due date",
-                        active: false,
-                        trailing_caret: false,
-                    },
-                );
+                draw_field_button(scene, t, tr, theme, clear, "Clear due date", false, false);
                 hits.push((clear, Action::SetTaskDue(None)));
             }
             TaskPopover::Priority => {
@@ -5948,21 +6045,35 @@ impl CalendarApp {
     ) {
         if let Some(msg) = &self.status {
             let c = &theme.tokens.colors;
-            let wmeas = f64::from(tr.measure(msg, 12.0, None).0);
-            let pill = Rect::new(
-                content_x0 + 20.0,
-                self.rect.y1 - 44.0,
-                content_x0 + 44.0 + wmeas,
-                self.rect.y1 - 16.0,
+            let sp = &theme.tokens.spacing;
+            let (inset, pad_x, gap) = (f64::from(sp.s4), f64::from(sp.s3), f64::from(sp.s2));
+            let (wmeas, hmeas) = tr.measure(msg, 12.0, None);
+            let (wmeas, hmeas) = (f64::from(wmeas), f64::from(hmeas));
+            // The pill is the theme's compact selector height, or its measured
+            // line plus the `s2` it keeps above and below once type scales.
+            let pill_h = metrics::at_least_whole(
+                f64::from(theme.tokens.metrics.selector_height),
+                hmeas + 2.0 * gap,
             );
-            fill_round(scene, t, c.neutral[2], pill, 8.0);
-            stroke_round(scene, t, c.border_standard, pill, 8.0, 1.0);
+            let pill = Rect::new(
+                content_x0 + inset,
+                self.rect.y1 - inset - pill_h,
+                content_x0 + inset + wmeas + 2.0 * pad_x,
+                self.rect.y1 - inset,
+            );
+            card(
+                scene,
+                t,
+                pill,
+                f64::from(theme.tokens.radii.md),
+                c.surfaces.raised,
+            );
             tr.draw_text(
                 scene,
                 msg,
                 12.0,
-                c.neutral[9],
-                t * Affine::translate((pill.x0 + 12.0, pill.center().y - 7.0)),
+                c.text_primary,
+                t * Affine::translate((pill.x0 + pad_x, pill.center().y - hmeas / 2.0)),
                 None,
             );
             // An error must offer its recovery at the point where it is
@@ -5970,22 +6081,18 @@ impl CalendarApp {
             // keyboard, screen-reader and resource-operation retry on one
             // execution path instead of presenting inert advice.
             if msg.starts_with("Sync failed") {
-                let retry = Rect::new(pill.x1 + 8.0, pill.y0, pill.x1 + 68.0, pill.y1);
+                let retry_w = f64::from(tr.measure("Retry", 12.0, None).0) + 2.0 * pad_x;
+                let retry = Rect::new(pill.x1 + gap, pill.y0, pill.x1 + gap + retry_w, pill.y1);
                 let hot = retry.contains(self.last_mouse);
-                fill_round(
+                Button::paint(
                     scene,
                     t,
-                    if hot { c.accent[5] } else { c.accent[4] },
-                    retry,
-                    8.0,
-                );
-                tr.draw_text(
-                    scene,
-                    "Retry",
-                    12.0,
-                    c.on_accent(4.5),
-                    t * Affine::translate((retry.x0 + 12.0, retry.center().y - 7.0)),
-                    None,
+                    tr,
+                    theme,
+                    &ButtonFace::new(retry, "Retry")
+                        .primary()
+                        .text_size(12.0)
+                        .hovered(hot),
                 );
                 hits.push((retry, Action::Sync));
             }
@@ -6015,20 +6122,35 @@ impl CalendarApp {
         hint: &str,
     ) {
         let c = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
         let title_size = 20.0_f32;
         let hint_size = 14.0_f32;
-        let gap = 10.0_f64;
-        let title_w = f64::from(tr.measure(title, title_size, None).0);
-        let hint_w = f64::from(tr.measure(hint, hint_size, None).0);
-        let block_h = f64::from(title_size) + gap + f64::from(hint_size);
+        // Related title and hint sit one small gap apart (HIG §7a); the plate
+        // around them takes the larger padding so the group reads as a unit.
+        let gap = f64::from(sp.s2);
+        let (title_w, title_h) = tr.measure(title, title_size, None);
+        let (hint_w, hint_h) = tr.measure(hint, hint_size, None);
+        let block_h = f64::from(title_h) + gap + f64::from(hint_h);
+        let block_w = f64::from(title_w.max(hint_w));
         let cx = area.center().x;
         let top = area.center().y - block_h / 2.0;
+        // The prompt floats over the day grid, so it needs its own surface:
+        // without one the hint line lands on whichever date numbers happen to
+        // sit in the middle row (visible at phone widths).
+        let plate = Rect::new(
+            cx - block_w / 2.0 - f64::from(sp.s6),
+            top - f64::from(sp.s4),
+            cx + block_w / 2.0 + f64::from(sp.s6),
+            top + block_h + f64::from(sp.s4),
+        );
+        let radius = f64::from(theme.tokens.radii.lg);
+        card(scene, t, plate, radius, c.surfaces.raised);
         tr.draw_text(
             scene,
             title,
             title_size,
             c.neutral[8],
-            t * Affine::translate((cx - title_w / 2.0, top)),
+            t * Affine::translate((cx - f64::from(title_w) / 2.0, top)),
             None,
         );
         tr.draw_text(
@@ -6036,7 +6158,7 @@ impl CalendarApp {
             hint,
             hint_size,
             c.text_dim,
-            t * Affine::translate((cx - hint_w / 2.0, top + f64::from(title_size) + gap)),
+            t * Affine::translate((cx - f64::from(hint_w) / 2.0, top + f64::from(title_h) + gap)),
             None,
         );
     }
@@ -7050,6 +7172,10 @@ impl Widget for CalendarApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = theme.text_scale;
+        self.spacing = theme.tokens.spacing.clone();
+        self.tokens_metrics = theme.tokens.metrics;
+        self.timeline
+            .set_layout_tokens(theme.text_scale, &theme.tokens.spacing);
         let editor_node = self.notes_editor.build_layout(taffy, theme, node_map);
         let notes_w = self.detail_body_w();
         self.built_notes_w = notes_w;
@@ -7161,7 +7287,7 @@ impl Widget for CalendarApp {
         // calls need the same accessibility multiplier as toolkit widgets.
         text_renderer.set_text_scale(theme.text_scale);
         let c = &theme.tokens.colors;
-        fill_rect(scene, t, c.surfaces.base, self.rect);
+        fill_rect(scene, t, self.rect, c.surfaces.base);
 
         let mut hits = Vec::new();
 
@@ -7170,15 +7296,17 @@ impl Widget for CalendarApp {
         // pushed detail).
         let detail_drawn = self.detail_open && self.detail_rect.area() > 0.0;
         if self.content_rect.area() > 0.0 {
-            let mut topbar_paint = PaintContext {
-                scene,
-                transform: t,
-                text: text_renderer,
-                theme,
-            };
             hits.extend(
                 self.topbar
-                    .draw(&mut topbar_paint, self.view, self.anchor, self.last_mouse)
+                    .draw(
+                        scene,
+                        t,
+                        text_renderer,
+                        theme,
+                        self.view,
+                        self.anchor,
+                        self.last_mouse,
+                    )
                     .iter()
                     .map(|(rect, action)| {
                         let action = match action {
@@ -7195,43 +7323,6 @@ impl Widget for CalendarApp {
             );
             let area = self.view_rect();
             match self.view {
-                View::Month if self.text_scale >= LARGE_TEXT_SCALE && area.width() < 520.0 => {
-                    // A seven-column grid turns events into indistinguishable
-                    // dots at phone width/200% text. Keep the Month navigation
-                    // identity in the top bar, but present the selected day and
-                    // following dates as the readable, focusable shared agenda.
-                    let hidden = self.hidden_calendar_ids();
-                    let render = AgendaRenderModel {
-                        area,
-                        model: &self.model,
-                        anchor: self.anchor,
-                        today: self.today,
-                        hidden_calendars: &hidden,
-                        calendar_filter: self.calendar_filter.as_deref(),
-                        pointer: self.last_mouse,
-                    };
-                    hits.extend(
-                        self.agenda
-                            .draw(
-                                &mut PaintContext {
-                                    scene,
-                                    transform: t,
-                                    text: text_renderer,
-                                    theme,
-                                },
-                                &render,
-                            )
-                            .into_iter()
-                            .map(|(rect, action)| {
-                                let action = match action {
-                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
-                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
-                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
-                                };
-                                (rect, action)
-                            }),
-                    );
-                }
                 View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
                 View::Week | View::Day => {
                     let days = self.timeline_days();
@@ -7249,16 +7340,7 @@ impl Widget for CalendarApp {
                     };
                     hits.extend(
                         self.timeline
-                            .draw_timeline(
-                                &mut PaintContext {
-                                    scene,
-                                    transform: t,
-                                    text: text_renderer,
-                                    theme,
-                                },
-                                area,
-                                &model,
-                            )
+                            .draw_timeline(scene, t, text_renderer, theme, area, &model)
                             .into_iter()
                             .filter_map(|(rect, effect)| match effect {
                                 TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
@@ -7269,25 +7351,20 @@ impl Widget for CalendarApp {
                 }
                 View::Agenda => {
                     let hidden = self.hidden_calendar_ids();
-                    let render = AgendaRenderModel {
-                        area,
-                        model: &self.model,
-                        anchor: self.anchor,
-                        today: self.today,
-                        hidden_calendars: &hidden,
-                        calendar_filter: self.calendar_filter.as_deref(),
-                        pointer: self.last_mouse,
-                    };
                     hits.extend(
                         self.agenda
                             .draw(
-                                &mut PaintContext {
-                                    scene,
-                                    transform: t,
-                                    text: text_renderer,
-                                    theme,
-                                },
-                                &render,
+                                scene,
+                                t,
+                                text_renderer,
+                                theme,
+                                area,
+                                &self.model,
+                                self.anchor,
+                                self.today,
+                                &hidden,
+                                self.calendar_filter.as_deref(),
+                                self.last_mouse,
                             )
                             .into_iter()
                             .map(|(rect, action)| {
@@ -7316,15 +7393,17 @@ impl Widget for CalendarApp {
             // The editable event form (title/location inputs, date/time/
             // calendar fields, chips) draws over the event detail body.
             let editing_event = matches!(self.selection, Some(Sel::Event(_)));
-            let sticky_header_height = if matches!(self.detail_mode, DetailMode::Overlay) {
-                46.0
-            } else {
-                80.0
-            };
-            let body_clip = Rect::new(
+            if editing_event {
+                hits.extend(self.draw_event_form(scene, t, text_renderer, theme, presence));
+            }
+            // Notes editor — clipped to the notes region below the header.
+            // Clip to the editor's own column (not the whole panel) so a
+            // long single-line note block scrolls/cuts at the notes
+            // padding rather than bleeding to the window edge.
+            let clip = Rect::new(
                 self.detail_rect.x0,
-                self.detail_rect.y0 + sticky_header_height,
-                self.detail_rect.x1,
+                self.notes_origin.y - 4.0,
+                self.notes_origin.x + self.notes_w + 4.0,
                 self.detail_rect.y1 - 12.0,
             );
             scene.push_layer(
@@ -7332,26 +7411,13 @@ impl Widget for CalendarApp {
                 vello::peniko::BlendMode::default(),
                 1.0,
                 t,
-                &body_clip,
+                &clip,
             );
-            if editing_event {
-                hits.extend(
-                    self.draw_event_form(scene, t, text_renderer, theme, presence)
-                        .into_iter()
-                        .filter(|(rect, _)| rect.y1 > body_clip.y0 && rect.y0 < body_clip.y1),
-                );
-            }
             self.notes_editor
                 .draw(scene, t, text_renderer, theme, presence);
             scene.pop_layer();
-            if editing_event && self.detail_scroll_max > 0.0 {
-                self.draw_detail_scrollbar(scene, t, theme, body_clip);
-            }
             self.notes_editor
                 .draw_overlay(scene, t, text_renderer, theme);
-            if editing_event {
-                self.redraw_narrow_sticky_header(scene, t, text_renderer, theme);
-            }
             // Transient date/time/calendar popovers paint on top of the form
             // and the notes, with a dismiss scrim beneath them.
             if editing_event {
@@ -7733,9 +7799,12 @@ pub(crate) fn center_text(
     r: Rect,
     t: Affine,
 ) {
-    let w = f64::from(tr.measure(text, size, None).0);
-    let x = r.center().x - w / 2.0;
-    let y = r.center().y - f64::from(size) / 2.0;
+    // Centre on the measured line box, not the nominal glyph size: the
+    // renderer scales the text it draws, so only the measurement it reports
+    // tells us how tall the line really is at the current text scale.
+    let (w, h) = tr.measure(text, size, None);
+    let x = r.center().x - f64::from(w) / 2.0;
+    let y = r.center().y - f64::from(h) / 2.0;
     tr.draw_text(
         scene,
         text,
@@ -7753,8 +7822,7 @@ pub(crate) fn draw_icon_button(scene: &mut Scene, t: Affine, theme: &Theme, r: R
     } else {
         c.surfaces.raised
     };
-    fill_round(scene, t, bg, r, 8.0);
-    stroke_round(scene, t, c.border_standard, r, 8.0, 1.0);
+    card(scene, t, r, f64::from(theme.tokens.radii.md), bg);
 }
 
 pub(crate) fn draw_chevron(scene: &mut Scene, t: Affine, color: Color, center: Point, left: bool) {
@@ -7971,16 +8039,20 @@ fn draw_count_badge(
     t: Affine,
     tr: &mut TextRenderer,
     theme: &Theme,
-    cx: f64,
-    cy: f64,
+    at: Point,
     n: usize,
+    ground: Color,
 ) {
     let c = &theme.tokens.colors;
     let s = format!("{n}");
     let w = (f64::from(tr.measure(&s, 11.0, None).0) + 12.0).max(20.0);
-    let r = Rect::new(cx - w / 2.0, cy - 9.0, cx + w / 2.0, cy + 9.0);
-    fill_round(scene, t, c.neutral[3], r, 9.0);
-    center_text(scene, tr, &s, 11.0, c.neutral[9], r, t);
+    let r = Rect::new(at.x - w / 2.0, at.y - 9.0, at.x + w / 2.0, at.y + 9.0);
+    // A pill on `ground` — the sidebar's raised pane, or the lifted row it
+    // sits in: whichever tier moves furthest from that ground, so the badge
+    // body registers on an idle row and on the selected one alike (a fixed
+    // `base` fill vanished on a selected row whose lift is `base`).
+    card(scene, t, r, r.height() / 2.0, selection_fill(theme, ground));
+    center_text(scene, tr, &s, 11.0, c.text_primary, r, t);
 }
 
 pub(crate) fn draw_download(scene: &mut Scene, t: Affine, color: Color, center: Point) {
@@ -8038,42 +8110,35 @@ pub(crate) fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Po
 /// value and an optional trailing disclosure caret. Backs the date/time/
 /// calendar fields, mirroring the `TextInput` chrome so the whole form looks
 /// uniformly editable.
-#[derive(Clone, Copy)]
-struct FieldButtonFace<'a> {
-    rect: Rect,
-    label: &'a str,
-    active: bool,
-    trailing_caret: bool,
-}
-
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The field-button painter combines scene, transform, text, and theme with bounds, label, active state, and optional caret."
+)]
 fn draw_field_button(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
     theme: &Theme,
-    face: &FieldButtonFace<'_>,
+    r: Rect,
+    label: &str,
+    active: bool,
+    trailing_caret: bool,
 ) {
-    let &FieldButtonFace {
-        rect: r,
-        label,
-        active,
-        trailing_caret,
-    } = face;
     let c = &theme.tokens.colors;
     let bg = if active {
         c.lift(0.72)
     } else {
         c.surfaces.raised
     };
-    fill_round(scene, t, bg, r, 8.0);
-    let (bw, border) = if active {
-        (2.0, c.border_focus)
+    let radius = f64::from(theme.tokens.radii.md);
+    if active {
+        fill_round(scene, t, r, radius, bg);
+        stroke_round(scene, t, r, radius, c.border_focus, 2.0);
     } else {
-        (1.0, c.border_standard)
-    };
-    stroke_round(scene, t, border, r, 8.0, bw);
+        card(scene, t, r, radius, bg);
+    }
     let text_max = (r.width() - if trailing_caret { 40.0 } else { 24.0 }).max(0.0);
-    let disp = elide_to_width(tr, label, 14.0, text_max);
+    let disp = tr.elide_to_width(label, 14.0, ui::num::f32_of_f64(text_max));
     tr.draw_text(
         scene,
         &disp,
@@ -8093,6 +8158,19 @@ fn draw_field_button(
     }
 }
 
+/// Height of a metadata chip for the current text scale: the theme's compact
+/// selector height (28px at 1×), or the measured label line plus the `s3`
+/// pad the painter leaves — rounded up — once scaled type needs more. Shared
+/// by `form_layout` (no renderer; reads the cached theme tokens) and `chip`
+/// (renderer) so the reserved row and the painted pill agree.
+#[cfg(test)]
+fn event_form_chip_h(selector_h: f64, pad_y: f64, text_scale: f32) -> f64 {
+    metrics::at_least_whole(
+        selector_h,
+        metrics::line_h(EVENT_FORM_CHIP_TEXT, text_scale) + pad_y,
+    )
+}
+
 /// The immediate-mode shared chip measures its label against the renderer's
 /// scaled font. Keep this geometry in one helper so the form reserve, hit
 /// targets, and painted border agree at every accessibility text size.
@@ -8102,17 +8180,6 @@ fn event_form_chip_height(text_scale: f32) -> f64 {
 
 fn event_form_chip_row_pitch(text_scale: f32) -> f64 {
     event_form_chip_height(text_scale) + EVENT_FORM_CHIP_GAP * f64::from(text_scale).max(1.0)
-}
-
-/// Position the NOTES heading above its rule using the shaped label height.
-/// At 200% text, a fixed baseline offset made the rule cut across the label.
-/// The editor starts eight pixels below the rule, preserving its prior visual
-/// rhythm while making the heading's clearance explicit.
-fn notes_header_positions(notes_origin_y: f64, label_h: f64) -> (f64, f64) {
-    const RULE_TO_EDITOR_GAP: f64 = 8.0;
-    const LABEL_TO_RULE_GAP: f64 = 6.0;
-    let rule_y = notes_origin_y - RULE_TO_EDITOR_GAP;
-    (rule_y - LABEL_TO_RULE_GAP - label_h, rule_y)
 }
 
 fn elide(s: &str, max: usize) -> String {

@@ -629,7 +629,7 @@ impl Widget for ResourceActionHost {
         self.root.needs_animation_frame()
     }
 
-    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
         self.root.next_wake_deadline()
     }
 

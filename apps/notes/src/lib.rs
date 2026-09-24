@@ -1,3 +1,9 @@
+#![allow(
+    clippy::doc_markdown,
+    clippy::useless_conversion,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Library root for the notes app.
 //!
 //! The binary in `main.rs` is a thin shim that wires the [`NotesApp`]
@@ -37,6 +43,8 @@ pub mod app;
 mod block_order;
 pub mod capture;
 pub mod component;
+pub mod framework_history;
+pub mod production;
 pub use component::definition;
 pub mod doc;
 pub mod hosting;

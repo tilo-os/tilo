@@ -13,6 +13,7 @@
 //! [`ShellNetwork::peer_labels`] — a frame's own `user` field is never
 //! trusted, since a peer naming itself could name anybody.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -415,7 +416,12 @@ impl PeerPresence {
                 return false;
             };
             let tree = replica.tree.read();
-            let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
+            let Some(ws) = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == tree.desktop.active)
+            else {
                 return false;
             };
             if ws.room.is_nil() {
@@ -443,7 +449,7 @@ impl PeerPresence {
                         .flatten()
                 });
             }
-            let unchanged = ws.collaborators == rows && tree.collaborators == rows;
+            let unchanged = ws.collaborators == rows && tree.desktop.collaborators == rows;
             let active = ws.id;
             // Drop the read guard as soon as it's no longer needed, rather
             // than holding it to the end of the block below.
@@ -457,13 +463,18 @@ impl PeerPresence {
             return false;
         };
         let mut tree = replica.tree.write();
-        if let Some(workspace) = tree.workspaces.iter_mut().find(|ws| ws.id == active) {
+        if let Some(workspace) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.id == active)
+        {
             workspace.collaborators.clone_from(&rows);
         }
         // Keep the migration-era cache in sync for older readers. New shell
         // chrome always reads the active workspace directly, so this cache
         // cannot leak another workspace's presence into the top bar.
-        tree.collaborators = rows;
+        tree.desktop.collaborators = rows;
         true
     }
 }
@@ -1233,6 +1244,7 @@ mod two_sessions {
     /// loop does before calling [`PeerPresence::set_rooms`].
     fn rooms_of(tree: &crate::shell::state::WorkspaceTreeHandle) -> Vec<String> {
         tree.read()
+            .desktop
             .workspaces
             .iter()
             .map(|w| w.room.to_string())
@@ -1562,7 +1574,8 @@ mod two_sessions {
     /// Put the fixture's workspace on screen — `append_empty_workspace`
     /// doesn't move `active`, but the roster reads whichever room that is.
     fn looking_at_its_room(tree: &mut WorkspaceTree) {
-        tree.active = tree
+        tree.desktop.active = tree
+            .desktop
             .workspaces
             .first()
             .expect("the fixture makes a workspace")
@@ -1574,6 +1587,7 @@ mod two_sessions {
         tree: &crate::shell::state::WorkspaceTreeHandle,
     ) -> Vec<(String, Option<String>, bool)> {
         tree.read()
+            .desktop
             .active_workspace()
             .map(|workspace| workspace.collaborators.as_slice())
             .unwrap_or_default()
@@ -1643,7 +1657,13 @@ mod two_sessions {
              somebody who is here rather than somebody who was asked",
         );
         assert_eq!(
-            host_handle.read().active_workspace().unwrap().collaborators[0].session,
+            host_handle
+                .read()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators[0]
+                .session,
             Some(handle_of(&guest_peer)),
             "trusted screen-sharing disclosure joins viewers through the authenticated session",
         );

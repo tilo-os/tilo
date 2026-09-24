@@ -167,8 +167,8 @@ impl XdgConfigMarkerSource {
     /// Resolve the marker file path using the same rules [`peer_sync_marker_exists`] uses; exposed for diagnostics and for tests asserting resolution without touching the filesystem.
     pub fn marker_path() -> Option<std::path::PathBuf> {
         peer_sync_marker_path_from_env(
-            std::env::var_os("XDG_CONFIG_HOME"),
-            std::env::var_os("HOME"),
+            std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+            std::env::var_os("HOME").as_deref(),
         )
     }
 }
@@ -181,21 +181,15 @@ impl MarkerSource for XdgConfigMarkerSource {
 
 /// Pure helper for [`XdgConfigMarkerSource::marker_path`], so tests can drive the path-resolution rules with fixture env-var values.
 pub fn peer_sync_marker_path_from_env(
-    xdg_config_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
+    xdg_config_home: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
 ) -> Option<std::path::PathBuf> {
-    if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
-        let mut p = std::path::PathBuf::from(xdg);
-        p.push("tilo-desktop");
-        p.push("peer-sync.enabled");
-        return Some(p);
-    }
-    let home = home.filter(|v| !v.is_empty())?;
-    let mut p = std::path::PathBuf::from(home);
-    p.push(".config");
-    p.push("tilo-desktop");
-    p.push("peer-sync.enabled");
-    Some(p)
+    Some(
+        xdg_paths::xdg::Base::Config
+            .resolve_from(xdg_config_home, home)?
+            .join("tilo-desktop")
+            .join("peer-sync.enabled"),
+    )
 }
 
 /// Combined peer-sync resolution. Sync is on by default; an explicit
@@ -613,8 +607,8 @@ mod tests {
     #[test]
     fn marker_path_prefers_xdg_config_home() {
         let path = peer_sync_marker_path_from_env(
-            Some(std::ffi::OsString::from("/custom/xdg")),
-            Some(std::ffi::OsString::from("/home/ignored")),
+            Some(std::ffi::OsStr::new("/custom/xdg")),
+            Some(std::ffi::OsStr::new("/home/ignored")),
         )
         .expect("path resolves with XDG set");
         assert_eq!(
@@ -625,9 +619,8 @@ mod tests {
 
     #[test]
     fn marker_path_falls_back_to_home_dot_config() {
-        let path =
-            peer_sync_marker_path_from_env(None, Some(std::ffi::OsString::from("/home/alice")))
-                .expect("path resolves via HOME");
+        let path = peer_sync_marker_path_from_env(None, Some(std::ffi::OsStr::new("/home/alice")))
+            .expect("path resolves via HOME");
         assert_eq!(
             path,
             std::path::PathBuf::from("/home/alice/.config/tilo-desktop/peer-sync.enabled")
@@ -638,8 +631,8 @@ mod tests {
     fn marker_path_empty_xdg_treated_as_unset() {
         // POSIX convention: an empty env-var means "use the default".
         let path = peer_sync_marker_path_from_env(
-            Some(std::ffi::OsString::from("")),
-            Some(std::ffi::OsString::from("/home/bob")),
+            Some(std::ffi::OsStr::new("")),
+            Some(std::ffi::OsStr::new("/home/bob")),
         )
         .expect("falls back through empty XDG to HOME");
         assert_eq!(
@@ -654,8 +647,8 @@ mod tests {
         assert!(peer_sync_marker_path_from_env(None, None).is_none());
         assert!(
             peer_sync_marker_path_from_env(
-                Some(std::ffi::OsString::from("")),
-                Some(std::ffi::OsString::from("")),
+                Some(std::ffi::OsStr::new("")),
+                Some(std::ffi::OsStr::new("")),
             )
             .is_none()
         );

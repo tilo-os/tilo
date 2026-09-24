@@ -13,7 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{
+    SysRng,
+    rand_core::{TryRng as _, UnwrapErr},
+};
+use rand_core::Rng;
 use serde_json::{Map, Value};
 
 use crate::network::actor::{PersonalMediaTransferStatus, PersonalNearbyTransferFrame};
@@ -3231,7 +3235,7 @@ fn pump_device_health(network: &ShellNetwork, policy: ContinuityPolicySnapshot) 
         for peer in online {
             let mut nonce = [0; 16];
             while nonce == [0; 16] {
-                OsRng.fill_bytes(&mut nonce);
+                UnwrapErr(SysRng).fill_bytes(&mut nonce);
             }
             if state.tracker.begin_probe(peer.clone(), nonce, now) {
                 probes.push((peer, nonce));
@@ -4092,7 +4096,7 @@ pub fn authorize_bluetooth_handoff(
         let authorization = if approved {
             let mut authorization = [0; 16];
             while authorization == [0; 16] {
-                OsRng.fill_bytes(&mut authorization);
+                UnwrapErr(SysRng).fill_bytes(&mut authorization);
             }
             if let Some(pending) = state.transactions.get_mut(&request_id) {
                 pending.phase = BluetoothHandoffPhase::PairingReady;
@@ -4532,7 +4536,7 @@ pub fn request_nearby_drop(
         let sender = nearby_staging_queue().0.clone();
         let mut transfer_id = [0; 16];
         while transfer_id == [0; 16] {
-            OsRng.fill_bytes(&mut transfer_id);
+            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
         }
         std::thread::Builder::new()
             .name("tilo-nearby-stage".into())
@@ -4633,7 +4637,7 @@ pub fn request_nearby_drop_secure(
         let sender = nearby_staging_queue().0.clone();
         let mut transfer_id = [0; 16];
         while transfer_id == [0; 16] {
-            OsRng.fill_bytes(&mut transfer_id);
+            UnwrapErr(SysRng).fill_bytes(&mut transfer_id);
         }
         std::thread::Builder::new()
             .name("tilo-nearby-stage".into())
@@ -5755,7 +5759,7 @@ pub fn grant_input_control(
         return Err("the controller has no online pointer or keyboard capability".into());
     }
     let mut nonce = [0_u8; 16];
-    OsRng
+    SysRng
         .try_fill_bytes(&mut nonce)
         .map_err(|_| "secure randomness is unavailable".to_string())?;
     if nonce == [0; 16] {
@@ -6168,7 +6172,7 @@ pub fn request_display_mirror(
     drop(fabric);
     let mut session_id = [0; 16];
     while session_id == [0; 16] {
-        OsRng.fill_bytes(&mut session_id);
+        UnwrapErr(SysRng).fill_bytes(&mut session_id);
     }
     {
         let mut state = display_mirror_state()
@@ -6601,7 +6605,7 @@ fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapsh
         let session = state.outbound.entry(target.clone()).or_insert_with(|| {
             let mut session_id = [0_u8; 16];
             while session_id == [0; 16] {
-                OsRng.fill_bytes(&mut session_id);
+                UnwrapErr(SysRng).fill_bytes(&mut session_id);
             }
             OutboundDisplaySession {
                 session_id,
@@ -7468,7 +7472,7 @@ pub fn stop_typed_gamepad_forwarding(
 
 fn secure_nonce() -> Option<[u8; 16]> {
     let mut nonce = [0; 16];
-    OsRng.try_fill_bytes(&mut nonce).ok()?;
+    SysRng.try_fill_bytes(&mut nonce).ok()?;
     (nonce != [0; 16]).then_some(nonce)
 }
 
@@ -7797,7 +7801,7 @@ mod tests {
             request_id,
             source,
             session_id: format!("session-{}", request_id[0]),
-            app_id: "dev.tilo.music".into(),
+            app_id: "so.tilo.music".into(),
             workspace_id: "00000000-0000-0000-0000-000000000001".into(),
             title: "Track".into(),
             locator: MediaSourceLocator::RemoteStream {
@@ -8808,7 +8812,7 @@ mod tests {
         PendingGamepadAuthorization {
             source: DeviceId::new(source).unwrap(),
             target: DeviceId::new("target").unwrap(),
-            app_id: "dev.tilo.game".into(),
+            app_id: "so.tilo.game".into(),
             workspace_id: "workspace".into(),
             session_id: "session".into(),
             label: "Controller".into(),
@@ -8837,7 +8841,7 @@ mod tests {
     fn gamepad_approval_requires_exact_compositor_local_focus() {
         let pending = pending_gamepad("source");
         let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
-            app_id: "dev.tilo.game".into(),
+            app_id: "so.tilo.game".into(),
             workspace_id: "workspace".into(),
             session_id: "session".into(),
         };
@@ -8845,7 +8849,7 @@ mod tests {
         assert!(!pending.matches_local_focus(None));
         for mismatch in [
             crate::shell::physical_gamepad::PhysicalGamepadBinding {
-                app_id: "dev.tilo.other".into(),
+                app_id: "so.tilo.other".into(),
                 ..exact.clone()
             },
             crate::shell::physical_gamepad::PhysicalGamepadBinding {
@@ -8866,13 +8870,13 @@ mod tests {
         let identity = os_actions::ForwardedPeripheralIdentity::new_after_verification(
             "source",
             "target",
-            "dev.tilo.game",
+            "so.tilo.game",
             "workspace",
             "session",
         )
         .unwrap();
         let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
-            app_id: "dev.tilo.game".into(),
+            app_id: "so.tilo.game".into(),
             workspace_id: "workspace".into(),
             session_id: "session".into(),
         };

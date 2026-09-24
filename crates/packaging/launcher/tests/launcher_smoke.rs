@@ -19,38 +19,22 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use launcher::capabilities::CapabilityPlan;
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
+use tilo_test_env::{ScopedEnv, TestHome};
 
-/// The runtime-bundle lookup tests all mutate `HOME` / `XDG_DATA_HOME`
-/// to a per-test tempdir; since env vars are process-global, run those
-/// tests serially or concurrent tempdir paths bleed across each other.
-static RUNTIME_ENV_MUTEX: Mutex<()> = Mutex::new(());
+use crate::support::{hello_payload, isolated_options};
 
 // helpers
 
-/// rustc-compile the in-tree `hello` fixture into `out_dir/bin/hello`
-/// rather than `cargo build`, since the fixture lives outside the
-/// workspace and this wants a single-shot build that doesn't dirty the
-/// workspace target dir.
-fn build_hello(out_dir: &Path) -> PathBuf {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello/src/main.rs");
-    let bin = out_dir.join("bin").join("hello");
-    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-    let status = std::process::Command::new("rustc")
-        .arg("--edition=2024")
-        .arg("-O")
-        .arg(&src)
-        .arg("-o")
-        .arg(&bin)
-        .status()
-        .expect("invoke rustc");
-    assert!(status.success(), "rustc failed to build hello fixture");
-    bin
+/// Point `$XDG_RUNTIME_DIR`, where session services are looked up, at `dir`.
+fn runtime_dir_env(dir: &Path) -> ScopedEnv {
+    let mut env = ScopedEnv::new();
+    env.set("XDG_RUNTIME_DIR", dir);
+    env
 }
 
 // `with_glibc_binds` is gone: those loader paths are in the launcher's
@@ -93,7 +77,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
 /// Locate the product sandbox executable. A test unable to observe it fails.
 fn bwrap_path() -> PathBuf {
     let p = PathBuf::from("/usr/bin/bwrap");
-    assert!(p.exists(), "bwrap is required to verify qpkg launching");
+    assert!(p.exists(), "bwrap is required to verify tapp launching");
     p
 }
 
@@ -113,11 +97,10 @@ fn manifest_malformed_fails_before_exec() {
 }
 
 #[test]
-#[serial_test::serial(process_env)]
 fn required_service_missing_fails() {
     // Manifest says `collab = "required@1"` but no socket exists.
     let dir = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+    let _env = runtime_dir_env(dir.path());
 
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "required@1".to_string());
@@ -125,7 +108,7 @@ fn required_service_missing_fails() {
     let opts = RunOptions {
         no_services: false,
         landlock_enforce: true,
-        ..Default::default()
+        ..isolated_options(dir.path())
     };
     let err = run_with(&m, dir.path(), &opts).unwrap_err();
     assert_eq!(err.to_exit_code(), EXIT_REQUIRED_SERVICE_MISSING);
@@ -149,10 +132,10 @@ fn no_services_flag_skips_required_resolution() {
 #[test]
 fn hello_world_runs() {
     let bwrap = bwrap_path();
-    let payload = tempfile::tempdir().unwrap();
-    let _bin = build_hello(payload.path());
+    let payload = hello_payload();
+    let data = tempfile::tempdir().unwrap();
 
-    let m = hello_manifest(payload.path(), BTreeMap::new());
+    let m = hello_manifest(payload, BTreeMap::new());
     let opts = RunOptions {
         no_services: false,
         runtime_root: None,
@@ -161,9 +144,9 @@ fn hello_world_runs() {
         minimal_libs: false,
         landlock_enforce: false,
         mode: launcher::run::LaunchMode::Gui,
-        ..Default::default()
+        ..isolated_options(data.path())
     };
-    let (status, stdout) = run_with_captured(&m, payload.path(), &opts).expect("launch");
+    let (status, stdout) = run_with_captured(&m, payload, &opts).expect("launch");
     assert!(status.success(), "child exited non-zero: {status:?}");
     let stdout = String::from_utf8_lossy(&stdout);
     assert!(
@@ -175,11 +158,11 @@ fn hello_world_runs() {
 #[test]
 fn no_services_flag_skips_required() {
     let bwrap = bwrap_path();
-    let payload = tempfile::tempdir().unwrap();
-    let _bin = build_hello(payload.path());
+    let payload = hello_payload();
+    let data = tempfile::tempdir().unwrap();
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "required@1".to_string());
-    let m = hello_manifest(payload.path(), svcs);
+    let m = hello_manifest(payload, svcs);
     let opts = RunOptions {
         no_services: true,
         runtime_root: None,
@@ -187,25 +170,23 @@ fn no_services_flag_skips_required() {
         minimal_libs: false,
         landlock_enforce: false,
         mode: launcher::run::LaunchMode::Gui,
-        ..Default::default()
+        ..isolated_options(data.path())
     };
-    let status = run_with(&m, payload.path(), &opts).expect("launch");
+    let status = run_with(&m, payload, &opts).expect("launch");
     assert!(status.success());
 }
 
 #[test]
-#[serial_test::serial(process_env)]
 fn optional_service_missing_warns_and_runs() {
     let bwrap = bwrap_path();
     let dir = tempfile::tempdir().unwrap();
-    unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+    let _env = runtime_dir_env(dir.path());
 
-    let payload = tempfile::tempdir().unwrap();
-    let _bin = build_hello(payload.path());
+    let payload = hello_payload();
 
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "optional@1".to_string());
-    let m = hello_manifest(payload.path(), svcs);
+    let m = hello_manifest(payload, svcs);
     let opts = RunOptions {
         no_services: false,
         runtime_root: None,
@@ -213,9 +194,9 @@ fn optional_service_missing_warns_and_runs() {
         minimal_libs: false,
         landlock_enforce: false,
         mode: launcher::run::LaunchMode::Gui,
-        ..Default::default()
+        ..isolated_options(dir.path())
     };
-    let status = run_with(&m, payload.path(), &opts).expect("launch");
+    let status = run_with(&m, payload, &opts).expect("launch");
     assert!(status.success(), "optional missing should still run");
 }
 
@@ -225,29 +206,19 @@ fn optional_service_missing_warns_and_runs() {
 // risk.
 
 #[test]
-#[serial_test::serial(process_env)]
 fn manifest_declared_runtime_missing_bundle_fails() {
-    let _guard = RUNTIME_ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Manifest points at a runtime whose bundle doesn't exist anywhere on
     // the search path: expect a RuntimeBundleMissing error naming the
     // paths looked at.
-    let dir = tempfile::tempdir().unwrap();
-    let user_home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", user_home.path());
-        std::env::set_var("HOME", user_home.path());
-        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-    }
-    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    let home = runtime_home();
+    let mut m = hello_manifest(home.root(), BTreeMap::new());
     m.runtime = Some("tilo-runtime/nope-9.9.9".to_string());
     let opts = RunOptions {
         no_services: true,
         landlock_enforce: false,
         ..Default::default()
     };
-    let err = run_with(&m, dir.path(), &opts).unwrap_err();
+    let err = run_with(&m, home.root(), &opts).unwrap_err();
     match &err {
         RunError::RuntimeBundleMissing { runtime, paths } => {
             assert!(runtime.contains("nope-9.9.9"));
@@ -260,6 +231,19 @@ fn manifest_declared_runtime_missing_bundle_fails() {
         msg.contains("nope-9.9.9"),
         "error text must name runtime: {msg}"
     );
+}
+
+/// A fresh home for the runtime-bundle lookup, which is resolved from the
+/// environment: `$XDG_DATA_HOME/tilo-runtime` unless
+/// [`runtime_bundle::RUNTIME_DIR_ENV`] names another root, and a trust list
+/// named by `TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`. Both overrides are
+/// cleared so the developer's own settings never decide a result.
+fn runtime_home() -> TestHome {
+    let mut home = TestHome::new().unwrap();
+    home.env()
+        .remove(runtime_bundle::RUNTIME_DIR_ENV)
+        .remove("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
+    home
 }
 
 /// Build a valid unsigned runtime bundle under `<xdg_data_home>/tilo-runtime/<version>/`
@@ -321,22 +305,14 @@ fn install_signed_bundle(
 /// `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
 /// loader binds even if the flag is on.
 #[test]
-#[serial_test::serial(process_env)]
 fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
     use launcher::sandbox::build_bwrap_argv;
 
-    let _guard = RUNTIME_ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Set up a real signed bundle so resolve_runtime + its integrity
     // check are happy.
-    let user_home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", user_home.path());
-        std::env::set_var("HOME", user_home.path());
-    }
-    let (bundle_dir, _identity) = install_signed_bundle(user_home.path(), "smoke-1.0.0");
+    let home = runtime_home();
+    let (bundle_dir, _identity) = install_signed_bundle(home.data(), "smoke-1.0.0");
 
     let mut m = MinimalManifest {
         package_id: "com.example.hello".to_string(),
@@ -419,19 +395,11 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
 /// and the launcher sets `LD_LIBRARY_PATH=<mount>/lib`, so the loader
 /// finds them by soname. Signature integrity is enforced along the way.
 #[test]
-#[serial_test::serial(process_env)]
 fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
     use launcher::sandbox::build_bwrap_argv;
 
-    let _guard = RUNTIME_ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let user_home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", user_home.path());
-        std::env::set_var("HOME", user_home.path());
-    }
+    let home = runtime_home();
 
     // Build a signed bundle folding in stand-ins for the two shared
     // objects a thin app links (Rust std + Tilo runtime dylib), exercising
@@ -451,7 +419,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     let id_path = host.path().join("id.json");
     std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
 
-    let bundle_dir = user_home.path().join("tilo-runtime").join(version);
+    let bundle_dir = home.data().join("tilo-runtime").join(version);
     runtime_bundle::build_bundle_with(
         &bundle_dir,
         version,
@@ -470,7 +438,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
     assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
     let m = MinimalManifest {
-        package_id: "dev.tilo.thin".to_string(),
+        package_id: "so.tilo.thin".to_string(),
         name: None,
         category: None,
         icon: None,
@@ -540,11 +508,8 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
 }
 
 #[test]
-#[serial_test::serial(process_env)]
 fn configured_runtime_root_wins_over_the_installed_fallback() {
-    let _guard = RUNTIME_ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut home = runtime_home();
     let overlay = tempfile::tempdir().unwrap();
     let version = "developer-overlay-smoke";
     let bundle = overlay.path().join(version);
@@ -570,15 +535,11 @@ fn configured_runtime_root_wins_over_the_installed_fallback() {
     .unwrap();
     let mut manifest = hello_manifest(Path::new("/payload"), BTreeMap::new());
     manifest.runtime = Some(format!("tilo-runtime/{version}"));
-    let old = std::env::var_os(runtime_bundle::RUNTIME_DIR_ENV);
-    unsafe { std::env::set_var(runtime_bundle::RUNTIME_DIR_ENV, overlay.path()) };
+    // An installed bundle of the same version under the data home must lose.
+    install_signed_bundle(home.data(), version);
+    home.env()
+        .set(runtime_bundle::RUNTIME_DIR_ENV, overlay.path());
     let resolved = launcher::run::resolve_runtime_test_helper(&manifest, &RunOptions::default());
-    unsafe {
-        match old {
-            Some(value) => std::env::set_var(runtime_bundle::RUNTIME_DIR_ENV, value),
-            None => std::env::remove_var(runtime_bundle::RUNTIME_DIR_ENV),
-        }
-    }
     assert_eq!(resolved.unwrap().unwrap().0, bundle);
 }
 
@@ -589,42 +550,18 @@ fn configured_runtime_root_wins_over_the_installed_fallback() {
 /// from `run_with` directly, so this drives `resolve_dbus_bind` via the
 /// same entry path and asserts on the resulting plan + guard.
 #[test]
-#[serial_test::serial(process_env)]
 fn dbus_proxy_wires_up_when_manifest_declares_via_host_portal() {
     use launcher::dbus_proxy::PROXY_BIN_ENV;
     use launcher::sandbox::build_bwrap_argv;
-    use std::os::unix::fs::PermissionsExt;
 
-    // Point the launcher's proxy binary at a shell-script mock.
+    // Point the launcher's proxy binary at a checked-in mock. It is
+    // executed directly, so it is not written by the test: a script this
+    // process had just written could fail to exec with `ETXTBSY`.
     let tmp = tempfile::tempdir().unwrap();
-    let mock = tmp.path().join("mock-xdg-dbus-proxy");
-    std::fs::write(
-        &mock,
-        r#"#!/bin/sh
-: >"$2"
-trap 'rm -f "$2"; exit 0' TERM
-if [ -x /usr/bin/sleep ]; then
-    /usr/bin/sleep infinity &
-elif [ -x /bin/sleep ]; then
-    /bin/sleep infinity &
-else
-    exit 1
-fi
-wait $!
-"#,
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&mock).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&mock, perms).unwrap();
-
-    // SAFETY: setting env for the test process. Test intentionally
-    // gates ordering by not running in parallel with any other proxy
-    // test — nothing else touches this var.
-    unsafe {
-        std::env::set_var(PROXY_BIN_ENV, &mock);
-        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
-    }
+    let mock = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock-xdg-dbus-proxy");
+    let mut env = ScopedEnv::new();
+    env.set(PROXY_BIN_ENV, &mock)
+        .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
 
     // Build a manifest declaring `notifications = via-host`.
     let mut m = hello_manifest(tmp.path(), BTreeMap::new());
@@ -638,8 +575,16 @@ wait $!
     // canonical /run/user/1234/... path a real launch would use.
     let sock = tmp.path().join("proxy.sock");
     let bin = launcher::dbus_proxy::find_proxy_binary().expect("PROXY_BIN_ENV was set above");
-    let guard = launcher::dbus_proxy::spawn_dbus_proxy(&bin, "unix:path=/run/user/1234/bus", &sock)
-        .expect("spawn mock proxy");
+    // The launch's own readiness bound is sized for the real proxy on an
+    // idle machine; this asserts the wiring, not the startup latency of a
+    // shell script on a loaded test host.
+    let guard = launcher::dbus_proxy::spawn_dbus_proxy_within(
+        &bin,
+        "unix:path=/run/user/1234/bus",
+        &sock,
+        std::time::Duration::from_secs(60),
+    )
+    .expect("spawn mock proxy");
     let plan = launcher::sandbox::DBusBindPlan {
         host_socket: guard.socket_path().to_path_buf(),
         sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
@@ -676,7 +621,7 @@ wait $!
 
     // Drop the guard: the proxy is SIGTERMed + reaped.
     drop(guard);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::path::Path::new(&format!("/proc/{pid}")).exists()
         && std::time::Instant::now() < deadline
     {
@@ -686,11 +631,7 @@ wait $!
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
         "proxy pid {pid} should be reaped after Drop"
     );
-
-    unsafe {
-        std::env::remove_var(PROXY_BIN_ENV);
-        std::env::remove_var("DBUS_SESSION_BUS_ADDRESS");
-    }
+    drop(env);
 }
 
 #[test]
@@ -725,21 +666,11 @@ fs = "optional@2"
 /// A runtime bundle that exists but is unsigned is refused by default;
 /// --allow-unsigned-runtime makes the resolve succeed.
 #[test]
-#[serial_test::serial(process_env)]
 fn unsigned_bundle_is_refused_unless_opted_in() {
-    let _guard = RUNTIME_ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = tempfile::tempdir().unwrap();
-    let user_home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", user_home.path());
-        std::env::set_var("HOME", user_home.path());
-        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-    }
-    let _bundle = install_unsigned_bundle(user_home.path(), "sig-refuse-1");
+    let home = runtime_home();
+    let _bundle = install_unsigned_bundle(home.data(), "sig-refuse-1");
 
-    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    let mut m = hello_manifest(home.root(), BTreeMap::new());
     m.runtime = Some("tilo-runtime/sig-refuse-1".to_string());
 
     let opts = RunOptions {
@@ -769,21 +700,11 @@ fn unsigned_bundle_is_refused_unless_opted_in() {
 /// for runtime bundles at mount time: missing means any signed
 /// publisher works; a matching key accepts; a mismatched key refuses.
 #[test]
-#[serial_test::serial(process_env)]
 fn trusted_publisher_file_gates_mount() {
-    let _guard = RUNTIME_ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = tempfile::tempdir().unwrap();
-    let user_home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", user_home.path());
-        std::env::set_var("HOME", user_home.path());
-        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-    }
-    let (_bundle, identity) = install_signed_bundle(user_home.path(), "trust-file-1");
+    let mut home = runtime_home();
+    let (_bundle, identity) = install_signed_bundle(home.data(), "trust-file-1");
 
-    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    let mut m = hello_manifest(home.root(), BTreeMap::new());
     m.runtime = Some("tilo-runtime/trust-file-1".to_string());
     let opts = RunOptions {
         no_services: true,
@@ -792,7 +713,7 @@ fn trusted_publisher_file_gates_mount() {
     };
 
     // 1. Trust file lists this publisher: accepted.
-    let trust_file = user_home.path().join("trust.txt");
+    let trust_file = home.root().join("trust.txt");
     std::fs::write(
         &trust_file,
         format!(
@@ -801,9 +722,8 @@ fn trusted_publisher_file_gates_mount() {
         ),
     )
     .unwrap();
-    unsafe {
-        std::env::set_var("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
-    }
+    home.env()
+        .set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trust_file);
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("trusted pubkey ok");
 
     // 2. Trust file lists a different publisher only: refused.
@@ -831,30 +751,18 @@ fn trusted_publisher_file_gates_mount() {
 
     // 4. No trust file: any signed publisher works (verifies the env
     //    override above, since the default /etc file isn't readable here).
-    unsafe {
-        std::env::remove_var("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
-    }
+    home.env().remove("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE");
     launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no trust file = any signed");
 }
 
 /// A signed bundle is accepted by default. Pinning the publisher to
 /// its actual key still accepts; pinning to a different key refuses.
 #[test]
-#[serial_test::serial(process_env)]
 fn signed_bundle_publisher_pin_enforced() {
-    let _guard = RUNTIME_ENV_MUTEX
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let dir = tempfile::tempdir().unwrap();
-    let user_home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", user_home.path());
-        std::env::set_var("HOME", user_home.path());
-        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-    }
-    let (_bundle, identity) = install_signed_bundle(user_home.path(), "sig-pin-1");
+    let home = runtime_home();
+    let (_bundle, identity) = install_signed_bundle(home.data(), "sig-pin-1");
 
-    let mut m = hello_manifest(dir.path(), BTreeMap::new());
+    let mut m = hello_manifest(home.root(), BTreeMap::new());
     m.runtime = Some("tilo-runtime/sig-pin-1".to_string());
 
     // Default: accepted.

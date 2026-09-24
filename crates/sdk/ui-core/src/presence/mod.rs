@@ -1,6 +1,6 @@
 use crate::permissions::UserId;
+use crate::time::{Duration, Instant, SystemTime};
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime};
 
 mod geom;
 mod interaction;
@@ -11,13 +11,17 @@ pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{PathSegment, PointerSpace, PresenceKey, SelectionRange};
+/// Shared with the other widgets that frame a label in fixed-pixel insets
+/// (the capture studio's docked recorder), so one rule decides how much
+/// larger than the default a label paints.
+pub(crate) use render::label_magnification;
 pub use render::{
     PeerCursor, PillPlacement, PillRequest, contrast_ink, draw_peer_cursors, draw_peer_presence,
     draw_remote_cursors, draw_remote_presence, layout_peer_pills,
 };
 
 /// How long a "just typed" highlight lingers before fading out.
-pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(2500);
+pub const TYPING_FADE: crate::time::Duration = crate::time::Duration::from_millis(2500);
 
 /// Longest forward caret jump still read as "this peer just wrote that"
 /// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
@@ -29,7 +33,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// How long after a remote text edit an advancing caret may still be read as
 /// that peer having written what it crossed — one network hop, no more, or a
 /// real edit would license markers for every caret that moves afterward.
-const EDIT_PULSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
+const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
 /// Stable RGB colour for a collaborator. `me`/`alice`/`bob`/`charlie` are
 /// pinned; everything else hashes onto [`PEER_PALETTE`]. A pure function of
@@ -667,7 +671,7 @@ impl PresenceCtx {
     }
 
     pub fn set_pointer(&mut self, key: &PresenceKey, user: UserId, pos: (f32, f32)) {
-        self.set_pointer_at(key, user, pos, Instant::now());
+        self.set_pointer_at(key, user, pos, crate::time::now());
     }
 
     /// [`Self::set_pointer`] with the clock supplied, so retirement can be
@@ -1256,7 +1260,7 @@ impl PresenceCtx {
                 // Feed BOTH stores: in-app BlockEditor reads `carets`
                 // (set_caret); the cross-process overlay reads `remote_caret`.
                 let uid = UserId(user_id.clone());
-                let now = Instant::now();
+                let now = crate::time::now();
                 // Derive a typing mark from a caret that advanced under the
                 // same scope, not only from an explicit `Typing` payload —
                 // an agent/SDK peer publishing bare caret moves has no
@@ -1291,7 +1295,7 @@ impl PresenceCtx {
                     UserId(user_id),
                     key,
                     SelectionRange { start, end },
-                    Instant::now(),
+                    crate::time::now(),
                 );
             }
             Interaction(update) => {
@@ -1341,7 +1345,7 @@ impl PresenceCtx {
                                 } else {
                                     crate::live_collaboration::StatusOrigin::Manual
                                 },
-                                updated_at: SystemTime::now(),
+                                updated_at: crate::time::wall(),
                             },
                         );
                     }
@@ -1439,29 +1443,14 @@ impl PresenceCtx {
     }
 }
 
-/// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple.
-/// Alpha is discarded; leading `#` is optional; `None` for anything unparseable.
+/// Parse a `#rgb` / `#rrggbb` / `#rrggbbaa` colour string to an RGB triple
+/// (see [`crate::color::parse_hex`]). Alpha is discarded; `None` for anything
+/// unparseable.
 pub fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
-    let s = hex.trim_start_matches('#');
-    let bytes = s.as_bytes();
-    match bytes.len() {
-        3 => {
-            let b0 = *bytes.first()?;
-            let b1 = *bytes.get(1)?;
-            let b2 = *bytes.get(2)?;
-            let r = u8::from_str_radix(std::str::from_utf8(&[b0, b0]).ok()?, 16).ok()?;
-            let g = u8::from_str_radix(std::str::from_utf8(&[b1, b1]).ok()?, 16).ok()?;
-            let b = u8::from_str_radix(std::str::from_utf8(&[b2, b2]).ok()?, 16).ok()?;
-            Some((r, g, b))
-        }
-        6 | 8 => {
-            let r = u8::from_str_radix(s.get(0..2)?, 16).ok()?;
-            let g = u8::from_str_radix(s.get(2..4)?, 16).ok()?;
-            let b = u8::from_str_radix(s.get(4..6)?, 16).ok()?;
-            Some((r, g, b))
-        }
-        _ => None,
-    }
+    crate::color::parse_hex(hex).map(|c| {
+        let c = c.to_rgba8();
+        (c.r, c.g, c.b)
+    })
 }
 
 #[cfg(test)]
@@ -1910,12 +1899,12 @@ mod string_id_wrapper_tests {
     /// consulting the other.
     #[test]
     fn one_content_pointer_reaches_two_surfaces_and_one_places_it() {
-        let frame = PresenceKey::surface_pointer("dev.tilo.word-processor");
+        let frame = PresenceKey::surface_pointer("so.tilo.word-processor");
 
         let mut word_processor = PresenceCtx::empty();
-        word_processor.set_surface_id("dev.tilo.word-processor");
+        word_processor.set_surface_id("so.tilo.word-processor");
         let mut file_manager = PresenceCtx::empty();
-        file_manager.set_surface_id("dev.tilo.files");
+        file_manager.set_surface_id("so.tilo.files");
 
         for ctx in [&mut word_processor, &mut file_manager] {
             ctx.apply_remote_presence(
@@ -1959,7 +1948,7 @@ mod string_id_wrapper_tests {
     #[test]
     fn a_session_that_has_not_named_its_surface_places_no_content_pointer() {
         let mut ctx = PresenceCtx::empty();
-        let key = PresenceKey::surface_pointer("dev.tilo.word-processor");
+        let key = PresenceKey::surface_pointer("so.tilo.word-processor");
         assert_eq!(ctx.pointer_owner_for(&key), PointerOwner::OtherSurface);
         ctx.apply_remote_presence(
             "peer@77".into(),
@@ -1995,13 +1984,13 @@ mod string_id_wrapper_tests {
 
     #[test]
     fn typing_mark_fades_linearly_and_prunes() {
-        use std::time::Duration;
+        use crate::time::Duration;
         let mut ctx = PresenceCtx::empty();
         let bob = UserId("bob".into());
         let key = PresenceKey::Widget {
             path: vec![PathSegment::Index(0)],
         };
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         ctx.record_peer_typing(
             bob.clone(),
             key.clone(),
@@ -2042,7 +2031,7 @@ mod string_id_wrapper_tests {
         let key = PresenceKey::Widget {
             path: vec![PathSegment::Index(1)],
         };
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         ctx.record_peer_typing(
             bob.clone(),
             key.clone(),
@@ -2081,11 +2070,17 @@ mod string_id_wrapper_tests {
             alice.clone(),
             key.clone(),
             SelectionRange { start: 0, end: 2 },
-            Instant::now(),
+            crate::time::now(),
         );
-        assert!(!ctx.active_typing(&alice, &key, Instant::now()).is_empty());
+        assert!(
+            !ctx.active_typing(&alice, &key, crate::time::now())
+                .is_empty()
+        );
         ctx.unregister_peer("alice");
-        assert!(ctx.active_typing(&alice, &key, Instant::now()).is_empty());
+        assert!(
+            ctx.active_typing(&alice, &key, crate::time::now())
+                .is_empty()
+        );
         assert_eq!(
             ctx.display_name(&alice),
             "alice",
@@ -2386,9 +2381,9 @@ mod own_identity_tests {
         let mut ctx = PresenceCtx::empty();
         let me = UserId("peer@42".into());
         ctx.set_self_participant(me.clone(), "bob");
-        ctx.set_own_identity(["dev.tilo.chat"]);
+        ctx.set_own_identity(["so.tilo.chat"]);
         assert!(ctx.is_own_identity(&me.0));
-        assert!(ctx.is_own_identity("dev.tilo.chat"));
+        assert!(ctx.is_own_identity("so.tilo.chat"));
     }
 
     #[test]
@@ -2408,7 +2403,7 @@ mod own_identity_tests {
     /// would vanish from the roster whenever it stops moving.
     #[test]
     fn a_pointer_nobody_restates_is_retired_and_nothing_else_is() {
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         let horizon = Duration::from_secs(4);
         let room = PresenceKey::Workspace { id: "r".into() };
         let block = PresenceKey::Widget {
@@ -2494,7 +2489,7 @@ mod own_identity_tests {
     /// widget-scoped one (a position in a document, not on the desktop) does not.
     #[test]
     fn a_desktop_pointer_registers_its_peer_and_an_in_app_one_does_not() {
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         let room = PresenceKey::Workspace { id: "r".into() };
         let block = PresenceKey::Widget {
             path: vec![PathSegment::Index(0)],

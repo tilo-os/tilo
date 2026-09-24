@@ -1,3 +1,8 @@
+#![allow(
+    clippy::doc_markdown,
+    clippy::useless_conversion,
+    reason = "migration stack lint debt is scoped to this target"
+)]
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 //! Thin binary entry point. All logic lives in the library.

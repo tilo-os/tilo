@@ -1,0 +1,16 @@
+[package]
+name = "tilo-test-env"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Serialised, self-restoring process environment and XDG fixtures for tests"
+
+# Test support only: depend on this from [dev-dependencies], never from a
+# production dependency table.
+
+[dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

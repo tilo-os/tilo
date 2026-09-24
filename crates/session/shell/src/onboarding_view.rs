@@ -57,7 +57,7 @@ const INTRO_PANEL_HEIGHT: f32 = 500.0;
 /// confirmation, next-step explanation, and backup guidance a stable canvas
 /// on ordinary laptop displays; the inner viewport still scrolls when large
 /// text or a short window cannot fit that content.
-const READY_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
+const READY_PANEL_PREFERRED_HEIGHT: f32 = 552.0;
 const VIEWPORT_GUTTER: f32 = 24.0;
 /// A 40 px action plus the footer's 17 px bottom inset. The gap above the
 /// footer belongs to the parent column and must not be reserved twice; doing
@@ -73,8 +73,10 @@ const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
 /// explanatory scroller so a short display never lets the pinned form clip
 /// the created-identity banner above it.
 const BACKUP_FORM_HEIGHT: f32 = 264.0;
-/// Eyebrow row, gap, padded 8 px progress track, and gap below the sticky header.
-const PROGRESS_HEADER_HEIGHT: f32 = 58.0;
+/// `s3` top pad, eyebrow row, gap, padded 8 px progress track, and gap below
+/// the sticky header. The pad keeps the eyebrow off the panel's top edge
+/// (HIG §7: nothing touches the container it sits in).
+const PROGRESS_HEADER_HEIGHT: f32 = 70.0;
 const PROGRESS_FILE: &str = ".onboarding-progress.json";
 const PROGRESS_VERSION: u32 = 1;
 const PROGRESS_MAX_BYTES: u64 = 4096;
@@ -938,13 +940,17 @@ impl OnboardingView {
         };
         let progress = Column::new()
             .with_no_padding()
+            // The header clears the panel's top edge by `s3`, and the
+            // progress track stays `s3` inside both panel edges (HIG §9.5: a
+            // rule inside a Panel never runs full-bleed into the corner
+            // radius). The labels add their own `s3` so they sit on the
+            // body's `s6` gutter.
+            .with_extra_top_padding(spacing.s3)
+            .with_horizontal_padding(spacing.s3, spacing.s3)
             .with_intrinsic_height()
             .with_gap(spacing.s3)
             .push(Box::new(
                 Row::new()
-                    // Keep both labels away from the rounded card edge. The
-                    // progress rule spans the content width below; its text
-                    // should not visually collide with the panel outline.
                     .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
                         Text::new("Tilo identity setup")
@@ -979,7 +985,16 @@ impl OnboardingView {
         // hid the acknowledgement/Continue action below a subtle scrollbar,
         // making a fresh login look stuck. Reserve the same persistent footer
         // contract here and keep only explanatory/form content scrollable.
-        let footer_gap = spacing.s3;
+        // Ready is exactly the full safe height on an 800x600 display. Its
+        // two column gaps use s2 so the complete hand-off fits without an
+        // ornamental 8 px scroll range; the footer still retains the 8 px
+        // separation required by the interaction contract.
+        let composition_gap = if self.identity_ready_page {
+            spacing.s2
+        } else {
+            spacing.s3
+        };
+        let footer_gap = composition_gap;
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
         let backup_form_visible =
@@ -1031,7 +1046,11 @@ impl OnboardingView {
         let scroll = scroll
             // Keep a clean terminal edge even on Backup's in-flow decision
             // block, so the last control is not painted against the clip.
-            .with_bottom_content_inset(spacing.s3)
+            .with_bottom_content_inset(if self.identity_ready_page {
+                0.0
+            } else {
+                spacing.s3
+            })
             // A 960×540 large-text/high-contrast dialog resolves to a 492 px
             // scroll viewport. Keep its first frame's edge in the gap between
             // the form card and recovery copy; the full-height 672 px dialog
@@ -1045,7 +1064,7 @@ impl OnboardingView {
         };
         let composition = Column::new()
             .with_no_padding()
-            .with_gap(spacing.s3)
+            .with_gap(composition_gap)
             .push(Box::new(progress))
             .push(Box::new(scroll));
         if backup_in_scroll {
@@ -1302,10 +1321,16 @@ impl OnboardingView {
         };
         let progress = Column::new()
             .with_no_padding()
+            // Same header rhythm as the identity pages: `s3` off the panel's
+            // top edge, the track `s3` inside both edges, labels on the `s6`
+            // gutter.
+            .with_extra_top_padding(theme.tokens.spacing.s3)
+            .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s3)
             .push(Box::new(
                 Row::new()
+                    .with_padding(theme.tokens.spacing.s3, 0.0)
                     .push(Box::new(
                         Text::new("Tilo  •  DESKTOP TOUR")
                             .with_role(ui::tokens::typography::TextRole::Label)
@@ -2022,32 +2047,29 @@ impl OnboardingView {
         let Some(composed) = self.composed.as_mut() else {
             return;
         };
-        let colors = &theme.tokens.colors;
         let panel = composed.get_rect();
         if panel.area() > 0.0 {
-            if !theme.name.eq_ignore_ascii_case("high contrast") {
-                ui::surface::soft_shadow(
-                    scene,
-                    transform,
-                    panel,
-                    colors.neutral[0],
-                    42.0,
-                    18.0,
-                    0.42,
-                );
-            }
-            let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.xl));
+            // Panel role (HIG §9.1–§9.3): the onboarding card floats over the
+            // backdrop, so it casts the same Panel shadow every other Panel
+            // casts, from the elevation token; on the high-contrast palette
+            // that black shadow lands on a black ground and contributes
+            // nothing — the edge does the separating (§9.3) — so the former
+            // by-name high-contrast guard is not needed. Ground is
+            // `panel_ground`, edge the derived Panel border.
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
+            ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
+            let shape = RoundedRect::from_rect(panel, radius);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.surfaces.raised,
+                ui::chrome::shell::panel_ground(theme),
                 None,
                 &shape,
             );
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                ui::chrome::shell::panel_border(theme),
                 None,
                 &shape,
             );
@@ -2721,8 +2743,10 @@ impl Widget for OnboardingView {
         // the sticky action on top of its scrolling sibling.
         let composition_height = if accessibility_expanded {
             ACCESSIBLE_PANEL_HEIGHT
-        } else if dense_identity_page || ready_identity_page {
+        } else if dense_identity_page {
             DENSE_PANEL_PREFERRED_HEIGHT
+        } else if ready_identity_page {
+            READY_PANEL_PREFERRED_HEIGHT
         } else {
             panel_height
         };
@@ -4237,8 +4261,8 @@ mod tests {
 
     #[test]
     fn recovery_mode_starts_on_restore_and_never_offers_creation() {
-        let mut recovery =
-            OnboardingView::new_for_recovery(std::env::temp_dir().join("tilo-recovery-ui-test"));
+        let identity = tempfile::tempdir().expect("identity directory");
+        let mut recovery = OnboardingView::new_for_recovery(identity.path().to_path_buf());
         assert!(recovery.recovery_only);
         assert_eq!(recovery.flow.screen(), Screen::Connect);
         let mut document = AutoCommit::new();

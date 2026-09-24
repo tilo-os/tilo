@@ -40,12 +40,12 @@ Everything it needs is built by:
 
     cargo build -p shell -p notes -p install -p launcher
     cargo build --release -p notes
-    cargo build -p app-catalogue --bins --examples
+    cargo build -p app-cli --bins --examples
 
 ## What is real and what is staged
 
-Real: the `.qpkg` is packed and signed by `pkg`, served over a live HTTP
-socket, fetched by `tilo-catalogue`, verified fail-closed and unpacked by
+Real: the `.tapp` is packed and signed by `pkg`, served over a live HTTP
+socket, fetched by `app`, verified fail-closed and unpacked by
 `tilo-install`, then started by `tilo-launcher` inside bwrap. The compositor
 is a test-enabled build of the shipping compositor/layout/paint code on its
 headless backend; release builds omit the control socket, not those paint
@@ -96,7 +96,7 @@ def _load_demo_home():
 
 stage_home = _load_demo_home().stage
 
-PACKAGE_ID = "dev.tilo.notes"
+PACKAGE_ID = "so.tilo.notes"
 DISPLAY_NAME = "Notes"
 # What the operator types. It is sent as individual text events on camera,
 # rather than appearing as an already-complete fixture query.
@@ -223,7 +223,7 @@ def foreign_tiles(state) -> set:
 # ---------------------------------------------------------------------
 
 class Registry:
-    """`serve-test-registry`, packing a real binary into a real `.qpkg`.
+    """`serve-test-registry`, packing a real binary into a real `.tapp`.
 
     The example's own default payload is `/bin/true`, which installs
     fine and exits immediately — it proves the fetch and never proves
@@ -715,7 +715,7 @@ def main() -> int:
         "notes": release_notes,
         "tilo-install": target / "tilo-install",
         "tilo-launcher": target / "tilo-launcher",
-        "tilo-catalogue": target / "tilo-catalogue",
+        "app": target / "app",
         "serve-test-registry": target / "examples" / "serve-test-registry",
     }
     missing = [f"{k} ({v})" for k, v in binaries.items() if not v.exists()]
@@ -723,7 +723,7 @@ def main() -> int:
         print("FAIL: not built:\n  " + "\n  ".join(missing), file=sys.stderr)
         print("\n  cargo build -p shell -p notes -p install -p launcher"
               "\n  cargo build --release -p notes"
-              "\n  cargo build -p app-catalogue --bins --examples", file=sys.stderr)
+              "\n  cargo build -p app-cli --bins --examples", file=sys.stderr)
         return 1
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -771,7 +771,7 @@ def main() -> int:
         "TILO_APPS_DATA_DIR": str(apps_dir),
         "TILO_STORE_CONFIG_DIR": str(store_config),
         "TILO_STORE_CACHE_DIR": str(store_cache),
-        "TILO_CATALOGUE_BIN": str(binaries["tilo-catalogue"]),
+        "TILO_APP_BIN": str(binaries["app"]),
         "TILO_INSTALL_BIN": str(binaries["tilo-install"]),
         "TILO_LAUNCHER_BIN": str(binaries["tilo-launcher"]),
         "TILO_HEADLESS_SIZE": f"{args.size[0]}x{args.size[1]}",
@@ -795,7 +795,7 @@ def main() -> int:
         # --- 1. offered, and not here ---------------------------------
         probe_env = {**os.environ, **env_extra}
         listing = json.loads(subprocess.run(
-            [str(binaries["tilo-catalogue"]), "list", "--json"],
+            [str(binaries["app"]), "list", "--json"],
             env=probe_env, capture_output=True, text=True, check=True).stdout)
         try:
             check(not listing.get("unreachable"),

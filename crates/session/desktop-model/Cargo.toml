@@ -1,0 +1,26 @@
+[package]
+name = "tilo-desktop-model"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# The canonical desktop model: workspaces, strips, window groups, tabs and the
+# people and permissions attached to them. Pure data and pure functions — no
+# compositor, toolkit, transport, async runtime or host filesystem, so every
+# host (native compositor, headless peer, anything else) shares one model.
+# `tools/policy/check_desktop_model_dependencies.py` enforces that list.
+
+[dependencies]
+automerge.workspace = true
+blake3.workspace = true
+collab-types = { path = "../../collab/collab-types" }
+desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+uuid.workspace = true
+
+[lints]
+workspace = true
