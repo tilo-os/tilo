@@ -17,7 +17,7 @@
     reason = "C API integer and float conversions; every value is range-checked where it matters"
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{c_int, c_ulong, c_void};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -31,11 +31,13 @@ use pdfium_render::prelude::{
     FS_POINTF, FS_QUADPOINTSF, FS_RECTF, Pdfium, PdfiumLibraryBindings,
 };
 
-use crate::edits::{Edits, FieldValue, NewAnnotation, NewAnnotationKind, PageSource};
+use crate::edits::{
+    AdoptedAnnotation, Edits, FieldValue, NewAnnotation, NewAnnotationKind, PageSource,
+};
 use crate::geom::{PageGeometry, Point, Rect, Rotation};
 use crate::model::{
     AnnotationInfo, AnnotationKind, Destination, DocumentInfo, FieldKind, FieldWidget, FormField,
-    Link, MAX_RENDER_PIXELS, Metadata, OutlineEntry, RenderOptions, Rgba,
+    Link, MAX_RENDER_PIXELS, Metadata, OutlineEntry, RenderOptions, ReplyType, Rgba,
 };
 use crate::proto::{FailureKind, OpenKind};
 use crate::text::{MAX_PAGE_CHARS, RawChar, raw_flags};
@@ -72,6 +74,7 @@ const FPDF_INCREMENTAL: c_ulong = 1;
 const FPDF_NO_INCREMENTAL: c_ulong = 2;
 const FORMTYPE_NONE: c_int = 0;
 const COLORTYPE_COLOR: u32 = 0;
+const ANNOT_FLAG_HIDDEN: c_int = 2;
 const ANNOT_FLAG_PRINT: c_int = 4;
 const PDFACTION_GOTO: c_ulong = 1;
 const PDFACTION_REMOTEGOTO: c_ulong = 2;
@@ -195,7 +198,9 @@ impl Library {
 
 /// Bytes a pdfium document reads from; must outlive the document.
 enum Backing {
-    Mapped(#[allow(dead_code, reason = "kept alive for pdfium, never read directly")] Mmap),
+    /// The document's bytes: pdfium reads them in place, and the
+    /// structure reader shares them.
+    Mapped(std::sync::Arc<Mmap>),
     None,
 }
 
@@ -211,6 +216,9 @@ struct Doc {
     pages: Vec<PageGeometry>,
     password: Option<String>,
     backing: Backing,
+    /// The file's object structure, read on first use for what pdfium's
+    /// API does not expose (see [`Engine::annotation_colors`]).
+    structure: std::cell::OnceCell<Option<hayro_syntax::Pdf>>,
 }
 
 /// The engine: a library and the documents opened in it.
@@ -531,7 +539,7 @@ impl Engine {
                 if raw.is_null() {
                     return Err(self.load_failure());
                 }
-                (raw, Backing::Mapped(map))
+                (raw, Backing::Mapped(std::sync::Arc::new(map)))
             }
             OpenKind::Image => (self.image_document(file)?, Backing::None),
         };
@@ -556,6 +564,7 @@ impl Engine {
                 pages,
                 password,
                 backing,
+                structure: std::cell::OnceCell::new(),
             },
         );
         Ok(info)
@@ -750,6 +759,13 @@ impl Engine {
             0i32.saturating_sub(ox as c_int),
             0i32.saturating_sub(oy as c_int),
         );
+        // Reader markup is hidden for this render only: the flags are put
+        // back before the page is closed, so exports never see the change.
+        let hidden = if options.annotations && !options.reader_markup {
+            self.hide_reader_markup(guard.raw)
+        } else {
+            Vec::new()
+        };
         api.FPDF_RenderPageBitmap(
             bitmap,
             guard.raw,
@@ -774,8 +790,42 @@ impl Engine {
             );
         }
         api.FPDFBitmap_Destroy(bitmap);
+        self.restore_flags(guard.raw, &hidden);
         drop(guard);
         Ok(())
+    }
+
+    /// Set the Hidden flag on every reader-markup annotation of `page`;
+    /// returns what to restore.
+    fn hide_reader_markup(&self, page: FPDF_PAGE) -> Vec<(c_int, c_int)> {
+        let api = self.api();
+        let count = api.FPDFPage_GetAnnotCount(page).clamp(0, 10_000);
+        let mut changed = Vec::new();
+        for i in 0..count {
+            let annot = api.FPDFPage_GetAnnot(page, i);
+            if annot.is_null() {
+                continue;
+            }
+            if Self::annotation_kind(api.FPDFAnnot_GetSubtype(annot)).is_reader_markup() {
+                let flags = api.FPDFAnnot_GetFlags(annot);
+                if api.FPDFAnnot_SetFlags(annot, flags | ANNOT_FLAG_HIDDEN) != 0 {
+                    changed.push((i, flags));
+                }
+            }
+            api.FPDFPage_CloseAnnot(annot);
+        }
+        changed
+    }
+
+    fn restore_flags(&self, page: FPDF_PAGE, changed: &[(c_int, c_int)]) {
+        let api = self.api();
+        for &(i, flags) in changed {
+            let annot = api.FPDFPage_GetAnnot(page, i);
+            if !annot.is_null() {
+                api.FPDFAnnot_SetFlags(annot, flags);
+                api.FPDFPage_CloseAnnot(annot);
+            }
+        }
     }
 
     /// The characters of a page in engine order, in the page's display
@@ -988,6 +1038,53 @@ impl Engine {
         }
     }
 
+    /// Each annotation's `/C` colour on `page`, by position, read from the
+    /// file's own objects. pdfium reports no colour for an annotation that
+    /// has an appearance stream — which is nearly every annotation a reader
+    /// wrote — so this is where a taken-over annotation's colour comes from.
+    fn annotation_colors(doc: &Doc, page: usize) -> Vec<Option<Rgba>> {
+        let Some(pdf) = doc
+            .structure
+            .get_or_init(|| match &doc.backing {
+                Backing::Mapped(map) => hayro_syntax::Pdf::new_with_password(
+                    std::sync::Arc::clone(map),
+                    doc.password.as_deref().unwrap_or(""),
+                )
+                .ok(),
+                Backing::None => None,
+            })
+            .as_ref()
+        else {
+            return Vec::new();
+        };
+        let Some(page) = pdf.pages().get(page) else {
+            return Vec::new();
+        };
+        let Some(annots) = page.raw().get::<hayro_syntax::object::Array<'_>>(b"Annots") else {
+            return Vec::new();
+        };
+        let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        annots
+            .iter::<hayro_syntax::object::Dict<'_>>()
+            .take(10_000)
+            .map(|annot| {
+                let c: Vec<f32> = annot
+                    .get::<hayro_syntax::object::Array<'_>>(b"C")?
+                    .iter::<f32>()
+                    .collect();
+                match c.as_slice() {
+                    [g] => Some(Rgba::new(channel(*g), channel(*g), channel(*g), 255)),
+                    [r, g, b] => Some(Rgba::new(channel(*r), channel(*g), channel(*b), 255)),
+                    [c, m, y, k] => {
+                        let to = |v: f32| channel((1.0 - v) * (1.0 - k));
+                        Some(Rgba::new(to(*c), to(*m), to(*y), 255))
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
     fn annot_string(&self, annot: FPDF_ANNOTATION, key: &str) -> String {
         let api = self.api();
         read_wide(|buf, len| api.FPDFAnnot_GetStringValue(annot, key, buf, len))
@@ -998,6 +1095,10 @@ impl Engine {
     /// # Errors
     ///
     /// Unknown document or page.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass reading every property of each annotation"
+    )]
     pub fn annotations(&self, id: u64, page: usize) -> Result<Vec<AnnotationInfo>> {
         const MAX_ANNOTS: usize = 10_000;
         let doc = self.doc(id)?;
@@ -1010,6 +1111,7 @@ impl Engine {
         let count = usize::try_from(api.FPDFPage_GetAnnotCount(guard.raw))
             .unwrap_or(0)
             .min(MAX_ANNOTS);
+        let dict_colors = Self::annotation_colors(doc, page);
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
             let annot = api.FPDFPage_GetAnnot(guard.raw, i as c_int);
@@ -1035,7 +1137,8 @@ impl Engine {
                 .then(|| {
                     let [red, green, blue, alpha] = rgba.map(|c| c.min(255) as u8);
                     Rgba::new(red, green, blue, alpha)
-                });
+                })
+                .or_else(|| dict_colors.get(i).copied().flatten());
             let mut quads = Vec::new();
             let quad_count = api.FPDFAnnot_CountAttachmentPoints(annot).min(4096);
             for q in 0..quad_count {
@@ -1080,15 +1183,47 @@ impl Engine {
                         .collect(),
                 );
             }
+            let (mut hr, mut vr, mut width) = (0.0f32, 0.0f32, 0.0f32);
+            let border_width = (api.FPDFAnnot_HasKey(annot, "Border") != 0
+                && api.FPDFAnnot_GetBorder(annot, &raw mut hr, &raw mut vr, &raw mut width) != 0
+                && width.is_finite())
+            .then_some(width);
+            let linked_index = |key: &str| {
+                let linked = api.FPDFAnnot_GetLinkedAnnot(annot, key);
+                if linked.is_null() {
+                    return None;
+                }
+                let index = usize::try_from(api.FPDFPage_GetAnnotIndex(guard.raw, linked)).ok();
+                api.FPDFPage_CloseAnnot(linked);
+                index
+            };
+            let in_reply_to = linked_index("IRT");
+            let popup = linked_index("Popup");
+            let reply_type = if self.annot_string(annot, "RT") == "Group" {
+                ReplyType::Group
+            } else {
+                ReplyType::Reply
+            };
+            let (font_size, text_color) = parse_default_appearance(&self.annot_string(annot, "DA"));
             out.push(AnnotationInfo {
+                index: i,
                 kind,
                 rect,
                 color,
                 contents: self.annot_string(annot, "Contents"),
                 author: self.annot_string(annot, "T"),
                 name: self.annot_string(annot, "NM"),
+                modified: self.annot_string(annot, "M"),
+                created: self.annot_string(annot, "CreationDate"),
+                flags: u32::try_from(api.FPDFAnnot_GetFlags(annot)).unwrap_or(0),
                 quads,
                 ink,
+                border_width,
+                in_reply_to,
+                reply_type,
+                popup,
+                font_size,
+                text_color,
             });
             api.FPDFPage_CloseAnnot(annot);
         }
@@ -1221,12 +1356,13 @@ impl Engine {
     /// Unknown documents, out-of-range references, or engine failures.
     pub fn export(&self, id: u64, edits: &Edits, imports: &[u64]) -> Result<Vec<u8>> {
         let source = self.doc(id)?;
-        let Backing::Mapped(bytes) = &source.backing else {
+        let Backing::Mapped(map) = &source.backing else {
             return Err(Failure::new(
                 FailureKind::Invalid,
                 "only documents opened from PDF bytes can be exported",
             ));
         };
+        let bytes: &[u8] = map;
         let api = self.api();
         let copy = api.FPDF_LoadMemDocument64(bytes, source.password.as_deref());
         if copy.is_null() {
@@ -1237,8 +1373,20 @@ impl Engine {
         } else {
             self.init_form(copy)
         };
+        // An encrypted source keeps its encryption in an incremental save,
+        // so the patch pass (which writes plain objects) cannot run there:
+        // stamps then get pdfium-built appearances and replies no links.
+        let patchable = api.FPDF_GetSecurityHandlerRevision(copy) < 0;
+        let mut plan = crate::patch::PatchPlan::default();
         let result = self
-            .apply_edits(source, copy, form.as_ref(), edits, imports)
+            .apply_edits(
+                source,
+                copy,
+                form.as_ref(),
+                edits,
+                imports,
+                patchable.then_some(&mut plan),
+            )
             .and_then(|()| {
                 let mut out = Vec::with_capacity(bytes.len().saturating_add(64 * 1024));
                 let mut writer = VecWriter {
@@ -1262,7 +1410,12 @@ impl Engine {
                 }
                 let seed = export_seed(bytes, edits);
                 normalize_trailer_ids(&mut out, bytes, &seed);
-                Ok(out)
+                crate::patch::apply(&out, plan).map_err(|declined| {
+                    Failure::new(
+                        FailureKind::Engine,
+                        format!("finishing the annotations failed: {}", declined.0),
+                    )
+                })
             });
         self.close_raw(copy, form);
         result
@@ -1279,9 +1432,20 @@ impl Engine {
         form: Option<&Form>,
         edits: &Edits,
         imports: &[u64],
+        mut patching: Option<&mut crate::patch::PatchPlan>,
     ) -> Result<()> {
         let api = self.api();
         let original_count = source.pages.len();
+        if edits
+            .adopted
+            .iter()
+            .any(|a| a.target.page >= original_count)
+        {
+            return Err(Failure::new(
+                FailureKind::Invalid,
+                "adopted annotation page out of range",
+            ));
+        }
         // Source geometry for every output page, to validate references.
         let mut output_rotations: Vec<(Rotation, Rotation)> = Vec::new();
         if !edits.pages.is_empty() {
@@ -1377,14 +1541,76 @@ impl Engine {
             }
         }
         let output_count = usize::try_from(api.FPDF_GetPageCount(copy)).unwrap_or(0);
+        if !edits.adopted.is_empty() {
+            // Which original page each output page shows, and whether it is
+            // the occurrence that keeps that page's adopted annotations.
+            let occurrences: Vec<Option<(usize, bool)>> = if edits.pages.is_empty() {
+                (0..output_count).map(|i| Some((i, true))).collect()
+            } else {
+                edits
+                    .pages
+                    .iter()
+                    .map(|p| match p.source {
+                        PageSource::Original(i) => Some((i, p.primary)),
+                        PageSource::Imported { .. } => None,
+                    })
+                    .collect()
+            };
+            for (k, occurrence) in occurrences.iter().enumerate() {
+                let Some((original, primary)) = *occurrence else {
+                    continue;
+                };
+                let targets: Vec<&AdoptedAnnotation> = edits
+                    .adopted
+                    .iter()
+                    .filter(|a| a.target.page == original && (!primary || !a.unchanged))
+                    .collect();
+                if targets.is_empty() {
+                    continue;
+                }
+                let page = api.FPDF_LoadPage(copy, k as c_int);
+                if page.is_null() {
+                    return Err(Failure::new(
+                        FailureKind::Engine,
+                        "loading a page to replace annotations failed",
+                    ));
+                }
+                self.remove_adopted(page, &targets);
+                api.FPDF_ClosePage(page);
+            }
+        }
+        // Annotations the patch pass must find again: those it gives an
+        // appearance, replies, and the annotations replied to.
+        let by_name: HashMap<&str, usize> = edits
+            .annotations
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(k, a)| (a.name.as_str(), k))
+            .collect();
+        let reply_parent = |a: &NewAnnotation| -> Option<usize> {
+            let parent = *by_name.get(a.in_reply_to.as_deref()?)?;
+            (edits.annotations.get(parent)?.page == a.page).then_some(parent)
+        };
+        let replied_to: HashSet<usize> =
+            edits.annotations.iter().filter_map(reply_parent).collect();
         let mut annotated: Vec<usize> = Vec::new();
-        for annotation in &edits.annotations {
+        // Each output page's new annotations' text, in creation order.
+        let mut texts: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
+        for (k, annotation) in edits.annotations.iter().enumerate() {
             if annotation.page >= output_count {
                 return Err(Failure::new(
                     FailureKind::Invalid,
                     "annotation page out of range",
                 ));
             }
+            let parent = reply_parent(annotation);
+            let finished_later = patching.is_some()
+                && (matches!(
+                    annotation.kind,
+                    NewAnnotationKind::FreeText { .. } | NewAnnotationKind::Stamp { .. }
+                ) || parent.is_some()
+                    || replied_to.contains(&k));
             let page = api.FPDF_LoadPage(copy, annotation.page as c_int);
             if page.is_null() {
                 return Err(Failure::new(
@@ -1392,17 +1618,65 @@ impl Engine {
                     "loading a page to annotate failed",
                 ));
             }
-            let added = self.add_annotation(copy, page, annotation);
+            let added = self.add_annotation(copy, page, annotation, finished_later);
             api.FPDF_ClosePage(page);
             added?;
+            if let Some(plan) = patching.as_deref_mut() {
+                // pdfium appends each new annotation to its page's /Annots,
+                // after every removal above: its position there is how the
+                // patch pass finds it again.
+                let ordinal = plan.created.entry(annotation.page).or_insert(0);
+                let this = *ordinal;
+                *ordinal = ordinal.saturating_add(1);
+                if finished_later {
+                    let appearance = match &annotation.kind {
+                        NewAnnotationKind::FreeText { rect, font_size } => {
+                            Some(crate::appearance::free_text(
+                                &mut plan.setter,
+                                *rect,
+                                annotation.color,
+                                *font_size,
+                                &annotation.contents,
+                            ))
+                        }
+                        NewAnnotationKind::Stamp {
+                            rect,
+                            strokes,
+                            stroke_width,
+                            text,
+                        } => Some(crate::appearance::stamp(
+                            &mut plan.setter,
+                            *rect,
+                            annotation.color,
+                            strokes,
+                            *stroke_width,
+                            text,
+                        )),
+                        _ => None,
+                    };
+                    plan.patches.push(crate::patch::AnnotPatch {
+                        key: k,
+                        page: annotation.page,
+                        ordinal: this,
+                        name: annotation.name.clone(),
+                        appearance,
+                        reply_to: parent.map(|p| (p, annotation.reply_type)),
+                    });
+                }
+            }
+            let on_page = texts.entry(annotation.page).or_default();
+            on_page.push(annotation.contents.as_str());
             if !annotated.contains(&annotation.page) {
                 annotated.push(annotation.page);
             }
         }
         // pdfium writes appearance streams for markup, ink and note
-        // annotations when it first lays out a page's annotation list;
-        // rendering each annotated page once makes it do so before saving,
-        // so other readers draw exactly what pdfium draws.
+        // annotations (and makes new annotations indirect objects) when it
+        // first lays out a page's annotation list; rendering each annotated
+        // page once makes it do so before saving, so other readers draw
+        // exactly what pdfium draws. The text is set only afterwards: that
+        // layout also builds pop-up windows for annotations with text, whose
+        // appearances would otherwise be saved as unused objects.
         for index in annotated {
             let page = api.FPDF_LoadPage(copy, index as c_int);
             if page.is_null() {
@@ -1414,6 +1688,22 @@ impl Engine {
             if !bitmap.is_null() {
                 api.FPDF_RenderPageBitmap(bitmap, page, 0, 0, 1, 1, 0, FPDF_ANNOT);
                 api.FPDFBitmap_Destroy(bitmap);
+            }
+            if let Some(contents) = texts.get(&index) {
+                let count = usize::try_from(api.FPDFPage_GetAnnotCount(page)).unwrap_or(0);
+                let first = count.saturating_sub(contents.len());
+                for (ordinal, text) in contents.iter().enumerate() {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let annot = api.FPDFPage_GetAnnot(page, first.saturating_add(ordinal) as c_int);
+                    if annot.is_null() {
+                        continue;
+                    }
+                    let w = wide(text);
+                    api.FPDFAnnot_SetStringValue(annot, "Contents", w.as_ptr());
+                    api.FPDFPage_CloseAnnot(annot);
+                }
             }
             api.FPDF_ClosePage(page);
         }
@@ -1429,7 +1719,16 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_lines, reason = "one arm per annotation kind")]
-    fn add_annotation(&self, doc: FPDF_DOCUMENT, page: FPDF_PAGE, a: &NewAnnotation) -> Result<()> {
+    /// Create `a` on `page`. When the patch pass will finish it
+    /// (appearance, reply link) nothing more is drawn here; otherwise a
+    /// stamp gets an appearance built from pdfium page objects.
+    fn add_annotation(
+        &self,
+        doc: FPDF_DOCUMENT,
+        page: FPDF_PAGE,
+        a: &NewAnnotation,
+        finished_later: bool,
+    ) -> Result<()> {
         let api = self.api();
         let (sub, quads) = match &a.kind {
             NewAnnotationKind::Highlight { quads } => (subtype::HIGHLIGHT, Some(quads)),
@@ -1517,6 +1816,7 @@ impl Engine {
                     f32::from(b) / 255.0
                 );
                 api.FPDFAnnot_SetStringValue_str(annot, "DA", &da);
+                api.FPDFAnnot_SetBorder(annot, 0.0, 0.0, 0.0);
             }
             NewAnnotationKind::Stamp { rect, .. } => bounds = Some(*rect),
             _ => {}
@@ -1534,6 +1834,7 @@ impl Engine {
             text,
             ..
         } = &a.kind
+            && !finished_later
             && !self.stamp_appearance(doc, annot, a.color, strokes, *stroke_width, text)
         {
             return fail("drawing the stamp appearance failed");
@@ -1549,13 +1850,21 @@ impl Engine {
                 u32::from(c.a),
             );
         }
+        if finished_later
+            && matches!(
+                a.kind,
+                NewAnnotationKind::FreeText { .. } | NewAnnotationKind::Stamp { .. }
+            )
+        {
+            // A placeholder until the patch pass writes the real appearance:
+            // without one pdfium would generate its own (in a standard font)
+            // when the page is laid out.
+            const APPEARANCE_NORMAL: c_int = 0;
+            api.FPDFAnnot_SetAP_str(annot, APPEARANCE_NORMAL, "");
+        }
         api.FPDFAnnot_SetFlags(annot, ANNOT_FLAG_PRINT);
-        for (key, value) in [
-            ("Contents", &a.contents),
-            ("T", &a.author),
-            ("NM", &a.name),
-            ("M", &a.modified),
-        ] {
+        // `/Contents` is set after the layout pass (see `apply_edits`).
+        for (key, value) in [("T", &a.author), ("NM", &a.name), ("M", &a.modified)] {
             if !value.is_empty() {
                 let w = wide(value);
                 api.FPDFAnnot_SetStringValue(annot, key, w.as_ptr());
@@ -1565,8 +1874,72 @@ impl Engine {
         Ok(())
     }
 
+    /// Remove the adopted annotations `targets` from `page`, with their
+    /// pop-up windows. An annotation is found by `/NM` where it has one
+    /// (checked at its recorded index first), otherwise at its index; a
+    /// target whose subtype no longer matches is left alone.
+    fn remove_adopted(&self, page: FPDF_PAGE, targets: &[&AdoptedAnnotation]) {
+        let api = self.api();
+        let count = api.FPDFPage_GetAnnotCount(page).clamp(0, 10_000);
+        let mut present: Vec<(AnnotationKind, String)> = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let annot = api.FPDFPage_GetAnnot(page, i);
+            if annot.is_null() {
+                present.push((AnnotationKind::Other(String::new()), String::new()));
+                continue;
+            }
+            present.push((
+                Self::annotation_kind(api.FPDFAnnot_GetSubtype(annot)),
+                self.annot_string(annot, "NM"),
+            ));
+            api.FPDFPage_CloseAnnot(annot);
+        }
+        let mut doomed: Vec<c_int> = Vec::new();
+        for adopted in targets {
+            let t = &adopted.target;
+            let at_index = present
+                .get(t.index)
+                .is_some_and(|(kind, name)| *kind == t.kind && *name == t.name);
+            let index = if at_index {
+                Some(t.index)
+            } else if t.name.is_empty() {
+                None
+            } else {
+                present
+                    .iter()
+                    .position(|(kind, name)| *kind == t.kind && *name == t.name)
+            };
+            let Some(index) = index else {
+                continue;
+            };
+            let Ok(index) = c_int::try_from(index) else {
+                continue;
+            };
+            doomed.push(index);
+            let annot = api.FPDFPage_GetAnnot(page, index);
+            if !annot.is_null() {
+                let popup = api.FPDFAnnot_GetLinkedAnnot(annot, "Popup");
+                if !popup.is_null() {
+                    let p = api.FPDFPage_GetAnnotIndex(page, popup);
+                    if p >= 0 {
+                        doomed.push(p);
+                    }
+                    api.FPDFPage_CloseAnnot(popup);
+                }
+                api.FPDFPage_CloseAnnot(annot);
+            }
+        }
+        doomed.sort_unstable();
+        doomed.dedup();
+        for index in doomed.into_iter().rev() {
+            api.FPDFPage_RemoveAnnot(page, index);
+        }
+    }
+
     /// Build a stamp's appearance from page objects; pdfium writes them as
     /// the annotation's appearance stream with the resources they need.
+    /// Used where the patch pass cannot run (encrypted sources): the text is
+    /// set in Helvetica, so only Latin text shows there.
     fn stamp_appearance(
         &self,
         doc: FPDF_DOCUMENT,
@@ -1818,6 +2191,49 @@ fn walk(
         child = api.FPDFBookmark_GetNextSibling(doc.raw, child);
     }
     out
+}
+
+/// Font size and fill colour from a default appearance string
+/// (`/Helv 12 Tf 0 0 1 rg`).
+fn parse_default_appearance(da: &str) -> (Option<f32>, Option<Rgba>) {
+    let tokens: Vec<&str> = da.split_whitespace().collect();
+    let number = |i: usize| tokens.get(i).and_then(|t| t.parse::<f32>().ok());
+    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut size = None;
+    let mut color = None;
+    for (i, token) in tokens.iter().enumerate() {
+        match *token {
+            "Tf" => size = i.checked_sub(1).and_then(number).filter(|s| *s > 0.0),
+            "rg" => {
+                if let (Some(r), Some(g), Some(b)) = (
+                    i.checked_sub(3).and_then(number),
+                    i.checked_sub(2).and_then(number),
+                    i.checked_sub(1).and_then(number),
+                ) {
+                    color = Some(Rgba::new(channel(r), channel(g), channel(b), 255));
+                }
+            }
+            "g" => {
+                if let Some(v) = i.checked_sub(1).and_then(number) {
+                    let v = channel(v);
+                    color = Some(Rgba::new(v, v, v, 255));
+                }
+            }
+            "k" => {
+                if let (Some(c), Some(m), Some(y), Some(k)) = (
+                    i.checked_sub(4).and_then(number),
+                    i.checked_sub(3).and_then(number),
+                    i.checked_sub(2).and_then(number),
+                    i.checked_sub(1).and_then(number),
+                ) {
+                    let to = |v: f32| channel((1.0 - v) * (1.0 - k));
+                    color = Some(Rgba::new(to(c), to(m), to(y), 255));
+                }
+            }
+            _ => {}
+        }
+    }
+    (size, color)
 }
 
 fn export_seed(bytes: &[u8], edits: &Edits) -> [u8; 32] {

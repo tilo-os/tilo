@@ -120,9 +120,22 @@ pub enum AnnotationKind {
     Other(String),
 }
 
+/// How a reply relates to the annotation it answers (`/RT`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ReplyType {
+    /// A reply in the comment thread (`/RT /R`, the default).
+    #[default]
+    Reply,
+    /// Grouped with the annotation it names, acting as one unit (`/RT /Group`).
+    Group,
+}
+
 /// An annotation present in the document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AnnotationInfo {
+    /// Position in the page's `/Annots` array — with the page, the
+    /// annotation's address in these bytes.
+    pub index: usize,
     pub kind: AnnotationKind,
     pub rect: Rect,
     pub color: Option<Rgba>,
@@ -132,10 +145,65 @@ pub struct AnnotationInfo {
     pub author: String,
     /// `/NM` — the annotation's unique name, when set.
     pub name: String,
+    /// `/M` — last modified, as the raw PDF date string (empty when unset).
+    pub modified: String,
+    /// `/CreationDate`, as the raw PDF date string (empty when unset).
+    pub created: String,
+    /// `/F` annotation flags.
+    pub flags: u32,
     /// Text-markup quadrilaterals as rectangles (highlight, underline, …).
     pub quads: Vec<Rect>,
     /// Ink strokes.
     pub ink: Vec<Vec<Point>>,
+    /// Border (stroke) width, where the annotation has one.
+    pub border_width: Option<f32>,
+    /// `/IRT`: the index (on the same page) of the annotation this one
+    /// replies to.
+    pub in_reply_to: Option<usize>,
+    /// `/RT`, meaningful with [`Self::in_reply_to`].
+    pub reply_type: ReplyType,
+    /// `/Popup`: the index of this annotation's pop-up window annotation.
+    pub popup: Option<usize>,
+    /// Font size from `/DA` (free text).
+    pub font_size: Option<f32>,
+    /// Text colour from `/DA` (free text).
+    pub text_color: Option<Rgba>,
+}
+
+impl AnnotationInfo {
+    /// Whether `/F` hides the annotation (Hidden or `NoView`).
+    #[must_use]
+    pub fn is_hidden(&self) -> bool {
+        self.flags & (ANNOT_FLAG_HIDDEN | ANNOT_FLAG_NOVIEW) != 0
+    }
+}
+
+/// `/F` bit: do not display or print.
+pub const ANNOT_FLAG_HIDDEN: u32 = 1 << 1;
+/// `/F` bit: print the annotation.
+pub const ANNOT_FLAG_PRINT: u32 = 1 << 2;
+/// `/F` bit: do not display (may still print).
+pub const ANNOT_FLAG_NOVIEW: u32 = 1 << 5;
+
+impl AnnotationKind {
+    /// The kinds a reader keeps as its own editable markup records: text
+    /// markup, notes (and their replies), free text and ink, with the pop-up
+    /// windows that belong to them. Every other kind — links, widgets,
+    /// stamps, attachments — stays part of the page.
+    #[must_use]
+    pub fn is_reader_markup(&self) -> bool {
+        matches!(
+            self,
+            Self::Text
+                | Self::FreeText
+                | Self::Highlight
+                | Self::Underline
+                | Self::Squiggly
+                | Self::StrikeOut
+                | Self::Ink
+                | Self::Popup
+        )
+    }
 }
 
 /// The type of a form field.
@@ -199,6 +267,11 @@ pub struct RenderOptions {
     pub region: Option<PixelRect>,
     /// Draw annotation appearances (including form widgets).
     pub annotations: bool,
+    /// With [`Self::annotations`], also draw the kinds for which
+    /// [`AnnotationKind::is_reader_markup`] holds. A reader that shows those
+    /// from its own edit records turns this off so they are not drawn twice;
+    /// links, widgets and stamps are still drawn.
+    pub reader_markup: bool,
 }
 
 impl Default for RenderOptions {
@@ -208,6 +281,7 @@ impl Default for RenderOptions {
             rotation: Rotation::None,
             region: None,
             annotations: true,
+            reader_markup: true,
         }
     }
 }

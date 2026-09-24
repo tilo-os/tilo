@@ -438,14 +438,8 @@ fn export_round_trips_annotations_forms_and_page_operations() {
     let edits = Edits {
         // Page three first (rotated), then page one; page two deleted.
         pages: vec![
-            PageEdit {
-                source: PageSource::Original(2),
-                rotation: Rotation::Cw90,
-            },
-            PageEdit {
-                source: PageSource::Original(0),
-                rotation: Rotation::None,
-            },
+            PageEdit::new(PageSource::Original(2), Rotation::Cw90),
+            PageEdit::new(PageSource::Original(0), Rotation::None),
         ],
         annotations: vec![
             NewAnnotation {
@@ -458,6 +452,8 @@ fn export_round_trips_annotations_forms_and_page_operations() {
                 contents: String::new(),
                 name: "hl-1".into(),
                 modified: "D:20260924120000Z".into(),
+                in_reply_to: None,
+                reply_type: tilo_pdf::ReplyType::Reply,
             },
             NewAnnotation {
                 page: 0,
@@ -469,6 +465,8 @@ fn export_round_trips_annotations_forms_and_page_operations() {
                 contents: "Check this".into(),
                 name: "note-1".into(),
                 modified: String::new(),
+                in_reply_to: None,
+                reply_type: tilo_pdf::ReplyType::Reply,
             },
             NewAnnotation {
                 page: 1,
@@ -485,9 +483,12 @@ fn export_round_trips_annotations_forms_and_page_operations() {
                 contents: String::new(),
                 name: "ink-1".into(),
                 modified: String::new(),
+                in_reply_to: None,
+                reply_type: tilo_pdf::ReplyType::Reply,
             },
         ],
         form_values: Vec::new(),
+        adopted: Vec::new(),
     };
     let out = doc.export(&edits, &[]).unwrap();
     assert!(
@@ -581,6 +582,8 @@ fn stamps_carry_their_own_appearance() {
             contents: "Signed".into(),
             name: "sig-1".into(),
             modified: String::new(),
+            in_reply_to: None,
+            reply_type: tilo_pdf::ReplyType::Reply,
         }],
         ..Edits::default()
     };
@@ -659,18 +662,9 @@ fn export_imports_pages_from_other_documents() {
     let other = engine.open_bytes(&fixture("cjk.pdf")).unwrap();
     let edits = Edits {
         pages: vec![
-            PageEdit {
-                source: PageSource::Original(0),
-                rotation: Rotation::None,
-            },
-            PageEdit {
-                source: PageSource::Imported { import: 0, page: 0 },
-                rotation: Rotation::None,
-            },
-            PageEdit {
-                source: PageSource::Original(0),
-                rotation: Rotation::Cw180,
-            },
+            PageEdit::new(PageSource::Original(0), Rotation::None),
+            PageEdit::new(PageSource::Imported { import: 0, page: 0 }, Rotation::None),
+            PageEdit::new(PageSource::Original(0), Rotation::Cw180),
         ],
         ..Edits::default()
     };
@@ -715,4 +709,313 @@ fn in_process_and_sandboxed_engines_agree() {
             "{name}"
         );
     }
+}
+
+/// The fixture page the annotation tests mark up: `multipage.pdf`'s second
+/// page, "Findable needle on page two".
+const PAGE: usize = 1;
+
+fn note(page: usize, at: Point, name: &str, author: &str, contents: &str) -> NewAnnotation {
+    NewAnnotation {
+        page,
+        kind: NewAnnotationKind::Note { at },
+        color: Rgba::new(255, 200, 0, 255),
+        author: author.into(),
+        contents: contents.into(),
+        name: name.into(),
+        modified: String::new(),
+        in_reply_to: None,
+        reply_type: tilo_pdf::ReplyType::Reply,
+    }
+}
+
+/// Count pixels in `rect` (display space, points) of a render at `scale`
+/// that are clearly not paper.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixel coordinates of a small render"
+)]
+fn ink_in(bitmap: &tilo_pdf::Bitmap, scale: f32, rect: Rect) -> usize {
+    let (w, h) = (bitmap.width() as usize, bitmap.height() as usize);
+    let px = |v: f32| (v * scale).max(0.0) as usize;
+    let (x0, x1) = (px(rect.x0).min(w), px(rect.x1).min(w));
+    let (y0, y1) = (px(rect.y0).min(h), px(rect.y1).min(h));
+    bitmap
+        .pixels()
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(i, p)| {
+            let (x, y) = (i.checked_rem(w).unwrap_or(0), i.checked_div(w).unwrap_or(0));
+            (x0..x1).contains(&x)
+                && (y0..y1).contains(&y)
+                && (p[0] < 160 || p[1] < 160 || p[2] < 160)
+        })
+        .count()
+}
+
+/// A previously annotated file: what another reader (or an earlier save)
+/// left in a Typst-generated document — a highlight, a note with a reply
+/// thread, free text and a signature stamp in non-Latin scripts.
+fn annotated_source(engine: &Engine) -> (Vec<u8>, Vec<Rect>) {
+    let source = fixture("multipage.pdf");
+    let doc = engine.open_bytes(&source).unwrap();
+    let quads = user_quads(&doc, PAGE, "needle");
+    let g = doc.page(PAGE).unwrap();
+    let mut reply = note(
+        PAGE,
+        g.to_user(Point::new(250.0, 30.0)),
+        "reply-1",
+        "Bo",
+        "Agreed",
+    );
+    reply.in_reply_to = Some("note-1".into());
+    let edits = Edits {
+        annotations: vec![
+            NewAnnotation {
+                page: PAGE,
+                kind: NewAnnotationKind::Highlight {
+                    quads: quads.clone(),
+                },
+                color: Rgba::new(255, 220, 0, 255),
+                author: "Ada".into(),
+                contents: "Original".into(),
+                name: "hl-1".into(),
+                modified: String::new(),
+                in_reply_to: None,
+                reply_type: tilo_pdf::ReplyType::Reply,
+            },
+            note(
+                PAGE,
+                g.to_user(Point::new(250.0, 30.0)),
+                "note-1",
+                "Ada",
+                "Check this",
+            ),
+            reply,
+            NewAnnotation {
+                page: PAGE,
+                kind: NewAnnotationKind::FreeText {
+                    rect: g.rect_to_user(Rect::from_xywh(20.0, 100.0, 130.0, 50.0)),
+                    font_size: 14.0,
+                },
+                color: Rgba::new(200, 0, 0, 255),
+                author: "Ada".into(),
+                contents: "你好，世界 — see page 2".into(),
+                name: "ft-1".into(),
+                modified: String::new(),
+                in_reply_to: None,
+                reply_type: tilo_pdf::ReplyType::Reply,
+            },
+            NewAnnotation {
+                page: PAGE,
+                kind: NewAnnotationKind::Stamp {
+                    rect: g.rect_to_user(Rect::from_xywh(160.0, 100.0, 120.0, 50.0)),
+                    strokes: Vec::new(),
+                    stroke_width: 1.0,
+                    text: vec![tilo_pdf::StampText {
+                        at: g.to_user(Point::new(166.0, 132.0)),
+                        size: 18.0,
+                        text: "محمد 李小龍".into(),
+                    }],
+                },
+                color: Rgba::new(20, 30, 160, 255),
+                author: "محمد".into(),
+                contents: "Signed".into(),
+                name: "sig-1".into(),
+                modified: String::new(),
+                in_reply_to: None,
+                reply_type: tilo_pdf::ReplyType::Reply,
+            },
+        ],
+        ..Edits::default()
+    };
+    (doc.export(&edits, &[]).unwrap(), quads)
+}
+
+#[test]
+fn replies_link_to_their_parent_and_come_back_as_a_thread() {
+    let Some(engine) = engine() else { return };
+    let (bytes, _) = annotated_source(&engine);
+    let doc = engine.open_bytes(&bytes).unwrap();
+    let annots = doc.annotations(PAGE).unwrap();
+    let parent = annots.iter().find(|a| a.name == "note-1").unwrap();
+    let reply = annots.iter().find(|a| a.name == "reply-1").unwrap();
+    assert_eq!(reply.in_reply_to, Some(parent.index), "{annots:#?}");
+    assert_eq!(reply.reply_type, tilo_pdf::ReplyType::Reply);
+    assert_eq!(parent.in_reply_to, None);
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(!text.contains("TiloRef"), "no private marker in the file");
+}
+
+#[test]
+fn free_text_and_non_latin_stamps_draw_with_embedded_subset_fonts() {
+    let Some(engine) = engine() else { return };
+    let (bytes, _) = annotated_source(&engine);
+    let doc = engine.open_bytes(&bytes).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("/FontFile2") || text.contains("/FontFile3"),
+        "a font program is embedded"
+    );
+    assert!(text.contains("/ToUnicode"), "text stays extractable");
+    let subset = text
+        .split("/BaseFont")
+        .skip(1)
+        .filter_map(|rest| rest.trim_start().strip_prefix('/'))
+        .any(|name| name.as_bytes().get(6) == Some(&b'+'));
+    assert!(subset, "fonts are embedded as tagged subsets");
+    let scale = 2.0;
+    let bitmap = doc
+        .render(
+            PAGE,
+            &RenderOptions {
+                scale,
+                ..RenderOptions::default()
+            },
+        )
+        .unwrap();
+    let free_text = ink_in(&bitmap, scale, Rect::from_xywh(20.0, 100.0, 130.0, 50.0));
+    let stamp = ink_in(&bitmap, scale, Rect::from_xywh(160.0, 100.0, 120.0, 50.0));
+    assert!(
+        free_text > 200,
+        "free text drawn by pdfium ({free_text} px)"
+    );
+    assert!(stamp > 200, "the non-Latin signature is drawn ({stamp} px)");
+    // The same export again is byte-identical, fonts included.
+    let (again, _) = annotated_source(&engine);
+    assert_eq!(bytes, again);
+}
+
+#[test]
+fn reader_markup_can_be_left_out_of_a_render() {
+    let Some(engine) = engine() else { return };
+    let (bytes, _) = annotated_source(&engine);
+    let doc = engine.open_bytes(&bytes).unwrap();
+    let options = RenderOptions {
+        scale: 2.0,
+        ..RenderOptions::default()
+    };
+    let with = doc.render(PAGE, &options).unwrap();
+    let without = doc
+        .render(
+            PAGE,
+            &RenderOptions {
+                reader_markup: false,
+                ..options
+            },
+        )
+        .unwrap();
+    let yellow = |b: &tilo_pdf::Bitmap| {
+        b.pixels()
+            .chunks(4)
+            .filter(|p| p[0] > 200 && p[1] > 180 && p[2] < 120)
+            .count()
+    };
+    assert!(yellow(&with) > 50);
+    assert_eq!(yellow(&without), 0, "highlight and notes hidden");
+    // Stamps are page content, not reader markup: still drawn.
+    let stamp = Rect::from_xywh(160.0, 100.0, 120.0, 50.0);
+    assert!(ink_in(&without, 2.0, stamp) > 200);
+    // The document itself is unchanged by the hidden render.
+    assert_eq!(doc.render(PAGE, &options).unwrap().pixels(), with.pixels());
+}
+
+#[test]
+fn adopted_annotations_are_replaced_not_duplicated() {
+    let Some(engine) = engine() else { return };
+    let (bytes, quads) = annotated_source(&engine);
+    let doc = engine.open_bytes(&bytes).unwrap();
+    let found = doc.annotations(PAGE).unwrap();
+    let adopt = |a: &tilo_pdf::AnnotationInfo, unchanged: bool| tilo_pdf::AdoptedAnnotation {
+        target: tilo_pdf::AnnotationRef {
+            page: PAGE,
+            index: a.index,
+            name: a.name.clone(),
+            kind: a.kind.clone(),
+        },
+        unchanged,
+    };
+    let by_name = |name: &str| found.iter().find(|a| a.name == name).unwrap();
+    let g = doc.page(PAGE).unwrap();
+    // The records took over every piece of markup. The highlight is
+    // unchanged, the note was edited and got a second reply, the free text
+    // was deleted.
+    let at = g.to_user(Point::new(255.0, 40.0));
+    let mut reply1 = note(PAGE, at, "reply-1", "Bo", "Agreed");
+    reply1.in_reply_to = Some("note-1".into());
+    let mut reply2 = note(PAGE, at, "reply-2", "Cy", "Done");
+    reply2.in_reply_to = Some("note-1".into());
+    let edits = Edits {
+        adopted: vec![
+            adopt(by_name("hl-1"), true),
+            adopt(by_name("note-1"), false),
+            adopt(by_name("reply-1"), false),
+            adopt(by_name("ft-1"), false),
+        ],
+        annotations: vec![
+            note(PAGE, at, "note-1", "Ada", "Check this again"),
+            reply1,
+            reply2,
+        ],
+        ..Edits::default()
+    };
+    let out = doc.export(&edits, &[]).unwrap();
+    assert_eq!(out, doc.export(&edits, &[]).unwrap(), "deterministic");
+    let reloaded = engine.open_bytes(&out).unwrap();
+    let annots = reloaded.annotations(PAGE).unwrap();
+    let named = |name: &str| annots.iter().filter(|a| a.name == name).count();
+    assert_eq!(named("hl-1"), 1, "{annots:#?}");
+    assert_eq!(named("note-1"), 1);
+    assert_eq!(named("reply-1"), 1);
+    assert_eq!(named("reply-2"), 1);
+    assert_eq!(named("ft-1"), 0, "deleted free text is gone");
+    assert_eq!(named("sig-1"), 1, "stamps are not adopted and stay");
+    let highlight = annots.iter().find(|a| a.name == "hl-1").unwrap();
+    assert_eq!(highlight.contents, "Original");
+    assert_eq!(highlight.quads.len(), quads.len());
+    let parent = annots.iter().find(|a| a.name == "note-1").unwrap();
+    assert_eq!(parent.contents, "Check this again");
+    for reply in ["reply-1", "reply-2"] {
+        let r = annots.iter().find(|a| a.name == reply).unwrap();
+        assert_eq!(r.in_reply_to, Some(parent.index), "{reply} threads");
+    }
+
+    // A duplicated page is a copy of the content: it carries none of the
+    // adopted markup, while the primary occurrence keeps it.
+    let markup: Vec<&tilo_pdf::AnnotationInfo> =
+        found.iter().filter(|a| a.kind.is_reader_markup()).collect();
+    let dup = Edits {
+        pages: vec![
+            PageEdit {
+                primary: false,
+                ..PageEdit::new(PageSource::Original(PAGE), Rotation::None)
+            },
+            PageEdit::new(PageSource::Original(PAGE), Rotation::None),
+        ],
+        adopted: markup.iter().map(|a| adopt(a, true)).collect(),
+        ..Edits::default()
+    };
+    let out = doc.export(&dup, &[]).unwrap();
+    let reloaded = engine.open_bytes(&out).unwrap();
+    let copy = reloaded.annotations(0).unwrap();
+    let primary = reloaded.annotations(1).unwrap();
+    assert!(copy.iter().all(|a| !a.kind.is_reader_markup()), "{copy:#?}");
+    assert_eq!(
+        primary.iter().filter(|a| a.kind.is_reader_markup()).count(),
+        markup.len()
+    );
+}
+
+#[test]
+fn free_text_colour_and_size_read_back() {
+    let Some(engine) = engine() else { return };
+    let (bytes, _) = annotated_source(&engine);
+    let doc = engine.open_bytes(&bytes).unwrap();
+    let annots = doc.annotations(PAGE).unwrap();
+    let ft = annots.iter().find(|a| a.name == "ft-1").unwrap();
+    assert_eq!(ft.kind, AnnotationKind::FreeText);
+    assert_eq!(ft.font_size, Some(14.0));
+    assert_eq!(ft.text_color, Some(Rgba::new(200, 0, 0, 255)));
+    assert_eq!(ft.contents, "你好，世界 — see page 2");
 }
