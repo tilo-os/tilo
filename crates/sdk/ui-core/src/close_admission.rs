@@ -56,7 +56,7 @@ pub(crate) struct Admission {
     pub ready: bool,
     pub save_local: Option<tilo_actions::InvocationId>,
     pub save_broker_request: Option<u64>,
-    pub save_broker_id: Option<u64>,
+    pub save_broker_id: Option<tilo_actions::InvocationId>,
     pub save_poll_at: crate::time::Instant,
     pub save_waiting: bool,
     pub save_result: Option<Result<(), String>>,

@@ -247,8 +247,9 @@ class AppResourceActionContractTests(unittest.TestCase):
     def test_generic_broker_agent_passes(self):
         root = self.fixture(
             "fn resources() {}\n"
-            "struct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "struct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             app_name="agent",
         )
         violations, _ = contract.audit(root)
@@ -256,8 +257,9 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_direct_ui_core_dependency_fails_even_when_renamed(self):
         root = self.fixture(
-            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "fn resources() {}\nstruct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             dependencies=(
                 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
                 'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n'
@@ -269,8 +271,9 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_direct_ui_core_path_fails_without_explicit_package_name(self):
         root = self.fixture(
-            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "fn resources() {}\nstruct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             dependencies=(
                 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
                 'rendering={path="../../crates/sdk/ui-core"}\n'
@@ -282,8 +285,9 @@ class AppResourceActionContractTests(unittest.TestCase):
 
     def test_target_specific_facades_are_checked(self):
         root = self.fixture(
-            "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
-            "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
+            "fn resources() {}\nstruct ActionDescriptor;\n"
+            "RemoteActionMessage::CatalogueRequest; RemoteActionMessage::Invoke(request);\n"
+            "RemoteActionMessage::Observe;\n",
             dependencies="",
             app_name="agent",
         )
