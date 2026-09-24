@@ -7,8 +7,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{
     FilePicker, HostServices, LocationProvider, MediaSession, MediaSessionFactory,
-    MediaSessionPublisher, Notification, Notifier, NotifyError, SpeechFactory, UriOpener, answered,
+    MediaSessionPublisher, Notification, Notifier, NotifyError, ScreenCaptureProvider,
+    SpeechFactory, UriOpener, answered,
 };
+use crate::capture::{ScreenCaptureChannel, ScreenCaptureOutcome, ScreenCaptureRequest};
 use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
 use crate::location::{LocationChannel, LocationOutcome};
 use crate::mpris::{MprisConfig, PlayerSnapshot};
@@ -31,6 +33,8 @@ struct Log {
     notifications: Vec<Notification>,
     media_sessions: Vec<MprisConfig>,
     location_requests: usize,
+    screen_capture_requests: Vec<ScreenCaptureRequest>,
+    screen_capture_outcomes: VecDeque<ScreenCaptureOutcome>,
     location_outcomes: VecDeque<LocationOutcome>,
     published: Vec<PlayerSnapshot>,
 }
@@ -40,7 +44,8 @@ struct Log {
 ///
 /// Copies round-trip through an in-process clipboard; pickers and launches
 /// answer queued outcomes, then `Cancelled` (launches: `Opened`); location
-/// requests answer queued fixes, then `Unavailable`; URIs, utterances
+/// requests answer queued fixes, then `Unavailable`; screen-capture requests
+/// answer queued outcomes, then `Cancelled`; URIs, utterances
 /// and notifications are recorded; media sessions start and record what the
 /// player publishes.
 #[derive(Clone, Default)]
@@ -105,6 +110,16 @@ impl HostRecorder {
         self.log().location_requests
     }
 
+    /// Answer the next screen-capture request with `outcome`.
+    pub fn respond_to_screen_capture(&self, outcome: ScreenCaptureOutcome) {
+        self.log().screen_capture_outcomes.push_back(outcome);
+    }
+
+    /// Every screen-capture request, in order.
+    pub fn screen_capture_requests(&self) -> Vec<ScreenCaptureRequest> {
+        self.log().screen_capture_requests.clone()
+    }
+
     /// Everything the screen reader was asked to say, in order.
     pub fn utterances(&self) -> Vec<tts::Utterance> {
         self.log().utterances.clone()
@@ -141,6 +156,7 @@ impl HostServices {
             notifications: Arc::new(recorder.clone()),
             media_session: Arc::new(recorder.clone()),
             location: Arc::new(recorder.clone()),
+            screen_capture: Arc::new(recorder.clone()),
         };
         (services, recorder)
     }
@@ -285,6 +301,18 @@ impl LocationProvider for HostRecorder {
             log.location_outcomes
                 .pop_front()
                 .unwrap_or_else(|| LocationOutcome::Unavailable("no location queued".to_string())),
+        )
+    }
+}
+
+impl ScreenCaptureProvider for HostRecorder {
+    fn request(&self, request: ScreenCaptureRequest) -> ScreenCaptureChannel {
+        let mut log = self.log();
+        log.screen_capture_requests.push(request);
+        answered(
+            log.screen_capture_outcomes
+                .pop_front()
+                .unwrap_or(ScreenCaptureOutcome::Cancelled),
         )
     }
 }

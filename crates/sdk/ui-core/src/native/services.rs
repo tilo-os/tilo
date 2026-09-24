@@ -9,7 +9,8 @@
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: Windows toasts (with the `notifications` feature);
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
-//! - location: the XDG Location portal (with the `portal` feature).
+//! - location: the XDG Location portal (with the `portal` feature);
+//! - screen capture: the XDG ScreenCast portal (with the `portal` feature).
 //!
 //! It is also the one place the toolkit reads the process environment:
 //! [`process_environment`] turns launcher variables, XDG paths and
@@ -36,6 +37,7 @@ pub fn services(app_id: Option<&str>) -> HostServices {
         notifications: notifier(app_id),
         media_session: Arc::new(super::mpris::DesktopMediaSessions),
         location: Arc::new(super::location::DesktopLocation),
+        screen_capture: Arc::new(super::capture::DesktopScreenCapture),
     }
 }
 

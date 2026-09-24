@@ -109,6 +109,7 @@ pub(crate) mod application_test_support;
 
 pub mod app;
 pub mod caps_lock;
+pub mod capture;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
