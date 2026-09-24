@@ -129,7 +129,7 @@ impl SnippetsDoc {
 
     fn read_int(doc: &AutoCommit, parent: &ObjId, key: &str) -> u32 {
         match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0).max(0) as u32,
+            Ok(Some((Value::Scalar(v), _))) => v.as_i64().unwrap_or(0).max(0) as u32,
             _ => 0,
         }
     }

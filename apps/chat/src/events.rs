@@ -1954,12 +1954,13 @@ mod tests {
         // load can't adopt a real chat store left on the dev machine — the test
         // must exercise the fresh-first-run seed, not whatever is on disk.
         let data = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("TILO_CHAT_DATA", data.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_CHAT_DATA", data.path());
         let mut app = ChatApp::new_ephemeral();
         app.is_live = true; // a live view with no disk behind it
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        unsafe { std::env::remove_var("TILO_CHAT_DATA") };
+        drop(env);
 
         let ws = ChatDoc::list_workspaces(&doc);
         assert!(
@@ -2414,9 +2415,10 @@ mod tests {
         write_real_png(&dir.path().join("shot.png"), 64, 64);
         // Point the workspace picker at the temp dir and open it via the real
         // event path (the composer "+").
-        unsafe { std::env::set_var("TILO_CHAT_ATTACH_DIR", dir.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_CHAT_ATTACH_DIR", dir.path());
         app.on_hit(Hit::Attach, &mut doc);
-        unsafe { std::env::remove_var("TILO_CHAT_ATTACH_DIR") };
+        drop(env);
         assert!(app.attach_open, "the picker opens");
         assert!(
             app.attachment_picker_pending.is_some(),

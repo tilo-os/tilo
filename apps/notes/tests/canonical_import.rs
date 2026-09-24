@@ -88,7 +88,7 @@ fn rich_import_preserves_tree_blocks_marks_and_source() {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_i64(),
+                        .as_i64(),
                     Some(1)
                 );
                 let mut actual = marks[index].1.clone();

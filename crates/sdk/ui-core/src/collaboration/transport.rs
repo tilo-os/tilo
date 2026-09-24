@@ -23,6 +23,12 @@
 //!   cannot retain must turn [`CollabTransport::status`] into
 //!   [`TransportStatus::Closed`], never be dropped silently. Only transient
 //!   presence may be shed, reported as [`TransportError::Shed`].
+//! - **Document mutations are deferred, not failed.** A document change
+//!   the transport cannot take right now is refused with
+//!   [`TransportError::Busy`] so its sender offers it again; one above the
+//!   transport's per-change limit is refused with
+//!   [`TransportError::TooLarge`] before anything is queued. Neither closes
+//!   the transport.
 //! - **Primary-route acknowledgements are real.** A result from
 //!   [`CollabTransport::take_primary_route_result`] reports what the remote
 //!   end decided about the latest primary `Hello`; it is never an optimistic
@@ -65,6 +71,12 @@ pub enum TransportError {
     Closed,
     /// This transport does not implement the command.
     Unsupported,
+    /// Document traffic already queued fills the transport's budget. The
+    /// change was not admitted; retry once earlier changes have been sent.
+    Busy,
+    /// The document change exceeds the transport's per-change limit and can
+    /// never be sent. Nothing of it was queued.
+    TooLarge { actual: usize, max: usize },
 }
 
 impl std::fmt::Display for TransportError {
@@ -73,6 +85,11 @@ impl std::fmt::Display for TransportError {
             Self::Shed => f.write_str("transient collaboration update shed"),
             Self::Closed => f.write_str("collaboration transport is closed"),
             Self::Unsupported => f.write_str("collaboration transport does not support this"),
+            Self::Busy => f.write_str("collaboration transport is busy"),
+            Self::TooLarge { actual, max } => write!(
+                f,
+                "document change is {actual} bytes, above the {max}-byte collaboration limit"
+            ),
         }
     }
 }
@@ -122,7 +139,8 @@ pub trait CollabTransport: Send {
     /// [`TransportError::Shed`] when transient presence was dropped,
     /// [`TransportError::Closed`] when the transport is (or just became)
     /// unavailable, [`TransportError::Unsupported`] for a command it does not
-    /// implement.
+    /// implement, [`TransportError::Busy`] or [`TransportError::TooLarge`]
+    /// for a document mutation it did not admit.
     fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError>;
 
     /// Move every event that is ready into `out`, in arrival order.

@@ -481,52 +481,23 @@ mod window_title_tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn env_path_end_to_end_prefers_app_name() {
-        let prev_name = std::env::var_os("TILO_APP_NAME");
-        let prev_id = std::env::var_os("TILO_PACKAGE_ID");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::set_var("TILO_APP_NAME", "Weather");
-            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.weather");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APP_NAME", "Weather")
+            .set("TILO_PACKAGE_ID", "so.tilo.weather");
         let resolved = resolve_window_title(None);
-        // Restore before asserting so a failure doesn't leak env.
-        unsafe {
-            match prev_name {
-                Some(v) => std::env::set_var("TILO_APP_NAME", v),
-                None => std::env::remove_var("TILO_APP_NAME"),
-            }
-            match prev_id {
-                Some(v) => std::env::set_var("TILO_PACKAGE_ID", v),
-                None => std::env::remove_var("TILO_PACKAGE_ID"),
-            }
-        }
+        drop(env);
         assert_eq!(resolved, "Weather");
         assert_ne!(resolved, "QuickUI App");
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn env_path_falls_back_to_package_id_without_app_name() {
-        let prev_name = std::env::var_os("TILO_APP_NAME");
-        let prev_id = std::env::var_os("TILO_PACKAGE_ID");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe {
-            std::env::remove_var("TILO_APP_NAME");
-            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.calculator");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_APP_NAME")
+            .set("TILO_PACKAGE_ID", "so.tilo.calculator");
         let resolved = resolve_window_title(None);
-        unsafe {
-            match prev_name {
-                Some(v) => std::env::set_var("TILO_APP_NAME", v),
-                None => std::env::remove_var("TILO_APP_NAME"),
-            }
-            match prev_id {
-                Some(v) => std::env::set_var("TILO_PACKAGE_ID", v),
-                None => std::env::remove_var("TILO_PACKAGE_ID"),
-            }
-        }
+        drop(env);
         assert_eq!(resolved, "Calculator");
     }
 }
@@ -624,11 +595,11 @@ mod pointer_broadcast_tests {
     /// The scope is what sends `Arrived`, so opt-in would mean an app that
     /// forgets to set it never receives state written before it opened.
     #[test]
-    #[serial_test::serial(process_env)]
     fn an_app_in_a_workspace_publishes_presence_without_being_asked() {
         let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_WORKSPACE_ID", room) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_WORKSPACE_ID", room)
+            .remove("QUICK_CLUSTER_ID");
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert_eq!(
             app.presence_broadcast_scope(),
@@ -637,18 +608,13 @@ mod pointer_broadcast_tests {
             }),
             "a workspace in the environment is a scope, with no app-side call"
         );
-        unsafe { std::env::remove_var("TILO_WORKSPACE_ID") };
     }
 
     /// The nil cluster addresses nobody, so no room means nothing published.
     #[test]
-    #[serial_test::serial(process_env)]
     fn an_app_with_no_workspace_publishes_nothing() {
-        // SAFETY: see above.
-        unsafe {
-            std::env::remove_var("TILO_WORKSPACE_ID");
-            std::env::remove_var("QUICK_CLUSTER_ID");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_WORKSPACE_ID").remove("QUICK_CLUSTER_ID");
         let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert!(app.presence_broadcast_scope().is_none());
     }
@@ -2597,7 +2563,7 @@ mod action_palette_tests {
                         .doc
                         .get(&ROOT, "escaped_keyboard")
                         .unwrap()
-                        .and_then(|(value, _)| value.to_bool()),
+                        .and_then(|(value, _)| value.as_bool()),
                     Some(true)
                 );
                 app.state.doc.delete(&ROOT, "escaped_keyboard").unwrap();
@@ -2612,7 +2578,7 @@ mod action_palette_tests {
                         .doc
                         .get(&ROOT, "escaped_keyboard")
                         .unwrap()
-                        .and_then(|(value, _)| value.to_bool()),
+                        .and_then(|(value, _)| value.as_bool()),
                     Some(true)
                 );
             }
@@ -2730,7 +2696,7 @@ mod action_palette_tests {
             .doc
             .get(&ROOT, "flipped")
             .unwrap()
-            .and_then(|(v, _)| v.to_bool());
+            .and_then(|(v, _)| v.as_bool());
         assert_eq!(
             flipped,
             Some(true),
@@ -2863,7 +2829,7 @@ mod action_palette_tests {
             .doc
             .get(&ROOT, "navigated")
             .unwrap()
-            .and_then(|(v, _)| v.to_str().map(str::to_string));
+            .and_then(|(v, _)| v.as_str().map(str::to_string));
         assert_eq!(
             nav,
             Some("person:Ada Lovelace".to_string()),
@@ -3711,7 +3677,7 @@ mod semantic_tree_app_tests {
             match self {
                 CounterAction::Bump | CounterAction::HostBump => {
                     let n = match doc.get(&ROOT, "n") {
-                        Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+                        Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
                         _ => 0,
                     };
                     doc.put(&ROOT, "n", ScalarValue::Int(n.saturating_add(1)))?;
@@ -4120,7 +4086,7 @@ mod semantic_tree_app_tests {
 
     fn counter_in_doc(doc: &automerge::AutoCommit) -> i64 {
         match doc.get(&ROOT, "n") {
-            Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+            Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
             _ => 0,
         }
     }
@@ -4901,7 +4867,7 @@ mod semantic_tree_app_tests {
 
         let via_a11y = counter(&app);
         let via_affordance = match host_doc.get(&ROOT, "n") {
-            Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+            Ok(Some((v, _))) => v.as_i64().unwrap_or(0),
             _ => 0,
         };
         assert_eq!(
@@ -6074,7 +6040,7 @@ mod bound_component_tests {
             assert_eq!(type_id, "bound.follow-up");
             assert_eq!(path, &ROOT);
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             let mode = COMPOUND_MODE.get();
@@ -6134,7 +6100,7 @@ mod bound_component_tests {
                 return None;
             }
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
@@ -6147,7 +6113,7 @@ mod bound_component_tests {
 
         fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             Self::capture("sync");
@@ -6201,7 +6167,7 @@ mod bound_component_tests {
             _: &TaffyTree<()>,
         ) {
             assert_eq!(
-                d.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                d.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             Self::capture("event");
@@ -6238,7 +6204,7 @@ mod bound_component_tests {
             _: &automerge::ObjId,
         ) -> bool {
             assert_eq!(
-                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
                 Some("child")
             );
             doc.put(ROOT, "action", true).unwrap();
@@ -6406,7 +6372,7 @@ mod bound_component_tests {
                     .unwrap()
                     .unwrap()
                     .0
-                    .to_bool()
+                    .as_bool()
                     .unwrap())
                 .unwrap()
         );
@@ -6522,7 +6488,7 @@ mod bound_component_tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("record-0")
         );
         assert!(
@@ -8209,7 +8175,7 @@ mod prepared_runner_tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some(expected)
         );
     }
@@ -8469,7 +8435,7 @@ mod prepared_runner_tests {
                                 .unwrap()
                                 .unwrap()
                                 .0
-                                .to_str()
+                                .as_str()
                                 .unwrap()
                                 .to_owned()
                         })

@@ -20,7 +20,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::Arc;
 
 use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
@@ -35,15 +35,6 @@ use tilo_app_package::{Manifest, MemoryBlobStore};
 /// so tests use the same manifest contract as the served package.
 #[path = "../examples/support/authoring.rs"]
 mod authoring;
-
-/// Every test in this file repoints process-global environment
-/// variables, so they cannot run concurrently.
-fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// Locate the `tilo-install` binary this workspace builds. A missing
 /// binary **fails** the test rather than skipping it; without the binary the
@@ -300,34 +291,14 @@ fn serve_one(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
     let _ = stream.flush();
 }
 
-/// Point every relevant environment variable at scratch directories, restoring them on drop.
-struct Env {
-    _lock: MutexGuard<'static, ()>,
-    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
-}
-
-impl Env {
-    fn set(vars: &[(&'static str, &Path)]) -> Self {
-        let lock = env_lock();
-        let mut saved = Vec::new();
-        for (k, v) in vars {
-            saved.push((*k, std::env::var_os(k)));
-            // SAFETY: serialised by `env_lock`.
-            unsafe { std::env::set_var(k, v) };
-        }
-        Self { _lock: lock, saved }
+/// Point every relevant environment variable at scratch directories, restoring them when the
+/// returned scope drops.
+fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    for (k, v) in vars {
+        env.set(k, v);
     }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        for (k, v) in &self.saved {
-            match v {
-                Some(val) => unsafe { std::env::set_var(k, val) },
-                None => unsafe { std::env::remove_var(k) },
-            }
-        }
-    }
+    env
 }
 
 const PACKAGE_ID: &str = "so.tilo.catalogue-e2e";
@@ -374,7 +345,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
     .unwrap();
 
     let installer_bin = tilo_install_bin();
-    let _env = Env::set(&[
+    let _env = scoped_env(&[
         ("TILO_STORE_CONFIG_DIR", config_dir.path()),
         ("TILO_STORE_CACHE_DIR", cache_dir.path()),
         ("TILO_APPS_DATA_DIR", apps_dir.path()),
@@ -448,7 +419,7 @@ fn an_installed_app_updates_from_a_newer_signed_registry_offer() {
     let cache_dir = tempfile::tempdir().unwrap();
     let apps_dir = tempfile::tempdir().unwrap();
     let installer = tilo_install_bin();
-    let _env = Env::set(&[
+    let _env = scoped_env(&[
         ("TILO_STORE_CONFIG_DIR", config_dir.path()),
         ("TILO_STORE_CACHE_DIR", cache_dir.path()),
         ("TILO_APPS_DATA_DIR", apps_dir.path()),
@@ -549,7 +520,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
     .unwrap();
 
     let installer = tilo_install_bin();
-    let _env = Env::set(&[
+    let _env = scoped_env(&[
         ("TILO_STORE_CONFIG_DIR", config_dir.path()),
         ("TILO_STORE_CACHE_DIR", cache_dir.path()),
         ("TILO_APPS_DATA_DIR", apps_dir.path()),
@@ -666,7 +637,7 @@ fn publish_and_install(
     .unwrap();
 
     let installer = tilo_install_bin();
-    let _env = Env::set(&[
+    let _env = scoped_env(&[
         ("TILO_STORE_CONFIG_DIR", config_dir.path()),
         ("TILO_STORE_CACHE_DIR", cache_dir.path()),
         ("TILO_APPS_DATA_DIR", apps_dir),
@@ -737,7 +708,7 @@ fn an_app_installed_from_a_registry_keeps_the_services_it_declared() {
     // Assert on the launcher's own resolution against a live socket, not
     // the map — a manifest that parses but resolves to nothing is the
     // same silent failure wearing a different hat.
-    let _env = Env::set(&[("XDG_RUNTIME_DIR", runtime_dir.path())]);
+    let _env = scoped_env(&[("XDG_RUNTIME_DIR", runtime_dir.path())]);
     let services_root =
         launcher::services::ensure_services_root().expect("create the services dir");
     let _listener = std::os::unix::net::UnixListener::bind(services_root.join("collab.sock"))

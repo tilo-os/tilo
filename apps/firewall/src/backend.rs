@@ -652,12 +652,9 @@ public (active)
     fn detect_defaults_to_dry_run_without_env() {
         // Without TILO_FIREWALL_APPLY=1 we must never be Live, regardless of
         // whether firewall-cmd happens to exist on this host.
-        let prev = std::env::var("TILO_FIREWALL_APPLY").ok();
-        unsafe { std::env::remove_var("TILO_FIREWALL_APPLY") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_FIREWALL_APPLY");
         let b = Backend::detect();
         assert_eq!(b.mode(), Mode::DryRun);
-        if let Some(v) = prev {
-            unsafe { std::env::set_var("TILO_FIREWALL_APPLY", v) };
-        }
     }
 }

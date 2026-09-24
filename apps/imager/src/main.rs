@@ -183,6 +183,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     clippy::unnecessary_wraps,
     reason = "signature is fixed by LaunchSpec::new_with_args"
 )]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the live-mode switch is set once, before the root widget and the drive \
+              probe that reads IMAGER_LIVE are constructed"
+)]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     if args.has("--import-folders") {
         return Ok(imager::setup::import_view::app_root());

@@ -642,6 +642,13 @@ mod tests {
         let mut bar = ProgressBar::indeterminate();
         bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
         bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
+        // Build everything `draw` needs first: loading the text renderer's
+        // fonts takes long enough to move the sweep off the wraparound phase
+        // this test backdates to.
+        let theme = Theme::dark().with_reduce_motion(false);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
         bar.start = crate::time::now()
             .checked_sub(Duration::from_millis(300))
             .expect("the test duration is far shorter than the monotonic clock");
@@ -649,7 +656,7 @@ mod tests {
         // The frame owner must collect immediately after `draw`, before it
         // clears dirty flags. `draw` is what records this frame's outgoing
         // and incoming segment geometry.
-        let _ = render(&mut bar);
+        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
         let mut regions = Vec::new();
         bar.collect_damage(&mut regions);

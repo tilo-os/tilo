@@ -117,7 +117,14 @@ A permission is `(subject: role|user) × (scope: app | resource-type | resource-
 are named cap-bundles; users get roles + individual overrides + per-resource shares
 ("share this doc with Bob, view-only"). Because **actions are typed** (§3), a permission
 like "member may delete comments" is literally `(role:member, resource-type:comment,
-verb:delete)` checked at op-application.
+verb:delete)`.
+
+That is the model, and it is only partly enforced. Directed action invocations are checked
+against the action's declared requirement, and the filesystem enforces per-identity access.
+Replicated app documents are not checked per action: every document change is signed as
+one coarse class that requires `Write`, so a role either writes the whole document or none
+of it. `docs/architecture/collaboration.md` records exactly what is checked and why a
+receiver cannot yet check more.
 
 **FUSE reconciliation:** the FUSE driver is the **enforcement point**. Every open/read/write
 is checked against the workspace ACL keyed on *identity*, not archaic mode bits. Unix mode

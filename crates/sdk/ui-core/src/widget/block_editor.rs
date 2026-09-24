@@ -1226,7 +1226,7 @@ impl BlockEditor {
                     .map_err(|e| invalid(&e.to_string()))?;
                 match values.as_slice() {
                     [(Value::Scalar(value), _)] => value
-                        .to_str()
+                        .as_str()
                         .map(str::to_string)
                         .ok_or_else(|| invalid("canonical block field must be a string")),
                     _ => Err(invalid("canonical block field is missing or conflicted")),
@@ -1308,7 +1308,7 @@ impl BlockEditor {
                         .ok()
                         .flatten()
                         .is_some_and(|(value, _)| {
-                            value.to_str() == Some(kind_to_str(&block.kind).as_str())
+                            value.as_str() == Some(kind_to_str(&block.kind).as_str())
                         })
                     && state
                         .get(object, "text")
@@ -4926,7 +4926,7 @@ fn read_nesting(state: &AutoCommit, map: &ObjId) -> Result<u8, crate::view::Thaw
     {
         [] => Ok(0),
         [(Value::Scalar(value), _)] => value
-            .to_u64()
+            .as_u64()
             .filter(|depth| *depth <= u64::from(MAX_LIST_INDENT))
             .and_then(|depth| u8::try_from(depth).ok())
             .ok_or_else(invalid),
@@ -4951,7 +4951,7 @@ fn read_code_group(
     match values.as_slice() {
         [] => Ok(None),
         [(Value::Scalar(value), _)] => {
-            let raw = value.to_str().ok_or_else(invalid)?;
+            let raw = value.as_str().ok_or_else(invalid)?;
             let id = Uuid::parse_str(raw).map_err(|_| invalid())?;
             if id.is_nil() {
                 return Err(invalid());

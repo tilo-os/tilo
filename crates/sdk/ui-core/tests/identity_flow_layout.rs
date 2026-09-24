@@ -1,11 +1,10 @@
 #![allow(
     clippy::similar_names,
     clippy::too_many_lines,
-    reason = "migration stack lint debt is scoped to this target"
+    reason = "one table-driven fixture per screen keeps every screen's setup in view"
 )]
 
-//! F6 (window chrome / identity flow) alignment review: the identity
-//! ceremony screens.
+//! Layout and input of the identity ceremony screens.
 //!
 //! Every screen is mounted in the headless frame pipeline at a real
 //! viewport, in every shipped theme family, and rasterised to
@@ -14,13 +13,12 @@
 //!
 //! The geometry assertion runs unconditionally: a screen must own the
 //! whole viewport. A fixed 720×580 leaf centres its card in the top-left
-//! corner of a 1280×800 window, which is how the ceremony looked before
-//! this review. Card centring and row alignment inside the card are pinned
+//! corner of a 1280×800 window. Card centring and row alignment inside the card are pinned
 //! by the unit tests in `ui/src/widget/identity_flow/sheet.rs`, which can
 //! reach the pure layout directly.
 //!
-//! Round two: every text field in the ceremony is the shared `TextInput`,
-//! so the second test drives them the way a user, a screen reader and an
+//! Every text field in the ceremony is the shared `TextInput`, so the
+//! second test drives them the way a user, a screen reader and an
 //! agent do — the host's Tab order, typed keys, the widget's own paste
 //! shortcut and the accessibility `SetValue` action — and reads the result
 //! back through the fields' accessibility values by `test_id`.

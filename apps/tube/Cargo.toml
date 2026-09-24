@@ -69,6 +69,7 @@ dirs.workspace = true
 vello_encoding.workspace = true
 # Encode a valid PNG for the offline image-store test fixture.
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [features]
 thin = ["dep:runtime-dylib"]

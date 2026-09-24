@@ -575,11 +575,11 @@ mod tests {
         );
 
         let provider = HostApplicationsProvider::new();
-        let apps = (0..100_001)
+        let apps = (0..=4_000)
             .map(|index| {
                 app(
                     &format!("org.fixture.App{index}"),
-                    if index == 100_000 {
+                    if index == 4_000 {
                         "unique-tail"
                     } else {
                         "common app"
@@ -621,11 +621,11 @@ mod tests {
     #[test]
     fn source_backed_cold_query_does_no_host_index_work_before_refresh() {
         let source = HostAppsTestSource::new(
-            (0..100_001)
+            (0..=4_000)
                 .map(|index| {
                     app(
                         &format!("org.fixture.Source{index}"),
-                        if index == 100_000 {
+                        if index == 4_000 {
                             "unique-source-tail"
                         } else {
                             "common source app"

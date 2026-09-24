@@ -136,7 +136,7 @@ fn validate(doc: &AutoCommit) -> Result<(), String> {
                 if doc
                     .get(&tags, i)
                     .map_err(|e| e.to_string())?
-                    .is_none_or(|(v, _)| v.to_str().is_none())
+                    .is_none_or(|(v, _)| v.as_str().is_none())
                 {
                     return Err("Invalid snippet tag".into());
                 }

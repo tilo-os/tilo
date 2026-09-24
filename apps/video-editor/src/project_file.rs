@@ -650,11 +650,9 @@ mod tests {
         // that is only ever held in memory is exactly the bug this replaces.
         let tmp = std::env::temp_dir().join(format!("tilo-ve-recents-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
-        // Safety: single-threaded test mutation of process env.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", &tmp);
-            std::env::set_var("TILO_PACKAGE_ID", "so.tilo.video-editor-test");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", &tmp)
+            .set("TILO_PACKAGE_ID", "so.tilo.video-editor-test");
 
         let present = tmp.join("Present.qvp");
         save(&present, &Project::new("Present")).unwrap();
@@ -674,17 +672,14 @@ mod tests {
         );
         assert_eq!(super::recents::label(&present), "Present");
 
-        unsafe {
-            std::env::remove_var("XDG_DATA_HOME");
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
+        drop(env);
         std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
     fn missing_sources_separate_absent_bytes_from_titles_and_present_files() {
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::remove_var("TILO_VE_MEDIA_DIR") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VE_MEDIA_DIR");
 
         let mut p = Project::new("moved");
         // A reference whose bytes are nowhere on this box.

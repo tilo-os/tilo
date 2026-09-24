@@ -435,7 +435,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("before")
         );
         assert_eq!(
@@ -444,7 +444,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("last")
         );
         // Omitting the interior change contaminates the before frontier with
@@ -457,7 +457,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("middle")
         );
     }

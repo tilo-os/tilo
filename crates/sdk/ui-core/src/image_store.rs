@@ -536,6 +536,12 @@ pub fn paint_image_cover(
 mod tests {
     use super::*;
 
+    /// Upper bound for waiting on background decodes. `block_until_idle`
+    /// returns as soon as the queue drains, so this only matters when a
+    /// decode never finishes; a debug build decoding two 2100 px scans on a
+    /// loaded machine has taken longer than the old 10 s.
+    const DECODE_HANG_GUARD: Duration = Duration::from_secs(60);
+
     fn logical_image(width: u32, height: u32) -> PenikoImage {
         PenikoImage {
             data: Blob::new(Arc::new(vec![0, 0, 0, 0])),
@@ -574,7 +580,7 @@ mod tests {
         // First look: not cached → placeholder (None) + a load is scheduled.
         assert!(store.get("http://example.test/cover.png").is_none());
 
-        store.block_until_idle(Duration::from_secs(5));
+        store.block_until_idle(DECODE_HANG_GUARD);
         assert!(store.is_idle(), "load settled");
         assert_eq!(
             fetches.load(Ordering::SeqCst),
@@ -664,7 +670,7 @@ mod tests {
         let fetch: Fetcher = Arc::new(|_url: &str| None);
         let store = ImageStore::new(&fetch);
         assert!(store.get("http://example.test/missing.jpg").is_none());
-        store.block_until_idle(Duration::from_secs(5));
+        store.block_until_idle(DECODE_HANG_GUARD);
         assert!(store.is_idle(), "a failed fetch still settles");
         // Still None, and no repeated scheduling (already known/Failed).
         assert!(store.get("http://example.test/missing.jpg").is_none());
@@ -771,7 +777,7 @@ mod tests {
             (ImageStore::with_max_dimension(&fetch, 4096), (1200, 760)),
         ] {
             assert!(store.get("scan.png").is_none());
-            store.block_until_idle(Duration::from_secs(5));
+            store.block_until_idle(DECODE_HANG_GUARD);
             let image = store.get("scan.png").expect("scan must finish decoding");
             assert_eq!((image.width, image.height), expected);
             assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
@@ -798,7 +804,7 @@ mod tests {
         let store = ImageStore::with_max_dimension(&fetch, 2048);
         assert!(store.get("first-scan.png").is_none());
         assert!(store.get("second-scan.png").is_none());
-        store.block_until_idle(Duration::from_secs(10));
+        store.block_until_idle(DECODE_HANG_GUARD);
         for _ in 0..3 {
             for url in ["first-scan.png", "second-scan.png"] {
                 let image = store.get(url).expect("both scans stay resident");

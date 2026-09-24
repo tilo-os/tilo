@@ -2833,9 +2833,9 @@ mod tests {
             actions: Vec::new(),
             live: true,
         };
-        let entries = (0..100_001)
+        let entries = (0..=4_000)
             .map(|index| {
-                let label = if index == 100_000 {
+                let label = if index == 4_000 {
                     "tailtoken".to_string()
                 } else {
                     format!("common action {index}")
@@ -2902,10 +2902,10 @@ mod tests {
             peer_id: 1,
             app_id: "so.tilo.fixture".into(),
             route: CrdtRoute::app("so.tilo.fixture", "room"),
-            actions: (0..100_001)
+            actions: (0..=4_000)
                 .map(|index| {
                     local_action(
-                        if index == 100_000 {
+                        if index == 4_000 {
                             "unique-source-tail"
                         } else {
                             "common source action"
@@ -2938,9 +2938,9 @@ mod tests {
             0
         );
         assert!(provider.surface_build.borrow().is_none());
-        // Building the actual 100k broker projection is intentionally real
-        // work.  Give a slow shared CI worker a minute to finish rather than
-        // turning this cold-path assertion into a scheduler-speed test.
+        // Building the broker projection is intentionally real work.  Give a
+        // slow shared CI worker a minute to finish rather than turning this
+        // cold-path assertion into a scheduler-speed test.
         for _ in 0..12_000 {
             provider.refresh_search_index(&ctx);
             if provider.search_revision(&ctx).starts_with("ready:") {

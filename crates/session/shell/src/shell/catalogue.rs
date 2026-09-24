@@ -512,10 +512,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let fake = tmp.path().join("app");
         std::fs::write(&fake, b"#!/bin/true\n").unwrap();
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APP_BIN", &fake) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APP_BIN", &fake);
         let resolved = resolve_catalogue_bin();
-        unsafe { std::env::remove_var("TILO_APP_BIN") };
+        env.remove("TILO_APP_BIN");
         assert_eq!(resolved.as_deref(), Some(fake.as_path()));
     }
 
@@ -537,10 +537,10 @@ mod tests {
     fn a_missing_override_falls_through_rather_than_resolving_to_it() {
         let tmp = tempfile::tempdir().unwrap();
         let absent = tmp.path().join("not-here");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APP_BIN", &absent) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APP_BIN", &absent);
         let resolved = resolve_catalogue_bin();
-        unsafe { std::env::remove_var("TILO_APP_BIN") };
+        env.remove("TILO_APP_BIN");
         assert_ne!(
             resolved.as_deref(),
             Some(absent.as_path()),

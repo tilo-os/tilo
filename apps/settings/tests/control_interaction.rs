@@ -193,8 +193,11 @@ fn navigate(
 fn clicking_back_button_returns_to_list() {
     const NW: f32 = 440.0;
     const NH: f32 = 820.0;
+    let config = crate::support::ScratchConfig::new();
     // Start drilled into a category's content screen (narrow layout).
-    let mut app = SettingsApp::with_selected(Category::Network)
+    let mut app = config
+        .app()
+        .with_category(Category::Network)
         .with_width_hint(NW)
         .with_narrow_content_shot();
     let mut doc = AutoCommit::new();
@@ -228,7 +231,8 @@ fn clicking_back_button_returns_to_list() {
 /// remote scalar may turn the collaborative document into a radio command.
 #[test]
 fn network_wifi_toggle_drives_state() {
-    let mut app = SettingsApp::new();
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app();
     let mut doc = AutoCommit::new();
     let _ = navigate(&mut app, &mut doc, Category::Network);
     let root = automerge::ROOT;
@@ -251,8 +255,9 @@ fn network_wifi_toggle_drives_state() {
 /// confirm the primary CRDT key each interactive pane seeds is present.)
 #[test]
 fn all_panels_navigate_and_seed_their_controls() {
+    let config = crate::support::ScratchConfig::new();
     for &target in Category::ALL {
-        let mut app = SettingsApp::new();
+        let mut app = config.app();
         let mut doc = AutoCommit::new();
         let _ = navigate(&mut app, &mut doc, target);
         // The pane rebuilt by navigate's final layout seeds on its next

@@ -2739,7 +2739,7 @@ Video
     #[test]
     fn choosing_a_default_sink_persists_the_preference() {
         // Redirect the config dir so this never touches the real settings.json.
-        let _guard = crate::prefs::test_env::ConfigGuard::new("audio-default-device");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let rec = Arc::new(RecordingDispatcher::default());
         let dev = Arc::new(RecordingDevice::default());
         let devices = parse_wpctl_status(sample_status());
@@ -2770,7 +2770,7 @@ Video
 
     #[test]
     fn balance_and_mono_persist_without_settings_owning_the_transform() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new("audio-session-policy");
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
         let runtime = Arc::new(RecordingRuntime {
             calls: Mutex::new(Vec::new()),
             drops: Arc::new(AtomicUsize::new(0)),

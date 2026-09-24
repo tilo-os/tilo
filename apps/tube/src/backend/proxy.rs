@@ -325,13 +325,12 @@ mod tests {
 
     #[test]
     fn instances_honours_env_override_first() {
-        // Safety: single-threaded test mutation of process env.
-        unsafe { std::env::set_var("TILO_TUBE_INVIDIOUS", "https://my.inv, https://two.inv") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_TUBE_INVIDIOUS", "https://my.inv, https://two.inv");
         let list = instances();
         assert_eq!(list[0], "https://my.inv");
         assert_eq!(list[1], "https://two.inv");
         assert!(list.len() > 2, "defaults are appended after the override");
-        unsafe { std::env::remove_var("TILO_TUBE_INVIDIOUS") };
     }
 
     /// Integration check: resolve a real, widely-available video and prove the

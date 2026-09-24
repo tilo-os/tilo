@@ -2075,41 +2075,38 @@ impl Widget for ThemesApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_test_env::ScopedEnv;
 
-    /// Point the shared theme store at a throwaway config dir once for the
-    /// whole test binary, so Apply never writes the developer's real
-    /// `~/.config/tilo/settings.json`. `Once` serialises the single env write
-    /// before any concurrent test reads it.
-    fn isolate_config() {
-        use std::sync::Once;
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            let dir = std::env::temp_dir().join(format!("tilo-themes-test-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&dir);
-            // SAFETY: performed exactly once, guarded by `Once`, before the
-            // seed path (the only env reader) runs in any test.
-            unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
-        });
+    /// Point the shared theme store at a throwaway config dir for as long as
+    /// the returned scope lives, so Apply never writes the developer's real
+    /// `~/.config/tilo/settings.json`.
+    fn isolate_config() -> ScopedEnv {
+        let dir = std::env::temp_dir().join(format!("tilo-themes-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut env = ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &dir);
+        env
     }
 
-    /// A freshly-seeded **live** app + its CRDT state (first-run seed done).
+    /// A freshly-seeded **live** app + its CRDT state (first-run seed done),
+    /// with the config isolation scope that must outlive both.
     /// Live = presets only, no fabricated custom theme.
-    fn seeded() -> (ThemesApp, ui::State) {
-        isolate_config();
+    fn seeded() -> (ThemesApp, ui::State, ScopedEnv) {
+        let env = isolate_config();
         let mut app = ThemesApp::new();
         let mut st = ui::State::new();
         app.sync(&mut st.doc, &st.root);
-        (app, st)
+        (app, st, env)
     }
 
     /// A freshly-seeded **demo** app (presets + the editable custom "sunset"),
     /// for the tests that exercise editing / deleting a custom theme.
-    fn seeded_demo() -> (ThemesApp, ui::State) {
-        isolate_config();
+    fn seeded_demo() -> (ThemesApp, ui::State, ScopedEnv) {
+        let env = isolate_config();
         let mut app = ThemesApp::new_demo();
         let mut st = ui::State::new();
         app.sync(&mut st.doc, &st.root);
-        (app, st)
+        (app, st, env)
     }
 
     fn catalog(st: &ui::State) -> Vec<ThemeSpec> {
@@ -2220,7 +2217,7 @@ mod tests {
 
     #[test]
     fn narrow_editor_is_visible_before_full_preview() {
-        let (mut app, _) = seeded_demo();
+        let (mut app, _, _env) = seeded_demo();
         layout_narrow(&mut app, 480.0);
         assert_eq!(
             narrow_view_state(&app),
@@ -2245,7 +2242,7 @@ mod tests {
 
     #[test]
     fn live_preset_starts_with_its_full_specimen() {
-        let (mut app, _) = seeded();
+        let (mut app, _, _env) = seeded();
         layout_narrow(&mut app, 480.0);
         assert!(app.narrow_preview);
         assert_eq!(
@@ -2258,7 +2255,7 @@ mod tests {
 
     #[test]
     fn custom_preview_capture_seed_selects_full_preview() {
-        isolate_config();
+        let _env = isolate_config();
         let mut app = ThemesApp::new_demo();
         app.seed_shot(480.0, "preview");
         let mut state = ui::State::new();
@@ -2273,7 +2270,7 @@ mod tests {
 
     #[test]
     fn narrow_full_preview_contains_and_can_scroll_to_the_specimen_tail() {
-        let (mut app, _) = seeded();
+        let (mut app, _, _env) = seeded();
         let (tree, node) = layout_at(&mut app, 480.0, 480.0);
         let card = app.preview.specimen_card_rect();
         let tail = app.preview.specimen_tail_rect();
@@ -2315,7 +2312,7 @@ mod tests {
 
     #[test]
     fn narrow_view_pointer_keyboard_resize_and_escape_preserve_edits() {
-        let (mut app, mut state) = seeded_demo();
+        let (mut app, mut state, _env) = seeded_demo();
         app.customizer.load_picker([1, 2, 3]);
         app.sync(&mut state.doc, &state.root);
         let (mut tree, mut node) = layout_narrow(&mut app, 480.0);
@@ -2425,7 +2422,7 @@ mod tests {
 
     #[test]
     fn duplicate_command_adds_editable_copy_and_selects_it() {
-        let (mut app, mut st) = seeded();
+        let (mut app, mut st, _env) = seeded();
         let before = catalog(&st).len();
         run(&mut app, &mut st, "duplicate:tilo-blue");
         let cat = catalog(&st);
@@ -2442,7 +2439,7 @@ mod tests {
     fn live_seed_is_presets_only_and_selects_a_preset() {
         // Honest live default: only built-in presets, and the focused theme is
         // one of them — no fabricated "your custom theme".
-        let (app, st) = seeded();
+        let (app, st, _env) = seeded();
         let cat = catalog(&st);
         assert!(
             cat.iter().all(|s| s.builtin),
@@ -2458,7 +2455,7 @@ mod tests {
 
     #[test]
     fn delete_command_removes_a_custom_theme_and_reselects() {
-        let (mut app, mut st) = seeded_demo();
+        let (mut app, mut st, _env) = seeded_demo();
         assert!(
             catalog(&st).iter().any(|s| s.id == "sunset"),
             "seeded custom present"
@@ -2476,7 +2473,7 @@ mod tests {
 
     #[test]
     fn delete_command_refuses_builtin_presets() {
-        let (mut app, mut st) = seeded();
+        let (mut app, mut st, _env) = seeded();
         let before = catalog(&st).len();
         run(&mut app, &mut st, "delete:tilo-blue");
         assert_eq!(catalog(&st).len(), before, "a builtin preset is protected");
@@ -2485,7 +2482,7 @@ mod tests {
 
     #[test]
     fn inline_name_edit_persists_into_the_selected_custom_theme() {
-        let (mut app, mut st) = seeded_demo();
+        let (mut app, mut st, _env) = seeded_demo();
         // The demo's editable custom "sunset" is selected out of the box.
         assert_eq!(selected(&app), "sunset");
         // Inline text stays local until reconciliation dispatches the canonical
@@ -2500,7 +2497,7 @@ mod tests {
 
     #[test]
     fn local_navigation_never_writes_or_overwrites_a_peer_theme_edit() {
-        let (mut app, mut state) = seeded_demo();
+        let (mut app, mut state, _env) = seeded_demo();
         state.doc.commit();
         let mut peer = AutoCommit::load(&state.doc.save()).unwrap();
         assert!(doc::set_token(
@@ -2535,7 +2532,7 @@ mod tests {
 
     #[test]
     fn export_is_a_brokered_local_effect_not_document_scratch() {
-        let (mut app, mut state) = seeded_demo();
+        let (mut app, mut state, _env) = seeded_demo();
         state.doc.commit();
         let before_heads = state.doc.get_heads();
         assert!(
@@ -2574,7 +2571,7 @@ mod tests {
 
     #[test]
     fn visible_new_operation_dispatches_the_canonical_create_action() {
-        let (mut app, mut state) = seeded_demo();
+        let (mut app, mut state, _env) = seeded_demo();
         let before = catalog(&state).len();
         assert!(
             Widget::invoke_resource_operation(
@@ -2607,7 +2604,7 @@ mod tests {
 
     #[test]
     fn rename_command_selects_its_target() {
-        let (mut app, mut st) = seeded();
+        let (mut app, mut st, _env) = seeded();
         run(&mut app, &mut st, "duplicate:nord");
         let copy_id = catalog(&st)
             .iter()
@@ -2626,7 +2623,7 @@ mod tests {
 
     #[test]
     fn selected_apply_operation_writes_the_active_theme_to_the_shared_store() {
-        let (mut app, mut st) = seeded();
+        let (mut app, mut st, _env) = seeded();
         run(&mut app, &mut st, "select:dracula");
         let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
@@ -2663,7 +2660,7 @@ mod tests {
     #[test]
     fn affordance_dispatches_the_same_encoded_action_as_the_palette_spec() {
         use tilo_actions::{ActionInput, ResourceProvider};
-        let (mut app, mut st) = seeded_demo();
+        let (mut app, mut st, _env) = seeded_demo();
         assert_eq!(selected(&app), "sunset");
 
         // The affordance path: the sidebar's "Delete" command for the sunset row.
@@ -2707,7 +2704,7 @@ mod tests {
     /// (`State::undo`) reverts precisely that delete.
     #[test]
     fn affordance_delete_is_one_undo_boundary_reverted_by_ctrl_z() {
-        let (mut app, mut st) = seeded_demo();
+        let (mut app, mut st, _env) = seeded_demo();
         let before_len = catalog(&st).len();
         assert!(
             catalog(&st).iter().any(|s| s.id == "sunset"),
@@ -2764,7 +2761,7 @@ mod tests {
 
     #[test]
     fn exported_apply_uses_cancellable_background_lifecycle() {
-        let (mut app, st) = seeded();
+        let (mut app, st, _env) = seeded();
         let theme_id = catalog(&st)[0].id.clone();
         let invocation = tilo_actions::InvocationId::new();
         let started = app
@@ -2798,7 +2795,7 @@ mod tests {
 
     #[test]
     fn static_theme_gallery_stops_requesting_frames_after_draw() {
-        let (mut app, _state) = seeded();
+        let (mut app, _state, _env) = seeded();
         let layout = app.layout_class();
         app.gallery_flap.snap(app.gallery_flap.is_open(layout));
         app.mark_drawn();

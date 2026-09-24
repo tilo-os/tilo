@@ -63,6 +63,7 @@ pub mod caps;
 pub mod channel;
 pub mod compaction;
 pub mod crypto;
+pub mod document_transfer;
 pub mod event;
 pub mod file_invite;
 pub mod files;
@@ -101,6 +102,10 @@ pub use crypto::{
     Ed25519PublicKey, Signature, VerifyError, generate_keypair, sign_event, sign_op, verify_event,
     verify_op,
 };
+pub use document_transfer::{
+    DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
+    MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
+};
 pub use event::{ChannelEvent, RoleAttestation};
 pub use file_invite::{
     BearerFileInvite, FILE_INVITE_DOMAIN_TAG, FILE_INVITE_LINK_PREFIX, FileInviteError,
@@ -135,9 +140,9 @@ pub use mls_governance::{
     MlsGovernanceFrameV1,
 };
 pub use op::{
-    DocumentMutation, DocumentMutationError, EncryptionMetadata, RoutedDocumentPayload, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id,
-    validate_document_payload_route,
+    DocumentMutation, DocumentMutationEncodeError, DocumentMutationError, EncryptionMetadata,
+    MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload, SignedOp, document_artifact_id,
+    document_attestation_id, document_channel_id, validate_document_payload_route,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,

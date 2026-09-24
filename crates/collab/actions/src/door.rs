@@ -721,7 +721,7 @@ mod tests {
         perform(&mut b, &hijacked, &star(), None).unwrap();
 
         assert_eq!(
-            a.get(&ROOT, "starred").unwrap().unwrap().0.to_bool(),
+            a.get(&ROOT, "starred").unwrap().unwrap().0.as_bool(),
             Some(true)
         );
         assert!(b.get(&ROOT, "starred").unwrap().is_none());
@@ -913,7 +913,7 @@ mod tests {
         assert_eq!(
             change
                 .message()
-                .and_then(|message| ActionContext::from_change_message(message)),
+                .and_then(ActionContext::from_change_message),
             env.context,
             "semantic provenance survives as part of the durable change"
         );
@@ -1010,7 +1010,7 @@ mod tests {
         )
         .expect("a policy gate may explicitly attest confirmation");
         assert_eq!(
-            doc.get(&ROOT, "starred").unwrap().unwrap().0.to_bool(),
+            doc.get(&ROOT, "starred").unwrap().unwrap().0.as_bool(),
             Some(true)
         );
     }

@@ -92,6 +92,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Serialised, self-restoring HOME/XDG redirection for the tests that
+# construct the whole app or persist through the per-user settings file.
+tilo-test-env = { path = "../../crates/dev/test-env" }
 rcgen.workspace = true
 # The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.

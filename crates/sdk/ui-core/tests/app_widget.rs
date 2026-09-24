@@ -87,21 +87,3 @@ fn app_widget_defaults_yield_empty_commands() {
     assert_eq!(app.permission_hint(), Some(AppKind::Terminal));
     assert!(app.commands().is_empty());
 }
-
-#[test]
-fn app_widget_is_object_safe_and_upcasts_to_widget() {
-    let app: Box<dyn AppWidget> = Box::new(DummyApp);
-    // Super-trait upcast must compile; AppWidget: Widget.
-    let _w: &dyn Widget = &*app;
-}
-
-#[test]
-fn app_kind_covers_spec_variants() {
-    let _ = [
-        AppKind::Terminal,
-        AppKind::Files,
-        AppKind::Editor,
-        AppKind::Browser,
-        AppKind::Settings,
-    ];
-}

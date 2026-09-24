@@ -987,14 +987,19 @@ mod tests {
     #[test]
     fn bounded_result_wait_returns_fresh_data_and_times_out_without_stale_fallback() {
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            std::thread::sleep(crate::time::Duration::from_millis(2));
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
+        let owner = std::thread::spawn(move || {
+            // Answer only once the reader is waiting, so the budget is what
+            // bounds the wait rather than the answer already being queued.
+            request_rx.recv().unwrap();
             let _ = tx.send(Some("fresh".to_string()));
         });
+        request_tx.send(()).unwrap();
         assert_eq!(
-            recv_bounded(&rx, crate::time::Duration::from_millis(100)),
+            recv_bounded(&rx, crate::time::Duration::from_secs(30)),
             Some(Some("fresh".to_string()))
         );
+        owner.join().unwrap();
 
         let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
         assert_eq!(
@@ -1007,12 +1012,20 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn shutdown_join_is_bounded_when_a_protocol_worker_is_stuck() {
-        let started = crate::time::now();
-        let worker = std::thread::spawn(|| {
-            std::thread::sleep(crate::time::Duration::from_millis(80));
+        // The worker stays blocked until this test releases it, so a
+        // `join_bounded` that returns at all has given up on its own budget.
+        let (release, stuck) = std::sync::mpsc::channel::<()>();
+        let worker = std::thread::spawn(move || {
+            let _ = stuck.recv();
         });
         assert!(!join_bounded(worker, crate::time::Duration::from_millis(2)));
-        assert!(started.elapsed() < crate::time::Duration::from_millis(50));
+        drop(release);
+
+        let finished = std::thread::spawn(|| {});
+        assert!(
+            join_bounded(finished, crate::time::Duration::from_secs(30)),
+            "a worker that exits is joined within the budget"
+        );
     }
 
     #[cfg(target_os = "linux")]

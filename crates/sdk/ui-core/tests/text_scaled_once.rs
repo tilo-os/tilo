@@ -3,10 +3,10 @@
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::type_complexity,
-    reason = "migration stack lint debt is scoped to this target"
+    reason = "pixel geometry over bounded fixture canvases"
 )]
 
-//! X1 regression: text is scaled exactly once.
+//! Text is scaled exactly once.
 //!
 //! Theme typography already carries the accessibility text scale and the
 //! legacy size-based `TextRenderer` APIs multiply by the renderer's scale
@@ -22,10 +22,8 @@
 //! - for the immediate-mode painters, on the glyph runs they encode: every
 //!   run's font size at 2× is exactly the expected multiple of its 1× size.
 //!
-//! PNGs land in `target/ui-review/ui/x1_fixture/<X1_FIXTURE_TAG>/` so the
-//! same run doubles as visual evidence.
-
-use std::path::PathBuf;
+//! With `QUICK_UI_SCREENSHOT_DIR` set, each frame is also written under
+//! `text_scaled_once/` there as visual evidence.
 
 use tilo_ui::State;
 use tilo_ui::headless::{FrameHarness, InspectionNode};
@@ -37,15 +35,6 @@ use tilo_ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
-
-fn out_dir() -> PathBuf {
-    let tag = std::env::var("X1_FIXTURE_TAG").unwrap_or_else(|_| "current".into());
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../target/ui-review/ui/x1_fixture")
-        .join(tag);
-    std::fs::create_dir_all(&dir).expect("fixture output directory");
-    dir
-}
 
 struct Capture {
     harness: FrameHarness,
@@ -61,11 +50,15 @@ fn capture(name: &str, root: Element, viewport: (u32, u32), scale: f32) -> Captu
         viewport,
         Theme::dark().with_text_scale(scale),
     );
-    let path = out_dir().join(format!("{name}-{scale}x.png"));
-    harness.render_window_png(&path);
-    let image = image::open(&path)
-        .unwrap_or_else(|e| panic!("decode {}: {e}", path.display()))
-        .to_rgba8();
+    let rgba = harness.render_window_rgba();
+    crate::support::evidence::save_png(
+        &format!("text_scaled_once/{name}-{scale}x"),
+        viewport.0,
+        viewport.1,
+        &rgba,
+    );
+    let image =
+        image::RgbaImage::from_raw(viewport.0, viewport.1, rgba).expect("viewport-sized frame");
     Capture { harness, image }
 }
 

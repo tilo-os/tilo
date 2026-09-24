@@ -37,6 +37,7 @@ same-file = "1.0.6"
 durable-store = { path = "../durable-store", features = ["conformance"] }
 tempfile.workspace = true
 serial_test.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
