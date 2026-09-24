@@ -202,6 +202,7 @@ members = [
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
+    "crates/system/cloud-source-gdrive",
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",

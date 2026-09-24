@@ -2102,6 +2102,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud-source-gdrive"
+version = "0.1.0"
+dependencies = [
+ "cloud-source",
+ "cloud-source-gdrive",
+ "md-5",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-net",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
