@@ -1305,6 +1305,30 @@ async fn checked_application_catalogue(
         revision: None,
     };
     assert_eq!(table_cells(&remote), 0);
+    if publication_failure == PublicationFailureFixture::None {
+        // A relay-invoked Writer operation runs in the host worker under its
+        // original caller's custody. The native owner keeps final publication
+        // of such original-invocation contributors closed until their bounded
+        // witness exists (see owner/exact_startup_replay.rs and
+        // action_host::production_authorizer_tests). No witness exists on the
+        // native host yet, so the documented outcome is a definite refusal:
+        // the operation is admitted, never reported as succeeded, and no
+        // document change is committed or replicated.
+        invoke_and_expect_closed_publication(
+            &client,
+            &mut remote,
+            room,
+            &cert,
+            &native,
+            broker_host,
+            invocation,
+            operation,
+            origin,
+        )
+        .await;
+        client.close().await;
+        return;
+    }
     #[cfg(feature = "test-support")]
     let client = if publication_failure != PublicationFailureFixture::None {
         client
@@ -1811,6 +1835,94 @@ fn table_cells(peer: &qos_peer_state::StatePeer) -> usize {
         .filter(|b| b.kind == "cell")
         .count()
 }
+/// Invoke on the actual relay/broker path and prove that the native owner
+/// refuses the invocation's final document publication: the invocation is
+/// admitted but never succeeds, and neither the owner's Writer record nor the
+/// replicated remote copy changes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors invoke_and_observe on the same certified relay path"
+)]
+async fn invoke_and_expect_closed_publication(
+    client: &tilo_relay::RelayClient,
+    remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid,
+    cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
+    host: uuid::Uuid,
+    invocation: tilo_actions::InvocationId,
+    operation: tilo_relay::peer_actions::ActionMessage,
+    origin: &str,
+) {
+    use tilo_relay::{
+        peer_actions::{ActionMessage, DirectedAction},
+        transport_v2::EnvelopeV2,
+    };
+    let writer_heads = |status: &serde_json::Value| {
+        status["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["app_id"] == "so.tilo.word-processor")
+            .map(|row| row["heads"].clone())
+            .unwrap()
+    };
+    let before = writer_heads(&request(origin, "/status", None, None).await.1);
+    let mut pending = qos_browser_runtime::action_client::PendingActions::default();
+    let mut request_id = uuid::Uuid::new_v4();
+    let directed = DirectedAction {
+        room,
+        request_id,
+        source: cert.device_public_key,
+        target: native.device_public_key,
+        message: operation,
+    };
+    pending.insert(directed.clone()).unwrap();
+    client.send_action(EnvelopeV2::Directed(directed)).unwrap();
+    let mut admitted = false;
+    let window = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < window {
+        tokio::select! {
+            state = client.recv() => apply_state(remote, state.unwrap()),
+            event = client.recv_action() => {
+                if !pending.receive(event.unwrap(), native.user_public_key) {
+                    continue;
+                }
+                match pending.take(request_id).unwrap() {
+                    ActionMessage::Observation { host: got, invocation: id, update, .. } => {
+                        assert_eq!(got, host);
+                        assert_eq!(id, invocation);
+                        assert!(
+                            !matches!(update, Some(tilo_actions::InvocationUpdate::Succeeded { .. })),
+                            "a closed native publication must never report success"
+                        );
+                        admitted |= update.is_some();
+                        request_id = uuid::Uuid::new_v4();
+                        let status = DirectedAction {
+                            room,
+                            request_id,
+                            source: cert.device_public_key,
+                            target: native.device_public_key,
+                            message: ActionMessage::Status { invocation },
+                        };
+                        pending.insert(status.clone()).unwrap();
+                        client.send_action(EnvelopeV2::Directed(status)).unwrap();
+                    }
+                    other => panic!("actual browser action response: {other:?}"),
+                }
+            }
+            () = tokio::time::sleep_until(window) => {}
+        }
+    }
+    assert!(admitted, "the certified invocation was never admitted");
+    assert_eq!(table_cells(remote), 0, "no refused change may replicate");
+    assert_eq!(
+        writer_heads(&request(origin, "/status", None, None).await.1),
+        before,
+        "the owner committed a refused contributor publication"
+    );
+}
+
 async fn invoke_and_observe(
     client: &tilo_relay::RelayClient,
     remote: &mut qos_peer_state::StatePeer,
