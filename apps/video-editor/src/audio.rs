@@ -1281,6 +1281,15 @@ impl Drop for SystemSink {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "decode")]
+    #[allow(dead_code, reason = "only the media-stack check is used here")]
+    mod generated_clip {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/generated_clip.rs"
+        ));
+    }
+
     /// A pull that came back empty used to be read as proof that the file had
     /// no audio stream. It is not, and stating the rule here pins the exact
     /// distinction the loop turns on.
@@ -1321,6 +1330,9 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn a_source_that_carries_audio_decodes_to_real_samples() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))
             .to_uri()
             .expect("fixture file URL");

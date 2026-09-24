@@ -67,9 +67,10 @@ mod generated_clip {
     ));
 }
 
-/// A deterministic, genuinely encoded moving-picture source. Generation is a
-/// hard requirement, not a skip: a test that could not inspect footage must
-/// not claim that export fidelity passed.
+/// A deterministic, genuinely encoded moving-picture source. Every test here
+/// first asks `generated_clip::media_stack()`: without the encoders a test
+/// reports that it did not run, and with `TILO_REQUIRE_MEDIA=1` (CI) it
+/// fails, so export fidelity is never claimed without inspecting footage.
 fn demo_clip() -> std::path::PathBuf {
     generated_clip::encoded_video()
 }
@@ -279,6 +280,9 @@ fn tidy(path: &std::path::Path) {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn the_webm_chain_encodes_the_real_footage_too() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     let clip = demo_clip();
     let project = project_over(&clip, 1.0, &format!("ve webm {}", std::process::id()));
     let out = export_as(&project, Container::WebM);
@@ -336,6 +340,9 @@ fn the_webm_chain_encodes_the_real_footage_too() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn the_exported_file_carries_the_source_footage() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     let clip = demo_clip();
     let out = export(&project_over(
         &clip,
@@ -376,6 +383,9 @@ fn the_exported_file_carries_the_source_footage() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn the_colour_grade_reaches_the_encoded_pixels() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     // The grade used to be computed on the clip's palette colour, so it
     // never touched a decoded pixel. Prove it changes the encoded file.
     let clip = demo_clip();
@@ -427,6 +437,9 @@ fn the_colour_grade_reaches_the_encoded_pixels() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_wipe_reaches_the_encoded_file_as_geometry() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::model::{ClipEffect, EffectKind, Transition};
 
     let clip = demo_clip();
@@ -439,8 +452,8 @@ fn a_wipe_reaches_the_encoded_file_as_geometry() {
         let media = p.media[0].id;
         let second = p.add_clip(track, media, 1.0).unwrap();
         let c = p.clip_mut(second).unwrap();
-        c.in_point = 20.0;
-        c.out_point = 21.0;
+        c.in_point = 3.0;
+        c.out_point = 4.0;
         c.transition = kind;
         c.effects = vec![ClipEffect {
             id: uuid::Uuid::new_v4(),
@@ -564,6 +577,9 @@ fn bright_centre(px: &[[u8; 3]]) -> Option<(f64, f64)> {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_title_reaches_the_encoded_file_as_real_glyphs() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     let (p, _, _) = title_project("title_export", "HELLO");
     let path = export(&p);
     let frame = decode_frame(&path, 1.0);
@@ -595,6 +611,9 @@ fn a_title_reaches_the_encoded_file_as_real_glyphs() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_transform_moves_the_picture_in_the_encoded_file() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     // The same title, pushed into the lower-right quadrant. If the export
     // ignored geometry the two files would be identical.
     let (mut p, _, cid) = title_project("title_moved_export", "HELLO");
@@ -619,6 +638,9 @@ fn a_transform_moves_the_picture_in_the_encoded_file() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_keyframed_move_is_at_a_different_place_in_each_encoded_second() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     // An animated parameter has to be sampled per frame during the encode,
     // not once for the whole file. Two instants of the same clip must
     // therefore differ — and differ in the direction the curve runs.
@@ -660,6 +682,9 @@ fn a_keyframed_move_is_at_a_different_place_in_each_encoded_second() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn speed_shortens_the_encoded_file() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     // Timeline length is the source window divided by the rate, and the
     // export encodes the timeline — so a sped-up clip must produce a
     // shorter file, not the same file played faster.
@@ -1026,6 +1051,9 @@ fn av_project(name: &str, video: &std::path::Path, audio: &std::path::Path) -> P
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn the_generated_footage_and_mixer_fixture_are_audible() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     let clip = demo_clip();
     let decoded = decode_audio_full(&clip);
     let (rate, channels) = decoded.native.unwrap_or_else(|| {
@@ -1151,6 +1179,9 @@ fn assert_audio_round_trip(container: Container) {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn an_mp4_export_carries_the_timelines_real_audio() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     assert_audio_round_trip(Container::Mp4);
 }
 
@@ -1161,6 +1192,9 @@ fn an_mp4_export_carries_the_timelines_real_audio() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_webm_export_carries_the_timelines_real_audio() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     assert_audio_round_trip(Container::WebM);
 }
 
@@ -1171,6 +1205,9 @@ fn a_webm_export_carries_the_timelines_real_audio() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn the_encoded_sources_audio_survives_mp4_and_webm_export() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     let source = demo_clip();
     let pid = std::process::id();
     for container in [Container::Mp4, Container::WebM] {
@@ -1266,6 +1303,9 @@ fn tone_switch_secs(right: &[f32]) -> Option<f64> {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn the_exported_audio_sits_where_the_timeline_puts_it() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     let video = demo_clip();
     let audio = audio_fixture();
     let pid = std::process::id();
@@ -1564,6 +1604,9 @@ fn is_magentaish(q: [u8; 3]) -> bool {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_chroma_key_reaches_the_encoded_file_as_compositing() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::model::ChromaKey;
 
     let pid = std::process::id();
@@ -1621,6 +1664,9 @@ fn a_chroma_key_reaches_the_encoded_file_as_compositing() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_mask_reaches_the_encoded_file_as_geometry() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::model::{Mask, MaskShape};
 
     let pid = std::process::id();
@@ -1677,6 +1723,9 @@ fn a_mask_reaches_the_encoded_file_as_geometry() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_keyframed_mask_moves_across_the_encoded_file() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::model::{Mask, MaskShape};
 
     let (mut p, over) = plate_stack(&format!("ve mask move {}", std::process::id()));
@@ -1891,6 +1940,9 @@ fn wedge_project(name: &str) -> (Project, uuid::Uuid) {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_tone_curve_reaches_the_encoded_file_as_a_table() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::curve::Curve;
 
     let pid = std::process::id();
@@ -1961,6 +2013,9 @@ fn a_tone_curve_reaches_the_encoded_file_as_a_table() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_per_channel_curve_reaches_the_encoded_file() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::curve::Curve;
 
     let pid = std::process::id();
@@ -1994,6 +2049,9 @@ fn a_per_channel_curve_reaches_the_encoded_file() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn an_animated_curve_amount_grades_each_encoded_second_differently() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::curve::Curve;
 
     let pid = std::process::id();
@@ -2034,6 +2092,9 @@ fn an_animated_curve_amount_grades_each_encoded_second_differently() {
 #[test]
 #[serial_test::serial(video_editor_gst)]
 fn a_relative_media_path_is_resolved_or_refused_never_stood_in_for() {
+    if !generated_clip::media_stack() {
+        return;
+    }
     use video_editor::export::{begin_export, output_path};
 
     let clip = demo_clip();

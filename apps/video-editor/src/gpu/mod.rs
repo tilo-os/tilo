@@ -1457,6 +1457,9 @@ mod tests {
     #[serial_test::serial(video_editor_gst)]
     fn a_hydrated_source_puts_real_footage_on_the_canvas() {
         use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+        if !generated_clip::media_stack() {
+            return;
+        }
 
         let path = demo_clip();
         let mut p = Project::new("live");
@@ -1488,12 +1491,11 @@ mod tests {
             gain_db: 0.0,
             pan: 0.0,
         });
-        let cid = p.add_clip(tid, mid, 0.0).unwrap();
-        p.clip_mut(cid).unwrap().out_point = 57.0;
+        p.add_clip(tid, mid, 0.0).unwrap();
 
         // Drive the real decoder the way the app's warm-up does: pump until
         // a frame for the clip under the playhead lands, or give up loudly.
-        let playhead = 22.0;
+        let playhead = 2.0;
         let mut decoder = crate::preview::PreviewDecoder::new();
         assert!(
             decoder.is_real_decode(),
@@ -1575,6 +1577,9 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn the_apps_own_frame_source_puts_real_footage_on_the_canvas() {
+        if !generated_clip::media_stack() {
+            return;
+        }
         let path = demo_clip();
         let mut p = Project::new("live");
         p.width = 1920;
@@ -1600,13 +1605,12 @@ mod tests {
             index: 1,
             ..Default::default()
         });
-        let cid = p.add_clip(tid, mid, 0.0).unwrap();
-        p.clip_mut(cid).unwrap().out_point = 57.0;
+        p.add_clip(tid, mid, 0.0).unwrap();
 
         let (w, h) = (192u32, 108u32);
         let mut c = compositor();
         let mut sources = MediaFrameSource::new(&p, Fetch::Exact);
-        let live = c.frame(&p, 22.0, w, h, &mut sources);
+        let live = c.frame(&p, 2.0, w, h, &mut sources);
 
         assert!(
             sources.served_real_picture(),
@@ -1775,6 +1779,9 @@ mod tests {
     fn the_media_source_paints_a_decoded_frame_through_the_gpu() {
         use crate::model::{MediaItem, MediaKind, Track, TrackKind};
         use media::{FramePayload, SessionPool};
+        if !generated_clip::media_stack() {
+            return;
+        }
 
         let path = demo_clip();
         let mut p = Project::new("hw");
@@ -1806,8 +1813,7 @@ mod tests {
             gain_db: 0.0,
             pan: 0.0,
         });
-        let cid = p.add_clip(tid, mid, 0.0).unwrap();
-        p.clip_mut(cid).unwrap().out_point = 57.0;
+        p.add_clip(tid, mid, 0.0).unwrap();
 
         // A generous deadline: this box shares its CPU with other builds,
         // and a cold pipeline plus an accurate seek can outrun the 2s the
@@ -1819,8 +1825,8 @@ mod tests {
 
         let mut c = compositor();
         let (w, h) = (192u32, 108u32);
-        let live = c.frame(&p, 22.0, w, h, &mut src);
-        let fallback = c.frame(&p, 22.0, w, h, &mut NoSources);
+        let live = c.frame(&p, 2.0, w, h, &mut src);
+        let fallback = c.frame(&p, 2.0, w, h, &mut NoSources);
 
         assert_ne!(live, fallback, "the decoded frame must reach the canvas");
         let live_detail = horizontal_detail(&live, w, h);
@@ -1842,8 +1848,8 @@ mod tests {
         let mut s = session.lock().unwrap();
         s.set_fps(30.0);
         let frame = s
-            .frame_at(22_000, std::time::Duration::from_secs(10))
-            .expect("a frame at 22s");
+            .frame_at(2_000, std::time::Duration::from_secs(10))
+            .expect("a frame at 2s");
         match &frame.payload {
             FramePayload::Planar(img) => {
                 assert_eq!(img.planes.len(), 2, "NV12 is luma plus interleaved chroma");
@@ -1883,6 +1889,9 @@ mod tests {
     #[serial_test::serial(video_editor_gst)]
     fn two_layers_of_one_source_get_their_own_textures() {
         use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+        if !generated_clip::media_stack() {
+            return;
+        }
 
         let path = demo_clip();
         let mut p = Project::new("two");
@@ -1922,14 +1931,14 @@ mod tests {
         let lower = p.add_clip(v1, mid, 0.0).unwrap();
         {
             let c = p.clip_mut(lower).unwrap();
-            c.in_point = 2.0;
-            c.out_point = 12.0;
+            c.in_point = 0.0;
+            c.out_point = 2.0;
         }
         let upper = p.add_clip(v2, mid, 0.0).unwrap();
         {
             let c = p.clip_mut(upper).unwrap();
-            c.in_point = 40.0;
-            c.out_point = 50.0;
+            c.in_point = 2.0;
+            c.out_point = 4.0;
             c.opacity = 0.5;
             c.effects = vec![ClipEffect {
                 id: uuid::Uuid::new_v4(),
