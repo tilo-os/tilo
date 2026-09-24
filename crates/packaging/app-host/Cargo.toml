@@ -49,7 +49,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
-dirs.workspace = true
+xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true

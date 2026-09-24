@@ -5147,7 +5147,7 @@ pub fn run() {
         let runtime = crate::shell::launcher::runtime_dir();
         // SAFETY: getuid has no arguments or memory contract.
         let uid = unsafe { libc::getuid() };
-        let pending = dirs::data_local_dir().is_some_and(|data| {
+        let pending = xdg_paths::data_local_dir().is_some_and(|data| {
             crate::shell::desktop_continuation::pending_review(
                 &data.join("qos-imager/migrations/desktop-continuation.json"),
                 uid,

@@ -163,7 +163,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         _ => None,
     };
     // Keep screenshot state independent of persisted zoom and Places ordering.
-    let mut widget = FileExplorerWidget::with_persistence(None, dirs::home_dir());
+    let mut widget = FileExplorerWidget::with_persistence(None, xdg_paths::home());
     // Optional `--path <dir>` starts the shot in a specific directory
     // (e.g. to capture a deep breadcrumb trail), else the default
     // cold-start location is used.

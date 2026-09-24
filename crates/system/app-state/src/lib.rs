@@ -1076,7 +1076,7 @@ fn sync_directory_ancestors(
     // It does not include creating the OS-owned C:\Users or volume root.
     // Query the OS known folder, not USERPROFILE supplied by an environment.
     #[cfg(windows)]
-    let profile_root = dirs::home_dir().and_then(|path| fs::canonicalize(path).ok());
+    let profile_root = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)
