@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use tilo_vm_protocol::{
-    Action, ComponentInfo, ControlResult, InputAction, Policy, Scope, SlotKind,
+    Action, BootChange, BootConfirmResult, ComponentInfo, ControlResult, InputAction, Policy,
+    Scope, SlotKind,
 };
 
 use crate::error::DaemonError;
@@ -92,6 +93,19 @@ pub trait Apply {
     /// `tilo-install install --allow-self-signed --force <tapp>` as `user`;
     /// returns what it printed.
     fn install_app(&mut self, user: &str, tapp: &std::path::Path) -> Result<String, DaemonError>;
+    /// Make the kernel in `layer` (already merged into `/usr`) the next boot,
+    /// or with `None` put the image's own kernel back (see [`crate::boot`]).
+    /// Returns what the next boot starts, and warnings.
+    fn boot_kernel(
+        &mut self,
+        layer: Option<&std::path::Path>,
+    ) -> Result<(BootChange, Vec<String>), DaemonError>;
+    /// After the reboot: report the running kernel; make its entry the
+    /// default when it is the expected one.
+    fn confirm_boot(
+        &mut self,
+        expect_version: Option<&str>,
+    ) -> Result<BootConfirmResult, DaemonError>;
 }
 
 /// What makes a session equivalent to a greetd one, as read from `/proc`.
@@ -175,6 +189,7 @@ pub fn policy(
         let needed = match entry.info.scope {
             Scope::App => Policy::NoRestart,
             Scope::Session => Policy::SessionRestart,
+            Scope::Vm if entry.info.reboot => Policy::Reboot,
             Scope::Vm => {
                 for unit in &entry.info.units {
                     if !units.contains(unit) {
@@ -289,7 +304,9 @@ pub fn activate(
     apply.reload()?;
 
     let change = match (change, policy) {
-        (SessionChange::Keep, Policy::SessionRestart | Policy::VmRefresh) => SessionChange::Restart,
+        (SessionChange::Keep, Policy::SessionRestart | Policy::VmRefresh | Policy::Reboot) => {
+            SessionChange::Restart
+        }
         (change, _) => change,
     };
     match change {
@@ -386,6 +403,8 @@ pub struct RecordingApply {
     users: BTreeMap<String, u32>,
     units: BTreeMap<String, bool>,
     pub sysext: Vec<PathBuf>,
+    /// The kernel layer the next boot runs; `None` for the image's.
+    pub next_kernel: Option<PathBuf>,
 }
 
 impl RecordingApply {
@@ -516,6 +535,43 @@ impl Apply for RecordingApply {
             .unwrap_or_default();
         Ok(format!("installed: so.tilo.{name} 0.1.0\n"))
     }
+    fn boot_kernel(
+        &mut self,
+        layer: Option<&std::path::Path>,
+    ) -> Result<(BootChange, Vec<String>), DaemonError> {
+        self.call(format!(
+            "boot_kernel {}",
+            layer.map_or_else(|| "image".into(), |l| l.display().to_string())
+        ));
+        self.next_kernel = layer.map(std::path::Path::to_path_buf);
+        let entry = layer
+            .and_then(std::path::Path::file_name)
+            .map(|h| format!("tilo-vm-recorded-{}", h.to_string_lossy()));
+        Ok((
+            BootChange {
+                kver: layer.map(|_| "0.0.0+dev".into()),
+                entry,
+                fallback: Some("image".into()),
+                loader: "recorded".into(),
+                initramfs: None,
+                initramfs_seconds: 0.0,
+            },
+            Vec::new(),
+        ))
+    }
+    fn confirm_boot(
+        &mut self,
+        _expect_version: Option<&str>,
+    ) -> Result<BootConfirmResult, DaemonError> {
+        self.call("confirm_boot".into());
+        Ok(BootConfirmResult {
+            running: "0.0.0+dev".into(),
+            version: "#1".into(),
+            expected: self.next_kernel.as_ref().map(|_| "0.0.0+dev".into()),
+            confirmed: true,
+            default_entry: None,
+        })
+    }
     fn session_process(&mut self, slot: &str) -> Option<SessionProcess> {
         self.units
             .get(&session_unit(slot))
@@ -559,10 +615,10 @@ mod tests {
                 (*name).into(),
                 Entry {
                     layer: (*layer).into(),
-                    info: ComponentInfo {
-                        scope: *scope,
-                        units: units.iter().map(|u| (*u).to_string()).collect(),
-                    },
+                    info: ComponentInfo::new(
+                        *scope,
+                        units.iter().map(|u| (*u).to_string()).collect(),
+                    ),
                 },
             );
         }
@@ -617,6 +673,27 @@ mod tests {
         let (p, units) = policy(&vm, &fs1, &fs2).unwrap();
         assert_eq!(p, Policy::VmRefresh);
         assert_eq!(units, ["fs.service", "greetd.service"]);
+
+        // A kernel outranks a refresh, and restarts no unit of its own.
+        let mut kernel = fs2.clone();
+        kernel.number = 3;
+        kernel.layers.push("k1".into());
+        kernel.components.insert(
+            "kernel".into(),
+            Entry {
+                layer: "k1".into(),
+                info: ComponentInfo {
+                    reboot: true,
+                    ..ComponentInfo::new(Scope::Vm, vec![])
+                },
+            },
+        );
+        let (p, units) = policy(&vm, &fs2, &kernel).unwrap();
+        assert_eq!(p, Policy::Reboot);
+        assert!(units.is_empty(), "{units:?}");
+        // Rolling the kernel back is a reboot too.
+        assert_eq!(policy(&vm, &kernel, &fs2).unwrap().0, Policy::Reboot);
+        assert_eq!(policy(&vm, &kernel, &kernel).unwrap().0, Policy::NoRestart);
     }
 
     #[test]
@@ -654,14 +731,8 @@ mod tests {
     fn scope_misuse_is_refused() {
         let user = record("a", SlotKind::Headful);
         let vm = record("vm", SlotKind::Vm);
-        let fs = ComponentInfo {
-            scope: Scope::Vm,
-            units: vec![],
-        };
-        let shell = ComponentInfo {
-            scope: Scope::Session,
-            units: vec![],
-        };
+        let fs = ComponentInfo::new(Scope::Vm, vec![]);
+        let shell = ComponentInfo::new(Scope::Session, vec![]);
         assert!(matches!(
             check_scope(&user, "fs", &fs),
             Err(DaemonError::ScopeMismatch { .. })

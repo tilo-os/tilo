@@ -193,6 +193,10 @@ impl SshEndpoint {
 
 /// What an adapter can do beyond the required five operations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one independent flag per optional adapter capability"
+)]
 pub struct Capabilities {
     pub serial: bool,
     pub screenshot: bool,
@@ -203,6 +207,8 @@ pub struct Capabilities {
     pub credentials: Option<&'static str>,
     /// Native control channel passed through by `vm control`.
     pub control: Option<&'static str>,
+    /// Boots `VmEntry::direct_kernel` from the host (`swap kernel --direct`).
+    pub direct_kernel: bool,
 }
 
 /// A VM as the adapter sees it.
@@ -270,6 +276,27 @@ pub trait Hypervisor {
     fn control(&self, _vm: &Vm<'_>, _args: &[String]) -> Option<CommandLine> {
         None
     }
+    /// Commands that rewrite an existing VM's definition from its registry
+    /// entry (for `direct_kernel`), where [`Capabilities::direct_kernel`].
+    /// `runner` may query the hypervisor for the VM's identity.
+    ///
+    /// # Errors
+    /// Missing registry fields.
+    fn redefine(
+        &self,
+        _vm: &Vm<'_>,
+        _root_key: &str,
+        _runner: &mut dyn Runner,
+    ) -> Result<Vec<CommandLine>, CliError> {
+        Err(CliError::Unsupported {
+            what: format!("redefining a VM with the {} adapter", self.name()),
+            alternative: "install the kernel in the VM instead: tilo-vm swap kernel".into(),
+        })
+    }
+    /// Power the VM off at once, so the next start takes a new definition.
+    fn power_off(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
+        None
+    }
 }
 
 /// # Errors
@@ -317,6 +344,14 @@ fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
 pub struct Libvirt;
 
 impl Libvirt {
+    /// Write the domain XML beside the disk; the command that defines it.
+    fn define(vm: &Vm<'_>, root_key: &str, uuid: Option<&str>) -> Result<CommandLine, CliError> {
+        let xml_path = domain_xml_path(vm.disk()?);
+        std::fs::write(&xml_path, domain_xml_with_uuid(vm, root_key, uuid)?)
+            .map_err(CliError::io(format!("write {xml_path}")))?;
+        Ok(Self::virsh(vm, &["define", &xml_path]))
+    }
+
     fn virsh(vm: &Vm<'_>, args: &[&str]) -> CommandLine {
         CommandLine::new(
             "virsh",
@@ -362,6 +397,19 @@ fn xml_escape(text: &str) -> String {
 /// # Errors
 /// The VM has no `disk`.
 pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
+    domain_xml_with_uuid(vm, root_key, None)
+}
+
+/// [`domain_xml`] for a domain that already exists: libvirt redefines a
+/// domain only under its own UUID.
+///
+/// # Errors
+/// The VM has no `disk`.
+pub fn domain_xml_with_uuid(
+    vm: &Vm<'_>,
+    root_key: &str,
+    uuid: Option<&str>,
+) -> Result<String, CliError> {
     let arch = vm.entry.arch.as_deref().unwrap_or(std::env::consts::ARCH);
     let (machine, features) = match arch {
         "x86_64" => ("q35", "<acpi/><apic/>"),
@@ -375,7 +423,7 @@ pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
     let e = xml_escape;
     Ok(format!(
         "<domain type='{domain_type}'>
-  <name>{name}</name>
+  <name>{name}</name>{uuid}
   <memory unit='MiB'>{memory}</memory>
   <vcpu>{cpus}</vcpu>
   <os firmware='efi'>
@@ -384,7 +432,7 @@ pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
       <feature enabled='no' name='secure-boot'/>
       <feature enabled='no' name='enrolled-keys'/>
     </firmware>
-    <smbios mode='sysinfo'/>
+    <smbios mode='sysinfo'/>{direct}
   </os>
   <sysinfo type='smbios'>
     <oemStrings>
@@ -415,12 +463,23 @@ pub fn domain_xml(vm: &Vm<'_>, root_key: &str) -> Result<String, CliError> {
 </domain>
 ",
         name = e(vm.name),
+        uuid = uuid.map_or_else(String::new, |u| format!("\n  <uuid>{}</uuid>", e(u))),
         memory = vm.memory(),
         cpus = vm.cpus(),
         arch = e(arch),
         credential = e(&sshkey::smbios_credential(root_key)),
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
+        direct = vm
+            .entry
+            .direct_kernel
+            .as_ref()
+            .map_or_else(String::new, |d| format!(
+                "\n    <kernel>{}</kernel>\n    <initrd>{}</initrd>\n    <cmdline>{}</cmdline>",
+                e(&d.kernel),
+                e(&d.initrd),
+                e(&d.cmdline)
+            )),
     ))
 }
 
@@ -438,12 +497,28 @@ impl Hypervisor for Libvirt {
     }
 
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError> {
-        let xml_path = domain_xml_path(vm.disk()?);
-        std::fs::write(&xml_path, domain_xml(vm, root_key)?)
-            .map_err(CliError::io(format!("write {xml_path}")))?;
         let mut commands: Vec<CommandLine> = overlay_disk(vm)?.into_iter().collect();
-        commands.push(Self::virsh(vm, &["define", &xml_path]));
+        commands.push(Self::define(vm, root_key, None)?);
         Ok(commands)
+    }
+
+    fn redefine(
+        &self,
+        vm: &Vm<'_>,
+        root_key: &str,
+        runner: &mut dyn Runner,
+    ) -> Result<Vec<CommandLine>, CliError> {
+        let uuid = runner
+            .output(&Self::virsh(vm, &["domuuid", vm.name]))
+            .ok()
+            .filter(|o| o.success)
+            .map(|o| o.stdout.trim().to_owned())
+            .filter(|u| !u.is_empty());
+        Ok(vec![Self::define(vm, root_key, uuid.as_deref())?])
+    }
+
+    fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::virsh(vm, &["destroy", vm.name]))
     }
 
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
@@ -472,6 +547,7 @@ impl Hypervisor for Libvirt {
             reset: true,
             credentials: Some("SMBIOS type 11 OEM string"),
             control: Some("virsh"),
+            direct_kernel: true,
         }
     }
 
@@ -557,6 +633,7 @@ impl Hypervisor for Qemu {
             reset: true,
             credentials: None,
             control: Some("QEMU monitor (HMP)"),
+            direct_kernel: false,
         }
     }
 
@@ -664,6 +741,7 @@ impl Hypervisor for Utm {
             reset: false,
             credentials: None,
             control: Some("utmctl"),
+            direct_kernel: false,
         }
     }
 
@@ -770,6 +848,7 @@ impl Hypervisor for HyperV {
             reset: true,
             credentials: None,
             control: Some("PowerShell (Hyper-V module)"),
+            direct_kernel: false,
         }
     }
 
@@ -1182,7 +1261,77 @@ mod tests {
                 a.control(&vm, &[]).is_some(),
                 "{name} control"
             );
+            assert_eq!(
+                caps.direct_kernel,
+                a.redefine(&vm, KEY, &mut fake("")).is_ok() && a.power_off(&vm).is_some(),
+                "{name} direct kernel"
+            );
         }
         assert!(adapter("vbox").is_err());
+    }
+
+    #[test]
+    fn libvirt_boots_a_direct_kernel_from_the_registry_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("dev.qcow2").display().to_string();
+        let mut entry = VmEntry {
+            disk: Some(disk.clone()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let plain = domain_xml(&vm, KEY).unwrap();
+        assert!(!plain.contains("<kernel>"), "{plain}");
+        entry.direct_kernel = Some(crate::config::DirectKernel {
+            kernel: "/c/tilo-kernel/direct/dev/vmlinuz".into(),
+            initrd: "/c/tilo-kernel/direct/dev/initrd.img".into(),
+            cmdline: "root=UUID=1 ro console=ttyS0 a<b".into(),
+            kver: "7.2.5+dev".into(),
+        });
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let xml = domain_xml(&vm, KEY).unwrap();
+        let os = xml
+            .split_once("<os ")
+            .and_then(|(_, rest)| rest.split_once("</os>"))
+            .map(|(os, _)| os)
+            .unwrap();
+        assert!(
+            os.contains("<kernel>/c/tilo-kernel/direct/dev/vmlinuz</kernel>"),
+            "{os}"
+        );
+        assert!(
+            os.contains("<initrd>/c/tilo-kernel/direct/dev/initrd.img</initrd>"),
+            "{os}"
+        );
+        assert!(
+            os.contains("<cmdline>root=UUID=1 ro console=ttyS0 a&lt;b</cmdline>"),
+            "{os}"
+        );
+        // Redefined under the existing domain's UUID, which virsh reports.
+        let mut runner = fake("e7482d68-86d0-43dc-8f53-fc6b508ea038\n");
+        let commands = Libvirt.redefine(&vm, KEY, &mut runner).unwrap();
+        assert_eq!(
+            runner.0[0].display(),
+            "virsh --connect qemu:///session domuuid dev"
+        );
+        assert_eq!(
+            commands[0].display(),
+            format!("virsh --connect qemu:///session define {disk}.xml")
+        );
+        let written = std::fs::read_to_string(format!("{disk}.xml")).unwrap();
+        assert!(written.contains("<kernel>"), "{written}");
+        assert!(
+            written.contains("<uuid>e7482d68-86d0-43dc-8f53-fc6b508ea038</uuid>"),
+            "{written}"
+        );
+        assert_eq!(
+            Libvirt.power_off(&vm).unwrap().display(),
+            "virsh --connect qemu:///session destroy dev"
+        );
     }
 }

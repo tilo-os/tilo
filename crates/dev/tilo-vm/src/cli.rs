@@ -30,25 +30,25 @@ impl Cli {
                 *slot = flag.take();
             }
         }
-        match &mut self.command {
-            Some(
-                Command::Rollback {
-                    slot, slot_flag, ..
-                }
-                | Command::Logs {
-                    slot, slot_flag, ..
-                }
-                | Command::Shot {
-                    slot, slot_flag, ..
-                },
-            ) => fold(slot, slot_flag),
-            Some(Command::Seat(
+        if let Some(
+            Command::Rollback {
+                slot, slot_flag, ..
+            }
+            | Command::Logs {
+                slot, slot_flag, ..
+            }
+            | Command::Shot {
+                slot, slot_flag, ..
+            }
+            | Command::Seat(
                 SeatCommand::Claim {
                     slot, slot_flag, ..
                 }
                 | SeatCommand::Release { slot, slot_flag },
-            )) => fold(slot, slot_flag),
-            _ => {}
+            ),
+        ) = &mut self.command
+        {
+            fold(slot, slot_flag);
         }
         self
     }
@@ -67,7 +67,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm guide\n  tilo-vm guide swapping\n  tilo-vm guide troubleshooting"
     )]
     Guide {
-        /// quickstart, concepts, swapping, driving, storage, platforms, troubleshooting, fedora-loop
+        /// quickstart, concepts, swapping, kernel, driving, storage, platforms, troubleshooting, fedora-loop
         topic: Option<String>,
     },
     /// Manage dev VMs through the host's hypervisor.
@@ -78,7 +78,7 @@ pub enum Command {
     Slot(SlotCommand),
     /// Put a build of a component (or an app) into a slot and restart what it needs.
     #[command(
-        after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
+        after_help = "Examples:\n  tilo-vm swap shell                      # your slot, built in the VM from this worktree\n  tilo-vm swap shell --profile dev        # faster compile, slower binary\n  tilo-vm swap --slot vm fs               # VM-wide component into the vm slot\n  tilo-vm swap app:notes                  # package and install one app; live at its next launch\n  tilo-vm swap shell --from ci:main-1a2b3c4   # the CI build of a published image\n  tilo-vm swap shell --from sha:1a2b3c4   # the CI build of a main commit\n  tilo-vm swap shell --builder host       # build on this Linux host instead\n  tilo-vm swap --slot review-a launcher --from layer:3f9c...\n  tilo-vm swap kernel                     # build os/kernel incrementally, install VM-wide, reboot\n  tilo-vm swap kernel --jobs 4            # fewer parallel compile jobs (default: half the CPUs)\n  tilo-vm swap kernel --direct            # boot the host build directly (libvirt), install nothing\n  tilo-vm swap kernel --direct --cmdline 'root=UUID=... ro console=ttyS0'   # when the VM is not up\n  tilo-vm rollback --slot vm              # back to the previous kernel (or off the direct boot)\n\nKernel: the build reuses ~/.cache/tilo-kernel/, so after the first (long) build\nonly what changed recompiles; see tilo-vm guide kernel.\n\nBuild profile: builds from this worktree use the component's manifest profile\n(release for almost all) with the manifest's features plus each package's\ndev-overrides feature, so speed is realistic and the harness variables work.\n--profile dev compiles much faster and runs slower; the layer records which."
     )]
     Swap {
         /// A component from os/components.toml (python3 os/scripts/install-components.py --list), or `app:<dir>` for an app under apps/.
@@ -99,6 +99,18 @@ pub enum Command {
         /// release for almost every component). `dev` compiles faster.
         #[arg(long)]
         profile: Option<String>,
+        /// Kernel only: boot the host-built kernel straight from the host
+        /// (libvirt direct kernel boot) instead of installing it in the VM.
+        #[arg(long)]
+        direct: bool,
+        /// Kernel only: parallel compile jobs (default: half the CPUs, or
+        /// `TILO_KERNEL_JOBS`).
+        #[arg(long)]
+        jobs: Option<u32>,
+        /// With --direct: the kernel command line (default: the running
+        /// VM's, read over SSH).
+        #[arg(long, requires = "direct")]
+        cmdline: Option<String>,
     },
     /// Type, press keys, move and click on a headful slot's own seat (real libinput path).
     #[command(
@@ -423,11 +435,11 @@ mod tests {
                 Some(
                     Command::Rollback { slot, .. }
                     | Command::Logs { slot, .. }
-                    | Command::Shot { slot, .. },
+                    | Command::Shot { slot, .. }
+                    | Command::Seat(
+                        SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
+                    ),
                 ) => slot,
-                Some(Command::Seat(
-                    SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
-                )) => slot,
                 other => panic!("{other:?}"),
             };
             assert_eq!(slot.as_deref(), Some("a"), "{args:?}");
@@ -519,13 +531,24 @@ mod tests {
         .unwrap();
         assert!(cli.json);
         assert!(
-            matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+            matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
         );
         assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
         let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--profile", "dev"]).unwrap();
         assert!(
             matches!(cli.command, Some(Command::Swap { profile: Some(ref p), .. }) if p == "dev")
         );
+        assert!(Cli::try_parse_from(["tilo-vm", "swap", "kernel", "--cmdline", "ro"]).is_err());
+        let cli =
+            Cli::try_parse_from(["tilo-vm", "swap", "kernel", "--direct", "--jobs", "4"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Swap {
+                direct: true,
+                jobs: Some(4),
+                ..
+            })
+        ));
         let cli =
             Cli::try_parse_from(["tilo-vm", "swap", "app:notes", "--builder", "host"]).unwrap();
         assert!(matches!(
