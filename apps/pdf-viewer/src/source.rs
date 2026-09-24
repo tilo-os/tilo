@@ -278,6 +278,8 @@ pub struct RasterBackend {
     cache_bytes: usize,
     /// Per-source-page extracted text layer, filled lazily on first request.
     text_cache: HashMap<(usize, usize), Arc<PageText>>,
+    /// Rendered tiles of zoomed pages, per zoom level (see [`crate::tiles`]).
+    tiles: crate::tiles::TileCache<TileKey>,
     /// Content hash and length of the opened bytes, which are kept in the
     /// content-addressed blob store.
     source_hash: String,
@@ -286,6 +288,25 @@ pub struct RasterBackend {
 
 /// A cached bitmap's identity: source, source page, width bucket, rotation.
 type RasterKey = (usize, usize, u32, i32);
+
+/// A cached tile's identity: source, source page, zoom level, rotation,
+/// column and row. Keyed by source page like whole-page bitmaps, so a
+/// duplicated or moved page reuses its tiles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct TileKey {
+    source: usize,
+    page: usize,
+    level: crate::tiles::Level,
+    rotation: i32,
+    col: u32,
+    row: u32,
+}
+
+impl crate::tiles::LevelKey for TileKey {
+    fn level(&self) -> crate::tiles::Level {
+        self.level
+    }
+}
 
 /// A page size after an added rotation.
 fn rotated_size((w, h): (f64, f64), degrees: i32) -> (f64, f64) {
@@ -411,6 +432,7 @@ impl RasterBackend {
             cache_lru: VecDeque::new(),
             cache_bytes: 0,
             text_cache: HashMap::new(),
+            tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
             source_hash,
             source_len: byte_len,
         })
@@ -893,6 +915,98 @@ impl RasterBackend {
         Some(img)
     }
 
+    /// Render tile `(col, row)` of displayed page `display_idx` at zoom
+    /// `level` (see [`crate::tiles`]), with the page's recorded rotation,
+    /// returning a cached tile when this level already has it. Unlike
+    /// [`Self::render`] there is no page-size cap: every tile is bounded by
+    /// the grid, however large the page is at this level.
+    pub fn render_tile(
+        &mut self,
+        display_idx: usize,
+        level: crate::tiles::Level,
+        col: u32,
+        row: u32,
+    ) -> Option<PenikoImage> {
+        let slot = self.slot(display_idx)?;
+        let rotation = self.page_rotation(display_idx);
+        let key = TileKey {
+            source: slot.source,
+            page: slot.page,
+            level,
+            rotation,
+            col,
+            row,
+        };
+        if let Some(image) = self.tiles.get(&key) {
+            return Some(image);
+        }
+        let size = rotated_size(
+            *self.sources.get(slot.source)?.page_sizes.get(slot.page)?,
+            rotation,
+        );
+        if !valid_page_size(size.0, size.1) {
+            return None;
+        }
+        let region = crate::tiles::tile_region(size, level, col, row)?;
+        let extra = tilo_pdf::Rotation::from_degrees(rotation).unwrap_or_default();
+        let source = self.sources.get(slot.source)?;
+        let tile = tilo_pdf::Tile { col, row, region };
+        let t = Instant::now();
+        let bitmap = source
+            .doc
+            .render_tile(slot.page, crate::tiles::level_scale(level), extra, &tile)
+            .ok()?;
+        if profiling() {
+            eprintln!(
+                "[pdf-profile]   render tile {}/{col},{row} @ level {level}: {:.1}ms",
+                display_idx + 1,
+                t.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+        let (w, h) = (bitmap.width(), bitmap.height());
+        if w == 0 || h == 0 || bitmap.pixels().len() != (w as usize) * (h as usize) * 4 {
+            return None;
+        }
+        let image = PenikoImage {
+            data: Blob::new(bitmap.shared_pixels()),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: w,
+            height: h,
+        };
+        self.tiles.insert(key, image.clone());
+        Some(image)
+    }
+
+    /// Whether tile `(col, row)` of `display_idx` at `level` is cached.
+    pub fn is_tile_cached(
+        &self,
+        display_idx: usize,
+        level: crate::tiles::Level,
+        col: u32,
+        row: u32,
+    ) -> bool {
+        self.slot(display_idx).is_some_and(|slot| {
+            self.tiles.contains(&TileKey {
+                source: slot.source,
+                page: slot.page,
+                level,
+                rotation: self.page_rotation(display_idx),
+                col,
+                row,
+            })
+        })
+    }
+
+    /// Test-only: the zoom levels this backend holds tiles for.
+    #[cfg(test)]
+    pub fn cached_tile_levels(&self) -> Vec<crate::tiles::Level> {
+        let mut levels: Vec<_> = self.tiles.keys().map(|k| k.level).collect();
+        levels.sort_unstable();
+        levels.dedup();
+        levels
+    }
+
     /// Width bucket adjusted to keep the decoded raster within the per-page
     /// pixel budget. A malformed, needle-shaped media box therefore produces
     /// an honest unavailable-page state instead of asking the engine for a
@@ -1228,6 +1342,25 @@ pub struct RenderRequest {
     pub target_width: u32,
 }
 
+/// A request for one tile of a zoomed page (see [`crate::tiles`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TileRequest {
+    pub document_id: u64,
+    pub page: usize,
+    pub level: crate::tiles::Level,
+    pub col: u32,
+    pub row: u32,
+}
+
+/// The tiles a viewer wants now, most important first. A batch *replaces*
+/// the viewer's queued tiles: after a scroll or zoom, tiles that left the
+/// viewport are never rendered ahead of the ones that entered it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TileBatch {
+    pub document_id: u64,
+    pub tiles: Vec<TileRequest>,
+}
+
 /// A request for one page's selectable text layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextRequest {
@@ -1294,6 +1427,10 @@ pub enum RasterCommand {
         document_id: u64,
     },
     Render(RenderRequest),
+    /// Replace the session's queued tiles with this batch.
+    Tiles(TileBatch),
+    /// One tile taken off a batch by the worker.
+    Tile(TileRequest),
     Text(TextRequest),
     Reconcile(ReconcileRequest),
     Save(SaveRequest),
@@ -1360,6 +1497,14 @@ pub enum RasterEvent {
     TextExtracted {
         request: TextRequest,
         text: Arc<PageText>,
+    },
+    TileRendered {
+        request: TileRequest,
+        image: Option<PenikoImage>,
+    },
+    TileFailed {
+        request: TileRequest,
+        error: String,
     },
     RenderFailed {
         request: RenderRequest,
@@ -1461,6 +1606,10 @@ struct QueueState {
     open_order: VecDeque<u64>,
     controls: VecDeque<QueuedCommand>,
     renders: VecDeque<QueuedCommand>,
+    /// Each session's current tile batch, most important first, and the
+    /// round-robin order sessions are served in.
+    tiles: HashMap<u64, VecDeque<TileRequest>>,
+    tile_order: VecDeque<u64>,
     texts: VecDeque<QueuedCommand>,
     reconciles: HashMap<u64, ReconcileRequest>,
     reconcile_order: VecDeque<u64>,
@@ -1582,6 +1731,17 @@ impl RasterHandle {
     /// queue is occupied by distinct work.
     pub fn request_render(&self, request: RenderRequest) -> Result<(), RasterSubmitError> {
         self.enqueue(RasterCommand::Render(request))
+    }
+
+    /// Replace this session's queued tiles with `batch` (most important
+    /// first; at most [`crate::tiles::MAX_TILE_BATCH`] are kept). An empty
+    /// batch cancels every queued tile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker has stopped or is unavailable.
+    pub fn request_tiles(&self, batch: TileBatch) -> Result<(), RasterSubmitError> {
+        self.enqueue(RasterCommand::Tiles(batch))
     }
 
     /// Queue extraction of one page text layer, coalescing duplicate pages.
@@ -1743,6 +1903,7 @@ impl RasterHandle {
                 state
                     .renders
                     .retain(|queued| queued.session_id != self.session.id);
+                drop_session_tiles(&mut state, self.session.id);
                 state
                     .texts
                     .retain(|queued| queued.session_id != self.session.id);
@@ -1778,6 +1939,34 @@ impl RasterHandle {
                     });
                 }
             }
+            RasterCommand::Tiles(batch) => {
+                let mut seen = HashSet::new();
+                let tiles: VecDeque<TileRequest> = batch
+                    .tiles
+                    .into_iter()
+                    .filter(|tile| tile.document_id == batch.document_id && seen.insert(*tile))
+                    .take(crate::tiles::MAX_TILE_BATCH)
+                    .collect();
+                if tiles.is_empty() {
+                    state.tiles.remove(&self.session.id);
+                    state.tile_order.retain(|queued| *queued != self.session.id);
+                } else {
+                    if !state.tiles.contains_key(&self.session.id) {
+                        state.tile_order.push_back(self.session.id);
+                    }
+                    state.tiles.insert(self.session.id, tiles);
+                }
+            }
+            // A single tile is only ever taken off a batch by the worker.
+            RasterCommand::Tile(request) => {
+                if !state.tiles.contains_key(&self.session.id) {
+                    state.tile_order.push_back(self.session.id);
+                }
+                let queue = state.tiles.entry(self.session.id).or_default();
+                if !queue.contains(&request) && queue.len() < crate::tiles::MAX_TILE_BATCH {
+                    queue.push_back(request);
+                }
+            }
             RasterCommand::Text(request) => {
                 if !state.texts.iter().any(|queued| {
                     queued.session_id == self.session.id
@@ -1802,6 +1991,7 @@ impl RasterHandle {
                 state
                     .renders
                     .retain(|queued| queued.session_id != self.session.id);
+                drop_session_tiles(&mut state, self.session.id);
                 state
                     .texts
                     .retain(|queued| queued.session_id != self.session.id);
@@ -1921,6 +2111,60 @@ fn close_session(queue: &WorkerQueue, session_id: u64) {
     queue.ready.notify_one();
 }
 
+/// The next page-level job: whole-page renders, tiles and text layers.
+/// Rendering and text work alternate so a long visible render burst cannot
+/// starve selection/search indefinitely. Whole-page renders (placeholders,
+/// thumbnails) come before tiles, so a zoomed page is never blank while its
+/// tiles arrive.
+fn next_page_work(state: &mut QueueState) -> Option<QueuedCommand> {
+    let command = if state.prefer_text {
+        state
+            .texts
+            .pop_front()
+            .or_else(|| state.renders.pop_front())
+            .or_else(|| pop_tile(state))
+    } else {
+        state
+            .renders
+            .pop_front()
+            .or_else(|| pop_tile(state))
+            .or_else(|| state.texts.pop_front())
+    };
+    if command.is_some() {
+        state.prefer_text = !state.prefer_text;
+    }
+    command
+}
+
+fn drop_session_tiles(state: &mut QueueState, session_id: u64) {
+    state.tiles.remove(&session_id);
+    state.tile_order.retain(|queued| *queued != session_id);
+}
+
+/// The next queued tile, serving sessions round-robin so one viewer's large
+/// batch cannot starve another window.
+fn pop_tile(state: &mut QueueState) -> Option<QueuedCommand> {
+    while let Some(session_id) = state.tile_order.pop_front() {
+        let Some(queue) = state.tiles.get_mut(&session_id) else {
+            continue;
+        };
+        let Some(tile) = queue.pop_front() else {
+            state.tiles.remove(&session_id);
+            continue;
+        };
+        if queue.is_empty() {
+            state.tiles.remove(&session_id);
+        } else {
+            state.tile_order.push_back(session_id);
+        }
+        return Some(QueuedCommand {
+            session_id,
+            command: RasterCommand::Tile(tile),
+        });
+    }
+    None
+}
+
 fn close_session_locked(state: &mut QueueState, session_id: u64) {
     if state.start_error.is_some() {
         return;
@@ -1934,6 +2178,7 @@ fn close_session_locked(state: &mut QueueState, session_id: u64) {
     state
         .renders
         .retain(|queued| queued.session_id != session_id);
+    drop_session_tiles(state, session_id);
     state.texts.retain(|queued| queued.session_id != session_id);
     state.reconciles.remove(&session_id);
     state.reconcile_order.retain(|queued| *queued != session_id);
@@ -2017,21 +2262,7 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                         command: RasterCommand::Import(request),
                     };
                 }
-                // Alternate between rendering and text work so a long visible
-                // render burst cannot starve selection/search indefinitely.
-                let command = if state.prefer_text {
-                    state
-                        .texts
-                        .pop_front()
-                        .or_else(|| state.renders.pop_front())
-                } else {
-                    state
-                        .renders
-                        .pop_front()
-                        .or_else(|| state.texts.pop_front())
-                };
-                if let Some(command) = command {
-                    state.prefer_text = !state.prefer_text;
+                if let Some(command) = next_page_work(&mut state) {
                     break command;
                 }
                 state = queue
@@ -2108,6 +2339,26 @@ fn source_worker(queue: &Arc<WorkerQueue>) {
                     error: "the requested raster document is no longer active".to_string(),
                 },
             },
+            RasterCommand::Tile(request) => match active
+                .get_mut(&session_id)
+                .and_then(|documents| documents.get_mut(&request.document_id))
+            {
+                Some(backend) => RasterEvent::TileRendered {
+                    request,
+                    image: backend.render_tile(
+                        request.page,
+                        request.level,
+                        request.col,
+                        request.row,
+                    ),
+                },
+                _ => RasterEvent::TileFailed {
+                    request,
+                    error: "the requested raster document is no longer active".to_string(),
+                },
+            },
+            // Batches are unpacked at admission and never reach the worker.
+            RasterCommand::Tiles(_) => continue,
             RasterCommand::Text(request) => match active
                 .get_mut(&session_id)
                 .and_then(|documents| documents.get_mut(&request.document_id))
@@ -2325,6 +2576,11 @@ fn same_page_result(left: &RasterEvent, right: &RasterEvent) -> bool {
             | RasterEvent::TextFailed { request: old, .. },
             RasterEvent::TextExtracted { request, .. } | RasterEvent::TextFailed { request, .. },
         ) => old.document_id == request.document_id && old.page == request.page,
+        (
+            RasterEvent::TileRendered { request: old, .. }
+            | RasterEvent::TileFailed { request: old, .. },
+            RasterEvent::TileRendered { request, .. } | RasterEvent::TileFailed { request, .. },
+        ) => old == request,
         _ => false,
     }
 }
@@ -2332,6 +2588,9 @@ fn same_page_result(left: &RasterEvent, right: &RasterEvent) -> bool {
 fn page_event_bytes(event: &RasterEvent) -> usize {
     match event {
         RasterEvent::Rendered {
+            image: Some(image), ..
+        }
+        | RasterEvent::TileRendered {
             image: Some(image), ..
         } => usize::try_from(image.width)
             .ok()
@@ -2363,6 +2622,10 @@ fn bound_page_event(event: RasterEvent) -> RasterEvent {
         RasterEvent::TextExtracted { request, .. } => RasterEvent::TextFailed {
             request,
             error: "the extracted text layer exceeds the UI result memory limit".to_string(),
+        },
+        RasterEvent::TileRendered { request, .. } => RasterEvent::TileFailed {
+            request,
+            error: "the rendered tile exceeds the UI result memory limit".to_string(),
         },
         _ => event,
     }
@@ -2401,6 +2664,85 @@ mod tests {
                 closed: std::sync::atomic::AtomicBool::new(false),
             }),
         }
+    }
+
+    fn tile(document_id: u64, level: i32, col: u32, row: u32) -> TileRequest {
+        TileRequest {
+            document_id,
+            page: 0,
+            level,
+            col,
+            row,
+        }
+    }
+
+    #[test]
+    fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
+        let queue = Arc::new(WorkerQueue {
+            state: Mutex::new(QueueState::default()),
+            ready: Condvar::new(),
+        });
+        let handle = test_handle(Arc::clone(&queue), 1);
+        let other = test_handle(Arc::clone(&queue), 2);
+        // The first viewport, then a scroll: the new batch names what is on
+        // screen now, nearest the centre first.
+        handle
+            .request_tiles(TileBatch {
+                document_id: 7,
+                tiles: vec![tile(7, 12, 0, 0), tile(7, 12, 1, 0), tile(7, 12, 2, 0)],
+            })
+            .expect("first batch");
+        handle
+            .request_tiles(TileBatch {
+                document_id: 7,
+                tiles: vec![tile(7, 12, 1, 5), tile(7, 12, 1, 0), tile(7, 12, 1, 5)],
+            })
+            .expect("second batch");
+        other
+            .request_tiles(TileBatch {
+                document_id: 9,
+                tiles: vec![tile(9, 8, 0, 0)],
+            })
+            .expect("another window");
+        // A whole-page placeholder is served before any tile.
+        handle
+            .request_render(RenderRequest {
+                document_id: 7,
+                page: 0,
+                target_width: 1024,
+            })
+            .expect("placeholder");
+        let mut state = queue.state.lock().unwrap();
+        let order: Vec<RasterCommand> = std::iter::from_fn(|| next_page_work(&mut state))
+            .map(|queued| queued.command)
+            .collect();
+        assert!(matches!(order[0], RasterCommand::Render(_)));
+        // Stale tiles (0,0) and (2,0) were dropped, the duplicate collapsed,
+        // and the two windows are served in turn.
+        assert_eq!(
+            order[1..].to_vec(),
+            vec![
+                RasterCommand::Tile(tile(7, 12, 1, 5)),
+                RasterCommand::Tile(tile(9, 8, 0, 0)),
+                RasterCommand::Tile(tile(7, 12, 1, 0)),
+            ]
+        );
+        drop(state);
+        // An empty batch cancels whatever is still queued.
+        handle
+            .request_tiles(TileBatch {
+                document_id: 7,
+                tiles: vec![tile(7, 12, 3, 3)],
+            })
+            .expect("third batch");
+        handle
+            .request_tiles(TileBatch {
+                document_id: 7,
+                tiles: Vec::new(),
+            })
+            .expect("cancel");
+        let mut state = queue.state.lock().unwrap();
+        assert!(next_page_work(&mut state).is_none());
     }
 
     #[test]

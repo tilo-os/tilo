@@ -79,7 +79,9 @@ const VIEW_PAD: f64 = 28.0;
 /// single [`ViewportState`] content rect.
 const PAGE_GAP: f64 = 22.0;
 const ZOOM_MIN: f64 = 0.25;
-const ZOOM_MAX: f64 = 6.0;
+/// Zoomed pages are drawn from bounded tiles ([`crate::tiles`]), so the
+/// ceiling is about usefulness, not bitmap size.
+const ZOOM_MAX: f64 = 16.0;
 /// A drag shorter than this (in screen px) is treated as a click, not a pan.
 const PAN_SLOP: f64 = 4.0;
 /// Below this window width the rail + sidebar become closed-by-default
@@ -99,6 +101,45 @@ const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = 1;
 /// a rapid scroll/zoom sequence from retaining an unbounded history of owned
 /// bitmap results in one viewer window.
 const MAX_UI_RASTER_IMAGES: usize = 12;
+/// Max number of new tiles the synchronous test backend renders per frame; a
+/// tile is a fraction of a page, so a viewport fills within a few frames.
+#[cfg(test)]
+const MAX_NEW_TILE_RASTERS_PER_FRAME: usize = 8;
+
+/// One frame's page imagery, keyed by 1-based page: whole-page bitmaps
+/// (placeholders under tiles for zoomed pages), rail thumbnails, and the
+/// tiles of zoomed pages.
+type RasterFrame = (
+    HashMap<usize, PenikoImage>,
+    HashMap<usize, PenikoImage>,
+    HashMap<usize, render::PageTiles>,
+);
+
+/// A tile the UI holds: displayed page (0-based), zoom level, column, row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct UiTileKey {
+    page: usize,
+    level: crate::tiles::Level,
+    col: u32,
+    row: u32,
+}
+
+impl UiTileKey {
+    fn of(request: &crate::source::TileRequest) -> Self {
+        Self {
+            page: request.page,
+            level: request.level,
+            col: request.col,
+            row: request.row,
+        }
+    }
+}
+
+impl crate::tiles::LevelKey for UiTileKey {
+    fn level(&self) -> crate::tiles::Level {
+        self.level
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct SearchProjectionRevision {
@@ -409,6 +450,11 @@ pub struct PdfApp {
     /// zero-based display page and the worker's snapped width bucket.
     raster_images: HashMap<(usize, u32), PenikoImage>,
     raster_render_pending: HashSet<(usize, u32)>,
+    /// Tiles of zoomed pages the worker has returned, per zoom level.
+    raster_tiles: crate::tiles::TileCache<UiTileKey>,
+    /// The tile batch last handed to the worker, most important first;
+    /// entries leave it as their results arrive.
+    raster_tile_batch: Vec<crate::source::TileRequest>,
     raster_text_pending: HashSet<usize>,
     pending_worker_plan: Option<Vec<PagePlanEntry>>,
     applied_worker_plan: Option<Vec<PagePlanEntry>>,
@@ -934,6 +980,8 @@ impl PdfApp {
             pending_open: None,
             raster_images: HashMap::new(),
             raster_render_pending: HashSet::new(),
+            raster_tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
+            raster_tile_batch: Vec::new(),
             raster_text_pending: HashSet::new(),
             pending_worker_plan: None,
             applied_worker_plan: None,
@@ -3824,6 +3872,8 @@ impl PdfApp {
                     self.raster_document = Some(raster);
                     self.raster_images.clear();
                     self.raster_render_pending.clear();
+                    self.raster_tiles.clear();
+                    self.raster_tile_batch.clear();
                     self.raster_text_pending.clear();
                     self.pending_worker_plan = None;
                     self.applied_worker_plan = None;
@@ -3949,6 +3999,29 @@ impl PdfApp {
                     ));
                     self.dirty = true;
                 }
+                RasterEvent::TileRendered { request, image }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    self.raster_tile_batch.retain(|queued| *queued != request);
+                    if let Some(image) = image {
+                        self.raster_tiles.insert(UiTileKey::of(&request), image);
+                    }
+                    self.dirty = true;
+                }
+                RasterEvent::TileFailed { request, .. }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    // The placeholder keeps showing; the tile is asked for
+                    // again only by a later batch.
+                    self.raster_tile_batch.retain(|queued| *queued != request);
+                    self.dirty = true;
+                }
                 RasterEvent::TextExtracted { request, text }
                     if self
                         .raster_document
@@ -3991,6 +4064,8 @@ impl PdfApp {
                     self.applied_worker_plan = Some(request.plan);
                     self.raster_images.clear();
                     self.raster_render_pending.clear();
+                    self.raster_tiles.clear();
+                    self.raster_tile_batch.clear();
                     self.raster_text.clear();
                     self.raster_text_pending.clear();
                     if let Some(document) = self.raster_document.as_mut() {
@@ -7949,6 +8024,274 @@ mod tests {
             idle_text_pages, 0,
             "an idle frame must defer pdfium text extraction (only selection/search needs it)"
         );
+    }
+
+    /// The Typst-typeset text fixture shared with the engine's tests.
+    const LATIN_PDF: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/doc/pdf/tests/fixtures/latin.pdf"
+    );
+
+    fn open_latin_raster() -> Option<PdfApp> {
+        let app = PdfApp::open(LATIN_PDF);
+        match pdfium_gate(app.raster.is_some(), require_pdfium()) {
+            PdfiumGate::Run => Some(app),
+            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+            PdfiumGate::Skip => {
+                eprintln!("SKIPPING a tiled-zoom test: {NO_PDFIUM}");
+                None
+            }
+        }
+    }
+
+    /// Lay the reader out at 100 %, then switch to `zoom` without drawing, so
+    /// the next `rasterize_visible` is the first frame at that zoom.
+    fn zoom_without_frame(app: &mut PdfApp, st: &mut ui::State, zoom: f64) {
+        if app.canvas_rect.area() <= 0.0 {
+            set_zoom_and_frame(app, st, 1.0, None);
+        }
+        app.fit = FitMode::Custom(zoom);
+        app.viewport.set_zoom(zoom);
+    }
+
+    /// Run frames until every visible tile is present. Each frame renders a
+    /// bounded number of new tiles, so this terminates within a few frames.
+    fn settle_tiles(app: &mut PdfApp) -> RasterFrame {
+        for _ in 0..64 {
+            let frame = app.rasterize_visible();
+            if !app.pending_visuals {
+                return frame;
+            }
+        }
+        panic!("the viewport's tiles never all arrived");
+    }
+
+    /// The screen area of `canvas ∩ page` the tiles of `tiles` cover, and
+    /// the area of `canvas ∩ page` itself.
+    fn tile_coverage(app: &PdfApp, tiles: &render::PageTiles) -> (f64, f64) {
+        let canvas = app.canvas_rect;
+        let p = tiles.placement;
+        let (pw, ph) = crate::tiles::page_pixels(p.size, p.level);
+        let (px0, py0, px1, py1) = p.screen_rect(tilo_pdf::PixelRect {
+            x: 0,
+            y: 0,
+            width: pw,
+            height: ph,
+        });
+        let target = Rect::new(px0, py0, px1, py1).intersect(canvas);
+        let covered: f64 = tiles
+            .tiles
+            .iter()
+            .map(|(region, _)| {
+                let (x0, y0, x1, y1) = p.screen_rect(*region);
+                let r = Rect::new(x0, y0, x1, y1).intersect(target);
+                r.width().max(0.0) * r.height().max(0.0)
+            })
+            .sum();
+        (covered, target.width().max(0.0) * target.height().max(0.0))
+    }
+
+    /// At 800 % a page is far wider than the old 4096 px whole-page cap; it
+    /// is drawn from tiles at a level sharper than that cap allowed, covering
+    /// the viewport exactly, with a placeholder underneath while tiles are
+    /// still arriving.
+    #[test]
+    #[serial(pdfium)]
+    fn zoomed_pages_are_drawn_from_tiles_past_the_old_bitmap_cap() {
+        let Some(mut app) = open_latin_raster() else {
+            return;
+        };
+        let mut st = ui::State::new();
+        zoom_without_frame(&mut app, &mut st, 8.0);
+
+        let (placeholders, _, first) = app.rasterize_visible();
+        let (&page, tiles) = first.iter().next().expect("the zoomed page is tiled");
+        assert!(
+            app.pending_visuals,
+            "one frame renders only a budget of tiles; the rest follow"
+        );
+        let placeholder = placeholders
+            .get(&page)
+            .expect("a placeholder shows while tiles are pending");
+        assert!(placeholder.width <= crate::tiles::PLACEHOLDER_PAGE_PX);
+        assert!(!tiles.tiles.is_empty());
+
+        let (_, _, settled) = settle_tiles(&mut app);
+        let tiles = settled.get(&page).expect("still tiled");
+        let (pw, _) = crate::tiles::page_pixels(tiles.placement.size, tiles.placement.level);
+        assert!(
+            pw > 4096,
+            "the page is rendered {pw} px wide, past the whole-page cap"
+        );
+        let (covered, target) = tile_coverage(&app, tiles);
+        assert!(target > 0.0);
+        assert!(
+            (covered - target).abs() / target < 1e-6,
+            "visible tiles cover the viewport exactly: {covered} of {target}"
+        );
+        assert!(tiles.tiles.iter().all(|(r, image)| {
+            image.width == r.width && image.height == r.height && r.width <= 512
+        }));
+        assert_eq!(
+            app.raster.as_ref().unwrap().cached_tile_levels(),
+            vec![tiles.placement.level]
+        );
+    }
+
+    /// Tiles are cached per zoom level: zooming out and back finds the first
+    /// level's tiles still there, so the viewport is complete on the very
+    /// first frame back.
+    #[test]
+    #[serial(pdfium)]
+    fn returning_to_a_zoom_level_reuses_its_tiles() {
+        let Some(mut app) = open_latin_raster() else {
+            return;
+        };
+        let mut st = ui::State::new();
+        zoom_without_frame(&mut app, &mut st, 8.0);
+        let (_, _, at_eight) = settle_tiles(&mut app);
+        let count: usize = at_eight.values().map(|t| t.tiles.len()).sum();
+        assert!(
+            count > MAX_NEW_TILE_RASTERS_PER_FRAME,
+            "enough tiles that a cold frame could not fill them ({count})"
+        );
+        let eight = at_eight.values().next().unwrap().placement.level;
+        let scroll = (app.scroll_x(), app.scroll_y());
+
+        zoom_without_frame(&mut app, &mut st, 5.0);
+        let (_, _, at_five) = settle_tiles(&mut app);
+        let five = at_five
+            .values()
+            .next()
+            .expect("5x is tiled")
+            .placement
+            .level;
+        assert_ne!(eight, five);
+        assert_eq!(app.raster.as_ref().unwrap().cached_tile_levels(), {
+            let mut levels = vec![eight, five];
+            levels.sort_unstable();
+            levels
+        });
+
+        zoom_without_frame(&mut app, &mut st, 8.0);
+        app.viewport.set_scroll(scroll.0, scroll.1);
+        let (_, _, back) = app.rasterize_visible();
+        assert!(!app.pending_visuals, "every tile was a cache hit");
+        assert_eq!(back.values().map(|t| t.tiles.len()).sum::<usize>(), count);
+    }
+
+    /// The production path: the owner worker renders the placeholder and the
+    /// tile batch the draw pass hands it, and the viewport fills from tiles.
+    #[test]
+    #[serial(pdfium)]
+    fn the_owner_worker_fills_a_zoomed_viewport_with_tiles() {
+        let mut app = PdfApp::empty();
+        let mut st = ui::State::new();
+        app.queue_worker_open(std::path::Path::new(LATIN_PDF));
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+            app.sync(&mut st.doc, &st.root);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !app.has_document {
+            assert!(!require_pdfium(), "fixture must open: {:?}", app.load_error);
+            eprintln!("SKIPPING the worker tiled-zoom test: {NO_PDFIUM}");
+            return;
+        }
+        // The page at 100 % arrives first; it is what shows under the tiles.
+        set_zoom_and_frame(&mut app, &mut st, 1.0, None);
+        while app.raster_images.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            full_frame(&mut app, &mut st, 1280.0, 800.0, None);
+        }
+        app.fit = FitMode::Custom(8.0);
+        app.viewport.set_zoom(8.0);
+
+        let mut saw_placeholder_while_pending = false;
+        let placement = loop {
+            let (placeholders, _, tiles) = app.rasterize_visible();
+            let page = tiles.values().next().expect("the zoomed page is tiled");
+            let (covered, target) = tile_coverage(&app, page);
+            if app.pending_visuals && placeholders.contains_key(&(page.placement.page + 1)) {
+                saw_placeholder_while_pending = true;
+            }
+            if !app.pending_visuals && (covered - target).abs() / target < 1e-6 {
+                break Some(page.placement);
+            }
+            if std::time::Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            app.sync(&mut st.doc, &st.root);
+        };
+        let placement = placement.expect("the worker filled the viewport with tiles");
+        assert!(
+            saw_placeholder_while_pending,
+            "the placeholder showed while tiles were on their way"
+        );
+        // Whatever is still queued is prefetch margin, never a visible tile.
+        let canvas = app.canvas_rect;
+        let visible: Vec<_> =
+            crate::tiles::wanted_tiles(&[placement], (canvas.x0, canvas.y0, canvas.x1, canvas.y1))
+                .into_iter()
+                .filter(|t| t.visible)
+                .map(|t| (t.col, t.row))
+                .collect();
+        assert!(
+            app.raster_tile_batch
+                .iter()
+                .all(|queued| !visible.contains(&(queued.col, queued.row)))
+        );
+    }
+
+    /// A tile's pixels are the same region of the page rendered whole at the
+    /// same scale (the recorded rotation applied in both).
+    #[test]
+    #[serial(pdfium)]
+    fn a_tile_matches_the_same_region_of_a_whole_page_render() {
+        let Some(mut app) = open_latin_raster() else {
+            return;
+        };
+        let rz = app.raster.as_mut().unwrap();
+        let plan: Vec<_> = (1..=rz.page_count())
+            .map(|page| crate::doc::PagePlanEntry {
+                id: format!("source-{page}"),
+                source_page: page,
+                imported: None,
+                rotation: if page == 1 { 90 } else { 0 },
+            })
+            .collect();
+        assert!(rz.reconcile_page_plan(&plan));
+        let level = 8; // 4 px per point.
+        let tile = rz.render_tile(0, level, 1, 1).expect("tile");
+        let engine = tilo_pdf::Engine::shared().expect("engine");
+        let doc = engine
+            .open_path(std::path::Path::new(LATIN_PDF))
+            .expect("open fixture");
+        let whole = doc
+            .render(
+                0,
+                &tilo_pdf::RenderOptions {
+                    scale: crate::tiles::level_scale(level),
+                    rotation: tilo_pdf::Rotation::from_degrees(90).unwrap(),
+                    ..tilo_pdf::RenderOptions::default()
+                },
+            )
+            .expect("whole page");
+        let stride = whole.width() as usize * 4;
+        let pixels = tile.data.data();
+        let mut diff = 0u64;
+        for y in 0..tile.height as usize {
+            for x in 0..tile.width as usize * 4 {
+                let a = pixels[y * tile.width as usize * 4 + x];
+                let b = whole.pixels()[(512 + y) * stride + 512 * 4 + x];
+                diff += u64::from(a.abs_diff(b));
+            }
+        }
+        let mean = diff as f64 / f64::from(tile.width * tile.height * 4);
+        assert!(mean < 1.0, "tile differs from the page region by {mean}");
+        // The tile is not blank paper.
+        assert!(pixels.chunks_exact(4).any(|px| px[0] < 128));
     }
 
     /// Opening a document must not rasterise a screen-full of pages on the very
