@@ -570,18 +570,10 @@ fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
         ));
     }
     let mut apps = BTreeSet::new();
-    for package in launcher::registry::list_installed()
+    for package in package_store::list_installed()
         .map_err(|error| ComputeWorkerError::Health(error.to_string()))?
     {
-        let Some(data_root) = package.payload_root.parent().and_then(Path::parent) else {
-            continue;
-        };
-        let Ok(report) = install::integrity::verify(
-            data_root,
-            &package.id,
-            &package.package_id_hex,
-            &package.payload_root,
-        ) else {
+        let Ok(report) = package_store::integrity::verify(&package, &package.payload_root) else {
             continue;
         };
         let Ok(manifest) = read_manifest(&package.manifest_path) else {

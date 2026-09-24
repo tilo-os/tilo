@@ -177,11 +177,11 @@ else
 fi
 
 # --- 5. the launcher actually reads that store -------------------------------
-reg="$REPO/crates/packaging/launcher/src/registry.rs"
+reg="$REPO/crates/packaging/package-store/src/layout.rs"
 if [ ! -r "$reg" ]; then
   bad "missing $reg"
 elif grep -q "SYSTEM_DATA_DIR: &str = \"$store\"" "$reg"; then
-  ok "the launcher's system store constant is $store"
+  ok "the package store's system store constant is $store"
 else
   bad "$reg does not point SYSTEM_DATA_DIR at $store — the image would ship a
       store nothing reads."

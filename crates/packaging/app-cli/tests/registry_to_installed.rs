@@ -373,7 +373,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
 
     // 2. Nothing is installed yet — this is what makes step 3 mean something.
     assert!(
-        launcher::registry::list_installed().unwrap().is_empty(),
+        package_store::list_installed().unwrap().is_empty(),
         "the scratch install root must start empty"
     );
 
@@ -384,7 +384,7 @@ fn a_registry_entry_becomes_an_installed_app_the_desktop_can_see() {
 
     // 4. The desktop's own reader now returns it — the compositor
     //    enumerates installed apps through exactly this call.
-    let now_installed = launcher::registry::list_installed().unwrap();
+    let now_installed = package_store::list_installed().unwrap();
     let found = now_installed
         .iter()
         .find(|e| e.id == PACKAGE_ID)
@@ -548,7 +548,7 @@ fn a_corrupted_download_never_becomes_an_installed_app() {
         "the refusal has to say something a person can read"
     );
     assert!(
-        launcher::registry::list_installed().unwrap().is_empty(),
+        package_store::list_installed().unwrap().is_empty(),
         "nothing may be registered after a refused install"
     );
 }
@@ -607,7 +607,7 @@ fn publish_and_install(
     version: &str,
     apps_dir: &Path,
     runtime_dir: &Path,
-) -> launcher::registry::InstalledPackage {
+) -> package_store::InstalledPackage {
     let owner = SigningKey::from_bytes(&[12; 32]);
     let registry = Registry::start(String::new(), tapp.clone());
     let url = format!("http://127.0.0.1:{}/app.tapp", registry.port);
@@ -646,7 +646,7 @@ fn publish_and_install(
 
     app_cli::install::install(package_id)
         .unwrap_or_else(|e| panic!("install must succeed: {}", e.user_message()));
-    launcher::registry::list_installed()
+    package_store::list_installed()
         .unwrap()
         .into_iter()
         .find(|e| e.id == package_id)
