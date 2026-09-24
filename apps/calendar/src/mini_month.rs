@@ -102,10 +102,10 @@ impl MiniMonth {
             None,
         );
         if layout.previous.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), layout.previous, 6.0);
+            fill_round(scene, transform, layout.previous, 6.0, colors.lift(0.35));
         }
         if layout.next.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), layout.next, 6.0);
+            fill_round(scene, transform, layout.next, 6.0, colors.lift(0.35));
         }
         draw_chevron(
             scene,
@@ -157,18 +157,18 @@ impl MiniMonth {
                 stroke_round(
                     scene,
                     transform,
-                    colors.accent[5],
                     cell.inflate(-3.0, -2.0),
                     7.0,
+                    colors.accent[5],
                     1.2,
                 );
             } else if cell.contains(pointer) {
                 fill_round(
                     scene,
                     transform,
-                    colors.lift(0.35),
                     cell.inflate(-3.0, -2.0),
                     7.0,
+                    colors.lift(0.35),
                 );
             }
             let number_color = if is_today {

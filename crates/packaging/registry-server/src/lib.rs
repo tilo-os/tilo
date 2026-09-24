@@ -114,16 +114,8 @@ pub async fn run_server(addr: SocketAddr, state: AppState) -> std::io::Result<()
 /// Convenience: default XDG state dir for the registry data.
 /// Falls back to `~/.local/state/tilo-registry`.
 pub fn default_data_dir() -> std::path::PathBuf {
-    if let Ok(v) = std::env::var("XDG_STATE_HOME")
-        && !v.is_empty()
-    {
-        return std::path::PathBuf::from(v).join("tilo-registry");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return std::path::PathBuf::from(home)
-            .join(".local")
-            .join("state")
-            .join("tilo-registry");
-    }
-    std::path::PathBuf::from("/var/lib/tilo-registry")
+    xdg_paths::xdg::state_home().map_or_else(
+        || std::path::PathBuf::from("/var/lib/tilo-registry"),
+        |state| state.join("tilo-registry"),
+    )
 }

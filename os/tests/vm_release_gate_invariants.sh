@@ -92,6 +92,16 @@ else
   bad 'VM lifecycle helpers cannot distinguish logout, crash, and forced VM termination'
 fi
 
+if grep -Fq 'virtserialport,chardev=tiloconsole,name=org.tilo.console.0' "$common" \
+  && [ "$(grep -Fc '$(console_qemu_args)' "$vm")" -eq 2 ] \
+  && grep -Fq 'rm -f "$TILO_SERIAL" "$TILO_MON" "$TILO_PIDFILE" "$TILO_CONSOLE"' "$vm" \
+  && grep -Fq 'if [ "$s" = "-" ]; then IFS= read -r s || true; fi' "$vm" \
+  && ! grep -Fq 'org.tilo.console.0' "$repo/os/Containerfile.installer"; then
+  ok 'only the installer and target boots attach the console port, and secrets can be typed from stdin'
+else
+  bad 'the console channel is attached outside the scenario boots or unlock secrets must travel on argv'
+fi
+
 [ "$(grep -Fc 'serial=tilo-install-target' "$vm")" -ge 3 ] \
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'

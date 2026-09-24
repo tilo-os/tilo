@@ -1,0 +1,128 @@
+{
+  "blockdevices": [
+    {
+      "name": "zram0",
+      "model": null,
+      "serial": null,
+      "size": 42949672960,
+      "type": "disk",
+      "rota": false,
+      "tran": null,
+      "rm": false,
+      "fstype": "swap",
+      "label": "zram0",
+      "mountpoint": "[SWAP]",
+      "fsused": null,
+      "uuid": "1beb5738-bce5-b4e1-765f-3c5471d570a3"
+    },
+    {
+      "name": "nvme0n1",
+      "model": "CT2000P310SSD8",
+      "serial": "SERIAL73D2FB",
+      "size": 2000398934016,
+      "type": "disk",
+      "rota": false,
+      "tran": "nvme",
+      "rm": false,
+      "fstype": null,
+      "label": null,
+      "mountpoint": null,
+      "fsused": null,
+      "uuid": null,
+      "children": [
+        {
+          "name": "nvme0n1p1",
+          "model": null,
+          "serial": null,
+          "size": 629145600,
+          "type": "part",
+          "rota": false,
+          "tran": "nvme",
+          "rm": false,
+          "fstype": "vfat",
+          "label": null,
+          "mountpoint": "/boot/efi",
+          "fsused": 13754368,
+          "uuid": "83BB-9B39"
+        },
+        {
+          "name": "nvme0n1p2",
+          "model": null,
+          "serial": null,
+          "size": 1073741824,
+          "type": "part",
+          "rota": false,
+          "tran": "nvme",
+          "rm": false,
+          "fstype": "ext4",
+          "label": null,
+          "mountpoint": "/boot",
+          "fsused": 263368704,
+          "uuid": "46527feb-110f-9884-19ab-28479ff0c3b6"
+        },
+        {
+          "name": "nvme0n1p3",
+          "model": null,
+          "serial": null,
+          "size": 1998694907904,
+          "type": "part",
+          "rota": false,
+          "tran": "nvme",
+          "rm": false,
+          "fstype": "btrfs",
+          "label": "fedora",
+          "mountpoint": "/run/media/system/fedora",
+          "fsused": 2445203636224,
+          "uuid": "a036f77a-15e0-adc8-91fb-ab48702e1cdf"
+        }
+      ]
+    },
+    {
+      "name": "nvme1n1",
+      "model": "WD PC SN560 SDDPNQE-1T00-1002",
+      "serial": "SERIAL278596",
+      "size": 1024209543168,
+      "type": "disk",
+      "rota": false,
+      "tran": "nvme",
+      "rm": false,
+      "fstype": null,
+      "label": null,
+      "mountpoint": null,
+      "fsused": null,
+      "uuid": null,
+      "children": [
+        {
+          "name": "nvme1n1p1",
+          "model": null,
+          "serial": null,
+          "size": 31999393792,
+          "type": "part",
+          "rota": false,
+          "tran": "nvme",
+          "rm": false,
+          "fstype": "swap",
+          "label": "Swap 2",
+          "mountpoint": "[SWAP]",
+          "fsused": null,
+          "uuid": "32784620-6228-3561-3f8a-9757ced319e4"
+        },
+        {
+          "name": "nvme1n1p2",
+          "model": null,
+          "serial": null,
+          "size": 992208748544,
+          "type": "part",
+          "rota": false,
+          "tran": "nvme",
+          "rm": false,
+          "fstype": "btrfs",
+          "label": "fedora",
+          "mountpoint": null,
+          "fsused": null,
+          "uuid": "a036f77a-15e0-adc8-91fb-ab48702e1cdf"
+        }
+      ]
+    }
+  ]
+}

@@ -10,6 +10,7 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
 
@@ -2456,7 +2457,7 @@ fn collaborators_screen_exposure(
         .active_exposures()
         .iter()
         .map(|exposure| {
-            let participant = tree.workspaces.iter().find_map(|workspace| {
+            let participant = tree.desktop.workspaces.iter().find_map(|workspace| {
                 workspace
                     .collaborators
                     .iter()
@@ -2479,6 +2480,7 @@ fn collaborators_screen_exposure(
                 },
             );
             let target = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find_map(|workspace| {
@@ -2495,7 +2497,7 @@ fn collaborators_screen_exposure(
                             )
                         })
                         .map(|tab| {
-                            if workspace.id == tree.active {
+                            if workspace.id == tree.desktop.active {
                                 tab.title.clone()
                             } else {
                                 format!("{} › {}", workspace.name, tab.title)
@@ -4173,6 +4175,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let room = state
                 .tree()
+                .desktop
                 .active_workspace()
                 .map(|workspace| workspace.room)?;
             Some((room, state.active_tab_id()?))
@@ -4259,11 +4262,12 @@ impl ShellOverlayHost {
                 let state = chrome.borrow();
                 let local_user = state.local_user_id.clone();
                 let tree = state.tree();
-                let workspace_name = tree.active_workspace().map_or_else(
+                let workspace_name = tree.desktop.active_workspace().map_or_else(
                     || "this workspace".to_string(),
                     |workspace| workspace.name.clone(),
                 );
                 let room_invitees = tree
+                    .desktop
                     .active_workspace()
                     .map(|workspace| tree.trusted_identity_projection(workspace.room))
                     .map(|projection| {
@@ -4437,7 +4441,7 @@ impl ShellOverlayHost {
         self.content_built_empty = self.chrome.as_ref().and_then(|chrome| {
             let state = chrome.borrow();
             let tree = state.tree();
-            tree.active_workspace().map(|workspace| {
+            tree.desktop.active_workspace().map(|workspace| {
                 workspace
                     .strips
                     .iter()
@@ -4464,8 +4468,8 @@ impl ShellOverlayHost {
         let snapshot = {
             let st = chrome.borrow();
             let tree = st.tree();
-            let active_raw = tree.active.raw();
-            let active_empty = tree.active_workspace().is_some_and(|workspace| {
+            let active_raw = tree.desktop.active.raw();
+            let active_empty = tree.desktop.active_workspace().is_some_and(|workspace| {
                 workspace
                     .strips
                     .iter()
@@ -4498,8 +4502,8 @@ impl ShellOverlayHost {
         self.content = root;
         self.workspace_scene_parts = Some(scene_parts);
         self.group_row_ptrs = ptrs;
-        self.content_built_for_ws = Some(snapshot.active.raw());
-        self.content_built_empty = snapshot.active_workspace().map(|workspace| {
+        self.content_built_for_ws = Some(snapshot.desktop.active.raw());
+        self.content_built_empty = snapshot.desktop.active_workspace().map(|workspace| {
             workspace
                 .strips
                 .iter()
@@ -4515,7 +4519,7 @@ impl ShellOverlayHost {
     /// workspace? A strip with no row can't be drawn (the incremental
     /// resync looks it up by id); extra rows point at strips that went away.
     fn rows_cover_active_strips(&self, tree: &crate::shell::state::WorkspaceTree) -> bool {
-        let Some(ws) = tree.active_workspace() else {
+        let Some(ws) = tree.desktop.active_workspace() else {
             return true;
         };
         ws.strips.len() == self.group_row_ptrs.len()
@@ -4610,7 +4614,7 @@ impl ShellOverlayHost {
         let tab_id = {
             let state = chrome.borrow();
             let tree = state.tree();
-            tree.active_workspace().and_then(|workspace| {
+            tree.desktop.active_workspace().and_then(|workspace| {
                 workspace.strips.iter().find_map(|strip| {
                     strip.window_groups.iter().find_map(|group| {
                         group.tabs.iter().find_map(|tab| match &tab.tile {
@@ -4761,7 +4765,7 @@ impl ShellOverlayHost {
         let tile = self.chrome.as_ref().and_then(|chrome| {
             let state = chrome.borrow();
             let tree = state.tree();
-            tree.active_workspace().and_then(|workspace| {
+            tree.desktop.active_workspace().and_then(|workspace| {
                 workspace.strips.iter().find_map(|strip| {
                     strip.window_groups.iter().find_map(|group| {
                         group
@@ -4892,7 +4896,7 @@ impl ShellOverlayHost {
         let records = st.records().clone();
         let tree = st.tree();
         let creation_failures = st.record_creation_errors(&tree);
-        if let Some(ws) = tree.active_workspace() {
+        if let Some(ws) = tree.desktop.active_workspace() {
             for strip in &ws.strips {
                 let Some(&row_ptr) = self.group_row_ptrs.get(&strip.id) else {
                     continue;
@@ -5143,8 +5147,10 @@ impl ShellOverlayHost {
         let mut changed = false;
         for (strip_id, closing) in closing_per_strip {
             let mut tree = st.tree_mut();
-            let before = tree.active_group_for(strip_id);
-            let after = tree.nudge_active_group_off_closing(strip_id, &closing);
+            let before = tree.desktop.active_group_for(strip_id);
+            let after = tree
+                .desktop
+                .nudge_active_group_off_closing(strip_id, &closing);
             changed |= before != after;
         }
         if changed {
@@ -5202,7 +5208,7 @@ impl ShellOverlayHost {
         let mut changed = false;
         for (_strip_id, group_id, new_value) in changes {
             // Flat scan is correct since group ids are tree-unique.
-            for ws in &mut tree.workspaces {
+            for ws in &mut tree.desktop.workspaces {
                 for strip in &mut ws.strips {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
                         if g.maximized != new_value {
@@ -5279,7 +5285,7 @@ impl ShellOverlayHost {
         {
             let mut tree = st.tree_mut();
             for w in &writes {
-                for ws in &mut tree.workspaces {
+                for ws in &mut tree.desktop.workspaces {
                     for strip in &mut ws.strips {
                         if strip.id != w.strip {
                             continue;
@@ -5306,9 +5312,9 @@ impl ShellOverlayHost {
         if !focus_writes.is_empty() {
             let mut tree = st.tree_mut();
             for (ws_id, strip_id, group_id) in focus_writes {
-                tree.active = ws_id;
-                tree.active_strip.insert(ws_id, strip_id);
-                tree.active_group.insert(strip_id, group_id);
+                tree.desktop.active = ws_id;
+                tree.desktop.active_strip.insert(ws_id, strip_id);
+                tree.desktop.active_group.insert(strip_id, group_id);
             }
             let activated_file_tabs: Vec<_> = activated_file_tabs
                 .into_iter()
@@ -5346,7 +5352,7 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.clone() {
             let st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            for ws in &mut tree.workspaces {
+            for ws in &mut tree.desktop.workspaces {
                 for strip in &mut ws.strips {
                     for g in &mut strip.window_groups {
                         if touched.contains(&g.id) {
@@ -5418,6 +5424,7 @@ impl ShellOverlayHost {
         // id must not close a tab that has since moved elsewhere.
         let in_group = st
             .tree()
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -5484,7 +5491,7 @@ impl ShellOverlayHost {
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
         for (_strip_id, group_id, new_value) in changes {
-            for ws in &mut tree.workspaces {
+            for ws in &mut tree.desktop.workspaces {
                 for strip in &mut ws.strips {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
                         g.width = crate::shell::state::WindowWidth::Fraction(new_value);
@@ -5727,7 +5734,7 @@ impl ShellOverlayHost {
             let tree = st.tree();
             self.group_row_ptrs
                 .keys()
-                .filter_map(|&sid| tree.active_group_for(sid).map(|gid| (sid, gid)))
+                .filter_map(|&sid| tree.desktop.active_group_for(sid).map(|gid| (sid, gid)))
                 .collect()
         };
         for (strip_id, group_id) in active {
@@ -5781,16 +5788,19 @@ impl ShellOverlayHost {
         let focused: Option<(StripId, GroupId)> = {
             let st = chrome.borrow();
             let tree = st.tree();
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .and_then(|ws| {
-                    tree.active_strip
+                    tree.desktop
+                        .active_strip
                         .get(&ws.id)
                         .copied()
                         .filter(|id| ws.strips.iter().any(|s| s.id == *id))
                         .or_else(|| ws.strips.first().map(|s| s.id))
                 })
                 .and_then(|sid| {
-                    tree.resolve_active_group(sid, |gid| closing.contains(&gid))
+                    tree.desktop
+                        .resolve_active_group(sid, |gid| closing.contains(&gid))
                         .map(|gid| (sid, gid))
                 })
         };
@@ -5826,8 +5836,9 @@ impl ShellOverlayHost {
         let strip_id = {
             let st = chrome.borrow();
             let tree = st.tree();
-            tree.active_workspace().and_then(|ws| {
-                tree.active_strip
+            tree.desktop.active_workspace().and_then(|ws| {
+                tree.desktop
+                    .active_strip
                     .get(&ws.id)
                     .copied()
                     .filter(|id| ws.strips.iter().any(|s| s.id == *id))
@@ -6198,6 +6209,7 @@ impl ShellOverlayHost {
         let painted: Vec<String> = {
             let st = chrome_handle.borrow();
             st.tree()
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|w| w.strips.iter())
@@ -6495,7 +6507,11 @@ impl ShellOverlayHost {
         };
         let strip = {
             let st = chrome.borrow();
-            st.tree().active_strip.get(&st.tree().active).copied()
+            st.tree()
+                .desktop
+                .active_strip
+                .get(&st.tree().desktop.active)
+                .copied()
         };
         let Some(strip) = strip else { return false };
         let Some(&ptr) = self.group_row_ptrs.get(&strip) else {
@@ -6518,7 +6534,11 @@ impl ShellOverlayHost {
         };
         let strip = {
             let st = chrome.borrow();
-            st.tree().active_strip.get(&st.tree().active).copied()
+            st.tree()
+                .desktop
+                .active_strip
+                .get(&st.tree().desktop.active)
+                .copied()
         };
         let Some(strip) = strip else { return false };
         let Some(&ptr) = self.group_row_ptrs.get(&strip) else {
@@ -6587,9 +6607,14 @@ impl ShellOverlayHost {
         let target = (|| -> Option<(StripId, GroupId, u64)> {
             let st = chrome.borrow();
             let tree = st.tree();
-            let strip = tree.active_strip.get(&tree.active).copied()?;
-            let group_id = tree.active_group_for(strip)?;
+            let strip = tree
+                .desktop
+                .active_strip
+                .get(&tree.desktop.active)
+                .copied()?;
+            let group_id = tree.desktop.active_group_for(strip)?;
             let group = tree
+                .desktop
                 .active_workspace()?
                 .strips
                 .iter()
@@ -6633,13 +6658,15 @@ impl ShellOverlayHost {
         let (strip_id, group_id, width) = {
             let st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            let Some(strip_id) = tree.active_strip.get(&tree.active).copied() else {
+            let Some(strip_id) = tree.desktop.active_strip.get(&tree.desktop.active).copied()
+            else {
                 return false;
             };
-            let Some(group_id) = tree.active_group_for(strip_id) else {
+            let Some(group_id) = tree.desktop.active_group_for(strip_id) else {
                 return false;
             };
             let Some(group) = tree
+                .desktop
                 .active_workspace_mut()
                 .and_then(|workspace| {
                     workspace
@@ -6694,39 +6721,40 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let (changed, strip_id) = {
-            let st = chrome.borrow_mut();
-            let mut tree = st.tree_mut();
-            let Some(strip_id) = tree.active_strip.get(&tree.active).copied() else {
-                return false;
+        let (changed, strip_id) =
+            {
+                let st = chrome.borrow_mut();
+                let mut tree = st.tree_mut();
+                let Some(strip_id) = tree.desktop.active_strip.get(&tree.desktop.active).copied()
+                else {
+                    return false;
+                };
+                let Some(group_id) = tree.desktop.active_group_for(strip_id) else {
+                    return false;
+                };
+                let Some(strip) = tree.desktop.active_workspace().and_then(|workspace| {
+                    workspace.strips.iter().find(|strip| strip.id == strip_id)
+                }) else {
+                    return false;
+                };
+                let Some(current) = strip
+                    .window_groups
+                    .iter()
+                    .position(|group| group.id == group_id)
+                else {
+                    return false;
+                };
+                let last = strip.window_groups.len().saturating_sub(1);
+                let destination = if direction < 0 {
+                    current.saturating_sub(1)
+                } else {
+                    current.saturating_add(1).min(last)
+                };
+                (
+                    tree.reorder_group_within_strip(strip_id, group_id, destination),
+                    strip_id,
+                )
             };
-            let Some(group_id) = tree.active_group_for(strip_id) else {
-                return false;
-            };
-            let Some(strip) = tree
-                .active_workspace()
-                .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == strip_id))
-            else {
-                return false;
-            };
-            let Some(current) = strip
-                .window_groups
-                .iter()
-                .position(|group| group.id == group_id)
-            else {
-                return false;
-            };
-            let last = strip.window_groups.len().saturating_sub(1);
-            let destination = if direction < 0 {
-                current.saturating_sub(1)
-            } else {
-                current.saturating_add(1).min(last)
-            };
-            (
-                tree.reorder_group_within_strip(strip_id, group_id, destination),
-                strip_id,
-            )
-        };
         if changed {
             self.last_scrolled_active_group.remove(&strip_id);
             chrome.borrow_mut().bump();
@@ -6756,6 +6784,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             state
                 .tree()
+                .desktop
                 .active_workspace()
                 .and_then(|workspace| {
                     workspace
@@ -6779,6 +6808,7 @@ impl ShellOverlayHost {
             let st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
             if let Some(g) = tree
+                .desktop
                 .active_workspace_mut()
                 .and_then(|ws| ws.strips.iter_mut().find(|s| s.id == strip))
                 .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
@@ -6787,8 +6817,8 @@ impl ShellOverlayHost {
                 g.active_tab = tab;
                 changed = true;
             }
-            if tree.active_group_for(strip) != Some(group) {
-                tree.set_active_group(strip, group);
+            if tree.desktop.active_group_for(strip) != Some(group) {
+                tree.desktop.set_active_group(strip, group);
                 changed = true;
             }
             if changed {
@@ -6810,7 +6840,8 @@ impl ShellOverlayHost {
         let tab = {
             let st = chrome.borrow();
             let tree = st.tree();
-            tree.active_workspace()
+            tree.desktop
+                .active_workspace()
                 .and_then(|ws| ws.strips.iter().find(|s| s.id == strip))
                 .and_then(|s| s.window_groups.iter().find(|g| g.id == group))
                 .map(|g| g.active_tab)
@@ -6831,11 +6862,15 @@ impl ShellOverlayHost {
         };
         let room_changed = {
             let state = chrome.borrow();
-            state.tree().active_workspace().is_none_or(|workspace| {
-                self.followed_room
-                    .as_ref()
-                    .is_some_and(|room| room != &workspace.room)
-            })
+            state
+                .tree()
+                .desktop
+                .active_workspace()
+                .is_none_or(|workspace| {
+                    self.followed_room
+                        .as_ref()
+                        .is_some_and(|room| room != &workspace.room)
+                })
         };
         if room_changed {
             // Follow is an attached local view, never a cross-workspace
@@ -6847,24 +6882,29 @@ impl ShellOverlayHost {
         let target = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
+            let roster: &[crate::shell::state::Collaborator] = match tree.desktop.active_workspace()
+            {
                 Some(workspace) if !workspace.collaborators.is_empty() => &workspace.collaborators,
-                _ => &tree.collaborators,
+                _ => &tree.desktop.collaborators,
             };
             let tab = roster
                 .iter()
                 .find(|participant| participant.id == peer_id && !participant.invited)
                 .and_then(|participant| participant.active_tab);
             let target = tab.and_then(|tab| {
-                tree.active_workspace()?.strips.iter().find_map(|strip| {
-                    strip.window_groups.iter().find_map(|group| {
-                        group
-                            .tabs
-                            .iter()
-                            .any(|candidate| candidate.id == tab)
-                            .then_some((strip.id, group.id, tab))
+                tree.desktop
+                    .active_workspace()?
+                    .strips
+                    .iter()
+                    .find_map(|strip| {
+                        strip.window_groups.iter().find_map(|group| {
+                            group
+                                .tabs
+                                .iter()
+                                .any(|candidate| candidate.id == tab)
+                                .then_some((strip.id, group.id, tab))
+                        })
                     })
-                })
             });
             drop(tree);
             drop(state);
@@ -6898,7 +6938,7 @@ impl ShellOverlayHost {
             (Some(id), Some(chrome)) => {
                 let state = chrome.borrow();
                 let tree = state.tree();
-                let command = tree.active_workspace().map(|workspace| {
+                let command = tree.desktop.active_workspace().map(|workspace| {
                     let target = workspace
                         .collaborators
                         .iter()
@@ -6922,6 +6962,7 @@ impl ShellOverlayHost {
                     let state = chrome.borrow();
                     let tree = state.tree();
                     let command = tree
+                        .desktop
                         .active_workspace()
                         .map(|workspace| (workspace.room, None));
                     drop(tree);
@@ -7064,7 +7105,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
-        let count = chrome.borrow().tree().workspaces.len();
+        let count = chrome.borrow().tree().desktop.workspaces.len();
         (0..count).map(|i| self.overview_row_rect(i)).collect()
     }
 
@@ -7427,7 +7468,12 @@ impl ShellOverlayHost {
         let strip_tree_ids: Vec<(StripId, std::collections::HashSet<u64>)> = {
             let st = chrome.borrow();
             let tree = st.tree();
-            let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
+            let Some(ws) = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == tree.desktop.active)
+            else {
                 return;
             };
             ws.strips
@@ -7459,7 +7505,7 @@ impl ShellOverlayHost {
         let mut emptied: Vec<(StripId, GroupId)> = Vec::new();
         for (strip_id, idx, group) in writes {
             let moved: std::collections::HashSet<u64> = group.tabs.iter().map(|t| t.id).collect();
-            for ws in &mut tree.workspaces {
+            for ws in &mut tree.desktop.workspaces {
                 let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) else {
                     continue;
                 };
@@ -7502,8 +7548,8 @@ impl ShellOverlayHost {
             }
             // Focus follows the tab out of a source that is gone.
             for (emptied_strip, emptied_group) in emptied.drain(..) {
-                if tree.active_group.get(&emptied_strip) == Some(&emptied_group) {
-                    tree.active_group.insert(emptied_strip, group.id);
+                if tree.desktop.active_group.get(&emptied_strip) == Some(&emptied_group) {
+                    tree.desktop.active_group.insert(emptied_strip, group.id);
                 }
             }
         }
@@ -7761,16 +7807,17 @@ impl ShellOverlayHost {
         self.harvest_widget_only_groups_into_tree();
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
-        let ws_id = tree.active;
+        let ws_id = tree.desktop.active;
         let workspace_exists = tree
+            .desktop
             .workspaces
             .iter()
             .any(|w| w.id == ws_id && w.strips.iter().any(|s| s.id == strip_id));
         if !workspace_exists {
             return;
         }
-        tree.active_strip.insert(ws_id, strip_id);
-        tree.active_group.insert(strip_id, group_id);
+        tree.desktop.active_strip.insert(ws_id, strip_id);
+        tree.desktop.active_group.insert(strip_id, group_id);
         tree.flush_to_disk();
         drop(tree);
         drop(st);
@@ -9449,8 +9496,9 @@ impl ShellOverlayHost {
         let (strip_id, order) = {
             let st = chrome.borrow();
             let tree = st.tree();
-            let Some(sid) = tree.active_workspace().and_then(|ws| {
-                tree.active_strip
+            let Some(sid) = tree.desktop.active_workspace().and_then(|ws| {
+                tree.desktop
+                    .active_strip
                     .get(&ws.id)
                     .copied()
                     .filter(|id| ws.strips.iter().any(|s| s.id == *id))
@@ -9459,6 +9507,7 @@ impl ShellOverlayHost {
                 return empty;
             };
             let order: Vec<GroupId> = tree
+                .desktop
                 .active_workspace()
                 .and_then(|ws| ws.strips.iter().find(|s| s.id == sid))
                 .map(|s| s.window_groups.iter().map(|g| g.id).collect())
@@ -9471,6 +9520,7 @@ impl ShellOverlayHost {
         let focused = chrome
             .borrow()
             .tree()
+            .desktop
             .active_group_for(strip_id)
             .and_then(|g| order.iter().position(|&id| id == g))
             .unwrap_or(0);
@@ -9516,8 +9566,9 @@ impl ShellOverlayHost {
         let chrome = self.chrome.as_ref()?;
         let st = chrome.borrow();
         let tree = st.tree();
-        let ws = tree.active_workspace()?;
+        let ws = tree.desktop.active_workspace()?;
         let sid = tree
+            .desktop
             .active_strip
             .get(&ws.id)
             .copied()
@@ -9605,7 +9656,7 @@ impl ShellOverlayHost {
             return false;
         }
         let tree = st.tree();
-        let Some(workspace) = tree.active_workspace() else {
+        let Some(workspace) = tree.desktop.active_workspace() else {
             return false;
         };
         let actor_id = st.local_user_for_room(&workspace.room);
@@ -9690,11 +9741,12 @@ impl ShellOverlayHost {
             let records = st.records().clone();
             let mut tree = st.tree_mut();
             let local = self.room_records.borrow();
-            self.room_activity.observe_workspace(tree.active.raw());
+            self.room_activity
+                .observe_workspace(tree.desktop.active.raw());
             self.room_activity.refresh(&mut tree);
             self.room_activity
                 .refresh_records_with_local(&mut tree, &records, &*local);
-            tree.active.raw()
+            tree.desktop.active.raw()
         };
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
@@ -9748,7 +9800,7 @@ impl ShellOverlayHost {
             let state = chrome.borrow();
             let tree = state.tree();
             let mut ids = vec![state.local_user_id.clone()];
-            if let Some(workspace) = tree.active_workspace() {
+            if let Some(workspace) = tree.desktop.active_workspace() {
                 ids.push(state.local_user_for_room(&workspace.room));
             }
             ids.retain(|id| !id.is_empty());
@@ -10338,7 +10390,7 @@ impl ShellOverlayHost {
         let count = {
             let state = chrome.borrow();
             let tree = state.tree();
-            tree.workspaces.len()
+            tree.desktop.workspaces.len()
         };
         let band = Rect::new(
             self.overview_content_rect().x0,
@@ -10677,7 +10729,7 @@ impl ShellOverlayHost {
         let Some(app_id) = target.app_id.as_deref() else {
             return;
         };
-        let Some(workspace) = chrome.borrow().tree().active_workspace().cloned() else {
+        let Some(workspace) = chrome.borrow().tree().desktop.active_workspace().cloned() else {
             return;
         };
         let result = match history_target_address(target) {
@@ -11696,7 +11748,7 @@ impl ShellOverlayHost {
         let count = self
             .chrome
             .as_ref()
-            .map_or(0, |c| c.borrow().tree().workspaces.len());
+            .map_or(0, |c| c.borrow().tree().desktop.workspaces.len());
         if count == 0 {
             return false;
         }
@@ -11709,7 +11761,7 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 {
                     let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.workspaces.get(idx) {
+                    if let Some(ws) = tree.desktop.workspaces.get(idx) {
                         let id = ws.id;
                         tree.set_active(id);
                     }
@@ -12717,7 +12769,10 @@ impl ShellOverlayHost {
         let room = self.chrome.as_ref().and_then(|chrome| {
             let state = chrome.borrow();
             let tree = state.tree();
-            let room = tree.active_workspace().map(|workspace| workspace.room);
+            let room = tree
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room);
             drop(tree);
             drop(state);
             room
@@ -14363,6 +14418,7 @@ impl ShellOverlayHost {
                         chrome
                             .borrow()
                             .tree()
+                            .desktop
                             .active_workspace()
                             .and_then(|ws| ws.role_of(&user))
                     });
@@ -14402,6 +14458,7 @@ impl ShellOverlayHost {
                     chrome
                         .borrow()
                         .tree()
+                        .desktop
                         .active_workspace()
                         .and_then(|ws| ws.role_of(&user))
                         != Some(role)
@@ -14437,7 +14494,7 @@ impl ShellOverlayHost {
             WorkspaceSettingsOutcome::ReviewAgent(agent) => {
                 if is_owner && let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
-                    let subject_index = st.tree().active_workspace().and_then(|ws| {
+                    let subject_index = st.tree().desktop.active_workspace().and_then(|ws| {
                         crate::shell::workspace_settings::grant_subjects(ws)
                             .iter()
                             .position(|subject| {
@@ -14508,6 +14565,7 @@ impl ShellOverlayHost {
                     if st.editing_workspace_name.is_none() {
                         let new_name = st
                             .tree()
+                            .desktop
                             .active_workspace()
                             .map(|w| w.name.clone())
                             .or_else(|| Some(String::new()));
@@ -14541,7 +14599,7 @@ impl ShellOverlayHost {
         let candidates = crate::shell::launcher::default_app_candidates();
         let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
         let mut tree = state.tree_mut();
-        if let Some(workspace) = tree.active_workspace_mut() {
+        if let Some(workspace) = tree.desktop.active_workspace_mut() {
             if workspace_choice && is_owner {
                 let next = crate::shell::workspace_settings::next_workspace_default(
                     workspace.default_apps.policy.get(&resource),
@@ -14625,7 +14683,7 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 if let Some(idx) = hit {
                     let mut tree = st.tree_mut();
-                    if let Some(ws) = tree.workspaces.get(idx) {
+                    if let Some(ws) = tree.desktop.workspaces.get(idx) {
                         let id = ws.id;
                         tree.set_active(id);
                     }
@@ -15971,7 +16029,8 @@ impl Widget for ShellOverlayHost {
             let top_strip: Option<StripId> = self.chrome.as_ref().and_then(|c| {
                 let st = c.borrow();
                 let tree = st.tree();
-                tree.active_workspace()
+                tree.desktop
+                    .active_workspace()
                     .and_then(|ws| ws.strips.first().map(|s| s.id))
             });
             let scroll_of = |id: Option<StripId>| -> Option<f64> {
@@ -16653,7 +16712,7 @@ impl Widget for ShellOverlayHost {
                             let body = self.workspace_settings_overlay.general_body_rect();
                             let summary = self.workspace_settings_overlay.general_summary_rect();
                             let value = state.editing_workspace_name.clone().or_else(|| {
-                                state.tree().active_workspace().map(|workspace| workspace.name.clone())
+                                state.tree().desktop.active_workspace().map(|workspace| workspace.name.clone())
                             });
                             settings.children.push(
                                 AccessNode::new(Role::TextInput)
@@ -17810,7 +17869,8 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
     }
     let user = state.active_local_user();
     let tree = state.tree();
-    tree.active_workspace()
+    tree.desktop
+        .active_workspace()
         .is_some_and(|ws| tree.governs_room(ws.room) && ws.may_administer(&user))
 }
 
@@ -17832,16 +17892,16 @@ where
     let actor = st.active_local_user();
     let outcome = {
         let mut tree = st.tree_mut();
-        let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
+        let Some(ws_id) = tree.desktop.active_workspace().map(|w| w.id) else {
             return false;
         };
-        let Some(room) = tree.active_workspace().map(|w| w.room) else {
+        let Some(room) = tree.desktop.active_workspace().map(|w| w.room) else {
             return false;
         };
         if !tree.governs_room(room) {
             return false;
         }
-        let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+        let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
             return false;
         };
         let changed = edit(ws, &actor);
@@ -17891,7 +17951,7 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
         }
         ComposerHit::Subject => {
             let mut st = chrome.borrow_mut();
-            let subject_count = st.tree().active_workspace().map_or(0, |ws| {
+            let subject_count = st.tree().desktop.active_workspace().map_or(0, |ws| {
                 crate::shell::workspace_settings::grant_subjects(ws).len()
             });
             st.ws_grant_draft.cycle_subject(subject_count);
@@ -17980,9 +18040,7 @@ pub(crate) fn fill_scrim(
 fn build_state_group_from_widget(
     widget: &ui::widget::WindowGroup,
 ) -> crate::shell::state::WindowGroup {
-    use crate::shell::state::{
-        AppKind, Tab, TileContent, WindowGroup as StateGroup, WindowWidth as StateWidth,
-    };
+    use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup as StateGroup};
     let tabs: Vec<Tab> = widget
         .tabs()
         .iter()
@@ -18009,7 +18067,7 @@ fn build_state_group_from_widget(
         })
         .collect();
     let active_tab = widget.active_tab_id();
-    let width = StateWidth::from_ui(widget.width());
+    let width = widget.width();
     StateGroup {
         id: widget.id,
         tabs,
@@ -18728,7 +18786,7 @@ impl ShellOverlayHost {
             if let Some(chrome) = self.chrome.as_ref() {
                 let (workspace, focus) = {
                     let mut state = chrome.borrow_mut();
-                    let workspace = state.tree().active.raw();
+                    let workspace = state.tree().desktop.active.raw();
                     (workspace, state.take_activity_focus_request())
                 };
                 self.room_activity.begin_view(workspace);
@@ -18740,7 +18798,7 @@ impl ShellOverlayHost {
             && self.room_activity_was_open
             && let Some(chrome) = self.chrome.as_ref()
         {
-            let workspace = chrome.borrow().tree().active.raw();
+            let workspace = chrome.borrow().tree().desktop.active.raw();
             self.room_activity.finish_view(workspace);
         }
         self.room_activity_was_open = visible;
@@ -19026,6 +19084,7 @@ impl ShellOverlayHost {
             chrome
                 .borrow()
                 .tree()
+                .desktop
                 .active_workspace()
                 .is_some_and(|workspace| {
                     workspace
@@ -20053,7 +20112,7 @@ impl ShellOverlayHost {
             Some(c) => {
                 let state = c.borrow();
                 let tree = state.tree();
-                match tree.workspaces.get(idx) {
+                match tree.desktop.workspaces.get(idx) {
                     Some(ws) => crate::shell::state::roster_colors(&ws.collaborators),
                     None => std::collections::HashMap::default(),
                 }
@@ -21154,7 +21213,7 @@ impl ShellOverlayHost {
         let state = chrome.borrow();
         let local_user = state.active_local_user();
         let tree = state.tree();
-        let Some(workspace) = tree.active_workspace() else {
+        let Some(workspace) = tree.desktop.active_workspace() else {
             return Vec::new();
         };
         let key = PresenceKey::Workspace {
@@ -21188,6 +21247,7 @@ impl ShellOverlayHost {
         let state = chrome.borrow();
         state
             .tree()
+            .desktop
             .active_workspace()
             .map(|workspace| PresenceKey::Workspace {
                 id: workspace.room.to_string(),
@@ -21207,7 +21267,7 @@ impl ShellOverlayHost {
         };
         let state = chrome.borrow();
         let tree = state.tree();
-        let Some(workspace) = tree.active_workspace() else {
+        let Some(workspace) = tree.desktop.active_workspace() else {
             return Vec::new();
         };
         let room = PresenceKey::Workspace {
@@ -21263,7 +21323,11 @@ impl ShellOverlayHost {
         let (room, local) = {
             let chrome = chrome_rc.borrow();
             let local = chrome.active_local_user();
-            let room = chrome.tree().active_workspace().map(|w| w.room.to_string());
+            let room = chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|w| w.room.to_string());
             (room, local)
         };
         let Some(room) = room else {
@@ -23778,6 +23842,7 @@ mod tab_context_menu_tests {
     use super::overlay_event_absorb_tests::lay_out_host_with_theme;
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -23849,11 +23914,14 @@ mod tab_context_menu_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, GROUP);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id)
@@ -23891,7 +23959,7 @@ mod tab_context_menu_tests {
             tree_with_tabs(1).0
         };
         let (strip, group, tab_ids, titles) = {
-            let strip = &tree.workspaces[0].strips[0];
+            let strip = &tree.desktop.workspaces[0].strips[0];
             let group = &strip.window_groups[0];
             (
                 strip.id,
@@ -24012,7 +24080,7 @@ mod tab_context_menu_tests {
         fn group_ids(&self) -> Vec<u64> {
             let st = self.chrome.borrow();
             let tree = st.tree();
-            tree.workspaces[0].strips[0]
+            tree.desktop.workspaces[0].strips[0]
                 .window_groups
                 .iter()
                 .map(|g| g.id)
@@ -24022,7 +24090,7 @@ mod tab_context_menu_tests {
         fn tab_ids(&self, group: usize) -> Vec<u64> {
             let st = self.chrome.borrow();
             let tree = st.tree();
-            tree.workspaces[0].strips[0].window_groups[group]
+            tree.desktop.workspaces[0].strips[0].window_groups[group]
                 .tabs
                 .iter()
                 .map(|t| t.id)
@@ -24516,6 +24584,7 @@ mod overview_panel_tests {
     //! it, what leaves it, how to get to another. These pin geometry/data,
     //! not pixels — every assertion runs against the same helpers
     //! `draw_overview` itself calls (`overview_row_rect`, `room_cards`).
+    use crate::shell::state::FreshId as _;
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -24840,7 +24909,7 @@ mod overview_panel_tests {
         let mut handled = false;
         h.handle_shell_overview_pointer_event(&event, &mut handled);
         let chrome = h.chrome.as_ref().unwrap().borrow();
-        assert_eq!(chrome.tree().workspaces.len(), 2);
+        assert_eq!(chrome.tree().desktop.workspaces.len(), 2);
         assert!(
             !chrome.overlays.overview,
             "new workspace must release navigation input"
@@ -24850,7 +24919,7 @@ mod overview_panel_tests {
     fn ws_count(h: &ShellOverlayHost) -> usize {
         h.chrome
             .as_ref()
-            .map_or(0, |c| c.borrow().tree().workspaces.len())
+            .map_or(0, |c| c.borrow().tree().desktop.workspaces.len())
     }
 
     /// The room you are in is the block at the top, not a row in the
@@ -25063,10 +25132,12 @@ mod overview_panel_tests {
     fn a_long_room_list_is_capped_and_scrolls() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         for i in 0..40 {
-            tree.workspaces.push(crate::shell::state::Workspace::new(
-                WorkspaceId::new(),
-                format!("Room {i}"),
-            ));
+            tree.desktop
+                .workspaces
+                .push(crate::shell::state::Workspace::new(
+                    WorkspaceId::new(),
+                    format!("Room {i}"),
+                ));
         }
         let h = host_with(tree);
         let p = h.overview_panel_rect();
@@ -25129,20 +25200,22 @@ mod overview_panel_tests {
     #[test]
     fn faces_come_from_capabilities_not_from_the_collaborator_list() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.workspaces[0].owner = None;
-        tree.workspaces[0].capabilities.clear();
-        tree.workspaces[0].collaborators = vec![Collaborator::new("ada", "Ada")];
+        tree.desktop.workspaces[0].owner = None;
+        tree.desktop.workspaces[0].capabilities.clear();
+        tree.desktop.workspaces[0].collaborators = vec![Collaborator::new("ada", "Ada")];
         assert!(
             room_cards(&tree)[0].people.is_empty(),
             "a person with no capability here is not on this room"
         );
 
-        let room = tree.workspaces[0].id.raw().to_string();
-        tree.workspaces[0].capabilities.push(CapOverride::grant(
-            Subject::person("ada"),
-            Scope::Room(room),
-            Verb::Write,
-        ));
+        let room = tree.desktop.workspaces[0].id.raw().to_string();
+        tree.desktop.workspaces[0]
+            .capabilities
+            .push(CapOverride::grant(
+                Subject::person("ada"),
+                Scope::Room(room),
+                Verb::Write,
+            ));
         let card = &room_cards(&tree)[0];
         assert_eq!(
             card.people
@@ -25161,11 +25234,13 @@ mod overview_panel_tests {
     fn the_share_list_collapses_rather_than_growing_without_bound() {
         let mut tree = WorkspaceTree::bootstrap_default();
         for i in 0..12 {
-            tree.workspaces[0].capabilities.push(CapOverride::grant(
-                Subject::person("ada"),
-                Scope::FsPath(format!("/var/workspace/doc{i}")),
-                Verb::Read,
-            ));
+            tree.desktop.workspaces[0]
+                .capabilities
+                .push(CapOverride::grant(
+                    Subject::person("ada"),
+                    Scope::FsPath(format!("/var/workspace/doc{i}")),
+                    Verb::Read,
+                ));
         }
         let card = &room_cards(&tree)[0];
         assert_eq!(card.shares.len(), 12, "the model keeps every share");
@@ -25786,10 +25861,13 @@ mod palette_dispatch_tests {
             assert!(chrome.borrow().editing_workspace_name.is_some());
         }
         assert_eq!(
-            format!("{:?}", chrome.borrow().tree().workspaces),
-            format!("{:?}", before.workspaces)
+            format!("{:?}", chrome.borrow().tree().desktop.workspaces),
+            format!("{:?}", before.desktop.workspaces)
         );
-        assert_eq!(chrome.borrow().tree().active_strip, before.active_strip);
+        assert_eq!(
+            chrome.borrow().tree().desktop.active_strip,
+            before.desktop.active_strip
+        );
     }
 
     #[test]
@@ -25817,10 +25895,13 @@ mod palette_dispatch_tests {
             assert!(chrome.borrow().overlays.quick_settings);
         }
         assert_eq!(
-            format!("{:?}", chrome.borrow().tree().workspaces),
-            format!("{:?}", before.workspaces)
+            format!("{:?}", chrome.borrow().tree().desktop.workspaces),
+            format!("{:?}", before.desktop.workspaces)
         );
-        assert_eq!(chrome.borrow().tree().active_strip, before.active_strip);
+        assert_eq!(
+            chrome.borrow().tree().desktop.active_strip,
+            before.desktop.active_strip
+        );
 
         let mut handled = false;
         assert!(host.handle_shell_keyboard_event(
@@ -25865,9 +25946,8 @@ mod palette_dispatch_tests {
     #[serial_test::serial(process_env)]
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
-        let old_config = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: the process_env serial group excludes concurrent env users.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", settings.path());
         let (mut host, _) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let capture = std::rc::Rc::clone(&published);
@@ -25905,13 +25985,6 @@ mod palette_dispatch_tests {
             published.borrow().as_slice(),
             &[Some("Preparing Q2 review".into())]
         );
-        // SAFETY: restore the serialised process environment.
-        unsafe {
-            match old_config {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-        }
     }
 
     #[test]
@@ -26022,9 +26095,8 @@ mod palette_dispatch_tests {
     #[serial_test::serial(process_env)]
     fn semantic_status_requests_use_the_live_presence_publisher_and_privacy_state() {
         let settings = tempfile::tempdir().expect("isolated settings directory");
-        let old_config = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: the process_env serial group excludes concurrent env users.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", settings.path());
         let (mut host, chrome) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let capture = std::rc::Rc::clone(&published);
@@ -26055,13 +26127,6 @@ mod palette_dispatch_tests {
             "the same publisher first receives the manual status and then its privacy revocation"
         );
         assert!(chrome.borrow_mut().take_presence_requests().is_empty());
-        // SAFETY: restore the serialised process environment.
-        unsafe {
-            match old_config {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-        }
     }
 
     #[test]
@@ -26104,8 +26169,8 @@ mod palette_dispatch_tests {
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let active = tree.active;
-            tree.active_strip.remove(&active);
+            let active = tree.desktop.active;
+            tree.desktop.active_strip.remove(&active);
         }
         host.refresh_active_tab_presence();
         let events = published.borrow();
@@ -26121,7 +26186,10 @@ mod palette_dispatch_tests {
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let workspace = tree.active_workspace_mut().expect("active workspace");
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("active workspace");
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         }
         let mut document = AutoCommit::new();
@@ -26139,7 +26207,9 @@ mod palette_dispatch_tests {
                 .find(|result| result.id == "identity.select")
                 .expect("identity action")
         };
-        let before = chrome.borrow().tree().workspaces[0].capabilities.clone();
+        let before = chrome.borrow().tree().desktop.workspaces[0]
+            .capabilities
+            .clone();
         host.pending_palette_action = Some(action);
         host.palette
             .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
@@ -26150,7 +26220,7 @@ mod palette_dispatch_tests {
             "refused palette action remains editable"
         );
         assert_eq!(
-            chrome.borrow().tree().workspaces[0].capabilities,
+            chrome.borrow().tree().desktop.workspaces[0].capabilities,
             before,
             "false confirmation cannot create an Admin grant"
         );
@@ -26167,7 +26237,10 @@ mod palette_dispatch_tests {
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            let workspace = tree.active_workspace_mut().expect("active workspace");
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("active workspace");
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         }
         chrome.borrow_mut().peer_sync_enabled = true;
@@ -26464,8 +26537,8 @@ mod palette_dispatch_tests {
             "Escape must dismiss the visible error"
         );
         assert_eq!(
-            chrome.borrow().tree().workspaces.len(),
-            WorkspaceTree::bootstrap_demo().workspaces.len(),
+            chrome.borrow().tree().desktop.workspaces.len(),
+            WorkspaceTree::bootstrap_demo().desktop.workspaces.len(),
             "dismissing a notification must not mutate the desktop layout"
         );
     }
@@ -26985,10 +27058,8 @@ mod palette_dispatch_tests {
         // An empty registry makes the personal Settings package genuinely
         // unavailable; the ordinary launcher owns wording and notification
         // lifetime for that error.
-        // SAFETY: process-wide launcher overrides are serialized by `process_env`.
-        unsafe {
-            std::env::set_var("TILO_APPS_DATA_DIR", tmp.path());
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
 
@@ -27015,10 +27086,7 @@ mod palette_dispatch_tests {
         );
         drop(state);
 
-        // SAFETY: restore the process-wide override before releasing the serial lock.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-        }
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
     }
@@ -27581,15 +27649,17 @@ mod two_workspace_host_tests {
         let (here, elsewhere) = {
             let c = chrome.borrow();
             let tree = c.tree();
-            let active = tree.active;
+            let active = tree.desktop.active;
             (
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .find(|w| w.id == active)
                     .expect("an active workspace")
                     .room
                     .to_string(),
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .find(|w| w.id != active)
                     .expect("a second workspace")
@@ -27630,8 +27700,9 @@ mod two_workspace_host_tests {
         let room = {
             let c = chrome.borrow();
             let tree = c.tree();
-            let active = tree.active;
-            tree.workspaces
+            let active = tree.desktop.active;
+            tree.desktop
+                .workspaces
                 .iter()
                 .find(|w| w.id == active)
                 .expect("an active workspace")
@@ -28360,7 +28431,7 @@ mod overlay_event_absorb_tests {
     fn first_local_key_releases_follow_without_also_running_a_shell_chord() {
         let mut h = build_harness();
         h.host.set_followed_peer(Some("ada".into()));
-        let before = h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+        let before = h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .len();
         let modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER);
@@ -28372,7 +28443,7 @@ mod overlay_event_absorb_tests {
         ));
         assert!(h.host.followed_peer.is_none(), "the key exits Follow mode");
         assert_eq!(
-            h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
                 .tabs
                 .len(),
             before,
@@ -28391,7 +28462,7 @@ mod overlay_event_absorb_tests {
             .borrow_mut()
             .tree_mut()
             .append_empty_workspace("Second");
-        let active_before = h.chrome.borrow().tree().active;
+        let active_before = h.chrome.borrow().tree().desktop.active;
 
         // This is the exact lock-boundary call made by native.rs after it
         // cancels the backend stream. Late End events must not turn a partial
@@ -28481,7 +28552,7 @@ mod overlay_event_absorb_tests {
 
         let chrome = h.chrome.borrow();
         assert_eq!(
-            chrome.tree().active,
+            chrome.tree().desktop.active,
             active_before,
             "a cancelled touch stream cannot switch workspaces"
         );
@@ -30923,7 +30994,7 @@ mod tests {
 
     fn build_activity_harness() -> Harness {
         let tree = WorkspaceTree::bootstrap_demo();
-        let workspace = tree.active.raw();
+        let workspace = tree.desktop.active.raw();
         let chrome = ChromeState::new(tree);
         chrome.borrow_mut().open_room_activity(None);
         let content = Box::new(StubContent::new());
@@ -31127,7 +31198,7 @@ mod tests {
         {
             let mut chrome = h.chrome.borrow_mut();
             let local_user = chrome.active_local_user();
-            if let Some(workspace) = chrome.tree_mut().active_workspace_mut() {
+            if let Some(workspace) = chrome.tree_mut().desktop.active_workspace_mut() {
                 workspace.set_owner(local_user);
             }
             chrome.overlays.ws_settings = true;
@@ -31176,6 +31247,7 @@ mod tests {
             let mut chrome = h.chrome.borrow_mut();
             chrome
                 .tree_mut()
+                .desktop
                 .active_workspace_mut()
                 .expect("fixture has an active workspace")
                 .collaborators
@@ -31535,6 +31607,7 @@ mod tests {
             .chrome
             .borrow()
             .tree()
+            .desktop
             .active_workspace()
             .expect("demo desktop has an active workspace")
             .id;
@@ -31711,8 +31784,9 @@ mod tests {
         {
             let state = h.chrome.borrow();
             let tree = state.tree();
-            assert_eq!(tree.active_group_for(first.0), Some(first.1));
+            assert_eq!(tree.desktop.active_group_for(first.0), Some(first.1));
             let active_tab = tree
+                .desktop
                 .active_workspace()
                 .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == first.0))
                 .and_then(|strip| strip.window_groups.iter().find(|group| group.id == first.1))
@@ -31733,8 +31807,9 @@ mod tests {
         ));
         let state = h.chrome.borrow();
         let tree = state.tree();
-        assert_eq!(tree.active_group_for(previous.0), Some(previous.1));
+        assert_eq!(tree.desktop.active_group_for(previous.0), Some(previous.1));
         let active_tab = tree
+            .desktop
             .active_workspace()
             .and_then(|workspace| workspace.strips.iter().find(|strip| strip.id == previous.0))
             .and_then(|strip| {
@@ -32120,7 +32195,7 @@ mod tests {
             // here — the ordinary position of a guest in a room.
             let st = h.chrome.borrow();
             let mut tree = st.tree_mut();
-            for ws in &mut tree.workspaces {
+            for ws in &mut tree.desktop.workspaces {
                 ws.set_owner("somebody-else".to_string());
             }
         }
@@ -32309,8 +32384,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         install_gui_fixture(tmp.path(), "so.tilo.zzyzx", "Zzyzx");
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
@@ -32367,8 +32442,7 @@ mod tests {
         assert_eq!(hit.id, "so.tilo.zzyzx");
         assert_eq!(hit.title, "Open Zzyzx");
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         crate::shell::launcher::invalidate_app_cache();
     }
 
@@ -32389,7 +32463,7 @@ mod tests {
         // The document as `TileHost::sync` hands it to the app every
         // frame: the tab's own record.
         let notes_tab =
-            h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].tabs[0].id;
+            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
         let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
         let store = h.chrome.borrow().records().clone();
         store.open_record(&record);
@@ -32468,8 +32542,13 @@ mod tests {
         let (here, there, there_name) = {
             let st = h.chrome.borrow();
             let tree = st.tree();
-            let here = tree.active_workspace().expect("an active room").room;
+            let here = tree
+                .desktop
+                .active_workspace()
+                .expect("an active room")
+                .room;
             let other = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.room != here)
@@ -32887,6 +32966,7 @@ mod maximize_harvest_tests {
     //! leave persisted state alone, and a pending change must write through.
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -32939,11 +33019,14 @@ mod maximize_harvest_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_id)
@@ -33033,7 +33116,7 @@ mod maximize_harvest_tests {
         {
             let st = chrome.borrow();
             assert!(
-                !st.tree().workspaces[0].strips[0].window_groups[0].maximized,
+                !st.tree().desktop.workspaces[0].strips[0].window_groups[0].maximized,
                 "persisted state lags widget until harvest runs",
             );
         }
@@ -33044,7 +33127,7 @@ mod maximize_harvest_tests {
         {
             let st = chrome.borrow();
             assert!(
-                st.tree().workspaces[0].strips[0].window_groups[0].maximized,
+                st.tree().desktop.workspaces[0].strips[0].window_groups[0].maximized,
                 "harvest writes pending change through to persisted state",
             );
         }
@@ -33062,7 +33145,7 @@ mod maximize_harvest_tests {
 
         let st = chrome.borrow();
         assert!(
-            st.tree().workspaces[0].strips[0].window_groups[0].maximized,
+            st.tree().desktop.workspaces[0].strips[0].window_groups[0].maximized,
             "no-op harvest must not overwrite persisted true with widget default",
         );
     }
@@ -33079,7 +33162,7 @@ mod maximize_harvest_tests {
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("width writeback creates valid durable state");
-        let group = restarted.workspaces[0]
+        let group = restarted.desktop.workspaces[0]
             .strips
             .iter()
             .find(|strip| strip.id == strip_id)
@@ -33109,7 +33192,7 @@ mod maximize_harvest_tests {
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("keyboard width writeback creates valid durable state");
-        let group = restarted.workspaces[0]
+        let group = restarted.desktop.workspaces[0]
             .strips
             .iter()
             .find(|strip| strip.id == strip_id)
@@ -33136,6 +33219,7 @@ mod resync_strips_tests {
     //! skips it.
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, PeerOrigin, SharedSurfaces, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -33188,11 +33272,14 @@ mod resync_strips_tests {
         let mut active_group = StdHashMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_id)
@@ -33267,6 +33354,7 @@ mod resync_strips_tests {
                 {
                     let mut tree = state.tree_mut();
                     for group in tree
+                        .desktop
                         .workspaces
                         .iter_mut()
                         .flat_map(|workspace| &mut workspace.strips)
@@ -33342,7 +33430,7 @@ mod resync_strips_tests {
         for pass in 0..2 {
             if pass == 1 {
                 let mut state = chrome.borrow_mut();
-                state.tree_mut().workspaces[0]
+                state.tree_mut().desktop.workspaces[0]
                     .strips
                     .push(Strip::new(StripId::new(), "Rebuild"));
                 state.bump();
@@ -33424,7 +33512,7 @@ mod resync_strips_tests {
                 }
                 let mut tree = state.tree_mut();
                 if cancellation == "closed" {
-                    for workspace in &mut tree.workspaces {
+                    for workspace in &mut tree.desktop.workspaces {
                         for strip in &mut workspace.strips {
                             for group in &mut strip.window_groups {
                                 group.tabs.retain(|tab| tab.id != new_id);
@@ -33437,10 +33525,11 @@ mod resync_strips_tests {
                         "/untouched/different.txt".into();
                 }
                 if cancellation == "room" {
-                    tree.workspaces[0].room = crate::shell::state::RoomId::new();
+                    tree.desktop.workspaces[0].room = crate::shell::state::RoomId::new();
                 }
                 if cancellation == "app" {
                     for tab in tree
+                        .desktop
                         .workspaces
                         .iter_mut()
                         .flat_map(|workspace| &mut workspace.strips)
@@ -33527,7 +33616,7 @@ mod resync_strips_tests {
         {
             let mut st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            let strip = tree.workspaces[0]
+            let strip = tree.desktop.workspaces[0]
                 .strips
                 .iter_mut()
                 .find(|s| s.id == strip_id)
@@ -33562,14 +33651,14 @@ mod resync_strips_tests {
     fn resync_drops_groups_removed_after_bump() {
         let (mut tree, strip_id, _) = one_group_seed();
         // Seed two extra groups so the first frame already has 3.
-        tree.workspaces[0]
+        tree.desktop.workspaces[0]
             .strips
             .iter_mut()
             .find(|s| s.id == strip_id)
             .unwrap()
             .window_groups
             .push(make_stub_group(301, "Drop-A"));
-        tree.workspaces[0]
+        tree.desktop.workspaces[0]
             .strips
             .iter_mut()
             .find(|s| s.id == strip_id)
@@ -33582,7 +33671,7 @@ mod resync_strips_tests {
         {
             let mut st = chrome.borrow_mut();
             let mut tree = st.tree_mut();
-            let strip = tree.workspaces[0]
+            let strip = tree.desktop.workspaces[0]
                 .strips
                 .iter_mut()
                 .find(|s| s.id == strip_id)
@@ -33612,6 +33701,7 @@ mod resync_strips_tests {
         let state_path = state_dir.path().join("state.json");
         tree.persist_path = Some(state_path.clone());
         let strip = tree
+            .desktop
             .workspaces
             .first_mut()
             .and_then(|workspace| {
@@ -33736,7 +33826,7 @@ mod resync_strips_tests {
         chrome.borrow().tree().flush_to_disk();
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("reordered layout survives a process restart");
-        let strip = restarted.workspaces[0]
+        let strip = restarted.desktop.workspaces[0]
             .strips
             .iter()
             .find(|strip| strip.id == strip_id)
@@ -33771,7 +33861,7 @@ mod resync_strips_tests {
         );
         let state = chrome.borrow();
         let tree = state.tree();
-        let group = tree.workspaces[0].strips[0]
+        let group = tree.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .find(|group| group.id == group_id)
@@ -33781,7 +33871,7 @@ mod resync_strips_tests {
             "stale keyboard/rail focus cannot leave durable state pointing at a deleted tab"
         );
         assert_eq!(
-            tree.active_group_for(strip_id),
+            tree.desktop.active_group_for(strip_id),
             Some(group_id),
             "stale focus must not dislodge the selected group either"
         );
@@ -33794,8 +33884,8 @@ mod resync_strips_tests {
         {
             let state = chrome.borrow_mut();
             let mut tree = state.tree_mut();
-            tree.workspaces[0].strips[0].window_groups.clear();
-            tree.active_group.remove(&strip_id);
+            tree.desktop.workspaces[0].strips[0].window_groups.clear();
+            tree.desktop.active_group.remove(&strip_id);
         }
         assert!(
             !host.focus_window_on_strip(strip_id, group_id, 1),
@@ -33803,7 +33893,7 @@ mod resync_strips_tests {
         );
         let state = chrome.borrow();
         assert_eq!(
-            state.tree().active_group_for(strip_id),
+            state.tree().desktop.active_group_for(strip_id),
             None,
             "a missing group remains unselected until the resync drops its widget"
         );
@@ -33816,7 +33906,7 @@ mod resync_strips_tests {
         let state_path = state_dir.path().join("state.json");
         let second_group = 202;
         let second_tab = 1_202;
-        tree.workspaces[0].strips[0]
+        tree.desktop.workspaces[0].strips[0]
             .window_groups
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
@@ -33826,14 +33916,20 @@ mod resync_strips_tests {
         assert!(host.focus_window_on_strip(strip_id, second_group, second_tab));
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("focused window is restartable");
-        assert_eq!(restarted.active_group_for(strip_id), Some(second_group));
-        let group = restarted.workspaces[0].strips[0]
+        assert_eq!(
+            restarted.desktop.active_group_for(strip_id),
+            Some(second_group)
+        );
+        let group = restarted.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .find(|group| group.id == second_group)
             .expect("second group");
         assert_eq!(group.active_tab, second_tab);
-        assert_ne!(restarted.active_group_for(strip_id), Some(first_group));
+        assert_ne!(
+            restarted.desktop.active_group_for(strip_id),
+            Some(first_group)
+        );
     }
 
     #[test]
@@ -33842,7 +33938,7 @@ mod resync_strips_tests {
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
         let second_group = 202;
-        tree.workspaces[0].strips[0]
+        tree.desktop.workspaces[0].strips[0]
             .window_groups
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
@@ -33883,8 +33979,14 @@ mod resync_strips_tests {
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("pointer focus is restartable");
-        assert_eq!(restarted.active_group_for(strip_id), Some(second_group));
-        assert_ne!(restarted.active_group_for(strip_id), Some(first_group));
+        assert_eq!(
+            restarted.desktop.active_group_for(strip_id),
+            Some(second_group)
+        );
+        assert_ne!(
+            restarted.desktop.active_group_for(strip_id),
+            Some(first_group)
+        );
     }
 
     #[allow(
@@ -33897,7 +33999,7 @@ mod resync_strips_tests {
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
         tree.persist_path = Some(state_path.clone());
-        tree.workspaces[0].strips[0].window_groups[0]
+        tree.desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .push(Tab {
                 id: 2,
@@ -33913,10 +34015,10 @@ mod resync_strips_tests {
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("selection writeback creates valid durable state");
         assert_eq!(
-            restarted.workspaces[0].strips[0].window_groups[0].active_tab, 2,
+            restarted.desktop.workspaces[0].strips[0].window_groups[0].active_tab, 2,
             "a crash after the input boundary must restore the newly selected tab"
         );
-        assert_eq!(restarted.active_group_for(strip_id), Some(group_id));
+        assert_eq!(restarted.desktop.active_group_for(strip_id), Some(group_id));
     }
 
     #[allow(
@@ -33931,13 +34033,13 @@ mod resync_strips_tests {
 
         let mut local = WorkspaceTree::bootstrap_demo();
         local.set_salt_override(HOST_SALT);
-        let local_workspace = local.active;
+        let local_workspace = local.desktop.active;
         let room = local.room_of(local_workspace).expect("local room");
         local.adopt_ownerless_workspaces(&"owner".to_string());
 
         let mut peer = WorkspaceTree::bootstrap_demo();
         peer.set_salt_override(PEER_SALT);
-        let peer_workspace = peer.active;
+        let peer_workspace = peer.desktop.active;
         assert!(peer.set_room(peer_workspace, room));
         // The fixed ids below model windows this peer owns in the shared
         // room. They predate this process's global allocator, so make the
@@ -33956,7 +34058,8 @@ mod resync_strips_tests {
                 label: title.into(),
             },
         };
-        peer.workspaces
+        peer.desktop
+            .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == peer_workspace)
             .expect("peer workspace")
@@ -34049,7 +34152,7 @@ mod resync_strips_tests {
         assert!(host.close_tab_in_group(group_id, Some(1)));
 
         assert!(
-            chrome.borrow().tree().workspaces[0].strips[0]
+            chrome.borrow().tree().desktop.workspaces[0].strips[0]
                 .window_groups
                 .is_empty(),
             "close is a tree mutation, not merely a widget fade"
@@ -34070,7 +34173,9 @@ mod resync_strips_tests {
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("the close flushes valid state");
         assert!(
-            restarted.workspaces[0].strips[0].window_groups.is_empty(),
+            restarted.desktop.workspaces[0].strips[0]
+                .window_groups
+                .is_empty(),
             "a fresh load must not restore the group closed before restart"
         );
 
@@ -34090,7 +34195,7 @@ mod resync_strips_tests {
     #[test]
     fn closing_one_of_two_same_app_windows_targets_only_its_surface() {
         let (mut tree, strip_id, group_id) = one_group_seed();
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs = vec![
             Tab {
                 id: 1,
@@ -34119,7 +34224,7 @@ mod resync_strips_tests {
             vec![41],
             "close requests are keyed by surface, never by shared app id"
         );
-        let remaining = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+        let remaining = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
             .filter_map(|tab| match tab.tile {
@@ -34143,7 +34248,7 @@ mod resync_strips_tests {
         let state_dir = tempfile::tempdir().expect("temporary state directory");
         let state_path = state_dir.path().join("state.json");
         let second_group = 202;
-        tree.workspaces[0].strips[0]
+        tree.desktop.workspaces[0].strips[0]
             .window_groups
             .push(make_stub_group(second_group, "Second"));
         tree.persist_path = Some(state_path.clone());
@@ -34157,12 +34262,12 @@ mod resync_strips_tests {
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("focus hand-off is durable during the close fade");
         assert_eq!(
-            restarted.active_group_for(strip_id),
+            restarted.desktop.active_group_for(strip_id),
             Some(second_group),
             "restart must focus the surviving sibling, not the group whose close animation began"
         );
         assert_eq!(
-            restarted.workspaces[0].strips[0]
+            restarted.desktop.workspaces[0].strips[0]
                 .window_groups
                 .iter()
                 .map(|group| group.id)
@@ -34230,6 +34335,7 @@ mod peer_cursor_tests {
     //! a real peer is still drawn.
     use super::*;
     use crate::shell::build_tilo_overlay_host_with_chrome;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, Collaborator, GroupId, Strip, StripId, Tab, TileContent,
         WindowGroup as StateGroup, WindowWidth as StateWidth, Workspace, WorkspaceId,
@@ -34265,17 +34371,20 @@ mod peer_cursor_tests {
         };
         // Through the constructor rather than a struct literal: a field
         // added to `Workspace` should not break this fixture.
-        let mut ws = Workspace::test_default(ws_id, "Work");
+        let mut ws = Workspace::new(ws_id, "Work");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
         // Both are per-parent maps, not single pointers: one active strip
         // per workspace, one active group per strip.
-        tree.active_strip.insert(ws_id, strip_id);
-        tree.active_group.insert(strip_id, group_id);
+        tree.desktop.active_strip.insert(ws_id, strip_id);
+        tree.desktop.active_group.insert(strip_id, group_id);
         tree
     }
 
@@ -34287,9 +34396,10 @@ mod peer_cursor_tests {
         // `TILO_WORKSPACE_ID`, not the local `WorkspaceId` — naming the
         // local handle here would write a key nobody reads.
         let room = tree
+            .desktop
             .workspaces
             .iter()
-            .find(|w| w.id == tree.active)
+            .find(|w| w.id == tree.desktop.active)
             .map(|w| w.room.to_string())
             .expect("the seed has an active workspace");
         PresenceKey::Workspace { id: room }
@@ -34356,7 +34466,7 @@ mod peer_cursor_tests {
     #[test]
     fn clicking_a_peer_cursor_starts_follow_without_opening_the_roster() {
         let mut tree = one_group_seed();
-        tree.workspaces[0]
+        tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::new("ada", "Ada"));
         let key = active_key(&tree);
@@ -34382,24 +34492,27 @@ mod peer_cursor_tests {
     #[test]
     fn following_a_peer_tracks_their_live_tab() {
         let mut tree = one_group_seed();
-        let strip = tree.workspaces[0].strips[0].id;
+        let strip = tree.desktop.workspaces[0].strips[0].id;
         let target_group = 200;
         let target_tab = 201;
-        tree.workspaces[0].strips[0].window_groups.push(StateGroup {
-            id: target_group,
-            width: StateWidth::Normal,
-            maximized: false,
-            tabs: vec![Tab {
-                id: target_tab,
-                title: "Plan".into(),
-                tile: TileContent::AppPlaceholder {
-                    kind: AppKind::Other("Plan".into()),
-                    label: "Plan".into(),
-                },
-            }],
-            active_tab: target_tab,
-        });
-        tree.collaborators
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(StateGroup {
+                id: target_group,
+                width: StateWidth::Normal,
+                maximized: false,
+                tabs: vec![Tab {
+                    id: target_tab,
+                    title: "Plan".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Other("Plan".into()),
+                        label: "Plan".into(),
+                    },
+                }],
+                active_tab: target_tab,
+            });
+        tree.desktop
+            .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab));
 
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -34407,7 +34520,7 @@ mod peer_cursor_tests {
 
         assert!(host.reconcile_followed_peer());
         assert_eq!(
-            chrome.borrow().tree().active_group_for(strip),
+            chrome.borrow().tree().desktop.active_group_for(strip),
             Some(target_group),
             "follow must move local focus to the participant's live group",
         );
@@ -34416,11 +34529,11 @@ mod peer_cursor_tests {
     #[test]
     fn follow_binds_app_views_to_the_live_session_and_stop_releases_them() {
         let mut tree = one_group_seed();
-        let target_tab = tree.workspaces[0].strips[0].window_groups[0].active_tab;
-        tree.workspaces[0]
+        let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room;
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -34444,11 +34557,11 @@ mod peer_cursor_tests {
     #[test]
     fn a_local_workspace_click_releases_follow_before_routing_the_click() {
         let mut tree = one_group_seed();
-        let target_tab = tree.workspaces[0].strips[0].window_groups[0].active_tab;
-        tree.workspaces[0]
+        let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room;
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -34474,11 +34587,11 @@ mod peer_cursor_tests {
     #[test]
     fn escape_releases_follow_before_the_key_reaches_content() {
         let mut tree = one_group_seed();
-        let target_tab = tree.workspaces[0].strips[0].window_groups[0].active_tab;
-        tree.workspaces[0]
+        let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let room = tree.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room;
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -34509,14 +34622,15 @@ mod peer_cursor_tests {
     #[test]
     fn leaving_a_workspace_releases_follow_in_the_original_room() {
         let mut tree = one_group_seed();
-        let target_tab = tree.workspaces[0].strips[0].window_groups[0].active_tab;
-        tree.workspaces[0]
+        let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+        tree.desktop.workspaces[0]
             .collaborators
             .push(Collaborator::with_active_tab("ada", "Ada", target_tab).with_session(77));
-        let expected_room = tree.workspaces[0].room;
+        let expected_room = tree.desktop.workspaces[0].room;
         let next_workspace = WorkspaceId::new();
-        tree.workspaces
-            .push(Workspace::test_default(next_workspace, "Elsewhere"));
+        tree.desktop
+            .workspaces
+            .push(Workspace::new(next_workspace, "Elsewhere"));
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let captured = std::rc::Rc::clone(&calls);
@@ -34527,7 +34641,7 @@ mod peer_cursor_tests {
         host.set_followed_peer(Some("ada".into()));
         {
             let mut state = chrome.borrow_mut();
-            state.tree_mut().active = next_workspace;
+            state.tree_mut().desktop.active = next_workspace;
             state.bump();
         }
         assert!(
@@ -34554,6 +34668,7 @@ mod peer_cursor_tests {
 mod roster_rows {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         CapOverride, Collaborator, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
     };
@@ -34564,17 +34679,19 @@ mod roster_rows {
     fn tree_with_room() -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
-        let mut ws = Workspace::test_default(id, "Demo");
+        let mut ws = Workspace::new(id, "Demo");
         ws.set_owner("ada");
-        tree.workspaces.push(ws);
-        tree.active = id;
+        tree.desktop.workspaces.push(ws);
+        tree.desktop.active = id;
         tree
     }
 
     #[test]
     fn an_ungranted_room_contributes_no_agent_row() {
         let mut tree = tree_with_room();
-        tree.collaborators.push(Collaborator::new("bob", "bob"));
+        tree.desktop
+            .collaborators
+            .push(Collaborator::new("bob", "bob"));
         let rows = collaborator_roster_rows(&tree);
         assert_eq!(rows.len(), 1, "only the peer is here: {rows:?}");
         assert!(!rows[0].is_agent);
@@ -34589,9 +34706,14 @@ mod roster_rows {
     #[test]
     fn a_granted_but_absent_agent_is_not_reported_as_live() {
         let mut tree = tree_with_room();
-        tree.collaborators.push(Collaborator::new("bob", "bob"));
+        tree.desktop
+            .collaborators
+            .push(Collaborator::new("bob", "bob"));
         {
-            let ws = tree.active_workspace_mut().expect("fixture has a room");
+            let ws = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("fixture has a room");
             let room = ws.id.raw().to_string();
             ws.grant_as(
                 &"ada".to_string(),
@@ -34610,7 +34732,10 @@ mod roster_rows {
     fn a_connected_headless_agent_is_tagged_without_a_fake_follow_target() {
         let mut tree = tree_with_room();
         {
-            let ws = tree.active_workspace_mut().expect("fixture has a room");
+            let ws = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("fixture has a room");
             let room = ws.id.raw().to_string();
             ws.grant_as(
                 &"ada".to_string(),
@@ -34662,7 +34787,10 @@ mod roster_rows {
     fn a_row_carries_the_role_the_room_recorded_and_no_other() {
         let mut tree = tree_with_room();
         {
-            let ws = tree.active_workspace_mut().expect("fixture has a room");
+            let ws = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("fixture has a room");
             ws.collaborators.push(Collaborator::new("peer@7", "peer@7"));
             ws.collaborators
                 .push(Collaborator::new("bob", "bob").with_role("editor"));

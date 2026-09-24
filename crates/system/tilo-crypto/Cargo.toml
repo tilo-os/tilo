@@ -16,28 +16,28 @@ path = "src/main.rs"
 
 [dependencies]
 authenticode = { version = "0.6", features = ["object", "std"] }
+# authenticode 0.6 hashes PE images through digest 0.10's `Update` trait and
+# has no release on the digest 0.11 / der 0.8 generation, so its digest input
+# comes from the matching sha2 release.
+authenticode-sha2 = { package = "sha2", version = "0.10" }
+base64.workspace = true
 cms = "0.2"
 const-oid = { version = "0.9", features = ["db"] }
 der = { version = "0.7", features = ["alloc", "pem"] }
 ed25519-dalek.workspace = true
+# RSA key generation takes a rand_core 0.10 RNG; read it straight from the OS.
+getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
-p256 = { version = "0.13", features = ["pem"] }
-picky = { version = "=7.0.0-rc.26", default-features = false, features = ["pkcs7", "time_conversion", "wincert"] }
-picky-asn1 = "0.10"
-picky-asn1-der = "0.5"
-picky-asn1-x509 = "0.15"
+p256 = { version = "0.14", features = ["pem"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
-rand.workspace = true
-rand10 = { package = "rand", version = "0.10" }
 ring = "0.17"
 rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
 sha-crypt = { version = "0.6", features = ["getrandom"] }
 sha2.workspace = true
 spki = "0.7"
-time = "0.3"
-x509-parser = "0.18"
+time = { version = "0.3", features = ["formatting", "macros"] }
 x509-cert = { version = "0.2", features = ["pem"] }
 zeroize.workspace = true
 

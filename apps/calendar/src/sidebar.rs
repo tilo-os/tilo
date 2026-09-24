@@ -163,7 +163,7 @@ impl Sidebar {
             } else {
                 detail
             };
-            fill_rect(scene, transform, colors.surfaces.overlay, behind);
+            fill_rect(scene, transform, behind, colors.surfaces.overlay);
             hits.push((behind, Action::Dismiss));
         }
 
@@ -173,7 +173,7 @@ impl Sidebar {
             // shadow token, not a literal black band.
             ui::surface::elevation(scene, transform, rect, &theme.tokens.elevation.e3);
         }
-        fill_rect(scene, transform, colors.surfaces.raised, rect);
+        fill_rect(scene, transform, rect, colors.surfaces.raised);
         hairline(
             scene,
             transform,
@@ -225,7 +225,7 @@ impl Sidebar {
         if !overlay {
             let button = Rect::new(rect.x1 - pad - 24.0, y - 3.0, rect.x1 - pad, y + 21.0);
             if button.contains(pointer) {
-                fill_round(scene, transform, colors.lift(0.35), button, 7.0);
+                fill_round(scene, transform, button, 7.0, colors.lift(0.35));
             }
             draw_chevron(scene, transform, colors.neutral[7], button.center(), true);
             hits.push((button, Action::ToggleCollapsed));

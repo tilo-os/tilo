@@ -1,6 +1,10 @@
 //! Private, bounded persistence for the pinned HAL's DXC shader cache.
 //! Only compiled shaders are reused: normal WGSL/Naga validation and layout
 //! translation still happen, and native PSOs are still created by the driver.
+#![allow(
+    clippy::disallowed_methods,
+    reason = "native host runner: shader-cache persistence runs on its own writer thread"
+)]
 
 // Bump whenever HAL cache semantics, compiler arguments or the codec change.
 #[cfg(windows)]
@@ -144,10 +148,7 @@ mod platform {
             if file_id(&loaded_file)? != compiler.file_id {
                 return None;
             }
-            let base = std::env::var_os("XDG_CACHE_HOME")
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .or_else(dirs::cache_dir)?;
+            let base = xdg_paths::env_dir("XDG_CACHE_HOME").or_else(xdg_paths::cache_dir)?;
             let directory = base.join("tilo").join("dx12-shaders");
             private_fs::directory(&directory).ok()?;
             // One bounded file per app, so updates replace stale revisions and

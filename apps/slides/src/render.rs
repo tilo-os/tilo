@@ -5,14 +5,14 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
+use vello::peniko::{BlendMode, Fill, ImageBrush};
 
-use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::assets::{ImageLookup, ImageState};
 use crate::model::{Element, ElementKind, Palette, SLIDE_W, Slide, TextAlign};
+pub use ui::paint::with_alpha;
 
 /// Map a point from slide space to destination pixels.
 #[inline]
@@ -342,8 +342,4 @@ fn draw_text_element(
         }
         y += *r as f64 * line_h;
     }
-}
-
-pub fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }

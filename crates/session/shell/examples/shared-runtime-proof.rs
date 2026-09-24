@@ -47,6 +47,70 @@ fn emit(value: serde_json::Value) {
     println!("{value}");
 }
 
+/// Invoke through the session's action host, as the fixed session actor
+/// confined to the surface's workspace — the path every caller takes.
+fn start_action(
+    actions: &shell::shell::collab_broker::AppActionBroker,
+    actor: &str,
+    surface: &PublishedSurface,
+    resource: &str,
+    action: &str,
+    input: Option<&str>,
+) -> Result<tilo_actions::InvocationId> {
+    use tilo_actions::remote::{
+        ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    };
+    let invocation = tilo_actions::InvocationId::new();
+    let receipt = shell::shell::remote_actions::BrokerActionHost::new(actions.clone()).invoke(
+        &Caller::local_person(actor).in_room(&surface.route.cluster_id),
+        InvokeRequest {
+            invocation,
+            target: RemoteActionTarget {
+                provider: surface.peer_id.to_string(),
+                address: tilo_actions::ActionAddress::new(resource, action),
+            },
+            argument: input.map_or(InvokeArgument::None, |text| {
+                InvokeArgument::Text(text.to_string())
+            }),
+            context: None,
+            confirmation: None,
+            revision: None,
+        },
+    );
+    // This thread does not drive the broker; waiting here blocks nothing.
+    let receipt = receipt
+        .wait_timeout(Duration::from_secs(30))
+        .map_err(|_| "the action host did not admit the action in time")?
+        .ok_or("the action host dropped the request")??;
+    if let ReceiptStatus::Rejected { error } = receipt.status {
+        return Err(error.into());
+    }
+    Ok(invocation)
+}
+
+/// Observe an invocation until it is terminal.
+fn wait_terminal(
+    actions: &shell::shell::collab_broker::AppActionBroker,
+    actor: &str,
+    surface: &PublishedSurface,
+    invocation: tilo_actions::InvocationId,
+    timeout: Duration,
+) -> Result<tilo_actions::InvocationUpdate> {
+    use tilo_actions::remote::{ActionHost as _, Caller};
+    let host = shell::shell::remote_actions::BrokerActionHost::new(actions.clone());
+    let caller = Caller::local_person(actor).in_room(&surface.route.cluster_id);
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(state) = host.observe(&caller, &invocation)
+            && state.is_terminal()
+        {
+            return Ok(state.update);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Err("the invocation did not finish in time".into())
+}
+
 fn wait_action(
     session: &Session,
     children: &mut Children,
@@ -73,6 +137,10 @@ fn wait_action(
     Err(format!("timed out waiting for {app}/{action}").into())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the proof is one linear scripted scenario whose emitted events are read in order"
+)]
 fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -189,37 +257,41 @@ fn main() -> Result<()> {
         .app_action_broker()
         .ok_or("missing action broker")?;
     // Prove the same broker denies a caller with no workspace authority.
-    if actions
-        .start(
-            writer_surface.peer_id,
-            &writer_action.resource,
-            "place-image",
-            Some(hash),
-            "ungranted-proof-caller",
-        )
-        .is_ok()
+    if start_action(
+        &actions,
+        "ungranted-proof-caller",
+        &writer_surface,
+        &writer_action.resource,
+        "place-image",
+        Some(hash),
+    )
+    .is_ok()
     {
         return Err("ungranted caller unexpectedly invoked the app".into());
     }
     emit(json!({"event":"unauthorized_invocation_denied"}));
-    let job = actions.start(
-        writer_surface.peer_id,
+    let invocation = start_action(
+        &actions,
+        &session.actor,
+        &writer_surface,
         &writer_action.resource,
         "place-image",
         Some(hash),
-        &session.actor,
     )?;
     emit(
-        json!({"event":"handoff_started", "invocation":job.id, "source_peer":photo_surface.peer_id, "target_peer":writer_surface.peer_id, "target_app":WRITER, "resource":writer_action.resource, "action":"place-image", "content_hash":hash}),
+        json!({"event":"handoff_started", "invocation":invocation.0.to_string(), "source_peer":photo_surface.peer_id, "target_peer":writer_surface.peer_id, "target_app":WRITER, "resource":writer_action.resource, "action":"place-image", "content_hash":hash}),
     );
-    let completion = job.completion.recv_timeout(Duration::from_secs(30))?;
+    let update = wait_terminal(
+        &actions,
+        &session.actor,
+        &writer_surface,
+        invocation,
+        Duration::from_secs(30),
+    )?;
     emit(
-        json!({"event":"invocation_completed", "invocation":job.id, "code":completion.code, "message":completion.message, "status":actions.status(job.id)}),
+        json!({"event":"invocation_completed", "invocation":invocation.0.to_string(), "status":update}),
     );
-    if !matches!(
-        actions.status(job.id),
-        Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-    ) {
+    if !matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
         return Err("insertion did not succeed".into());
     }
     // Reconstruct the app's signed document stream, not a locally fabricated

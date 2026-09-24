@@ -7,6 +7,7 @@ use crate::shell::input_policy::{
     is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
+use crate::shell::state::WorkspaceAuthority as _;
 pub use crate::shell::test_control::{
     ReadLineError, TEST_CONTROL_MAX_LINE_BYTES, keyboard_input_event, read_bounded_line,
 };
@@ -59,6 +60,7 @@ fn with_action_gate<R>(
     let chrome = chrome_handle.borrow();
     let tree = chrome.tree();
     let workspace = tree
+        .desktop
         .active_workspace()
         .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
     let actor_id = chrome.local_user_for_room(&workspace.room);
@@ -114,9 +116,10 @@ fn desired_legacy_shares(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> HashMap<u64, (String, std::collections::HashSet<u64>)> {
     let Some(workspace) = tree
+        .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.id == tree.active)
+        .find(|workspace| workspace.id == tree.desktop.active)
     else {
         return HashMap::new();
     };
@@ -1019,7 +1022,7 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// reads back state as if it were the person at the keyboard — even while
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
-const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
+const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1102,9 +1105,8 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )?;
-    // Best-effort cleanup of a stale socket — otherwise `bind` fails EADDRINUSE.
-    let _ = std::fs::remove_file(&path);
-    match UnixListener::bind(&path) {
+    // Replaces a stale socket; only this user can ever connect.
+    match crate::shell::test_control_socket::bind_private(&path) {
         Ok(listener) => {
             if let Err(e) = listener.set_nonblocking(true) {
                 eprintln!("tilo compositor: test_control set_nonblocking: {e}");
@@ -1152,8 +1154,13 @@ pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> O
 /// the unlink guard so the file disappears with the process.
 fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
     let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    // 0700 when created: the test-control socket may share this directory.
     if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(dir)
+        && let Err(e) = std::os::unix::fs::DirBuilderExt::mode(
+            std::fs::DirBuilder::new().recursive(true),
+            0o700,
+        )
+        .create(dir)
     {
         eprintln!("tilo compositor: publishing {}: {e}", path.display());
         return None;
@@ -1178,14 +1185,20 @@ pub const PRIVILEGED_SOCKET_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 /// compositor's pid so concurrent sessions can't collide. The pid is only a
 /// collision-free socket name; authorization comes from which acceptor made
 /// the immutable per-connection `ClientState`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "publishes the socket to privileged children, which inherit the compositor's \
+              environment; no thread started earlier reads this variable"
+)]
 fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
     let name = format!("tilo-privileged-{}", std::process::id());
     let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
     let socket_name = socket.socket_name().to_os_string();
     // Published for privileged children only; sandboxed apps get an explicit
     // environment from `tilo-launcher` and never inherit this.
-    // SAFETY: single-threaded compositor startup, before any thread that
-    // reads the environment has been spawned.
+    // SAFETY: helper threads already run at this point (settings, portal,
+    // sync), but none of them reads this variable, and the value is written
+    // once before any privileged child is spawned.
     unsafe { std::env::set_var(PRIVILEGED_SOCKET_ENV, &socket_name) };
     Ok((socket, socket_name))
 }
@@ -1349,7 +1362,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let tree = chrome.tree();
         serde_json::json!({
             "exposures": shares.disclosure().into_iter().map(|(peer, surface, can_control)| {
-                let participant = tree.workspaces.iter().find_map(|workspace| {
+                let participant = tree.desktop.workspaces.iter().find_map(|workspace| {
                     workspace.collaborators.iter()
                         .find(|person| person.session == Some(peer))
                         .map(|person| (workspace, person))
@@ -1369,7 +1382,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "person"
                     }
                 });
-                let target = tree.workspaces.iter().find_map(|workspace| {
+                let target = tree.desktop.workspaces.iter().find_map(|workspace| {
                     workspace.strips.iter()
                         .flat_map(|strip| &strip.window_groups)
                         .flat_map(|group| &group.tabs)
@@ -1462,6 +1475,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         drop(chrome);
         let mut tree = tree_handle.write();
         let ws_id = tree
+            .desktop
             .active_workspace()
             .map(|w| w.id)
             .ok_or_else(|| "no active workspace".to_string())?;
@@ -1493,10 +1507,12 @@ impl ControlState for FrameBuilderControlState<'_> {
         drop(chrome);
         let mut tree = tree_handle.write();
         let ws_id = tree
+            .desktop
             .active_workspace()
             .map(|w| w.id)
             .ok_or_else(|| "no active workspace".to_string())?;
         let ws = tree
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == ws_id)
@@ -1542,6 +1558,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         drop(chrome);
         let tree = tree_handle.read();
         let ws = tree
+            .desktop
             .active_workspace()
             .ok_or_else(|| "no active workspace".to_string())?;
         let verb = test_control::parse_verb(verb)?;
@@ -1731,7 +1748,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "local_user_id": chrome.active_local_user(),
             "may_administer_active": chrome
                 .tree()
-                .active_workspace()
+                .desktop.active_workspace()
                 .is_some_and(|ws| ws.may_administer(&chrome.local_user_for_room(&ws.room))),
             // The peer-sync card's contents — the invite token, exposed for scripts as it is on screen.
             "peer_sync": {
@@ -1755,7 +1772,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             "ws_grant_draft": {
                 "subject": chrome
                     .tree()
-                    .active_workspace()
+                    .desktop.active_workspace()
                     .and_then(|ws| {
                         crate::shell::workspace_settings::draft_subject(
                             ws,
@@ -2477,7 +2494,6 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
 ) {
-    use std::io::Write;
     let (w, h) = fb.viewport();
     // Viewport dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
@@ -2554,43 +2570,9 @@ fn write_snapshot_png(
         drop(slot);
         rgba
     };
-    let file = match std::fs::File::create(path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!(
-                "tilo compositor: test_control snapshot: create {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    let mut writer = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(&mut writer, w, h);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png_writer = match encoder.write_header() {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!(
-                "tilo compositor: test_control snapshot: png header {}: {e}",
-                path.display()
-            );
-            return;
-        }
-    };
-    if let Err(e) = png_writer.write_image_data(&rgba) {
+    if let Err(e) = ui::png::write_rgba8(path, w, h, &rgba) {
         eprintln!(
-            "tilo compositor: test_control snapshot: png write {}: {e}",
-            path.display()
-        );
-        return;
-    }
-    // Drop the PNG writer first so the BufWriter holds the last bytes, then
-    // flush explicitly — else a fast-following file-size assertion could race a buffered tail.
-    drop(png_writer);
-    if let Err(e) = writer.flush() {
-        eprintln!(
-            "tilo compositor: test_control snapshot: flush {}: {e}",
+            "tilo compositor: test_control snapshot: write {}: {e}",
             path.display()
         );
     }
@@ -3696,16 +3678,16 @@ fn spawn_session_collab_broker(
 fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
 ) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
-    use crate::shell::state::TileContent;
-
-    let workspace = tree.active_workspace()?;
+    let workspace = tree.desktop.active_workspace()?;
     let strip_id = tree
+        .desktop
         .active_strip
         .get(&workspace.id)
         .copied()
         .or_else(|| workspace.strips.first().map(|strip| strip.id))?;
     let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
     let group_id = tree
+        .desktop
         .active_group_for(strip_id)
         .filter(|group_id| {
             strip
@@ -3719,13 +3701,7 @@ fn active_physical_gamepad_binding(
         .iter()
         .find(|group| group.id == group_id)?;
     let tab = group.tabs.iter().find(|tab| tab.id == group.active_tab)?;
-    let app_id = match &tab.tile {
-        TileContent::WorkspaceActivity => return None,
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => kind.app_id(),
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
-    };
+    let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
     let workspace_id = workspace.room.to_string();
     Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
         app_id,
@@ -4050,7 +4026,7 @@ fn spawn_session_peer_sync(
             frame_builder
                 .host_mut()
                 .set_peer_sync_bridge(std::rc::Rc::new(move |req| {
-                    let active = tree_handle.read().active;
+                    let active = tree_handle.read().desktop.active;
                     match req {
                         PeerSyncRequest::IssueInvite => bridge_net
                             .issue_invite(active, INVITE_EXPIRY_SECONDS)
@@ -4078,6 +4054,7 @@ fn spawn_session_peer_sync(
                         PeerSyncRequest::ListPendingInvitations => {
                             let room = tree_handle
                                 .read()
+                                .desktop
                                 .active_workspace()
                                 .map(|workspace| workspace.room)
                                 .ok_or_else(|| "no active workspace".to_string())?;
@@ -4211,7 +4188,8 @@ fn attach_peer_presence(
         let chrome = frame_builder.chrome_handle();
         let chrome = chrome.borrow();
         let tree = chrome.tree();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .map(|workspace| workspace.room.to_string())
             .collect::<Vec<_>>()
@@ -4639,7 +4617,7 @@ fn start_portal_backend(
     };
 
     let serve_result = runtime.block_on(async {
-        let conn = zbus::ConnectionBuilder::session()?.build().await?;
+        let conn = zbus::connection::Builder::session()?.build().await?;
         crate::portal::serve_with_inhibit_and_clipboard(
             conn,
             ctx,
@@ -4963,7 +4941,7 @@ pub fn run() {
     );
     // Point `ui`'s clipboard at the compositor's selection mirror — everything
     // hosted here isn't a Wayland client, so without this they'd share no buffer.
-    crate::compositor::selection::install_host_clipboard(state.selection_store());
+    crate::compositor::selection::install_host_services(state.selection_store());
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
@@ -5430,7 +5408,7 @@ pub fn run() {
             let bridge = notif_bridge.clone();
             let res: Result<crate::notifications::ServerHandle, zbus::Error> =
                 rt.block_on(async move {
-                    let conn = zbus::ConnectionBuilder::session()?.build().await?;
+                    let conn = zbus::connection::Builder::session()?.build().await?;
                     let service = crate::notifications::NotificationService::with_connection(
                         bridge.clone(),
                         // v1: a fresh CallerMap. Per-workspace attribution comes once the bridge
@@ -6806,6 +6784,7 @@ pub fn run() {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
                 let rooms = tree
+                    .desktop
                     .workspaces
                     .iter()
                     .map(|w| w.room.to_string())
@@ -6813,9 +6792,10 @@ pub fn run() {
                 // The room the user is looking at (where their pointer is), distinct from
                 // the set above (every room the session listens to).
                 let here = tree
+                    .desktop
                     .workspaces
                     .iter()
-                    .find(|w| w.id == tree.active)
+                    .find(|w| w.id == tree.desktop.active)
                     .map(|w| w.room.to_string());
                 (rooms, here)
             };
@@ -7106,7 +7086,7 @@ pub fn run() {
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
                     let tree = chrome.tree();
-                    tree.active_workspace().and_then(|workspace| {
+                    tree.desktop.active_workspace().and_then(|workspace| {
                         crate::shell::desktop_backdrop::wallpaper_image_for_workspace(
                             &workspace.id.0.to_string(),
                             "lockscreen",
@@ -7984,6 +7964,7 @@ mod tests {
                 Placement::NewGroup,
             );
             let (strip, group) = tree
+                .desktop
                 .active_workspace()
                 .and_then(|workspace| {
                     workspace.strips.iter().find_map(|strip| {
@@ -8126,15 +8107,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn compositor_binds_the_socket_the_launcher_dials() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        // SAFETY: `serial(process_env)` keeps this off any other
-        // test's env. The group name is load-bearing: serial_test only
-        // excludes tests that name the *same* group, and every other
-        // test in this crate that writes `XDG_RUNTIME_DIR` names
-        // `process_env`. Under the unnamed group this ran alongside
-        // them, read the variable after one of them had pointed it at
-        // an already-dropped tempdir, and failed to bind a socket in a
-        // directory that no longer existed.
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
         let fb = FrameBuilder::new((800, 600));
         let chrome = fb.chrome_handle();
         let broker = spawn_session_collab_broker(&chrome, None)
@@ -8176,7 +8150,6 @@ mod tests {
         );
 
         drop(broker);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     /// A live socket is not taken away from the session that owns it. Two
@@ -8187,7 +8160,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_second_session_refuses_to_take_a_live_collab_socket() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_RUNTIME_DIR", runtime.path());
 
         let first_fb = FrameBuilder::new((800, 600));
         let first_chrome = first_fb.chrome_handle();
@@ -8217,7 +8191,6 @@ mod tests {
 
         drop(second);
         drop(first);
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     // developer surfaces are absent from a shipped build
@@ -8266,12 +8239,12 @@ mod tests {
 
     fn directory_test_tree() -> crate::shell::state::WorkspaceTreeHandle {
         let mut tree = crate::shell::state::WorkspaceTree::default();
-        let mut workspace = crate::shell::state::Workspace::test_default(
+        let mut workspace = crate::shell::state::Workspace::new(
             crate::shell::state::WorkspaceId(71),
             "Directory socket room",
         );
         workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(71));
         tree.shared()
     }
@@ -8489,7 +8462,7 @@ mod tests {
                 matches!(
                     rejection,
                     test_control::Response::Err { ref code, ref message }
-                        if code == "action_failed" && message.contains("NotFound")
+                        if code == "action_failed" && message.contains("no such action is offered")
                 ),
                 "unexpected revoked-action response: {rejection:?}"
             );
@@ -8846,7 +8819,7 @@ mod tests {
         // constant — tied here so flipping the production call site to a literal `true` fails.
         assert_eq!(
             crate::compositor::dev_env::DEV_ENV_OVERRIDES,
-            cfg!(debug_assertions)
+            cfg!(debug_assertions) || cfg!(feature = "dev-overrides")
         );
     }
 
@@ -8990,7 +8963,7 @@ mod tests {
             .copied()
             .expect("wheel_disc test_id resolves on bootstrap tree");
 
-        let initial_count = fb.chrome().tree().workspaces.len();
+        let initial_count = fb.chrome().tree().desktop.workspaces.len();
 
         // Sweep the footprint bottom-up in 4px rows until one click lands on
         // the affordance; misses are harmless (rim press drags back, row press switches workspace).
@@ -9021,7 +8994,7 @@ mod tests {
                     &mut fb,
                     &mut ctx,
                 );
-                if fb.chrome().tree().workspaces.len() > initial_count {
+                if fb.chrome().tree().desktop.workspaces.len() > initial_count {
                     found = true;
                     break 'sweep;
                 }
@@ -9307,7 +9280,11 @@ mod tests {
             let tree_handle = chrome.tree_handle();
             drop(chrome);
             let mut tree = tree_handle.write();
-            let room = tree.active_workspace().expect("active workspace").room;
+            let room = tree
+                .desktop
+                .active_workspace()
+                .expect("active workspace")
+                .room;
             let noted = tree.note_peer_present(room, 0x51, "alice");
             drop(tree);
             assert!(noted);
@@ -9354,7 +9331,10 @@ mod tests {
             let tree_handle = chrome.tree_handle();
             drop(chrome);
             let mut tree = tree_handle.write();
-            let workspace = tree.active_workspace_mut().expect("active workspace");
+            let workspace = tree
+                .desktop
+                .active_workspace_mut()
+                .expect("active workspace");
             workspace.owner = Some("owner".to_string());
             let room = workspace.id.raw().to_string();
             workspace
@@ -9374,6 +9354,7 @@ mod tests {
                 Placement::NewGroup,
             );
             let tab = tree
+                .desktop
                 .active_workspace_mut()
                 .into_iter()
                 .flat_map(|workspace| &mut workspace.strips)
@@ -9935,10 +9916,10 @@ mod gesture_wireup_tests {
         fb.with_chrome(|st| {
             st.add_workspace("second");
         });
-        let before = fb.chrome().tree().active;
+        let before = fb.chrome().tree().desktop.active;
         // What a three-finger swipe up resolves to — same value `gestures::swipe_action` produces for an upward delta.
         apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
-        let after = fb.chrome().tree().active;
+        let after = fb.chrome().tree().desktop.active;
         assert_ne!(
             before, after,
             "a three-finger swipe must move the active workspace, not just resolve to an intent"

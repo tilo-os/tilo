@@ -2,8 +2,9 @@
 //! here: it is contextual and belongs to the shell's Workspace Settings.
 
 use std::collections::HashMap;
+use ui::doc::read_str;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
@@ -18,6 +19,12 @@ use crate::widgets::{caption, card, choice_row_described, rows, value_row};
 pub struct PersonalAppsPane {
     candidates: Vec<AppCandidate>,
     defaults: PersonalDefaults,
+    /// Where choices persist; `None` is the per-user `default-apps.json`.
+    defaults_path: Option<std::path::PathBuf>,
+    /// The choice each dropdown last showed, as seeded or read back. The
+    /// resolver's pick seeded into an untouched dropdown is not a choice;
+    /// only a value that moves away from what was shown is.
+    shown: HashMap<String, String>,
     needs_seed: bool,
     commit_context_pending: bool,
     actions: ui::ActionHost,
@@ -27,13 +34,19 @@ pub struct PersonalAppsPane {
 
 impl PersonalAppsPane {
     pub fn new() -> Self {
-        Self::with_state(installed_candidates(), PersonalDefaults::load())
+        Self::with_state(installed_candidates(), PersonalDefaults::load(), None)
     }
 
-    pub fn with_state(candidates: Vec<AppCandidate>, defaults: PersonalDefaults) -> Self {
+    pub fn with_state(
+        candidates: Vec<AppCandidate>,
+        defaults: PersonalDefaults,
+        defaults_path: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
             candidates,
             defaults,
+            defaults_path,
+            shown: HashMap::new(),
             needs_seed: true,
             commit_context_pending: false,
             actions: ui::ActionHost::new(),
@@ -136,16 +149,6 @@ impl PersonalAppsPane {
         crate::widgets::cards(vec![scope, card("Open files and links with", body)])
     }
 
-    fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn draft_key(canonical: &str) -> String {
         format!("{canonical}.edit")
     }
@@ -238,16 +241,17 @@ impl Widget for PersonalAppsPane {
                 initial_values
             };
             for (key, value) in initial_values {
-                self.dispatch(state, &set_text_action(key, value));
+                self.dispatch(state, &set_text_action(&key, &value));
+                self.shown.insert(key, value);
             }
             self.needs_seed = false;
         }
         let mut changed = false;
         for resource in self.resources() {
             let key = Self::key(&resource);
-            let canonical = Self::read_str(state, root, &key);
+            let canonical = read_str(state, root, &key);
             let draft_key = Self::draft_key(&key);
-            let draft = Self::read_str(state, root, &draft_key);
+            let draft = read_str(state, root, &draft_key);
             let Some(option) = canonical.clone() else {
                 continue;
             };
@@ -269,10 +273,14 @@ impl Widget for PersonalAppsPane {
                 continue;
             }
             if let Some(canonical) = canonical
-                && Self::read_str(state, root, &draft_key).as_deref() != Some(&canonical)
+                && read_str(state, root, &draft_key).as_deref() != Some(&canonical)
             {
                 let _ = state.put(root, draft_key, canonical);
             }
+            if self.shown.get(&key) == Some(&option) {
+                continue;
+            }
+            self.shown.insert(key.clone(), option.clone());
             let Some(app) = self
                 .apps_for(&resource)
                 .into_iter()
@@ -292,7 +300,10 @@ impl Widget for PersonalAppsPane {
             }
         }
         if changed {
-            let _ = self.defaults.save();
+            let _ = match &self.defaults_path {
+                Some(path) => self.defaults.save_at(path),
+                None => self.defaults.save(),
+            };
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
@@ -432,9 +443,14 @@ mod tests {
     }
     #[test]
     fn dropdown_change_persists_personal_choice() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("personal_default");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("default-apps.json");
         let candidates = vec![candidate("so.tilo.a", "pdf"), candidate("so.tilo.b", "pdf")];
-        let mut pane = PersonalAppsPane::with_state(candidates, PersonalDefaults::default());
+        let mut pane = PersonalAppsPane::with_state(
+            candidates,
+            PersonalDefaults::default(),
+            Some(path.clone()),
+        );
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
         doc.put(
@@ -451,6 +467,14 @@ mod tests {
                 .map(String::as_str),
             Some("so.tilo.b")
         );
+        assert_eq!(
+            PersonalDefaults::load_at(&path)
+                .handlers
+                .get(&ResourceKind::extension("pdf").unwrap())
+                .map(String::as_str),
+            Some("so.tilo.b"),
+            "the choice survives a reload"
+        );
     }
 
     #[test]
@@ -464,17 +488,27 @@ mod tests {
             ]
             .into(),
         };
-        let mut pane = PersonalAppsPane::with_state(vec![candidate], PersonalDefaults::default());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("default-apps.json");
+        let mut pane = PersonalAppsPane::with_state(
+            vec![candidate],
+            PersonalDefaults::default(),
+            Some(path.clone()),
+        );
         let mut doc = AutoCommit::new();
         pane.sync(&mut doc, &automerge::ROOT);
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            pane.defaults.handlers.is_empty(),
+            "showing the resolver's pick is not a personal choice"
+        );
+        assert!(!path.exists(), "opening the pane persists nothing");
         assert_eq!(
-            PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html")
-                .as_deref(),
+            read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html").as_deref(),
             Some("Browser — so.tilo.browser")
         );
         assert_eq!(
-            PersonalAppsPane::read_str(&doc, &automerge::ROOT, "default_apps.scheme.https")
-                .as_deref(),
+            read_str(&doc, &automerge::ROOT, "default_apps.scheme.https").as_deref(),
             Some("Browser — so.tilo.browser")
         );
     }

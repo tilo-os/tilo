@@ -30,21 +30,23 @@ use shell::shell::identity_provisioning;
 use shell::{firstboot, portal};
 
 /// Install a panic hook that writes a crash report to
-/// `~/.cache/tilo/crashes/<timestamp>.log` and echoes the panic message +
+/// `~/.cache/tilo/crashes/<timestamp>-<pid>.log` and echoes the panic message +
 /// log path to stderr — without this, a session launched outside a
 /// terminal (greetd, .desktop double-click) discards stderr, making "the shell just disappeared" unactionable.
 ///
 /// Chains to the default hook AFTER writing the file so a developer running from a terminal still sees the colored panic + backtrace.
+///
+/// Reports carry backtraces and payloads, so they are private (0700 directory,
+/// 0600 file, never following a link). Without a home cache directory only the
+/// stderr copy is made: a shared fallback such as `/tmp` would let another user
+/// plant the path.
 fn install_crash_log_hook() {
     let dir = dirs::cache_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("tilo")
-        .join("crashes");
-    let _ = std::fs::create_dir_all(&dir);
+        .map(|cache| cache.join("tilo").join("crashes"))
+        .filter(|dir| private_fs::directory(dir).is_ok());
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let ts = chrono::Local::now().format("%Y-%m-%d-%H%M%S");
-        let path = dir.join(format!("{ts}.log"));
         let backtrace = std::backtrace::Backtrace::force_capture();
         let payload = info
             .payload()
@@ -64,28 +66,47 @@ fn install_crash_log_hook() {
              message:   {payload}\n\n\
              backtrace:\n{backtrace}\n"
         );
-        let wrote = std::fs::write(&path, &body).is_ok();
-        if wrote {
-            eprintln!("\n[tilo] crash log written to {}", path.display());
+        if let Some(dir) = &dir {
+            use std::io::Write as _;
+            let path = dir.join(format!("{ts}-{}.log", std::process::id()));
+            let wrote = private_fs::create_new(&path)
+                .and_then(|mut file| file.write_all(body.as_bytes()))
+                .is_ok();
+            if wrote {
+                eprintln!("\n[tilo] crash log written to {}", path.display());
+            } else {
+                eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
+            }
         } else {
-            eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
+            eprintln!("\n[tilo] no private cache directory; crash log not written");
         }
         default_hook(info);
     }));
 }
 
-/// Landlock launcher shim short-circuit: `shell __sandbox-exec --ro PATH... --rw
-/// PATH... [--net-restricted] -- APP-ARGV`, execed by bwrap from inside the
-/// sandbox. Applies the in-kernel Landlock ruleset and `execvp`s the real
-/// app when `raw_args` is that invocation; otherwise a no-op. Split out of
-/// `main` to keep it short.
-fn maybe_run_sandbox_exec(raw_args: &[String]) {
+/// The in-sandbox Landlock shim token. Only `tilo-launcher` implements it;
+/// the compositor never builds a sandbox.
+const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
+
+/// Refuse `shell __sandbox-exec …`. Something that still execs the
+/// compositor as a Landlock shim expects the program after `--` to run
+/// confined; starting a compositor, or the program unconfined, would both
+/// be silent failures of that expectation, so the process exits instead.
+/// Split out of `main` to keep it short.
+#[allow(
+    clippy::exit,
+    reason = "refusing before any compositor state exists; there is no caller to return to"
+)]
+fn refuse_sandbox_exec(raw_args: &[String]) {
     if raw_args
         .get(1)
-        .is_some_and(|a| a == shell::sandbox::SANDBOX_EXEC_SUBCOMMAND)
+        .is_some_and(|a| a == SANDBOX_EXEC_SUBCOMMAND)
     {
-        tracing_subscriber::fmt::init();
-        shell::sandbox::run_sandbox_exec(raw_args.get(2..).unwrap_or(&[]));
+        eprintln!(
+            "tilo-sandbox-exec: the compositor does not install sandboxes; \
+             launch through tilo-launcher"
+        );
+        std::process::exit(126);
     }
 }
 
@@ -222,12 +243,7 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                             %error,
                             "existing Tilo identity needs recovery; opening trusted recovery"
                         );
-                        // SAFETY: startup is single-threaded until native
-                        // compositor initialization, and this marker only
-                        // selects a stricter recovery surface.
-                        unsafe {
-                            std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1");
-                        }
+                        mark_identity_recovery();
                     }
                     ExistingIdentityFailureAction::FailClosed => {
                         if provision_requested {
@@ -257,6 +273,18 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
         }
     }
     None
+}
+
+/// Select the trusted identity-recovery surface for the compositor, which
+/// reads the marker from its own environment.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "set before compositor startup; the only thread running then (font warm-up) never reads it"
+)]
+fn mark_identity_recovery() {
+    // SAFETY: only the font warm-up thread may run yet; it never reads this
+    // variable, and the marker only selects a stricter recovery surface.
+    unsafe { std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1") };
 }
 
 #[cfg(test)]
@@ -357,7 +385,7 @@ pub fn run() -> std::process::ExitCode {
     // distro name, desktop variable or backend would conflate independent
     // facts and break on a different display manager.
     let raw_args: Vec<String> = std::env::args().collect();
-    maybe_run_sandbox_exec(&raw_args);
+    refuse_sandbox_exec(&raw_args);
     let arg_refs: Vec<&str> = raw_args
         .iter()
         .skip(1)
@@ -407,6 +435,7 @@ pub fn run() -> std::process::ExitCode {
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
     log_gpu_pin(gpu_pin.as_ref());
+    compositor::dev_env::report_build_mode();
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();
@@ -534,7 +563,7 @@ fn run_portal_server_only() -> std::process::ExitCode {
             portal::CallerMap::new(),
         );
 
-        let connection = match zbus::ConnectionBuilder::session() {
+        let connection = match zbus::connection::Builder::session() {
             Ok(builder) => match builder.build().await {
                 Ok(c) => c,
                 Err(e) => {

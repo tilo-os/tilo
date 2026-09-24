@@ -3,6 +3,7 @@
 //! keywords/created/modified) and `app.xml`'s `Properties > Application` generator string.
 //! This maps those onto `meta.props`, preserving unmodeled `core.xml` children on export.
 
+use crate::codecs::xml_escape::escape_text;
 use crate::model::{DocMut, DocRef, doc_prop};
 use crate::schema::{
     PROP_AUTHOR, PROP_CREATED, PROP_GENERATOR, PROP_KEYWORDS, PROP_MODIFIED, PROP_SUBJECT,
@@ -54,6 +55,9 @@ fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Opti
                     text.push_str(&s);
                 }
             }
+            Ok(Event::GeneralRef(r)) if current.is_some() => {
+                text.extend(crate::codecs::resolve_general_ref(&r));
+            }
             Ok(Event::End(e)) => {
                 if let Some(prop) = prop_of(local_name(e.name().as_ref()))
                     && current == Some(prop)
@@ -84,19 +88,6 @@ pub(super) fn import_app(xml: &[u8], doc: &mut DocMut) {
             None
         }
     });
-}
-
-fn escape_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 const CORE_NS: &str = concat!(
@@ -211,6 +202,14 @@ fn unmodeled_inner(xml: &[u8], container: &str, modeled_names: &[&[u8]]) -> Stri
             Ok(Event::Text(t)) => {
                 if skip_depth == 0 {
                     out.extend_from_slice(t.into_inner().as_ref());
+                }
+            }
+            // Copied through still escaped: `&amp;` has to stay `&amp;` in the output.
+            Ok(Event::GeneralRef(r)) => {
+                if skip_depth == 0 {
+                    out.push(b'&');
+                    out.extend_from_slice(&r);
+                    out.push(b';');
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

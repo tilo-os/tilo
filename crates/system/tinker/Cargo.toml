@@ -15,6 +15,7 @@ name = "tinker"
 path = "src/main.rs"
 
 [dependencies]
+xdg-paths = { path = "../xdg-paths" }
 anyhow = { workspace = true }
 bounded-command = { path = "../bounded-command" }
 clap = { workspace = true }

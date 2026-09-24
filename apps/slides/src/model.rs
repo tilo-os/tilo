@@ -17,6 +17,7 @@
 #![allow(clippy::should_implement_trait)]
 
 use ui::ColorCompat;
+use ui::paint::with_alpha;
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -534,7 +535,7 @@ impl Palette {
             return None;
         }
         if role.starts_with('#') {
-            return parse_hex(role).or(Some(self.accent));
+            return ui::color::parse_hex(role).or(Some(self.accent));
         }
         Some(match role {
             "none" => return None,
@@ -589,28 +590,6 @@ pub const FILL_ROLES: [&str; 8] = [
     "info",
 ];
 pub const STROKE_ROLES: [&str; 6] = ["none", "accent", "text", "white", "deep", "danger"];
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
-
-/// Parse a `#RRGGBB` or `#RRGGBBAA` hex string into a concrete colour.
-/// Returns `None` for anything that isn't a well-formed hex literal.
-pub fn parse_hex(s: &str) -> Option<Color> {
-    let h = s.strip_prefix('#').unwrap_or(s);
-    let byte = |i: usize| h.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok());
-    match h.len() {
-        6 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, 255)),
-        8 => Some(Color::from_rgba8(byte(0)?, byte(2)?, byte(4)?, byte(6)?)),
-        _ => None,
-    }
-}
-
-/// Format a colour as a `#RRGGBB` hex string (opaque). Used to store a
-/// picker-chosen fill/stroke in the deck and to emit `.odp` fill colours.
-pub fn color_to_hex(c: Color) -> String {
-    format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
-}
 
 /// Linear blend `a*(1-t) + b*t` in straight RGB.
 fn mix(a: Color, b: Color, t: f64) -> Color {

@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
 use std::collections::HashMap;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -85,7 +86,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
         // Everything else, including the workspace's durable collaboration room,
         // comes from the builder, so a field added to `Workspace` does not break
         // this fixture.
-        ..Workspace::test_default(ws_id, "Test")
+        ..Workspace::new(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
@@ -95,11 +96,14 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
     active_group.insert(s_b, g_b);
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     // Production trees always carry the Automerge mirror established at
@@ -286,12 +290,12 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
     // strip A on the next reload.
     let st = chrome.borrow();
     let tree = st.tree();
-    let tree_strip_a = tree.workspaces[0]
+    let tree_strip_a = tree.desktop.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_a)
         .expect("strip A in tree");
-    let tree_strip_b = tree.workspaces[0]
+    let tree_strip_b = tree.desktop.workspaces[0]
         .strips
         .iter()
         .find(|s| s.id == s_b)

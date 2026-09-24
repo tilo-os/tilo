@@ -20,7 +20,7 @@ pub struct Manifest {
 }
 
 pub(crate) fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 /// Write a new 2,000-line Rust file; refuse existing files and symlinks.

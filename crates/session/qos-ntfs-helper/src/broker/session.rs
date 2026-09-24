@@ -260,7 +260,7 @@ impl ExclusiveReadSession {
             if e.content_readable && e.size == 0 {
                 self.stream
                     .hashes
-                    .insert(e.token.clone(), format!("{:x}", Sha256::digest([])));
+                    .insert(e.token.clone(), hex::encode(Sha256::digest([])));
             }
         }
         Ok(self.generation)

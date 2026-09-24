@@ -116,7 +116,11 @@
 #include <spa/utils/hook.h>
 #if PW_CHECK_VERSION(0,3,18)
 #include <spa/utils/json.h>
+// PipeWire 1.2 split the core parser out of json.h; older releases such as
+// Ubuntu 24.04's 1.0 keep it in json.h.
+#if __has_include(<spa/utils/json-core.h>)
 #include <spa/utils/json-core.h>
+#endif
 #endif
 #include <spa/utils/keys.h>
 #include <spa/utils/list.h>

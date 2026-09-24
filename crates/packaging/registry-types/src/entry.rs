@@ -456,7 +456,7 @@ pub fn sign_entry(entry: &mut RegistryEntry, signing_key: &SigningKey) {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
 
     fn sample_entry() -> RegistryEntry {
         RegistryEntry {
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn sign_entry_fills_signature_field() {
         let mut e = sample_entry();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         sign_entry(&mut e, &key);
         assert_eq!(e.signature_hex.len(), 128, "64-byte hex-encoded sig");
         // Idempotent under re-sign with the same key + same payload.

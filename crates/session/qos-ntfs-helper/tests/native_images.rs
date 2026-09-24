@@ -18,7 +18,7 @@ fn probe(name: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         .and_then(|v| v.get("sha256"))
         .and_then(serde_json::Value::as_str)
         .ok_or("missing fixture checksum")?;
-    if format!("{before:x}") != expected {
+    if hex::encode(before) != expected {
         return Err("fixture does not match generated manifest".into());
     }
     let output = Command::new(env!("CARGO_BIN_EXE_qos-ntfs-image-test"))

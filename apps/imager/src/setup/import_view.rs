@@ -1778,7 +1778,7 @@ impl ImportApp {
                         operation.apply_progress(&progress);
                         self.status = format!(
                             "Verified {} across {} file(s).",
-                            format_bytes(progress.verified_bytes),
+                            ui::format::bytes_si(progress.verified_bytes),
                             progress.verified_files
                         );
                     }
@@ -2441,7 +2441,7 @@ fn operation_text(operation: &OperationRecord) -> (String, String) {
     let mut summary = format!(
         "{source} → {destination}\n{}\nCopied and checked: {} across {} file(s)",
         state_summary(operation.state()),
-        format_bytes(operation.verified_bytes()),
+        ui::format::bytes_si(operation.verified_bytes()),
         operation.verified_file_count()
     );
     if operation.state() == OperationState::Running
@@ -2530,18 +2530,6 @@ fn state_summary(state: OperationState) -> &'static str {
         OperationState::Incomplete => "Some items need review before the copy can finish.",
         OperationState::Failed => "The copy could not start. Open Details before trying again.",
         OperationState::Complete => "Copy checked and complete.",
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GIB: f64 = 1_073_741_824.0;
-    const MIB: f64 = 1_048_576.0;
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GiB", bytes as f64 / GIB)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MiB", bytes as f64 / MIB)
-    } else {
-        format!("{bytes} bytes")
     }
 }
 
@@ -3225,7 +3213,11 @@ mod tests {
     }
 
     fn cancelled_picker() -> ui::PortalChannel {
-        ui::portal::inject_for_test(ui::PortalOutcome::Cancelled)
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ui::PortalOutcome::Cancelled)
+            .expect("the receiver is held");
+        receiver
     }
 
     fn disconnected_picker() -> ui::PortalChannel {
@@ -4483,19 +4475,20 @@ mod tests {
         app.prepare_review().unwrap();
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
+        // The save stays held until this thread releases it. A UI call that
+        // waited for it would only return once the hold timed out, which
+        // drops the release receiver and fails the send below.
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
-        let started = Instant::now();
         app.start_operation(0).unwrap();
-        assert!(started.elapsed() < Duration::from_millis(200));
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(!destination_parent.join("source").exists());
-        let started = Instant::now();
         app.poll_background();
         assert!(app.cancel_active());
-        assert!(started.elapsed() < Duration::from_millis(200));
         drop(app);
         assert!(MigrationStore::open_at(&root).is_err());
-        release.send(()).unwrap();
+        release
+            .send(())
+            .expect("the start checkpoint was still held when the UI calls returned");
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Ok(store) = MigrationStore::open_at(&root) {
@@ -4524,11 +4517,13 @@ mod tests {
         // disks to reach the terminal checkpoint without weakening the state
         // assertion that follows.
         entered.recv_timeout(Duration::from_secs(15)).unwrap();
-        let started = Instant::now();
         app.poll_background();
-        assert!(started.elapsed() < Duration::from_millis(200));
         assert_eq!(app.operations[0].state(), OperationState::Running);
-        release.send(()).unwrap();
+        // Polling must not wait for the held checkpoint: had it waited, the
+        // hold would have timed out and dropped its release receiver.
+        release
+            .send(())
+            .expect("the terminal checkpoint was still held when polling returned");
         wait_terminal(&mut app);
         assert_eq!(app.operations[0].state(), OperationState::Complete);
     }

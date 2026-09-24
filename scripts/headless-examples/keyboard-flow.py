@@ -2,7 +2,7 @@
 """Open global search with Super+K, type a query, snapshot.
 
 Usage:
-  ./keyboard-flow.py [/tmp/tilo.sock] [QUERY] [/tmp/out.png]
+  ./keyboard-flow.py [SOCKET] [QUERY] [/tmp/out.png]
 
 Demonstrates the modifier + key + type pattern. The palette opens on
 Super+K (the desktop-wide search shortcut); typing into it sets the live query, which

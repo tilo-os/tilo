@@ -15,7 +15,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::ObjectPath;
 #[cfg(target_os = "linux")]
@@ -641,7 +641,7 @@ impl GlobalShortcutsBackend {
 
     async fn bind_shortcuts(
         &self,
-        #[zbus(signal_context)] sig: SignalContext<'_>,
+        #[zbus(signal_emitter)] sig: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
         handle: ObjectPath<'_>,
@@ -821,7 +821,7 @@ impl GlobalShortcutsBackend {
 
     async fn configure_shortcuts(
         &self,
-        #[zbus(signal_context)] sig: SignalContext<'_>,
+        #[zbus(signal_emitter)] sig: SignalEmitter<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         session: ObjectPath<'_>,
         parent_window: String,
@@ -929,7 +929,7 @@ impl GlobalShortcutsBackend {
 
     #[zbus(signal)]
     async fn activated(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         session: ObjectPath<'_>,
         shortcut_id: String,
         timestamp: u64,
@@ -937,7 +937,7 @@ impl GlobalShortcutsBackend {
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn deactivated(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         session: ObjectPath<'_>,
         shortcut_id: String,
         timestamp: u64,
@@ -945,7 +945,7 @@ impl GlobalShortcutsBackend {
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn shortcuts_changed(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         session: ObjectPath<'_>,
         shortcuts: Vec<ShortcutWire>,
     ) -> zbus::Result<()>;
@@ -960,7 +960,7 @@ pub fn spawn_signal_emitter(
     handle: GlobalShortcutsHandle,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let Ok(context) = SignalContext::new(&connection, super::OBJECT_PATH) else {
+        let Ok(context) = SignalEmitter::new(&connection, super::OBJECT_PATH) else {
             return;
         };
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(32));

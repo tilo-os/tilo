@@ -70,7 +70,7 @@ class TiloClient:
     @classmethod
     def spawn_headless(
         cls,
-        socket_path: str | os.PathLike = "/tmp/tilo-py.sock",
+        socket_path: str | os.PathLike | None = None,
         binary: str | os.PathLike | None = None,
         wait_seconds: float = 15.0,
     ) -> "_SpawnedTilo":
@@ -78,12 +78,21 @@ class TiloClient:
         return a context manager that kills the child on exit.
 
         Args:
-          socket_path: Where to bind the control socket.
+          socket_path: Where to bind the control socket. Defaults to
+                       `$XDG_RUNTIME_DIR/tilo-session/tilo-py.sock`; keep
+                       any override out of shared directories like /tmp.
           binary: Override the binary path. Defaults to
                   `target/debug/shell` relative to this script's
                   great-grandparent (the repo root).
           wait_seconds: Bounded wait for the socket to appear.
         """
+        if socket_path is None:
+            runtime = os.environ.get("XDG_RUNTIME_DIR")
+            if not runtime or not os.path.isabs(runtime):
+                raise RuntimeError(
+                    "XDG_RUNTIME_DIR is unset; pass socket_path in a private directory"
+                )
+            socket_path = os.path.join(runtime, "tilo-session", "tilo-py.sock")
         socket_path = str(socket_path)
         try:
             os.unlink(socket_path)

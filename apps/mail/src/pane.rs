@@ -1254,7 +1254,7 @@ impl Pane {
                 c.lift(0.35)
             },
         );
-        stroke_round(scene, t, mode_rect, 8.0 * s, 1.0, c.border_standard);
+        stroke_round(scene, t, mode_rect, 8.0 * s, c.border_standard, 1.0);
         if st.bulk_selecting {
             Icon::Check.draw(scene, t, mode_rect.inset(-8.0 * s), c.accent[5]);
         } else {
@@ -1267,12 +1267,12 @@ impl Pane {
                 t,
                 sr,
                 9.0 * s,
-                1.0,
                 if st.search_focused {
                     c.border_focus
                 } else {
                     c.border_standard
                 },
+                1.0,
             );
             Icon::Search.draw(
                 scene,
@@ -1352,7 +1352,7 @@ impl Pane {
                 8.0 * s,
                 if hover { c.lift(0.72) } else { c.lift(0.35) },
             );
-            stroke_round(scene, t, rect, 8.0 * s, 1.0, c.border_standard);
+            stroke_round(scene, t, rect, 8.0 * s, c.border_standard, 1.0);
             let (icon, color) = match hit {
                 Hit::SelectAllVisible => (Icon::Square, c.neutral[8]),
                 Hit::Bulk(BulkAction::Archive) => (Icon::Archive, c.neutral[8]),

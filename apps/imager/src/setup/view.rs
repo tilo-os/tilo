@@ -1379,7 +1379,7 @@ impl SetupApp {
         let details = format!(
             "{} files · {} · source: {source}",
             folder.scan.file_count,
-            format_bytes(folder.scan.bytes)
+            ui::format::bytes_si(folder.scan.bytes)
         );
         let destination = match &folder.destination {
             FolderDestination::Resolved(path) => path.display().to_string(),
@@ -1748,7 +1748,7 @@ impl SetupApp {
                         folder.scan.source.display(),
                         destination,
                         mode_label(folder.mode),
-                        format_bytes(folder.scan.bytes)
+                        ui::format::bytes_si(folder.scan.bytes)
                     );
                     scan_warning(&folder.scan).map_or_else(
                         || summary.clone(),
@@ -1768,12 +1768,12 @@ impl SetupApp {
                 if skipped_count == 0 {
                     format!(
                         "Estimated Tilo space for selected files: {}",
-                        format_bytes(bytes)
+                        ui::format::bytes_si(bytes)
                     )
                 } else {
                     format!(
                         "Estimated Tilo space for counted files: {}. This total is incomplete because {} skipped.",
-                        format_bytes(bytes),
+                        ui::format::bytes_si(bytes),
                         skipped_count_phrase(skipped_count)
                     )
                 }
@@ -2515,8 +2515,8 @@ impl SetupApp {
             })) => t_args(
                 "imager-setup-internal-plan-error-space",
                 &[
-                    ("needed", format_bytes(needed_bytes).into()),
-                    ("available", format_bytes(available_bytes).into()),
+                    ("needed", ui::format::bytes(needed_bytes).into()),
+                    ("available", ui::format::bytes(available_bytes).into()),
                 ],
             ),
             Some(Err(super::staging::plan::PlanError::Unsupported(detail))) => t_args(
@@ -2533,11 +2533,13 @@ impl SetupApp {
                                 ("host", host.into()),
                                 (
                                     "shrink",
-                                    format_bytes(shrink.from_bytes.saturating_sub(shrink.to_bytes))
-                                        .into(),
+                                    ui::format::bytes(
+                                        shrink.from_bytes.saturating_sub(shrink.to_bytes),
+                                    )
+                                    .into(),
                                 ),
-                                ("from", format_bytes(shrink.from_bytes).into()),
-                                ("to", format_bytes(shrink.to_bytes).into()),
+                                ("from", ui::format::bytes(shrink.from_bytes).into()),
+                                ("to", ui::format::bytes(shrink.to_bytes).into()),
                             ],
                         )
                     },
@@ -2548,14 +2550,14 @@ impl SetupApp {
                         "imager-setup-internal-plan-target",
                         &[(
                             "target",
-                            format_bytes(install_flow::target_extent_bytes(plan)).into(),
+                            ui::format::bytes(install_flow::target_extent_bytes(plan)).into(),
                         )],
                     ),
                     t_args(
                         "imager-setup-internal-plan-staging",
                         &[(
                             "staging",
-                            format_bytes(install_flow::staging_bytes(plan)).into(),
+                            ui::format::bytes(install_flow::staging_bytes(plan)).into(),
                         )],
                     ),
                 ]
@@ -2727,8 +2729,8 @@ impl SetupApp {
                                 "imager-setup-internal-run-progress",
                                 &[
                                     ("step", step.into()),
-                                    ("done", format_bytes(progress.done_bytes).into()),
-                                    ("total", format_bytes(progress.total_bytes).into()),
+                                    ("done", ui::format::bytes(progress.done_bytes).into()),
+                                    ("total", ui::format::bytes(progress.total_bytes).into()),
                                 ],
                             )
                         }
@@ -2928,18 +2930,6 @@ fn mode_label(mode: FolderMode) -> &'static str {
         FolderMode::Copy => "Copy",
         FolderMode::Connected => "Connected",
         FolderMode::Later => "Decide later",
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const GIB: f64 = 1_073_741_824.0;
-    const MIB: f64 = 1_048_576.0;
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GiB", bytes as f64 / GIB)
-    } else if bytes >= 1_048_576 {
-        format!("{:.1} MiB", bytes as f64 / MIB)
-    } else {
-        format!("{bytes} bytes")
     }
 }
 

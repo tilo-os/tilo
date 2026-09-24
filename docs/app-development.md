@@ -1133,7 +1133,7 @@ scope from the identity of the thing being changed:
 
 | State | Canonical home | Identity / permission scope | Replication |
 |---|---|---|---|
-| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | local unless the app explicitly exports a safe semantic projection |
+| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | replicated: in a shared workspace the package document is the app's collaboration route, one document per app and room. Keep person- or device-scoped settings out of it |
 | Collaborative document, note, annotation set, or other artifact | one Automerge document per room record | room-scoped `ui::RecordId`; `Scope::ResourceInstance` for artifact authority | record route in its home room |
 | Collaborative filesystem entry | filesystem catalogue/content store | rename-stable `FileRecordId`; `Scope::FsRecord` | follows rename and move |
 | Host filesystem access | the host filesystem | component-aligned path; `Scope::FsPath` | never implies record authority and never matches CRDT operations |

@@ -10,12 +10,12 @@
 //! windows paint, hit testing, fetching, scrolling, and accessibility to the
 //! same visible rows.
 
+use crate::time::Instant;
 use automerge::{AutoCommit, ObjId};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::Instant;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -402,7 +402,7 @@ pub struct DataTable<Row> {
     on_header_click: Option<Box<dyn FnMut(usize)>>,
     /// For internal double-click detection (used only when `on_activate` is
     /// set and the table is long-lived).
-    last_click_row: Option<(usize, std::time::Instant)>,
+    last_click_row: Option<(usize, crate::time::Instant)>,
     /// Active only in internal-virtualization mode (host called
     /// `set_viewport` and rows overflow it); dormant when wrapped in an
     /// outer [`crate::widget::Scrollable`], to avoid a double bar.
@@ -1465,7 +1465,7 @@ impl<Row> DataTable<Row> {
             return;
         }
         if self.drag_scroll.is_tracking() {
-            let now = Instant::now();
+            let now = crate::time::now();
             if let Some(update) = self.drag_scroll.update(pt.y, now) {
                 self.momentum.stop();
                 self.set_scroll_offset(update.target_offset);
@@ -1550,7 +1550,7 @@ impl<Row> DataTable<Row> {
             && pt.y <= self.rect.y1;
         if self.internal_scroll() && in_body {
             self.drag_scroll
-                .begin(pt.y, self.viewport.offset(), Instant::now());
+                .begin(pt.y, self.viewport.offset(), crate::time::now());
             *focus_target = Some(node_id);
             *handled = true;
             return;
@@ -1577,7 +1577,7 @@ impl<Row> DataTable<Row> {
                 cb(ri, ctrl, shift);
             }
             // Internal double-click → activate (long-lived hosts).
-            let now = std::time::Instant::now();
+            let now = crate::time::now();
             let is_double = matches!(
                 self.last_click_row,
                 Some((pri, t)) if pri == ri && now.duration_since(t) < crate::gesture::multi_click_interval()
@@ -1611,13 +1611,13 @@ impl<Row> DataTable<Row> {
         if self.vbar.release() {
             did = true;
         }
-        if let Some(drag) = self.drag_scroll.finish(Instant::now()) {
+        if let Some(drag) = self.drag_scroll.finish(crate::time::now()) {
             if drag.dragged {
                 if self.reduce_motion {
                     self.momentum.stop();
                 } else {
                     self.momentum.fling(drag.velocity);
-                    self.last_tick = Some(Instant::now());
+                    self.last_tick = Some(crate::time::now());
                 }
             } else {
                 self.select_row_at_cursor(modifiers, handled, focus_target, node_id);
@@ -1647,7 +1647,7 @@ impl<Row> DataTable<Row> {
                     -pp.y
                 }
             };
-            self.last_tick = Some(Instant::now());
+            self.last_tick = Some(crate::time::now());
             let before = self.viewport.offset();
             self.set_scroll_offset(before + dy);
             *handled = self.viewport.offset().to_bits() != before.to_bits();
@@ -1870,11 +1870,11 @@ impl<Row: 'static> Widget for DataTable<Row> {
         if received_changes {
             self.notify_model_changes(&model_changes);
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         let elapsed = self
             .last_tick
             .replace(now)
-            .map_or(std::time::Duration::ZERO, |last| {
+            .map_or(crate::time::Duration::ZERO, |last| {
                 now.saturating_duration_since(last)
             });
         let mut children_changed = false;
@@ -2686,10 +2686,10 @@ mod tier_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::Button;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use std::time::Duration;
 
     #[derive(Clone)]
     struct R {
@@ -3880,8 +3880,8 @@ mod tests {
         assert_eq!(immediate, 60.0);
         assert!(table.needs_animation_frame());
         table.last_tick = Some(
-            Instant::now()
-                .checked_sub(std::time::Duration::from_millis(16))
+            crate::time::now()
+                .checked_sub(crate::time::Duration::from_millis(16))
                 .expect("a 16 ms earlier instant is representable"),
         );
         assert!(Widget::update(
@@ -4283,7 +4283,7 @@ mod tests {
         assert_eq!(table.scroll_y(), 60.0_f32);
         assert!(!table.momentum.is_active());
 
-        let now = Instant::now();
+        let now = crate::time::now();
         let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
         let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
         table

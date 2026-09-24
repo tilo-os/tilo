@@ -27,7 +27,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
     assert!(crate::runtime_host::Session::start(&root).is_err());
     let invocation = tilo_actions::InvocationId::new();
     let membership = session.workspace_tree();
-    let workspace_id = membership.read().workspaces[0].id;
+    let workspace_id = membership.read().desktop.workspaces[0].id;
     assert!(membership.write().append_workspace_effect_receipt(
         workspace_id,
         invocation,
@@ -48,7 +48,7 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
     assert_eq!(reopened.room, room);
     let membership = reopened.workspace_tree();
     let tree = membership.read();
-    let receipts = &tree.workspaces[0].effect_receipts;
+    let receipts = &tree.desktop.workspaces[0].effect_receipts;
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].invocation, invocation);
     assert_eq!(receipts[0].actor, "agent:Scribe");

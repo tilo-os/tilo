@@ -206,7 +206,7 @@ impl InternalRelease {
                 release_id: "fixture-only".into(),
                 arch: "x86_64".into(),
                 manifest_url: url.into(),
-                manifest_sha256: format!("{:x}", Sha256::digest(bytes)),
+                manifest_sha256: hex::encode(Sha256::digest(bytes)),
                 manifest_size: bytes.len() as u64,
             },
         }
@@ -227,7 +227,7 @@ impl InternalRelease {
     ) -> Result<crate::setup::internal_bundle::InternalBundle, String> {
         let expected = &self.metadata;
         if bytes.len() as u64 != expected.manifest_size
-            || format!("{:x}", Sha256::digest(bytes)) != expected.manifest_sha256
+            || hex::encode(Sha256::digest(bytes)) != expected.manifest_sha256
         {
             return Err("Internal manifest does not match the embedded catalog bytes.".into());
         }
@@ -483,7 +483,7 @@ fn sha256_controlled(path: &Path, control: &DownloadControl) -> Result<String, S
             .ok_or_else(|| "Could not bound downloaded data while verifying it.".to_string())?;
         hash.update(chunk);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(hex::encode(hash.finalize()))
 }
 
 fn same_origin(actual: &reqwest::Url, trusted: &reqwest::Url) -> bool {
@@ -744,7 +744,7 @@ fn verified_image_observed(
 
     let archive_part = root.join("tilo-installer.img.zst.part");
     let image_part = root.join("tilo-installer.img.part");
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .user_agent("Tilo-Imager/1")
         .timeout(std::time::Duration::from_secs(60 * 60))
         .build()
@@ -929,7 +929,7 @@ mod tests {
     }
 
     fn test_client() -> reqwest::blocking::Client {
-        reqwest::blocking::Client::builder().build().unwrap()
+        tilo_net::http::blocking_client().build().unwrap()
     }
 
     #[test]
@@ -1429,7 +1429,7 @@ mod internal_catalog_tests {
         json!({"purpose":"tilo-internal-installer","layout":"internal-bundle-v2",
             "release_id":"fixture-only","arch":"x86_64",
             "manifest_url":"https://code.sandbox.example/fixture/manifest.json",
-            "manifest_sha256":format!("{:x}",Sha256::digest(manifest)),"manifest_size":manifest.len()})
+            "manifest_sha256":hex::encode(Sha256::digest(manifest)),"manifest_size":manifest.len()})
     }
     /// The catalog `os/tests/staging_helper_loop.sh` writes for its synthetic
     /// bundle (via `TILO_STAGING_TEST_CATALOG`) must pass the real parser.

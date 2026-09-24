@@ -4,7 +4,7 @@
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It persists as a JSON array under
-//! `dirs::data_dir()/qos-browser/history.json`. The legacy directory name is
+//! `xdg_paths::data_dir()/qos-browser/history.json`. The legacy directory name is
 //! retained so an upgrade does not strand a user's existing history.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
@@ -361,7 +361,7 @@ fn bounded_text(value: &str, limit: usize) -> String {
 }
 
 /// Absolute path to the history file:
-/// `dirs::data_dir()/qos-browser/history.json`. `None` when the platform
+/// `xdg_paths::data_dir()/qos-browser/history.json`. `None` when the platform
 /// exposes no data directory. The legacy directory remains the canonical
 /// default until storage migration is explicit and crash-safe.
 pub fn history_path() -> Option<PathBuf> {

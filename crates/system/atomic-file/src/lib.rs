@@ -23,6 +23,14 @@
 //! The temp file is created beside the target, never in `/tmp`, so the rename is always
 //! within one filesystem — a cross-device rename fails with `EXDEV` and would leave the
 //! original untouched and the write silently lost by any caller that ignored the error.
+//!
+//! Every write gets its own exclusively created temp name (process id plus a
+//! per-process sequence), so concurrent writers never truncate each other's
+//! half-written temp file, and a temp file left behind by a crash never blocks
+//! the next save.
+//!
+//! With the `json` feature, `json` adds load-or-default reading and atomic
+//! saving of `serde` values on top of the same write path.
 
 #![cfg_attr(
     test,
@@ -41,6 +49,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "json")]
+pub mod json;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -131,6 +142,77 @@ pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> 
     write_inner(path, bytes, Some(mode))
 }
 
+/// Save user-private state: the parent directory is created owner-only (`0700`)
+/// and tightened to `0700` when it already exists, and the file lands with mode
+/// `0600` before it is visible at `path` — see [`write_with_mode`].
+///
+/// # Errors
+///
+/// Returns an error if the parent directory cannot be created or restricted, or
+/// any error [`write_with_mode`] documents.
+pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    create_private_parent(path)?;
+    write_inner(path, bytes, Some(0o600))
+}
+
+/// Create `path`'s parent owner-only, and restrict it when it already exists:
+/// `create_dir_all`'s mode only reaches newly created components.
+fn create_private_parent(path: &Path) -> io::Result<()> {
+    let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(dir)
+}
+
+/// [`write`], with the temp file opened by `open_temp` instead of this crate —
+/// for callers that must validate the opened object (owner, access, not a link)
+/// before trusting it with their bytes.
+///
+/// `open_temp` receives a fresh hidden sibling path and must create it
+/// **exclusively** (`create_new`); an `AlreadyExists` error makes the next
+/// name be tried. The file is synced, renamed over `path` and the directory
+/// synced exactly as [`write`] does.
+///
+/// # Errors
+///
+/// Returns `open_temp`'s error, or any error [`write`] documents.
+pub fn write_with_temp_opener(
+    path: &Path,
+    bytes: &[u8],
+    open_temp: impl FnMut(&Path) -> io::Result<File>,
+) -> io::Result<()> {
+    publish(path, bytes, open_temp, Publish::Replace).map(|_| ())
+}
+
+/// Publish `bytes` at `path` only if nothing exists there yet, never replacing
+/// a concurrently created file. The complete, synced temp file is hard-linked
+/// into place, so the name never refers to partial contents. Returns `false`
+/// when another writer already owns the name.
+///
+/// `open_temp` has the contract [`write_with_temp_opener`] documents.
+///
+/// # Errors
+///
+/// Returns creation, write, sync or hard-link errors. The filesystem must
+/// support same-directory hard links for the no-clobber guarantee.
+pub fn create_with_temp_opener(
+    path: &Path,
+    bytes: &[u8],
+    open_temp: impl FnMut(&Path) -> io::Result<File>,
+) -> io::Result<bool> {
+    publish(path, bytes, open_temp, Publish::CreateNew)
+}
+
 fn create_parent(path: &Path) -> io::Result<()> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -153,7 +235,24 @@ pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
 }
 
 fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
-    let (tmp, mut file) = create_temp(path, mode)?;
+    publish(path, bytes, |tmp| open_temp(tmp, mode), Publish::Replace).map(|_| ())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Publish {
+    /// Rename over whatever `path` currently names.
+    Replace,
+    /// Hard-link into place only while `path` is still absent.
+    CreateNew,
+}
+
+fn publish(
+    path: &Path,
+    bytes: &[u8],
+    open: impl FnMut(&Path) -> io::Result<File>,
+    how: Publish,
+) -> io::Result<bool> {
+    let (tmp, mut file) = create_temp(path, open)?;
     let written = file.write_all(bytes).and_then(|()| file.sync_all());
     drop(file);
     if let Err(error) = written {
@@ -161,10 +260,20 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
         return Err(error);
     }
 
-    if let Err(e) = fs::rename(&tmp, path) {
-        // Don't leave litter beside the target when the rename fails.
+    let published = match how {
+        Publish::Replace => fs::rename(&tmp, path),
+        Publish::CreateNew => fs::hard_link(&tmp, path),
+    };
+    if how == Publish::CreateNew || published.is_err() {
+        // Don't leave litter beside the target: after a hard link the temp
+        // name is a second link, and after a failed rename it is orphaned.
         let _ = fs::remove_file(&tmp);
-        return Err(e);
+    }
+    if let Err(error) = published {
+        if how == Publish::CreateNew && error.kind() == io::ErrorKind::AlreadyExists {
+            return Ok(false);
+        }
+        return Err(error);
     }
 
     // The data is durable before rename, but the new directory entry is not
@@ -172,18 +281,15 @@ fn write_inner(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
     // without this step can resurrect an old rollback floor after power loss.
     // A failure happens after publication, so callers may observe the new file,
     // but they must not treat it as crash-durable and may safely retry.
-    let dir = path.parent().map_or_else(
-        || Path::new("."),
-        |parent| {
-            if parent.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                parent
-            }
-        },
-    );
-    sync_directory(dir)?;
-    Ok(())
+    sync_directory(parent_or_current(path))?;
+    Ok(true)
+}
+
+fn parent_or_current(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
 }
 
 /// Flush an existing directory after publishing or renaming a file inside it.
@@ -228,35 +334,15 @@ fn temp_path(path: &Path, sequence: u64) -> PathBuf {
     }
 }
 
-fn create_temp(path: &Path, mode: Option<u32>) -> io::Result<(PathBuf, File)> {
+fn create_temp(
+    path: &Path,
+    mut open: impl FnMut(&Path) -> io::Result<File>,
+) -> io::Result<(PathBuf, File)> {
     for _ in 0..32 {
         let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let tmp = temp_path(path, sequence);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(mode);
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        match options.open(&tmp) {
-            Ok(file) => {
-                #[cfg(unix)]
-                if let Some(mode) = mode {
-                    use std::os::unix::fs::PermissionsExt;
-                    // `mode()` is filtered by umask. Restore the caller's
-                    // exact contract while the file still has only its hidden
-                    // temporary name; the initial mode can only be stricter.
-                    if let Err(error) = file.set_permissions(fs::Permissions::from_mode(mode)) {
-                        drop(file);
-                        let _ = fs::remove_file(&tmp);
-                        return Err(error);
-                    }
-                }
-                return Ok((tmp, file));
-            }
+        match open(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
         }
@@ -265,6 +351,33 @@ fn create_temp(path: &Path, mode: Option<u32>) -> io::Result<(PathBuf, File)> {
         io::ErrorKind::AlreadyExists,
         "could not allocate a unique atomic-write temporary file",
     ))
+}
+
+/// The default temp opener: exclusive creation, with `mode` applied exactly.
+fn open_temp(tmp: &Path, mode: Option<u32>) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode);
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    let file = options.open(tmp)?;
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        // `mode()` is filtered by umask. Restore the caller's exact contract
+        // while the file still has only its hidden temporary name; the
+        // initial mode can only be stricter.
+        if let Err(error) = file.set_permissions(fs::Permissions::from_mode(mode)) {
+            drop(file);
+            let _ = fs::remove_file(tmp);
+            return Err(error);
+        }
+    }
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -424,6 +537,92 @@ mod tests {
         let final_value = fs::read(&*target).unwrap();
         assert_eq!(final_value.len(), 64 * 1024);
         assert!(final_value.iter().all(|byte| *byte == final_value[0]));
+    }
+
+    #[test]
+    fn a_crashed_writers_temp_file_does_not_block_the_next_save() {
+        // A fixed `path.tmp` name opened with `create_new` would fail forever
+        // after one crash; a truncating open would share it between writers.
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("state.json");
+        for sequence in 0..4 {
+            fs::write(temp_path(&p, sequence), b"left by a crash").unwrap();
+        }
+        write(&p, b"saved").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"saved");
+    }
+
+    #[test]
+    fn the_directory_barrier_targets_the_containing_directory() {
+        assert_eq!(parent_or_current(Path::new("/a/b/c")), Path::new("/a/b"));
+        assert_eq!(parent_or_current(Path::new("c")), Path::new("."));
+        assert_eq!(parent_or_current(Path::new("/")), Path::new("."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_creates_and_tightens_an_owner_only_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = TempDir::new().unwrap();
+        let parent = d.path().join("state");
+        let p = parent.join("consents.json");
+        write_private(&p, b"{}").unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&parent), 0o700);
+        assert_eq!(mode(&p), 0o600);
+
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        write_private(&p, b"{\"a\":1}").unwrap();
+        assert_eq!(mode(&parent), 0o700, "an existing parent is restricted too");
+        assert_eq!(fs::read(&p).unwrap(), b"{\"a\":1}");
+    }
+
+    #[test]
+    fn a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("identity");
+        let mut offered = Vec::new();
+        write_with_temp_opener(&p, b"bytes", |tmp| {
+            offered.push(tmp.to_path_buf());
+            if offered.len() == 1 {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            OpenOptions::new().write(true).create_new(true).open(tmp)
+        })
+        .unwrap();
+        assert_eq!(offered.len(), 2);
+        assert_ne!(offered[0], offered[1]);
+        assert!(offered.iter().all(|tmp| tmp.parent() == Some(d.path())));
+        assert_eq!(fs::read(&p).unwrap(), b"bytes");
+        assert_eq!(fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_rejecting_opener_leaves_the_target_untouched() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("identity");
+        fs::write(&p, b"original").unwrap();
+        let error = write_with_temp_opener(&p, b"replacement", |_| {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&p).unwrap(), b"original");
+    }
+
+    #[test]
+    fn create_publishes_only_while_the_name_is_free() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("broker-identity");
+        let open = |tmp: &Path| OpenOptions::new().write(true).create_new(true).open(tmp);
+        assert!(create_with_temp_opener(&p, b"first", open).unwrap());
+        assert!(!create_with_temp_opener(&p, b"second", open).unwrap());
+        assert_eq!(fs::read(&p).unwrap(), b"first");
+        assert_eq!(
+            fs::read_dir(d.path()).unwrap().count(),
+            1,
+            "neither the winner's nor the loser's temp file may remain"
+        );
     }
 
     #[test]

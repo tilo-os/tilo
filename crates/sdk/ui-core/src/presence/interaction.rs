@@ -14,7 +14,7 @@ use crate::permissions::UserId;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 use tilo_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
 use vello::{
     Scene,
@@ -71,7 +71,7 @@ impl PresenceCtx {
         &mut self,
         interaction: SemanticInteraction,
     ) -> Result<bool, tilo_actions::InteractionViolation> {
-        self.apply_interaction_at(interaction, Instant::now())
+        self.apply_interaction_at(interaction, crate::time::now())
     }
 
     /// Observe semantic work without claiming its resource belongs to this
@@ -88,7 +88,7 @@ impl PresenceCtx {
         &mut self,
         interaction: SemanticInteraction,
     ) -> Result<bool, tilo_actions::InteractionViolation> {
-        self.apply_interaction_at(interaction, Instant::now())
+        self.apply_interaction_at(interaction, crate::time::now())
     }
 
     fn apply_interaction_at(
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn invocation_updates_are_monotonic_and_terminal_is_final() {
-        let at = Instant::now();
+        let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
         assert!(
             presence
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn an_invocation_cannot_substitute_its_actor_or_target() {
-        let at = Instant::now();
+        let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
         presence
             .apply_interaction_at(interaction(2, 1, InteractionPhase::Applying), at)
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn foreign_app_fallback_is_strictly_scoped_to_catalogue_owner() {
-        let at = Instant::now();
+        let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
         let mut writer = interaction(20, 1, InteractionPhase::Applying);
         writer.action.app = Some(tilo_actions::ActionApp {
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn active_and_terminal_states_expire_on_their_own_dwell() {
-        let at = Instant::now();
+        let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
         presence
             .apply_interaction_at(interaction(3, 1, InteractionPhase::Applying), at)
@@ -694,7 +694,7 @@ mod tests {
 
     #[test]
     fn fallback_cards_do_not_overlap_and_fold_excess_activity() {
-        let at = Instant::now();
+        let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
         for id in 1..=5 {
             presence
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn applying_an_agent_interaction_does_not_synthesize_input_presence() {
-        let at = Instant::now();
+        let at = crate::time::now();
         let mut presence = PresenceCtx::empty();
         presence
             .apply_interaction_at(interaction(9, 1, InteractionPhase::Applying), at)
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn room_fanout_only_paints_the_addressed_app_surface() {
-        let at = Instant::now();
+        let at = crate::time::now();
         let update = interaction(10, 1, InteractionPhase::Applying);
         let key = crate::presence::PresenceKey::resource(
             "org.tilo.Writer",
@@ -741,7 +741,7 @@ mod tests {
         let mut writer = PresenceCtx::empty();
         writer.set_surface_id("org.tilo.Writer");
         writer.apply_remote_presence("broker-agent".into(), key, payload);
-        assert!(writer.has_visible_interactions(Instant::now()));
+        assert!(writer.has_visible_interactions(crate::time::now()));
     }
 
     #[test]

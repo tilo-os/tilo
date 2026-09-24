@@ -73,6 +73,8 @@ struct Harness {
     focused: Option<NodeId>,
     focus_order: Vec<NodeId>,
     viewport: (f32, f32),
+    /// Dropped last: the app's stores live under this guard's config root.
+    _config: crate::prefs::test_env::ScratchConfig,
 }
 
 impl Harness {
@@ -81,8 +83,9 @@ impl Harness {
     }
 
     fn at_size(width: f32, height: f32) -> Self {
+        let config = crate::prefs::test_env::ScratchConfig::new();
         let mut h = Harness {
-            app: SettingsApp::new(),
+            app: config.app(),
             doc: AutoCommit::new(),
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -90,6 +93,7 @@ impl Harness {
             focused: None,
             focus_order: Vec::new(),
             viewport: (width, height),
+            _config: config,
         };
         h.layout();
         // AppShell first learns the real width in apply_layout and requests
@@ -421,7 +425,8 @@ fn native_observer_tracks_search_rebuild_and_backspace() {
 #[test]
 fn native_observer_does_not_commit_original_pending_changes() {
     use automerge::transaction::Transactable;
-    let app = SettingsApp::new();
+    let config = crate::prefs::test_env::ScratchConfig::new();
+    let app = config.app();
     let mut doc = AutoCommit::new();
     doc.put(root(), "diagnostic_test", "pending").unwrap();
     let debug_before = format!("{doc:?}");

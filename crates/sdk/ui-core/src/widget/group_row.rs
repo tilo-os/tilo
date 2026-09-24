@@ -4,9 +4,9 @@
 //! `pending_detach`, splices the tab + `TileHost` into a matching sibling.
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
+use crate::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -138,16 +138,14 @@ struct GroupDrag {
     moved: bool,
 }
 
-/// The one spatial answer to a tab drag within a strip.
+/// The one spatial answer to a tab drag within a strip — the desktop
+/// model's drop target, so what the row previews is exactly what the
+/// model applies.
 ///
 /// Both hover feedback and release consume this value. A target in an
 /// existing group names the exact tab-list insertion point; a group gap names
 /// the slot where a new window group will be made.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TabDropTarget {
-    ExistingGroup { group_id: u64, tab_index: usize },
-    GroupGap { gap_index: usize },
-}
+pub use tilo_desktop_model::DropTarget as TabDropTarget;
 
 /// Payload published when a tab drag ends outside the row's own band; the
 /// shell hit-tests the release point against other strips and delivers it
@@ -1457,7 +1455,7 @@ impl GroupRow {
                         src_idx: idx,
                         group_id,
                         start: self.last_cursor,
-                        lifted_at: Instant::now(),
+                        lifted_at: crate::time::now(),
                         moved: false,
                     });
                 }
@@ -1842,7 +1840,7 @@ impl Widget for GroupRow {
         }
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased.
-        self.tick_snap_at(Instant::now());
+        self.tick_snap_at(crate::time::now());
         // Panning stays in lock-step with the wheel-disc's own
         // `-scroll_x` shift in `ShellOverlayHost::apply_layout`. A
         // fullscreen-promoted group drops the leading gutter and any
@@ -2199,7 +2197,7 @@ impl GroupRow {
                 })
                 .collect();
             self.shift_anim = (!offsets.is_empty()).then(|| ShiftAnim {
-                started: Instant::now(),
+                started: crate::time::now(),
                 offsets,
             });
         }
@@ -3579,7 +3577,7 @@ mod tests {
         let expected = plain.scroll_x();
         assert!(expected > 0.0);
 
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         assert!(
             anim.scroll_group_into_view_animated(target_id, t0),
             "an off-screen group must start an animated pan"
@@ -3608,7 +3606,7 @@ mod tests {
         // Fixture's full 2000px viewport: first group is fully inside.
         let (mut row, _taffy, _root) =
             make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
-        assert!(!row.scroll_group_into_view_animated(100, Instant::now()));
+        assert!(!row.scroll_group_into_view_animated(100, crate::time::now()));
         assert_eq!(row.scroll_x(), 0.0);
         assert!(
             !row.needs_animation_frame(),
@@ -3833,12 +3831,11 @@ mod tests {
 
     #[test]
     fn group_pruned_after_close_fade_completes() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
         // Already-elapsed timestamp: ready-to-prune on the very next tick.
-        row.groups[0].set_closing_at_for_tests(earlier(Instant::now(), 200));
+        row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 200));
         assert_eq!(row.groups.len(), 2, "precondition: two groups before prune");
 
         let event = WindowEvent::CursorMoved {
@@ -3876,11 +3873,10 @@ mod tests {
     /// Mirror of the prune test above.
     #[test]
     fn group_retained_during_close_fade() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
-        row.groups[0].set_closing_at_for_tests(Instant::now());
+        row.groups[0].set_closing_at_for_tests(crate::time::now());
         assert!(row.groups[0].is_closing());
         assert!(!row.groups[0].close_complete());
 
@@ -3914,7 +3910,6 @@ mod tests {
 
     #[test]
     fn drop_onto_closing_group_creates_new_group_instead() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         // Two multi-tab groups so neither gets pruned by the
@@ -3923,7 +3918,7 @@ mod tests {
 
         // B (index 1) is fresh-latched closing, so the prune sweep won't
         // touch it this tick.
-        row.groups[1].set_closing_at_for_tests(Instant::now());
+        row.groups[1].set_closing_at_for_tests(crate::time::now());
         assert!(row.groups[1].is_closing());
         assert!(!row.groups[1].close_complete());
         let b_tabs_before: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
@@ -4150,13 +4145,12 @@ mod tests {
     /// means the tab stays in source.
     #[test]
     fn cross_group_drop_into_closing_content_area_keeps_tab_in_source() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         // B (index 1) is fresh-latched closing so the prune sweep won't
         // reap it this tick.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1, 2], &[10, 11]]);
-        row.groups[1].set_closing_at_for_tests(Instant::now());
+        row.groups[1].set_closing_at_for_tests(crate::time::now());
         assert!(row.groups[1].is_closing());
         assert!(!row.groups[1].close_complete());
 
@@ -4259,14 +4253,13 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     fn group_prune_keeps_node_ids_aligned_in_debug() {
-        use std::time::Instant;
         use winit::event::WindowEvent;
 
         // Non-adjacent prune indices (0, 2) verify the
         // highest-index-first sort doesn't shift slots under the loop.
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
-        row.groups[0].set_closing_at_for_tests(earlier(Instant::now(), 500));
-        row.groups[2].set_closing_at_for_tests(earlier(Instant::now(), 500));
+        row.groups[0].set_closing_at_for_tests(earlier(crate::time::now(), 500));
+        row.groups[2].set_closing_at_for_tests(earlier(crate::time::now(), 500));
 
         let groups_pre = row.groups.len();
         let node_ids_pre = row.node_ids.len();
@@ -4697,7 +4690,7 @@ mod tests {
             );
             assert!(!handled, "a bare wheel must be left unclaimed by the strip");
             // Lets any wrongly-started eased travel show itself.
-            row.tick_snap_at(Instant::now() + Duration::from_millis(400));
+            row.tick_snap_at(crate::time::now() + Duration::from_millis(400));
             assert_eq!(row.scroll_x(), 0.0, "a bare wheel must not move the strip");
             row.apply_layout(&taffy, root, Point::ORIGIN);
             assert_eq!(
@@ -4747,7 +4740,7 @@ mod tests {
             "total gesture travel must reverse without rebasing its origin"
         );
         assert!(
-            !row.end_strip_pan(Instant::now()),
+            !row.end_strip_pan(crate::time::now()),
             "an in-range release must not snap away from the fingers"
         );
         assert!((row.scroll_x() - 320.0).abs() < 0.01);
@@ -4757,7 +4750,7 @@ mod tests {
         row.begin_strip_pan();
         assert!(row.update_strip_pan(10.0));
         assert!((row.scroll_x() - 330.0).abs() < 0.01);
-        let _ = row.end_strip_pan(Instant::now());
+        let _ = row.end_strip_pan(crate::time::now());
     }
 
     #[test]
@@ -4785,7 +4778,7 @@ mod tests {
             previous_gain = gain;
         }
 
-        let now = Instant::now();
+        let now = crate::time::now();
         assert!(row.end_strip_pan(now));
         row.tick_snap_at(now + Duration::from_millis(u64::from(SNAP_ANIM_MS) + 1));
         assert!(
@@ -4804,7 +4797,7 @@ mod tests {
         row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
         // 400 is closer to 608 than to 0: exercises the second group's edge.
         row.set_scroll_x_for_test(400.0);
-        let base = Instant::now();
+        let base = crate::time::now();
         row.set_last_wheel_at_for_test(earlier(base, 250));
 
         // First tick after idle: snap kicks off and advances ~25% of the
@@ -4837,7 +4830,7 @@ mod tests {
         row.set_content_w_for_test(1816.0);
         row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
         row.set_scroll_x_for_test(400.0);
-        let base = Instant::now();
+        let base = crate::time::now();
         // Only 100 ms since the last wheel — inside the idle window.
         row.set_last_wheel_at_for_test(earlier(base, 100));
 
@@ -4857,7 +4850,7 @@ mod tests {
         let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
         // Stage an in-flight snap directly to skip a real idle window.
         row.set_scroll_x_for_test(300.0);
-        let base = Instant::now();
+        let base = crate::time::now();
         row.set_last_wheel_at_for_test(earlier(base, 250));
         row.tick_snap_at(base);
         assert!(
@@ -4919,7 +4912,7 @@ mod tests {
              ({expected}); got {}",
             anim.to
         );
-        row.tick_snap_at(Instant::now() + Duration::from_millis(400));
+        row.tick_snap_at(crate::time::now() + Duration::from_millis(400));
         assert!(
             (row.scroll_x() - expected).abs() < 0.5,
             "the snap must settle on its original target ({expected}); \

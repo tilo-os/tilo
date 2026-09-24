@@ -16,13 +16,13 @@
 //! first [`TRACE_FRAMES`] frames and draws are logged individually — the
 //! fast path to diagnosing a visual glitch.
 //!
-//! All timing uses `std::time::Instant`; the whole module is a no-op
+//! All timing uses `crate::time::Instant`; the whole module is a no-op
 //! (one relaxed atomic load) when disabled.
 
+use crate::time::{Duration, Instant};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 
 /// Frames between periodic stderr summaries.
 const SUMMARY_EVERY: u64 = 120;
@@ -104,7 +104,7 @@ pub fn record_input(kind: &'static str) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if s.pending_input.is_none() {
-        s.pending_input = Some((Instant::now(), kind));
+        s.pending_input = Some((crate::time::now(), kind));
     }
 }
 
@@ -114,7 +114,7 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     if !enabled() {
         return;
     }
-    let now = Instant::now();
+    let now = crate::time::now();
     let mut s = state()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -16,7 +16,7 @@ use automerge::AutoCommit;
 /// documents written by the former widget-owned store. The source is retained;
 /// merging its unchanged history again cannot resurrect a subsequently deleted
 /// event or replace a newer edit.
-pub fn open_state(app_id: &'static str) -> (ui::State, ui::persist::Autosave) {
+pub fn open_state(app_id: &'static str) -> (ui::State, ui::persist::DocWriter) {
     match default_path() {
         Some(legacy) => ui::persist::open_migrating(app_id, &legacy),
         None => ui::persist::open(app_id),

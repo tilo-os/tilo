@@ -413,7 +413,7 @@ pub(super) struct MigrationStore {
     root_path: PathBuf,
     root: Arc<PinnedDirectory>,
     // The descriptor lock survives while any live worker owns this store.
-    ownership: fs::File,
+    ownership: super::advisory_lock::ExclusiveLock,
     ownership_identity: Metadata,
 }
 
@@ -468,8 +468,7 @@ impl MigrationStore {
         if !same_directory_identity(&expected, &ownership_identity) {
             return Err("migration ownership lock was replaced".into());
         }
-        ownership
-            .try_lock()
+        let ownership = super::advisory_lock::ExclusiveLock::try_new(ownership)
             .map_err(|e| format!("folder imports are busy in another window or process: {e}"))?;
         let current = metadata_nofollow(&root.file, name).map_err(|e| e.to_string())?;
         if !same_directory_identity(&current, &ownership_identity) {

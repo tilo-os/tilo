@@ -358,7 +358,7 @@ impl NotesDoc {
             };
 
             let order = match doc.get(&page, "order") {
-                Ok(Some((Value::Scalar(v), _))) => num::u32_of_i64(v.to_i64().unwrap_or(0)),
+                Ok(Some((Value::Scalar(v), _))) => num::u32_of_i64(v.as_i64().unwrap_or(0)),
                 _ => 0,
             };
 
@@ -578,7 +578,7 @@ impl NotesDoc {
             };
             matches!(
                 doc.get(&block, "notes_marks_version"),
-                Ok(Some((Value::Scalar(value), _))) if value.to_i64() == Some(1)
+                Ok(Some((Value::Scalar(value), _))) if value.as_i64() == Some(1)
             )
         })
     }
@@ -788,7 +788,7 @@ fn prepare_duplicate_blocks(
         let code_group = doc
             .get(&source_map, "code_group")
             .map_err(|e| e.to_string())?
-            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .map(|old| -> Result<_, String> {
                 let copied = blocks
                     .get(id.as_str())
@@ -809,7 +809,7 @@ fn prepare_duplicate_blocks(
             nesting: doc
                 .get(&source_map, "nesting")
                 .map_err(|e| e.to_string())?
-                .and_then(|(value, _)| value.to_u64())
+                .and_then(|(value, _)| value.as_u64())
                 .unwrap_or(0) as u8,
         });
     }
@@ -1028,7 +1028,7 @@ fn order_enabled(doc: &AutoCommit, list: &ObjId) -> bool {
     doc.get(ROOT, "notes_schema_version")
         .ok()
         .flatten()
-        .is_some_and(|(value, _)| value.to_u64().is_some_and(|version| version >= 2))
+        .is_some_and(|(value, _)| value.as_u64().is_some_and(|version| version >= 2))
         || NotesDoc::has_block_order(doc, list)
 }
 
@@ -1064,7 +1064,7 @@ fn enable_block_order(doc: &mut AutoCommit, list: &ObjId) -> Result<(), String> 
         .get(ROOT, "notes_schema_version")
         .ok()
         .flatten()
-        .is_some_and(|(value, _)| value.to_u64() == Some(1));
+        .is_some_and(|(value, _)| value.as_u64() == Some(1));
     if canonical_v1 {
         let lists = NotesDoc::list_pages(doc)
             .into_iter()
@@ -1166,7 +1166,7 @@ fn insert_block(
         .get(ROOT, "notes_schema_version")
         .ok()
         .flatten()
-        .is_some_and(|(value, _)| value.to_i64().is_some_and(|version| version >= 1))
+        .is_some_and(|(value, _)| value.as_i64().is_some_and(|version| version >= 1))
     {
         doc.put(&block, "notes_marks_version", 1_i64)
             .map_err(|e| e.to_string())?;

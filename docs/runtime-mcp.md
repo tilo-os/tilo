@@ -103,13 +103,19 @@ The endpoint implements `initialize`, `ping`, `tools/list`, `tools/call`,
 `resources/list`, and `resources/read`. Its generic tools list live app
 instances, browse a bounded lazy resource/action directory, resolve an exact
 current action, start it, inspect its canonical status, and request
-cancellation. Call `qos_list_apps`, then `qos_query`; preserve the returned peer
+cancellation. Starting, status and cancellation go through the session's
+action host — the same `tilo_actions::remote` door apps, agents and peers use —
+so an invocation is identified by a UUID `invocation_id`. Pass your own
+`invocation_id` to `qos_invoke` to make a retry safe: repeating the same id and
+request reports the original invocation instead of starting it again, and
+reusing an id for a different request is refused. Call `qos_list_apps`, then `qos_query`; preserve the returned peer
 id, revision, resource and action for `qos_resolve` or `qos_invoke`. Browse
 roots with an empty `parent_resource`, then use a returned resource as
 `parent_resource` to discover its actions and children. Follow `next_cursor`
 with the same revision and query. The optional `needle` searches declared
 search providers; it is not a search across every action label. After an
-invocation is accepted, poll `qos_status` until its real terminal update. Pass
+invocation is accepted, poll `qos_status` with its `invocation_id` until its
+real terminal update. Pass
 content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
 no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or

@@ -30,7 +30,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
 use zbus::zvariant::{ObjectPath, OwnedFd};
 use zbus::zvariant::{OwnedValue, Value};
@@ -856,25 +856,25 @@ impl InputCaptureBackend {
     }
     #[zbus(signal)]
     async fn disabled(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         session: ObjectPath<'_>,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn activated(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         session: ObjectPath<'_>,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn deactivated(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         session: ObjectPath<'_>,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::Result<()>;
     #[zbus(signal)]
     async fn zones_changed(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         session: ObjectPath<'_>,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::Result<()>;
@@ -1106,7 +1106,7 @@ fn insert_value(values: &mut HashMap<String, OwnedValue>, key: &str, value: Valu
 
 #[cfg(target_os = "linux")]
 async fn emit_signal(connection: &zbus::Connection, signal: PortalSignal) {
-    let context = match SignalContext::new(connection, super::OBJECT_PATH) {
+    let context = match SignalEmitter::new(connection, super::OBJECT_PATH) {
         Ok(context) => context,
         Err(_) => return,
     };

@@ -6333,7 +6333,7 @@ impl Widget for VideoEditorApp {
                 // timeline, leaving a narrow window looking like a black void.
                 let a = self.bin_flap.reveal() * SCRIM_ALPHA;
                 let scrim = theme.tokens.colors.surfaces.scrim;
-                fill_rect(scene, transform, with_alpha(scrim, a), r.scrim);
+                fill_rect(scene, transform, r.scrim, with_alpha(scrim, a));
             }
             if self.bin_flap.reveal() > 0.001 {
                 self.draw_bin(scene, transform, tr, theme, &r);
@@ -8100,9 +8100,9 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        fill_rect(scene, tf, c.surfaces.base, self.rect);
+        fill_rect(scene, tf, self.rect, c.surfaces.base);
         // Top bar.
-        fill_rect(scene, tf, c.surfaces.raised, r.topbar);
+        fill_rect(scene, tf, r.topbar, c.surfaces.raised);
         // The bar's foot, on its own last pixel row: derived against the
         // raised bar, so it still shows where the raised side panes meet it.
         stroke_line(
@@ -8130,12 +8130,12 @@ impl VideoEditorApp {
             // A panel glyph: the pane outline with its right column filled,
             // which is where the inspector lives and what the toggle reveals.
             let g = rect.inset(-8.0);
-            stroke_rrect(scene, tf, fg, g, 2.0, 1.4);
+            stroke_round(scene, tf, g, 2.0, fg, 1.4);
             fill_rect(
                 scene,
                 tf,
-                fg,
                 Rect::new(g.x0 + g.width() * 0.55, g.y0, g.x1, g.y1),
+                fg,
             );
         }
         // The project button. The frame size and rate still live in the
@@ -8290,8 +8290,8 @@ impl VideoEditorApp {
         }
         let c = &theme.tokens.colors;
         let w = self.rect;
-        fill_rect(scene, tf, with_alpha(c.accent[5], 0.10), w);
-        stroke_rrect(scene, tf, c.accent[5], w.inset(-4.0), 10.0, 3.0);
+        fill_rect(scene, tf, w, with_alpha(c.accent[5], 0.10));
+        stroke_round(scene, tf, w.inset(-4.0), 10.0, c.accent[5], 3.0);
         // One label, centred on the window, on a plate so it stays readable
         // over the timeline and the preview alike.
         let hint = "Drop to import";
@@ -8303,8 +8303,8 @@ impl VideoEditorApp {
             ctr.x + hw as f64 / 2.0 + 18.0,
             ctr.y + 20.0,
         );
-        fill_rrect(scene, tf, c.surfaces.raised, plate, 10.0);
-        stroke_rrect(scene, tf, c.accent[5], plate, 10.0, 1.5);
+        fill_round(scene, tf, plate, 10.0, c.surfaces.raised);
+        stroke_round(scene, tf, plate, 10.0, c.accent[5], 1.5);
         let baseline = text_baseline(plate, 15.0, tr);
         text_w(
             scene,
@@ -8359,9 +8359,9 @@ impl VideoEditorApp {
             (x0 + f64::from(w) + 24.0).min(self.project_notice_limit(r)),
             r.topbar.y1 + PANE_HEADING_Y0 + PANE_HEADING_H,
         );
-        fill_rrect(scene, tf, c.surfaces.raised, plate, 7.0);
-        fill_rrect(scene, tf, with_alpha(tint, 0.18), plate, 7.0);
-        stroke_rrect(scene, tf, with_alpha(tint, 0.55), plate, 7.0, 1.0);
+        fill_round(scene, tf, plate, 7.0, c.surfaces.raised);
+        fill_round(scene, tf, plate, 7.0, with_alpha(tint, 0.18));
+        stroke_round(scene, tf, plate, 7.0, with_alpha(tint, 0.55), 1.0);
         let baseline = text_baseline(plate, 11.5, tr);
         text(
             scene,
@@ -8465,8 +8465,8 @@ impl VideoEditorApp {
         let shown = cached.shown.clone();
         let c = &theme.tokens.colors;
         let tint = level.tint(theme);
-        fill_rrect(scene, tf, c.surfaces.raised, chip, 7.0);
-        fill_rrect(scene, tf, with_alpha(tint, 0.18), chip, 7.0);
+        fill_round(scene, tf, chip, 7.0, c.surfaces.raised);
+        fill_round(scene, tf, chip, 7.0, with_alpha(tint, 0.18));
         // A render in flight fills the chip as it encodes: the progress bar
         // the dialog used to hold alone, in a place that survives the dialog.
         // Clipped to the chip's own shape so the fill's leading edge is a
@@ -8484,13 +8484,13 @@ impl VideoEditorApp {
                 fill_rect(
                     scene,
                     tf,
-                    with_alpha(tint, 0.34),
                     Rect::new(chip.x0, chip.y0, chip.x0 + done, chip.y1),
+                    with_alpha(tint, 0.34),
                 );
                 scene.pop_layer();
             }
         }
-        stroke_rrect(scene, tf, with_alpha(tint, 0.55), chip, 7.0, 1.0);
+        stroke_round(scene, tf, chip, 7.0, with_alpha(tint, 0.55), 1.0);
         let baseline = text_baseline(chip, 11.0, tr);
         text(
             scene,
@@ -8622,7 +8622,7 @@ impl VideoEditorApp {
         let bx1 = rect.x1 - 7.0;
         for i in 0..3 {
             let by = rect.center().y - 5.0 + f64::from(i) * 5.0;
-            fill_rrect(scene, tf, bar, Rect::new(bx0, by - 1.0, bx1, by + 1.0), 1.0);
+            fill_round(scene, tf, Rect::new(bx0, by - 1.0, bx1, by + 1.0), 1.0, bar);
         }
     }
 
@@ -8747,25 +8747,25 @@ impl VideoEditorApp {
         // border — and, because the card *is* the focused field, the focus
         // ring over it, in danger while the entry cannot be read.
         let radius = f64::from(theme.tokens.radii.lg);
-        fill_rrect(scene, tf, ui::chrome::panel_ground(theme), l.card, radius);
-        stroke_rrect(
+        fill_round(scene, tf, l.card, radius, ui::chrome::panel_ground(theme));
+        stroke_round(
             scene,
             tf,
-            ui::chrome::panel_border(theme),
             l.card.inset(-0.5),
             radius - 0.5,
+            ui::chrome::panel_border(theme),
             1.0,
         );
-        stroke_rrect(
+        stroke_round(
             scene,
             tf,
+            l.card,
+            radius,
             if self.navigation.goto_notice {
                 c.semantic.danger
             } else {
                 c.border_focus
             },
-            l.card,
-            radius,
             FOCUS_RING_W,
         );
         let x = l.card.x0 + f64::from(theme.tokens.spacing.s4);
@@ -8810,13 +8810,13 @@ impl VideoEditorApp {
             fill_rect(
                 scene,
                 tf,
-                c.accent[6],
                 Rect::new(
                     caret_x,
                     l.entry_top,
                     caret_x + theme.caret_width,
                     l.entry_top + f64::from(th),
                 ),
+                c.accent[6],
             );
         }
         let hint = if self.navigation.goto_notice {
@@ -8976,7 +8976,7 @@ impl VideoEditorApp {
                     bar.x0 + bar.width() * progress.max(0.04),
                     bar.y1,
                 );
-                fill_rrect(scene, tf, c.accent[5], f, radius);
+                fill_round(scene, tf, f, radius, c.accent[5]);
                 text(scene, tr, tf, "Rendering…", ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {

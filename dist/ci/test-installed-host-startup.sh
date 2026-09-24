@@ -5,9 +5,15 @@
 # runner's seat or relying on a nested display server.
 set -euo pipefail
 
+# TILO_SHELL_BIN points the check at a workspace build instead of the
+# installed package, e.g. inside a throwaway container:
+#   podman run --rm -v "$PWD:/src:ro" -e TILO_SHELL_BIN=/src/target/release/shell \
+#       <image with the session's runtime libraries> /src/dist/ci/test-installed-host-startup.sh
+shell_bin=${TILO_SHELL_BIN:-/usr/bin/tilo-shell}
+
 [[ $# == 0 ]] || { echo "usage: $0" >&2; exit 2; }
 [[ $(id -u) == 0 ]] || { echo "installed host startup test must run as root" >&2; exit 2; }
-test -x /usr/bin/tilo-shell
+test -x "$shell_bin"
 command -v useradd >/dev/null
 command -v runuser >/dev/null
 
@@ -52,7 +58,7 @@ runuser -u "$smoke_user" -- env -i \
     TILO_RUN_SECONDS=3 \
     TILO_FRAME_WARMUP_MS=0 \
     TILO_FRAME_SUMMARY="$work/state/frame-summary.json" \
-    /usr/bin/tilo-shell --host-desktop-session --firstboot --backend headless \
+    "$shell_bin" --host-desktop-session --firstboot --backend headless \
     >"$work/startup.log" 2>&1
 status=$?
 set -e
@@ -95,7 +101,7 @@ run_identity() {
         XDG_CONFIG_HOME="$host_home/.config" \
         XDG_DATA_HOME="$host_home/.local/share" \
         TILO_IDENTITY_ROOT="$host_home/.local/share/tilo" \
-        /usr/bin/tilo-shell "$@"
+        "$shell_bin" "$@"
 }
 
 run_identity --host-desktop-session --provision-identity \

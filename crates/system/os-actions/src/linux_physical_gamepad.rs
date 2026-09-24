@@ -384,12 +384,10 @@ fn query_abs_info(fd: libc::c_int, code: u16) -> io::Result<libc::input_absinfo>
     // request is the kernel EVIOCGABS read ioctl for one fixed axis code, and
     // the pointer remains valid and uniquely borrowed for the call.
     let mut info: libc::input_absinfo = unsafe { std::mem::zeroed() };
-    let request = nix::request_code_read!(
-        b'E',
-        0x40_u16.saturating_add(code),
-        size_of::<libc::input_absinfo>()
-    );
-    let result = unsafe { libc::ioctl(fd, request as libc::c_ulong, &mut info) };
+    let number = u8::try_from(0x40_u16.saturating_add(code))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "axis outside EVIOCGABS"))?;
+    let request = rustix::ioctl::opcode::read::<libc::input_absinfo>(b'E', number);
+    let result = unsafe { libc::ioctl(fd, request as libc::Ioctl, &mut info) };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {

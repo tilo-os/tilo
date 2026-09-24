@@ -99,6 +99,8 @@ pub struct SettingsApp {
     /// for the host is O(1), so a palette continuation always talks to the
     /// same generation instead of rebuilding an index on every frame.
     search_provider: crate::search_provider::SettingsSearchProvider,
+    /// Where the account stores, credential vault and mutation journal live.
+    account_root: crate::accounts::AccountRoot,
     /// Secret-free snapshot for resource enumeration. Refreshes at account
     /// mutation boundaries, never during the per-frame resource query.
     account_resources: Vec<accounts::Account>,
@@ -139,11 +141,20 @@ impl Default for SettingsApp {
 
 impl SettingsApp {
     pub fn new() -> Self {
-        if accounts::config_root().is_some()
-            && let Err(error) = crate::accounts::recover_account_mutation()
-        {
-            tracing::warn!(target: "tilo::settings", %error, "could not recover interrupted account mutation");
-        }
+        Self::with_account_root(crate::accounts::AccountRoot::live())
+    }
+
+    /// Keep every account store, the credential vault and the interrupted
+    /// mutation journal under `config_root` instead of the user's config
+    /// directory. An instance over its own root never replays or clears
+    /// another instance's journal.
+    #[must_use]
+    pub fn with_config_root(config_root: impl Into<std::path::PathBuf>) -> Self {
+        Self::with_account_root(crate::accounts::AccountRoot::at(config_root))
+    }
+
+    fn with_account_root(account_root: crate::accounts::AccountRoot) -> Self {
+        account_root.recover_mutation_or_warn();
         Self {
             selected: Category::DEFAULT,
             structure_dirty: false,
@@ -153,7 +164,8 @@ impl SettingsApp {
             sidebar_selection: ui::LocalState::new(None),
             search_state: ui::LocalState::new(String::new()),
             search_provider: crate::search_provider::SettingsSearchProvider::new(),
-            account_resources: accounts::AccountStore::load().all().to_vec(),
+            account_resources: account_root.store().all().to_vec(),
+            account_root,
             account_commands: ui::LocalState::new(None),
             device_mesh_commands: ui::LocalState::new(None),
             account_tester: std::sync::Arc::new(crate::account_probe::LiveAccountTester),
@@ -174,9 +186,14 @@ impl SettingsApp {
     /// Construct with a specific category pre-selected. Used by tests and
     /// future deep-linking (`settings://network`).
     pub fn with_selected(category: Category) -> Self {
-        let mut s = Self::new();
-        s.selected = category;
-        s
+        Self::new().with_category(category)
+    }
+
+    /// Pre-select `category` on an already constructed app.
+    #[must_use]
+    pub fn with_category(mut self, category: Category) -> Self {
+        self.selected = category;
+        self
     }
 
     /// Seed the responsive layout with a known width before the first frame —
@@ -241,7 +258,7 @@ impl SettingsApp {
     }
 
     fn refresh_account_resources(&mut self) {
-        self.account_resources = accounts::AccountStore::load().all().to_vec();
+        self.account_resources = self.account_root.store().all().to_vec();
     }
 
     #[doc(hidden)]
@@ -483,12 +500,16 @@ impl SettingsApp {
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::ExternalAccounts => {
-                let mut pane = self
-                    .account_directory_override
-                    .as_ref()
-                    .map_or_else(panes::accounts::AccountsPane::new, |directory| {
-                        panes::accounts::AccountsPane::from_dir(directory.clone(), false)
-                    });
+                let mut pane = self.account_directory_override.as_ref().map_or_else(
+                    || panes::accounts::AccountsPane::in_root(self.account_root.clone()),
+                    |directory| {
+                        panes::accounts::AccountsPane::from_dir_in(
+                            self.account_root.clone(),
+                            directory.clone(),
+                            false,
+                        )
+                    },
+                );
                 if let Some(kind) = self.account_form_override {
                     pane = pane.with_open_form_for_shot(kind);
                 }
@@ -2068,7 +2089,9 @@ impl Widget for SettingsApp {
                 tilo_actions::OperationKind::Effect,
                 crate::actions::AccountOperation::Remove { id },
             ) => {
-                let stored = accounts::AccountStore::load()
+                let stored = self
+                    .account_root
+                    .store()
                     .get(&accounts::AccountId::from(id.clone()))
                     .cloned()
                     .ok_or_else(|| "account no longer exists".to_string())?;
@@ -2079,7 +2102,11 @@ impl Widget for SettingsApp {
                     "nextcloud" => crate::accounts::AccountKind::Nextcloud,
                     _ => return Err("unsupported account type".into()),
                 };
-                crate::panes::accounts::AccountsPane::remove_account(account_kind, &id)?;
+                crate::panes::accounts::AccountsPane::remove_account(
+                    &self.account_root,
+                    account_kind,
+                    &id,
+                )?;
                 self.refresh_account_resources();
                 self.refresh_shell_children();
             }
@@ -2091,15 +2118,15 @@ impl Widget for SettingsApp {
                     return Err("an account connection check is already running".into());
                 }
                 let account_id = accounts::AccountId::from(id);
-                let account = accounts::AccountStore::load()
+                let account = self
+                    .account_root
+                    .store()
                     .get(&account_id)
                     .cloned()
                     .ok_or_else(|| "account no longer exists".to_string())?;
-                let secret = accounts::SecretVault::open()
-                    .get(&account_id)
-                    .ok_or_else(|| {
-                        "this account has no saved credential; sign in again first".to_string()
-                    })?;
+                let secret = self.account_root.vault().get(&account_id).ok_or_else(|| {
+                    "this account has no saved credential; sign in again first".to_string()
+                })?;
                 let tester = std::sync::Arc::clone(&self.account_tester);
                 let (sender, receiver) = std::sync::mpsc::sync_channel(1);
                 std::thread::spawn(move || {
@@ -2310,20 +2337,23 @@ mod tests {
 
     #[test]
     fn new_starts_on_default_category() {
-        assert_eq!(SettingsApp::new().selected(), Category::DEFAULT);
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        assert_eq!(config.app().selected(), Category::DEFAULT);
     }
 
     #[test]
     fn with_selected_overrides_default() {
+        let config = crate::prefs::test_env::ScratchConfig::new();
         assert_eq!(
-            SettingsApp::with_selected(Category::About).selected(),
+            config.app().with_category(Category::About).selected(),
             Category::About
         );
     }
 
     #[test]
     fn select_changes_category_and_flags_structure_dirty() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         layout_at(&mut app, 1200.0, 760.0);
         app.select(Category::Users);
         assert_eq!(app.selected(), Category::Users);
@@ -2338,7 +2368,8 @@ mod tests {
 
     #[test]
     fn canonical_update_operation_is_accepted_not_completed_until_the_pane_reports() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let heads = doc.get_heads();
@@ -2402,8 +2433,8 @@ mod tests {
     fn hardware_effect_admission_never_mutates_the_collaborative_document() {
         use std::collections::BTreeSet;
 
-        let _config = crate::prefs::test_env::ConfigGuard::new("device-local-admission");
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ConfigGuard::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let keyboard_label = crate::input_sources::installed_catalog()
@@ -2554,7 +2585,8 @@ mod tests {
 
     #[test]
     fn network_refresh_is_a_local_lifecycle_not_a_replicated_setting_action() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let heads = doc.get_heads();
@@ -2608,8 +2640,8 @@ mod tests {
     fn input_effect_persists_locally_and_never_latches_a_crdt_value() {
         use automerge::ReadDoc;
 
-        let _config = crate::prefs::test_env::ConfigGuard::new("input-effect");
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ConfigGuard::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let operation = crate::actions::InputOperation::SetTapToClick { enabled: false };
@@ -2644,7 +2676,8 @@ mod tests {
 
     #[test]
     fn bluetooth_refresh_waits_for_its_own_local_completion_token() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let heads = doc.get_heads();
@@ -2689,7 +2722,8 @@ mod tests {
 
     #[test]
     fn non_cancellable_local_operation_ignores_cancel_until_the_pane_finishes() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let invocation = tilo_actions::InvocationId::new();
@@ -2724,7 +2758,8 @@ mod tests {
 
     #[test]
     fn unrelated_pane_status_cannot_finish_a_pending_local_operation() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let invocation = tilo_actions::InvocationId::new();
@@ -2766,7 +2801,8 @@ mod tests {
 
     #[test]
     fn overwritten_schedule_value_cannot_complete_the_original_invocation() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let invocation = tilo_actions::InvocationId::new();
@@ -2814,7 +2850,8 @@ mod tests {
 
     #[test]
     fn pane_reported_local_error_becomes_a_failed_terminal_update() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let invocation = tilo_actions::InvocationId::new();
@@ -2844,7 +2881,8 @@ mod tests {
 
     #[test]
     fn local_operation_rejects_an_update_schedule_outside_the_panes_choices() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let payload = serde_json::to_vec(&crate::actions::UpdateOperation::SetSchedule {
@@ -2865,7 +2903,8 @@ mod tests {
 
     #[test]
     fn wide_layout_docks_the_sidebar() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         layout_at(&mut app, 1200.0, 760.0);
         assert!(!app.is_narrow(), "1200px should dock the sidebar");
         assert!(app.sidebar_open(), "docked sidebar is open by default");
@@ -2873,11 +2912,12 @@ mod tests {
 
     #[test]
     fn narrow_layout_collapses_to_the_content_screen() {
+        let config = crate::prefs::test_env::ScratchConfig::new();
         // A collapse to the narrow (phone) layout keeps the selected category's
         // CONTENT on screen — it never defaults to the category list. The list
         // is a back-tap away (see the back arrow), not the surface a collapse
         // lands on.
-        let mut app = SettingsApp::new().with_width_hint(440.0);
+        let mut app = config.app().with_width_hint(440.0);
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow(), "440px should resolve to the narrow layout");
         assert!(
@@ -2892,11 +2932,10 @@ mod tests {
 
     #[test]
     fn narrow_list_shot_shows_the_standalone_list_screen() {
+        let config = crate::prefs::test_env::ScratchConfig::new();
         // The category list remains reachable (and capturable) as its own
         // full-screen screen — it is simply no longer the collapse default.
-        let mut app = SettingsApp::new()
-            .with_width_hint(440.0)
-            .with_narrow_list_shot();
+        let mut app = config.app().with_width_hint(440.0).with_narrow_list_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow(), "440px should resolve to the narrow layout");
         assert!(
@@ -2912,7 +2951,10 @@ mod tests {
 
     #[test]
     fn narrow_content_shot_drills_into_the_content_screen() {
-        let mut app = SettingsApp::with_selected(Category::RegionFormats)
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config
+            .app()
+            .with_category(Category::RegionFormats)
             .with_width_hint(440.0)
             .with_narrow_content_shot();
         layout_at(&mut app, 440.0, 820.0);
@@ -2939,9 +2981,12 @@ mod tests {
                 named_rect(child, name, out);
             }
         }
+        let config = crate::prefs::test_env::ScratchConfig::new();
 
         let selected = Category::RegionFormats;
-        let mut app = SettingsApp::with_selected(selected)
+        let mut app = config
+            .app()
+            .with_category(selected)
             .with_width_hint(440.0)
             .with_narrow_content_shot();
         layout_at(&mut app, 440.0, 820.0);
@@ -2968,9 +3013,12 @@ mod tests {
                 named_rect(child, name, out);
             }
         }
+        let config = crate::prefs::test_env::ScratchConfig::new();
 
         let selected = Category::RegionFormats;
-        let mut app = SettingsApp::with_selected(selected)
+        let mut app = config
+            .app()
+            .with_category(selected)
             .with_width_hint(390.0)
             .with_narrow_content_shot();
         layout_at_with_theme(
@@ -2992,7 +3040,9 @@ mod tests {
 
     #[test]
     fn wide_large_text_reserves_a_readable_sidebar_before_layout() {
-        let mut app = SettingsApp::new()
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config
+            .app()
             .with_width_hint(1440.0)
             .with_narrow_content_shot();
         layout_at_with_theme(
@@ -3014,7 +3064,7 @@ mod tests {
             (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
             "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
         );
-        let mut compact = SettingsApp::new().with_width_hint(900.0);
+        let mut compact = config.app().with_width_hint(900.0);
         layout_at_with_theme(
             &mut compact,
             900.0,
@@ -3029,10 +3079,9 @@ mod tests {
 
     #[test]
     fn narrow_pick_navigates_list_to_content_and_back() {
+        let config = crate::prefs::test_env::ScratchConfig::new();
         // Start on the list screen — the reachable back-tap state.
-        let mut app = SettingsApp::new()
-            .with_width_hint(440.0)
-            .with_narrow_list_shot();
+        let mut app = config.app().with_width_hint(440.0).with_narrow_list_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.sidebar_open(), "starts on the list screen");
         // Picking a category drills into its content screen.
@@ -3052,8 +3101,9 @@ mod tests {
     #[test]
     fn search_query_is_local_and_flags_rebuild() {
         use automerge::ReadDoc;
+        let config = crate::prefs::test_env::ScratchConfig::new();
 
-        let mut app = SettingsApp::new();
+        let mut app = config.app();
         layout_at(&mut app, 1200.0, 760.0);
         assert_eq!(app.search_query(), "", "starts with no query");
 
@@ -3077,7 +3127,11 @@ mod tests {
 
     #[test]
     fn seeded_search_shot_query_reaches_the_local_field() {
-        let mut app = SettingsApp::with_selected(Category::Displays).with_search_shot("light");
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config
+            .app()
+            .with_category(Category::Displays)
+            .with_search_shot("light");
         assert_eq!(app.search_query(), "light");
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
@@ -3094,11 +3148,14 @@ mod tests {
 
     #[test]
     fn wide_and_narrow_both_lay_out_without_panicking() {
-        let mut wide = SettingsApp::with_selected(Category::ExternalAccounts);
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut wide = config.app().with_category(Category::ExternalAccounts);
         layout_at(&mut wide, 1200.0, 720.0);
         assert!(wide.get_rect().width() > 0.0);
 
-        let mut narrow = SettingsApp::with_selected(Category::ExternalAccounts)
+        let mut narrow = config
+            .app()
+            .with_category(Category::ExternalAccounts)
             .with_width_hint(440.0)
             .with_narrow_content_shot();
         layout_at(&mut narrow, 440.0, 820.0);
@@ -3111,7 +3168,8 @@ mod tests {
     /// real composed tree: the shell's children are those three, in order.
     #[test]
     fn draws_no_app_name_header() {
-        let mut app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app();
         layout_at(&mut app, 1200.0, 760.0);
         let shell = app.shell.as_ref().expect("shell built");
         let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
@@ -3126,7 +3184,8 @@ mod tests {
 
     #[test]
     fn root_landmark_is_retained_across_responsive_shell_rebuilds() {
-        let mut app = SettingsApp::with_selected(Category::Appearance);
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = config.app().with_category(Category::Appearance);
         let wide = Widget::accessibility(&app).expect("Settings landmark");
         assert_eq!(wide.name.as_deref(), Some("Settings"));
         assert_eq!(wide.semantic_key.as_deref(), Some("settings.app"));
