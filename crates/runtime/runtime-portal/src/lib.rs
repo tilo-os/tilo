@@ -278,33 +278,25 @@ mod tests {
             .await;
     }
 
-    fn clear_tilo_env() {
-        // SAFETY: tests are not parallel for this function — the
-        // ones that touch TILO_* env are marked `#[serial]` via
-        // file-scoped tests... but the workspace lacks `serial_test`
-        // here, so we keep these tests independent by clearing
-        // every TILO_* var both before AND after the assertion. The
-        // test runner serialises top-level env mutation in stable
-        // rust 1.x via the `std::env::set_var` `unsafe` warning;
-        // these tests don't set vars concurrently with anyone else.
+    fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
+        let mut scoped = tilo_test_env::ScopedEnv::new();
         for (key, _) in env::vars() {
             if key.starts_with("TILO_") {
-                // SAFETY: we own the test process env. No other
-                // thread reads TILO_* during test setup.
-                unsafe { env::remove_var(&key) };
+                scoped.remove(&key);
             }
         }
+        scoped
     }
 
     #[test]
     fn is_tilo_native_false_without_env() {
-        clear_tilo_env();
+        let _env = clear_tilo_env();
         assert!(!is_tilo_native());
     }
 
     #[test]
     fn service_fd_returns_none_when_unset() {
-        clear_tilo_env();
+        let _env = clear_tilo_env();
         assert!(service_fd("collab").is_none());
         assert!(service_fd("fs").is_none());
         assert!(service_fd("identity").is_none());
@@ -312,21 +304,17 @@ mod tests {
 
     #[test]
     fn service_fd_returns_none_for_garbage_value() {
-        clear_tilo_env();
-        // SAFETY: see comment above; tests in this module are
-        // logically serial because they all touch TILO_* env.
-        unsafe { env::set_var("TILO_SVC_COLLAB_FD", "not-a-number") };
+        let mut env = clear_tilo_env();
+        env.set("TILO_SVC_COLLAB_FD", "not-a-number");
         assert!(service_fd("collab").is_none());
-        unsafe { env::remove_var("TILO_SVC_COLLAB_FD") };
     }
 
     #[test]
     fn service_fd_returns_none_for_closed_fd() {
-        clear_tilo_env();
+        let mut env = clear_tilo_env();
         // A fd well above stdin/stdout/stderr, unlikely to be open in a test process.
-        unsafe { env::set_var("TILO_SVC_COLLAB_FD", "999") };
+        env.set("TILO_SVC_COLLAB_FD", "999");
         assert!(service_fd("collab").is_none());
-        unsafe { env::remove_var("TILO_SVC_COLLAB_FD") };
     }
 }
 

@@ -1114,6 +1114,10 @@ fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
     Ok(listener)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to spawned children; cleared once, right after the descriptor is taken at the start of `serve`, before any thread is spawned"
+)]
 fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
     const SYSTEMD_LISTEN_FD: RawFd = 3;
 

@@ -1684,19 +1684,18 @@ mod tests {
         assert_eq!(unsigned_op, document);
     }
 
-    fn clear_env() {
-        // SAFETY: tests in this module all touch TILO_USER_IDENTITY
-        // and are logically serial.
-        unsafe {
-            env::remove_var(IDENTITY_ENV_VAR);
-            env::remove_var(broker::BROKER_ENV_VAR);
-        };
+    fn clear_env() -> tilo_test_env::ScopedEnv {
+        let mut scoped = tilo_test_env::ScopedEnv::new();
+        scoped
+            .remove(IDENTITY_ENV_VAR)
+            .remove(broker::BROKER_ENV_VAR);
+        scoped
     }
 
     #[test]
     #[serial_test::serial(identity_env)]
     fn load_without_env_returns_service_fd_missing() {
-        clear_env();
+        let _env = clear_env();
         match load() {
             Err(NotAvailable::ServiceFdMissing) => {}
             other => panic!("expected ServiceFdMissing, got {other:?}"),
@@ -1706,12 +1705,10 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn load_with_empty_env_returns_service_fd_missing() {
-        clear_env();
-        // SAFETY: see clear_env
-        unsafe { env::set_var(IDENTITY_ENV_VAR, "") };
+        let mut env = clear_env();
+        env.set(IDENTITY_ENV_VAR, "");
         let out = load();
-        // SAFETY: cleanup
-        unsafe { env::remove_var(IDENTITY_ENV_VAR) };
+        drop(env);
         match out {
             Err(NotAvailable::ServiceFdMissing) => {}
             other => panic!("expected ServiceFdMissing, got {other:?}"),
@@ -1721,28 +1718,13 @@ mod tests {
     #[test]
     #[serial_test::serial(identity_env)]
     fn relative_xdg_config_home_never_relocates_identity_by_cwd() {
-        let old_xdg = env::var_os("XDG_CONFIG_HOME");
-        let old_home = env::var_os("HOME");
-        // SAFETY: serialised with every identity env test.
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", "relative/config");
-            env::set_var("HOME", "/home/ada");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", "relative/config")
+            .set("HOME", "/home/ada");
         assert_eq!(
             identity_dir_from_env().unwrap(),
             PathBuf::from("/home/ada/.config/tilo/identity")
         );
-        // SAFETY: restore the process environment under the same serial lock.
-        unsafe {
-            match old_xdg {
-                Some(value) => env::set_var("XDG_CONFIG_HOME", value),
-                None => env::remove_var("XDG_CONFIG_HOME"),
-            }
-            match old_home {
-                Some(value) => env::set_var("HOME", value),
-                None => env::remove_var("HOME"),
-            }
-        }
     }
 
     #[test]

@@ -45,6 +45,7 @@ gstreamer-app = { version = "0.24", optional = true }
 # encoder is not safe to run concurrently in one process.
 [dev-dependencies]
 serial_test.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # The compose probe example writes rendered frames for inspection.
 
 [features]

@@ -4396,7 +4396,8 @@ mod tests {
     #[test]
     #[serial_test::serial(vpn_env)]
     fn confirm_dialog_routes_through_modaldialog() {
-        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VPN_ALLOW_EXEC");
         let (mut app, mut doc) = demo_with_doc();
         app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
         let work = app
@@ -4520,7 +4521,8 @@ mod tests {
     fn confirm_connect_without_exec_stays_disconnected() {
         // Honesty: with execution disabled (the default) confirming a connect
         // must NOT claim the tunnel is connected — the real command never ran.
-        unsafe { std::env::remove_var("TILO_VPN_ALLOW_EXEC") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_VPN_ALLOW_EXEC");
         let (mut app, mut doc) = demo_with_doc();
         let work = app
             .vault

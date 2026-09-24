@@ -3793,9 +3793,8 @@ fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle()
     // writes the real `~/.config/tilo/userdict.txt`. (The in-memory add is
     // what the assertions below check; persistence is best-effort.)
     let tmp = std::env::temp_dir().join(format!("tilo-userdict-test-{}", std::process::id()));
-    unsafe {
-        std::env::set_var("XDG_CONFIG_HOME", &tmp);
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", &tmp);
 
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();

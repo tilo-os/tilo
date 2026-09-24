@@ -1185,14 +1185,20 @@ pub const PRIVILEGED_SOCKET_ENV: &str = "TILO_WAYLAND_PRIVILEGED";
 /// compositor's pid so concurrent sessions can't collide. The pid is only a
 /// collision-free socket name; authorization comes from which acceptor made
 /// the immutable per-connection `ClientState`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "publishes the socket to privileged children, which inherit the compositor's \
+              environment; no thread started earlier reads this variable"
+)]
 fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
     let name = format!("tilo-privileged-{}", std::process::id());
     let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
     let socket_name = socket.socket_name().to_os_string();
     // Published for privileged children only; sandboxed apps get an explicit
     // environment from `tilo-launcher` and never inherit this.
-    // SAFETY: single-threaded compositor startup, before any thread that
-    // reads the environment has been spawned.
+    // SAFETY: helper threads already run at this point (settings, portal,
+    // sync), but none of them reads this variable, and the value is written
+    // once before any privileged child is spawned.
     unsafe { std::env::set_var(PRIVILEGED_SOCKET_ENV, &socket_name) };
     Ok((socket, socket_name))
 }

@@ -58,26 +58,13 @@ mod tests {
     use super::*;
 
     fn with_env<T>(state_home: Option<&str>, home: &str, check: impl FnOnce() -> T) -> T {
-        let saved = (std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"));
-        // SAFETY: serialised with every other environment-touching test in
-        // this crate through `serial_test`, and restored before returning.
-        unsafe {
-            match state_home {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-            std::env::set_var("HOME", home);
-        }
-        let result = check();
-        unsafe {
-            for (name, value) in [("XDG_STATE_HOME", saved.0), ("HOME", saved.1)] {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
-            }
-        }
-        result
+        let mut env = tilo_test_env::ScopedEnv::new();
+        match state_home {
+            Some(value) => env.set("XDG_STATE_HOME", value),
+            None => env.remove("XDG_STATE_HOME"),
+        };
+        env.set("HOME", home);
+        check()
     }
 
     #[test]

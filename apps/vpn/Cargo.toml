@@ -37,5 +37,8 @@ winit.workspace = true
 taffy.workspace = true
 serial_test.workspace = true
 
+[dev-dependencies]
+tilo-test-env = { path = "../../crates/dev/test-env" }
+
 [lints]
 workspace = true

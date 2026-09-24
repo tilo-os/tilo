@@ -44,6 +44,13 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "only reached from the --shots handler on the main thread before the \
+              headless harness or any camera worker thread exists, so nothing reads \
+              the environment concurrently; the widget reads these variables while \
+              it is constructed"
+)]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // These variables are consumed while the widget is constructed. Startup
     // is still single-threaded here, before any camera worker exists.
