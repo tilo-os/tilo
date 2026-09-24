@@ -125,15 +125,18 @@ pub enum Tool {
     Highlight,
     Ink,
     Note,
+    /// Free text: a text box placed directly on the page.
+    Text,
     Sign,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [
+    pub const ALL: [Tool; 6] = [
         Tool::Select,
         Tool::Highlight,
         Tool::Ink,
         Tool::Note,
+        Tool::Text,
         Tool::Sign,
     ];
 
@@ -143,6 +146,7 @@ impl Tool {
             Tool::Highlight => "Highlight",
             Tool::Ink => "Draw",
             Tool::Note => "Note",
+            Tool::Text => "Text",
             Tool::Sign => "Sign",
         }
     }
@@ -154,8 +158,15 @@ impl Tool {
             Tool::Highlight => '2',
             Tool::Ink => '3',
             Tool::Note => '4',
+            Tool::Text => '6',
             Tool::Sign => '5',
         }
+    }
+
+    /// Tools that author markup on the page (and so show the colour
+    /// swatches).
+    pub fn annotates(self) -> bool {
+        matches!(self, Tool::Highlight | Tool::Ink | Tool::Note | Tool::Text)
     }
 }
 
@@ -170,6 +181,9 @@ pub enum Swatch {
     Pink,
     Blue,
     Purple,
+    /// An exact colour, `0xRRGGBB` — markup that came from the PDF itself
+    /// keeps its own colour rather than being snapped to a swatch.
+    Custom(u32),
 }
 
 impl Swatch {
@@ -181,13 +195,14 @@ impl Swatch {
         Swatch::Purple,
     ];
 
-    pub fn key(self) -> &'static str {
+    pub fn key(self) -> String {
         match self {
-            Swatch::Yellow => "yellow",
-            Swatch::Green => "green",
-            Swatch::Pink => "pink",
-            Swatch::Blue => "blue",
-            Swatch::Purple => "purple",
+            Swatch::Yellow => "yellow".into(),
+            Swatch::Green => "green".into(),
+            Swatch::Pink => "pink".into(),
+            Swatch::Blue => "blue".into(),
+            Swatch::Purple => "purple".into(),
+            Swatch::Custom(rgb) => format!("#{:06x}", rgb & 0x00ff_ffff),
         }
     }
 
@@ -197,8 +212,23 @@ impl Swatch {
             "pink" => Swatch::Pink,
             "blue" => Swatch::Blue,
             "purple" => Swatch::Purple,
-            _ => Swatch::Yellow,
+            _ => s
+                .strip_prefix('#')
+                .filter(|hex| hex.len() == 6)
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .map_or(Swatch::Yellow, Swatch::Custom),
         }
+    }
+
+    /// The swatch for an exact colour: the named swatch with that colour, or
+    /// a custom one.
+    pub fn from_rgb(r: u8, g: u8, b: u8) -> Swatch {
+        Swatch::ALL
+            .into_iter()
+            .find(|s| s.rgb() == (r, g, b))
+            .unwrap_or_else(|| {
+                Swatch::Custom((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b))
+            })
     }
 
     /// A fixed sRGB triple for this swatch, used when **flattening** markup into
@@ -212,6 +242,7 @@ impl Swatch {
             Swatch::Pink => (236, 72, 153),
             Swatch::Blue => (59, 130, 246),
             Swatch::Purple => (139, 92, 246),
+            Swatch::Custom(rgb) => ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8),
         }
     }
 }
@@ -265,6 +296,8 @@ pub enum MarkupStyle {
     Highlight,
     Underline,
     StrikeOut,
+    /// A wavy underline (from PDFs that use it; drawn as an underline).
+    Squiggly,
 }
 
 impl MarkupStyle {
@@ -273,6 +306,7 @@ impl MarkupStyle {
             MarkupStyle::Highlight => "highlight",
             MarkupStyle::Underline => "underline",
             MarkupStyle::StrikeOut => "strikeout",
+            MarkupStyle::Squiggly => "squiggly",
         }
     }
 
@@ -281,9 +315,38 @@ impl MarkupStyle {
             "highlight" => Some(MarkupStyle::Highlight),
             "underline" => Some(MarkupStyle::Underline),
             "strikeout" => Some(MarkupStyle::StrikeOut),
+            "squiggly" => Some(MarkupStyle::Squiggly),
             _ => None,
         }
     }
+}
+
+/// Default font size of new free text, in points.
+pub const FREE_TEXT_SIZE: f64 = 14.0; // a PDF font size, not UI spacing
+
+/// A generous estimate of the box height `text` needs at `size` points when
+/// wrapped to `width`: explicit lines, each wrapped by an average advance
+/// (half the size for alphabetic text, the full size for ideographs), plus
+/// the box's inner padding.
+pub fn free_text_height(text: &str, size: f64, width: f64) -> f64 {
+    let inner = (width - 4.0).max(size);
+    let lines: f64 = text
+        .split('\n')
+        .map(|line| {
+            let advance: f64 = line
+                .chars()
+                .map(|c| {
+                    if matches!(u32::from(c), 0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xFF00..=0xFFEF) {
+                        size
+                    } else {
+                        size * 0.55
+                    }
+                })
+                .sum();
+            (advance / inner).ceil().max(1.0)
+        })
+        .sum();
+    lines * size * 1.2 + 4.0
 }
 
 #[derive(Clone, Debug)]
@@ -294,11 +357,18 @@ pub enum AnnoKind {
         style: MarkupStyle,
         quads: Vec<PtRect>,
     },
-    /// A freehand ink stroke — a polyline.
-    Ink { points: Vec<(f64, f64)> },
+    /// Freehand ink: one or more polylines.
+    Ink { strokes: Vec<Vec<(f64, f64)>> },
     /// A sticky note anchored at a point. The body text is mirrored into
     /// the linked top-level comment so the comments rail can thread it.
     Note { x: f64, y: f64 },
+    /// Text written on the page inside `rect`, wrapped to its width, at
+    /// `size` points, in the annotation's colour.
+    FreeText {
+        rect: PtRect,
+        text: String,
+        size: f64,
+    },
 }
 
 impl AnnoKind {
@@ -315,12 +385,25 @@ impl AnnoKind {
             AnnoKind::Markup { style, .. } => style.key(),
             AnnoKind::Ink { .. } => "ink",
             AnnoKind::Note { .. } => "note",
+            AnnoKind::FreeText { .. } => "freetext",
+        }
+    }
+
+    /// One freehand stroke.
+    pub fn ink(points: Vec<(f64, f64)>) -> Self {
+        AnnoKind::Ink {
+            strokes: vec![points],
         }
     }
 
     /// Whether `(x, y)` lies on one of the markup's bands.
     pub fn markup_contains(&self, x: f64, y: f64) -> bool {
         matches!(self, AnnoKind::Markup { quads, .. } if quads.iter().any(|q| q.contains(x, y)))
+    }
+
+    /// Whether `(x, y)` lies inside a free text box.
+    pub fn free_text_contains(&self, x: f64, y: f64) -> bool {
+        matches!(self, AnnoKind::FreeText { rect, .. } if rect.contains(x, y))
     }
 }
 
@@ -374,8 +457,12 @@ impl Annotation {
     pub fn anchor(&self) -> (f64, f64) {
         match &self.kind {
             AnnoKind::Markup { quads, .. } => quads.first().map_or((0.0, 0.0), |r| (r.x, r.y)),
-            AnnoKind::Ink { points } => points.first().copied().unwrap_or((0.0, 0.0)),
+            AnnoKind::Ink { strokes } => strokes
+                .iter()
+                .find_map(|s| s.first().copied())
+                .unwrap_or((0.0, 0.0)),
             AnnoKind::Note { x, y } => (*x, *y),
+            AnnoKind::FreeText { rect, .. } => (rect.x, rect.y),
         }
     }
 }
@@ -600,7 +687,9 @@ impl PageMap {
     pub fn annotation_to_card(&self, a: &Annotation) -> Annotation {
         match a.space {
             GeomSpace::Page => a.clone(),
-            GeomSpace::User => Self::map_annotation(a, GeomSpace::Page, |p| self.user_to_card(p)),
+            GeomSpace::User => {
+                Self::map_annotation(a, GeomSpace::Page, self.scale, |p| self.user_to_card(p))
+            }
         }
     }
 
@@ -608,13 +697,16 @@ impl PageMap {
     pub fn annotation_to_user(&self, a: &Annotation) -> Annotation {
         match a.space {
             GeomSpace::User => a.clone(),
-            GeomSpace::Page => Self::map_annotation(a, GeomSpace::User, |p| self.card_to_user(p)),
+            GeomSpace::Page => Self::map_annotation(a, GeomSpace::User, 1.0 / self.scale, |p| {
+                self.card_to_user(p)
+            }),
         }
     }
 
     fn map_annotation(
         a: &Annotation,
         to: GeomSpace,
+        size_factor: f64,
         f: impl Fn((f64, f64)) -> (f64, f64),
     ) -> Annotation {
         let kind = match &a.kind {
@@ -622,13 +714,23 @@ impl PageMap {
                 style: *style,
                 quads: quads.iter().map(|q| Self::map_rect(q, &f)).collect(),
             },
-            AnnoKind::Ink { points } => AnnoKind::Ink {
-                points: points.iter().copied().map(&f).collect(),
+            AnnoKind::Ink { strokes } => AnnoKind::Ink {
+                strokes: strokes
+                    .iter()
+                    .map(|s| s.iter().copied().map(&f).collect())
+                    .collect(),
             },
             AnnoKind::Note { x, y } => {
                 let (x, y) = f((*x, *y));
                 AnnoKind::Note { x, y }
             }
+            // The box keeps its text upright: its corners move, and the text
+            // size follows the fit.
+            AnnoKind::FreeText { rect, text, size } => AnnoKind::FreeText {
+                rect: Self::map_rect(rect, &f),
+                text: text.clone(),
+                size: size * size_factor,
+            },
         };
         Annotation {
             kind,
@@ -1422,8 +1524,13 @@ mod tests {
     #[test]
     fn swatch_round_trips() {
         for s in Swatch::ALL {
-            assert_eq!(Swatch::parse(s.key()), s);
+            assert_eq!(Swatch::parse(&s.key()), s);
         }
         assert_eq!(Swatch::parse("nonsense"), Swatch::Yellow);
+        let custom = Swatch::from_rgb(12, 200, 99);
+        assert_eq!(custom, Swatch::Custom(0x0c_c8_63));
+        assert_eq!(Swatch::parse(&custom.key()), custom);
+        assert_eq!(custom.rgb(), (12, 200, 99));
+        assert_eq!(Swatch::from_rgb(250, 204, 21), Swatch::Yellow);
     }
 }

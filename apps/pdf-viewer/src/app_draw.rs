@@ -221,7 +221,7 @@ impl PdfApp {
 
         // Swatches sit just right of the tools (on the tools' row), but only
         // when the annotate tools are active and there is genuinely room.
-        let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
+        let annotate = self.tool.annotates();
         let sw = 16.0;
         let sgap = rhythm::RELATED;
         let swatch_span = 5.0 * sw + 4.0 * sgap;
@@ -265,7 +265,7 @@ impl PdfApp {
         for (t, r) in &lay.tools {
             out.push((format!("{}  ({})", t.label(), t.hotkey()), *r));
         }
-        if matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note) {
+        if self.tool.annotates() {
             for (s, r) in &lay.swatches {
                 out.push((format!("{} marker", swatch_label(*s)), *r));
             }
@@ -574,6 +574,7 @@ impl PdfApp {
         }
         self.draw_canvas(scene, base, tr, theme, &page_imgs, &page_tiles);
         self.draw_field_editor(scene, base, tr, theme);
+        let free_text_edit = self.draw_free_text_editor(scene, base, tr, theme);
         tr.set_text_scale(chrome_text_scale);
 
         // The floating selection HUD over the page (shared `ui` component).
@@ -590,6 +591,9 @@ impl PdfApp {
         let mut edit_rect = Rect::ZERO;
         let hits = self.draw_sidebar(scene, base, tr, theme, &mut edit_rect);
         self.edit_rect = edit_rect;
+        if let Some(rect) = free_text_edit {
+            self.edit_rect = rect;
+        }
         self.draw_toolbar(scene, base, tr, theme);
         if self.search_active {
             let shits = self.draw_search(scene, base, tr, theme);
@@ -1529,6 +1533,54 @@ impl PdfApp {
         }
     }
 
+    /// The inline editor over the free text box being edited, if any: typed
+    /// in place, at the box's position, width and text size.
+    fn draw_free_text_editor(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<Rect> {
+        let Some(EditTarget::FreeText(id)) = self.editing.as_ref().map(|e| e.target.clone()) else {
+            return None;
+        };
+        let (page, rect) =
+            self.annotations
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| match &a.kind {
+                    AnnoKind::FreeText { rect, .. } => Some((a.page, *rect)),
+                    _ => None,
+                })?;
+        let origins = self.page_origins();
+        let origin = page.checked_sub(1).and_then(|i| origins.get(i)).copied()?;
+        let z = self.zoom();
+        let r = Rect::new(
+            origin.x + rect.x * z,
+            origin.y + rect.y * z,
+            origin.x + (rect.x + rect.w) * z,
+            origin.y + (rect.y + rect.h) * z,
+        );
+        scene.fill(Fill::NonZero, base, render::paper(theme), None, &r);
+        scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &r);
+        if let Some(editing) = self.editing.as_mut() {
+            draw_inline_editor(
+                &mut editing.input,
+                scene,
+                base,
+                tr,
+                theme,
+                Point::new(r.x0 + 2.0 * z, r.y0 + 2.0 * z),
+                (
+                    (r.width() - 4.0 * z).max(8.0) as f32,
+                    (r.height() - 4.0 * z).max(8.0),
+                ),
+            );
+        }
+        Some(r)
+    }
+
     /// The inline editor over the text field being edited, if any.
     fn draw_field_editor(
         &mut self,
@@ -2006,7 +2058,7 @@ impl PdfApp {
             draw_tool_icon(scene, base, *t, *r, col);
         }
 
-        let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
+        let annotate = self.tool.annotates();
         if annotate {
             for (s, r) in &lay.swatches {
                 let col = render::swatch_color(theme, *s);
@@ -3859,6 +3911,7 @@ fn swatch_label(s: Swatch) -> &'static str {
         Swatch::Pink => "Pink",
         Swatch::Blue => "Blue",
         Swatch::Purple => "Purple",
+        Swatch::Custom(_) => "Custom",
     }
 }
 
@@ -3923,6 +3976,16 @@ fn draw_tool_icon(scene: &mut Scene, base: Affine, tool: Tool, btn: Rect, color:
                     &Line::new((sq.x0 + 3.0, ly), (sq.x1 - 3.0, ly)),
                 );
             }
+        }
+        Tool::Text => {
+            // A capital T in a text box.
+            let bar = Line::new((r.x0 + 1.0, r.y0 + 2.0), (r.x1 - 1.0, r.y0 + 2.0));
+            let stem = Line::new(
+                (f64::midpoint(r.x0, r.x1), r.y0 + 2.0),
+                (f64::midpoint(r.x0, r.x1), r.y1 - 1.0),
+            );
+            scene.stroke(&Stroke::new(2.2), base, color, None, &bar);
+            scene.stroke(&Stroke::new(2.2), base, color, None, &stem);
         }
         Tool::Sign => {
             let mut p = BezPath::new();
