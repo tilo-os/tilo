@@ -67,7 +67,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
 tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
-futures = { workspace = true, optional = true, features = ["std"] }
+futures-util = { workspace = true, optional = true }
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -76,7 +76,7 @@ thin = ["dep:runtime-dylib"]
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
-live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures"]
+live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 # Render HTML mail bodies with WPE WebKit; requires the stack from
 # os/dev/build-wpe.sh.
 html-webview = ["ui/webview-wpe"]
