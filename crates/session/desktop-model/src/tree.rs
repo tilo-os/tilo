@@ -109,6 +109,17 @@ impl DesktopTree {
         self.workspaces.iter_mut().find(|w| w.id == self.active)
     }
 
+    /// The `(workspace, strip)` indices of `strip_id`, searching every
+    /// workspace.
+    pub fn strip_position(&self, strip_id: StripId) -> Option<(usize, usize)> {
+        self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
+            ws.strips
+                .iter()
+                .position(|strip| strip.id == strip_id)
+                .map(|si| (wi, si))
+        })
+    }
+
     /// The currently-active [`GroupId`] for `strip_id`, or `None` if
     /// unseeded — callers compose this with their own fallback.
     pub fn active_group_for(&self, strip_id: StripId) -> Option<GroupId> {
