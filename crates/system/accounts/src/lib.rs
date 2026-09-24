@@ -332,7 +332,7 @@ impl AccountStore {
 /// accounts subtree until a Tilo accounts subtree exists, keeping the store
 /// and credential vault together even when unrelated Tilo settings exist.
 pub fn config_root() -> Option<PathBuf> {
-    config_root_from(std::env::var_os("XDG_CONFIG_HOME"), dirs::home_dir())
+    config_root_from(std::env::var_os("XDG_CONFIG_HOME"), xdg_paths::home())
 }
 
 fn config_root_from(

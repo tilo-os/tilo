@@ -99,7 +99,6 @@ chrono = { workspace = true, default-features = true }
 uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
-dirs.workspace = true
 qcms.workspace = true
 
 iroh.workspace = true

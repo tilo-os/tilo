@@ -259,7 +259,7 @@ pub fn bundle_root_from(root_override: Option<std::ffi::OsString>) -> Result<Pat
     {
         return Ok(PathBuf::from(dir));
     }
-    Ok(dirs::data_dir()
+    Ok(xdg_paths::data_dir()
         .ok_or(BundleError::NoDataDir)?
         .join("tilo-runtime"))
 }

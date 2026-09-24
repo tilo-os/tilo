@@ -85,7 +85,7 @@ pub fn default_root() -> Result<Option<PathBuf>, String> {
         }
         return Ok(Some(root));
     }
-    Ok(dirs::home_dir()
+    Ok(xdg_paths::home()
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
         .map(|home| home.join("notes")))
 }

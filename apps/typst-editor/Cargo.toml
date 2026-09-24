@@ -27,7 +27,7 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-dirs.workspace = true
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 
 # Typst compilation + raster rendering. All pinned to the same 0.15
 # series so the `typst` crate instance is unified across compile + render.

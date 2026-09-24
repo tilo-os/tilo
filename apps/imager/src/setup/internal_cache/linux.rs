@@ -360,7 +360,7 @@ mod native {
         if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
             Ok(std::path::PathBuf::from(raw))
         } else {
-            let home = dirs::home_dir().ok_or("Current-user home directory unavailable")?;
+            let home = xdg_paths::home().ok_or("Current-user home directory unavailable")?;
             raw_components(home.as_os_str().as_bytes())?;
             Ok(home.join(".cache"))
         }
