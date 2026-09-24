@@ -30,6 +30,12 @@
 //! Apps carrying state an older release wrote elsewhere call
 //! [`open_migrating`] once with that legacy path; the old document is
 //! merged in, so the migration is safe to run repeatedly.
+//!
+//! Every function here resolves storage from the native process
+//! environment (`TILO_PACKAGE_ID`, the XDG data directory) and the local
+//! filesystem. A host with an explicit profile opens records through
+//! [`crate::record::RecordOwners`] instead, which persists through any
+//! [`durable_store::DurableStore`].
 
 // `app_state::StoreError` (144+ bytes) is what makes every `Result<_,
 // StoreError>` in this module large. Shrinking it means editing the
