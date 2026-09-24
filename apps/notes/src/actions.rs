@@ -300,6 +300,10 @@ pub enum NotesAction {
         marks: Vec<(String, Vec<InlineMarkSpan>)>,
         assets: Vec<(String, Vec<u8>)>,
     },
+    /// Move images a notebook still carries inline into the device content
+    /// store and keep only their references, so the notebook stops paying
+    /// for image bytes in every replica and sync message. Idempotent.
+    MoveAssetsToContentStore { digests: Vec<String> },
 }
 
 fn update_page_tree(doc: &mut Doc, before: &[PageData], after: &[PageData]) -> Result<(), String> {
@@ -528,6 +532,12 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.notebook",
             "Notes".into(),
         ),
+        NotesAction::MoveAssetsToContentStore { .. } => (
+            "Move images to shared storage",
+            "notes.notebook".into(),
+            "notes.notebook",
+            "Notes".into(),
+        ),
         NotesAction::UpsertPage(page) => (
             "Update note",
             format!("notes.page:{}", page.id),
@@ -717,6 +727,9 @@ impl Action for NotesAction {
             }
             NotesAction::UpdatePageTree { before, after } => {
                 update_page_tree(doc, before, after).map_err(ActionError::Refused)?;
+            }
+            NotesAction::MoveAssetsToContentStore { digests } => {
+                crate::notebook::move_inline_assets(doc, digests).map_err(ActionError::Refused)?;
             }
             NotesAction::UpsertPage(data) => {
                 if let Some(meta) = data.to_meta() {
@@ -2886,6 +2899,9 @@ mod tests {
             }
             NotesAction::CreateAndAssignTag { .. } => {
                 panic!("new-child built the wrong action: CreateAndAssignTag")
+            }
+            NotesAction::MoveAssetsToContentStore { .. } => {
+                panic!("new-child built the wrong action: MoveAssetsToContentStore")
             }
         }
     }
