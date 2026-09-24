@@ -1043,7 +1043,12 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "files on the peer",
-        || (m2.join("big").exists() && m2.join("f49").exists()).then_some(()),
+        || {
+            // A new file's record is published empty before its content, and
+            // a peer that pulls promptly can show that first version briefly.
+            let big_len = std::fs::metadata(m2.join("big")).ok()?.len();
+            (big_len == big.len() as u64 && m2.join("f49").exists()).then_some(())
+        },
     );
     assert!(residency_xattr(&m2.join("big")).is_some());
 
