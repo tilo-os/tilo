@@ -1823,13 +1823,6 @@ mod tests {
         r
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
@@ -1855,6 +1848,85 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
+    }
+
+    fn spec_encoding_of(spec: &ActionSpec) -> EncodedAction {
+        ui::testing::action_contract::spec_encoding(spec, None)
+    }
+
+    fn contract_seed_doc() -> AutoCommit {
+        seeded().1
+    }
+
+    /// The sample library is deterministic, so a freshly seeded app publishes
+    /// the resources of any document seeded the same way.
+    fn contract_resources_for(doc: &AutoCommit) -> Vec<Resource> {
+        let (app, _) = seeded();
+        ResourceProvider::resources(&app, doc)
+    }
+
+    fn playlist_key(res: &Resource) -> &str {
+        res.id
+            .as_str()
+            .strip_prefix("music.playlist:")
+            .expect("a playlist resource")
+    }
+
+    /// A playlist with tracks, and a library track it does not hold yet.
+    fn addable_track(doc: &AutoCommit) -> EncodedAction {
+        let lib = crate::doc::load_library(doc);
+        let playlist = lib
+            .playlists
+            .iter()
+            .find(|p| !p.track_ids.is_empty())
+            .expect("a playlist with tracks");
+        let new_track = lib
+            .tracks
+            .keys()
+            .find(|t| !playlist.track_ids.contains(*t))
+            .expect("a track not already in the playlist");
+        encode(&add_track_action(
+            &playlist.id,
+            new_track,
+            playlist.append_rank(),
+        ))
+    }
+
+    ui::action_contract_tests! {
+        seed: contract_seed_doc(),
+        registry: registry(),
+        resources: |doc| contract_resources_for(doc),
+        palette: ["New playlist", "Rename playlist", "Delete playlist", "Remove from playlist"],
+        replay: [
+            add_track => |doc| addable_track(doc),
+            set_liked => |doc| {
+                let lib = crate::doc::load_library(doc);
+                let track = lib
+                    .tracks
+                    .keys()
+                    .find(|track| !lib.is_liked(track))
+                    .expect("an unliked track");
+                encode(&set_liked_action(track, true))
+            },
+        ],
+        undo: [
+            delete_playlist => |doc| encode(&delete_playlist_action(
+                &crate::doc::load_library(doc).playlists[0].id,
+            )),
+        ],
+        encodes: [
+            delete_playlist => ("music.playlist", "delete", |_, res| {
+                encode(&delete_playlist_action(playlist_key(res)))
+            }),
+            rename_playlist => ("music.playlist", "rename", arg: "Road Trip", |_, res| {
+                encode(&rename_playlist_action(playlist_key(res), "Road Trip"))
+            }),
+            remove_track => ("music.playlist-track", "remove", |_, res| {
+                let (playlist, track) = parse_playlist_track_resource_id(res.id.as_str())
+                    .expect("nested playlist tracks use canonical membership IDs");
+                encode(&remove_track_action(&playlist, &track))
+            }),
+        ],
     }
 
     /// Ctrl+K on Music yields the tree: the library with a "New playlist"
@@ -1950,126 +2022,6 @@ mod tests {
         assert!(flat.contains(&"New playlist"), "{flat:?}");
         assert!(flat.contains(&"Delete playlist"), "{flat:?}");
         assert!(flat.contains(&"Remove from playlist"), "{flat:?}");
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("New playlist")),
-            "{labels:?}"
-        );
-        // The shared palette shows eight rows per group; find the nested
-        // action through its production search path instead of assuming order.
-        palette.set_query("Rename playlist");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Rename playlist")),
-            "{labels:?}"
-        );
-    }
-
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let (_app, seeded_doc) = seeded();
-        let mut state = ui::State::new();
-        state.doc = seeded_doc;
-
-        // A real playlist to delete (the sample library seeds several).
-        let victim = crate::doc::load_library(&state.doc).playlists[0].id.clone();
-        let before_heads = state.doc.get_heads();
-        let before = crate::doc::load_library(&state.doc).playlists.len();
-
-        let action = delete_playlist_action(&victim);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            crate::doc::load_library(&state.doc).playlists.len(),
-            before - 1,
-            "the action deleted a playlist"
-        );
-        assert!(
-            crate::doc::load_library(&state.doc)
-                .playlist(&victim)
-                .is_none(),
-            "the right playlist is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            crate::doc::load_library(&state.doc).playlists.len(),
-            before,
-            "undo reverted the deletion and nothing else"
-        );
-        assert!(
-            crate::doc::load_library(&state.doc)
-                .playlist(&victim)
-                .is_some(),
-            "the playlist is back after undo"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn add_track_replays_byte_identical_on_a_peer() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Add a real track to a real playlist.
-        let lib = crate::doc::load_library(&a);
-        let playlist = lib
-            .playlists
-            .iter()
-            .find(|p| !p.track_ids.is_empty())
-            .unwrap();
-        let taken = playlist.track_ids.clone();
-        let new_track = lib
-            .tracks
-            .keys()
-            .find(|t| !taken.contains(*t))
-            .cloned()
-            .expect("a track not already in the playlist");
-        let pid = playlist.id.clone();
-        let action = add_track_action(&pid, &new_track, playlist.append_rank());
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            crate::doc::load_library(&b)
-                .playlist(&pid)
-                .unwrap()
-                .track_ids
-                .contains(&new_track),
-            "the track landed on the peer too"
-        );
     }
 
     #[test]
@@ -2127,91 +2079,6 @@ mod tests {
                 "must refuse hostile/nonportable cover {cover:?}"
             );
         }
-    }
-
-    /// An absolute like write replays byte-identically, regardless of the
-    /// membership visible on the receiver when it arrives.
-    #[test]
-    fn set_liked_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let track = crate::doc::load_library(&a)
-            .tracks
-            .keys()
-            .next()
-            .unwrap()
-            .clone();
-        let action = set_liked_action(&track, true);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "set write replayed identically"
-        );
-        assert!(crate::doc::load_library(&a).is_liked(&track));
-        assert!(crate::doc::load_library(&b).is_liked(&track));
-    }
-
-    /// Single source of truth: the palette's "Delete playlist" spec and the
-    /// builder the trash button calls encode byte-identically; so does the
-    /// prompted "Rename" spec against the rename builder for the same name.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let lib = &resources[0];
-        let playlist = lib
-            .children
-            .iter()
-            .find(|r| r.kind == "music.playlist")
-            .unwrap();
-        let id = playlist.id.as_str().trim_start_matches("music.playlist:");
-
-        let delete_spec = playlist.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_playlist_action(id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        let rename_spec = playlist.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename_spec, "Road Trip");
-        let from_builder = encode(&rename_playlist_action(id, "Road Trip"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
-
-        // And a nested track's remove spec matches the remove builder.
-        let with_tracks = lib
-            .children
-            .iter()
-            .find(|r| !r.children.is_empty())
-            .unwrap();
-        let pid = with_tracks
-            .id
-            .as_str()
-            .trim_start_matches("music.playlist:");
-        let track = &with_tracks.children[0];
-        let (_, tid) = parse_playlist_track_resource_id(track.id.as_str())
-            .expect("nested playlist tracks use canonical membership IDs");
-        let remove_spec = track.actions.iter().find(|a| a.id == "remove").unwrap();
-        let from_spec = immediate_encode(remove_spec);
-        let from_builder = encode(&remove_track_action(pid, &tid));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "remove is one source of truth"
-        );
     }
 
     /// Dispatching the "New playlist" prompted action creates a playlist with the
@@ -2359,8 +2226,8 @@ mod tests {
             .find(|action| action.id == "remove")
             .expect("queue rows are actionable without pixels");
         let operation = decode_operation(
-            &immediate_encode(remove).type_id,
-            &immediate_encode(remove).payload,
+            &spec_encoding_of(remove).type_id,
+            &spec_encoding_of(remove).payload,
         )
         .unwrap()
         .unwrap();
@@ -2503,7 +2370,7 @@ mod tests {
             .find(|action| action.id == "open-artist")
             .expect("track has an exact artist action");
         for (action, wanted) in [(album, "album-9"), (artist, "artist-2")] {
-            let encoded = immediate_encode(action);
+            let encoded = spec_encoding_of(action);
             let operation = decode_operation(&encoded.type_id, &encoded.payload)
                 .expect("operation decodes")
                 .expect("music operation");
@@ -2563,7 +2430,7 @@ mod tests {
                 .expect("canonical open action");
             assert_eq!(open.kind, OperationKind::View);
             assert_eq!(open.contract.permission, PermissionRequirement::Read);
-            let encoded = immediate_encode(open);
+            let encoded = spec_encoding_of(open);
             assert_eq!(
                 decode_operation(&encoded.type_id, &encoded.payload).expect("operation decodes"),
                 Some(MusicOperation::OpenView { id: id.to_string() })
@@ -2644,7 +2511,7 @@ mod tests {
             .find(|action| action.id == "remove")
             .unwrap();
         assert_eq!(
-            immediate_encode(remove),
+            spec_encoding_of(remove),
             encode(&remove_track_action(&playlist.id, &target.id)),
             "the lazy resource uses the exact same canonical remove action"
         );
@@ -2654,7 +2521,7 @@ mod tests {
             .find(|action| action.id == "move-up")
             .unwrap();
         assert_eq!(
-            immediate_encode(up),
+            spec_encoding_of(up),
             encode(&move_track_action(
                 &playlist.id,
                 &target.id,

@@ -30,5 +30,8 @@ serde_json.workspace = true
 tilo-seal = { path = "../../crates/system/tilo-seal" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [lints]
 workspace = true
