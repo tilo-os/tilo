@@ -1,8 +1,10 @@
 //! Regenerate the PDF fixtures under `tests/fixtures/`.
 //!
 //! ```text
-//! rcargo run --locked -p tilo-pdf --features fixture-gen --example gen_fixtures
+//! rcargo run --locked -p tilo-pdf --features fixture-gen --example gen_fixtures [NAME.pdf…]
 //! ```
+//!
+//! With names, only those fixtures are written.
 //!
 //! Text fixtures are typeset by Typst from the sources below with fonts the
 //! Tilo image ships (Libertinus from typst-assets; Noto Sans CJK and Noto
@@ -79,20 +81,26 @@ fn system_font(candidates: &[&str]) -> Vec<Font> {
     panic!("none of these fonts exist: {candidates:?}");
 }
 
-fn fonts() -> Vec<Font> {
+/// The fonts the named fixtures need: typst-assets always, the system CJK
+/// and Arabic faces only for the fixtures set in them.
+fn fonts(wanted: &dyn Fn(&str) -> bool) -> Vec<Font> {
     let mut fonts: Vec<Font> = typst_assets::fonts()
         .flat_map(|data| Font::iter(Bytes::new(data)))
         .collect();
-    fonts.extend(system_font(&[
-        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    ]));
-    fonts.extend(system_font(&[
-        "/usr/share/fonts/google-noto/NotoNaskhArabic-Regular.ttf",
-        "/usr/share/fonts/google-noto-vf/NotoNaskhArabic[wght].ttf",
-        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
-    ]));
+    if wanted("cjk.pdf") {
+        fonts.extend(system_font(&[
+            "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        ]));
+    }
+    if wanted("arabic.pdf") {
+        fonts.extend(system_font(&[
+            "/usr/share/fonts/google-noto/NotoNaskhArabic-Regular.ttf",
+            "/usr/share/fonts/google-noto-vf/NotoNaskhArabic[wght].ttf",
+            "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        ]));
+    }
     fonts
 }
 
@@ -173,6 +181,21 @@ fn fixtures() -> Vec<(&'static str, String)> {
              Another needle on page three."
                 .to_string(),
         ),
+        (
+            "links.pdf",
+            "#set page(width: 300pt, height: 200pt, margin: 20pt)\n\
+             #set text(font: \"Libertinus Serif\", size: 12pt)\n\
+             Read #link(<appendix>)[the appendix] or visit #link(\"https://example.org/docs\")[the website].\n\
+             #pagebreak()\n\
+             A middle page without links.\n\
+             #pagebreak()\n\
+             #v(60pt)\n\
+             = Appendix <appendix>\n\
+             The appendix starts part way down page three.\n\
+             #pagebreak()\n\
+             A closing page."
+                .to_string(),
+        ),
     ]
 }
 
@@ -238,11 +261,18 @@ fn stream(dict: &str, content: &str) -> String {
 fn main() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     std::fs::create_dir_all(&dir).expect("fixture dir");
-    let fonts = fonts();
-    for (name, src) in fixtures() {
+    // Naming fixtures on the command line regenerates only those, so adding
+    // a fixture does not rewrite the others.
+    let only: Vec<String> = std::env::args().skip(1).collect();
+    let wanted = |name: &str| only.is_empty() || only.iter().any(|o| o == name);
+    let fonts = fonts(&wanted);
+    for (name, src) in fixtures().into_iter().filter(|(name, _)| wanted(name)) {
         let bytes = compile(&fonts, &src);
         std::fs::write(dir.join(name), &bytes).expect("write fixture");
         println!("{name}: {} bytes", bytes.len());
+    }
+    if !wanted("form.pdf") {
+        return;
     }
     let form = form_pdf();
     std::fs::write(dir.join("form.pdf"), &form).expect("write form fixture");
