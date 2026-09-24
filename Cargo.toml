@@ -194,6 +194,7 @@ members = [
     "crates/session/tilo-unlock-helper",
 
     # System
+    "crates/system/account-custody",
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",
@@ -227,6 +228,7 @@ members = [
     "crates/system/tilo-clock",
     "crates/system/tilo-crypto",
     "crates/system/tilo-dav",
+    "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
     "crates/system/tilo-net",
     "crates/system/tilo-rollback",
