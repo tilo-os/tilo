@@ -131,10 +131,27 @@ fn is_within(root: &Path, path: &Path) -> bool {
     }
 }
 
+/// A developer session serves a complete staged system store from another
+/// directory without editing its release-shaped registry: translate the
+/// canonical [`layout::SYSTEM_PAYLOAD_DIR`] prefix of a row's paths to the
+/// store's payload root. Rows elsewhere are left for the escape check.
+fn relocate_system_row(system: &SystemStore, row: &mut InstalledPackage) {
+    let canonical = Path::new(layout::SYSTEM_PAYLOAD_DIR);
+    if system.payload_dir == canonical {
+        return;
+    }
+    for path in [&mut row.payload_root, &mut row.manifest_path] {
+        if let Ok(suffix) = path.strip_prefix(canonical) {
+            *path = system.payload_dir.join(suffix);
+        }
+    }
+}
+
 fn system_packages(system: &SystemStore) -> Result<Vec<InstalledPackage>, CatalogError> {
     let rows = Registry::load(&system.data_dir.join(layout::REGISTRY_FILE))?.into_entries();
     let mut out = Vec::with_capacity(rows.len());
     for mut row in rows {
+        relocate_system_row(system, &mut row);
         // The system registry ships inside the image; a row that names a
         // tree elsewhere is a broken or tampered image, not a package.
         for path in [&row.payload_root, &row.manifest_path] {
@@ -271,6 +288,35 @@ mod tests {
         assert!(notes.user_managed());
         let calc = all.iter().find(|e| e.id == "so.tilo.calculator").unwrap();
         assert!(calc.payload_root.starts_with(system.path()));
+    }
+
+    #[test]
+    fn relocated_system_store_uses_the_developer_payload_root() {
+        let system = tempfile::tempdir().expect("system registry");
+        let user = tempfile::tempdir().expect("user registry");
+        let relocated = tempfile::tempdir().expect("relocated payload");
+        let payload = relocated.path().join("payloads/dev.tilo.chat");
+        std::fs::create_dir_all(&payload).unwrap();
+        let manifest = payload.join("manifest.toml");
+        std::fs::write(&manifest, "").unwrap();
+        std::fs::write(
+            system.path().join("registry.toml"),
+            "[[entry]]\nid='dev.tilo.chat'\npayload_root='/usr/lib/tilo-apps/payloads/dev.tilo.chat'\nmanifest_path='/usr/lib/tilo-apps/payloads/dev.tilo.chat/manifest.toml'\n",
+        )
+        .unwrap();
+        let catalog = Catalog::at(
+            user.path(),
+            Some(SystemStore {
+                data_dir: system.path().to_path_buf(),
+                payload_dir: relocated.path().to_path_buf(),
+            }),
+        );
+        let entry = catalog
+            .find("dev.tilo.chat")
+            .expect("registry readable")
+            .expect("chat installed");
+        assert_eq!(entry.payload_root, payload);
+        assert_eq!(entry.manifest_path, manifest);
     }
 
     #[test]

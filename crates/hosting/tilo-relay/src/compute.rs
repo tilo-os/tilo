@@ -24,9 +24,9 @@ use launcher::capture::{
     CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
 };
 use launcher::manifest::{MinimalManifest, read_manifest};
-use launcher::registry::InstalledPackage;
 #[cfg(target_os = "linux")]
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, run_with_captured_bounded};
+use package_store::InstalledPackage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -271,13 +271,13 @@ pub trait ComputePackageCatalogue: Send + Sync {
     fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String>;
 }
 
-/// Production catalogue backed by `tilo-install`'s registry.
+/// Production catalogue backed by the device's package store.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct InstalledComputeCatalogue;
 
 impl ComputePackageCatalogue for InstalledComputeCatalogue {
     fn resolve(&self, app_id: &str) -> Result<Option<InstalledPackage>, String> {
-        launcher::registry::find_installed(app_id).map_err(|error| error.to_string())
+        package_store::find_installed(app_id).map_err(|error| error.to_string())
     }
 }
 
@@ -546,9 +546,13 @@ where
         let snapshot_root = execution_root.join("payload");
         copy_payload_snapshot(&installed.payload_root, &snapshot_root)
             .map_err(|error| self.fail(spec.job_id, "integrity", error.to_string()))?;
-        verify_installed_payload(&installed, &snapshot_root)
+        let record = verify_installed_payload(&installed, &snapshot_root)
             .map_err(|error| self.fail_existing(spec.job_id, "integrity", error))?;
-        let snapshot_manifest_path = snapshot_root.join("manifest.toml");
+        // The manifest the launcher reads comes from the verified record, not
+        // from a second read of the installed file.
+        let snapshot_manifest_path = execution_root.join("manifest.toml");
+        fs::write(&snapshot_manifest_path, &record.manifest_bytes)
+            .map_err(|error| self.fail(spec.job_id, "integrity", error.to_string()))?;
         let manifest = read_manifest(&snapshot_manifest_path)
             .map_err(|error| self.fail(spec.job_id, "integrity", error.to_string()))?;
         if manifest.package_id != spec.app_id
@@ -565,10 +569,9 @@ where
             ));
         }
         let package = InstalledPackage {
-            id: installed.id,
-            package_id_hex: installed.package_id_hex,
             payload_root: snapshot_root,
             manifest_path: snapshot_manifest_path,
+            ..installed
         };
 
         let job_dir = launcher::appdir::prepare_host_app_dir(
@@ -881,23 +884,19 @@ fn verify_registry_binding(
 fn verify_installed_payload(
     package: &InstalledPackage,
     payload_root: &Path,
-) -> Result<(), ComputeExecutionError> {
-    let data_root = package
-        .payload_root
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| ComputeExecutionError::Staging("invalid installed payload root".into()))?;
-    let report = install::integrity::verify(
-        data_root,
-        &package.id,
-        &package.package_id_hex,
-        payload_root,
-    )
-    .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
+) -> Result<package_store::integrity::Record, ComputeExecutionError> {
+    use package_store::integrity;
+    let report = integrity::verify(package, payload_root)
+        .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
     if !report.is_intact() || !report.unexpected.is_empty() {
         return Err(ComputeExecutionError::PackageDigestMismatch);
     }
-    Ok(())
+    integrity::read_record(
+        &integrity::record_dir(package),
+        &package.id,
+        &package.package_id_hex,
+    )
+    .map_err(|error| ComputeExecutionError::Staging(error.to_string()))
 }
 
 fn copy_payload_snapshot(source: &Path, destination: &Path) -> std::io::Result<()> {
@@ -1169,16 +1168,12 @@ mod tests {
 
     fn installed_fixture(root: &Path, spec: &mut ComputeJobSpec) -> InstalledPackage {
         let data_root = root.join("apps");
-        let payload = data_root.join("payloads").join(&spec.app_id);
-        fs::create_dir_all(payload.join("bin")).unwrap();
-        fs::write(payload.join("bin/worker"), b"signed worker").unwrap();
         let manifest = format!(
             "[package]\nid = {:?}\nversion = \"1.0.0\"\n\
              [entrypoint]\nbin = \"bin/worker\"\ntype = \"cli\"\n\
              [cli]\ncommands = [{:?}]\n",
             spec.app_id, spec.entrypoint
         );
-        fs::write(payload.join("manifest.toml"), manifest.as_bytes()).unwrap();
         let collection =
             Collection::from_entries([("bin/worker".to_string(), BlobHash::of(b"signed worker"))]);
         let collection_bytes = collection.encode();
@@ -1193,19 +1188,33 @@ mod tests {
         let signed_bytes = signed.encode();
         let package_digest = *BlobHash::of(&signed_bytes).as_bytes();
         spec.package_digest = package_digest;
-        install::integrity::record(
-            &data_root,
-            &spec.app_id,
-            &signed_bytes,
-            manifest.as_bytes(),
-            &collection_bytes,
-        )
-        .unwrap();
+        // The package store's layout: the tree under pkgs/<id>, its signed
+        // record beside it.
+        let layout = package_store::Layout::new(&data_root);
+        let id = tilo_app_package::PackageId::from_bytes(package_digest);
+        let payload = layout.payload(id);
+        fs::create_dir_all(payload.join("bin")).unwrap();
+        fs::write(payload.join("bin/worker"), b"signed worker").unwrap();
+        let record = layout.meta_dir(id);
+        fs::create_dir_all(&record).unwrap();
+        fs::write(record.join("signed-root"), signed_bytes).unwrap();
+        fs::write(record.join("manifest.toml"), manifest.as_bytes()).unwrap();
+        fs::write(record.join("collection.qcl"), &collection_bytes).unwrap();
         InstalledPackage {
             id: spec.app_id.clone(),
+            version: "1.0.0".into(),
             package_id_hex: hex::encode(package_digest),
-            payload_root: payload.clone(),
-            manifest_path: payload.join("manifest.toml"),
+            payload_root: payload,
+            manifest_path: layout.manifest(id),
+            publisher_key_hex: hex::encode(signing_key.verifying_key().to_bytes()),
+            pinned: false,
+            installed_at: 0,
+            last_used: 0,
+            attested_by: String::new(),
+            cli_commands: vec![spec.entrypoint.clone()],
+            runtime: String::new(),
+            source: String::new(),
+            system: false,
         }
     }
 

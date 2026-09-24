@@ -104,7 +104,7 @@ fn installed_notification_apps_from(
     desktop_entries: &[desktop_entry::DesktopEntry],
 ) -> Vec<InstalledNotificationApp> {
     let mut apps = BTreeMap::new();
-    for entry in launcher::registry::list_installed().unwrap_or_default() {
+    for entry in package_store::list_installed().unwrap_or_default() {
         let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
             continue;
         };
@@ -121,7 +121,7 @@ fn installed_notification_apps_from(
         }
         let name = manifest
             .name
-            .unwrap_or_else(|| launcher::registry::display_name_for_package_id(&id));
+            .unwrap_or_else(|| package_store::display_name_for_package_id(&id));
         apps.entry(id).or_insert(name);
     }
     for entry in desktop_entries {
@@ -137,7 +137,7 @@ fn installed_notification_apps_from(
     // be reset without trusting the sender-controlled notification app_name.
     for id in existing.keys().filter(|id| valid_app_id(id)) {
         apps.entry(id.clone())
-            .or_insert_with(|| launcher::registry::display_name_for_package_id(id));
+            .or_insert_with(|| package_store::display_name_for_package_id(id));
     }
     let mut apps: Vec<_> = apps
         .into_iter()

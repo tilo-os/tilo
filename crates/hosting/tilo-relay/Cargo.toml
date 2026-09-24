@@ -61,7 +61,8 @@ atomic-file = { path = "../../../crates/system/atomic-file" }
 private-fs = { path = "../../system/private-fs" }
 bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
-install = { path = "../../packaging/install" }
+# Installed packages and their integrity records.
+package-store = { path = "../../packaging/package-store" }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
 fs = { path = "../../system/fs" }

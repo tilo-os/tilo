@@ -64,7 +64,7 @@ const OSK_PACKAGE_ID: &str = "so.tilo.osk";
 const OSK_PACKAGE_KIND: &str = "service";
 
 pub(crate) fn osk_service_available() -> bool {
-    launcher::registry::list_installed()
+    package_store::list_installed()
         .unwrap_or_default()
         .into_iter()
         .filter_map(|entry| launcher::manifest::read_manifest(&entry.manifest_path).ok())
