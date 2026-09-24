@@ -1,6 +1,6 @@
 //! Remote fetch — resolve an app-id through the registry protocol,
-//! download the tapp over iroh-blobs, verify it fail-closed, and hand
-//! the bytes to [`crate::install::install_tapp`].
+//! download the tapp over iroh-blobs, verify it fail-closed, and install
+//! it into the package store with [`crate::install::install_tapp`].
 //!
 //! The heavy lifting (signed index, target selection, iroh transport,
 //! signature/hash verification) lives in the `app-registry` crate; this
@@ -15,8 +15,7 @@ use app_registry::HostProfile;
 use app_registry::resolve::{self, FetchOutcome};
 
 use crate::install::{self, InstallError};
-use crate::registry::Pinning;
-use crate::store::Store;
+use package_store::{PackageStore, Pinning};
 use tilo_app_package::id::PackageId;
 
 #[derive(Debug, Error)]
@@ -44,9 +43,9 @@ pub enum FetchError {
 ///
 /// Returns [`FetchError::Resolve`] if resolving or downloading `app_id`
 /// fails, or [`FetchError::Install`] if the fetched tapp fails to
-/// install (bad signature, unpack failure, or a store write error).
+/// install (bad signature, missing payload, or a store error).
 pub async fn fetch_and_install(
-    store: &Store,
+    store: &PackageStore,
     workspace_root: Option<&Path>,
     app_id: &str,
     version: Option<&str>,
@@ -55,8 +54,8 @@ pub async fn fetch_and_install(
     let outcome = fetch_remote(workspace_root, app_id, version).await?;
     // `install_tapp` re-verifies and does blocking IO; the caller
     // (service task) already runs this off the capnp event loop.
-    let id = install::install_tapp(store, &outcome.bytes, pinning)?;
-    Ok(id)
+    let installed = install::install_tapp(store, &outcome.bytes, pinning, None)?;
+    Ok(installed.package_id().unwrap_or(outcome.package_id))
 }
 
 /// Resolve + download + verify the tapp for `app_id` WITHOUT

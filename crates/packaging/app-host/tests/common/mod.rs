@@ -90,14 +90,29 @@ pub fn write_app_payload_with_bulk(dir: &std::path::Path, bulk_kib: usize) -> st
 }
 
 pub fn build_tapp(payload_kib: usize) -> (Vec<u8>, PackageId) {
+    build_tapp_for("so.tilo.editor", payload_kib)
+}
+
+/// A package of app `app_id` whose payload carries a unique `payload_kib`
+/// KiB blob (seeded by the app id, so two apps share no bulk bytes).
+pub fn build_tapp_for(app_id: &str, payload_kib: usize) -> (Vec<u8>, PackageId) {
     let mut rng = UnwrapErr(SysRng);
     let sk = SigningKey::generate(&mut rng);
     let pub_hex = hex::encode(sk.verifying_key().to_bytes());
-    let src = render_template(SAMPLE_APP_MANIFEST_TEMPLATE, &pub_hex);
+    let src = render_template(SAMPLE_APP_MANIFEST_TEMPLATE, &pub_hex)
+        .replace("\"so.tilo.editor\"", &format!("{app_id:?}"));
     let manifest = Manifest::from_toml_str(&src).expect("decode manifest");
 
     let payload_dir = tempfile::tempdir().unwrap();
     write_app_payload_with_bulk(payload_dir.path(), payload_kib).unwrap();
+    std::fs::write(payload_dir.path().join("share/owner.txt"), app_id).unwrap();
+    let seed = app_id.bytes().fold(0u8, u8::wrapping_add);
+    let bulk: Vec<u8> = std::fs::read(payload_dir.path().join("share/data.bin"))
+        .unwrap()
+        .into_iter()
+        .map(|byte| byte ^ seed)
+        .collect();
+    std::fs::write(payload_dir.path().join("share/data.bin"), bulk).unwrap();
 
     let identity = SigningIdentity::from_signing_key(sk);
     let packed = pack(payload_dir.path(), &manifest, &identity).expect("pack");

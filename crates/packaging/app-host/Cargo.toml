@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo app host — content-addressed package store + Cap'n Proto control socket. Resolves package_id → manifest + payload-root for the launcher, tracks Pinned vs LRU, runs size-pressure GC."
+description = "Tilo app host — the privileged door to the device package store over a Cap'n Proto control socket: verified installs for the Store, pin, remove, launch and size-pressure eviction."
 
 [package.metadata.cargo-machete]
 # Invoked by build.rs to compile the Cap'n Proto schema.
@@ -21,16 +21,16 @@ name = "app_host"
 path = "src/lib.rs"
 
 [features]
-# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
-# release build. Debug builds always honour them; shipped images never enable
-# this.
-dev-overrides = []
+# Honour the developer-only environment overrides (`src/dev_env.rs`, and the
+# system store's in `package-store`) in a release build. Debug builds always
+# honour them; shipped images never enable this.
+dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
 tilo-app-package = { path = "../tilo-app-package" }
+# The one package registry and store; this daemon keeps none of its own.
+package-store = { path = "../package-store", features = ["store"] }
 app-registry = { path = "../app-registry" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 
@@ -47,10 +47,7 @@ futures-util = { workspace = true, features = ["io"] }
 
 # Daemon plumbing.
 clap.workspace = true
-serde.workspace = true
 serde_json.workspace = true
-toml.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true

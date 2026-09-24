@@ -1,5 +1,4 @@
-//! pin / unpin flip a package's `Pinning` state and persist across
-//! store re-opens.
+//! pin / unpin flip a package's pin and persist in the package store.
 
 #![allow(
     clippy::unwrap_used,
@@ -13,47 +12,43 @@
 
 use crate::common;
 use app_host::install::install_tapp;
-use app_host::registry::Pinning;
-use app_host::store::Store;
+use app_host::{PackageStore, Pinning};
+
+fn pinning(store: &PackageStore, app_id: &str) -> Pinning {
+    store.registry().unwrap().find(app_id).unwrap().pinning()
+}
 
 #[test]
 fn pin_and_unpin_flip_state_and_persist() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
-    let (bytes, id) = common::build_tapp(1);
-    install_tapp(&store, &bytes, Pinning::Tried).unwrap();
+    let store = PackageStore::at(dir.path());
+    let (bytes, _id) = common::build_tapp(1);
+    install_tapp(&store, &bytes, Pinning::Tried, None).unwrap();
 
-    // Initial: Tried.
-    assert_eq!(store.resolve(id).unwrap().pinning, Pinning::Tried);
+    assert_eq!(pinning(&store, "so.tilo.editor"), Pinning::Tried);
+    store.set_pinned("so.tilo.editor", true).unwrap();
+    assert_eq!(pinning(&store, "so.tilo.editor"), Pinning::Pinned);
+    store.set_pinned("so.tilo.editor", false).unwrap();
+    assert_eq!(pinning(&store, "so.tilo.editor"), Pinning::Tried);
 
-    // Pin.
-    store.pin(id).unwrap();
-    assert_eq!(store.resolve(id).unwrap().pinning, Pinning::Pinned);
-
-    // Unpin.
-    store.unpin(id).unwrap();
-    assert_eq!(store.resolve(id).unwrap().pinning, Pinning::Tried);
-
-    // Persistence: re-opening the store must preserve the last flip.
-    store.pin(id).unwrap();
+    // Persistence: another handle on the same root sees the last flip.
+    store.set_pinned("so.tilo.editor", true).unwrap();
     drop(store);
-
-    let reopened = Store::open(dir.path()).unwrap();
-    assert_eq!(reopened.resolve(id).unwrap().pinning, Pinning::Pinned);
+    let reopened = PackageStore::at(dir.path());
+    assert_eq!(pinning(&reopened, "so.tilo.editor"), Pinning::Pinned);
 }
 
 #[test]
 fn remove_refuses_pinned() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::open(dir.path()).unwrap();
-    let (bytes, id) = common::build_tapp(1);
-    install_tapp(&store, &bytes, Pinning::Pinned).unwrap();
+    let store = PackageStore::at(dir.path());
+    let (bytes, _id) = common::build_tapp(1);
+    install_tapp(&store, &bytes, Pinning::Pinned, None).unwrap();
 
-    let err = store.remove(id).unwrap_err();
+    let err = store.remove("so.tilo.editor", false).unwrap_err();
     assert!(
-        matches!(err, app_host::store::StoreError::PinnedRemove(_)),
+        matches!(err, package_store::StoreError::Pinned(_)),
         "remove of a Pinned package must fail; got {err:?}"
     );
-    // Still resolvable.
-    assert!(store.resolve(id).is_ok());
+    assert!(store.registry().unwrap().find("so.tilo.editor").is_some());
 }

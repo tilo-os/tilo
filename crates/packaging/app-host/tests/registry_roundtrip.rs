@@ -14,8 +14,7 @@
 )]
 
 use app_host::install::install_tapp;
-use app_host::registry::Pinning;
-use app_host::store::Store;
+use app_host::{PackageStore, Pinning};
 
 use app_registry::config::{RegistriesConfig, RegistryRef, RegistryTrust};
 use app_registry::index::HostProfile;
@@ -118,13 +117,12 @@ async fn publish_resolve_fetch_and_install() {
     );
 
     // Install on the production path and confirm the payload landed.
-    let store = Store::open(&tmp.path().join("store")).unwrap();
-    let installed = install_tapp(&store, &outcome.bytes, Pinning::Tried).unwrap();
-    assert_eq!(installed, pkg_id);
-    let entry = store.resolve(installed).unwrap();
+    let store = PackageStore::at(tmp.path().join("store"));
+    let installed = install_tapp(&store, &outcome.bytes, Pinning::Tried, None).unwrap();
+    assert_eq!(installed.package_id(), Some(pkg_id));
     assert!(
-        entry.payload_root.join("bin/app").exists(),
-        "payload was extracted"
+        installed.payload_root.join("bin/app").exists(),
+        "payload was materialised"
     );
 }
 
