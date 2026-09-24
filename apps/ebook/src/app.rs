@@ -100,8 +100,11 @@ struct ImportRequest {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
+    /// A test's hold on the worker: it reports on the first channel that it
+    /// took this request, then parses only once the second one fires or is
+    /// dropped.
     #[cfg(test)]
-    delay: Duration,
+    hold: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 
 struct ImportResult {
@@ -215,7 +218,10 @@ impl ImportWorker {
                     };
                     let Some(request) = request else { continue };
                     #[cfg(test)]
-                    thread::sleep(request.delay);
+                    if let Some((entered, release)) = &request.hold {
+                        let _ = entered.send(());
+                        let _ = release.recv();
+                    }
                     // The file is copied into the content-addressed workspace
                     // on this worker before its collaborative library row is
                     // written on the UI thread.  A peer therefore receives
@@ -2377,7 +2383,7 @@ impl BooksApp {
             kind,
             expected_book_id: expected_book_id.clone(),
             #[cfg(test)]
-            delay: Duration::ZERO,
+            hold: None,
         })?;
         self.import_generation = generation;
         self.import_loading = Some(LoadingImport {
@@ -2496,15 +2502,16 @@ impl BooksApp {
     }
 
     #[cfg(test)]
-    fn begin_import_with_delay(
+    /// Queue an import whose parse waits until the test lets it go. Returns a
+    /// receiver that fires once the worker has taken the request, and the
+    /// sender that releases it (dropping it releases it too).
+    fn begin_import_held(
         &mut self,
         path: &std::path::Path,
         kind: ImportKind,
-        delay: Duration,
-    ) -> Result<(), String> {
-        if self.import_loading.is_some() && kind == ImportKind::Watch {
-            return Ok(());
-        }
+    ) -> Result<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>), String> {
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
         let generation = self
             .import_generation
             .checked_add(1)
@@ -2518,7 +2525,7 @@ impl BooksApp {
             path: path.to_path_buf(),
             kind,
             expected_book_id: None,
-            delay,
+            hold: Some((entered_tx, release_rx)),
         })?;
         self.import_generation = generation;
         self.import_loading = Some(LoadingImport {
@@ -2527,7 +2534,7 @@ impl BooksApp {
             kind,
             expected_book_id: None,
         });
-        Ok(())
+        Ok((entered, release))
     }
 
     #[cfg(test)]
