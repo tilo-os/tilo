@@ -25,7 +25,9 @@ while [ "$current" != / ]; do
   current="$(dirname "$current")"
 done
 
-for tool in objcopy objdump podman python3 tilo-crypto; do command -v "$tool" >/dev/null || die "missing $tool"; done
+# Every signature and certificate check runs the image's own tilo-crypto, so
+# native release runners need no separately installed copy of it.
+for tool in objcopy objdump podman python3; do command -v "$tool" >/dev/null || die "missing $tool"; done
 podman image exists "$image" || die "image is not present in local storage: $image"
 efi_cert_sha256="${TILO_EFI_SIGNING_CERT_SHA256:-}"
 case "$efi_cert_sha256" in
@@ -38,6 +40,21 @@ work="$(mktemp -d "$scratch_root/tilo-pcr-prediction.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 install -d -m 0700 "$work/layer/boot/tilo-target/predictions" \
   "$work/layer/boot/EFI/tilo/pcr-predictions"
+
+# Run the image's tilo-crypto over files in the workspace, mounted read-only.
+image_crypto() {
+  local command="$1" argument
+  local -a arguments=()
+  shift
+  for argument in "$@"; do
+    case "$argument" in
+      "$work"/*) arguments+=("/work/${argument#"$work/"}") ;;
+      *) die "tilo-crypto input is outside the signing workspace: $argument" ;;
+    esac
+  done
+  podman run --rm -v "$work:/work:ro,Z" \
+    --entrypoint /usr/bin/tilo-crypto "$image" "$command" "${arguments[@]}"
+}
 
 # Copy through a container so no image mount (and no root storage access) is
 # exposed to this checkout-controlled script.
@@ -70,7 +87,7 @@ case "$generation" in ''|*[!0-9]*) die "image has no valid Tilo generation" ;; e
 "$signer" export-efi-cert "$work/efi-signing.crt"
 [ -f "$work/efi-signing.crt" ] && [ ! -L "$work/efi-signing.crt" ] \
   || die "broker did not export a regular EFI signing certificate"
-actual_efi_cert_sha256="$(tilo-crypto certificate-sha256 "$work/efi-signing.crt")" \
+actual_efi_cert_sha256="$(image_crypto certificate-sha256 "$work/efi-signing.crt")" \
   || die "broker did not export a valid X.509 EFI signing certificate"
 [ "$actual_efi_cert_sha256" = "$efi_cert_sha256" ] \
   || die "broker's EFI signing certificate does not match the independently pinned fingerprint"
@@ -167,7 +184,7 @@ approved, output, generation = sys.argv[1:]
 open(output, "wb").write(open(approved, "rb").read() + struct.pack(">Q", int(generation)))
 PY
 "$signer" sign-sha256-rsa-pkcs1 "$work/message.bin" "$signature"
-tilo-crypto verify-rsa-sha256 "$work/public.pem" "$work/message.bin" "$signature" \
+image_crypto verify-rsa-sha256 "$work/public.pem" "$work/message.bin" "$signature" \
   || die "broker signed the prediction with a key other than Tilo's pinned authority"
 python3 - "$work/approved.bin" "$signature" "$prediction" "$generation" <<'PY'
 import base64, json, sys
@@ -180,7 +197,7 @@ PY
 rm -f "$signature"
 
 "$signer" sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"
-tilo-crypto verify-rsa-sha256 "$work/public.pem" "$work/target.efi" "$prediction.uki.sig" \
+image_crypto verify-rsa-sha256 "$work/public.pem" "$work/target.efi" "$prediction.uki.sig" \
   || die "broker's detached target-UKI signature does not match Tilo's pinned authority"
 install -m 0644 "$prediction" "$prediction.uki.sig" \
   "$work/layer/boot/EFI/tilo/pcr-predictions/"
