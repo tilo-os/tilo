@@ -1518,10 +1518,12 @@ impl App {
         let started = Instant::now();
         let mut reachable = false;
         let mut no_daemon = None;
+        let mut remote = None;
         while started.elapsed() < Duration::from_secs(180) {
             match self.connect(&vm) {
-                Ok(_) => {
+                Ok(connected) => {
                     reachable = true;
+                    remote = Some(connected);
                     break;
                 }
                 // sshd is up and says no: waiting will not change that.
@@ -1557,11 +1559,28 @@ impl App {
                 )
             });
         }
-        Ok(Outcome::new(
-            format!("VM {} is up; SSH answered after {seconds:.0}s", vm.name),
-            json!({ "vm": vm.name, "boot_seconds": seconds }),
-        )
-        .next(&["tilo-vm status", "tilo-vm slot create --headless"]))
+        // Slots survive restarts, so only suggest creating one when none came back.
+        let slots = remote
+            .and_then(|mut remote| remote.call(Status { slot: None }).ok())
+            .map(|status| status.slots)
+            .unwrap_or_default();
+        let next = match slots.first() {
+            Some(slot) => vec![
+                "tilo-vm status".to_owned(),
+                format!("tilo-vm slot show --slot {}", slot.name),
+            ],
+            None => vec![
+                "tilo-vm status".to_owned(),
+                "tilo-vm slot create --headless".to_owned(),
+            ],
+        };
+        Ok(Outcome {
+            next,
+            ..Outcome::new(
+                format!("VM {} is up; SSH answered after {seconds:.0}s", vm.name),
+                json!({ "vm": vm.name, "boot_seconds": seconds, "slots": slots.len() }),
+            )
+        })
     }
 
     /// Run one shell line in the VM as root, capturing its output.
@@ -3507,6 +3526,10 @@ pub struct ConnectFailure {
 
 impl ConnectFailure {
     fn text(&self, error: &CliError) -> String {
+        // A VM that is off explains every connection error; repeating it is noise.
+        if self.state == "off" {
+            return format!("  {}", self.summary);
+        }
         format!(
             "  {}\n  error: {error}\n  hint: {}",
             self.summary,
@@ -3815,6 +3838,7 @@ mod tests {
         assert_eq!(off.state, "off");
         assert!(off.summary.contains("shut off"), "{}", off.summary);
         assert_eq!(off.next, ["tilo-vm vm start dev"]);
+        assert!(!off.text(&unreachable).contains("Connection refused"));
 
         let silent = connect_failure("dev", Some(true), &debug, &unreachable);
         assert_eq!(silent.state, "no-ssh");
@@ -4104,6 +4128,9 @@ mod tests {
         use crate::host::tests::{LIBVIRT, linux};
         let dir = tempfile::tempdir().unwrap();
         let mut app = app_with_empty_registry(dir.path());
+        // The checks under test are the image and the disk path, not this
+        // host's free space (a small /tmp would otherwise fail the floor).
+        std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
         let facts = linux(HostKind::Dnf, LIBVIRT);
 
         let mut args = create_args("dev");
