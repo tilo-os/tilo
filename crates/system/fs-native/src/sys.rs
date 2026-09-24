@@ -288,6 +288,32 @@ pub(crate) fn futimens(file: &File, mtime: libc::timespec) -> io::Result<()> {
     Ok(())
 }
 
+/// The mtime of an open file.
+pub(crate) fn fmtime(fd: BorrowedFd<'_>) -> io::Result<libc::timespec> {
+    // SAFETY: an all-zero `stat` is valid for the kernel to fill.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: `st` is writable; `fd` is open.
+    cvt(unsafe { libc::fstat(fd.as_raw_fd(), &raw mut st) })?;
+    Ok(libc::timespec {
+        tv_sec: st.st_mtime,
+        tv_nsec: st.st_mtime_nsec,
+    })
+}
+
+/// Sets the mtime of an open file, leaving its atime alone.
+pub(crate) fn set_fmtime(fd: BorrowedFd<'_>, mtime: libc::timespec) -> io::Result<()> {
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+        mtime,
+    ];
+    // SAFETY: `times` holds two valid timespecs.
+    cvt(unsafe { libc::futimens(fd.as_raw_fd(), times.as_ptr()) })?;
+    Ok(())
+}
+
 /// Punches a hole over `[offset, offset + len)`, keeping the file size.
 pub(crate) fn punch_hole(file: &File, offset: u64, len: u64) -> io::Result<()> {
     let off = libc::off_t::try_from(offset)

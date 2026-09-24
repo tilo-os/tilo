@@ -103,6 +103,12 @@ fn a_full_read_makes_the_file_resident_and_unmarked() {
     assert_eq!(all.len() as u64, size);
     assert_eq!(all, pattern(3, 0, size as usize));
     assert_eq!(h.residency(&path).unwrap(), Residency::Resident);
+    let meta = fs::metadata(&path).unwrap();
+    assert_eq!(
+        (meta.mtime(), meta.mtime_nsec()),
+        (1_700_000_000, 123_456_789),
+        "hydration does not move the version's mtime"
+    );
     let xattr = fs_native_xattr(&path);
     assert!(xattr.is_none(), "residency xattr left on a resident file");
     // No mark remains: further reads raise no events.
