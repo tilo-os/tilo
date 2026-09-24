@@ -72,6 +72,8 @@ pub mod record_protocol;
 #[cfg(feature = "filesystem")]
 pub mod record_publisher;
 #[cfg(feature = "filesystem")]
+pub mod record_reconcile;
+#[cfg(feature = "filesystem")]
 pub mod record_replication;
 #[cfg(feature = "filesystem")]
 pub mod record_repository;
