@@ -8,12 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
-};
 
 pub const SHEET_KIND: &str = "Sheets";
 pub const CELL_KIND: &str = "Sheet cells";
@@ -118,39 +115,16 @@ impl SheetSearchProvider {
     }
 }
 
-impl SearchProvider for SheetSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for SheetSearchProvider {
+    fn provider_name(&self) -> &str {
         SHEET_KIND
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(
+    fn resolve_action_address(
         &self,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::Resource> {
@@ -169,6 +143,7 @@ impl SearchProvider for SheetSearchProvider {
 mod tests {
     use super::*;
     use crate::actions::{SearchableCell, SearchableSheet};
+    use ui::search::SearchProvider;
     use ui::search::SearchRegistry;
 
     fn sheets() -> Vec<SearchableSheet> {

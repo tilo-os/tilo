@@ -87,7 +87,7 @@ struct Held {
     doc: AutoCommit,
     /// `None` for in-memory, or a room whose store couldn't be opened —
     /// runs without durability rather than refusing to reference anything.
-    autosave: Option<app_state::Autosave>,
+    autosave: Option<app_state::DocWriter>,
 }
 
 #[derive(Default)]
@@ -787,7 +787,7 @@ impl Default for RoomRecords {
 }
 
 /// Open (and merge in) the stored index for `room`, returning its writer.
-fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::Autosave> {
+fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::DocWriter> {
     let mut store = match app_state::DocStore::open_room(SHELL_PACKAGE_ID, &room.to_string()) {
         Ok(store) => store,
         Err(e) => {
@@ -810,7 +810,7 @@ fn open_room_store(room: RoomId, doc: &mut AutoCommit) -> Option<app_state::Auto
             None
         }
     };
-    let mut autosave = app_state::Autosave::spawn(store, app_state::DEFAULT_DEBOUNCE);
+    let mut autosave = store.writer();
     if let Some(mut stored) = stored {
         autosave.seed(&mut stored);
         if let Err(e) = doc.merge(&mut stored) {

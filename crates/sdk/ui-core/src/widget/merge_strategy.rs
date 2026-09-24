@@ -14,8 +14,8 @@
 //! strategy at construction, reinforced today by code review rather than
 //! a lint.
 
+use crate::time::SystemTime;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 /// How a CRDT-backed widget wants its concurrent edits resolved when the
 /// data layer can converge but the *semantic* outcome may need human

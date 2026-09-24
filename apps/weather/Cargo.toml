@@ -36,7 +36,8 @@ winit.workspace = true
 taffy.workspace = true
 # Networking is used only by the live event loop; shots render bundled sample
 # data without opening a connection.
-reqwest = { workspace = true, features = ["json", "rustls-tls", "blocking"] }
+reqwest = { workspace = true, features = ["json", "blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros"] }
 chrono = { workspace = true, features = ["std", "clock"] }
 

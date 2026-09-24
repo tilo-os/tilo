@@ -11,6 +11,7 @@ use collab_types::{
     ContentRevisionV1, Ed25519PublicKey, FileActor, Signature, canonical_bytes, sign_event,
     verify_event,
 };
+use getrandom::{SysRng, rand_core::TryRng as _};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -63,7 +64,10 @@ pub struct ReplicaAckV1 {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[allow(clippy::large_enum_variant)] // Boxing would change the versioned wire schema.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Boxing would change the versioned wire schema."
+)]
 pub enum ReplicaAckResponseV1 {
     Acknowledged(ReplicaAckV1),
     Denied,
@@ -78,7 +82,9 @@ impl ReplicaAckRequestV1 {
     /// Returns an error on randomness failure or invalid scope/revision.
     pub fn new(workspace_id: Uuid, revision: ContentRevisionV1) -> Result<Self, ReplicaAckError> {
         let mut nonce = [0_u8; 32];
-        getrandom::getrandom(&mut nonce).map_err(|_| ReplicaAckError::Randomness)?;
+        SysRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|_| ReplicaAckError::Randomness)?;
         let request = Self {
             protocol_version: REPLICA_ACK_PROTOCOL_VERSION,
             workspace_id,
@@ -303,7 +309,7 @@ pub(crate) async fn read_frame<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de
 mod tests {
     use super::*;
     use collab_types::{ContentHash, FileRecordId, FileVersionId};
-    use rand::rngs::OsRng;
+    use getrandom::rand_core::UnwrapErr;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
     fn revision() -> ContentRevisionV1 {
@@ -319,8 +325,8 @@ mod tests {
 
     #[test]
     fn exact_nonce_version_peer_and_freshness_are_bound() {
-        let root = ed25519_dalek::SigningKey::generate(&mut OsRng);
-        let device = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let capabilities = DeviceCapabilities::member();
         let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),

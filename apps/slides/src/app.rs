@@ -246,20 +246,6 @@ fn save_document_request(suggested_name: &str) -> DocPortalChannel {
     }
 }
 
-#[cfg(test)]
-fn inject_doc_for_test(outcome: DocOutcome) -> DocPortalChannel {
-    let (outcome, save) = match outcome {
-        DocOutcome::Open(path) => (PortalOutcome::Opened(path), false),
-        DocOutcome::Save(path) => (PortalOutcome::Opened(path), true),
-        DocOutcome::Cancelled => (PortalOutcome::Cancelled, false),
-        DocOutcome::Failed(error) => (PortalOutcome::Failed(error), false),
-    };
-    DocPortalChannel {
-        rx: ui::portal::inject_for_test(outcome),
-        save,
-    }
-}
-
 /// 1× floors for the editor chrome. Every row is derived from the measured
 /// line box of the text it carries plus spacing tokens (see
 /// [`ChromeMetrics`]); these floors reproduce the classic density exactly at
@@ -4688,7 +4674,7 @@ impl SlidesApp {
         let c = &theme.tokens.colors;
         // Soft drop shadow.
         let sh = chrome.slide_dest + vello::kurbo::Vec2::new(0.0, 6.0);
-        chrome::fill_rrect(
+        chrome::fill_round(
             scene,
             t,
             sh.inflate(2.0, 2.0),
@@ -4706,7 +4692,7 @@ impl SlidesApp {
             14.0,
             &self.images,
         );
-        chrome::stroke_rrect(
+        chrome::stroke_round(
             scene,
             t,
             chrome.slide_dest,
@@ -4751,7 +4737,7 @@ impl SlidesApp {
         // Ring is drawn at the handle outset so it passes through the
         // handle centres — the whole selection frame sits *around* the
         // content, never over the first glyph.
-        chrome::stroke_rrect(
+        chrome::stroke_round(
             scene,
             t,
             er.inflate(HANDLE_OFFSET, HANDLE_OFFSET),
@@ -4774,8 +4760,8 @@ impl SlidesApp {
                 // paint a smaller visual pip centred on it so the handle
                 // clears the content edge on every side.
                 let vis = hr.inflate(-4.0, -4.0);
-                chrome::fill_rrect(scene, t, vis, 2.5, Color::WHITE);
-                chrome::stroke_rrect(scene, t, vis, 2.5, sel_col, 1.5);
+                chrome::fill_round(scene, t, vis, 2.5, Color::WHITE);
+                chrome::stroke_round(scene, t, vis, 2.5, sel_col, 1.5);
             }
         }
     }
@@ -4963,7 +4949,7 @@ impl SlidesApp {
         let armed = self.over_delete_zone();
         let danger = theme.tokens.colors.semantic.danger;
         if armed {
-            chrome::fill_rrect(scene, t, zone, 10.0, render::with_alpha(danger, 40));
+            chrome::fill_round(scene, t, zone, 10.0, render::with_alpha(danger, 40));
         }
         scene.stroke(
             &Stroke::new(if armed { 2.0 } else { 1.5 }).with_dashes(0.0, [6.0, 4.0]),
@@ -5299,7 +5285,7 @@ impl SlidesApp {
             ui::surface::card(paint.scene, paint.transform, rect, 8.0, chip.fill);
             chip.ink
         } else if active {
-            chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, pal.accent);
+            chrome::fill_round(paint.scene, paint.transform, rect, 8.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
@@ -5329,7 +5315,7 @@ impl SlidesApp {
     ) {
         let c = &paint.theme.tokens.colors;
         let fg = if accent {
-            chrome::fill_rrect(paint.scene, paint.transform, rect, 8.0, pal.accent);
+            chrome::fill_round(paint.scene, paint.transform, rect, 8.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
@@ -5360,7 +5346,7 @@ impl SlidesApp {
         active: bool,
     ) {
         let fg = if active {
-            chrome::fill_rrect(scene, t, rect, 7.0, pal.accent);
+            chrome::fill_round(scene, t, rect, 7.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(scene, t, rect, 7.0, c.surfaces.base);
@@ -5397,7 +5383,7 @@ impl SlidesApp {
             );
         }
         if selected {
-            chrome::stroke_rrect(scene, t, rect.inflate(2.5, 2.5), 8.0, pal.accent, 2.0);
+            chrome::stroke_round(scene, t, rect.inflate(2.5, 2.5), 8.0, pal.accent, 2.0);
         }
     }
 
@@ -5411,7 +5397,7 @@ impl SlidesApp {
         let col = Palette::resolve(kind, paint.theme).accent;
         ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
         if selected {
-            chrome::stroke_rrect(paint.scene, paint.transform, rect, 8.0, col, 2.0);
+            chrome::stroke_round(paint.scene, paint.transform, rect, 8.0, col, 2.0);
         }
         let dot = Rect::new(
             rect.x0 + 8.0,
@@ -5419,7 +5405,7 @@ impl SlidesApp {
             rect.x0 + 20.0,
             rect.center().y + 6.0,
         );
-        chrome::fill_rrect(paint.scene, paint.transform, dot, 6.0, col);
+        chrome::fill_round(paint.scene, paint.transform, dot, 6.0, col);
         if rect.width() > 40.0 {
             // Clip the name to the pill so a slight text-metric over-run can
             // never bleed onto the next pill. Pills are sized (see
@@ -5506,7 +5492,7 @@ impl SlidesApp {
     ) {
         let active = self.rail_open();
         let fg = if active {
-            chrome::fill_rrect(scene, t, rect, 8.0, pal.accent);
+            chrome::fill_round(scene, t, rect, 8.0, pal.accent);
             on_accent(c, pal)
         } else {
             ui::surface::card(scene, t, rect, 8.0, c.surfaces.base);
@@ -5787,7 +5773,7 @@ impl SlidesApp {
         let style = TextBoxStyle::for_element(el, er, s);
         let col = render::with_alpha(pal.accent, 70);
         for r in self.selection_rects_in_box(paint.text, &el.text, sel.min(), sel.max(), style) {
-            chrome::fill_rrect(paint.scene, paint.transform, r, 2.0, col);
+            chrome::fill_round(paint.scene, paint.transform, r, 2.0, col);
         }
     }
 
@@ -5806,7 +5792,7 @@ impl SlidesApp {
         ui::surface::card(scene, t, nb, 8.0, c.surfaces.base);
         if self.editing_notes {
             let accent = self.palette(theme).accent;
-            chrome::fill_rrect(scene, t, nb, 8.0, render::with_alpha(accent, 28));
+            chrome::fill_round(scene, t, nb, 8.0, render::with_alpha(accent, 28));
             scene.stroke(
                 &Stroke::new(1.0),
                 t,
@@ -8012,7 +7998,7 @@ impl SlidesApp {
             Widget::set_focus(&mut self.fill_picker, true);
         }
         if let Some(col) = self.fill_picker.take_changed() {
-            self.set_sel_str(routed.state, "fill", &crate::model::color_to_hex(col));
+            self.set_sel_str(routed.state, "fill", &ui::color::to_hex(col));
         }
         true
     }
@@ -10056,12 +10042,24 @@ mod tests {
         app.reload(&doc);
         let before = app.slide().map_or(0, |s| s.elements.len());
 
+        // The recording host answers the chooser with a chosen file.
+        let path = write_png("slides-unit-insert.png", 12, 8);
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+
         // The Image tool asks the host portal for a file WITHOUT fabricating an
         // element and WITHOUT drawing any in-app picker (HIG §5).
-        app.apply_hit(&mut doc, Hit::Insert(ElementKind::Image));
+        ui::host::scoped(&services, || {
+            app.apply_hit(&mut doc, Hit::Insert(ElementKind::Image));
+        });
         assert!(
             app.portal_rx.is_some(),
             "the Image tool opens the host portal chooser (a real request is in flight)"
+        );
+        assert_eq!(
+            recorder.pick_requests().len(),
+            1,
+            "exactly one host chooser request"
         );
         assert_eq!(
             app.slide().unwrap().elements.len(),
@@ -10069,12 +10067,8 @@ mod tests {
             "no element is inserted until the portal returns a chosen file"
         );
 
-        // Feed the exact per-frame drain path a chosen-file outcome and confirm
-        // it lands a real image element (with its src) in the CRDT.
-        let path = write_png("slides-unit-insert.png", 12, 8);
-        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        // The exact per-frame drain path takes the chosen-file outcome and
+        // lands a real image element (with its src) in the CRDT.
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -10115,7 +10109,12 @@ mod tests {
         app.reload(&doc);
         let before = app.slide().map_or(0, |s| s.elements.len());
 
-        app.portal_rx = Some(ui::portal::inject_for_test(PortalOutcome::Cancelled));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || {
+            app.apply_hit(&mut doc, Hit::Insert(ElementKind::Image));
+        });
+        assert!(app.portal_rx.is_some(), "the Image tool asked the host");
         app.drain_portal(&mut doc);
         assert!(
             app.portal_rx.is_none(),
@@ -10366,7 +10365,9 @@ mod tests {
         let mut opened = SlidesApp::new();
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &opened.deck);
-        opened.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path.clone())));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || opened.request_odp_open());
         opened.drain_doc_portal(&mut doc);
         wait_for_document_job(&mut opened, &mut doc);
         assert_eq!(opened.deck.title, app.deck.title);
@@ -10389,7 +10390,10 @@ mod tests {
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
         app.reload(&doc);
-        app.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(path)));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path));
+        ui::host::scoped(&services, || app.request_odp_open());
+        assert_eq!(recorder.pick_requests()[0].title(), tr("slides-open-title"));
         app.drain_doc_portal(&mut doc);
         wait_for_document_job(&mut app, &mut doc);
         assert!(
@@ -10412,12 +10416,12 @@ mod tests {
         let mut app = SlidesApp::new();
         let mut doc = AutoCommit::new();
         crate::doc::SlidesDoc::seed(&mut doc, &app.deck);
-        app.doc_portal_rx = Some(inject_doc_for_test(DocOutcome::Open(
-            std::env::temp_dir().join(format!(
-                "missing-tilo-slides-deck-{}.odp",
-                std::process::id()
-            )),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir().join(format!(
+            "missing-tilo-slides-deck-{}.odp",
+            std::process::id()
+        ))));
+        ui::host::scoped(&services, || app.request_odp_open());
         app.drain_doc_portal(&mut doc);
         wait_for_document_job(&mut app, &mut doc);
         assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));

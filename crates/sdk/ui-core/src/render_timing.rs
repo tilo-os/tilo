@@ -8,6 +8,7 @@ pub(crate) struct CallBounds {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "native")]
 pub(crate) enum MainStage {
     BeforeProfilerCommit,
     AfterProfilerCommit,
@@ -19,6 +20,7 @@ pub(crate) enum MainStage {
     AfterNativeRedrawLog,
 }
 
+#[cfg(feature = "native")]
 const MAIN_STAGE_NAMES: [&str; 8] = [
     "before_profiler_commit",
     "after_profiler_commit",
@@ -31,10 +33,12 @@ const MAIN_STAGE_NAMES: [&str; 8] = [
 ];
 
 #[derive(Default)]
+#[cfg(feature = "native")]
 pub(crate) struct MainStages {
     points: [Option<HostClockBracket>; 8],
 }
 
+#[cfg(feature = "native")]
 impl MainStages {
     pub(crate) fn row(&self, cpu_frame_id: Option<u64>) -> serde_json::Value {
         let mut row = serde_json::Map::new();
@@ -57,10 +61,12 @@ impl MainStages {
     }
 }
 
+#[cfg(feature = "native")]
 pub(crate) fn record_main_stage(stages: &mut Option<MainStages>, stage: MainStage) {
     record_main_stage_with(stages, stage, capture);
 }
 
+#[cfg(feature = "native")]
 fn record_main_stage_with(
     stages: &mut Option<MainStages>,
     stage: MainStage,
@@ -84,6 +90,7 @@ pub(crate) fn enabled() -> bool {
 
 /// Presentation profiling needs support, an explicit `profile == "1"`, and a
 /// native scenario to profile.
+#[cfg(feature = "native")]
 pub(crate) fn gate(
     supported: bool,
     profile: Option<&str>,

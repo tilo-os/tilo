@@ -5,11 +5,8 @@ fn lines(text: &str) -> Vec<String> {
 }
 
 fn fresh(language: Language, text: &[String]) -> Vec<Vec<Span>> {
-    let highlighter = Highlighter::for_language(language);
-    let mut state = highlighter.fresh_state();
-    text.iter()
-        .map(|line| highlighter.highlight_line(&format!("{line}\n"), &mut state))
-        .collect()
+    let mut state = highlighter(language).start();
+    text.iter().map(|line| state.highlight_line(line)).collect()
 }
 
 fn check_sequence(sequence: &[(Language, &str)]) {

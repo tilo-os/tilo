@@ -9,6 +9,13 @@ use crate::vello::kurbo::Vec2;
 ///
 /// Keeping this lifecycle together prevents the main [`App`] state
 /// from becoming the schema for every optional host integration.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "some fields are read only by the native event-loop runner"
+    )
+)]
 pub(super) struct FloatingRuntime {
     pub client: Option<FloatingSurfaceServiceClient>,
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
@@ -34,6 +41,7 @@ impl FloatingRuntime {
 }
 
 impl App {
+    #[cfg(feature = "native")]
     fn pump_floating_surface_service(&mut self) -> bool {
         let active_ids = self
             .root_widget
@@ -82,6 +90,7 @@ impl App {
         changed || geometry_changed
     }
 
+    #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
         // Outside a Tilo session there is no trusted shell chooser to open.
         // Drain the edge so reconnecting later cannot replay a stale gesture.
@@ -103,6 +112,7 @@ impl App {
         changed
     }
 
+    #[cfg(feature = "native")]
     fn send_pending_floating_requests(
         &mut self,
         client: &mut FloatingSurfaceServiceClient,
@@ -144,6 +154,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "native")]
     fn dismiss_inactive_generic_surfaces(
         &self,
         client: &mut FloatingSurfaceServiceClient,
@@ -162,6 +173,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "native")]
     fn reconcile_floating_presentations(
         &mut self,
         client: &mut FloatingSurfaceServiceClient,
@@ -180,6 +192,7 @@ impl App {
         Ok(geometry_changed)
     }
 
+    #[cfg(feature = "native")]
     fn publish_prepared_presentations(
         &mut self,
         client: &mut FloatingSurfaceServiceClient,
@@ -225,6 +238,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "native")]
     fn retire_missing_presentations(
         &mut self,
         client: &mut FloatingSurfaceServiceClient,
@@ -268,6 +282,7 @@ impl App {
         Ok(())
     }
 
+    #[cfg(feature = "native")]
     fn apply_floating_host_messages(&mut self, messages: Vec<FloatingSurfaceHostMessage>) -> bool {
         let changed = !messages.is_empty();
         for message in messages {
@@ -317,6 +332,7 @@ impl App {
         }
         changed
     }
+    #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
         let ids = self
             .floating
@@ -339,6 +355,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     fn take_floating_host_messages(
         &mut self,
     ) -> Vec<crate::floating_surface::FloatingSurfaceHostMessage> {
@@ -351,6 +368,7 @@ impl App {
     /// but the native secondary may not have committed and taken pointer focus
     /// yet. Once the root reattaches, its presentation disappears immediately,
     /// so the very next primary event remains app-local as usual.
+    #[cfg(feature = "native")]
     fn primary_floating_pointer_event(
         &self,
         event: &WindowEvent,

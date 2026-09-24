@@ -45,7 +45,7 @@
 )]
 
 use serde::Serialize;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Instant, SystemTime};
 
 /// Global capture state. Cheap to check on every [`mark`] call: the `OnceLock` reads a
@@ -55,7 +55,7 @@ static METRICS: OnceLock<Option<Metrics>> = OnceLock::new();
 struct Metrics {
     origin: Instant,
     origin_epoch_ms: u128,
-    events: parking_lot::Mutex<Vec<Event>>,
+    events: Mutex<Vec<Event>>,
     output_path: std::path::PathBuf,
 }
 
@@ -81,7 +81,7 @@ pub fn init() {
         Some(Metrics {
             origin,
             origin_epoch_ms,
-            events: parking_lot::Mutex::new(Vec::with_capacity(16)),
+            events: Mutex::new(Vec::with_capacity(16)),
             output_path: path.into(),
         })
     });
@@ -93,17 +93,24 @@ pub fn init() {
 pub fn mark(name: &str) {
     let Some(Some(m)) = METRICS.get() else { return };
     let ns = m.origin.elapsed().as_nanos();
-    m.events.lock().push(Event {
-        name: name.to_owned(),
-        ns,
-    });
+    m.events
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(Event {
+            name: name.to_owned(),
+            ns,
+        });
 }
 
 /// Serialise every recorded event to the configured file. Called automatically at process
 /// exit via [`ScopedDumper`]; the explicit version lets tests dump before drop.
 pub fn dump() {
     let Some(Some(m)) = METRICS.get() else { return };
-    let events = m.events.lock().clone();
+    let events = m
+        .events
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
     let payload = serde_json::json!({
         "origin_epoch_ms": m.origin_epoch_ms,
         "events": events,

@@ -437,7 +437,7 @@ mod tests {
         FileVersionV1,
     };
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
+    use getrandom::{SysRng, rand_core::UnwrapErr};
     use uuid::Uuid;
 
     use super::*;
@@ -471,7 +471,7 @@ mod tests {
     fn broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history() {
         let temp = tempfile::tempdir().unwrap();
         let workspace_id = Uuid::new_v4();
-        let key = SigningKey::generate(&mut OsRng);
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
         let actor = FileActor {
             person: Ed25519PublicKey([6; 32]),
             device: Ed25519PublicKey(key.verifying_key().to_bytes()),

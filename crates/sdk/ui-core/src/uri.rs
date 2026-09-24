@@ -15,6 +15,30 @@
 //!
 //! Pick per call site by asking what produced the string, not by what it looks
 //! like.
+//!
+//! Encoding has one answer: [`encode_component`] escapes everything but the
+//! RFC 3986 unreserved set, so its output is a valid path segment, query key
+//! or query value, and a space always becomes `%20` (never `+`), which both
+//! decoders read back as a space.
+
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC};
+
+/// Everything except the RFC 3986 §2.3 unreserved characters
+/// (`ALPHA / DIGIT / "-" / "." / "_" / "~"`).
+const COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+/// Percent-encode a URI component: every byte outside the RFC 3986
+/// unreserved set becomes an upper-case `%XX` escape of its UTF-8 encoding.
+///
+/// Safe for a query key or value (in a plain or form-encoded query), and for
+/// a single path segment.
+pub fn encode_component(s: &str) -> String {
+    percent_encoding::utf8_percent_encode(s, COMPONENT).to_string()
+}
 
 /// Percent-decode a URI component per **RFC 3986**: `%XX` escapes are decoded
 /// and `+` is left as a literal plus.
@@ -45,6 +69,31 @@ pub fn parse_form_query(query: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_component_keeps_only_the_unreserved_set() {
+        assert_eq!(
+            encode_component("AZaz09-._~"),
+            "AZaz09-._~",
+            "unreserved characters pass through"
+        );
+        assert_eq!(
+            encode_component("a b+c/d?e=f&g%h:i@j#k"),
+            "a%20b%2Bc%2Fd%3Fe%3Df%26g%25h%3Ai%40j%23k"
+        );
+        assert_eq!(encode_component("*!'(),;$"), "%2A%21%27%28%29%2C%3B%24");
+        assert_eq!(encode_component("café ☕"), "caf%C3%A9%20%E2%98%95");
+        assert_eq!(encode_component("\u{0}\u{7f}"), "%00%7F");
+        assert_eq!(encode_component(""), "");
+    }
+
+    #[test]
+    fn encoded_components_round_trip_through_both_decoders() {
+        let raw = "C++ & friends: 100% café/π?";
+        let encoded = encode_component(raw);
+        assert_eq!(decode(&encoded), raw);
+        assert_eq!(parse_form_query(&format!("k={encoded}"))[0].1, raw);
+    }
 
     #[test]
     fn rfc3986_decode_keeps_plus_literal() {

@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ed25519_dalek::{Signer, SigningKey};
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde::Serialize;
 use tilo_app_package::blobs::{BlobHash, BlobStore};
 use tilo_app_package::manifest::TrustAttestation;
@@ -86,7 +86,7 @@ fn write_payload(dir: &Path) {
 }
 
 fn fresh_key() -> (SigningKey, String) {
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let sk = SigningKey::generate(&mut rng);
     let pub_hex = hex::encode(sk.verifying_key().to_bytes());
     (sk, pub_hex)

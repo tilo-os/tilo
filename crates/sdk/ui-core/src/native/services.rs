@@ -8,7 +8,9 @@
 //! - opener: the desktop's registered URI handler through `open`;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: Windows toasts (with the `notifications` feature);
-//! - media sessions: MPRIS on the session bus (with the `mpris` feature).
+//! - media sessions: MPRIS on the session bus (with the `mpris` feature);
+//! - location: the XDG Location portal (with the `portal` feature);
+//! - screen capture: the XDG ScreenCast portal (with the `portal` feature).
 //!
 //! It is also the one place the toolkit reads the process environment:
 //! [`process_environment`] turns launcher variables, XDG paths and
@@ -34,6 +36,8 @@ pub fn services(app_id: Option<&str>) -> HostServices {
         speech: Arc::new(SystemSpeech),
         notifications: notifier(app_id),
         media_session: Arc::new(super::mpris::DesktopMediaSessions),
+        location: Arc::new(super::location::DesktopLocation),
+        screen_capture: Arc::new(super::capture::DesktopScreenCapture),
     }
 }
 
@@ -113,10 +117,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             // sandboxes so an app comes up already scaled.
             ui_scale: factor(&["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"]),
         },
-        locale: ["LC_ALL", "LC_MESSAGES", "LANGUAGE", "LANG"]
-            .into_iter()
-            .filter_map(|name| std::env::var(name).ok())
-            .find(|value| crate::i18n::is_usable_locale(value)),
+        locale: crate::i18n::locale_from_vars(|name| std::env::var(name).ok()),
         diagnostics: crate::host::RunnerDiagnostics {
             debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
             perf_log: set("QUICK_UI_PERF"),

@@ -21,8 +21,8 @@
 //! it's content-addressed and stable across peers, letting
 //! [`heads_for_entry`] turn a clicked row back into a document state.
 
+use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};

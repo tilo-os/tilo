@@ -62,10 +62,9 @@ impl Language {
         }
     }
 
-    /// The token syntect uses to locate a grammar by file extension. Picked
-    /// so that `SyntaxSet::find_syntax_by_extension` resolves to the right
-    /// Sublime grammar in the bundled default set.
-    pub fn syntect_extension(self) -> &'static str {
+    /// The file extension the toolkit's syntax highlighter resolves this
+    /// language's grammar by.
+    pub fn grammar_token(self) -> &'static str {
         match self {
             Language::Rust => "rs",
             Language::Toml => "toml",

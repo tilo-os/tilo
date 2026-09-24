@@ -1091,9 +1091,10 @@ pub enum Capability {
     /// users' jobs, so "may print" and "may reach the print system" are
     /// not the same permission.
     ///
-    /// **Not yet enforced:** `SandboxProfile::apply_grants` has no arm
-    /// for it, so `/run/cups/cups.sock` never appears inside the sandbox
-    /// however broadly this is granted.
+    /// Brokered, never bound: the launcher's grant-to-bind mapping
+    /// (`launcher::capabilities`) has no print binding, so
+    /// `/run/cups/cups.sock` never appears inside the sandbox however
+    /// broadly this is granted; printing goes through the `Print` portal.
     Print { scope: GrantScope },
     /// Outbound network access. `hosts: None` = any host; `Some(list)` =
     /// only those.

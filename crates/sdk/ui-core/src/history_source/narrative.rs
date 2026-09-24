@@ -108,8 +108,8 @@ pub fn deterministic_narrative(request: &NarrativeRequest) -> GroundedNarrative 
 mod tests {
     use super::*;
     use crate::history_source::digest::{ActivityBrief, ActivityDigest};
+    use crate::time::SystemTime;
     use crate::widget::history::HistoryAuthor;
-    use std::time::SystemTime;
 
     fn brief(id: u8, title: &str) -> ActivityBrief {
         ActivityBrief {

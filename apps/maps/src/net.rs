@@ -7,7 +7,6 @@
 //! the bundled sample data instead.
 
 use std::fmt::Write as _;
-use std::sync::Once;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -25,26 +24,6 @@ const USER_AGENT: &str = "Tilo-Maps/0.1 (https://example.test; native maps app)"
 /// points OSRM/MOTIS emit along straight segments, so the render thread projects
 /// far fewer points per frame. See [`crate::geo::simplify_polyline`].
 const GEOMETRY_SIMPLIFY_M: f64 = 3.0;
-
-/// Install the process-wide rustls [`CryptoProvider`] exactly once, before any
-/// HTTPS fetch runs.
-///
-/// reqwest consults `CryptoProvider::get_default()` when it builds a TLS client.
-/// Installing the workspace-standard `ring` provider up front makes that lookup
-/// succeed, so tile / geocoding / routing requests actually complete instead of
-/// silently returning nothing (the "imagery unavailable" symptom).
-///
-/// Idempotent and safe to call from any thread or entry point (the live binary,
-/// the tile worker, tests). `install_default` only errors if a provider is
-/// already installed, which we ignore.
-///
-/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
-pub fn ensure_crypto_provider() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-}
 
 /// A completed background request handed back to the app.
 pub enum NetMsg {
@@ -103,8 +82,7 @@ pub struct TransitQuery {
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
-    ensure_crypto_provider();
-    reqwest::blocking::Client::builder()
+    tilo_net::http::blocking_client()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(12))
         .build()
@@ -125,7 +103,7 @@ fn fetch_json(url: &str) -> Result<Value, String> {
 ///
 /// Returns `Err` if the request fails or the response isn't the expected shape.
 pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
-    let q = urlencode(query);
+    let q = ui::uri::encode_component(query);
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=8&addressdetails=1"
     );
@@ -143,7 +121,7 @@ pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
 ///
 /// Returns `Err` if the request fails or the response isn't the expected shape.
 pub fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
-    let q = urlencode(query);
+    let q = ui::uri::encode_component(query);
     let url = format!(
         "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=8&addressdetails=1"
     );
@@ -265,7 +243,7 @@ nwr[\"public_transport\"=\"station\"]({bbox});\
     );
     format!(
         "https://overpass-api.de/api/interpreter?data={}",
-        urlencode(&ql)
+        ui::uri::encode_component(&ql)
     )
 }
 
@@ -541,7 +519,7 @@ pub fn transit_url(from: LatLon, to: LatLon, when: &TransitQuery) -> String {
         from.lat, from.lon, to.lat, to.lon
     );
     if let Some(time) = &when.time {
-        let _ = write!(url, "&time={}", urlencode(time));
+        let _ = write!(url, "&time={}", ui::uri::encode_component(time));
     }
     if when.arrive_by {
         url.push_str("&arriveBy=true");
@@ -711,23 +689,6 @@ fn hhmm(iso: &str) -> String {
     iso.to_string()
 }
 
-/// Minimal percent-encoding for query strings (space + reserved chars).
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push_str("%20"),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,11 +697,6 @@ mod tests {
     fn hhmm_extracts_clock() {
         assert_eq!(hhmm("2026-06-30T09:17:00+02:00"), "09:17");
         assert_eq!(hhmm("garbage"), "garbage");
-    }
-
-    #[test]
-    fn urlencode_basic() {
-        assert_eq!(urlencode("a b&c"), "a%20b%26c");
     }
 
     /// A region candidate carries the Nominatim `boundingbox`

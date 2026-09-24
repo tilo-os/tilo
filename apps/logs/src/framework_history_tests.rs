@@ -1,6 +1,6 @@
 use automerge::transaction::Transactable;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use tilo_actions::OperationKind;
 use ui::history_mode::{
     HistoryPresentation, HistoryRegistration, HistorySourceRegistration, ManagedRoot,
@@ -137,6 +137,55 @@ fn invoke(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
     );
 }
 
+/// A host chooser that records every Save request and holds its answer until
+/// the test settles it, so the request stays pending across History.
+#[derive(Default)]
+struct HeldSavePicker {
+    requests: Mutex<Vec<ui::portal::PickRequest>>,
+    held: Mutex<Option<Sender<ui::portal::PortalOutcome>>>,
+}
+
+impl HeldSavePicker {
+    fn requests(&self) -> Vec<ui::portal::PickRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+
+    fn is_pending(&self) -> bool {
+        self.held.lock().unwrap().is_some()
+    }
+
+    fn settle(&self, outcome: ui::portal::PortalOutcome) {
+        let sender = self.held.lock().unwrap().take();
+        sender.unwrap().send(outcome).unwrap();
+    }
+}
+
+/// A channel whose sender is already gone: the request disconnects at once.
+fn disconnected<T>() -> Receiver<T> {
+    std::sync::mpsc::channel().1
+}
+
+impl ui::host::FilePicker for HeldSavePicker {
+    fn pick(&self, request: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        self.requests.lock().unwrap().push(request);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.held.lock().unwrap() = Some(sender);
+        receiver
+    }
+
+    fn pick_multiple(&self, _request: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        disconnected()
+    }
+
+    fn open_file(&self, _request: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        disconnected()
+    }
+
+    fn launch(&self, _request: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        disconnected()
+    }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -154,24 +203,11 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
         .filter(|entry| entry.priority.level() <= crate::Priority::Err.level())
         .cloned()
         .collect::<Vec<_>>();
-    let held_sender = Rc::new(RefCell::new(None));
-    let requests = Rc::new(RefCell::new(Vec::new()));
+    let picker = Arc::new(HeldSavePicker::default());
+    let (mut services, _recorder) = ui::host::HostServices::recording();
+    services.files = picker.clone();
+    let _host = ui::host::enter(&services);
     let mut app = crate::LogsApp::new(entries, true);
-    let sender_slot = held_sender.clone();
-    let request_log = requests.clone();
-    app.set_controlled_export_portal(move |request| {
-        request_log.borrow_mut().push((
-            request.suggested_name().map(str::to_owned),
-            request
-                .filter_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>(),
-        ));
-        let (sender, receiver) = std::sync::mpsc::channel();
-        *sender_slot.borrow_mut() = Some(sender);
-        receiver
-    });
     invoke(
         &mut app,
         &crate::actions::LogsOperation::SetPriority {
@@ -188,8 +224,22 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
     invoke(&mut app, &crate::actions::LogsOperation::ExportFiltered);
     invoke(&mut app, &crate::actions::LogsOperation::ClearFilters);
 
+    let requests = picker
+        .requests()
+        .iter()
+        .map(|request| {
+            (
+                request.suggested_name().map(str::to_owned),
+                request
+                    .filter_names()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        requests.borrow().as_slice(),
+        requests.as_slice(),
         &[(
             Some("journal-filtered.jsonl".to_string()),
             vec!["JSON Lines".to_string()]
@@ -210,10 +260,7 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
     );
 
     driver.click_named("history-open").unwrap();
-    assert!(
-        held_sender.borrow().is_some(),
-        "portal request remains pending"
-    );
+    assert!(picker.is_pending(), "portal request remains pending");
     driver.click_named("history-open").unwrap();
     let returned = driver.inspection_json().unwrap();
     assert!(
@@ -221,12 +268,7 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
         "the same selected journal row returns after History"
     );
 
-    held_sender
-        .borrow_mut()
-        .take()
-        .unwrap()
-        .send(ui::portal::PortalOutcome::Opened(path.clone()))
-        .unwrap();
+    picker.settle(ui::portal::PortalOutcome::Opened(path.clone()));
     driver.relayout();
     let written = std::fs::read_to_string(&path).unwrap();
     let lines = written.lines().collect::<Vec<_>>();
@@ -256,7 +298,7 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
         "settled-once\n",
         "a drained portal outcome cannot write twice"
     );
-    assert_eq!(requests.borrow().len(), 1, "the request is not replayed");
+    assert_eq!(picker.requests().len(), 1, "the request is not replayed");
     std::fs::remove_file(path).unwrap();
 }
 

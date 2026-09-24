@@ -273,7 +273,7 @@ flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml"
 flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
 if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
   && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
-  && grep -Fq 'flatpak-media-writer = ["dep:zbus"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]' "$repo/apps/imager/Cargo.toml" \
   && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
     "$repo/apps/imager/src/write.rs" \
   && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \

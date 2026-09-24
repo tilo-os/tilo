@@ -10,30 +10,17 @@ promotion model, service levels and phased production plan.
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
-The protected check and lint contexts must pass for the exact head before merge.
+The required check and lint contexts must pass for the exact head before merge.
 `check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
 
-The trusted merge controller classifies changes using the deployed
-[admission code](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/admission.py)
-and [path policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/policy.json).
-Ordinary product and documentation changes are routine; tools are classified by
-path, not by being tools. CI/policy, publication, signing and named security
-boundaries use the protected scope, as does an existing file's executable-mode
-change. Named dependency exceptions carry their own CI checks. No scope requires
-review.
-
-After exact-head checks pass, the author posts `/merge <full-head-sha>` or follows
-the controller's queue instructions. Reviews are informational and never block
-integration. A new push requires fresh checks and intent.
-
-Review state does **not** turn a routine documentation PR into a protected-scope
-change. Such a PR still uses routine integration, respecting queue priority. The
-operator command is only for changes the classifier assigns to the protected
-scope. See [Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow)
-for the command and limits, and [Release pipeline](release-pipeline.md) for
-heavy-build and publication triggers.
+A PR merges once the required checks pass for its current head and the branch
+is up to date with `main`; reviews are informational and never block
+integration. A new push requires fresh checks. See
+[Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow) for the
+rule, and [Release pipeline](release-pipeline.md) for heavy-build and
+publication triggers.
 
 ## What runs for each event
 
@@ -57,6 +44,7 @@ exact head.
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |
 | Native Windows apps | Merged toolkit plus `tools/windows/install-apps.ps1`; production allowlist currently contains 30 selectable apps | This is a local build/install path, not continuous distributable app packaging. Versioned archive/MSIX format, signing/promotion, native dependency identity, disposable installation and runtime tests are not a qualified release path. Consider broad app coverage after a bounded native qualification. |
 | OS x86-64/ARM64 | `build-image.yml`: nightly `main` publication (skipped when `main` is already published), explicit builds and tag/manual publication | Retained component/development workflows cover targeted kernel, source, Windows compatibility guest and resume/finalize work. A generic architecture image is not qualification for every laptop/device. Keep device acceptance explicit. |
+| Dev VM disks | `dev-disk.yml`: requested by each published OS generation or by explicit dispatch; builds `tilo-vm` on the verified same-commit OS image, boots the disk, publishes `tilo-vm:<tag>` and qcow2 (optional VHDX) disks with a `tilo-vm-disk.json` manifest | Default lane is x86-64; aarch64 is an `architectures` input. The boot check proves SSH reachability only. UTM, libvirt and Hyper-V import are not qualified. |
 | macOS Imager | Native x86-64 and ARM64 signed/notarized DMG and app-zip lanes; first-party Homebrew cask with native install tests | Enabled for `full_native` rehearsal and release tags; requires ephemeral native runners and protected signing/notarization brokers. This does not qualify unrelated standalone macOS apps. |
 
 At this audit, neither the admin runner listing nor the repository runner listing

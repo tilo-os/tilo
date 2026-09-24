@@ -791,7 +791,7 @@ mod tests {
             driver.click_named("standalone-history-open").unwrap();
             assert!(driver.document_history.is_open());
             assert!(
-                driver.wait_until(std::time::Duration::from_secs(1), |driver| driver
+                driver.wait_until(crate::time::Duration::from_secs(1), |driver| driver
                     .pending_control_invocations
                     .is_empty())
             );

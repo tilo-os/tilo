@@ -5,10 +5,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_actions::{ActionAddress, ActionSpec, ExecutionLocus, Resource};
-use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError, SearchCursor, SearchPage,
-    SearchProvider, SearchResult,
-};
+use ui::search::{CatalogSearchProvider, SearchCatalog, SearchCatalogError, SearchResult};
 
 use crate::{
     actions::{
@@ -366,34 +363,16 @@ fn history_label(entry: &HistoryEntry) -> String {
         entry.status
     )
 }
-impl SearchProvider for ApiSearchProvider {
-    fn name(&self) -> &str {
+impl CatalogSearchProvider for ApiSearchProvider {
+    fn provider_name(&self) -> &str {
         KIND
     }
-    fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
-    }
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
-    }
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
-            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
-    }
-    fn search_page(
-        &self,
-        q: &str,
-        c: Option<&SearchCursor>,
-        work: usize,
-        limit: usize,
-    ) -> SearchPage {
-        self.catalog.query_page(q, c, work, limit)
+
+    fn catalog(&self) -> Option<SearchCatalog> {
+        Some(self.catalog.clone())
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
         let resource = self.resource(address.resource.as_str())?;
         resource
             .actions
@@ -407,6 +386,7 @@ impl SearchProvider for ApiSearchProvider {
 mod tests {
     use super::*;
     use crate::model::Request;
+    use ui::search::SearchProvider;
 
     #[test]
     fn late_request_is_found_with_bounded_cursor_work_and_no_variable_values() {

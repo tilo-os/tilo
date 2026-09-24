@@ -20,9 +20,9 @@ fn location_action_reports_the_real_portal_terminal_result() {
 
     let invocation = InvocationId::default();
     app.location_invocation = Some(invocation);
-    app.location_rx = Some(crate::location::inject_for_test(
-        LocationOutcome::Unavailable("permission denied".into()),
-    ));
+    app.location_rx = Some(host_location(LocationOutcome::Unavailable(
+        "permission denied".into(),
+    )));
     app.drain_location();
     assert!(matches!(
         app.poll_resource_operation(invocation, false, &state.doc, &state.root),
@@ -1454,7 +1454,7 @@ fn route_reply_folds_from_a_worker_thread() {
 
 // --- Location services -------------------------------------------------
 
-/// The "use my location" success path: a mocked portal fix becomes the route
+/// The "use my location" success path: a host-provided fix becomes the route
 /// origin and the journey re-plans from it. The real coordinates depend on
 /// the host location service + user permission (unverifiable headlessly);
 /// this proves the result *handling* around the portal.
@@ -1465,7 +1465,7 @@ fn use_my_location_success_sets_origin_from_fix() {
     a.enter_directions();
 
     a.locating = true;
-    a.location_rx = Some(location::inject_for_test(LocationOutcome::Located {
+    a.location_rx = Some(host_location(LocationOutcome::Located {
         lat: 48.11,
         lon: 11.53,
         accuracy_m: 8.0,
@@ -1500,7 +1500,7 @@ fn location_unavailable_is_honest_and_fabricates_nothing() {
     let mut a = app_at(1280.0, 800.0);
     let before = a.model.origin;
     a.locating = true;
-    a.location_rx = Some(location::inject_for_test(LocationOutcome::Unavailable(
+    a.location_rx = Some(host_location(LocationOutcome::Unavailable(
         "permission denied".into(),
     )));
     a.drain_location();

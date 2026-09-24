@@ -22,6 +22,7 @@ libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+atomic-file = { path = "../../system/atomic-file" }
 serde.workspace = true
 serde_json.workspace = true
 syn = { version = "2.0", features = ["full"] }

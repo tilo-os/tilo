@@ -12,7 +12,6 @@
 //! back into the document.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -149,7 +148,7 @@ const MAX_IMPORT_CELLS: usize = actions::MAX_IMPORTED_CELLS;
 /// populated cell at a hostile far-away coordinate must not turn into a
 /// trillion-slot dense `Vec`; this caps the actually materialised rectangle,
 /// independently of the populated-cell action limit above.
-const MAX_CSV_MATERIALIZED_SLOTS: usize = 1_000_000;
+const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
 
 type ImportedCellWrite = (Addr, String, Option<CellFormat>);
 type ImportedWorkbook = Vec<(String, Vec<ImportedCellWrite>)>;
@@ -1750,38 +1749,8 @@ impl SheetsApp {
         std::thread::Builder::new()
             .name("sheets-persistence-save".into())
             .spawn(move || {
-                let result = (|| {
-                    let parent = path
-                        .parent()
-                        .ok_or_else(|| "workbook path has no parent directory".to_string())?;
-                    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-                    // `create_new` avoids trampling an unrelated file, then a
-                    // same-directory rename makes the new, fully flushed image
-                    // visible atomically. A crash can at worst leave our
-                    // bounded, generation-named temporary file behind.
-                    let temporary = parent.join(format!(
-                        ".workbook.automerge-{}-{generation}.tmp",
-                        std::process::id()
-                    ));
-                    let _ = std::fs::remove_file(&temporary);
-                    let write_result = (|| {
-                        let mut file = std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&temporary)
-                            .map_err(|error| error.to_string())?;
-                        file.write_all(&saved_doc.save())
-                            .map_err(|error| error.to_string())?;
-                        file.sync_all().map_err(|error| error.to_string())?;
-                        drop(file);
-                        std::fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-                        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
-                    })();
-                    if write_result.is_err() {
-                        let _ = std::fs::remove_file(&temporary);
-                    }
-                    write_result
-                })();
+                let result = atomic_file::write_creating_parent(&path, &saved_doc.save())
+                    .map_err(|error| error.to_string());
                 let _ = tx.send(PersistenceResult::Save {
                     generation,
                     heads: result_heads,
@@ -5603,10 +5572,7 @@ fn tsv_cell(display: &str) -> String {
 /// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
 fn workbook_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::data_dir)?;
+    let base = xdg_paths::env_dir("XDG_DATA_HOME").or_else(xdg_paths::data_dir)?;
     Some(base.join("tilo").join("sheets").join("workbook.automerge"))
 }
 
@@ -9571,7 +9537,8 @@ mod tests {
 
     /// The portal drain path: a Save outcome writes the active sheet, and an
     /// Open outcome imports it back — driving the exact per-frame `drain_io`
-    /// the host file chooser feeds, via an injected outcome (no D-Bus dialog).
+    /// the host file chooser feeds, answered by a recording host (no D-Bus
+    /// dialog).
     #[test]
     fn portal_drain_exports_then_imports_through_the_picked_path() {
         let tmp = std::env::temp_dir().join(format!("tilo-sheets-portal-{}", std::process::id()));
@@ -9581,11 +9548,11 @@ mod tests {
 
         let (mut app, mut doc) = seeded_app();
 
-        // Inject a Save outcome as though the user picked `path`, then drain.
-        app.io = Some((
-            PendingIo::Export(Interchange::Csv),
-            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
-        ));
+        // Answer the Save dialog as though the user picked `path`, then drain.
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.begin_export(Interchange::Csv));
+        assert!(recorder.pick_requests()[0].suggested_name().is_some());
         app.drain_io(&mut doc);
         // The file codec runs on the bounded worker. Drive the same frame pump
         // as a live app and wait by elapsed time, not an arbitrary count of
@@ -9603,12 +9570,11 @@ mod tests {
             app.status
         );
 
-        // Inject an Open outcome for the same path and drain: it imports a sheet.
+        // Answer an Open dialog with the same path and drain: it imports a sheet.
         let before = SheetsDoc::sheet_count(&mut doc);
-        app.io = Some((
-            PendingIo::Import(Interchange::Csv),
-            ui::portal::inject_for_test(PortalOutcome::Opened(path)),
-        ));
+        recorder.respond_to_pick(PortalOutcome::Opened(path));
+        ui::host::scoped(&services, || app.begin_import(Interchange::Csv));
+        assert_eq!(recorder.pick_requests().len(), 2);
         app.drain_io(&mut doc);
         sync_until(&mut app, &mut doc, |app| app.interchange_rx.is_none());
         assert_eq!(
@@ -9630,10 +9596,10 @@ mod tests {
     fn portal_cancel_is_silent() {
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
-        app.io = Some((
-            PendingIo::Import(Interchange::Xlsx),
-            ui::portal::inject_for_test(PortalOutcome::Cancelled),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.begin_import(Interchange::Xlsx));
+        assert!(app.io.is_some(), "import asked the host chooser");
         app.drain_io(&mut doc);
         assert!(app.io.is_none());
         assert_eq!(

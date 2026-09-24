@@ -331,7 +331,7 @@ impl Resource {
 /// an earlier operation produced). Declared on the spec rather than
 /// inferred, so a caller with no screen can tell "give me a new name"
 /// from "give me the image to place".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Collects {
     /// Free text, in the words of whoever is asking.
     #[default]

@@ -63,10 +63,11 @@ mpris = ["native", "dep:zbus", "zbus/tokio"]
 # parts always compile, so headless tests drive the exact per-frame drain path
 # with no portal, and a feature-less build degrades to a clean
 # `PortalOutcome::Failed` rather than failing to link.
-portal = ["native", "dep:ashpd", "dep:windows", "dep:mime_guess"]
+portal = ["native", "dep:ashpd", "dep:futures-util", "dep:windows", "dep:mime_guess"]
 notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
+xdg-paths = { path = "../../system/xdg-paths" }
 private-fs = { path = "../../system/private-fs" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 atomic-file = { path = "../../system/atomic-file" }
@@ -98,13 +99,17 @@ app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
 spellcheck = { path = "../../text/spellcheck" }
-syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
+# Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
+# tokenizer over two-face's extended syntax set, the packed set Typst already
+# links for raw blocks, so the runtime carries those bytes once.
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-fancy"] }
+two-face = { version = "0.4.5", default-features = false, features = ["syntect-fancy"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 rustls.workspace = true
 chacha20poly1305.workspace = true
-cosmic-text = { version = "0.19.0", default-features = false, features = ["fontconfig", "peniko", "swash", "std"] }
+cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
 skrifa = "0.40.0"
@@ -120,18 +125,21 @@ vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+# `ui::time` clock types. On targets with a native clock it re-exports
+# `std::time` unchanged; it keeps the toolkit buildable where `std` has none.
+web-time = "1"
 dirs.workspace = true
 fluent.workspace = true
 tilo-headless-schema = { path = "../../dev/headless-schema" }
 unic-langid.workspace = true
-unicode-segmentation = "1.12"
 # UAX #14 opportunities shared by editor geometry and clamped-label wrapping.
 # cosmic-text uses the same crate internally; naming it directly lets toolkit
 # code that must mirror shaped rows avoid ASCII-space heuristics.
 unicode-linebreak = "0.1.5"
-# ICU dictionary/LSTM segmentation for scripts whose word boundaries cannot
-# be inferred from whitespace (Thai, Lao, Khmer, Myanmar, CJK).
-icu_segmenter = "1.5"
+# ICU grapheme clusters, plus dictionary/LSTM segmentation for scripts whose
+# word boundaries cannot be inferred from whitespace (Thai, Lao, Khmer,
+# Myanmar, CJK).
+icu_segmenter = "2.3"
 # TeX/Liang hyphenation patterns with language-specific minima. The same
 # implementation is already used by the workspace's Typst document engine;
 # making it direct lets UI paragraphs opt in without runtime dictionary I/O.
@@ -140,7 +148,6 @@ serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
-png.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 chrono = { workspace = true, features = ["clock", "std"] }
 # VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
@@ -153,12 +160,9 @@ openh264.workspace = true
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
 media = { path = "../../media/core" }
-# System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
-# Wayland uses `wl_data_device`; X11 uses the selection protocol —
-# `arboard` wraps both. The "wayland-data-control" feature lets us
-# talk to the data-control compositor extension when available
-# (kanshi / GNOME / KDE), falling back to the seat-driven protocol
-# otherwise.
+# Clipboard for non-Wayland platforms (X11, Windows, macOS). Wayland goes
+# through `smithay-clipboard` below; `arboard`'s Wayland path needs the
+# data-control manager protocol Tilo withholds from sandboxed apps.
 arboard = { workspace = true, features = ["image-data"], optional = true }
 # The `Link` widget hands its URL to the OS's registered handler (xdg-open /
 # the desktop portal on Linux) when activated. Same crate + pin the file
@@ -186,6 +190,7 @@ tilo-actions = { path = "../../collab/actions" }
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the tilo-collab-types private module path. Pinned
 # to the same major as `tilo-collab-types`.
+getrandom.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # FROST threshold identity engine used by the identity-flow widgets. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
@@ -222,11 +227,9 @@ postcard = { workspace = true, features = ["alloc", "use-std"] }
 hex.workspace = true
 serde_bytes.workspace = true
 thiserror.workspace = true
-# The identity-flow screens need a `CryptoRng + RngCore` compatible with
-# `frost-ed25519` 3.x, which consumes `rand_core` 0.6. Depending on it
-# directly (rather than reaching through `rand`) keeps the requirement
-# visible at the manifest level.
-rand_core = { workspace = true, features = ["getrandom"] }
+# The identity-flow screens hand a `rand_core` `CryptoRng` to
+# threshold-identity and ed25519-dalek; OS randomness comes from getrandom.
+rand_core.workspace = true
 # Accessibility: AccessKit is the cross-platform a11y schema; the winit
 # adapter bridges our exported tree into the event loop and, via its default
 # `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
@@ -256,7 +259,9 @@ smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional 
 # Shared MPRIS media control needs a Unix session bus. Keep zbus out of native
 # Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
 zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
-ashpd = { workspace = true, optional = true }
+ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast"] }
+# Drives the location portal's update stream (`native::location`).
+futures-util = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }

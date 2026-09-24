@@ -26,14 +26,7 @@ use video_editor::model::{
 use video_editor::param::{Interp, Param};
 
 fn png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) {
-    let file = std::fs::File::create(path).expect("create png");
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    enc.write_header()
-        .expect("header")
-        .write_image_data(rgba)
-        .expect("write");
+    ui::png::write_rgba8(path, w, h, rgba).expect("write png");
     println!("wrote {}", path.display());
 }
 

@@ -20,8 +20,9 @@
 //! user's current choice.
 
 use std::collections::HashMap;
+use ui::doc::{read_bool, read_str_or_text};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -246,27 +247,6 @@ impl AppearancePane {
         }
     }
 
-    fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Str(text) => Some(text.to_string()),
-                _ => None,
-            },
-            Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-            _ => None,
-        }
-    }
-
-    fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-        match state.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                automerge::ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
     fn draft_key(canonical: &str) -> String {
         format!("{canonical}.edit")
     }
@@ -291,10 +271,10 @@ impl AppearancePane {
         current: &str,
     ) -> (String, bool) {
         let canonical_value =
-            Self::read_str(state, root, canonical).unwrap_or_else(|| current.to_string());
+            read_str_or_text(state, root, canonical).unwrap_or_else(|| current.to_string());
         let draft = Self::draft_key(canonical);
         let draft_value =
-            Self::read_str(state, root, &draft).unwrap_or_else(|| canonical_value.clone());
+            read_str_or_text(state, root, &draft).unwrap_or_else(|| canonical_value.clone());
         if canonical_value != current {
             let _ = state.put(root, draft, canonical_value.as_str());
             (canonical_value, true)
@@ -313,9 +293,9 @@ impl AppearancePane {
         canonical: &str,
         current: bool,
     ) -> (bool, bool) {
-        let canonical_value = Self::read_bool(state, root, canonical).unwrap_or(current);
+        let canonical_value = read_bool(state, root, canonical).unwrap_or(current);
         let draft = Self::draft_key(canonical);
-        let draft_value = Self::read_bool(state, root, &draft).unwrap_or(canonical_value);
+        let draft_value = read_bool(state, root, &draft).unwrap_or(canonical_value);
         if canonical_value != current {
             let _ = state.put(root, draft, canonical_value);
             (canonical_value, true)
@@ -557,23 +537,20 @@ mod tests {
         let root = automerge::ROOT;
         pane.sync(&mut doc, &root);
         assert_eq!(
-            AppearancePane::read_str(&doc, &root, THEME_KEY).as_deref(),
+            read_str_or_text(&doc, &root, THEME_KEY).as_deref(),
             Some("Nord")
         );
         assert_eq!(
-            AppearancePane::read_str(&doc, &root, TEXT_SIZE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, TEXT_SIZE_KEY).as_deref(),
             Some("Large"),
             "1.15 seeds the 'Large' label"
         );
         assert_eq!(
-            AppearancePane::read_str(&doc, &root, UI_SCALE_KEY).as_deref(),
+            read_str_or_text(&doc, &root, UI_SCALE_KEY).as_deref(),
             Some("125%"),
             "1.25 seeds the '125%' UI-scale label"
         );
-        assert_eq!(
-            AppearancePane::read_bool(&doc, &root, HIGH_CONTRAST_KEY),
-            Some(true)
-        );
+        assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
     }
 
     #[test]

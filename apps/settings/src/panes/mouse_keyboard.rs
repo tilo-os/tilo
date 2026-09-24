@@ -22,10 +22,11 @@
 //   `input.key_repeat`       — f64 in `[0.0, 1.0]`
 //   `input.keyboard_layout`  — active source display label
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
+use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
 use vello::Scene;
@@ -840,14 +841,14 @@ impl MouseKeyboardPane {
     }
 
     fn sync_choice_fields(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Some(label) = read_str(state, root, ACCEL_PROFILE_KEY) {
+        if let Some(label) = read_str_or_text(state, root, ACCEL_PROFILE_KEY) {
             let profile = if label == "Flat" { "flat" } else { "adaptive" };
             if profile != self.last.accel_profile {
                 self.last.accel_profile = profile.into();
                 Self::persist_input(|i| i.accel_profile = profile.into());
             }
         }
-        if let Some(label) = read_str(state, root, COMPOSE_KEY) {
+        if let Some(label) = read_str_or_text(state, root, COMPOSE_KEY) {
             let compose = match label.as_str() {
                 "Right Alt" => Some("ralt"),
                 "Menu" => Some("menu"),
@@ -864,7 +865,7 @@ impl MouseKeyboardPane {
         }
         // Active source is durable preference only. The session compositor's
         // file watch compiles and applies it without a privileged helper.
-        if let Some(label) = read_str(state, root, LAYOUT_KEY)
+        if let Some(label) = read_str_or_text(state, root, LAYOUT_KEY)
             && let Some(id) = self.source_id(&label)
             && self.last.keyboard_layouts.contains(&id)
             && id != self.last.keyboard_layout
@@ -876,7 +877,7 @@ impl MouseKeyboardPane {
     }
 
     fn sync_add_source(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(label) = read_str(state, root, ADD_SOURCE_PICKER_KEY) {
+        if let Some(label) = read_str_or_text(state, root, ADD_SOURCE_PICKER_KEY) {
             self.pending_add_id = self.source_id(&label);
         }
         if Self::consume_action(state, root, ADD_SOURCE_KEY)
@@ -1097,29 +1098,6 @@ impl Widget for MouseKeyboardPane {
             .as_mut()
             .is_some_and(|composed| composed.take_structure_dirty());
         own || child
-    }
-}
-
-fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Boolean(b) => Some(*b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Read a string — dropdowns write into an Automerge `Text` object, so
-/// handle both a plain scalar and a `Text`.
-fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
-            _ => None,
-        },
-        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
-        _ => None,
     }
 }
 

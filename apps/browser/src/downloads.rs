@@ -218,7 +218,7 @@ impl Downloads {
 }
 
 fn store_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|dir| dir.join("tilo-browser").join("downloads.json"))
+    xdg_paths::data_dir().map(|dir| dir.join("tilo-browser").join("downloads.json"))
 }
 
 fn valid_id(id: &str) -> bool {

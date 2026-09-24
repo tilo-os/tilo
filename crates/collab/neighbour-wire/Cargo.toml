@@ -1,0 +1,32 @@
+[package]
+name = "neighbour-wire"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Peer-sync wire vocabulary exchanged between Tilo peers: the NeighbourMsg envelope and the pure helpers that classify it."
+
+[lib]
+name = "neighbour_wire"
+path = "src/lib.rs"
+
+# Pure types and pure functions: no I/O, no async runtime, no transport.
+# Any peer that speaks the collaboration protocol (the compositor, a
+# headless host) depends on this crate rather than on the compositor.
+[dependencies]
+serde.workspace = true
+# Signed document envelopes, presence and artifact ids ride inside messages.
+collab-types = { path = "../collab-types" }
+# Device certificates and revocations for identity announcements.
+tilo-user-identity = { path = "../tilo-user-identity" }
+# Host retention channels are BLAKE3 digests of the message route.
+blake3.workspace = true
+
+[dev-dependencies]
+# The production codec; tests pin every variant's exact encoding.
+postcard = { workspace = true, features = ["alloc"] }
+serde_json.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
