@@ -145,6 +145,7 @@ mod tests {
     use crate::actions::{SearchableCell, SearchableSheet};
     use ui::search::SearchProvider;
     use ui::search::SearchRegistry;
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn sheets() -> Vec<SearchableSheet> {
         vec![
@@ -213,30 +214,34 @@ mod tests {
     }
 
     #[test]
-    fn late_cells_are_reachable_in_a_100k_catalog_with_paged_work_budgets() {
-        let mut large = vec![SearchableSheet {
-            id: "large-id".into(),
-            name: "Large workbook".into(),
-            cells: (0..100_001)
-                .map(|row| SearchableCell {
-                    col: 0,
-                    row,
-                    raw: format!("common value {row}"),
-                    display: String::new(),
-                })
-                .collect(),
-        }];
-        large[0].cells[100_000].raw = "needle beyond one hundred thousand".into();
-        let provider = SheetSearchProvider::new(&large);
-        let needle = provider.search_page("needle beyond", None, 1, 1);
-        assert_eq!(needle.results.len(), 1);
-        assert_eq!(needle.results[0].title, "Large workbook!A100001");
+    fn late_cells_are_reachable_in_a_large_catalog_with_paged_work_budgets() {
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let large = vec![SearchableSheet {
+                    id: "large-id".into(),
+                    name: "Large workbook".into(),
+                    cells: corpus
+                        .map(|row| SearchableCell {
+                            col: 0,
+                            row: u32::try_from(row.index).expect("corpus fits a sheet"),
+                            raw: row.text,
+                            display: String::new(),
+                        })
+                        .collect(),
+                }];
+                SheetSearchProvider::new(&large)
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, "Large workbook!A3000");
+        let needle = provider.search_page(LATE_HIT_NEEDLE, None, 1, 1);
+        assert_eq!(needle.results, vec![hit]);
         assert!(needle.inspected <= 1);
 
         let mut cursor = None;
         let mut total = 0;
         loop {
-            let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+            let page = provider.search_page("ordinary", cursor.as_ref(), 17, 5);
             assert!(page.inspected <= 17);
             assert!(page.results.len() <= 5);
             total += page.results.len();

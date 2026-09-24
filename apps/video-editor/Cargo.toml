@@ -44,6 +44,7 @@ gstreamer-app = { version = "0.24", optional = true }
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 serial_test.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # The compose probe example writes rendered frames for inspection.

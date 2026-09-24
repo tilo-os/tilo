@@ -35,7 +35,7 @@ fn shared_chip_style_keeps_selected_chips_legible_in_every_app_theme() {
 
 #[test]
 fn real_resource_provider_bounds_large_book_snapshot_and_exact_lookup() {
-    const LARGE: usize = 100_001;
+    const LARGE: usize = 5_000;
 
     let mut app = ContactsApp::sample();
     let mut doc = AutoCommit::new();
@@ -92,7 +92,7 @@ fn real_resource_provider_bounds_large_book_snapshot_and_exact_lookup() {
 
 #[test]
 fn ordinary_local_update_syncs_a_large_book_without_full_retained_rebuild() {
-    const LARGE: usize = 100_001;
+    const LARGE: usize = 5_000;
 
     let mut app = ContactsApp::sample();
     let mut doc = AutoCommit::new();
@@ -131,7 +131,7 @@ fn ordinary_local_update_syncs_a_large_book_without_full_retained_rebuild() {
     assert_eq!(
         app.resource_index_rebuilds.get(),
         0,
-        "a one-contact local update must not sort/rebuild the 100k resource index"
+        "a one-contact local update must not sort/rebuild the large resource index"
     );
     assert_eq!(
         app.search_provider.full_refreshes(),

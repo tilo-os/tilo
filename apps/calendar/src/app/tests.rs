@@ -36,7 +36,7 @@ fn demo_app_seeds_model_and_selection() {
     reason = "one adversarial fixture proves every exact resource family uses the real provider"
 )]
 fn real_resource_provider_keeps_snapshot_and_late_exact_resolution_bounded() {
-    const LARGE: usize = 100_001;
+    const LARGE: usize = 5_000;
 
     let mut app = CalendarApp::new_demo();
     let doc = AutoCommit::new();

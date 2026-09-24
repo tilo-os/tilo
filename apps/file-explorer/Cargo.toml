@@ -81,6 +81,7 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 # The catalog tests parse each bundled locale exactly as Fluent will.
 fluent.workspace = true

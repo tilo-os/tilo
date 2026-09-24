@@ -31,5 +31,8 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 base64.workspace = true
 
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
 [lints]
 workspace = true

@@ -72,6 +72,7 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "syn
 tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
