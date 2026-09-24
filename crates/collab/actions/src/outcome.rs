@@ -116,6 +116,21 @@ impl InvocationUpdate {
             Self::Succeeded { .. } | Self::Failed { .. } | Self::Cancelled { .. }
         )
     }
+
+    /// The same update, reported under `id`. A host that tracks a job under
+    /// its own handle uses this to answer in the caller's invocation id.
+    #[must_use]
+    pub fn with_invocation(mut self, id: InvocationId) -> Self {
+        match &mut self {
+            Self::Accepted { invocation }
+            | Self::Progress { invocation, .. }
+            | Self::Item { invocation, .. }
+            | Self::Succeeded { invocation, .. }
+            | Self::Failed { invocation, .. }
+            | Self::Cancelled { invocation, .. } => *invocation = id,
+        }
+        self
+    }
 }
 
 /// Durable, deliberately redacted outcome of a consequential effect.
