@@ -131,7 +131,7 @@ impl DeviceFleetStore {
             if let Ok(metadata) = fs::metadata(&registry)
                 && metadata.len() <= 1024 * 1024
             {
-                let registrations: Vec<tilo_relay::HomePeerRegistration> =
+                let registrations: Vec<tilo_relay_protocol::HomePeerRegistration> =
                     serde_json::from_slice(&fs::read(&registry)?)
                         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
                 let identity = decode_hex_32(identity_id)?;
