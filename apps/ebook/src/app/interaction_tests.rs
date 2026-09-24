@@ -545,16 +545,14 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     app.reconcile_flaps();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
-    #[cfg(windows)]
+    // Only the checked-in fonts: pixels drawn with whatever the host happens to
+    // have installed would make every committed baseline machine-specific.
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../crates/sdk/ui-core/assets/fonts"),
         "en-US",
     );
-    #[cfg(windows)]
     let mut tr = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");
-    #[cfg(not(windows))]
-    let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     scene
