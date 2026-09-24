@@ -200,6 +200,7 @@ members = [
     "crates/system/atomic-file",
     "crates/system/block-devices",
     "crates/system/bounded-command",
+    "crates/system/cloud-source",
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
