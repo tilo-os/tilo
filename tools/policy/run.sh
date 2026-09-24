@@ -36,5 +36,6 @@ run 'Application resource/action contract' \
   python3 tools/policy/check_app_resource_action_contract.py
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py
+run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
 
 printf '\nRepository policy suite OK\n'

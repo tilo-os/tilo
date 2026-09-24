@@ -5,9 +5,9 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use crate::time::{Duration, Instant};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
@@ -3073,7 +3073,7 @@ impl TextInput {
         self.caret_affinity = TextAffinity::Before;
         self.selection_anchor = None;
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         if let Some(obj_id) = obj_id {
             let del = isize::try_from(char_count).unwrap_or(isize::MAX);
             let _ = state.splice_text(obj_id, char_start, del, "");
@@ -3139,7 +3139,7 @@ impl TextInput {
             }
         }
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         self.dirty = true;
     }
 
@@ -3185,7 +3185,7 @@ impl TextInput {
         self.caret_affinity = TextAffinity::Before;
         self.selection_anchor = None;
         self.goal_x = None;
-        self.last_edit_time = Some(Instant::now());
+        self.last_edit_time = Some(crate::time::now());
         self.dirty = true;
     }
 
@@ -4503,7 +4503,7 @@ impl Widget for TextInput {
         }
         self.last_edit_time
             .map(|edited| edited + SPELL_EDIT_SETTLE)
-            .filter(|deadline| *deadline > Instant::now())
+            .filter(|deadline| *deadline > crate::time::now())
     }
 
     fn needs_commit(&self) -> bool {
@@ -4588,7 +4588,7 @@ impl Widget for TextInput {
             // re-derived approximation. `transform` maps the local rect to the scene.
 
             // Fading "just typed" highlighter under the caret/selection.
-            let now = std::time::Instant::now();
+            let now = crate::time::now();
             for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                 let rect = self.selection_rect(theme, range.start, range.end);
                 // `Affine * Point` is a geometric transform over f64 coordinates,
@@ -5440,7 +5440,7 @@ impl TextInput {
                 self.text.replace_range(start..end, "");
                 self.cursor_pos = start;
                 self.caret_affinity = TextAffinity::Before;
-                self.last_edit_time = Some(Instant::now());
+                self.last_edit_time = Some(crate::time::now());
                 if let Some(obj_id) = obj_id {
                     let del = isize::try_from(char_count).unwrap_or(isize::MAX);
                     let _ = state.splice_text(obj_id, char_start, del, "");
@@ -5473,7 +5473,7 @@ impl TextInput {
                 let char_start = before.chars().count();
                 let char_count = removed.chars().count();
                 self.text.replace_range(start..end, "");
-                self.last_edit_time = Some(Instant::now());
+                self.last_edit_time = Some(crate::time::now());
                 if let Some(obj_id) = obj_id {
                     let del = isize::try_from(char_count).unwrap_or(isize::MAX);
                     let _ = state.splice_text(obj_id, char_start, del, "");
@@ -6591,12 +6591,12 @@ mod tests {
             .with_initial_value("teh wrold");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
         // Dictionary warm-up can dominate this unit test in an unoptimised
         // build. Model a fresh edit after checking to test presentation timing.
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         assert_eq!(ti.spell_spans, vec![(0, 3), (4, 9)]);
         assert!(ti.spelling_span_is_visible(0, 3));
@@ -6612,7 +6612,7 @@ mod tests {
             .with_initial_value("wrold ");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
 
@@ -6628,7 +6628,7 @@ mod tests {
             .with_initial_value("wrold");
         ti.set_focus(true);
         ti.cursor_pos = ti.text.len();
-        ti.last_edit_time = Instant::now()
+        ti.last_edit_time = crate::time::now()
             .checked_sub(SPELL_EDIT_SETTLE)
             .and_then(|t| t.checked_sub(Duration::from_millis(1)));
 
@@ -6649,7 +6649,7 @@ mod tests {
         ti.cursor_pos = ti.text.len();
         ti.spell_spans = vec![(0, 3)];
         ti.spell_cache_key = Some(("de_DE".to_string(), "alt".to_string()));
-        ti.last_edit_time = Some(Instant::now());
+        ti.last_edit_time = Some(crate::time::now());
 
         ti.refresh_spelling();
 

@@ -46,9 +46,9 @@
 // function-by-function.
 #![allow(clippy::result_large_err)]
 
+use crate::time::Duration;
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Duration;
 
 use durable_store::{DurableStore, StorageKey};
 

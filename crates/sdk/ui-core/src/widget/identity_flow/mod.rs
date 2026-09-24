@@ -15,10 +15,10 @@
 //! screens, so tests (including `end_to_end_ceremony_lets_both_devices_co_sign`)
 //! drive it directly without ever building a `TaffyTree`.
 
+use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
 
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
@@ -632,7 +632,7 @@ impl PairingHandshake {
             PairingBackend::Memory(_) => true,
             #[cfg(unix)]
             PairingBackend::Durable(backend) => {
-                let now = SystemTime::now()
+                let now = crate::time::wall()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .map_or(u64::MAX, |duration| duration.as_secs());
                 now < backend.expires_unix && !backend.root.join("cancelled").exists()
@@ -767,7 +767,7 @@ impl PairingHandshake {
         backend: &DurablePairingBackend,
         nonce: &[u8; 16],
     ) -> Option<PairingChannelState> {
-        let now = SystemTime::now()
+        let now = crate::time::wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(u64::MAX, |duration| duration.as_secs());
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
@@ -787,7 +787,7 @@ impl PairingHandshake {
         update: impl FnOnce(&mut PairingChannelState),
     ) -> bool {
         use std::io::Write;
-        let now = SystemTime::now()
+        let now = crate::time::wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(u64::MAX, |duration| duration.as_secs());
         if now >= backend.expires_unix || backend.root.join("cancelled").exists() {
@@ -1563,7 +1563,7 @@ impl InviteRedemptionAuthority {
         // across processes. `File`'s OS lock is released automatically after
         // a crash, unlike a sentinel lockfile.
         let _issue_lock = self.issue_lock()?;
-        let now = SystemTime::now()
+        let now = crate::time::wall()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |value| value.as_secs());
         for entry in std::fs::read_dir(&self.root)?
@@ -2836,7 +2836,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         let url = env.to_url().unwrap();
@@ -2857,7 +2857,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         env.channel_name = "treasury".into();
@@ -2873,7 +2873,7 @@ mod tests {
             &sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         endpoint_tampered.redemption_endpoint = "127.0.0.1:9".into();
@@ -2920,11 +2920,11 @@ mod tests {
             &owner_sk,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         let (_invitee_sk, invitee_pk) = generate_keypair();
-        let event = build_attestation_from_invite(&env, invitee_pk, SystemTime::now()).unwrap();
+        let event = build_attestation_from_invite(&env, invitee_pk, crate::time::wall()).unwrap();
         if let ChannelEvent::AttestationIssued(ra) = &event {
             assert_eq!(ra.attestation.subject.as_bytes(), invitee_pk.as_bytes());
             assert_eq!(ra.role, Role::Editor);
@@ -2949,13 +2949,13 @@ mod tests {
             &owner_signing_key,
             "Alice",
             Role::Editor,
-            SystemTime::now() + Duration::from_secs(3600),
+            crate::time::wall() + Duration::from_secs(3600),
         )
         .unwrap();
         let (_, first) = generate_keypair();
         let (_, second) = generate_keypair();
-        build_attestation_from_invite(&env, first, SystemTime::now()).unwrap();
-        let error = build_attestation_from_invite(&env, second, SystemTime::now()).unwrap_err();
+        build_attestation_from_invite(&env, first, crate::time::wall()).unwrap();
+        let error = build_attestation_from_invite(&env, second, crate::time::wall()).unwrap_err();
         assert!(error.to_string().contains("already redeemed"));
     }
 
@@ -3192,8 +3192,9 @@ mod tests {
 
         let mut rng = OsRng;
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec = IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], SystemTime::now())
-            .unwrap();
+        let rec =
+            IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], crate::time::wall())
+                .unwrap();
         let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
 
         let revived = back.into_threshold_identity().unwrap();
@@ -3231,9 +3232,13 @@ mod tests {
     fn memory_store_round_trip() {
         let mut rng = OsRng;
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
-        let rec =
-            IdentityRecord::from_threshold_identity(&id, "bob", [180, 200, 220], SystemTime::now())
-                .unwrap();
+        let rec = IdentityRecord::from_threshold_identity(
+            &id,
+            "bob",
+            [180, 200, 220],
+            crate::time::wall(),
+        )
+        .unwrap();
         let store = MemoryIdentityStore::new();
         assert!(store.load().unwrap().is_none());
         store.save(&rec).unwrap();
@@ -3300,7 +3305,7 @@ mod tests {
         assert!(first.take_pairer_reply(&nonce).is_none());
 
         let restarted =
-            PairingHandshake::durable(dir.path(), SystemTime::now() + Duration::from_secs(3600))
+            PairingHandshake::durable(dir.path(), crate::time::wall() + Duration::from_secs(3600))
                 .unwrap();
         restarted.publish_pairer_reply(&nonce, reply, [2; 64]);
         assert!(

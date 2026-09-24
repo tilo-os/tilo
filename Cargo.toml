@@ -259,6 +259,9 @@ uninhabited_references = "deny"
 set_contains_or_insert = "deny"
 clear_with_drain = "deny"
 trailing_empty_array = "deny"
+# Crates list their banned calls in their own clippy.toml; a listed call is an
+# error, not a style suggestion.
+disallowed_methods = "deny"
 
 # `as_conversions` is broad; pedantic already denies the dangerous cast
 # categories more precisely. The blanket lint adds noise to bounded graphics

@@ -5,10 +5,10 @@
 //! its causal parents. Rebuilding the graph after a restart or merge therefore
 //! recovers the same branch points, merge points, and revision identifiers.
 
+use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use automerge::{AutoCommit, ChangeHash};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Stable, content-addressed identifier for one document revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

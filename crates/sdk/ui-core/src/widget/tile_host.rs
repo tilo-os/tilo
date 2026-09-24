@@ -3,6 +3,7 @@ use crate::record::{RecordCheckout, RecordId, RecordStore};
 use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
@@ -14,7 +15,6 @@ use crate::widget::{
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -839,7 +839,7 @@ impl TileHost {
 
     /// A call mid-animation restarts the curve.
     pub fn start_spawn_animation(&mut self) {
-        self.spawned_at = Some(Instant::now());
+        self.spawned_at = Some(crate::time::now());
     }
 
     pub fn spawn_in_flight(&self) -> bool {
@@ -2148,7 +2148,7 @@ impl TileHost {
             // Dissolve the card over the arrived window rather than cut
             // it away, so the tile is never briefly empty.
             if self.opening_shown && self.handed_over_at.is_none() {
-                self.handed_over_at = Some(Instant::now());
+                self.handed_over_at = Some(crate::time::now());
             }
             if let Some(detail) = &self.record_error {
                 draw_card_text(
@@ -2334,7 +2334,7 @@ fn draw_card_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::time::Duration;
 
     fn sprite_alpha_at(sprite: &Image, x: u32, y: u32) -> u8 {
         let bytes: &[u8] = sprite.data.data();

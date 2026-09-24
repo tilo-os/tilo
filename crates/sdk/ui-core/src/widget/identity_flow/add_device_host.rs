@@ -703,7 +703,7 @@ mod tests {
                 completed = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(crate::time::Duration::from_millis(2));
         }
         assert!(completed);
         let host_identity = host.take_completed_identity().unwrap();
@@ -753,7 +753,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let channel = PairingHandshake::durable(
             temp.path(),
-            std::time::SystemTime::now() + std::time::Duration::from_secs(60),
+            crate::time::wall() + crate::time::Duration::from_secs(60),
         )
         .unwrap();
         let lock_path = temp.path().join(format!("{}.lock", hex::encode(nonce)));

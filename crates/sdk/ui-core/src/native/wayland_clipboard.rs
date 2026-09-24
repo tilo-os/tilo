@@ -9,23 +9,23 @@ use crate::clipboard::{
 };
 
 #[cfg(target_os = "linux")]
-const CLIPBOARD_READ_BUDGET: std::time::Duration = std::time::Duration::from_millis(40);
+const CLIPBOARD_READ_BUDGET: crate::time::Duration = crate::time::Duration::from_millis(40);
 #[cfg(target_os = "linux")]
-const CLIPBOARD_SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
+const CLIPBOARD_SHUTDOWN_BUDGET: crate::time::Duration = crate::time::Duration::from_millis(250);
 
 #[cfg(target_os = "linux")]
 fn recv_bounded<T>(
     receiver: &std::sync::mpsc::Receiver<T>,
-    budget: std::time::Duration,
+    budget: crate::time::Duration,
 ) -> Option<T> {
     receiver.recv_timeout(budget).ok()
 }
 
 #[cfg(target_os = "linux")]
-fn join_bounded(thread: std::thread::JoinHandle<()>, budget: std::time::Duration) -> bool {
-    let now = std::time::Instant::now();
+fn join_bounded(thread: std::thread::JoinHandle<()>, budget: crate::time::Duration) -> bool {
+    let now = crate::time::now();
     let deadline = now.checked_add(budget).unwrap_or(now);
-    while !thread.is_finished() && std::time::Instant::now() < deadline {
+    while !thread.is_finished() && crate::time::now() < deadline {
         std::thread::yield_now();
     }
     if thread.is_finished() {
@@ -993,17 +993,17 @@ mod tests {
     fn bounded_result_wait_returns_fresh_data_and_times_out_without_stale_fallback() {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(crate::time::Duration::from_millis(2));
             let _ = tx.send(Some("fresh".to_string()));
         });
         assert_eq!(
-            recv_bounded(&rx, std::time::Duration::from_millis(100)),
+            recv_bounded(&rx, crate::time::Duration::from_millis(100)),
             Some(Some("fresh".to_string()))
         );
 
         let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
         assert_eq!(
-            recv_bounded(&rx, std::time::Duration::from_millis(1)),
+            recv_bounded(&rx, crate::time::Duration::from_millis(1)),
             None,
             "a slow external owner must not make paste return an unrelated cached value"
         );
@@ -1012,12 +1012,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn shutdown_join_is_bounded_when_a_protocol_worker_is_stuck() {
-        let started = std::time::Instant::now();
+        let started = crate::time::now();
         let worker = std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(80));
+            std::thread::sleep(crate::time::Duration::from_millis(80));
         });
-        assert!(!join_bounded(worker, std::time::Duration::from_millis(2)));
-        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+        assert!(!join_bounded(worker, crate::time::Duration::from_millis(2)));
+        assert!(started.elapsed() < crate::time::Duration::from_millis(50));
     }
 
     #[cfg(target_os = "linux")]

@@ -41,7 +41,7 @@ fn clock(headless: bool) -> SystemTime {
             .checked_add(Duration::from_secs(SHOT_NOW_SECS))
             .unwrap_or(SystemTime::UNIX_EPOCH)
     } else {
-        SystemTime::now()
+        tilo_ui::time::wall()
     }
 }
 

@@ -2723,8 +2723,8 @@ fn authorize_legacy_owner(
     let (_, app, _) = store
         .history_namespace(&checkout.id)
         .map_err(|error| error.to_string())?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = crate::time::wall()
+        .duration_since(crate::time::UNIX_EPOCH)
         .map_err(|_| "execution time unavailable")?
         .as_secs();
     let current = authority.clone().at_unix_time(now);

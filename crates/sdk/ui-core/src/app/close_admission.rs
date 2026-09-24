@@ -251,7 +251,7 @@ impl App {
                 self.close_admission.save_broker_id = Some(*id);
                 self.observe_close_save(update);
                 self.close_admission.save_poll_at =
-                    std::time::Instant::now() + std::time::Duration::from_millis(100);
+                    crate::time::now() + crate::time::Duration::from_millis(100);
             }
             Err(error) => self.close_admission.save_result = Some(Err(error.clone())),
         }
@@ -316,7 +316,7 @@ impl App {
         if self.close_admission.save_waiting
             && self.close_admission.save_broker_id.is_some()
             && self.close_admission.save_broker_request.is_none()
-            && std::time::Instant::now() >= self.close_admission.save_poll_at
+            && crate::time::now() >= self.close_admission.save_poll_at
         {
             if !self.collaboration.manager.is_connected() {
                 self.close_admission.save_result = Some(Err("save broker disconnected".into()));

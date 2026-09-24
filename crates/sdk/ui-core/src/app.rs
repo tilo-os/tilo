@@ -180,8 +180,8 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use crate::widget::Widget;
-use std::time::{Duration, Instant};
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect as KurboRect;
 
@@ -520,7 +520,7 @@ pub struct App {
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made by Theme
     /// Studio. Throttled so the render loop does not stat the file per frame.
-    theme_store_stamp: Option<std::time::SystemTime>,
+    theme_store_stamp: Option<crate::time::SystemTime>,
     last_theme_store_check: Instant,
     input: InputRuntime,
 
@@ -593,7 +593,7 @@ struct AppConstructionInputs {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<std::time::SystemTime>,
+    theme_store_stamp: fn() -> Option<crate::time::SystemTime>,
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
@@ -1259,7 +1259,7 @@ impl App {
             autofocus_on_structure_change: false,
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
-            last_theme_store_check: Instant::now(),
+            last_theme_store_check: crate::time::now(),
             focus_history: HistoryRuntime::new(),
             collaboration: CollaborationRuntime::new(
                 inputs.collab_manager,
@@ -1545,7 +1545,7 @@ impl App {
         if !self.collaboration.manager.is_connected() {
             return;
         }
-        let now = Instant::now();
+        let now = crate::time::now();
         if self
             .last_playback_publish
             .is_some_and(|last| now.duration_since(last) < Duration::from_millis(500))
@@ -1674,7 +1674,7 @@ impl App {
     #[cfg(feature = "native")]
     fn reconcile_configured_theme(&mut self) -> bool {
         self.reconcile_configured_theme_with(
-            Instant::now(),
+            crate::time::now(),
             || {
                 settings_store::settings_path()
                     .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
@@ -1687,7 +1687,7 @@ impl App {
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<std::time::SystemTime>,
+        stamp: impl FnOnce() -> Option<crate::time::SystemTime>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         // Only an explicitly native service host watches process settings.
@@ -2188,7 +2188,7 @@ mod occlusion_probe_event_tests {
             "ordinary pointer motion adds no redraw"
         );
         retry.admitted();
-        retry.observe(FrameOutcome::Occluded, Instant::now());
+        retry.observe(FrameOutcome::Occluded, crate::time::now());
         assert!(
             retry.request_probe(),
             "pointer interaction wakes a blocked surface"
@@ -2234,7 +2234,7 @@ fn render_probe_event(event: &WindowEvent) -> bool {
 #[cfg(feature = "native")]
 fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
     render.is_none_or(|render| {
-        !render.buffers.redraw_deferred() && render.retry.allows(Instant::now())
+        !render.buffers.redraw_deferred() && render.retry.allows(crate::time::now())
     })
 }
 
@@ -2488,7 +2488,7 @@ mod render_retry_tests {
     use super::*;
     #[test]
     fn unavailable_surface_retries_wait_one_frame_instead_of_spinning() {
-        let now = Instant::now();
+        let now = crate::time::now();
         for outcome in [FrameOutcome::Skipped, FrameOutcome::Reconfigured] {
             let deadline = render_retry_deadline(outcome, now).unwrap();
             assert_eq!(

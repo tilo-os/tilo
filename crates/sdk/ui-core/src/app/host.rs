@@ -34,9 +34,9 @@ fn draw_frame_content(
     width: u32,
     height: u32,
     scale_factor: f32,
-    t_draw_start: Option<std::time::Instant>,
+    t_draw_start: Option<crate::time::Instant>,
 ) -> (Affine, KurboRect, u128) {
-    let __prof_resources = app.profiler.as_ref().map(|_| std::time::Instant::now());
+    let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     app.refresh_control_action_availability();
     if let Some(p) = app.profiler.as_mut() {
         p.record_since(
@@ -53,7 +53,7 @@ fn draw_frame_content(
     // No GPU damage clip: vello allocates a fresh `target_texture` per
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
-    let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
+    let __prof_draw = app.profiler.as_ref().map(|_| crate::time::now());
     if let Some(history) = &mut app.history {
         history.draw(
             scene,
@@ -170,7 +170,7 @@ fn draw_visible_tooltip(
     height: u32,
     scale_factor: f32,
 ) {
-    app.input.tooltip_host.tick(Instant::now());
+    app.input.tooltip_host.tick(crate::time::now());
     let Some((text, anchor)) = app
         .input
         .tooltip_host
@@ -303,7 +303,7 @@ fn run_layout_pass(
                 .ok_or(crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
         }
         if must_compute || rebuild {
-            let start = std::time::Instant::now();
+            let start = crate::time::now();
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "Taffy uses f32 logical pixels"
@@ -324,7 +324,7 @@ fn run_layout_pass(
             }
             t_compute_us = t_compute_us.saturating_add(start.elapsed().as_micros());
         }
-        let start = std::time::Instant::now();
+        let start = crate::time::now();
         app.apply_history_presentation(current_root);
         t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
         let dirty = app.root_widget.take_structure_dirty();
@@ -383,7 +383,7 @@ fn run_layout_pass(
         ] {
             profiler.record(
                 pass,
-                std::time::Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX)),
+                crate::time::Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX)),
             );
         }
     }
@@ -541,7 +541,7 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn pointer_broadcast_allowed_first_call_always_passes() {
-        let now = Instant::now();
+        let now = crate::time::now();
         assert!(pointer_broadcast_allowed(
             None,
             now,
@@ -551,7 +551,7 @@ mod pointer_broadcast_tests {
 
     #[test]
     fn pointer_broadcast_allowed_blocks_inside_gap() {
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         let t1 = t0 + Duration::from_millis(10);
         assert!(!pointer_broadcast_allowed(
             Some(t0),
@@ -564,7 +564,7 @@ mod pointer_broadcast_tests {
     fn pointer_broadcast_allowed_passes_at_and_past_gap() {
         // Exactly at the gap boundary is allowed — strict `>` would
         // accumulate single-ms drift under a sawtooth wakeup schedule.
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         assert!(pointer_broadcast_allowed(
             Some(t0),
             t0 + Duration::from_millis(33),
@@ -582,7 +582,7 @@ mod pointer_broadcast_tests {
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(state, root);
-        app.presence.last_pointer_broadcast = Some(Instant::now());
+        app.presence.last_pointer_broadcast = Some(crate::time::now());
         app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: "home".into() }));
         assert!(
             app.presence.last_pointer_broadcast.is_none(),
@@ -718,7 +718,7 @@ mod pointer_broadcast_tests {
             collab_types::Ed25519PublicKey::from_bytes([0; 32]),
             collab_types::document_attestation_id(&route.app_id, &route.cluster_id.to_string(), ""),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::time::SystemTime::UNIX_EPOCH,
             0,
         );
         app.state.commit_action(None, None);
@@ -8050,7 +8050,7 @@ mod prepared_runner_tests {
         let due = app.last_theme_store_check + Duration::from_millis(750);
         assert!(app.reconcile_configured_theme_with(
             due,
-            || Some(std::time::SystemTime::UNIX_EPOCH),
+            || Some(crate::time::SystemTime::UNIX_EPOCH),
             |app| {
                 app.accessibility.base_theme = Theme::light();
             },
@@ -8078,7 +8078,7 @@ mod prepared_runner_tests {
             due,
             || {
                 checks.set(checks.get() + 1);
-                Some(std::time::SystemTime::UNIX_EPOCH)
+                Some(crate::time::SystemTime::UNIX_EPOCH)
             },
             |app| {
                 applies.set(applies.get() + 1);
@@ -8114,7 +8114,7 @@ mod prepared_runner_tests {
         let start = app.last_theme_store_check;
         let checks = std::cell::Cell::new(0);
         let applies = std::cell::Cell::new(0);
-        let stamp = Some(std::time::SystemTime::UNIX_EPOCH);
+        let stamp = Some(crate::time::SystemTime::UNIX_EPOCH);
         for (millis, source_stamp, expected_checks, expected_applies, expected_changed) in [
             (749, stamp, 0, 0, false),
             (750, stamp, 1, 1, true),
@@ -8147,14 +8147,16 @@ mod prepared_runner_tests {
 
     fn wait_for_saved_record(host: &ProbeHost, binding: &crate::bound_dispatch::CallbackBinding) {
         assert!(host.records.same_owner(&binding.records));
-        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+        let deadline = crate::time::now()
+            .checked_add(Duration::from_secs(5))
+            .unwrap();
         loop {
             let status = host.records.save_status(&binding.checkout.id).unwrap();
             if status == crate::record::RecordSaveStatus::Saved {
                 break;
             }
             assert!(
-                Instant::now() < deadline,
+                crate::time::now() < deadline,
                 "original writer did not acknowledge: {status:?}"
             );
             std::thread::sleep(Duration::from_millis(10));
