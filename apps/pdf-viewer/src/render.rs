@@ -244,6 +244,27 @@ fn draw_page_backdrop(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect
 /// card and centred — a page whose rotation or size differs from the card's
 /// keeps its aspect, matching the reader's page maps
 /// ([`crate::model::PageMap`]) so overlays line up.
+/// The tiles available for a zoomed page this frame, and where the page's
+/// pixels at their zoom level land on screen.
+#[derive(Clone, Debug)]
+pub struct PageTiles {
+    pub placement: crate::tiles::PagePlacement,
+    pub tiles: Vec<(tilo_pdf::PixelRect, PenikoImage)>,
+}
+
+/// Paint a zoomed page's tiles, each at its own pixel region, over whatever
+/// placeholder is already drawn.
+fn draw_page_tiles(scene: &mut Scene, base: Affine, tiles: &PageTiles) {
+    let k = tiles.placement.screen_per_px;
+    for (region, image) in &tiles.tiles {
+        let (x0, y0, _, _) = tiles.placement.screen_rect(*region);
+        scene.draw_image(
+            image,
+            base * Affine::translate((x0, y0)) * Affine::scale_non_uniform(k, k),
+        );
+    }
+}
+
 fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &PenikoImage) {
     if img.width > 0 && img.height > 0 {
         let (iw, ih) = (f64::from(img.width), f64::from(img.height));
@@ -508,6 +529,7 @@ pub fn draw_page<S: std::hash::BuildHasher>(
     page_w: f64,
     page_h: f64,
     raster: Option<&PenikoImage>,
+    tiles: Option<&PageTiles>,
     matched_blocks: &HashSet<usize, S>,
     active_block: Option<usize>,
     annotations: &[Annotation],
@@ -521,9 +543,15 @@ pub fn draw_page<S: std::hash::BuildHasher>(
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
 
     // Raster backend: paint the page bitmap (engine output) scaled to fill the
-    // card width, then let the shared markup overlay draw on top.
-    if let Some(img) = raster {
-        draw_page_raster_image(scene, base, card, img);
+    // card width — for a zoomed page, a lower-resolution placeholder under
+    // its sharp tiles — then let the shared markup overlay draw on top.
+    if raster.is_some() || tiles.is_some() {
+        if let Some(img) = raster {
+            draw_page_raster_image(scene, base, card, img);
+        }
+        if let Some(tiles) = tiles {
+            draw_page_tiles(scene, base, tiles);
+        }
         draw_page_markup(
             scene,
             tr,
