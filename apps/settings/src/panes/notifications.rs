@@ -1031,6 +1031,8 @@ mod tests {
 
     #[test]
     fn seed_writes_current_prefs_into_crdt() {
+        // The pane persists through the per-user settings file.
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs {
             do_not_disturb: true,
             show_banners: false,
@@ -1049,7 +1051,7 @@ mod tests {
 
     #[test]
     fn toggling_dnd_updates_and_persists_prefs() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_dnd");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1071,7 +1073,7 @@ mod tests {
     /// the same pre-flip document state so both target the same value.
     #[test]
     fn on_screen_toggle_dispatches_same_action_as_palette() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_affordance");
+        let config = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1082,7 +1084,7 @@ mod tests {
         );
 
         // The palette's DND flip spec, read at the pre-flip state (DND off).
-        let app = crate::SettingsApp::new();
+        let app = config.app();
         let res = Widget::resources(&app, &doc);
         let notif = res[0]
             .children
@@ -1131,7 +1133,7 @@ mod tests {
     /// back into the toggle.
     #[test]
     fn on_screen_toggle_records_one_undo_boundary_and_reverts() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_undo");
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
         let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
         let mut state = ui::State::new();
         pane.sync(&mut state.doc, &state.root); // seed

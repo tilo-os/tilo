@@ -88,11 +88,12 @@ fn assert_finite_rects(widget: &dyn Widget, path: &str) {
 
 #[test]
 fn first_account_action_and_region_field_follow_compact_heading() {
+    let config = crate::support::ScratchConfig::new();
     for (category, label, limit) in [
         (Category::ExternalAccounts, "Add account", 370.0),
         (Category::RegionFormats, "Currency", 220.0),
     ] {
-        let mut app = SettingsApp::with_selected(category);
+        let mut app = config.app().with_category(category);
         lay_out(&mut app);
         let mut targets = Vec::new();
         named(&app, label, &mut targets);
@@ -109,7 +110,8 @@ fn first_account_action_and_region_field_follow_compact_heading() {
 
 #[test]
 fn region_preview_follows_every_format_control() {
-    let mut app = SettingsApp::with_selected(Category::RegionFormats);
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app().with_category(Category::RegionFormats);
     lay_out(&mut app);
     let mut last = Vec::new();
     named(&app, "First day of week", &mut last);
@@ -125,7 +127,8 @@ fn region_preview_follows_every_format_control() {
 
 #[test]
 fn region_layout_keeps_every_painted_widget_finite() {
-    let mut app = SettingsApp::with_selected(Category::RegionFormats);
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app().with_category(Category::RegionFormats);
     lay_out(&mut app);
     assert_finite_rects(&app, "root");
 }

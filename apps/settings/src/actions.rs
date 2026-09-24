@@ -4986,7 +4986,6 @@ impl ResourceProvider for crate::SettingsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SettingsApp;
     use crate::panes;
     use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
@@ -5025,7 +5024,8 @@ mod tests {
     /// collaborative document actions they own. Drives the app's real hook.
     #[test]
     fn ctrl_k_publishes_the_settings_tree() {
-        let app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let app = config.app();
         let doc = AutoCommit::new();
         let resources = Widget::resources(&app, &doc);
         assert_eq!(resources.len(), 1, "one configuration root");
@@ -5094,7 +5094,8 @@ mod tests {
 
     #[test]
     fn exact_root_lookup_is_shallow_and_section_lookup_is_canonical() {
-        let app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let app = config.app();
         let doc = AutoCommit::new();
         let root =
             ResourceProvider::resource(&app, &doc, "settings.root").expect("root resolves exactly");
@@ -5185,6 +5186,7 @@ mod tests {
     /// key is off, off when it is on.
     #[test]
     fn bool_flip_target_follows_current_value() {
+        let config = crate::prefs::test_env::ScratchConfig::new();
         let mut doc = AutoCommit::new();
         let _ = doc.put(
             &ROOT,
@@ -5192,7 +5194,7 @@ mod tests {
             ScalarValue::Boolean(false),
         );
         let notif = {
-            let app = SettingsApp::new();
+            let app = config.app();
             let res = Widget::resources(&app, &doc);
             find(&res, "settings.section:notifications").clone()
         };
@@ -5880,7 +5882,8 @@ mod tests {
     /// encode byte-identically for the same choice.
     #[test]
     fn palette_and_builder_encode_identically() {
-        let app = SettingsApp::new();
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let app = config.app();
         let doc = AutoCommit::new();
         let res = Widget::resources(&app, &doc);
         let appearance = find(&res, "settings.section:appearance");
