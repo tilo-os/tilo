@@ -23,26 +23,32 @@ use std::sync::Arc;
 
 use clap::Parser;
 
-use app_host::service::SystemCatalog;
-use app_host::{default_socket_path, default_store_root, gc, store::Store, transport};
+use app_host::{default_socket_path, transport};
+use package_store::{Catalog, PackageStore, SystemStore};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "tilo-app-host",
-    about = "Tilo app host: content-addressed package store + Cap'n Proto control socket."
+    about = "Tilo app host: the package store's privileged door, over a Cap'n Proto control socket."
 )]
 struct Cli {
     /// Cap'n Proto control socket path. Default:
     /// `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
     #[arg(long)]
     socket: Option<PathBuf>,
-    /// Store root directory. Default: `~/.local/share/tilo-apps`.
+    /// Package store root. Default: `$XDG_DATA_HOME/tilo-apps`, the store
+    /// the launcher and `tilo-install` use.
     #[arg(long)]
     store: Option<PathBuf>,
-    /// Soft cap on total disk usage. When exceeded, GC walks
-    /// LRU-Tried entries until the total drops below the cap.
-    /// `Pinned` entries are never evicted. Pass `0` to disable the
-    /// background GC; explicit `diskUsage` reports still work.
+    /// A retired app-host store (blob directory plus unpacked copies) whose
+    /// packages move into the package store at startup. Repeatable; a
+    /// directory with nothing left to move is ignored.
+    #[arg(long = "migrate-from")]
+    migrate_from: Vec<PathBuf>,
+    /// Soft cap on distinct payload bytes. When exceeded, unpinned packages
+    /// are evicted least recently used first until the total drops below
+    /// the cap. Pinned packages are never evicted. Pass `0` to disable the
+    /// sweep; explicit `diskUsage` reports still work.
     /// Default: 4 GiB.
     #[arg(long, default_value_t = 4 * 1024 * 1024 * 1024)]
     max_store_bytes: u64,
@@ -53,7 +59,10 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let socket = cli.socket.unwrap_or_else(default_socket_path);
-    let root = cli.store.unwrap_or_else(default_store_root);
+    let root = cli
+        .store
+        .or_else(package_store::layout::default_user_root)
+        .ok_or_else(|| anyhow::anyhow!("HOME / XDG_DATA_HOME not set: pass --store"))?;
     let inherited_listener = systemd_listener(&socket)?;
     tracing::info!(
         socket = %socket.display(),
@@ -62,10 +71,11 @@ fn main() -> anyhow::Result<()> {
         "tilo-app-host starting"
     );
 
-    // Open / create the store + registry; persistent state lives
-    // under `root`. The store builds its on-disk layout lazily.
-    let store = Arc::new(Store::open(&root)?);
-    let catalog = Arc::new(SystemCatalog::from_env());
+    // The store builds its on-disk layout lazily; the catalogue lists it
+    // together with the image's preinstalled packages.
+    let store = Arc::new(PackageStore::at(&root));
+    let catalog = Arc::new(Catalog::at(&root, SystemStore::from_env()));
+    let migrate_from = cli.migrate_from;
 
     // capnp-rpc + tokio LocalSet (one task per connection, single
     // event-loop Vat). Matches `format-host`'s shape.
@@ -83,17 +93,13 @@ fn main() -> anyhow::Result<()> {
         // Best-effort sd_notify — silently no-op if NOTIFY_SOCKET
         // isn't in env (e.g. when run by hand).
         let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
-        // A cold store walk must not delay the first socket-activated app.
-        // Store mutations are internally serialized, and the sweep already
-        // treats a concurrent pin/remove as a benign race. Install operations
-        // also run a post-write sweep, so accepting requests immediately does
-        // not weaken the configured size cap.
-        let gc_store = Arc::clone(&store);
+        // Migration and a cold sweep must not delay the first socket-activated
+        // app. Store mutations are serialised by the store's lock, and every
+        // migration step is idempotent, so accepting requests meanwhile is safe.
+        let startup_store = Arc::clone(&store);
         let max_store_bytes = cli.max_store_bytes;
-        let _gc = tokio::task::spawn_blocking(move || {
-            if let Err(error) = gc::sweep(&gc_store, max_store_bytes) {
-                tracing::warn!(%error, "startup gc sweep failed");
-            }
+        let _startup = tokio::task::spawn_blocking(move || {
+            startup(&startup_store, &migrate_from, max_store_bytes);
         });
         transport::serve(listener, store, catalog, cli.max_store_bytes).await
     })
@@ -159,4 +165,36 @@ fn init_tracing() {
         .with_env_filter(env)
         .with_target(false)
         .try_init();
+}
+
+/// Move packages from the layouts that predate the content store, then
+/// enforce the size cap. Failures are logged: they leave the old layout in
+/// place, still launchable, to be retried on the next start.
+fn startup(store: &PackageStore, migrate_from: &[PathBuf], max_store_bytes: u64) {
+    match store.migrate_legacy_layout() {
+        Ok(report) if !report.is_empty() => tracing::info!(
+            migrated = ?report.migrated,
+            kept = ?report.kept,
+            "moved installed packages into the content store"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "moving installed packages failed"),
+    }
+    for old in migrate_from {
+        match store.import_app_host_store(old) {
+            Ok(report) if !report.is_empty() => tracing::info!(
+                from = %old.display(),
+                migrated = ?report.migrated,
+                kept = ?report.kept,
+                "imported the retired app-host store"
+            ),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(from = %old.display(), %error, "importing the app-host store failed");
+            }
+        }
+    }
+    if let Err(error) = store.sweep(max_store_bytes) {
+        tracing::warn!(%error, "startup sweep failed");
+    }
 }

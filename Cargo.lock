@@ -528,7 +528,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-registry",
- "atomic-file",
  "bounded-command",
  "capnp",
  "capnp-rpc",
@@ -539,20 +538,18 @@ dependencies = [
  "getrandom 0.4.1",
  "hex",
  "libc",
+ "package-store",
  "runtime-portal",
  "sd-notify",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tilo-app-package",
  "tokio",
  "tokio-util",
- "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "wire-frame",
- "xdg-paths",
 ]
 
 [[package]]
@@ -13491,6 +13488,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
+ "package-store",
  "rand_core 0.10.0",
  "registry-types",
  "reqwest 0.13.2",
@@ -13510,7 +13508,6 @@ dependencies = [
  "tracing",
  "vello",
  "winit",
- "xdg-paths",
 ]
 
 [[package]]
