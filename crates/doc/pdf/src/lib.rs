@@ -12,9 +12,9 @@
 //! parsed in a separate helper process (`tilo-pdf-helper`) confined by
 //! Landlock (read-only access to the pdfium library and system fonts, no
 //! network) and a seccomp policy (no sockets, no exec, write-xor-execute).
-//! Documents reach the helper as read-only descriptors; rendered pixels and
-//! exported files come back as sealed memory files, so no pixel is copied
-//! through the socket. If the helper crashes or hangs, the request fails
+//! Documents reach the helper as read-only descriptors; pages are rendered
+//! straight into pooled shared pixel buffers and exports come back as sealed
+//! memory files, so no pixel or page is copied through the socket. If the helper crashes or hangs, the request fails
 //! with [`Error::Crashed`] or [`Error::Timeout`] and the next request starts
 //! a fresh helper, re-opening the documents it needs.
 //!
@@ -104,11 +104,11 @@ impl std::fmt::Debug for Bitmap {
 }
 
 impl Bitmap {
-    fn from_shared(width: u32, height: u32, pixels: shm::SharedBytes) -> Self {
+    fn from_parts(width: u32, height: u32, pixels: Arc<dyn AsRef<[u8]> + Send + Sync>) -> Self {
         Self {
             width,
             height,
-            pixels: Arc::new(pixels),
+            pixels,
         }
     }
 
@@ -550,8 +550,16 @@ impl Document {
     ///
     /// Out-of-range pages, renders over the pixel budget, engine failures.
     pub fn render(&self, page: usize, options: &RenderOptions) -> Result<Bitmap> {
+        let size = self
+            .page_size(page)
+            .ok_or_else(|| Error::Invalid("page out of range".into()))?;
+        let (w, h) = options.output_pixels(size);
+        let pixels = u64::from(w).saturating_mul(u64::from(h));
+        if pixels > model::MAX_RENDER_PIXELS {
+            return Err(Error::Limit("the render exceeds the pixel budget".into()));
+        }
         dispatch!(self,
-            s => s.render(self.id, page, options),
+            s => s.render(self.id, page, options, pixels.saturating_mul(4)),
             local => {
                 local.0.render_size(self.id, page, options).and_then(|(w, h)| {
                     let mut pixels = vec![0u8; (w as usize).saturating_mul(h as usize).saturating_mul(4)];
