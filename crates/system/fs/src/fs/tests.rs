@@ -40,7 +40,7 @@ mod availability_control_tests {
     }
 
     async fn pinned_content_source() -> (Endpoint, Router, Hash, Hash) {
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = ContentStore::memory();
         let first = store
             .write_content(b"first remote version")
@@ -169,7 +169,7 @@ mod availability_control_tests {
     async fn pin_policy_persists_and_a_directory_covers_future_descendants() {
         let dir = tempfile::tempdir().unwrap();
         let registry_path = dir.path().join("availability.json");
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -219,7 +219,7 @@ mod availability_control_tests {
         let dir = tempfile::tempdir().unwrap();
         let registry_path = dir.path().join("availability.json");
         let (source_endpoint, source_router, first, second) = pinned_content_source().await;
-        let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let client_store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), client_store));
         let namespace = Arc::new(Mutex::new(Namespace::new("pinned-client").unwrap()));
@@ -322,7 +322,7 @@ mod availability_control_tests {
     #[tokio::test]
     async fn pinned_hydration_is_bounded_and_unpin_cancels_queued_retries() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store));
         let namespace = Arc::new(Mutex::new(Namespace::new("bounded-pins").unwrap()));
@@ -408,7 +408,7 @@ mod availability_control_tests {
     async fn a_read_only_collaborator_can_manage_device_local_offline_policy() {
         const READER: [u8; 32] = [0x51; 32];
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -448,7 +448,7 @@ mod availability_control_tests {
     #[tokio::test]
     async fn retry_transfer_runs_off_thread_and_persists_completion() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hash = store
             .write_content(b"available locally")
@@ -499,7 +499,7 @@ mod availability_control_tests {
     #[tokio::test]
     async fn retrying_an_empty_file_completes_without_a_blob_fetch() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -535,7 +535,7 @@ mod availability_control_tests {
     #[tokio::test]
     async fn retry_failure_is_coarse_and_actionable() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -583,7 +583,7 @@ mod availability_control_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restart_does_not_project_completed_old_version_as_not_resident() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, Arc::clone(&store)));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -709,7 +709,7 @@ mod share_projection_tests {
         .unwrap();
         authority.register(&token, &[issuer], 1).unwrap();
 
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
@@ -766,7 +766,7 @@ mod thumb_tests {
     async fn fixture(
         thumb_dir: std::path::PathBuf,
     ) -> (Arc<Mutex<Namespace>>, Arc<ContentStore>, QuickFS) {
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -841,7 +841,7 @@ mod thumb_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn signed_mount_publishes_and_installs_verified_thumbnail_metadata() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let image = solid_png(320, 240, [35, 90, 180]);
         let manifest = store.write_content(&image).await.unwrap().unwrap();
@@ -1032,7 +1032,7 @@ mod predictive_tests {
     use iroh::endpoint::{Endpoint, presets};
 
     async fn fixture() -> (Arc<Mutex<Namespace>>, QuickFS) {
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -1522,7 +1522,7 @@ mod history_integration_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn existing_record_edit_and_rename_append_durable_versions() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
@@ -1603,7 +1603,7 @@ mod history_integration_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restoring_history_rehydrates_bytes_and_appends_without_rewriting() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let original = b"first durable revision";
         let original_hash = store.write_content(original).await.unwrap().unwrap();
@@ -1714,7 +1714,7 @@ mod record_publisher_integration_tests {
         let history_path = dir.path().join("history.json");
         let repository_path = dir.path().join("records");
         let workspace_id = Uuid::from_u128(0x51);
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let original = b"opaque bytes that predate record publishing";
         let original_manifest = store.write_content(original).await.unwrap().unwrap();
@@ -2174,7 +2174,7 @@ mod record_publisher_integration_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn keep_current_and_use_other_append_signed_convergent_resolutions() {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let original = b"original branch";
         let original_manifest = store.write_content(original).await.unwrap().unwrap();
@@ -2691,7 +2691,7 @@ mod record_publisher_integration_tests {
         qdoc: bool,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let store = Arc::new(crate::store::ContentStore::memory());
         let base_hash = store.write_content(&base_bytes).await.unwrap().unwrap();
         let namespace = Arc::new(Mutex::new(Namespace::new("host").unwrap()));
