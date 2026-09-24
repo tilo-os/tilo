@@ -129,7 +129,10 @@ impl Remote {
                     || stderr.contains("command not found")
                     || stderr.contains("No such file")
                 {
-                    Err(CliError::DaemonMissing { vm: vm.into() })
+                    Err(CliError::DaemonMissing {
+                        vm: vm.into(),
+                        bootc: None,
+                    })
                 } else {
                     let detail = if stderr.is_empty() {
                         "connection closed".into()

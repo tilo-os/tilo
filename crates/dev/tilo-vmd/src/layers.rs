@@ -24,6 +24,25 @@ const RELEASE_DIR: &str = "usr/lib/extension-release.d";
 /// Metadata beside the tree, also excluded from the hash.
 const PROVENANCE: &str = "provenance.json";
 
+/// What [`LayerStore::collect`] removed, and what it kept for its age.
+#[derive(Debug, Default)]
+pub struct Collected {
+    pub removed: Vec<String>,
+    pub freed: u64,
+    /// Unreferenced layers younger than the minimum age, with their age.
+    pub young: Vec<(String, std::time::Duration)>,
+}
+
+/// One file or symlink in a layer, as the slot sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerFile {
+    /// Absolute, e.g. `/usr/bin/shell`.
+    pub path: String,
+    pub sha256: Option<String>,
+    pub link: Option<String>,
+    pub executable: bool,
+}
+
 /// Labels a staged layer tree in place.
 pub type Labeler<'a> = &'a mut dyn FnMut(&Path) -> Result<(), DaemonError>;
 
@@ -146,16 +165,23 @@ impl LayerStore {
         referenced: &std::collections::BTreeSet<String>,
         min_age: std::time::Duration,
         dry_run: bool,
-    ) -> Result<(Vec<String>, u64), DaemonError> {
+    ) -> Result<Collected, DaemonError> {
         let mut removed = Vec::new();
+        let mut young = Vec::new();
         let mut freed: u64 = 0;
         for layer in self.list()? {
             let path = self.path(&layer.hash);
+            if referenced.contains(&layer.hash) {
+                continue;
+            }
+            // A clock step makes the age unknown: treat it as brand new.
             let age = fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()
-                .and_then(|t| t.elapsed().ok());
-            if referenced.contains(&layer.hash) || age.is_none_or(|age| age < min_age) {
+                .and_then(|t| t.elapsed().ok())
+                .unwrap_or_default();
+            if age < min_age {
+                young.push((layer.hash, age));
                 continue;
             }
             freed = freed.saturating_add(fsutil::allocated_bytes(&path));
@@ -170,7 +196,50 @@ impl LayerStore {
             }
             removed.push(layer.hash);
         }
-        Ok((removed, freed))
+        Ok(Collected {
+            removed,
+            freed,
+            young,
+        })
+    }
+
+    /// Every file and symlink the layer adds, sorted by path, with the
+    /// SHA-256 of each regular file; the importer's own metadata is left out.
+    ///
+    /// # Errors
+    /// Unknown layers and I/O failures.
+    pub fn files(&self, hash: &str) -> Result<Vec<LayerFile>, DaemonError> {
+        let root = self.require(hash)?;
+        let mut entries = Vec::new();
+        fsutil::walk(&root, Path::new(""), &mut entries).map_err(DaemonError::io("walk layer"))?;
+        entries.sort();
+        let mut files = Vec::new();
+        for relative in entries {
+            let text = relative.to_string_lossy().replace('\\', "/");
+            if text == PROVENANCE
+                || text == RELEASE_DIR
+                || text.starts_with(&format!("{RELEASE_DIR}/"))
+            {
+                continue;
+            }
+            let path = root.join(&relative);
+            let meta = fs::symlink_metadata(&path).map_err(DaemonError::io("stat layer entry"))?;
+            let (sha256, link) = if meta.file_type().is_symlink() {
+                let target = fs::read_link(&path).map_err(DaemonError::io("read link"))?;
+                (None, Some(target.to_string_lossy().into_owned()))
+            } else if meta.is_file() {
+                (Some(file_digest(&path)?), None)
+            } else {
+                continue;
+            };
+            files.push(LayerFile {
+                path: format!("/{text}"),
+                sha256,
+                link,
+                executable: meta.is_file() && fsutil::is_executable(&meta),
+            });
+        }
+        Ok(files)
     }
 
     fn stage(&self) -> Result<PathBuf, DaemonError> {
@@ -487,21 +556,46 @@ mod tests {
             .unwrap();
         let referenced = std::collections::BTreeSet::from([keep.clone()]);
         // Too young: an import waiting for its swap survives.
-        let (removed, _) = store
+        let young = store
             .collect(&referenced, std::time::Duration::from_secs(3600), false)
             .unwrap();
-        assert!(removed.is_empty());
-        let (removed, freed) = store
+        assert!(young.removed.is_empty());
+        // ... and is reported, so gc can say why it stayed.
+        assert_eq!(young.young.len(), 1);
+        assert_eq!(young.young[0].0, drop);
+        let dry = store
             .collect(&referenced, std::time::Duration::ZERO, true)
             .unwrap();
-        assert_eq!(removed, std::slice::from_ref(&drop));
-        assert!(freed > 0);
+        assert_eq!(dry.removed, std::slice::from_ref(&drop));
+        assert!(dry.freed > 0);
+        assert!(dry.young.is_empty());
         assert!(store.require(&drop).is_ok(), "dry run keeps the layer");
         store
             .collect(&referenced, std::time::Duration::ZERO, false)
             .unwrap();
         assert!(store.require(&drop).is_err());
         assert!(store.require(&keep).is_ok());
+    }
+
+    #[test]
+    fn files_lists_what_the_slot_sees_with_digests() {
+        let root = tempfile::tempdir().unwrap();
+        let store = LayerStore::new(root.path());
+        let (hash, _) = store
+            .import_tar(
+                tarball(&[("usr/bin/shell", b"v1"), ("usr/share/tilo/x.toml", b"k")]).as_slice(),
+                &provenance(),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        let files = store.files(&hash).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        // The importer's release file and provenance are not the layer's content.
+        assert_eq!(paths, ["/usr/bin/shell", "/usr/share/tilo/x.toml"]);
+        let digest = hex::encode(Sha256::digest(b"v1"));
+        assert_eq!(files[0].sha256.as_deref(), Some(digest.as_str()));
+        assert!(files[0].executable);
+        assert!(store.files("0".repeat(64).as_str()).is_err());
     }
 
     #[test]

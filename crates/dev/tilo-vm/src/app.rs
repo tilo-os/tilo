@@ -11,9 +11,9 @@ use serde_json::{Value, json};
 use tilo_vm_protocol::manifest::{Component, Manifest};
 use tilo_vm_protocol::{
     Action, AppInstall, AppInstallResult, ApplyResult, BuildJob, BuildTarget, Button, CiJob,
-    Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Policy, Rollback,
-    Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList, SlotRestart,
-    SlotRm, Status, Swap, VM_SLOT, VmTools,
+    Control, Gc, Input, InputAction, JobOutput, LayerImport, LayerSource, Logs, Owner, Policy,
+    Rollback, Scope, SeatClaim, SeatRelease, Shot, SlotCreate, SlotInfo, SlotKind, SlotList,
+    SlotRestart, SlotRm, SlotShow, SlotShowResult, Status, Swap, VM_SLOT, VmTools,
 };
 
 use crate::build;
@@ -34,6 +34,7 @@ use crate::hypervisor::{
 use crate::imageup;
 use crate::receipt::Receipt;
 use crate::remote::{self, LockOutcome, Remote};
+use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
@@ -261,27 +262,6 @@ fn registry_login(runner: &mut dyn Runner) -> Result<String, CliError> {
     }
 }
 
-/// Commands that change the VM's `/usr` or tilo-vm's state behind its back.
-pub fn looks_like_deploy(command: &[String]) -> bool {
-    let line = command.join(" ");
-    let writes_usr = ["cp ", "mv ", "install ", "rsync ", "tee ", "> ", "ln "]
-        .iter()
-        .any(|verb| line.contains(verb) && line.contains("/usr/"));
-    writes_usr
-        || [
-            "systemd-sysext merge",
-            "systemd-sysext refresh",
-            "systemd-sysext unmerge",
-            "/var/lib/tilo-vm",
-            "/var/lib/extensions",
-            "bootc usr-overlay",
-            "ostree admin unlock",
-            "tilo-vmd",
-        ]
-        .iter()
-        .any(|pattern| line.contains(pattern))
-}
-
 /// `path`, or its nearest ancestor that exists.
 fn existing_ancestor(path: &Path) -> &Path {
     path.ancestors()
@@ -401,14 +381,31 @@ impl App {
         let adapter = Self::adapter(vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
         let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
-        let remote = Remote::connect(
+        let remote = match Remote::connect(
             &vm.name,
             &endpoint,
             vm.entry.key.as_deref(),
             vm.entry.daemon.as_deref(),
             debug,
-        )
-        .map_err(|error| key_refusal(vm, adapter.as_ref(), &endpoint, error))?;
+        ) {
+            Ok(remote) => remote,
+            // SSH works; whether vm upgrade can fix it depends on bootc.
+            Err(CliError::ProtocolMismatch { client, daemon, .. }) => {
+                return Err(CliError::ProtocolMismatch {
+                    vm: vm.name.clone(),
+                    client,
+                    daemon,
+                    bootc: self.probe_bootc(vm, &endpoint),
+                });
+            }
+            Err(CliError::DaemonMissing { .. }) => {
+                return Err(CliError::DaemonMissing {
+                    vm: vm.name.clone(),
+                    bootc: self.probe_bootc(vm, &endpoint),
+                });
+            }
+            Err(error) => return Err(key_refusal(vm, adapter.as_ref(), &endpoint, error)),
+        };
         for issue in &remote.hello.issues {
             self.warnings.push(format!(
                 "slot {}: {}; {}",
@@ -419,10 +416,44 @@ impl App {
         Ok(remote)
     }
 
+    /// Does the VM have bootc? `None` when SSH did not say.
+    fn probe_bootc(&mut self, vm: &Resolved, endpoint: &SshEndpoint) -> Option<bool> {
+        let output = self.vm_sh(vm, endpoint, imageup::BOOTC_PROBE).ok()?;
+        imageup::parse_bootc_probe(&output.stdout)
+    }
+
+    /// Why `connect` failed, as `status` and `vm status` report it; asks the
+    /// hypervisor whether the VM is running at all.
+    fn connect_failure(
+        &mut self,
+        vm: &Resolved,
+        adapter: &dyn Hypervisor,
+        error: &CliError,
+    ) -> ConnectFailure {
+        let running = adapter.running(&vm.vm(), &mut self.runner);
+        let debug = Self::debug_commands(adapter, &vm.name);
+        connect_failure(&vm.name, running, &debug, error)
+    }
+
+    /// The slot commands use when none is named: `TILO_VM_SLOT`, then
+    /// `slot = "<name>"` in the worktree's `.tilo-vm`, then the branch's.
+    pub fn default_slot(&self) -> Option<String> {
+        if let Ok(name) = std::env::var("TILO_VM_SLOT")
+            && !name.trim().is_empty()
+        {
+            return Some(name.trim().to_owned());
+        }
+        let worktree = self.worktree.as_ref()?;
+        std::fs::read_to_string(worktree.root.join(WORKTREE_FILE))
+            .ok()
+            .and_then(|text| config::parse_worktree_slot(&text))
+            .or_else(|| worktree.default_slot())
+    }
+
     /// # Errors
     /// Outside a worktree, or a branch that makes no usable name.
     pub fn slot_name(&self, explicit: Option<String>) -> Result<String, CliError> {
-        if let Some(name) = explicit {
+        if let Some(name) = explicit.or_else(|| self.default_slot()) {
             return Ok(name);
         }
         let worktree = self.worktree.as_ref().ok_or(CliError::NotInWorktree)?;
@@ -448,8 +479,21 @@ impl App {
     /// # Errors
     /// Whatever the command reports.
     pub fn run(&mut self, command: Option<Command>) -> Result<Outcome, CliError> {
+        let named = command.as_ref().and_then(named_slot);
+        let mut outcome = self.dispatch(command)?;
+        // Hints follow the slot in use when it is not the default one.
+        if let Some(slot) = named
+            && self.default_slot().as_deref() != Some(slot.as_str())
+        {
+            outcome.next = outcome.next.iter().map(|n| with_slot(n, &slot)).collect();
+        }
+        Ok(outcome)
+    }
+
+    fn dispatch(&mut self, command: Option<Command>) -> Result<Outcome, CliError> {
         match command {
-            None | Some(Command::Status) => self.status(),
+            None => self.status(None),
+            Some(Command::Status { slot }) => self.status(slot),
             Some(Command::Doctor) => Ok(self.doctor()),
             Some(Command::Guide { topic }) => Self::guide(topic.as_deref()),
             Some(Command::Vm(command)) => self.vm(command),
@@ -476,12 +520,27 @@ impl App {
                 },
             ),
             Some(Command::Input { slot, action }) => self.input(slot, action),
-            Some(Command::Rollback { slot, to, .. }) => {
+            Some(Command::Rollback {
+                slot, to, forward, ..
+            }) => {
                 let slot = self.slot_name(slot)?;
+                let vm = self.resolve_vm(None)?;
+                let to = if forward {
+                    let info = self
+                        .connect(&vm)?
+                        .call(Status {
+                            slot: Some(slot.clone()),
+                        })?
+                        .slots
+                        .into_iter()
+                        .next();
+                    Some(forward_target(&slot, info.as_ref())?)
+                } else {
+                    to
+                };
                 if slot == VM_SLOT {
                     return self.rollback_vm(to);
                 }
-                let vm = self.resolve_vm(None)?;
                 let mut remote = self.connect(&vm)?;
                 let result = self.receipt.phase("apply", || {
                     remote.call(Rollback {
@@ -508,7 +567,8 @@ impl App {
                 dry_run,
                 keep,
                 keep_targets,
-            }) => self.gc(dry_run, keep, keep_targets),
+                min_age,
+            }) => self.gc(dry_run, keep, keep_targets, min_age),
         }
     }
 
@@ -543,7 +603,7 @@ impl App {
         clippy::too_many_lines,
         reason = "one linear report, section by section"
     )]
-    fn status(&mut self) -> Result<Outcome, CliError> {
+    fn status(&mut self, slot: Option<String>) -> Result<Outcome, CliError> {
         let goals =
             "goals: warm component build < 60s, swap + session restart < 10s, cached boot < 30s";
         let vm = match self.resolve_vm(None) {
@@ -563,7 +623,7 @@ impl App {
             }
             other => other?,
         };
-        let slot = self.slot_name(None).ok();
+        let slot = self.slot_name(slot).ok();
         let mut lines = vec![format!(
             "VM: {} ({}, {})",
             vm.name,
@@ -575,11 +635,17 @@ impl App {
         let mut remote = match self.connect(&vm) {
             Ok(remote) => remote,
             Err(error) => {
-                lines.push(format!("  unreachable: {error}"));
-                insert(&mut vm_data, "reachable", json!(false));
-                let data = json!({ "vm": vm_data, "error": error.to_json() });
+                let adapter = Self::adapter(&vm)?;
+                let failure = self.connect_failure(&vm, adapter.as_ref(), &error);
+                lines.push(failure.text(&error));
+                insert(&mut vm_data, "state", json!(failure.state));
+                insert(&mut vm_data, "reachable", json!(failure.ssh));
+                let mut data = json!({ "vm": vm_data });
+                merge_error(&mut data, &error);
                 let mut outcome = Outcome::new(lines.join("\n"), data);
-                outcome.next = vec!["tilo-vm vm start".into(), "tilo-vm doctor".into()];
+                outcome.next = failure.next;
+                outcome.failed = true;
+                self.warnings.clear();
                 return Ok(outcome);
             }
         };
@@ -628,11 +694,9 @@ impl App {
                 );
             }
             (Some(name), None) => {
-                lines.push(format!(
-                    "slot: {name} (not created yet; new here? tilo-vm guide quickstart)"
-                ));
-                next.push("tilo-vm slot create --headless".into());
-                next.push("tilo-vm guide quickstart".into());
+                let (text, hints) = missing_slot(name, &status.slots);
+                lines.extend(text);
+                next.extend(hints);
             }
             (None, _) => {
                 lines.push("slot: none (not in a worktree; pass a slot name)".into());
@@ -648,6 +712,7 @@ impl App {
         }
         self.warnings.clear();
         lines.push(goals.into());
+        insert(&mut vm_data, "state", json!("ready"));
         insert(&mut vm_data, "reachable", json!(true));
         let data = json!({
             "vm": vm_data,
@@ -742,7 +807,7 @@ impl App {
     }
 
     /// The checks that need the VM's daemon.
-    fn vm_checks(&self, remote: &mut Remote, vm: &Resolved, checks: &mut Vec<Check>) {
+    fn vm_checks(&mut self, remote: &mut Remote, vm: &Resolved, checks: &mut Vec<Check>) {
         let hello = remote.hello.clone();
         checks.push(Check::ok(
             "daemon",
@@ -753,7 +818,11 @@ impl App {
         ));
         let tools = &hello.tools;
         let builds = describe_tools(tools);
-        let upgrade = "tilo-vm vm upgrade   (a dev image with cargo, rsync and python3)";
+        let upgrade = if tools.can_build() || self.vm_has_bootc(vm) == Some(true) {
+            "tilo-vm vm upgrade   (a dev image with cargo, rsync and python3)"
+        } else {
+            "create a VM from a current dev image (tilo-vm vm create <name>); this one has no bootc, so vm upgrade cannot move it"
+        };
         checks.push(if tools.can_build() {
             Check::ok("vm builder", builds)
         } else if cfg!(target_os = "linux") {
@@ -831,6 +900,16 @@ impl App {
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
+            VmCommand::Restart { name } => {
+                let stopped = self.vm_stop(name.as_deref(), false)?;
+                if stopped.data.get("down") == Some(&json!(false)) {
+                    return Ok(stopped);
+                }
+                let mut started = self.vm_start(name.as_deref())?;
+                started.text = format!("{}\n{}", stopped.text, started.text);
+                insert(&mut started.data, "stop", stopped.data);
+                Ok(started)
+            }
             VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
             VmCommand::Upgrade(args) => self.vm_upgrade(&args),
             VmCommand::RollbackImage { name, no_reboot } => {
@@ -1000,7 +1079,8 @@ impl App {
         } else {
             let worktree = self.worktree.as_ref().ok_or(CliError::NotInWorktree)?;
             let file = worktree.root.join(WORKTREE_FILE);
-            std::fs::write(&file, format!("vm = \"{name}\"\n"))
+            let old = std::fs::read_to_string(&file).unwrap_or_default();
+            std::fs::write(&file, config::with_worktree_vm(&old, name))
                 .map_err(CliError::io(format!("write {}", file.display())))?;
             file
         };
@@ -1017,9 +1097,10 @@ impl App {
         raw: bool,
         command: &[String],
     ) -> Result<Outcome, CliError> {
-        if !raw && looks_like_deploy(command) {
-            return Err(CliError::RawDeploy {
+        if !raw && let Some(change) = sshguard::guarded_write(command) {
+            return Err(CliError::RawWrite {
                 command: command.join(" "),
+                change,
             });
         }
         let vm = self.resolve_vm(name)?;
@@ -1032,17 +1113,11 @@ impl App {
             command.is_empty(),
         );
         let ok = self.runner.interactive(&line)?;
-        if !ok && !command.is_empty() {
-            return Err(CliError::CommandFailed {
-                command: command.join(" "),
-                status: "non-zero exit".into(),
-                stderr: String::new(),
-            });
-        }
-        Ok(Outcome::new(
-            "",
-            json!({ "vm": vm.name, "command": command }),
-        ))
+        // A remote command that fails has said why itself: pass its failure
+        // on as the exit status, without a hint of ours.
+        let mut outcome = Outcome::new("", json!({ "vm": vm.name, "command": command, "ok": ok }));
+        outcome.failed = !ok && !command.is_empty();
+        Ok(outcome)
     }
 
     fn vm_status(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
@@ -1058,33 +1133,25 @@ impl App {
         match self.connect(&vm) {
             Ok(remote) => {
                 lines.push(format!(
-                    "  reachable; tilo-vmd {} (protocol {}, {})",
+                    "  running and ready; tilo-vmd {} (protocol {}, {})",
                     remote.hello.daemon_version, remote.hello.protocol, remote.hello.arch
                 ));
+                insert(&mut data, "state", json!("ready"));
                 insert(&mut data, "reachable", json!(true));
                 insert(&mut data, "daemon", json!(remote.hello));
                 Ok(Outcome::new(lines.join("\n"), data).next(&["tilo-vm status"]))
             }
-            Err(error @ CliError::DaemonMissing { .. }) => {
-                lines.push(
-                    "  reachable over SSH, but no tilo-vmd: it is not running a Tilo dev image"
-                        .into(),
-                );
-                insert(&mut data, "reachable", json!(true));
-                insert(&mut data, "daemon", Value::Null);
-                insert(&mut data, "error", error.to_json());
-                let mut outcome = Outcome::new(lines.join("\n"), data);
-                outcome.next = vec![error.hint(), format!("tilo-vm vm ssh {}", vm.name)];
-                Ok(outcome)
-            }
             Err(error) => {
-                lines.push(format!("  not reachable: {error}"));
-                insert(&mut data, "reachable", json!(false));
-                insert(&mut data, "error", error.to_json());
-                let mut outcome = Outcome::new(lines.join("\n"), data).next(&["tilo-vm vm start"]);
-                outcome
-                    .next
-                    .extend(Self::debug_commands(adapter.as_ref(), &vm.name));
+                let failure = self.connect_failure(&vm, adapter.as_ref(), &error);
+                lines.push(failure.text(&error));
+                insert(&mut data, "state", json!(failure.state));
+                insert(&mut data, "reachable", json!(failure.ssh));
+                insert(&mut data, "daemon", Value::Null);
+                merge_error(&mut data, &error);
+                let mut outcome = Outcome::new(lines.join("\n"), data);
+                outcome.next = failure.next;
+                outcome.failed = true;
+                self.warnings.clear();
                 Ok(outcome)
             }
         }
@@ -1511,10 +1578,12 @@ impl App {
     }
 
     /// Boot id, base.json, free space and bootc status, in one round trip.
+    /// `command` is what needs them, named when the VM has no bootc.
     fn vm_facts(
         &mut self,
         vm: &Resolved,
         endpoint: &SshEndpoint,
+        command: &str,
     ) -> Result<imageup::VmFacts, CliError> {
         let output = self.vm_sh(vm, endpoint, &imageup::vm_facts_script())?;
         if !output.stdout.contains("@@base") {
@@ -1526,10 +1595,16 @@ impl App {
             };
             return Err(key_refusal(vm, adapter.as_ref(), endpoint, error));
         }
-        imageup::parse_vm_facts(&output.stdout).map_err(|detail| CliError::CommandFailed {
-            command: "bootc status --json".into(),
-            status: format!("VM {} did not report a bootc status ({detail})", vm.name),
-            stderr: output.stderr.trim().to_owned(),
+        imageup::parse_vm_facts(&output.stdout).map_err(|error| match error {
+            imageup::FactsError::NoBootc => CliError::NotBootc {
+                vm: vm.name.clone(),
+                command: command.to_owned(),
+            },
+            imageup::FactsError::Unreadable(detail) => CliError::CommandFailed {
+                command: "bootc status --json".into(),
+                status: format!("VM {} did not report a bootc status ({detail})", vm.name),
+                stderr: output.stderr.trim().to_owned(),
+            },
         })
     }
 
@@ -1553,7 +1628,7 @@ impl App {
             imageup::check_image(&image, &imageup::ImageFacts::default())?;
         }
         // Fail on an unreachable or non-bootc VM before a long build.
-        self.vm_facts(&vm, &endpoint)?;
+        self.vm_facts(&vm, &endpoint, "vm upgrade")?;
         if build {
             self.build_dev_image(&image, args.base.as_deref(), args.rebuild_base)?;
         }
@@ -1562,7 +1637,7 @@ impl App {
             .receipt
             .phase("check", || local_image_facts(runner, &image))?;
         imageup::check_image(&image, &image_facts)?;
-        let facts = self.vm_facts(&vm, &endpoint)?;
+        let facts = self.vm_facts(&vm, &endpoint, "vm upgrade")?;
         match imageup::check_base_age(&image, facts.base.as_ref(), image_facts.base.as_ref()) {
             Err(error) if !args.allow_older_base => return Err(error),
             Err(error) => self
@@ -1639,7 +1714,7 @@ impl App {
         {
             imageup::check_image(image, &imageup::ImageFacts::default())?;
         }
-        let facts = self.vm_facts(vm, endpoint)?;
+        let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
         let (transport, imgref) = match &args.image {
             Some(image) => ("registry", image.clone()),
             None => match facts.bootc.spec.clone() {
@@ -1963,6 +2038,11 @@ impl App {
                     missing = true;
                     break;
                 }
+                Err(error @ CliError::ProtocolMismatch { .. }) => {
+                    self.warnings.push(format!("{error}; {}", error.hint()));
+                    daemon = Some(String::from("incompatible"));
+                    break;
+                }
                 Err(_) => std::thread::sleep(Duration::from_secs(1)),
             }
         }
@@ -2005,7 +2085,7 @@ impl App {
         let vm = self.resolve_vm(name)?;
         let adapter = Self::adapter(&vm)?;
         let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
-        let facts = self.vm_facts(&vm, &endpoint)?;
+        let facts = self.vm_facts(&vm, &endpoint, "vm rollback-image")?;
         let Some(target) = facts.bootc.rollback.clone() else {
             return Err(CliError::Unsupported {
                 what: format!("rolling back VM {}: it has no previous image", vm.name),
@@ -2059,6 +2139,7 @@ impl App {
                 name,
                 headless: _,
                 headful,
+                ..
             } => {
                 let name = self.slot_name(name)?;
                 let kind = if headful {
@@ -2110,7 +2191,19 @@ impl App {
                 }
                 Ok(outcome)
             }
-            SlotCommand::Restart { name } => {
+            SlotCommand::Show { name, .. } => {
+                let name = self.slot_name(name)?;
+                let shown = self.connect(&vm)?.call(SlotShow { name })?;
+                Ok(Outcome::new(describe_show(&shown), json!(shown))
+                    .next(&["tilo-vm slot exec -- sha256sum <path>"]))
+            }
+            SlotCommand::Exec {
+                name,
+                timeout,
+                command,
+                ..
+            } => self.slot_exec(&vm, name, timeout, &command),
+            SlotCommand::Restart { name, .. } => {
                 let name = self.slot_name(name)?;
                 let mut remote = self.connect(&vm)?;
                 let result = self
@@ -2119,7 +2212,7 @@ impl App {
                 Ok(Outcome::new(describe_apply(&result), json!(result))
                     .next(&["tilo-vm logs", "tilo-vm shot"]))
             }
-            SlotCommand::Rm { name } => {
+            SlotCommand::Rm { name, .. } => {
                 let name = self.slot_name(name)?;
                 let result = self.connect(&vm)?.call(SlotRm { name: name.clone() })?;
                 let text = if result.removed {
@@ -2131,6 +2224,69 @@ impl App {
                 };
                 Ok(Outcome::new(text, json!(result)).next(&["tilo-vm gc --dry-run"]))
             }
+        }
+    }
+
+    /// `slot exec`: `tilo-vmd exec` over SSH, output streaming straight
+    /// through; its exit status is the command's.
+    fn slot_exec(
+        &mut self,
+        vm: &Resolved,
+        name: Option<String>,
+        timeout: u64,
+        command: &[String],
+    ) -> Result<Outcome, CliError> {
+        let slot = self.slot_name(name)?;
+        let endpoint = Self::adapter(vm)?.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let line = remote::ssh_command(
+            &endpoint,
+            vm.entry.key.as_deref(),
+            &exec_words(vm.entry.daemon.as_deref(), &slot, timeout, command),
+            false,
+        );
+        let ok = self.runner.interactive(&line)?;
+        let mut outcome = Outcome::new(
+            "",
+            json!({ "vm": vm.name, "slot": slot, "command": command, "ok": ok }),
+        );
+        outcome.failed = !ok;
+        Ok(outcome)
+    }
+
+    /// Does the VM have bootc (so vm upgrade can move it)? `None` when
+    /// SSH does not say.
+    fn vm_has_bootc(&mut self, vm: &Resolved) -> Option<bool> {
+        let endpoint = Self::adapter(vm)
+            .ok()?
+            .ssh_endpoint(&vm.vm(), &mut self.runner)
+            .ok()?;
+        self.probe_bootc(vm, &endpoint)
+    }
+
+    /// Say where a build runs before it starts, when it is not the VM.
+    fn announce_builder(&mut self, vm: &Resolved, note: Option<String>) {
+        let Some(note) = note else { return };
+        let fix = if self.vm_has_bootc(vm) == Some(true) {
+            "tilo-vm vm upgrade gets an image that builds in the VM"
+        } else {
+            "a VM created from a current dev image builds in the VM (tilo-vm vm create <name>)"
+        };
+        let note = format!("{note}; {fix}");
+        if self.json {
+            self.warnings.push(note);
+        } else {
+            eprintln!("warning: {note}");
+        }
+    }
+
+    /// `choose_builder`'s refusal, with the fix that fits this VM.
+    fn cannot_build(&mut self, vm: &Resolved, error: CliError) -> CliError {
+        match error {
+            CliError::VmCannotBuild { missing, .. } => CliError::VmCannotBuild {
+                missing,
+                bootc: self.vm_has_bootc(vm),
+            },
+            other => other,
         }
     }
 
@@ -2291,8 +2447,9 @@ impl App {
             &remote.hello.tools,
             cfg!(target_os = "linux"),
             std::env::consts::OS,
-        )?;
-        self.warnings.extend(note);
+        )
+        .map_err(|error| self.cannot_build(vm, error))?;
+        self.announce_builder(vm, note);
         self.receipt
             .set("builder", if chosen == Builder::Vm { "vm" } else { "host" });
         match chosen {
@@ -2498,8 +2655,9 @@ impl App {
             &remote.hello.tools,
             cfg!(target_os = "linux"),
             std::env::consts::OS,
-        )?;
-        self.warnings.extend(note);
+        )
+        .map_err(|error| self.cannot_build(&vm, error))?;
+        self.announce_builder(&vm, note);
         let result: AppInstallResult = match chosen {
             Builder::Vm => {
                 let (worktree, id) = self.sync_worktree(&vm)?;
@@ -2769,6 +2927,7 @@ impl App {
         dry_run: bool,
         keep: Option<u32>,
         keep_targets: Option<u32>,
+        min_age: Option<u64>,
     ) -> Result<Outcome, CliError> {
         let registry = self.registry()?;
         let keep = keep.unwrap_or_else(|| registry.keep_generations());
@@ -2779,6 +2938,7 @@ impl App {
             dry_run,
             keep_targets,
             free_goal_bytes: Some(registry.min_free_bytes()),
+            min_age_seconds: min_age,
         })?;
         let verb = if dry_run { "would remove" } else { "removed" };
         let mut text = format!(
@@ -2798,9 +2958,17 @@ impl App {
                 format!(": {}", result.removed_targets.join(", "))
             }
         );
+        if let Some(kept) = describe_kept(&result) {
+            text.push('\n');
+            text.push_str(&kept);
+        }
         let mut outcome = Outcome::new(text, json!(result));
         if dry_run {
             outcome = outcome.next(&["tilo-vm gc"]);
+        }
+        if !result.kept_young.is_empty() {
+            outcome =
+                outcome.next(&["tilo-vm gc --min-age 0   (only for layers you know are yours)"]);
         }
         Ok(outcome)
     }
@@ -2980,7 +3148,7 @@ pub fn describe_tools(tools: &VmTools) -> String {
         )
     } else {
         format!(
-            "unavailable (the VM lacks {}; tilo-vm vm upgrade)",
+            "unavailable (the VM lacks {}; tilo-vm doctor says how to fix it)",
             tools.missing_for_build().join(", ")
         )
     };
@@ -3004,6 +3172,7 @@ pub fn choose_builder(
     os: &str,
 ) -> Result<(Builder, Option<String>), CliError> {
     let cannot = || CliError::VmCannotBuild {
+        bootc: None,
         missing: tools
             .missing_for_build()
             .into_iter()
@@ -3019,7 +3188,7 @@ pub fn choose_builder(
         None if linux_host => Ok((
             Builder::Host,
             Some(format!(
-                "the VM's image has no {}, so this build runs on this host (--builder host); tilo-vm vm upgrade gets an image that builds",
+                "the VM's image has no {}, so this build runs on this host (--builder host)",
                 tools.missing_for_build().join(", ")
             )),
         )),
@@ -3069,13 +3238,213 @@ fn slot_line(info: &SlotInfo) -> String {
         .as_deref()
         .map(|s| format!(", seat {s}"))
         .unwrap_or_default();
+    let owner = describe_owner(&info.owner)
+        .map(|o| format!(", owner {o}"))
+        .unwrap_or_default();
     format!(
-        "slot: {} ({}) generation {}, session {}{seat}",
+        "slot: {} ({}) generation {}, session {}{seat}{owner}",
         info.name,
         info.kind.as_str(),
         info.generation,
         info.session
     )
+}
+
+/// `status` for a slot that does not exist: create it when the VM has no
+/// slots, else show the ones it has rather than suggest yet another.
+fn missing_slot(name: &str, slots: &[SlotInfo]) -> (Vec<String>, Vec<String>) {
+    let others: Vec<&SlotInfo> = slots.iter().filter(|s| s.kind != SlotKind::Vm).collect();
+    if others.is_empty() {
+        return (
+            vec![format!(
+                "slot: {name} (not created yet; new here? tilo-vm guide quickstart)"
+            )],
+            vec![
+                "tilo-vm slot create --headless".into(),
+                "tilo-vm guide quickstart".into(),
+            ],
+        );
+    }
+    let mut lines = vec![format!(
+        "slot: {name} does not exist; the VM has these (use one with --slot <name>, or set TILO_VM_SLOT):"
+    )];
+    lines.extend(others.iter().map(|s| format!("  {}", slot_line(s))));
+    let mut next: Vec<String> = others
+        .iter()
+        .take(3)
+        .map(|s| format!("tilo-vm status --slot {}", s.name))
+        .collect();
+    next.push("tilo-vm slot list".into());
+    (lines, next)
+}
+
+/// `host:branch`, or whatever of host, branch and worktree is known.
+fn describe_owner(owner: &Owner) -> Option<String> {
+    let place = owner.branch.clone().or_else(|| {
+        owner
+            .worktree
+            .as_deref()
+            .and_then(|w| w.rsplit('/').next())
+            .map(str::to_owned)
+    });
+    match (owner.host.clone(), place) {
+        (Some(host), Some(place)) => Some(format!("{host}:{place}")),
+        (Some(one), None) | (None, Some(one)) => Some(one),
+        (None, None) => None,
+    }
+}
+
+/// The slot a command names explicitly, after `--slot` was folded in.
+fn named_slot(command: &Command) -> Option<String> {
+    match command {
+        Command::Swap { slot, .. }
+        | Command::Input { slot, .. }
+        | Command::Control { slot, .. }
+        | Command::Rollback { slot, .. }
+        | Command::Logs { slot, .. }
+        | Command::Shot { slot, .. }
+        | Command::Status { slot }
+        | Command::Seat(SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. })
+        | Command::Slot(
+            SlotCommand::Create { name: slot, .. }
+            | SlotCommand::Restart { name: slot, .. }
+            | SlotCommand::Rm { name: slot, .. }
+            | SlotCommand::Show { name: slot, .. }
+            | SlotCommand::Exec { name: slot, .. },
+        ) => slot.clone(),
+        _ => None,
+    }
+}
+
+/// `command` aimed at `slot`: `--slot <slot>` right after the subcommand
+/// (before any trailing arguments, which `control` would swallow).
+pub fn with_slot(command: &str, slot: &str) -> String {
+    let words: Vec<&str> = command.split(' ').collect();
+    if words.first() != Some(&"tilo-vm") || command.contains("--slot") {
+        return command.to_owned();
+    }
+    let at = match (words.get(1).copied(), words.get(2).copied()) {
+        (Some("swap" | "shot" | "control" | "logs" | "rollback" | "input" | "status"), _) => 2,
+        (Some("slot"), Some("create" | "restart" | "rm" | "show" | "exec"))
+        | (Some("seat"), Some("claim" | "release")) => 3,
+        _ => return command.to_owned(),
+    };
+    let Some((head, tail)) = words.split_at_checked(at) else {
+        return command.to_owned();
+    };
+    let flag = format!("--slot {slot}");
+    let mut out: Vec<&str> = head.to_vec();
+    out.push(&flag);
+    out.extend_from_slice(tail);
+    out.join(" ")
+}
+
+/// The generation `rollback --forward` goes to: the next newer one.
+///
+/// # Errors
+/// An unknown slot, or one already at its newest generation.
+pub fn forward_target(slot: &str, info: Option<&SlotInfo>) -> Result<u64, CliError> {
+    let info = info.ok_or_else(|| CliError::Unsupported {
+        what: format!("rolling slot {slot} forward: the VM has no such slot"),
+        alternative: "tilo-vm slot list".into(),
+    })?;
+    info.generations
+        .iter()
+        .copied()
+        .find(|n| *n > info.generation)
+        .ok_or_else(|| CliError::Unsupported {
+            what: format!(
+                "rolling slot {slot} forward: generation {} is its newest",
+                info.generation
+            ),
+            alternative: format!(
+                "pick one by number: tilo-vm rollback --slot {slot} --to <n>   (tilo-vm slot show --slot {slot} lists them)"
+            ),
+        })
+}
+
+/// The remote words of `slot exec`, quoted for the remote shell.
+fn exec_words(daemon: Option<&str>, slot: &str, timeout: u64, command: &[String]) -> Vec<String> {
+    let mut words = vmbuild::daemon_command(daemon, "exec");
+    words.extend([
+        "--slot".to_owned(),
+        vmbuild::sh_quote(slot),
+        "--timeout".to_owned(),
+        timeout.to_string(),
+        "--".to_owned(),
+    ]);
+    words.extend(command.iter().map(|w| vmbuild::sh_quote(w)));
+    words
+}
+
+/// `slot show` as text: the slot, then each component's files.
+fn describe_show(shown: &SlotShowResult) -> String {
+    let info = &shown.slot;
+    let mut lines = vec![
+        slot_line(info),
+        format!(
+            "  generations: {} (current {}; tilo-vm rollback --to <n> switches to any of them)",
+            info.generations
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            info.generation
+        ),
+    ];
+    if shown.files.is_empty() {
+        lines.push("  no layers: the slot sees the VM's image as it is".into());
+    }
+    let mut current = None;
+    for file in &shown.files {
+        if current != Some((&file.component, &file.layer)) {
+            current = Some((&file.component, &file.layer));
+            lines.push(format!(
+                "  {} (layer {})",
+                file.component,
+                short(&file.layer)
+            ));
+        }
+        let what = match (&file.sha256, &file.link) {
+            (Some(sha), _) => format!("sha256:{}", short(sha)),
+            (None, Some(link)) => format!("-> {link}"),
+            (None, None) => String::new(),
+        };
+        lines.push(format!("    {}  {what}", file.path));
+    }
+    lines.join("\n")
+}
+
+/// What gc kept for its age, and when it goes.
+fn describe_kept(result: &tilo_vm_protocol::GcResult) -> Option<String> {
+    if result.kept_young.is_empty() {
+        return None;
+    }
+    let age = |seconds: u64| {
+        if seconds >= 3600 {
+            format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60)
+        } else {
+            format!("{}m", seconds.div_ceil(60))
+        }
+    };
+    let mut lines = vec![format!(
+        "kept {} unreferenced layers younger than {} (an import may still be waiting for its swap):",
+        result.kept_young.len(),
+        age(result.min_age_seconds)
+    )];
+    for kept in &result.kept_young {
+        lines.push(format!(
+            "  {} {} (age {}, eligible in {})",
+            kept.component,
+            short(&kept.hash),
+            age(kept.age_seconds),
+            age(kept.eligible_in_seconds)
+        ));
+    }
+    lines.push(
+        "  your own orphans can go now: tilo-vm gc --min-age 0 (not while another agent's swap may be in flight)".into(),
+    );
+    Some(lines.join("\n"))
 }
 
 fn doctor_outcome(checks: &[Check]) -> Outcome {
@@ -3099,6 +3468,127 @@ fn doctor_outcome(checks: &[Check]) -> Outcome {
     let mut outcome = Outcome::new(text, json!({ "ok": !failed, "checks": checks }));
     outcome.failed = failed;
     outcome
+}
+
+/// Put an error's `error`, `hint` and `see` at the top level of a report,
+/// the one shape every `--json` error has.
+fn merge_error(data: &mut Value, error: &CliError) {
+    if let (Value::Object(map), Value::Object(fields)) = (data, error.to_json()) {
+        map.extend(fields);
+    }
+}
+
+/// Why a VM's daemon could not be reached, for `status` and `vm status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectFailure {
+    /// `off`, `no-ssh`, `key-refused`, `no-daemon`, `incompatible` or `error`.
+    pub state: &'static str,
+    /// What the VM is doing, in one line.
+    pub summary: String,
+    /// Whether SSH answered.
+    pub ssh: bool,
+    pub next: Vec<String>,
+}
+
+impl ConnectFailure {
+    fn text(&self, error: &CliError) -> String {
+        format!(
+            "  {}\n  error: {error}\n  hint: {}",
+            self.summary,
+            error.hint()
+        )
+    }
+}
+
+/// Tell apart a VM that is off, one whose SSH does not answer, one without
+/// tilo-vmd and one whose tilo-vmd is incompatible; each has its own fix.
+pub fn connect_failure(
+    vm: &str,
+    running: Option<bool>,
+    debug: &[String],
+    error: &CliError,
+) -> ConnectFailure {
+    let fail = |state, summary: String, ssh, next: Vec<String>| ConnectFailure {
+        state,
+        summary,
+        ssh,
+        next,
+    };
+    let start = format!("tilo-vm vm start {vm}");
+    let ssh = format!("tilo-vm vm ssh {vm}");
+    let no_ssh = || {
+        let mut next = debug.to_vec();
+        next.push("tilo-vm doctor".into());
+        next
+    };
+    match error {
+        CliError::RootKeyRefused { .. } => fail(
+            "key-refused",
+            "running; SSH answers but refuses the root key".into(),
+            true,
+            vec!["tilo-vm guide platforms".into(), "tilo-vm doctor".into()],
+        ),
+        CliError::DaemonMissing { bootc, .. } => fail(
+            "no-daemon",
+            "running and reachable over SSH, but no tilo-vmd: it is not running a Tilo dev image"
+                .into(),
+            true,
+            match bootc {
+                Some(true) => vec![
+                    format!("tilo-vm vm upgrade {vm} --image code.podesta.ai/qos/tilo-vm:<tag>"),
+                    ssh,
+                ],
+                Some(false) => vec!["tilo-vm vm create <name>".into(), ssh],
+                None => vec![format!("tilo-vm vm status {vm}"), ssh],
+            },
+        ),
+        CliError::ProtocolMismatch {
+            client,
+            daemon,
+            bootc,
+            ..
+        } => fail(
+            "incompatible",
+            format!(
+                "running and reachable over SSH, but its tilo-vmd speaks protocol {daemon} and this tilo-vm speaks {client}"
+            ),
+            true,
+            match (client > daemon, bootc) {
+                (false, _) => vec!["cargo build -p tilo-vm".into()],
+                (true, Some(true)) => vec![format!("tilo-vm vm upgrade {vm}")],
+                (true, Some(false)) => vec!["tilo-vm vm create <name>".into(), ssh],
+                (true, None) => vec![format!("tilo-vm vm status {vm}")],
+            },
+        ),
+        _ if running == Some(false) => fail(
+            "off",
+            "shut off (the hypervisor reports it is not running)".into(),
+            false,
+            vec![start],
+        ),
+        CliError::Unreachable { .. } if running == Some(true) => fail(
+            "no-ssh",
+            "running, but SSH does not answer (still booting, or stuck)".into(),
+            false,
+            no_ssh(),
+        ),
+        CliError::Unreachable { .. } => {
+            let mut next = vec![format!("{start}   (if it is off)")];
+            next.extend(no_ssh());
+            fail(
+                "no-ssh",
+                "SSH does not answer (the hypervisor cannot say whether it is running)".into(),
+                false,
+                next,
+            )
+        }
+        _ => fail(
+            "error",
+            "could not be checked".into(),
+            false,
+            vec!["tilo-vm doctor".into()],
+        ),
+    }
 }
 
 fn unsupported(adapter: &dyn Hypervisor, what: &str) -> CliError {
@@ -3233,14 +3723,166 @@ mod tests {
     }
 
     #[test]
-    fn deploy_attempts_over_raw_ssh_are_caught() {
-        let cmd = |s: &str| s.split(' ').map(str::to_owned).collect::<Vec<_>>();
-        assert!(looks_like_deploy(&cmd("sudo cp shell /usr/bin/shell")));
-        assert!(looks_like_deploy(&cmd("systemd-sysext refresh")));
-        assert!(looks_like_deploy(&cmd("rm -rf /var/lib/tilo-vm/layers/x")));
-        assert!(!looks_like_deploy(&cmd("ls /usr/bin")));
-        assert!(!looks_like_deploy(&cmd("journalctl -b -p warning")));
-        assert!(!looks_like_deploy(&[]));
+    fn vm_ssh_refuses_writes_before_it_looks_for_a_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let ssh = |raw: bool, line: &str| {
+            Command::Vm(VmCommand::Ssh {
+                raw,
+                name: None,
+                vm: None,
+                command: line.split(' ').map(str::to_owned).collect(),
+            })
+        };
+        let error = app
+            .run(Some(ssh(false, "cp shell /usr/bin/shell")))
+            .err()
+            .unwrap();
+        assert!(matches!(error, CliError::RawWrite { .. }), "{error}");
+        assert!(!error.to_string().contains("deploy"), "{error}");
+        assert!(
+            error.to_string().contains("writes /usr/bin/shell"),
+            "{error}"
+        );
+        assert!(error.hint().contains("--raw"), "{}", error.hint());
+        // Reads and --raw get past the guard, to the missing VM.
+        for command in [
+            ssh(false, "systemctl status tilo-vmd --no-pager"),
+            ssh(false, "tilo-vmd --version"),
+            ssh(true, "cp shell /usr/bin/shell"),
+        ] {
+            let error = app.run(Some(command)).err().unwrap();
+            assert!(
+                matches!(error, CliError::NoVm { .. } | CliError::UnknownVm { .. }),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_tells_off_from_silent_from_missing_from_incompatible() {
+        let debug = [
+            "tilo-vm vm shot dev".to_owned(),
+            "tilo-vm vm serial dev".to_owned(),
+        ];
+        let unreachable = CliError::Unreachable {
+            vm: "dev".into(),
+            detail: "Connection refused".into(),
+            debug: debug.to_vec(),
+        };
+        let off = connect_failure("dev", Some(false), &debug, &unreachable);
+        assert_eq!(off.state, "off");
+        assert!(off.summary.contains("shut off"), "{}", off.summary);
+        assert_eq!(off.next, ["tilo-vm vm start dev"]);
+
+        let silent = connect_failure("dev", Some(true), &debug, &unreachable);
+        assert_eq!(silent.state, "no-ssh");
+        assert!(
+            !silent.next.iter().any(|n| n.contains("vm start")),
+            "{:?}",
+            silent.next
+        );
+        assert!(silent.next.contains(&"tilo-vm vm serial dev".to_owned()));
+        assert!(silent.next.contains(&"tilo-vm doctor".to_owned()));
+        let unknown = connect_failure("dev", None, &debug, &unreachable);
+        assert!(unknown.next[0].starts_with("tilo-vm vm start dev"));
+
+        let missing = CliError::DaemonMissing {
+            vm: "dev".into(),
+            bootc: Some(false),
+        };
+        let no_daemon = connect_failure("dev", Some(true), &debug, &missing);
+        assert_eq!(no_daemon.state, "no-daemon");
+        assert!(no_daemon.ssh);
+        assert!(!no_daemon.next.iter().any(|n| n.contains("vm upgrade")));
+
+        let older_vm = |bootc| CliError::ProtocolMismatch {
+            vm: "dev".into(),
+            client: 3,
+            daemon: 2,
+            bootc,
+        };
+        let incompatible = connect_failure("dev", Some(true), &debug, &older_vm(Some(true)));
+        assert_eq!(incompatible.state, "incompatible");
+        assert!(incompatible.ssh);
+        assert!(
+            incompatible.summary.contains("protocol 2"),
+            "{}",
+            incompatible.summary
+        );
+        assert!(
+            incompatible.summary.contains("speaks 3"),
+            "{}",
+            incompatible.summary
+        );
+        assert_eq!(incompatible.next, ["tilo-vm vm upgrade dev"]);
+        assert!(!incompatible.next.iter().any(|n| n.contains("vm start")));
+        let no_bootc = connect_failure("dev", None, &debug, &older_vm(Some(false)));
+        assert!(
+            !no_bootc.next.iter().any(|n| n.contains("vm upgrade")),
+            "{:?}",
+            no_bootc.next
+        );
+        let older_tool = CliError::ProtocolMismatch {
+            vm: "dev".into(),
+            client: 2,
+            daemon: 3,
+            bootc: Some(true),
+        };
+        assert_eq!(
+            connect_failure("dev", Some(true), &debug, &older_tool).next,
+            ["cargo build -p tilo-vm"]
+        );
+    }
+
+    #[test]
+    fn json_errors_have_one_top_level_shape_everywhere() {
+        if std::env::var_os("TILO_VM").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("vms.toml"),
+            "default = \"probe\"\n[vms.probe]\nhypervisor = \"qemu\"\nssh = \"root@127.0.0.1:1\"\n",
+        )
+        .unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let reports = [
+            app.run(Some(Command::Status { slot: None })).unwrap(),
+            app.run(Some(Command::Vm(VmCommand::Status { name: None })))
+                .unwrap(),
+        ];
+        for report in reports {
+            assert!(report.failed, "{}", report.text);
+            for key in ["error", "hint", "see"] {
+                assert!(
+                    report.data[key].as_str().is_some_and(|v| !v.is_empty()),
+                    "{key} is not a top-level string: {:#}",
+                    report.data
+                );
+            }
+            assert!(report.text.contains("hint: "), "{}", report.text);
+            assert!(
+                report.next.iter().all(|n| !n.ends_with("vm start")),
+                "{:?}",
+                report.next
+            );
+        }
+        // The same keys as a failed command's own error.
+        let failed = CliError::NoVm {
+            registry: "r".into(),
+        }
+        .to_json();
+        let mut merged = json!({ "vm": {} });
+        merge_error(
+            &mut merged,
+            &CliError::NoVm {
+                registry: "r".into(),
+            },
+        );
+        for key in ["error", "hint", "see"] {
+            assert_eq!(merged[key], failed[key]);
+        }
     }
 
     #[test]
@@ -3561,6 +4203,204 @@ mod tests {
             ),
             CliError::Unreachable { .. }
         ));
+    }
+
+    fn slot_info(name: &str, kind: SlotKind, generation: u64, generations: &[u64]) -> SlotInfo {
+        SlotInfo {
+            name: name.into(),
+            kind,
+            owner: Owner {
+                host: Some("laptop".into()),
+                worktree: Some("/w/tilo".into()),
+                branch: Some("ux-pass".into()),
+            },
+            user: None,
+            generation,
+            generations: generations.to_vec(),
+            components: std::collections::BTreeMap::new(),
+            session: "active".into(),
+            seat: None,
+            parity: None,
+        }
+    }
+
+    #[test]
+    fn hints_follow_a_named_slot() {
+        assert_eq!(with_slot("tilo-vm shot", "ux1"), "tilo-vm shot --slot ux1");
+        assert_eq!(
+            with_slot("tilo-vm control state-dump --pretty", "ux1"),
+            "tilo-vm control --slot ux1 state-dump --pretty"
+        );
+        assert_eq!(
+            with_slot("tilo-vm swap <component>", "ux1"),
+            "tilo-vm swap --slot ux1 <component>"
+        );
+        assert_eq!(
+            with_slot("tilo-vm seat release", "ux1"),
+            "tilo-vm seat release --slot ux1"
+        );
+        assert_eq!(
+            with_slot("tilo-vm slot exec -- sha256sum <path>", "ux1"),
+            "tilo-vm slot exec --slot ux1 -- sha256sum <path>"
+        );
+        for untouched in [
+            "tilo-vm vm shot",
+            "tilo-vm gc",
+            "tilo-vm status --slot other",
+            "tilo-vm slot list",
+        ] {
+            assert_eq!(with_slot(untouched, "ux1"), untouched);
+        }
+        let swap = Command::Swap {
+            component: "shell".into(),
+            slot: Some("ux1".into()),
+            from: "worktree".into(),
+            builder: None,
+            profile: None,
+            direct: false,
+            jobs: None,
+            cmdline: None,
+        };
+        assert_eq!(named_slot(&swap).as_deref(), Some("ux1"));
+        assert_eq!(named_slot(&Command::Doctor), None);
+    }
+
+    #[test]
+    fn the_worktree_file_can_name_the_default_slot() {
+        if std::env::var_os("TILO_VM_SLOT").is_some() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        app.worktree = Some(Worktree {
+            root: dir.path().to_owned(),
+            branch: Some("feature/x".into()),
+        });
+        assert_eq!(app.slot_name(None).unwrap(), app.default_slot().unwrap());
+        let branch_slot = app.default_slot().unwrap();
+        std::fs::write(
+            dir.path().join(WORKTREE_FILE),
+            "vm = \"dev\"\nslot = \"ux1\"\n",
+        )
+        .unwrap();
+        assert_eq!(app.slot_name(None).unwrap(), "ux1");
+        assert_ne!(branch_slot, "ux1");
+        assert_eq!(app.slot_name(Some("other".into())).unwrap(), "other");
+    }
+
+    #[test]
+    fn a_missing_slot_shows_the_existing_ones_instead_of_create() {
+        let (lines, next) = missing_slot("mine", &[slot_info("vm", SlotKind::Vm, 0, &[0])]);
+        assert!(lines[0].contains("not created yet"));
+        assert_eq!(next[0], "tilo-vm slot create --headless");
+        let (lines, next) = missing_slot(
+            "mine",
+            &[
+                slot_info("vm", SlotKind::Vm, 0, &[0]),
+                slot_info("ux1", SlotKind::Headless, 2, &[0, 1, 2]),
+            ],
+        );
+        assert!(lines[0].contains("does not exist"), "{lines:?}");
+        assert!(lines[1].contains("ux1") && lines[1].contains("owner laptop:ux-pass"));
+        assert!(!next.iter().any(|n| n.contains("slot create")), "{next:?}");
+        assert_eq!(next[0], "tilo-vm status --slot ux1");
+    }
+
+    #[test]
+    fn slot_lines_name_the_owner() {
+        let line = slot_line(&slot_info("ux1", SlotKind::Headful, 1, &[0, 1]));
+        assert!(line.ends_with("owner laptop:ux-pass"), "{line}");
+        assert_eq!(describe_owner(&Owner::default()), None);
+    }
+
+    #[test]
+    fn rolling_forward_goes_to_the_next_newer_generation() {
+        let info = slot_info("a", SlotKind::Headless, 1, &[0, 1, 2, 4]);
+        assert_eq!(forward_target("a", Some(&info)).unwrap(), 2);
+        let newest = slot_info("a", SlotKind::Headless, 4, &[0, 1, 2, 4]);
+        let error = forward_target("a", Some(&newest)).unwrap_err();
+        assert!(error.to_string().contains("newest"), "{error}");
+        assert!(error.hint().contains("--to <n>"), "{}", error.hint());
+        assert!(forward_target("a", None).is_err());
+    }
+
+    #[test]
+    fn slot_exec_quotes_the_command_for_the_remote_shell() {
+        let words = exec_words(
+            None,
+            "a",
+            60,
+            &["sh".into(), "-c".into(), "ls /usr | head".into()],
+        );
+        assert_eq!(
+            words.join(" "),
+            "tilo-vmd exec --slot a --timeout 60 -- sh -c 'ls /usr | head'"
+        );
+        let sudo = exec_words(Some("sudo -n tilo-vmd rpc"), "a", 5, &["true".into()]);
+        assert_eq!(sudo[..3], ["sudo", "-n", "tilo-vmd"]);
+        assert_eq!(sudo[3], "exec");
+    }
+
+    #[test]
+    fn slot_show_lists_files_by_component_with_digests() {
+        let shown = SlotShowResult {
+            slot: slot_info("a", SlotKind::Headless, 2, &[0, 1, 2]),
+            files: vec![
+                tilo_vm_protocol::SlotFile {
+                    component: "shell".into(),
+                    layer: "ab".repeat(32),
+                    path: "/usr/bin/shell".into(),
+                    sha256: Some("cd".repeat(32)),
+                    link: None,
+                    executable: true,
+                },
+                tilo_vm_protocol::SlotFile {
+                    component: "shell".into(),
+                    layer: "ab".repeat(32),
+                    path: "/usr/bin/sh-alias".into(),
+                    sha256: None,
+                    link: Some("shell".into()),
+                    executable: false,
+                },
+            ],
+        };
+        let text = describe_show(&shown);
+        assert!(text.contains("generations: 0, 1, 2 (current 2"), "{text}");
+        assert!(text.contains("  shell (layer abababababab)"), "{text}");
+        assert!(
+            text.contains("/usr/bin/shell  sha256:cdcdcdcdcdcd"),
+            "{text}"
+        );
+        assert!(text.contains("/usr/bin/sh-alias  -> shell"), "{text}");
+    }
+
+    #[test]
+    fn gc_names_what_it_kept_and_when_it_goes() {
+        let mut result = tilo_vm_protocol::GcResult {
+            dry_run: true,
+            removed_layers: vec![],
+            removed_generations: vec![],
+            freed_bytes: 0,
+            removed_targets: vec![],
+            freed_target_bytes: 0,
+            storage: tilo_vm_protocol::Storage::default(),
+            kept_young: vec![],
+            min_age_seconds: 3600,
+        };
+        assert_eq!(describe_kept(&result), None);
+        result.kept_young.push(tilo_vm_protocol::KeptLayer {
+            hash: "ef".repeat(32),
+            component: "shell".into(),
+            age_seconds: 600,
+            eligible_in_seconds: 3000,
+        });
+        let text = describe_kept(&result).unwrap();
+        assert!(text.contains("younger than 1h00m"), "{text}");
+        assert!(
+            text.contains("shell efefefefefef (age 10m, eligible in 50m)"),
+            "{text}"
+        );
+        assert!(text.contains("--min-age 0"), "{text}");
     }
 
     #[test]

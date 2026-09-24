@@ -45,6 +45,30 @@ impl Cli {
                     slot, slot_flag, ..
                 }
                 | SeatCommand::Release { slot, slot_flag },
+            )
+            | Command::Slot(
+                SlotCommand::Create {
+                    name: slot,
+                    slot_flag,
+                    ..
+                }
+                | SlotCommand::Restart {
+                    name: slot,
+                    slot_flag,
+                }
+                | SlotCommand::Rm {
+                    name: slot,
+                    slot_flag,
+                }
+                | SlotCommand::Show {
+                    name: slot,
+                    slot_flag,
+                }
+                | SlotCommand::Exec {
+                    name: slot,
+                    slot_flag,
+                    ..
+                },
             ),
         ) = &mut self.command
         {
@@ -57,8 +81,14 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Show the current VM (and why), your slot, its generation and session, and what to do next.
-    #[command(after_help = "Examples:\n  tilo-vm status\n  tilo-vm status --json | jq .slot")]
-    Status,
+    #[command(
+        after_help = "Examples:\n  tilo-vm status\n  tilo-vm status --slot review-a\n  tilo-vm status --json | jq .slot\n\nYour slot is named after your branch, unless TILO_VM_SLOT or `slot = \"<name>\"`\nin the worktree's .tilo-vm names another."
+    )]
+    Status {
+        /// The slot to report on (default: your slot).
+        #[arg(long)]
+        slot: Option<String>,
+    },
     /// Check host prerequisites, the VM and its daemon; print a fix for each failure.
     #[command(after_help = "Examples:\n  tilo-vm doctor\n  tilo-vm doctor --json")]
     Doctor,
@@ -117,31 +147,38 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm input key ctrl+alt+t\n  tilo-vm input key super Return\n  tilo-vm input type 'hello world'\n  tilo-vm input move 400 300\n  tilo-vm input click left --at 400 300\n  tilo-vm input --slot review-b click right\n\nHeadless slots have no seat: drive them with tilo-vm control."
     )]
     Input {
+        /// The slot whose seat gets the input (default: your slot).
         #[arg(long)]
         slot: Option<String>,
         #[command(subcommand)]
         action: InputCommand,
     },
-    /// Switch a slot back to an earlier generation.
+    /// Switch a slot to another of its generations: back (the default), forward, or any by number.
     #[command(
-        after_help = "Examples:\n  tilo-vm rollback\n  tilo-vm rollback --to 0      # the bare VM image\n  tilo-vm rollback vm"
+        after_help = "Examples:\n  tilo-vm rollback              # the generation before the current one\n  tilo-vm rollback --forward    # the next newer one again, after a rollback\n  tilo-vm rollback --to 3       # any generation, older or newer\n  tilo-vm rollback --to 0       # the bare VM image\n  tilo-vm rollback --slot vm\n\nGenerations are kept until gc; tilo-vm slot show lists them."
     )]
     Rollback {
+        /// The slot (default: your slot).
         slot: Option<String>,
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
         slot_flag: Option<String>,
-        /// Generation to switch to; default is the one before the current.
+        /// Generation to switch to, older or newer; default is the one before the current.
         #[arg(long)]
         to: Option<u64>,
+        /// Switch to the next newer generation (undo a rollback).
+        #[arg(long, conflicts_with = "to")]
+        forward: bool,
     },
     /// Show a slot's session journal.
     #[command(after_help = "Examples:\n  tilo-vm logs\n  tilo-vm logs -n 500 review-a")]
     Logs {
+        /// The slot (default: your slot).
         slot: Option<String>,
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
         slot_flag: Option<String>,
+        /// Journal lines to show.
         #[arg(short = 'n', long, default_value_t = 100)]
         lines: u32,
     },
@@ -153,10 +190,12 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm shot\n  tilo-vm shot -o target/after-swap.png review-a\n\nThe slot's compositor renders its current scene into a PNG (tilo-control\nsnapshot): the same picture for a headless slot, a headful slot on its vkms\nseat, and a slot that holds seat0. It does not read any display. For the\nVM's real display (seat0) as the hypervisor shows it: tilo-vm vm shot."
     )]
     Shot {
+        /// The slot (default: your slot).
         slot: Option<String>,
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
         slot_flag: Option<String>,
+        /// Where to write the PNG.
         #[arg(short, long, default_value = "target/tilo-vm-shot.png")]
         output: PathBuf,
     },
@@ -165,6 +204,7 @@ pub enum Command {
         after_help = "Examples:\n  tilo-vm control actions list\n  tilo-vm control actions invoke notes new-note\n  tilo-vm control --slot review-a state-dump --pretty"
     )]
     Control {
+        /// The slot whose session tilo-control drives (default: your slot).
         #[arg(long)]
         slot: Option<String>,
         /// Arguments for tilo-control.
@@ -173,11 +213,15 @@ pub enum Command {
     },
     /// Delete generations and layers nothing needs any more, and evict old in-VM build dirs.
     #[command(
-        after_help = "Examples:\n  tilo-vm gc --dry-run\n  tilo-vm gc --keep 2\n  tilo-vm gc --keep-targets 0   # evict every in-VM build dir not in use"
+        after_help = "Examples:\n  tilo-vm gc --dry-run\n  tilo-vm gc --keep 2\n  tilo-vm gc --keep-targets 0   # evict every in-VM build dir not in use\n  tilo-vm gc --min-age 0        # also your own orphaned layers from the last hour\n\nUnreferenced layers younger than an hour stay by default: another agent's\nimport may still be waiting for its swap. gc names them and when they go."
     )]
     Gc {
+        /// Say what would be removed (and what stays, and why) without removing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Keep unreferenced layers younger than this (e.g. 0, 30m, 1h, 2d; default 1h).
+        #[arg(long, value_parser = parse_age)]
+        min_age: Option<u64>,
         /// Generations to keep per slot besides the current one (default from vms.toml, else 5).
         #[arg(long)]
         keep: Option<u32>,
@@ -188,19 +232,47 @@ pub enum Command {
 }
 
 /// Does this command leave a receipt? Only commands that change state or
-/// run long do; looking around (status, doctor, guide, lists, logs) does not.
+/// run long do; looking around (status, doctor, guide, lists, logs, slot
+/// show and exec, vm ssh without `--raw`) does not.
 pub fn writes_receipt(command: Option<&Command>) -> bool {
     !matches!(
         command,
         None | Some(
-            Command::Status
+            Command::Status { .. }
                 | Command::Doctor
                 | Command::Guide { .. }
                 | Command::Logs { .. }
-                | Command::Vm(VmCommand::List | VmCommand::Status { .. })
-                | Command::Slot(SlotCommand::List)
+                | Command::Vm(
+                    VmCommand::List | VmCommand::Status { .. } | VmCommand::Ssh { raw: false, .. }
+                )
+                | Command::Slot(
+                    SlotCommand::List | SlotCommand::Show { .. } | SlotCommand::Exec { .. }
+                )
         )
     )
+}
+
+/// `--min-age`: seconds, from `0`, `90s`, `30m`, `1h` or `2d`.
+///
+/// # Errors
+/// Anything else.
+pub fn parse_age(text: &str) -> Result<u64, String> {
+    let text = text.trim();
+    let (number, unit) = text.split_at(
+        text.find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(text.len()),
+    );
+    let value: u64 = number
+        .parse()
+        .map_err(|_| format!("'{text}' is not an age like 0, 90s, 30m, 1h or 2d"))?;
+    let scale = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return Err(format!("'{text}': the unit is s, m, h or d")),
+    };
+    Ok(value.saturating_mul(scale))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -224,17 +296,27 @@ pub enum InputCommand {
     },
     /// Type text on a US keyboard layout.
     #[command(after_help = "Examples:\n  tilo-vm input type 'hello world'")]
-    Type { text: String },
+    Type {
+        /// The text to type.
+        text: String,
+    },
     /// Move the pointer to output pixel X, Y.
     #[command(after_help = "Examples:\n  tilo-vm input move 400 300")]
-    Move { x: u32, y: u32 },
+    Move {
+        /// Pixels from the output's left edge.
+        x: u32,
+        /// Pixels from the output's top edge.
+        y: u32,
+    },
     /// Click a button (left, right, middle), optionally at X, Y.
     #[command(
         after_help = "Examples:\n  tilo-vm input click\n  tilo-vm input click right --at 400 300"
     )]
     Click {
+        /// left, right or middle.
         #[arg(default_value = "left")]
         button: String,
+        /// Click at output pixel X, Y (default: where the pointer is).
         #[arg(long, num_args = 2, value_names = ["X", "Y"])]
         at: Option<Vec<u32>>,
     },
@@ -248,7 +330,9 @@ pub enum VmCommand {
     /// Choose the VM for this worktree (writes .tilo-vm), or for everyone with --global.
     #[command(after_help = "Examples:\n  tilo-vm vm use dev\n  tilo-vm vm use shared --global")]
     Use {
+        /// A VM from tilo-vm vm list.
         name: String,
+        /// Make it the default for every worktree (vms.toml), not just this one.
         #[arg(long)]
         global: bool,
     },
@@ -257,7 +341,7 @@ pub enum VmCommand {
         after_help = "Examples:\n  tilo-vm vm ssh\n  tilo-vm vm ssh dev\n  tilo-vm vm ssh -- journalctl -b -p warning\n  tilo-vm vm ssh dev -- systemctl --failed\n  tilo-vm vm ssh --raw -- touch /var/tmp/x"
     )]
     Ssh {
-        /// Run commands that look like deploys anyway.
+        /// Run a command that writes into /usr, /etc, /boot or tilo-vm state anyway (leaves a receipt).
         #[arg(long)]
         raw: bool,
         /// The VM (default: the one this worktree uses).
@@ -270,7 +354,10 @@ pub enum VmCommand {
     },
     /// Is the VM up, reachable, and running a compatible daemon?
     #[command(after_help = "Examples:\n  tilo-vm vm status\n  tilo-vm vm status shared")]
-    Status { name: Option<String> },
+    Status {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+    },
     /// Download the published dev disk (or use a local one), create the VM with the host's hypervisor, and register it.
     #[command(
         after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
@@ -278,12 +365,22 @@ pub enum VmCommand {
     Create(CreateArgs),
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
-    Start { name: Option<String> },
+    Start {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+    },
+    /// Shut the VM down cleanly, wait until it is off, start it, and wait for tilo-vmd.
+    #[command(after_help = "Examples:\n  tilo-vm vm restart\n  tilo-vm vm restart shared")]
+    Restart {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+    },
     /// Shut the VM down cleanly, once no swap, gc or upgrade is running in it.
     #[command(
         after_help = "Examples:\n  tilo-vm vm stop\n  tilo-vm vm stop --force   # even while another command runs"
     )]
     Stop {
+        /// The VM (default: the one this worktree uses).
         name: Option<String>,
         /// Do not wait for the VM lock.
         #[arg(long)]
@@ -299,6 +396,7 @@ pub enum VmCommand {
         after_help = "Examples:\n  tilo-vm vm rollback-image\n  tilo-vm vm rollback-image --no-reboot   # takes effect at the next boot\n\nbootc keeps one previous image: the one the VM ran before its last upgrade.\nRolling back twice returns to the newer one."
     )]
     RollbackImage {
+        /// The VM (default: the one this worktree uses).
         name: Option<String>,
         /// Queue the rollback for the next boot instead of rebooting now.
         #[arg(long)]
@@ -306,26 +404,36 @@ pub enum VmCommand {
     },
     /// Attach to the VM's serial console (works when SSH does not).
     #[command(after_help = "Examples:\n  tilo-vm vm serial")]
-    Serial { name: Option<String> },
+    Serial {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+    },
     /// Screenshot seat0, the VM's real display, through the hypervisor.
     #[command(
         after_help = "Examples:\n  tilo-vm vm shot -o target/vm.png\n\nThis is what the hypervisor window shows: greetd's greeter, or the slot that\nclaimed seat0 (tilo-vm seat claim). Slots on their own seats (headless, or\nheadful on a vkms card) never appear here; use tilo-vm shot for them.\nWorks without SSH."
     )]
     Shot {
+        /// The VM (default: the one this worktree uses).
         name: Option<String>,
+        /// Where to write the PNG.
         #[arg(short, long, default_value = "target/tilo-vm-vm.png")]
         output: PathBuf,
     },
     /// Hard-reset the VM.
     #[command(after_help = "Examples:\n  tilo-vm vm reset")]
-    Reset { name: Option<String> },
+    Reset {
+        /// The VM (default: the one this worktree uses).
+        name: Option<String>,
+    },
     /// Pass arguments to the hypervisor's native control tool (virsh, QEMU monitor, utmctl, PowerShell).
     #[command(
         after_help = "Examples:\n  tilo-vm vm control dominfo dev\n  tilo-vm vm control --vm ci info block"
     )]
     Control {
+        /// The VM (default: the one this worktree uses).
         #[arg(long)]
         vm: Option<String>,
+        /// Arguments for the hypervisor's control tool.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
@@ -333,6 +441,7 @@ pub enum VmCommand {
 
 #[derive(Debug, Args)]
 pub struct CreateArgs {
+    /// The name to register the new VM under.
     pub name: String,
     /// Default: the host's native one, which its UI shows: libvirt's
     /// `qemu:///session` on Linux (virt-manager, Boxes), utm on macOS, hyperv on
@@ -355,8 +464,10 @@ pub struct CreateArgs {
     /// Allow a guest architecture other than the host's, emulated (slow).
     #[arg(long)]
     pub emulated: bool,
+    /// Guest memory in MiB (default: the adapter's).
     #[arg(long)]
     pub memory_mb: Option<u32>,
+    /// Guest CPUs (default: the adapter's).
     #[arg(long)]
     pub cpus: Option<u32>,
     /// `[user@]host[:port]` when the adapter cannot discover it.
@@ -372,6 +483,7 @@ pub struct CreateArgs {
 
 #[derive(Debug, Args)]
 pub struct UpgradeArgs {
+    /// The VM to upgrade (default: the one this worktree uses).
     pub name: Option<String>,
     /// A published dev image to switch to (default: the image the VM follows).
     #[arg(long, conflicts_with = "from")]
@@ -402,7 +514,11 @@ pub enum SlotCommand {
         after_help = "Examples:\n  tilo-vm slot create --headless\n  tilo-vm slot create review-a --headful"
     )]
     Create {
+        /// The slot (default: your slot).
         name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
         /// Offscreen compositor, driven by control and shot (default).
         #[arg(long, conflicts_with = "headful")]
         headless: bool,
@@ -413,12 +529,54 @@ pub enum SlotCommand {
     /// List the VM's slots with owner, generation and session state.
     #[command(after_help = "Examples:\n  tilo-vm slot list\n  tilo-vm slot list --json")]
     List,
+    /// Show a slot's generations and every file its layers add, with SHA-256 and source layer.
+    #[command(
+        after_help = "Examples:\n  tilo-vm slot show\n  tilo-vm slot show --slot review-a\n  tilo-vm slot show --json | jq '.files[] | select(.path == \"/usr/bin/shell\")'"
+    )]
+    Show {
+        /// The slot (default: your slot).
+        name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
+    },
+    /// Run a command as the slot sees the system: its layers over /usr, as its user.
+    #[command(
+        after_help = "Examples:\n  tilo-vm slot exec -- sha256sum /usr/bin/shell\n  tilo-vm slot exec --slot review-a -- shell --version\n  tilo-vm slot exec -- sh -c 'ls -l /usr/lib/tilo | head'\n\nThe command runs in the mount namespace of the slot's running session, as\ntds-<slot>, so it sees exactly what the session sees. Output streams; the\ncommand is stopped after --timeout seconds (exit 124) or 1 MiB of output\n(exit 125). Its exit status is passed on."
+    )]
+    Exec {
+        /// The slot (default: your slot).
+        name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
+        /// Seconds before the command is stopped.
+        #[arg(long, default_value_t = tilo_vm_protocol::EXEC_TIMEOUT_SECONDS)]
+        timeout: u64,
+        /// The command, after `--`.
+        #[arg(last = true, required = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Restart a slot's session on its current generation (also repairs an interrupted swap).
-    #[command(after_help = "Examples:\n  tilo-vm slot restart\n  tilo-vm slot restart vm")]
-    Restart { name: Option<String> },
+    #[command(after_help = "Examples:\n  tilo-vm slot restart\n  tilo-vm slot restart --slot vm")]
+    Restart {
+        /// The slot (default: your slot).
+        name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
+    },
     /// Remove a slot: its session, user and generations (layers stay until gc).
-    #[command(after_help = "Examples:\n  tilo-vm slot rm review-a")]
-    Rm { name: Option<String> },
+    #[command(
+        after_help = "Examples:\n  tilo-vm slot rm review-a\n  tilo-vm slot rm --slot review-a"
+    )]
+    Rm {
+        /// The slot (default: your slot).
+        name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -428,6 +586,7 @@ pub enum SeatCommand {
         after_help = "Examples:\n  tilo-vm seat claim\n  tilo-vm seat claim review-a --steal"
     )]
     Claim {
+        /// The slot (default: your slot).
         slot: Option<String>,
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
@@ -439,6 +598,7 @@ pub enum SeatCommand {
     /// Give seat0 back to greetd; the slot returns to its own seat.
     #[command(after_help = "Examples:\n  tilo-vm seat release")]
     Release {
+        /// The slot (default: your slot).
         slot: Option<String>,
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "slot")]
@@ -460,6 +620,12 @@ mod tests {
             &["tilo-vm", "shot", "--slot", "a"],
             &["tilo-vm", "seat", "claim", "--slot", "a"],
             &["tilo-vm", "seat", "release", "--slot", "a"],
+            &["tilo-vm", "slot", "create", "--slot", "a"],
+            &["tilo-vm", "slot", "restart", "--slot", "a"],
+            &["tilo-vm", "slot", "rm", "--slot", "a"],
+            &["tilo-vm", "slot", "show", "--slot", "a"],
+            &["tilo-vm", "slot", "exec", "--slot", "a", "--", "true"],
+            &["tilo-vm", "slot", "show", "a"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap().normalized();
             let slot = match cli.command {
@@ -469,6 +635,13 @@ mod tests {
                     | Command::Shot { slot, .. }
                     | Command::Seat(
                         SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
+                    )
+                    | Command::Slot(
+                        SlotCommand::Create { name: slot, .. }
+                        | SlotCommand::Restart { name: slot, .. }
+                        | SlotCommand::Rm { name: slot, .. }
+                        | SlotCommand::Show { name: slot, .. }
+                        | SlotCommand::Exec { name: slot, .. },
                     ),
                 ) => slot,
                 other => panic!("{other:?}"),
@@ -476,6 +649,54 @@ mod tests {
             assert_eq!(slot.as_deref(), Some("a"), "{args:?}");
         }
         assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--slot", "b"]).is_err());
+        assert!(Cli::try_parse_from(["tilo-vm", "slot", "rm", "a", "--slot", "b"]).is_err());
+        for args in [
+            &["tilo-vm", "swap", "--slot", "a", "shell"][..],
+            &["tilo-vm", "input", "--slot", "a", "key", "super"],
+            &["tilo-vm", "control", "--slot", "a", "actions", "list"],
+            &["tilo-vm", "status", "--slot", "a"],
+        ] {
+            Cli::try_parse_from(args).unwrap();
+        }
+    }
+
+    #[test]
+    fn every_argument_says_what_it_is() {
+        fn walk(command: &clap::Command, path: &str) {
+            for arg in command.get_arguments() {
+                let id = arg.get_id().as_str();
+                if ["help", "version"].contains(&id) || arg.is_hide_set() {
+                    continue;
+                }
+                assert!(
+                    arg.get_help().is_some() || arg.get_long_help().is_some(),
+                    "{path}: argument {id} has no description"
+                );
+            }
+            for sub in command.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()));
+            }
+        }
+        walk(&Cli::command(), "tilo-vm");
+    }
+
+    #[test]
+    fn ages_read_like_durations() {
+        assert_eq!(parse_age("0"), Ok(0));
+        assert_eq!(parse_age("90s"), Ok(90));
+        assert_eq!(parse_age("30m"), Ok(1800));
+        assert_eq!(parse_age("1h"), Ok(3600));
+        assert_eq!(parse_age("2d"), Ok(172_800));
+        assert!(parse_age("1w").is_err());
+        assert!(parse_age("soon").is_err());
+        let cli = Cli::try_parse_from(["tilo-vm", "gc", "--min-age", "0"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Gc {
+                min_age: Some(0),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -532,10 +753,18 @@ mod tests {
             &["vm", "list"],
             &["vm", "status"],
             &["slot", "list"],
+            &["slot", "show"],
+            &["slot", "exec", "--", "true"],
             &["logs"],
+            &["vm", "ssh"],
+            &["vm", "ssh", "--", "systemctl", "status", "tilo-vmd"],
         ] {
             assert!(!writes_receipt(parse(quiet).as_ref()), "{quiet:?}");
         }
+        // --raw is the one vm ssh that changes the VM behind tilo-vm.
+        assert!(writes_receipt(
+            parse(&["vm", "ssh", "--raw", "--", "podman", "login"]).as_ref()
+        ));
         for loud in [
             &["swap", "shell"][..],
             &["vm", "create", "dev"],
@@ -545,6 +774,7 @@ mod tests {
             &["gc"],
             &["seat", "claim"],
             &["shot"],
+            &["vm", "restart"],
         ] {
             assert!(writes_receipt(parse(loud).as_ref()), "{loud:?}");
         }

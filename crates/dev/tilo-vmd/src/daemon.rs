@@ -11,10 +11,11 @@ use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
 use tilo_vm_protocol::{
     Action, AppInstallResult, ApplyResult, BaseInfo, BootConfirmResult, ComponentInfo, GcResult,
-    HelloResult, InputAction, InputResult, Issue, LayerImportResult, LayerSource,
+    HelloResult, InputAction, InputResult, Issue, KeptLayer, LayerImportResult, LayerSource,
     LayerUploadBeginResult, LayerUploadChunkResult, Lease, LogsResult, Manifest, Owner,
     PROTOCOL_VERSION, Policy, Provenance, Request, Scope, SeatResult, ShotResult, SlotCreateResult,
-    SlotInfo, SlotKind, SlotRmResult, StatusResult, Storage, UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
+    SlotFile, SlotInfo, SlotKind, SlotRmResult, SlotShowResult, StatusResult, Storage,
+    UPLOAD_CHUNK_BYTES, VM_SLOT, VmTools,
 };
 
 use crate::apply::{self, Apply, GREETER_UNIT, SessionChange, session_unit};
@@ -384,6 +385,7 @@ impl Daemon {
                 let _locks = self.slot_locks(&p.name)?;
                 to_value(&self.remove(&p.name)?)
             }
+            Request::SlotShow(p) => to_value(&self.show(&p.name)?),
             Request::LayerUploadBegin(_) => to_value(&self.upload_begin()?),
             Request::LayerUploadChunk(p) => to_value(&self.upload_chunk(&p.upload, &p.data)?),
             Request::LayerImport(p) => {
@@ -680,7 +682,11 @@ impl Daemon {
             owner: record.owner.clone(),
             user: record.user(),
             generation: record.current,
-            generations: self.slots.generations(&record.name),
+            generations: std::iter::once(0)
+                .chain(self.slots.generations(&record.name))
+                .collect::<BTreeSet<u64>>()
+                .into_iter()
+                .collect(),
             components: generation
                 .components
                 .into_iter()
@@ -693,6 +699,57 @@ impl Daemon {
                 record.seat.clone()
             },
             parity,
+        })
+    }
+
+    /// Run `args` as slot `name` sees the system (see [`crate::exec`]),
+    /// streaming to this process's stdout and stderr.
+    ///
+    /// # Errors
+    /// Unknown slots, the `vm` slot, a stopped session, or a command that
+    /// cannot start.
+    pub fn exec(
+        &mut self,
+        name: &str,
+        args: &[String],
+        timeout: Duration,
+        max_bytes: u64,
+    ) -> Result<crate::exec::Ended, DaemonError> {
+        let (record, user) = self.user_slot(name)?;
+        let pid = self
+            .apply
+            .session_pid(&record.name)
+            .ok_or_else(|| DaemonError::SessionStopped(record.name.clone()))?;
+        crate::exec::run_bounded(
+            crate::exec::in_session(pid, &user, args),
+            timeout,
+            max_bytes,
+            std::io::stdout(),
+            std::io::stderr(),
+        )
+        .map_err(DaemonError::io(format!("run {}", args.join(" "))))
+    }
+
+    /// The slot and every file its current generation's layers add.
+    fn show(&mut self, name: &str) -> Result<SlotShowResult, DaemonError> {
+        let record = self.slots.load(name)?;
+        let generation = self.slots.generation(name, record.current)?;
+        let mut files = Vec::new();
+        for (component, entry) in &generation.components {
+            for file in self.layers.files(&entry.layer)? {
+                files.push(SlotFile {
+                    component: component.clone(),
+                    layer: entry.layer.clone(),
+                    path: file.path,
+                    sha256: file.sha256,
+                    link: file.link,
+                    executable: file.executable,
+                });
+            }
+        }
+        Ok(SlotShowResult {
+            slot: self.info(&record)?,
+            files,
         })
     }
 
@@ -1085,8 +1142,24 @@ impl Daemon {
             referenced.extend(layers);
             removed_generations.extend(removed.into_iter().map(|n| format!("{}/{n}", record.name)));
         }
-        let (removed_layers, freed_bytes) =
-            self.layers.collect(&referenced, GC_MIN_AGE, dry_run)?;
+        let min_age = request
+            .min_age_seconds
+            .map_or(GC_MIN_AGE, Duration::from_secs);
+        let collected = self.layers.collect(&referenced, min_age, dry_run)?;
+        let (removed_layers, freed_bytes) = (collected.removed, collected.freed);
+        let kept_young = collected
+            .young
+            .into_iter()
+            .map(|(hash, age)| KeptLayer {
+                component: self
+                    .layers
+                    .provenance(&hash)
+                    .map_or_else(|| "?".into(), |p| p.component),
+                hash,
+                age_seconds: age.as_secs(),
+                eligible_in_seconds: min_age.saturating_sub(age).as_secs(),
+            })
+            .collect();
         if !dry_run {
             // Uploads and staging dirs left by dropped connections.
             for dir in [&self.uploads_dir, &self.root.join("staging")] {
@@ -1139,6 +1212,8 @@ impl Daemon {
             removed_targets,
             freed_target_bytes,
             storage: self.storage(),
+            kept_young,
+            min_age_seconds: min_age.as_secs(),
         })
     }
 }
@@ -1147,6 +1222,38 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::RecordingApply;
+
+    #[test]
+    fn exec_needs_a_user_slot_with_a_running_session() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        );
+        SlotStore::new(root.path())
+            .create("a", SlotKind::Headless, Owner::default())
+            .unwrap();
+        let run = |daemon: &mut Daemon, slot: &str| {
+            daemon
+                .exec(slot, &["true".into()], Duration::from_secs(5), 1024)
+                .unwrap_err()
+        };
+        // The recording backend has no session process.
+        let stopped = run(&mut daemon, "a");
+        assert!(
+            matches!(stopped, DaemonError::SessionStopped(_)),
+            "{stopped}"
+        );
+        assert!(stopped.hint().contains("tilo-vm slot restart --slot a"));
+        let vm = run(&mut daemon, VM_SLOT);
+        assert!(vm.hint().contains("tilo-vm vm ssh"), "{}", vm.hint());
+        assert!(matches!(
+            run(&mut daemon, "nope"),
+            DaemonError::SlotNotFound(_)
+        ));
+    }
 
     #[test]
     fn headful_seats_are_recreated_at_start() {
