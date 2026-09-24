@@ -162,7 +162,7 @@ apps/word-processor/src/history_panel.rs pixel_const 2
 apps/word-processor/src/recovery_banner.rs pixel_const 1
 apps/word-processor/src/review_overlay.rs pixel_const 4
 apps/word-processor/src/ruler.rs pixel_const 1
-apps/word-processor/src/style_color_picker.rs pixel_const 2
+apps/word-processor/src/style_color_picker.rs pixel_const 1
 apps/word-processor/src/widget.rs pixel_const 41
 apps/word-processor/src/widget/block_layout.rs pixel_const 2
 apps/word-processor/src/widget/toolbar.rs pixel_const 1
