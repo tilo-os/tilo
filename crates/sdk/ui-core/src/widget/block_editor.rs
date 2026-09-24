@@ -30,9 +30,7 @@ use crate::widget::Widget;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
-use crate::widget::rich_text_line::{
-    LineSignal, RichTextLine, TransientColorRole, TransientColorSpan,
-};
+use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::widget::slash_menu::SlashMenu;
 use crate::widget::{Button, SearchField};
 
@@ -94,20 +92,13 @@ fn case_folded_match_ranges(haystack: &str, needle: &str) -> Vec<(usize, usize)>
     ranges
 }
 
-/// The block editor's colour role for a grammar token; body text stays in the
-/// block's own colour.
-fn syntax_role(kind: TokenKind) -> Option<TransientColorRole> {
-    Some(match kind {
-        TokenKind::Comment => TransientColorRole::Comment,
-        TokenKind::StringLit | TokenKind::CharLit => TransientColorRole::String,
-        TokenKind::Number | TokenKind::Constant => TransientColorRole::Number,
-        TokenKind::Function => TransientColorRole::Function,
-        TokenKind::Type => TransientColorRole::Type,
-        TokenKind::Keyword => TransientColorRole::Keyword,
-        TokenKind::Attribute | TokenKind::Preprocessor => TransientColorRole::Macro,
-        TokenKind::Operator => TransientColorRole::Operator,
-        _ => return None,
-    })
+/// Whether a grammar token gets its own syntax colour in a code block; body
+/// text, identifiers and prose emphasis stay in the block's own colour.
+fn colours_code(kind: TokenKind) -> bool {
+    !matches!(
+        kind,
+        TokenKind::Text | TokenKind::Variable | TokenKind::Emphasis | TokenKind::Strong
+    )
 }
 
 #[expect(
@@ -137,11 +128,10 @@ fn apply_syntax_colors(blocks: &mut [Block], languages: &[Option<String>]) {
             let colors = state
                 .highlight_line(block.text())
                 .into_iter()
-                .filter_map(|span| {
-                    syntax_role(span.kind).map(|role| TransientColorSpan {
-                        range: span.range,
-                        role,
-                    })
+                .filter(|span| colours_code(span.kind))
+                .map(|span| TransientColorSpan {
+                    range: span.range,
+                    kind: span.kind,
                 })
                 .collect();
             block.line.set_transient_colors(colors);
@@ -11352,21 +11342,15 @@ mod tests {
         apply_syntax_colors(&mut blocks, &[Some("rust".into())]);
         let colors = blocks[0].line.transient_colors();
         assert!(
-            colors
-                .iter()
-                .any(|span| span.role == TransientColorRole::Keyword),
+            colors.iter().any(|span| span.kind == TokenKind::Keyword),
             "the Rust grammar should classify `let`"
         );
         assert!(
-            colors
-                .iter()
-                .any(|span| span.role == TransientColorRole::Number),
+            colors.iter().any(|span| span.kind == TokenKind::Number),
             "numeric literals should receive the theme's semantic number role"
         );
         assert!(
-            colors
-                .iter()
-                .any(|span| span.role == TransientColorRole::Comment),
+            colors.iter().any(|span| span.kind == TokenKind::Comment),
             "comments should remain distinct from executable code"
         );
     }
