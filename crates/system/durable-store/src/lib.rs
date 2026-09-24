@@ -289,6 +289,15 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
 
+    /// Grant custody of `key` to exactly one `claimant`, durably: the first
+    /// claim wins, and the same claimant may claim again (to resume after a
+    /// crash). Used to import a retained source into exactly one workspace.
+    /// `true` when `claimant` holds custody.
+    ///
+    /// # Errors
+    /// A key the store cannot claim, or a failure recording the claim.
+    fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, StoreError>;
+
     /// Where a host that keeps the key in a local file keeps it. Only for
     /// diagnostics and tools that work on that file; `None` elsewhere.
     fn local_path(&self, _key: &StorageKey) -> Option<PathBuf> {

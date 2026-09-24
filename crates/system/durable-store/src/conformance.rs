@@ -48,6 +48,7 @@ pub fn run(subject: &Subject<'_>) {
     accepted_writes_become_durable(subject);
     leases_are_exclusive_until_dropped(subject);
     shared_leases_coexist_and_exclude_an_exclusive_owner(subject);
+    one_claimant_wins_custody(subject);
     keys_never_alias(subject);
     views_round_trip(subject);
 }
@@ -205,6 +206,30 @@ fn shared_leases_coexist_and_exclude_an_exclusive_owner(subject: &Subject<'_>) {
         assert!(matches!(store.lease_shared(&key), Err(StoreError::Busy(_))));
         drop(exclusive);
     }
+}
+
+fn one_claimant_wins_custody(subject: &Subject<'_>) {
+    let store = subject.store;
+    let package = format!("so.tilo.claim-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed));
+    let key = StorageKey::package(package.clone());
+    // A retained source exists before anyone claims it.
+    let lease = store.lease_shared(&key).unwrap();
+    store
+        .write(&key, WriteOp::Replace(b"source".to_vec()), None)
+        .unwrap();
+    subject.committed(&key);
+    drop(lease);
+    assert!(store.claim(&key, "room-a").unwrap());
+    assert!(!store.claim(&key, "room-b").unwrap());
+    assert!(
+        store.claim(&key, "room-a").unwrap(),
+        "the claimant may resume"
+    );
+    let record = StorageKey::package_record(package, "rec");
+    assert!(
+        store.claim(&record, "room-b").unwrap(),
+        "claims are per key"
+    );
 }
 
 fn keys_never_alias(subject: &Subject<'_>) {
