@@ -69,7 +69,7 @@ use crate::command_palette::{Command, CommandPalette, Entry, PaletteKind};
 use crate::disk;
 use crate::doc::EditorDoc;
 use crate::editor_view::{EditorView, LspAsk};
-use crate::file_tree::{FileTree, TreeEvent};
+use crate::explorer::{self, Explorer, ExplorerEvent, ExplorerEvents};
 use crate::find::{FindBar, FindEvent};
 use crate::lint;
 use crate::model::{Language, NodeId as TreeId, NodeKind, Project, Session};
@@ -477,7 +477,10 @@ struct SearchRefreshStats {
 )]
 pub struct CodeApp {
     session: Session,
-    sidebar: FileTree,
+    /// The project explorer (a toolkit `TreeView`); its activation and
+    /// expansion signals land in `explorer_events`.
+    sidebar: Explorer,
+    explorer_events: ExplorerEvents,
     tabs: TabBar,
     /// Sweep timer for a pill's close-fade, keyed by tab id (== node id).
     /// `TabBar::start_closing` runs the fade on its own clock; this is only
@@ -883,9 +886,9 @@ impl CodeApp {
     }
 
     fn from_session(session: Session, default: Option<TreeId>) -> Self {
-        let mut sidebar = FileTree::new();
-        sidebar.set_project(&session.project);
-        sidebar.set_active(default);
+        let explorer_events = ExplorerEvents::default();
+        let mut sidebar = explorer::explorer(&session.project, &explorer_events);
+        explorer::set_current(&mut sidebar, default);
 
         let mut tabs = TabBar::new("code-editor", Vec::new(), 0);
         // Tabs here are document buffers, not windows — there is nothing for
@@ -907,6 +910,7 @@ impl CodeApp {
         CodeApp {
             session,
             sidebar,
+            explorer_events,
             tabs,
             closing_since: HashMap::new(),
             editor: EditorView::new(),
@@ -1363,7 +1367,7 @@ impl CodeApp {
             }
         }
         self.session.project.order_collaborative_children(&ordering);
-        self.sidebar.set_project(&self.session.project);
+        explorer::refresh(&mut self.sidebar, &self.session.project);
     }
 
     fn buffer_key(&self, node: TreeId) -> String {
@@ -1913,7 +1917,7 @@ impl CodeApp {
     fn open_node(&mut self, node: TreeId) {
         self.session.open_file(node);
         self.invalidate_search_projection();
-        self.sidebar.set_active(Some(node));
+        explorer::set_current(&mut self.sidebar, Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
         self.reconcile_tabs();
     }
@@ -1930,10 +1934,22 @@ impl CodeApp {
         &self.session
     }
 
-    /// Apply a tree event (open file / toggle folder).
-    fn apply_tree_event(&mut self, ev: TreeEvent) {
+    /// Apply an explorer signal: activating a file opens it, activating a
+    /// folder toggles it, and an expansion reads and records the folder.
+    fn apply_tree_event(&mut self, ev: ExplorerEvent) {
         match ev {
-            TreeEvent::OpenFile(id) => {
+            ExplorerEvent::Activate(id) => {
+                if self
+                    .session
+                    .project
+                    .get(id)
+                    .is_some_and(crate::model::TreeNode::is_folder)
+                {
+                    // Echoes back as `Expand` through the tree's own
+                    // `on_expand`, which is where the folder is read.
+                    self.sidebar.toggle_expand(explorer::node_key(id));
+                    return;
+                }
                 self.open_node(id);
                 // In overlay mode, opening a file dismisses the flap so the
                 // user lands on the freshly-opened buffer (single-pane feel).
@@ -1942,12 +1958,12 @@ impl CodeApp {
                     self.flap.close();
                 }
             }
-            TreeEvent::ToggleFolder(id) => {
+            ExplorerEvent::Expand(id, open) => {
                 // Reading the folder's children happens here, on first
                 // expansion, rather than when the project was opened — one
                 // directory level at a time is what makes opening a large
                 // repository instant.
-                if let Err(e) = self.session.project.load_children(id) {
+                if open && let Err(e) = self.session.project.load_children(id) {
                     let name = self
                         .session
                         .project
@@ -1956,12 +1972,24 @@ impl CodeApp {
                         .unwrap_or_default();
                     self.note(format!("Could not read {name}: {e}"), true);
                 }
-                self.session.project.toggle_folder(id);
+                self.session.project.set_folder_expanded(id, open);
                 self.invalidate_search_projection();
-                self.sidebar.set_project(&self.session.project);
-                self.sidebar
-                    .set_active(self.session.active_buffer().map(|b| b.node));
+                explorer::refresh(&mut self.sidebar, &self.session.project);
                 self.refresh_palette_entries();
+            }
+        }
+    }
+
+    /// Apply every explorer signal queued since the last frame, including
+    /// the expansions a folder activation echoes back.
+    fn drain_explorer_events(&mut self) {
+        loop {
+            let events = std::mem::take(&mut *self.explorer_events.borrow_mut());
+            if events.is_empty() {
+                break;
+            }
+            for ev in events {
+                self.apply_tree_event(ev);
             }
         }
     }
@@ -2001,8 +2029,10 @@ impl CodeApp {
                 self.tabs.start_closing(id);
             }
             self.closing_since.entry(id).or_insert_with(Instant::now);
-            self.sidebar
-                .set_active(self.session.active_buffer().map(|b| b.node));
+            explorer::set_current(
+                &mut self.sidebar,
+                self.session.active_buffer().map(|b| b.node),
+            );
             self.reconcile_tabs();
         }
     }
@@ -2023,8 +2053,10 @@ impl CodeApp {
         {
             self.session.active = Some(idx);
             self.bound_node = None;
-            self.sidebar
-                .set_active(self.session.active_buffer().map(|b| b.node));
+            explorer::set_current(
+                &mut self.sidebar,
+                self.session.active_buffer().map(|b| b.node),
+            );
         }
 
         if let Some((from, to)) = self.tabs.take_reorder() {
@@ -2306,10 +2338,7 @@ impl CodeApp {
     /// through so a chosen palette command that mutates the document (New file)
     /// can dispatch its action.
     fn drain_child_events(&mut self, doc: &AutoCommit) {
-        let tree_events = self.sidebar.take_events();
-        for ev in tree_events {
-            self.apply_tree_event(ev);
-        }
+        self.drain_explorer_events();
         self.drain_tab_bar(doc);
         if let Some(index) = self.panel.take_activated_hit() {
             self.open_search_hit(index);
@@ -2610,7 +2639,7 @@ impl CodeApp {
             self.note(format!("Could not open {}", hit.rel), true);
             return;
         };
-        self.sidebar.set_project(&self.session.project);
+        explorer::refresh(&mut self.sidebar, &self.session.project);
         self.open_node(node);
         // The buffer is bound on the next sync, so the caret move waits for it.
         self.pending_jump = Some((hit.line.saturating_sub(1), hit.col));
@@ -2779,7 +2808,7 @@ impl CodeApp {
     pub fn shots_open_path(&mut self, path: &std::path::Path) {
         let path = disk::canonical(path);
         if let Some(node) = self.session.project.reveal_path(&path) {
-            self.sidebar.set_project(&self.session.project);
+            explorer::refresh(&mut self.sidebar, &self.session.project);
             self.open_node(node);
         }
     }
@@ -4262,7 +4291,7 @@ impl Widget for CodeApp {
                 let Some(target) = target else {
                     return Err("Code location no longer exists".to_string());
                 };
-                self.sidebar.set_project(&self.session.project);
+                explorer::refresh(&mut self.sidebar, &self.session.project);
                 self.open_node(target);
                 self.pending_jump = Some((line, col));
                 if show_search {
@@ -4442,6 +4471,12 @@ impl Widget for CodeApp {
             || self.terminal_visible()
     }
 
+    /// The explorer eases wheel scrolling and row transitions on its own
+    /// clock; it is the one child whose per-frame update this root runs.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.sidebar.update(state, path)
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while the sidebar flap is
         // mid-transition (so the slide + scrim fade play out) OR while a live
@@ -4454,6 +4489,7 @@ impl Widget for CodeApp {
         // A language server that is still working needs them too, so the
         // indexing readout actually advances.
         self.flap.is_animating(self.sidebar_layout())
+            || self.sidebar.needs_animation_frame()
             || self.terminal_visible()
             || self.search_job.is_some()
             || self.portal.is_some()
