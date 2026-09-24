@@ -41,10 +41,24 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             ..
         } => {
             let route = format!("app\0{app_id}\0{record_id}");
-            let mutation = collab_types::DocumentMutation::decode(&envelope.payload).ok()?;
-            let retention = match mutation {
-                collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
-                collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
+            let frame = collab_types::DocumentFrame::decode(&envelope.payload).ok()?;
+            // A segmented snapshot replaces the checkpoint with its first
+            // segment and retains the rest as the tail behind it, so a
+            // replaying device receives every segment of it in order.
+            let retention = match frame {
+                collab_types::DocumentFrame::Whole(collab_types::DocumentMutation::Snapshot(_)) => {
+                    Retention::Checkpoint
+                }
+                collab_types::DocumentFrame::Segment(segment)
+                    if segment.kind == collab_types::DocumentMutationKind::Snapshot
+                        && segment.index == 0 =>
+                {
+                    Retention::Checkpoint
+                }
+                collab_types::DocumentFrame::Whole(
+                    collab_types::DocumentMutation::Incremental(_),
+                )
+                | collab_types::DocumentFrame::Segment(_) => Retention::Delta,
             };
             return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
         }
@@ -81,6 +95,45 @@ mod tests {
             cluster_id: "room".into(),
             record_id: "doc".into(),
             envelope: Box::new(envelope),
+        }
+    }
+
+    fn frame(payload: Vec<u8>) -> NeighbourMsg {
+        let mut msg = document(&collab_types::DocumentMutation::Incremental(vec![0]));
+        if let NeighbourMsg::AppDocument { envelope, .. } = &mut msg {
+            envelope.payload = payload;
+        }
+        msg
+    }
+
+    /// The host replays a checkpoint followed by its tail. A snapshot too
+    /// large for one frame must therefore start a new checkpoint with its
+    /// first segment and keep every later segment in the tail, or a device
+    /// replaying from the host could never reassemble it.
+    #[test]
+    fn host_retains_every_segment_of_a_large_snapshot_after_its_checkpoint() {
+        let len = 3 * collab_types::document_transfer::DOCUMENT_SEGMENT_BYTES + 1;
+        for (mutation, first) in [
+            (
+                collab_types::DocumentMutation::Snapshot(vec![5; len]),
+                "checkpoint",
+            ),
+            (
+                collab_types::DocumentMutation::Incremental(vec![6; len]),
+                "delta",
+            ),
+        ] {
+            let frames = mutation.encode_frames().expect("segmented");
+            assert_eq!(frames.len(), 4);
+            let retained: Vec<_> = frames
+                .into_iter()
+                .map(|payload| match retention(&frame(payload), false) {
+                    Some((_, Retention::Checkpoint)) => "checkpoint",
+                    Some((_, Retention::Delta)) => "delta",
+                    None => "dropped",
+                })
+                .collect();
+            assert_eq!(retained, [first, "delta", "delta", "delta"]);
         }
     }
 
