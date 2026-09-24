@@ -34,7 +34,6 @@ apps/chat/src/responsive.rs pixel_const 2
 apps/code-editor/src/app.rs pixel_const 7
 apps/code-editor/src/bottom_panel.rs pixel_const 6
 apps/code-editor/src/editor_view.rs pixel_const 4
-apps/code-editor/src/file_tree.rs pixel_const 4
 apps/code-editor/src/find.rs pixel_const 10
 apps/contacts/src/app.rs pixel_const 22
 apps/contacts/src/export_dialog.rs pixel_const 5
