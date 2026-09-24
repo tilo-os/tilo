@@ -24,7 +24,7 @@ on:
         required: false
         default: ""
       base_image:
-        description: "Production image (code.podesta.ai/qos/tilo:<tag> or @sha256:...); empty uses tilo:main-<sha7>."
+        description: "Signed production image (code.podesta.ai/qos/tilo:<tag> or @sha256:...), or a dev-trust integration image (code.podesta.ai/qos/tilo-ci:main-<sha7>-<arch> or @sha256:...); empty uses tilo:main-<sha7>."
         required: false
         default: ""
       tag:
@@ -56,6 +56,7 @@ jobs:
       source: ${{ steps.plan.outputs.source }}
       tag: ${{ steps.plan.outputs.tag }}
       base: ${{ steps.plan.outputs.base }}
+      trust: ${{ steps.plan.outputs.trust }}
       channel: ${{ steps.plan.outputs.channel }}
     steps:
       - name: Resolve source, base image, tag and native lanes
@@ -75,19 +76,39 @@ jobs:
           }
           short=${source:0:7}
 
+          base=${INPUT_BASE:-code.podesta.ai/qos/tilo:main-$short}
+          # The repository is the trust boundary. tilo is signed and carries
+          # provenance; tilo-ci holds unsigned main integration builds that
+          # production policy rejects, and its disks carry a -ci tag suffix.
+          if [[ $base =~ ^code\.podesta\.ai/qos/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]]; then
+            trust=release
+            suffix=""
+          elif [[ $base =~ ^code\.podesta\.ai/qos/tilo-ci(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]]; then
+            trust=integration
+            suffix=-ci
+          else
+            echo "::error::base_image must name code.podesta.ai/qos/tilo or code.podesta.ai/qos/tilo-ci by tag or digest: $base"
+            exit 1
+          fi
+
           channel=false
           if [[ -n ${INPUT_TAG:-} ]]; then
             tag=$INPUT_TAG
           elif [[ $GITHUB_REF == refs/tags/v* ]]; then
-            tag=${GITHUB_REF_NAME#v}
+            tag=${GITHUB_REF_NAME#v}$suffix
           elif [[ $GITHUB_REF == refs/heads/main ]]; then
-            tag=main-$short
+            tag=main-$short$suffix
           else
             branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
-            tag=${branch:0:100}-$short
+            tag=${branch:0:100}-$short$suffix
           fi
           [[ $tag =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ && $tag != latest && $tag != *-candidate-* ]] || {
             echo "::error::invalid tilo-vm tag: $tag"
+            exit 1
+          }
+          # An unsigned base must never take a name a signed release would use.
+          [[ $trust == release || $tag == *-ci ]] || {
+            echo "::error::a tilo-ci base publishes only -ci tags, not $tag"
             exit 1
           }
           # Only main and release tags advance `latest`; other refs publish
@@ -95,12 +116,6 @@ jobs:
           if [[ $GITHUB_REF == refs/heads/main || $GITHUB_REF == refs/tags/v* ]]; then
             channel=true
           fi
-
-          base=${INPUT_BASE:-code.podesta.ai/qos/tilo:main-$short}
-          [[ $base =~ ^code\.podesta\.ai/qos/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$ ]] || {
-            echo "::error::base_image must name code.podesta.ai/qos/tilo by tag or digest: $base"
-            exit 1
-          }
 
           # One lane per native architecture. Adding a lane is a matter of
           # listing it here; both use the 100 GiB disk runners the OS build uses.
@@ -133,12 +148,13 @@ jobs:
             echo "source=$source"
             echo "tag=$tag"
             echo "base=$base"
+            echo "trust=$trust"
             echo "channel=$channel"
             echo "architectures=${architectures[*]}"
             echo "formats=${formats[*]}"
             echo "matrix=$(jq -c '{include:.}' <<< "$include")"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::tilo-vm:$tag from $base at $source (${architectures[*]}; ${formats[*]}; channel=$channel)"
+          echo "::notice::tilo-vm:$tag from $base ($trust trust) at $source (${architectures[*]}; ${formats[*]}; channel=$channel)"
 
   build:
     needs: plan
@@ -151,6 +167,7 @@ jobs:
       SOURCE_REVISION: ${{ needs.plan.outputs.source }}
       DEV_TAG: ${{ needs.plan.outputs.tag }}
       BASE_REF_INPUT: ${{ needs.plan.outputs.base }}
+      BASE_TRUST: ${{ needs.plan.outputs.trust }}
       DISK_FORMATS: ${{ needs.plan.outputs.formats }}
       ARCH: ${{ matrix.arch }}
       DEV_IMAGE: localhost/tilo-vm:ci
@@ -217,18 +234,27 @@ jobs:
           printf '%s' "$REGISTRY_TOKEN" | podman login code.podesta.ai \
             --username "${{ github.actor }}" --password-stdin
 
-      # "Same commit" is checked, not assumed: the base must carry the release
-      # signature, and its native child's signed provenance must name exactly
-      # the revision whose Containerfile.dev is built on top of it.
-      - name: Resolve and verify the signed production base
+      # "Same commit" is checked, not assumed. A release base must carry the
+      # release signature, and its native child's signed provenance must name
+      # exactly the revision whose Containerfile.dev is built on top of it. A
+      # dev-trust integration base is unsigned by design: it must come from
+      # tilo-ci and its revision label must name that same revision.
+      - name: Resolve and verify the same-commit base
         id: base
         run: |
           set -euo pipefail
           case "$ARCH" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
+          case "$BASE_TRUST" in
+            release) repository=code.podesta.ai/qos/tilo ;;
+            integration) repository=code.podesta.ai/qos/tilo-ci ;;
+            *) echo "::error::unknown base trust: $BASE_TRUST"; exit 1 ;;
+          esac
           raw=$(skopeo inspect --raw "docker://$BASE_REF_INPUT")
           top_digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
-          top="code.podesta.ai/qos/tilo@$top_digest"
-          cosign verify --key keys/cosign.pub "$top" >/dev/null
+          top="$repository@$top_digest"
+          if [[ $BASE_TRUST == release ]]; then
+            cosign verify --key keys/cosign.pub "$top" >/dev/null
+          fi
           if jq -e '.manifests? | type == "array"' <<< "$raw" >/dev/null; then
             child_digest=$(jq -er --arg platform "$platform" '
               [.manifests[] | select(.platform.os == "linux" and .platform.architecture == $platform)]
@@ -238,32 +264,42 @@ jobs:
             child_digest=$top_digest
           fi
           [[ $child_digest =~ ^sha256:[0-9a-f]{64}$ ]]
-          child="code.podesta.ai/qos/tilo@$child_digest"
-          [[ "$(skopeo inspect "docker://$child" | jq -er .Architecture)" == "$platform" ]] || {
+          child="$repository@$child_digest"
+          config=$(skopeo inspect "docker://$child")
+          [[ "$(jq -er .Architecture <<< "$config")" == "$platform" ]] || {
             echo "::error::$child is not a linux/$platform image"
             exit 1
           }
-          cosign verify --key keys/cosign.pub "$child" >/dev/null
-          cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$child" \
-            | jq -se --arg source "$SOURCE_REVISION" '
-                [.[] | (if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-                | any(any(.buildDefinition.resolvedDependencies[]?;
-                          .uri == ("git+ssh://code.podesta.ai/qos/qos@" + $source)))
-              ' >/dev/null || {
-                echo "::error::$child provenance does not bind source revision $SOURCE_REVISION"
-                exit 1
-              }
+          if [[ $BASE_TRUST == release ]]; then
+            cosign verify --key keys/cosign.pub "$child" >/dev/null
+            cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$child" \
+              | jq -se --arg source "$SOURCE_REVISION" '
+                  [.[] | (if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+                  | any(any(.buildDefinition.resolvedDependencies[]?;
+                            .uri == ("git+ssh://code.podesta.ai/qos/qos@" + $source)))
+                ' >/dev/null || {
+                  echo "::error::$child provenance does not bind source revision $SOURCE_REVISION"
+                  exit 1
+                }
+          else
+            [[ "$(jq -r '.Labels["org.opencontainers.image.revision"] // empty' <<< "$config")" == "$SOURCE_REVISION" ]] || {
+              echo "::error::$child is not the integration image of $SOURCE_REVISION"
+              exit 1
+            }
+          fi
           {
+            echo "repository=$repository"
             echo "index-digest=$top_digest"
             echo "child-digest=$child_digest"
             echo "child=$child"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::verified signed base $child for $SOURCE_REVISION"
+          echo "::notice::verified $BASE_TRUST-trust base $child for $SOURCE_REVISION"
 
       - name: Build the dev image FROM the verified base
         env:
           BASE_CHILD: ${{ steps.base.outputs.child }}
           BASE_INDEX_DIGEST: ${{ steps.base.outputs.index-digest }}
+          BASE_REPOSITORY: ${{ steps.base.outputs.repository }}
         run: |
           set -euo pipefail
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)
@@ -280,8 +316,9 @@ jobs:
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             --label "org.opencontainers.image.version=$DEV_TAG" \
             --label "org.opencontainers.image.revision=$SOURCE_REVISION" \
-            --label "org.opencontainers.image.base.name=code.podesta.ai/qos/tilo@$BASE_INDEX_DIGEST" \
+            --label "org.opencontainers.image.base.name=$BASE_REPOSITORY@$BASE_INDEX_DIGEST" \
             --label "org.opencontainers.image.base.digest=$BASE_INDEX_DIGEST" \
+            --label "sh.tilo.dev.base-trust=$BASE_TRUST" \
             --tag "$DEV_IMAGE" \
             .
 
@@ -356,6 +393,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
           BASE_INDEX_DIGEST: ${{ steps.base.outputs.index-digest }}
           BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
+          BASE_REPOSITORY: ${{ steps.base.outputs.repository }}
         run: |
           set -euo pipefail
           out=/var/tmp/tilo-vm-publish
@@ -384,8 +422,10 @@ jobs:
           done
           jq -n --arg arch "$ARCH" --arg source "$SOURCE_REVISION" --arg tag "$DEV_TAG" \
             --arg image "$IMAGE_DIGEST" --arg baseIndex "$BASE_INDEX_DIGEST" \
-            --arg base "$BASE_CHILD_DIGEST" --argjson disks "$disks" \
+            --arg base "$BASE_CHILD_DIGEST" --arg baseImage "$BASE_REPOSITORY" \
+            --arg baseTrust "$BASE_TRUST" --argjson disks "$disks" \
             '{arch:$arch,sourceRevision:$source,tag:$tag,imageDigest:$image,
+              baseImage:$baseImage,baseTrust:$baseTrust,
               baseIndexDigest:$baseIndex,baseDigest:$base,disks:$disks}' \
             > "dev-disk-fragment/$ARCH.json"
           ls -l "$out"
@@ -486,6 +526,8 @@ jobs:
                  and (map(.sourceRevision) | unique) == [env.SOURCE_REVISION]
                  and (map(.tag) | unique) == [env.DEV_TAG]
                  and (map(.baseIndexDigest) | unique | length) == 1
+                 and (map(.baseImage) | unique | length) == 1
+                 and (map(.baseTrust) | unique | length) == 1
                  and (map(.imageDigest) | unique | length) == length
                  and all(.[]; (.imageDigest | test("^sha256:[0-9a-f]{64}$"))
                               and (.baseDigest | test("^sha256:[0-9a-f]{64}$"))
@@ -535,7 +577,8 @@ jobs:
               sourceRevision: $source,
               image: $image,
               imageDigest: $digest,
-              baseImage: "code.podesta.ai/qos/tilo",
+              baseImage: $lanes[0].baseImage,
+              baseTrust: $lanes[0].baseTrust,
               baseDigest: $lanes[0].baseIndexDigest,
               disks: [$lanes[] as $lane | $lane.disks[] | {
                 arch: $lane.arch,

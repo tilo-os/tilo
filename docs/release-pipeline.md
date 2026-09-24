@@ -194,6 +194,33 @@ The nightly image carries `latest`, `genN` and `main-<sha7>` like a manual
 it without a separate schedule. Runner cost is bounded to at most one
 two-architecture release per day and none on days without `main` changes.
 
+## Dev VM disks and dev-trust integration images
+
+Dev VMs must not wait on release gating. Every `main` build that gets past the
+image build pushes that image, unsigned, as
+`code.podesta.ai/qos/tilo-ci:main-<sha7>-<arch>`. `tilo-ci` is a
+development-only repository: production policy
+(`os/etc/containers/policy.json`) rejects it, and
+`tools/policy/check_dev_image_contract.py` keeps it that way. The push never
+blocks a release.
+
+After the build, `dispatch-dev-disk` requests **Release / Dev VM disk** once
+per run:
+
+- when the run promoted a signed release, from its exact index digest, as
+  `tilo-vm:main-<sha7>` (or the release version);
+- otherwise, on `main`, from the run's x86-64 `tilo-ci` image after checking
+  that its revision label names the run's commit, as `tilo-vm:main-<sha7>-ci`.
+
+`dev-disk.yml` derives the base's trust from its repository. A `tilo` base must
+carry the release signature and provenance naming the source revision; a
+`tilo-ci` base must carry that revision as its OCI label and may publish only
+`-ci` tags, so it can never take a name a signed release would use. The disk
+manifest records `baseImage` and `baseTrust`. `tilo-vm vm create` takes the
+newest `main-*` disk, so developers get the freshest image either way. Dispatch
+`dev-disk.yml` with `base_image=code.podesta.ai/qos/tilo-ci:main-<sha7>-x86_64`
+to rebuild a disk by hand.
+
 A manual **Release / OS** dispatch is build-only by default. Enable its
 `publish` input only from `main` to allocate and promote a signed generation
 without waiting for the nightly run.

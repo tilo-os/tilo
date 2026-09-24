@@ -51,10 +51,16 @@ class DevDiskWorkflowTests(unittest.TestCase):
     def test_dev_image_builds_on_the_verified_same_source_base(self) -> None:
         build = job(self.source, "build")
         self.assertIn("ref: ${{ needs.plan.outputs.source }}", build)
-        verify = step(build, "Resolve and verify the signed production base")
+        verify = step(build, "Resolve and verify the same-commit base")
         self.assertIn('cosign verify --key keys/cosign.pub "$top"', verify)
         self.assertIn('cosign verify --key keys/cosign.pub "$child"', verify)
         self.assertIn('"git+ssh://code.podesta.ai/qos/qos@" + $source', verify)
+        # A dev-trust base skips signatures only because its repository says
+        # so, and must still name the exact source revision.
+        self.assertIn("release) repository=code.podesta.ai/qos/tilo ;;", verify)
+        self.assertIn("integration) repository=code.podesta.ai/qos/tilo-ci ;;", verify)
+        self.assertIn('.Labels["org.opencontainers.image.revision"] // empty', verify)
+        self.assertIn('== "$SOURCE_REVISION"', verify)
         image = step(build, "Build the dev image FROM the verified base")
         self.assertIn("--file os/Containerfile.dev", image)
         self.assertIn('--build-arg "BASE_IMAGE=$BASE_CHILD"', image)
@@ -127,14 +133,40 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertNotRegex(self.source, r"cosign (?:sign|attest)")
 
 
+    def test_base_trust_follows_the_repository(self) -> None:
+        plan = job(self.source, "plan")
+        self.assertIn("trust=release", plan)
+        self.assertIn("trust=integration", plan)
+        self.assertIn("suffix=-ci", plan)
+        self.assertIn('[[ $trust == release || $tag == *-ci ]]', plan)
+        assemble = step(job(self.source, "publish"), "Assemble the tilo-vm index and disk manifest")
+        self.assertIn("baseTrust: $lanes[0].baseTrust", assemble)
+
+
 class OsReleaseRequestsDevDisksTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.request = job(OS_RELEASE.read_text(encoding="utf-8"), "dispatch-dev-disk")
+
     def test_published_release_requests_disks_for_its_exact_digest(self) -> None:
-        request = job(OS_RELEASE.read_text(encoding="utf-8"), "dispatch-dev-disk")
-        self.assertIn("needs: [plan, promote-multiarch]", request)
-        self.assertIn("if: needs.plan.outputs.publish == 'true'", request)
-        self.assertIn("name: tilo-os-release-index", request)
-        self.assertIn("actions/workflows/dev-disk.yml/dispatches", request)
-        self.assertIn("source_revision:$source,base_image:$base,tag:$tag", request)
+        self.assertIn("needs: [plan, build-and-push, promote-multiarch]", self.request)
+        self.assertIn("needs.promote-multiarch.result == 'success'", self.request)
+        self.assertIn("name: tilo-os-release-index", self.request)
+        self.assertIn("actions/workflows/dev-disk.yml/dispatches", self.request)
+        self.assertIn("source_revision:$source,base_image:$base,tag:$tag", self.request)
+
+    def test_unpromoted_main_builds_request_disks_from_their_dev_trust_image(self) -> None:
+        self.assertIn("github.ref == 'refs/heads/main' && needs.build-and-push.result != 'skipped'", self.request)
+        self.assertIn("needs.plan.outputs.skip != 'true'", self.request)
+        self.assertIn('ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64"', self.request)
+        self.assertIn('image="code.podesta.ai/qos/tilo-ci@$digest"', self.request)
+        self.assertIn('tag="main-${GITHUB_SHA:0:7}-ci"', self.request)
+        self.assertIn('[[ $revision == "$GITHUB_SHA" ]]', self.request)
+        source = OS_RELEASE.read_text(encoding="utf-8")
+        push = step(source, "Publish the dev-trust integration image")
+        self.assertIn("github.ref == 'refs/heads/main'", push)
+        self.assertIn("continue-on-error: true", push)
+        self.assertIn('ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-$ARCH"', push)
+        self.assertNotRegex(push, r"cosign (?:sign|attest)")
 
 
 if __name__ == "__main__":
