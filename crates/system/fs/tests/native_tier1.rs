@@ -150,6 +150,20 @@ impl Daemon {
         mode: &[&str],
         mount: &Path,
     ) -> Self {
+        Self::spawn_env(name, profile, dir, store, mode, mount, &[])
+    }
+
+    /// [`Self::spawn`] with extra environment; a value may name
+    /// `{profile}` for a per-daemon path under `dir`.
+    fn spawn_env(
+        name: &'static str,
+        profile: &str,
+        dir: &Path,
+        store: &Path,
+        mode: &[&str],
+        mount: &Path,
+        env: &[(&str, &str)],
+    ) -> Self {
         let cache = dir.join(format!("{profile}-cache"));
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::create_dir_all(mount).unwrap();
@@ -161,6 +175,9 @@ impl Daemon {
             .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_fs")), PathBuf::from);
         let mut command = Command::new(binary);
         command.env("TILO_FS_NATIVE_TRACE", "1");
+        for (key, value) in env {
+            command.env(key, dir.join(value.replace("{profile}", profile)));
+        }
         command
             .env(
                 fs::identity::IDENTITY_ROOT_ENV,
@@ -399,6 +416,17 @@ struct Pair {
 }
 
 fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
+    start_pair_with(store_a, store_b, seed, &[], &[])
+}
+
+/// [`start_pair`] with extra daemon arguments and environment for both.
+fn start_pair_with(
+    store_a: &Path,
+    store_b: &Path,
+    seed: u8,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> Pair {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().to_path_buf();
     let person = [seed; 32];
@@ -420,23 +448,30 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
         std::fs::create_dir_all(&m).unwrap();
         std::os::unix::fs::chown(&m, Some(LOCAL_OWNER.0), Some(LOCAL_OWNER.1)).unwrap();
     }
-    let mut host = Daemon::spawn(
+    let host_args: Vec<&str> = ["serve"].into_iter().chain(extra.iter().copied()).collect();
+    let mut host = Daemon::spawn_env(
         "host",
         "host",
         &dir,
         store_a,
-        &["serve"],
+        &host_args,
         &dir.join("host-mount"),
+        env,
     );
     let ticket = host.wait_ticket();
     host.wait_serving();
-    let mut peer = Daemon::spawn(
+    let peer_args: Vec<&str> = ["mount", "--ticket", ticket.as_str()]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .collect();
+    let mut peer = Daemon::spawn_env(
         "peer",
         "peer",
         &dir,
         store_b,
-        &["mount", "--ticket", &ticket],
+        &peer_args,
         &dir.join("peer-mount"),
+        env,
     );
     peer.wait_line("Joined workspace");
     peer.wait_serving();
@@ -778,31 +813,38 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     let head = git(&repo1, &["rev-parse", "HEAD"]).unwrap();
     assert_eq!(git(&repo1, &["status", "--porcelain"]).unwrap(), "");
 
+    // A tool keeps running `git status` on the peer while it syncs, as a
+    // shell prompt does. It may write the index whenever what it sees is
+    // not a state the author's disk had; nothing it sees may make it.
     let t = Instant::now();
+    let mut last_status = String::new();
+    let mut polls = 0u32;
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "the host's HEAD on the peer",
         || {
-            std::thread::sleep(Duration::from_millis(250));
-            (git(&repo2, &["rev-parse", "HEAD"]).ok()? == head).then_some(())
-        },
-    );
-    eprintln!("three commits visible on the peer after {:?}", t.elapsed());
-    // Let the tree settle: the index and working files follow the ref.
-    let mut last_status = String::new();
-    wait_for(
-        &mut [&mut pair.host, &mut pair.peer],
-        "a clean status on the peer",
-        || {
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(100));
+            polls += 1;
+            let at_head = git(&repo2, &["rev-parse", "HEAD"]).ok()? == head;
             let status = git(&repo2, &["status", "--porcelain"]);
             let shown = format!("{status:?}");
             if shown != last_status {
                 eprintln!("peer git status: {shown}");
-                last_status = shown;
+                last_status.clone_from(&shown);
             }
-            status.ok().filter(String::is_empty)
+            if at_head {
+                assert_eq!(
+                    status.as_deref(),
+                    Ok(""),
+                    "the status is clean as soon as the new HEAD is visible"
+                );
+            }
+            at_head.then_some(())
         },
+    );
+    eprintln!(
+        "three commits visible on the peer after {:?}, clean at once ({polls} status runs while syncing)",
+        t.elapsed()
     );
     let index = repo2.join(".git/index");
     let index_before = std::fs::metadata(&index).unwrap().mtime_nsec();
@@ -816,6 +858,13 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
         std::fs::metadata(&index).unwrap().mtime_nsec(),
         index_before,
         "status on the peer did not rewrite the index (no stat ping-pong)"
+    );
+    // Give a stray capture on the peer time to show up.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        pair.peer.log_count(" change(s), "),
+        0,
+        "the peer published nothing: no spurious index or other transient state"
     );
     for (path, data) in &files {
         assert!(std::fs::read(repo2.join(path)).unwrap() == *data, "{path}");

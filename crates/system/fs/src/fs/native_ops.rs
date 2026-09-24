@@ -337,6 +337,24 @@ impl QuickFS {
         out
     }
 
+    /// Publishes `device`'s changeset mark (see
+    /// [`crate::namespace::ChangesetMark`]).
+    pub fn put_changeset_mark(&self, device: [u8; 32], mark: &crate::namespace::ChangesetMark) {
+        let delta = {
+            let mut ns = self.ns();
+            if !ns.put_changeset_mark(device, mark) {
+                return;
+            }
+            ns.save_incremental()
+        };
+        self.publish(delta);
+    }
+
+    /// Every device's latest changeset mark.
+    pub fn changeset_marks(&self) -> Vec<([u8; 32], crate::namespace::ChangesetMark)> {
+        self.ns().changeset_marks()
+    }
+
     /// The current time as the record plane stamps it.
     pub fn record_clock_ms() -> u64 {
         now_ms()

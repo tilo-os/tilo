@@ -36,8 +36,10 @@ const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-reco
 
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 
+mod changesets;
 mod leases;
 mod posix;
+pub use changesets::ChangesetMark;
 pub use leases::WriteLease;
 pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
 
