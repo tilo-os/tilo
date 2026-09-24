@@ -2605,7 +2605,7 @@ mod tests {
         draw_frame(&mut ns); // establishes the clock; dt == 0, no jump
         assert_eq!(ns.push.reveal(), 0.0, "first frame must not jump the slide");
 
-        std::thread::sleep(crate::time::Duration::from_millis(16));
+        elapse(&mut ns, 16);
         draw_frame(&mut ns);
         let r = ns.push.reveal();
         assert!(r > 0.0 && r < 1.0, "mid-slide after one frame (reveal {r})");
@@ -2615,7 +2615,7 @@ mod tests {
         );
 
         for _ in 0..240 {
-            std::thread::sleep(crate::time::Duration::from_millis(1));
+            elapse(&mut ns, 16);
             draw_frame(&mut ns);
             if !ns.push.is_animating(SplitLayout::Docked) {
                 break;
@@ -2663,7 +2663,7 @@ mod tests {
         ns.show_detail();
         ns.snap();
         assert_eq!(ns.push.reveal(), 1.0, "snap jumps straight to detail");
-        std::thread::sleep(crate::time::Duration::from_millis(20));
+        elapse(&mut ns, 20);
         draw_frame(&mut ns);
         assert_eq!(
             ns.push.reveal(),
@@ -2823,6 +2823,12 @@ mod tests {
     }
 
     // --- scaffolding -----------------------------------------------------
+
+    /// Pretend `ms` of wall clock passed since the last drawn frame, so the
+    /// next draw advances the animations by exactly that step.
+    fn elapse(ns: &mut NavShell, ms: u64) {
+        ns.last_tick = crate::time::now().checked_sub(crate::time::Duration::from_millis(ms));
+    }
 
     fn draw_frame(ns: &mut NavShell) {
         let theme = Theme::dark();
