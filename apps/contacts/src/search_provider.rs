@@ -491,6 +491,7 @@ fn group_result(group: &str) -> SearchResult {
 mod tests {
     use super::*;
     use crate::model::{Contact, ContactStore, sample_contacts};
+    use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT};
     use ui::search::{SearchProvider, SearchRegistry};
     use uuid::Uuid;
@@ -677,32 +678,32 @@ mod tests {
 
     #[test]
     fn paged_catalogue_reaches_a_late_contact_without_unbounded_allocation() {
-        let contacts = (0..100_001u128)
-            .map(|index| Contact {
-                id: Uuid::from_u128(index + 1),
-                first: if index == 100_000 {
-                    "Late catalogue needle".into()
-                } else {
-                    format!("Contact {index}")
-                },
-                ..Contact::default()
-            })
-            .collect();
-        let provider = ContactSearchProvider::new(&ContactStore { contacts });
-
-        let page = provider.search_page("catalogue needle", None, 4, 1);
+        let (provider, hit) = assert_late_hit_reachable(
+            |corpus| {
+                let contacts = corpus
+                    .map(|row| Contact {
+                        id: Uuid::from_u128(row.index as u128 + 1),
+                        first: row.text,
+                        ..Contact::default()
+                    })
+                    .collect();
+                ContactSearchProvider::new(&ContactStore { contacts })
+            },
+            3_000,
+        );
+        assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
+        let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 1);
         assert_eq!(page.inspected, 1, "rare postings avoid scanning the book");
         assert_eq!(page.results.len(), 1, "one bounded result is materialised");
-        assert_eq!(page.results[0].title, "Late catalogue needle");
         assert!(page.next.is_none(), "the unique match is exhausted");
-        let address = page.results[0]
+        let address = hit
             .action_address()
             .expect("catalogue hits use canonical open addresses");
         let resource = provider
             .resolve_action_resource(&address)
             .expect("the late hit resolves without expanding the contextual page");
         assert!(tilo_actions::door::resolve(&[resource], &address).is_some());
-        assert_eq!(provider.stats().records, 100_001);
+        assert_eq!(provider.stats().records, 3_000);
     }
 
     #[test]

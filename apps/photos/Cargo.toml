@@ -39,6 +39,7 @@ tilo-ocr = { path = "../../crates/media/ocr" }
 kamadak-exif = "0.6.1"
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 vello_encoding.workspace = true
 
