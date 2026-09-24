@@ -1,18 +1,6 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
 
 impl App {
-    fn screen_reader_env_enabled() -> bool {
-        for key in ["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"] {
-            if let Ok(v) = std::env::var(key) {
-                let v = v.trim();
-                if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     fn persisted_accessibility_bool(key: &str) -> bool {
         settings_store::load_section("accessibility")
             .get(key)
@@ -50,57 +38,6 @@ impl App {
         let mut reader = crate::screen_reader::ScreenReader::new();
         Self::configure_screen_reader(&mut reader);
         reader
-    }
-
-    /// Shared truthy-env-var gate for the low-vision flags: non-empty, not
-    /// `"0"`/`"false"` (case-insensitive).
-    fn bool_env(keys: &[&str]) -> bool {
-        for key in keys {
-            if let Ok(v) = std::env::var(key) {
-                let v = v.trim();
-                if !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false") {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    fn high_contrast_env_enabled() -> bool {
-        Self::bool_env(&["TILO_A11Y_HIGH_CONTRAST", "TILO_HIGH_CONTRAST"])
-    }
-
-    fn reduce_motion_env_enabled() -> bool {
-        Self::bool_env(&["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"])
-    }
-
-    /// A bad value is ignored rather than crashing the app at startup.
-    fn text_scale_env() -> Option<f32> {
-        for key in ["TILO_A11Y_TEXT_SCALE", "TILO_TEXT_SCALE"] {
-            if let Ok(v) = std::env::var(key)
-                && let Ok(f) = v.trim().parse::<f32>()
-                && f.is_finite()
-                && f > 0.0
-            {
-                return Some(f);
-            }
-        }
-        None
-    }
-
-    /// The shell mirrors the user's UI-scale preference into spawned
-    /// sandboxes via this var so an app comes up already scaled.
-    fn ui_scale_env() -> Option<f32> {
-        for key in ["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"] {
-            if let Ok(v) = std::env::var(key)
-                && let Ok(f) = v.trim().parse::<f32>()
-                && f.is_finite()
-                && f > 0.0
-            {
-                return Some(f);
-            }
-        }
-        None
     }
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].

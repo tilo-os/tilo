@@ -33,9 +33,15 @@ use crate::portal::{
     OpenFileOutcome, PickRequest, PortalChannel, PortalOutcome,
 };
 
+pub mod environment;
 pub mod native;
 #[cfg(any(test, feature = "test-support"))]
 mod recording;
+
+pub use environment::{
+    AccessibilityInputs, HostEnvironment, HostIdentity, HostPaths, RunnerDiagnostics, environment,
+    install_environment,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use recording::HostRecorder;
 

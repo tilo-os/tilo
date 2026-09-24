@@ -162,10 +162,7 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
 /// `shell::firstboot::resolve_identity_dir`, which is what writes the file.
 #[cfg(unix)]
 fn config_identity_path() -> Option<PathBuf> {
-    let base = match std::env::var("XDG_CONFIG_HOME") {
-        Ok(v) if !v.is_empty() => PathBuf::from(v),
-        _ => PathBuf::from(std::env::var("HOME").ok()?).join(".config"),
-    };
+    let base = crate::host::environment().paths.config_dir()?;
     let p = base.join("tilo").join("identity").join("primary.json");
     p.is_file().then_some(p)
 }
