@@ -50,6 +50,7 @@ unicode-bidi = "0.3.18"
 settings-store = { path = "../../crates/system/settings-store" }
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # Serialises the handful of tests that set the process-wide `EBOOK_LIBRARY_DIR`
 # env var (library discovery + the empty-shelf reload) so cargo's default
