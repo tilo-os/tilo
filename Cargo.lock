@@ -14712,7 +14712,6 @@ dependencies = [
  "media",
  "mime_guess",
  "open",
- "openh264",
  "percent-encoding",
  "pkg-config",
  "pollster",

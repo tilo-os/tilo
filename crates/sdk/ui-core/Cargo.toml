@@ -28,6 +28,11 @@ native = ["dep:arboard", "dep:open", "dep:accesskit_winit", "dep:smithay-clipboa
 # `CollaborationManager::new` starts disabled.
 broker-transport = ["runtime-collab/client", "dep:capnp", "dep:capnp-rpc"]
 test-support = []
+# Push-mode decode in `VideoPlayer` (`feed_frame` / `feed_encoded`) through
+# `media`'s GStreamer real-time decoder. Apps that stream video enable
+# `media/realtime` themselves; this feature exists so the widget's own tests
+# can exercise the path.
+realtime-video = ["media/realtime"]
 presentation-feedback = ["dep:wgpu-hal"]
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
 # (`webview::adblock`). Off by default: only the browser app (and any
@@ -153,11 +158,6 @@ base64.workspace = true
 uuid.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 chrono = { workspace = true, features = ["clock", "std"] }
-# VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
-# `source` feature compiles the pure-C reference implementation so we don't
-# rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
-# screencast pipeline.
-openh264.workspace = true
 # Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
