@@ -8,18 +8,72 @@ use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 
-pub const DURATION_SECS: f64 = 52.0;
+pub const DURATION_SECS: f64 = 4.0;
 pub const WIDTH: u32 = 320;
 pub const HEIGHT: u32 = 180;
 pub const FPS: u32 = 30;
-const FRAMES: u32 = 52 * FPS;
+const FRAMES: u32 = 4 * FPS;
+/// Part of the cached file's name: change it whenever the pictures or the
+/// sound the generator produces change, so no build reuses a stale clip.
+const GENERATION: u32 = 1;
+
+/// Whether this machine has the `GStreamer` elements the footage tests encode,
+/// mux and parse with.
+///
+/// Where one is missing, a test that needs them says so and returns instead of
+/// failing on a developer box without the full plugin set. With
+/// `TILO_REQUIRE_MEDIA=1`, which CI sets because its builder image carries the
+/// stack, the absence fails the test: a check that cannot observe its subject
+/// must not pass there.
+#[allow(
+    dead_code,
+    reason = "the shared helper is included by several test modules; not every one gates on it"
+)]
+pub fn media_stack() -> bool {
+    const REQUIRED: [&str; 8] = [
+        "openh264enc",
+        "h264parse",
+        "mp4mux",
+        "qtdemux",
+        "wavparse",
+        "webmmux",
+        "vp8enc",
+        "opusenc",
+    ];
+    const AAC: [&str; 3] = ["fdkaacenc", "avenc_aac", "voaacenc"];
+    if gst::init().is_err() {
+        return require_media("GStreamer did not initialise");
+    }
+    let mut missing: Vec<&str> = REQUIRED
+        .into_iter()
+        .filter(|name| gst::ElementFactory::find(name).is_none())
+        .collect();
+    if AAC
+        .iter()
+        .all(|name| gst::ElementFactory::find(name).is_none())
+    {
+        missing.push("an AAC encoder");
+    }
+    missing.is_empty() || require_media(&format!("missing {}", missing.join(", ")))
+}
+
+fn require_media(problem: &str) -> bool {
+    assert!(
+        std::env::var_os("TILO_REQUIRE_MEDIA").is_none_or(|value| value != "1"),
+        "TILO_REQUIRE_MEDIA=1 but the media stack is incomplete: {problem}"
+    );
+    eprintln!("footage not checked ({problem}); set TILO_REQUIRE_MEDIA=1 to make this a failure");
+    false
+}
 
 /// Return a real H.264/AAC MP4 source with deterministic moving imagery and
 /// an audible 440 Hz stereo track.
 ///
-/// One fixture is encoded per test process. `TILO_VE_TEST_CLIP` remains useful
-/// for deliberately exercising another source, but normal tests have no
-/// dependency outside the checkout and the `GStreamer` stack they already test.
+/// The clip is encoded once per build, not per test process: it is cached in
+/// the target directory beside the test binaries, where `cargo clean` removes
+/// it. `TILO_VE_TEST_CLIP` remains useful for deliberately exercising another
+/// source, but normal tests have no dependency outside the checkout and the
+/// `GStreamer` stack they already test.
 pub fn encoded_video() -> std::path::PathBuf {
     static CLIP: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     if let Some(path) = std::env::var_os("TILO_VE_TEST_CLIP") {
@@ -54,13 +108,46 @@ pub fn encoded_video_only() -> std::path::PathBuf {
     reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
 )]
 fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
-    gst::init().expect("initialize GStreamer for generated video fixture");
-    let path = std::env::temp_dir().join(format!(
-        "tilo-ve-generated-motion-{}-{}.mp4",
+    // Test binaries live in `target/<profile>/deps`; keep the clip next to
+    // that profile's other outputs.
+    let cache = std::env::current_exe()
+        .expect("locate the running test binary")
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("the test binary sits in a profile directory")
+        .join("video-editor-fixtures");
+    std::fs::create_dir_all(&cache).expect("create the generated clip cache");
+    let path = cache.join(format!(
+        "motion-g{GENERATION}-{DURATION_SECS}s-{WIDTH}x{HEIGHT}-{FPS}fps-{}.mp4",
         if with_audio { "av" } else { "video-only" },
+    ));
+    if path.exists() {
+        return path;
+    }
+    // Encode beside the final name and rename into place, so a concurrent
+    // test process sees either no clip or a complete one.
+    let partial = cache.join(format!(
+        "{}.{}.partial",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .expect("UTF-8 fixture name"),
         std::process::id()
     ));
-    std::fs::remove_file(&path).ok();
+    encode_to(&partial, with_audio);
+    std::fs::rename(&partial, &path).expect("publish the generated clip");
+    path
+}
+
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    reason = "test-fixture dimensions are fixed; panics make a missing codec or malformed buffer fail loudly"
+)]
+fn encode_to(path: &std::path::Path, with_audio: bool) {
+    gst::init().expect("initialize GStreamer for generated video fixture");
+    std::fs::remove_file(path).ok();
 
     let audio_branch = if with_audio {
         let audio_encoder = ["fdkaacenc", "avenc_aac", "voaacenc"]
@@ -129,11 +216,10 @@ fn encode_fixture(with_audio: bool) -> std::path::PathBuf {
     let _ = pipeline.set_state(gst::State::Null);
     assert!(reached_eos, "generated video fixture timed out before EOS");
     assert!(
-        std::fs::metadata(&path).is_ok_and(|metadata| metadata.len() > 512),
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 512),
         "generated fixture is not a real encoded MP4: {}",
         path.display()
     );
-    path
 }
 
 #[allow(
