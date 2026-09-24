@@ -240,7 +240,7 @@ fn draw_page_backdrop(scene: &mut Scene, theme: &Theme, base: Affine, card: Rect
     card_rr
 }
 
-/// Paint the raster backend's page bitmap (pdfium output) scaled to fill the
+/// Paint the raster backend's page bitmap (engine output) scaled to fill the
 /// card width.
 fn draw_page_raster_image(scene: &mut Scene, base: Affine, card: Rect, img: &PenikoImage) {
     if img.width > 0 && img.height > 0 {
@@ -511,7 +511,7 @@ pub fn draw_page<S: std::hash::BuildHasher>(
     // Clip content to the paper.
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &card_rr);
 
-    // Raster backend: paint the page bitmap (pdfium output) scaled to fill the
+    // Raster backend: paint the page bitmap (engine output) scaled to fill the
     // card width, then let the shared markup overlay draw on top.
     if let Some(img) = raster {
         draw_page_raster_image(scene, base, card, img);

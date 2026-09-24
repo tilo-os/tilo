@@ -15,9 +15,10 @@ license.workspace = true
 
 [features]
 default = []
-# PDF first-page rasterisation via dynamically loaded pdfium; falls back to a
-# type badge when unavailable and adds no native build dependency.
-pdf = ["dep:pdfium-render"]
+# PDF first-page rasterisation through tilo-pdf (the sandboxed PDF engine);
+# falls back to a type badge when unavailable and adds no native build
+# dependency.
+pdf = ["dep:tilo-pdf"]
 # Video keyframe extraction through the shared GStreamer media engine; off by
 # default to keep hermetic builds free of the GStreamer stack.
 video = ["dep:media", "media/decode"]
@@ -37,7 +38,7 @@ hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 
 # Optional decoders — see [features] above.
-pdfium-render = { version = "0.8.37", optional = true }
+tilo-pdf = { path = "../../doc/pdf", optional = true }
 media = { path = "../core", optional = true }
 
 [dev-dependencies]

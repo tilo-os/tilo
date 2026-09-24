@@ -138,7 +138,7 @@ fn pdf_save_request(suggested_name: &str) -> PickRequest {
         .thread_name("pdf-portal-save")
         .filter(pdf_filter())
 }
-/// Same budget for rail thumbnails, which are also full pdfium page renders (a
+/// Same budget for rail thumbnails, which are also full engine page renders (a
 /// scanned page's thumbnail can cost 15-30ms). A couple per frame keeps the
 /// rail filling in briskly without the open frame paying for a whole rail-full.
 const MAX_NEW_THUMB_RASTERS_PER_FRAME: usize = 2;
@@ -222,7 +222,7 @@ struct PanState {
     moved: bool,
 }
 
-/// A text selection over the real pdfium text layer (raster backend only). The
+/// A text selection over the real engine text layer (raster backend only). The
 /// anchor is where the drag began; the caret follows the pointer. Both are
 /// glyph indices into that page's [`PageText`]; selection stays within one page.
 #[derive(Clone, Copy)]
@@ -367,7 +367,7 @@ impl Editing {
 )]
 pub struct PdfApp {
     doc: Document,
-    /// Real page rasteriser (pdfium). `None` means no PDF is open and the
+    /// Real page rasteriser (the PDF engine). `None` means no PDF is open and the
     /// block model (the bundled sample, or the empty state) is shown.
     #[cfg(test)]
     raster: Option<crate::source::Rasterizer>,
@@ -507,7 +507,7 @@ pub struct PdfApp {
     active_match: usize,
     search_whole_word: bool,
     search_case_sensitive: bool,
-    /// Raster-backend search hits over the pdfium text layer. Used instead
+    /// Raster-backend search hits over the engine text layer. Used instead
     /// of `matches` (which searches the bundled sample's block model) when a PDF
     /// is open, so search highlights land on glyph rectangles.
     raster_matches: Vec<TextMatch>,
@@ -664,8 +664,8 @@ pub struct PdfApp {
 }
 
 impl PdfApp {
-    /// Open a real PDF from `path`, rasterising via pdfium. A failure —
-    /// including a host with no pdfium library — lands in the empty state
+    /// Open a real PDF from `path`, rendered by the PDF engine. A failure —
+    /// including a host without the engine — lands in the empty state
     /// with the error surfaced, rather than crashing.
     pub fn open(path: impl AsRef<std::path::Path>) -> Self {
         let path = path.as_ref();
@@ -797,7 +797,7 @@ impl PdfApp {
     }
 
     /// Screenshot-only: stage a settled text selection over page 1 (a synthetic
-    /// glyph layer so it needs no native pdfium) so a still frame shows the
+    /// glyph layer so it needs no PDF engine) so a still frame shows the
     /// shared selection HUD — highlight swatches + Copy + Note — over the page.
     pub fn arm_shots_selection(&mut self) {
         let text = "the keeper climbed the iron stair and set the great wick alight";
@@ -1804,7 +1804,7 @@ impl PdfApp {
         const MAX_IMPORT_BYTES: usize = 64 * 1024 * 1024;
         const MAX_IMPORT_PAGES: usize = 512;
         let Some(rz) = self.raster.as_ref() else {
-            self.status_note = Some("Importing pages needs the pdfium backend".to_string());
+            self.status_note = Some("Importing pages needs an open PDF".to_string());
             self.dirty = true;
             return false;
         };
@@ -1912,7 +1912,7 @@ impl PdfApp {
 
     fn request_import_via_portal(&mut self) {
         if !self.raster_active() {
-            self.status_note = Some("Importing pages needs the pdfium backend".to_string());
+            self.status_note = Some("Importing pages needs an open PDF".to_string());
             self.dirty = true;
             return;
         }
@@ -1968,7 +1968,7 @@ impl PdfApp {
         self.active_match = 0;
         #[cfg(test)]
         if let Some(rz) = self.raster.as_mut() {
-            // Raster backend: search the real pdfium text layer of every page.
+            // Raster backend: search the engine text layer of every page.
             self.matches.clear();
             let mut hits = Vec::new();
             let n = self.doc.page_count();
@@ -2171,7 +2171,7 @@ impl PdfApp {
         self.sel_anchor_range = (idx, idx + 1);
     }
 
-    /// The pdfium text layer for 1-based `page`, extracting it on demand and
+    /// The engine text layer for 1-based `page`, extracting it on demand and
     /// caching it into `raster_text` if the (deferred) per-frame refresh hasn't
     /// built it yet. This lets a text selection start on a freshly-opened or
     /// just-scrolled-to page without the reader having eagerly paid the
@@ -2425,9 +2425,9 @@ impl PdfApp {
     /// Ask the host portal for a save location (HIG §5 — never an in-app
     /// picker). A second request while one is in flight is ignored.
     fn request_save_via_portal(&mut self) {
-        // Saving flattens via pdfium; without an open PDF there is nothing to save.
+        // Saving exports through the PDF engine; without an open PDF there is nothing to save.
         if !self.raster_active() {
-            self.status_note = Some("Saving annotations needs the pdfium backend".to_string());
+            self.status_note = Some("Saving annotations needs an open PDF".to_string());
             self.dirty = true;
             return;
         }
@@ -2556,7 +2556,7 @@ impl PdfApp {
             }
         }
         let Some(rz) = self.raster.as_ref() else {
-            self.status_note = Some("Saving annotations needs the pdfium backend".to_string());
+            self.status_note = Some("Saving annotations needs an open PDF".to_string());
             self.dirty = true;
             return false;
         };
@@ -2993,7 +2993,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// The live selection's page-point bands (real pdfium glyph boxes), for
+    /// The live selection's page-point bands (real engine glyph boxes), for
     /// creating highlights from a text selection.
     fn selection_page_bands(&self) -> Vec<PtRect> {
         let Some(sel) = self.selection else {
@@ -7693,7 +7693,7 @@ mod tests {
 
     #[test]
     #[serial(pdfium)]
-    fn save_back_flattens_markup_into_a_reopenable_pdf() {
+    fn save_back_writes_markup_as_real_pdf_annotations() {
         let Some(mut app) = open_raster_sample() else {
             return;
         };
@@ -7703,12 +7703,7 @@ mod tests {
         app.recompute_regions();
         app.sync_viewport_frame();
 
-        let before = app
-            .raster
-            .as_ref()
-            .unwrap()
-            .page_object_count(0)
-            .expect("page 1 object count");
+        let before = app.raster.as_ref().unwrap().page_annotations(0).len();
 
         // Place a highlight, a sticky note with a body, and a signature on page
         // 1 — all through the reader's real mutation methods.
@@ -7737,7 +7732,6 @@ mod tests {
         );
         assert!(app.signatures.iter().any(|s| s.signer == "Grace Hopper"));
 
-        // Flatten + write a real .pdf to disk.
         let out = std::env::temp_dir()
             .join("tilo_pdf_saveback")
             .join("annotated.pdf");
@@ -7749,32 +7743,28 @@ mod tests {
             app.status_note
         );
         assert!(out.exists(), "the annotated .pdf exists on disk");
-        assert!(
-            std::fs::metadata(&out).unwrap().len() > 0,
-            "and is non-empty"
-        );
 
-        // Reopen the saved file with a fresh pdfium document: page 1 gained
-        // content objects, and the signer name + note body are extractable text
-        // (so any viewer sees them).
+        // Reopen the saved file: page 1 carries the markup as standard PDF
+        // annotations (a highlight, a note holding the comment text, and a
+        // stamp for the signature) that any viewer reads back.
         let reopened = crate::source::open(&out).expect("the saved PDF reopens");
-        let mut rz = reopened.raster;
-        let after = rz
-            .page_object_count(0)
-            .expect("reopened page 1 object count");
+        let annotations = reopened.raster.page_annotations(0);
         assert!(
-            after > before,
-            "flattening added page content ({before} -> {after})"
-        );
-        let text = rz.page_text(0).text.clone();
-        assert!(
-            text.contains("Grace Hopper"),
-            "the signer name is baked into the saved page text: {text:?}"
+            annotations.len() >= before + 3,
+            "markup became annotations ({before} -> {})",
+            annotations.len()
         );
         assert!(
-            text.contains("Check this claim"),
-            "the note body is baked into the saved page text"
+            annotations
+                .iter()
+                .any(|a| a.kind == tilo_pdf::AnnotationKind::Highlight)
         );
+        assert!(annotations.iter().any(|a| {
+            a.kind == tilo_pdf::AnnotationKind::Text && a.contents.contains("Check this claim")
+        }));
+        assert!(annotations.iter().any(|a| {
+            a.kind == tilo_pdf::AnnotationKind::Stamp && a.contents.contains("Grace Hopper")
+        }));
     }
 
     /// Prepare an opened raster sample for page-editing tests: sync + lay out so
@@ -7799,7 +7789,7 @@ mod tests {
             "a successful save clears the page-dirty flag"
         );
         crate::source::open(&out)
-            .expect("the edited PDF reopens via pdfium")
+            .expect("the edited PDF reopens")
             .raster
     }
 
@@ -8234,16 +8224,20 @@ mod tests {
         let mut st2 = ui::State::new();
         let p_reopen = shot("real_reopened_saved.png");
         full_frame(&mut app2, &mut st2, 1280.0, 800.0, Some(p_reopen.as_str()));
-        let baked = app2.raster.as_mut().unwrap().page_text(0).text.clone();
-        assert!(
-            baked.contains("Grace Hopper"),
-            "reopened saved file carries the signature text"
-        );
+        let signed = app2
+            .raster
+            .as_ref()
+            .unwrap()
+            .page_annotations(0)
+            .iter()
+            .any(|a| {
+                a.kind == tilo_pdf::AnnotationKind::Stamp && a.contents.contains("Grace Hopper")
+            });
+        assert!(signed, "reopened saved file carries the signature stamp");
         eprintln!(
-            "DRIVE real-pdf: word={word:?}  hits={}  saved={}  reopened-has-signature={}",
+            "DRIVE real-pdf: word={word:?}  hits={}  saved={}  reopened-has-signature={signed}",
             app.raster_matches.len(),
             out.display(),
-            baked.contains("Grace Hopper")
         );
     }
 }

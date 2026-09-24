@@ -1,4 +1,4 @@
-//! The per-page **text layer** that sits on top of a rasterised (pdfium) page.
+//! The per-page **text layer** that sits on top of a rendered page.
 //!
 //! The raster backend paints each page as a bitmap, which alone carries no
 //! machine-readable text — so search finds nothing and there is nothing to
@@ -10,9 +10,11 @@
 //!
 //! Everything here is pure data + geometry in **page-point space** (origin at
 //! the page's top-left, y increasing downward — the same convention the rest of
-//! the reader uses). The pdfium extraction that *produces* a [`PageText`] lives
-//! in [`crate::source`]; keeping the two apart lets all of this be unit-tested
-//! without a native library.
+//! the reader uses). A real page's layer comes from the PDF engine
+//! ([`tilo_pdf::TextLayer`]): its glyphs are already in reading order with
+//! ligatures expanded, and copy and highlight bands go through the engine's
+//! layer so hyphenation, right-to-left lines and columns behave. The
+//! geometry here also works on its own, which keeps it unit-testable.
 
 use crate::model::{PtRect, SearchOptions};
 
@@ -32,6 +34,9 @@ pub struct CharBox {
 pub struct PageText {
     pub text: String,
     pub chars: Vec<CharBox>,
+    /// The engine's analysed layer this text came from, index-aligned with
+    /// `chars`; `None` for synthetic text.
+    pub layer: Option<std::sync::Arc<tilo_pdf::TextLayer>>,
 }
 
 /// A search hit expressed as a run of glyphs on a page. `page` is 1-based to
@@ -60,7 +65,39 @@ impl PageText {
                 byte_start,
             });
         }
-        PageText { text, chars }
+        PageText {
+            text,
+            chars,
+            layer: None,
+        }
+    }
+
+    /// The reader's view of an engine text layer. Positions are shared: glyph
+    /// `i` here is character `i` of `layer`.
+    pub fn from_layer(layer: std::sync::Arc<tilo_pdf::TextLayer>) -> Self {
+        let mut page = Self::from_glyphs(layer.chars().iter().map(|c| {
+            (
+                c.ch,
+                PtRect::new(
+                    f64::from(c.rect.x0),
+                    f64::from(c.rect.y0),
+                    f64::from(c.rect.width()),
+                    f64::from(c.rect.height()),
+                ),
+            )
+        }));
+        page.layer = Some(layer);
+        page
+    }
+
+    /// The engine char index (stable for a given document) of glyph `i`.
+    pub fn source_index(&self, i: usize) -> Option<u32> {
+        let layer = self.layer.as_ref()?;
+        layer
+            .chars()
+            .get(i)
+            .map(|c| c.source)
+            .filter(|s| *s != u32::MAX)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -92,6 +129,9 @@ impl PageText {
     /// the same visual row within `row_tol` points, else `None`. This is the
     /// hit-test a selection drag uses to find where the caret landed.
     pub fn char_at(&self, x: f64, y: f64) -> Option<usize> {
+        if let Some(layer) = &self.layer {
+            return layer.hit_test(tilo_pdf::Point::new(x as f32, y as f32));
+        }
         // Exact containment first.
         for (i, c) in self.chars.iter().enumerate() {
             if c.rect.w > 0.0 && c.rect.h > 0.0 && c.rect.contains(x, y) {
@@ -137,6 +177,20 @@ impl PageText {
     /// the tidy bands a reader draws for a selection or a search hit. Rows are
     /// split where a glyph's vertical band no longer overlaps the running row.
     pub fn bands_for_range(&self, start: usize, end: usize) -> Vec<PtRect> {
+        if let Some(layer) = &self.layer {
+            return layer
+                .rects_for(&layer.select_range(start..end))
+                .into_iter()
+                .map(|r| {
+                    PtRect::new(
+                        f64::from(r.x0),
+                        f64::from(r.y0),
+                        f64::from(r.width()),
+                        f64::from(r.height()),
+                    )
+                })
+                .collect();
+        }
         let end = end.min(self.chars.len());
         if start >= end {
             return Vec::new();
@@ -227,6 +281,9 @@ impl PageText {
     /// The text of the glyph run `[start, end)` — what a copy of the selection
     /// yields.
     pub fn text_for_range(&self, start: usize, end: usize) -> String {
+        if let Some(layer) = &self.layer {
+            return layer.text_for(&layer.select_range(start..end));
+        }
         let end = end.min(self.chars.len());
         if start >= end {
             return String::new();
