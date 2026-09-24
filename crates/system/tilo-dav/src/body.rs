@@ -42,6 +42,7 @@ pub mod props {
     pub const GETCONTENTLENGTH: PropName = PropName::dav("getcontentlength");
     pub const GETCONTENTTYPE: PropName = PropName::dav("getcontenttype");
     pub const GETETAG: PropName = PropName::dav("getetag");
+    pub const GETLASTMODIFIED: PropName = PropName::dav("getlastmodified");
     pub const RESOURCETYPE: PropName = PropName::dav("resourcetype");
     pub const SYNC_TOKEN: PropName = PropName::dav("sync-token");
     pub const CALENDAR_DATA: PropName = PropName::caldav("calendar-data");
