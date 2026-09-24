@@ -808,14 +808,14 @@ impl PdfApp {
         }
     }
 
-    /// Populate `self.raster_text` with the pdfium text layer of the pages
-    /// currently in view (raster backend only). pdfium's own text-page cache
+    /// Populate `self.raster_text` with the engine text layer of the pages
+    /// currently in view (raster backend only). The engine's own text-page cache
     /// makes repeated frames cheap; only a page scrolling into view does work.
     fn refresh_raster_text(&mut self) {
         if !self.raster_active() {
             return;
         }
-        // The pdfium text layer only feeds the selection + search-hit overlays
+        // The engine text layer only feeds the selection + search-hit overlays
         // and is expensive to extract (hundreds of ms per page). On an idle or
         // scroll frame — no selection, no search hits — skip it entirely so
         // opening a document and scrolling stay smooth. A selection that starts
@@ -1318,7 +1318,7 @@ impl PdfApp {
 
     /// Draw the raster text-layer overlays for one page: every search hit as a
     /// translucent band (the active hit emphasised) and the live selection as
-    /// an accent band. All rectangles come from the real pdfium glyph boxes, so
+    /// an accent band. All rectangles come from the real engine glyph boxes, so
     /// they sit exactly over the printed characters.
     fn draw_text_overlays(
         &self,
@@ -1543,7 +1543,7 @@ impl PdfApp {
         // The shared page rail draws the panel, thumbnails, selection ring,
         // index numbers, drag reflow + ghost, scrollbar, context menu and the
         // "Import…" affordance. It renders the host's page content through this
-        // closure — a real pdfium bitmap when the raster backend has one,
+        // closure — a real engine bitmap when the raster backend has one,
         // otherwise the abstract block sketch. Move the rail out of `self` so
         // the closure can borrow the (immutable) document alongside it.
         let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(1.0));
@@ -1624,8 +1624,8 @@ impl PdfApp {
             },
         );
 
-        // Save annotated PDF (tray/down-arrow). Dimmed until a document with the
-        // pdfium backend is open, since flattening needs pdfium.
+        // Save annotated PDF (tray/down-arrow). Dimmed until a document is open in
+        // the PDF engine, since the export runs there.
         let can_save = self.has_document && self.raster_active();
         Self::icon_button_bg(
             scene,
