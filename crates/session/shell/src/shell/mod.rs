@@ -127,7 +127,7 @@ use ui::widget::context_menu::MenuItem;
 use ui::widget::toast::ToastStack;
 use ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
-    TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
+    TileContent as UiTile, Widget, WindowGroup as UiGroup, WorkspaceView,
     context_menu::ContextMenu,
 };
 
@@ -898,10 +898,6 @@ fn default_demo_tabs(
     }
 }
 
-fn to_ui_width(w: state::WindowWidth) -> UiWidth {
-    state::window_width_to_ui(w)
-}
-
 fn to_ui_kind(k: &ShellKind) -> UiKind {
     // `ui::AppKind` has only five variants; the shell's own `AppKind` still
     // carries `FileExplorer` and `Other(String)` for v1 compatibility.
@@ -1211,8 +1207,8 @@ pub fn to_ui_window_group_with_inputs(
             )
         })
         .collect();
-    let mut group = UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
-        .with_maximized(g.maximized);
+    let mut group =
+        UiGroup::new(g.id, tabs_with_content, g.active_tab, g.width).with_maximized(g.maximized);
     // Every tab gets its own document before it is ever synced, so no
     // hosted app writes a keystroke into the shell's own state.
     tab_documents::bind_group_records(&mut group, records);

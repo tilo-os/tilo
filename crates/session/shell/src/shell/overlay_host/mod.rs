@@ -18008,7 +18008,7 @@ fn build_state_group_from_widget(
         })
         .collect();
     let active_tab = widget.active_tab_id();
-    let width = crate::shell::state::window_width_from_ui(widget.width());
+    let width = widget.width();
     StateGroup {
         id: widget.id,
         tabs,

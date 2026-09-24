@@ -14805,6 +14805,7 @@ dependencies = [
  "thiserror 2.0.18",
  "threshold-identity",
  "tilo-actions",
+ "tilo-desktop-model",
  "tilo-headless-schema",
  "tilo-startup-metrics",
  "tilo-ui-graph",
