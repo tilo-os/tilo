@@ -154,6 +154,7 @@ fn failed(f: crate::pdfium::Failure) -> Response {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "one arm per protocol request")]
 fn handle(
     channel: &mut Channel,
     engine: &mut Engine,
@@ -259,6 +260,15 @@ fn handle(
             Err(e) => channel.send(&failed(e)),
         },
         Request::Probe { path } => channel.send(&Response::Probe(Engine::probe(&path))),
+        Request::Abort => {
+            if cfg!(debug_assertions) {
+                std::process::abort();
+            }
+            channel.send(&Response::Failed {
+                kind: FailureKind::Invalid,
+                message: "not a development build".into(),
+            })
+        }
     }
 }
 

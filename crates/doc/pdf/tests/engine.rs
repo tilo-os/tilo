@@ -327,21 +327,18 @@ fn a_crashed_helper_is_an_error_and_restarts() {
     let Some(engine) = engine() else { return };
     let doc = engine.open_bytes(&fixture("multipage.pdf")).unwrap();
     assert!(doc.render(0, &RenderOptions::default()).is_ok());
-    let pid = engine.helper_pid().expect("helper running");
-    // SAFETY: signalling the helper child this test's engine started.
-    assert_eq!(unsafe { libc::kill(pid.cast_signed(), libc::SIGKILL) }, 0);
-    let err = doc
-        .render(1, &RenderOptions::default())
-        .expect_err("in-flight request fails");
+    let first = engine.helper_pid().expect("helper running");
+    // The helper dies while handling a request: that request fails...
+    let err = engine.crash_helper_for_test().expect("sandboxed engine");
     assert!(matches!(err, Error::Crashed(_)), "{err:?}");
     assert!(err.is_transient());
-    // The next request starts a new helper and re-opens the document.
+    // ...and the next one starts a new helper and re-opens the document.
     let bitmap = doc
         .render(1, &RenderOptions::default())
         .expect("restarted helper renders");
     assert!(bitmap.width() > 0);
     assert_eq!(engine.helpers_started(), 2);
-    assert_ne!(engine.helper_pid(), Some(pid));
+    assert_ne!(engine.helper_pid(), Some(first));
     assert_eq!(
         doc.text(2)
             .unwrap()
@@ -349,6 +346,23 @@ fn a_crashed_helper_is_an_error_and_restarts() {
             .len(),
         1
     );
+}
+
+#[test]
+fn a_helper_killed_between_requests_is_replaced() {
+    let Some(engine) = engine() else { return };
+    let doc = engine.open_bytes(&fixture("latin.pdf")).unwrap();
+    assert!(doc.render(0, &RenderOptions::default()).is_ok());
+    let pid = engine.helper_pid().expect("helper running");
+    // SAFETY: signalling the helper child this test's engine started.
+    assert_eq!(unsafe { libc::kill(pid.cast_signed(), libc::SIGKILL) }, 0);
+    // A request racing the kill may see the helper die under it; at most
+    // that one fails, and the document keeps working.
+    let outcomes: Vec<bool> = (0..3)
+        .map(|_| doc.render(0, &RenderOptions::default()).is_ok())
+        .collect();
+    assert!(outcomes[1] && outcomes[2], "{outcomes:?}");
+    assert_ne!(engine.helper_pid(), Some(pid));
 }
 
 #[test]
@@ -486,6 +500,58 @@ fn export_round_trips_annotations_forms_and_page_operations() {
     assert!(
         yellow > 50,
         "highlight visible after reload ({yellow} yellow pixels)"
+    );
+}
+
+#[test]
+fn stamps_carry_their_own_appearance() {
+    let Some(engine) = engine() else { return };
+    let doc = engine.open_bytes(&fixture("latin.pdf")).unwrap();
+    let edits = Edits {
+        annotations: vec![NewAnnotation {
+            page: 0,
+            kind: NewAnnotationKind::Stamp {
+                rect: Rect::from_xywh(40.0, 20.0, 160.0, 50.0),
+                strokes: vec![vec![
+                    Point::new(45.0, 40.0),
+                    Point::new(120.0, 60.0),
+                    Point::new(190.0, 35.0),
+                ]],
+                stroke_width: 2.0,
+                text: vec![tilo_pdf::StampText {
+                    at: Point::new(45.0, 24.0),
+                    size: 9.0,
+                    text: "Ada Lovelace".into(),
+                }],
+            },
+            color: Rgba::new(20, 30, 200, 255),
+            author: "Ada".into(),
+            contents: "Signed".into(),
+            name: "sig-1".into(),
+            modified: String::new(),
+        }],
+        ..Edits::default()
+    };
+    let out = doc.export(&edits, &[]).unwrap();
+    let reloaded = engine.open_bytes(&out).unwrap();
+    let annots = reloaded.annotations(0).unwrap();
+    assert!(
+        annots
+            .iter()
+            .any(|a| a.kind == AnnotationKind::Stamp && a.name == "sig-1")
+    );
+    let size = reloaded.page_size(0).unwrap();
+    let bitmap = reloaded
+        .render(0, &RenderOptions::fit_width(size, 600))
+        .unwrap();
+    let blue = bitmap
+        .pixels()
+        .chunks(4)
+        .filter(|p| p[2] > 150 && p[0] < 100 && p[1] < 120)
+        .count();
+    assert!(
+        blue > 40,
+        "stamp strokes drawn after reload ({blue} blue pixels)"
     );
 }
 

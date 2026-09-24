@@ -1392,7 +1392,7 @@ impl Engine {
                     "loading a page to annotate failed",
                 ));
             }
-            let added = self.add_annotation(page, annotation);
+            let added = self.add_annotation(copy, page, annotation);
             api.FPDF_ClosePage(page);
             added?;
             if !annotated.contains(&annotation.page) {
@@ -1429,7 +1429,7 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_lines, reason = "one arm per annotation kind")]
-    fn add_annotation(&self, page: FPDF_PAGE, a: &NewAnnotation) -> Result<()> {
+    fn add_annotation(&self, doc: FPDF_DOCUMENT, page: FPDF_PAGE, a: &NewAnnotation) -> Result<()> {
         let api = self.api();
         let (sub, quads) = match &a.kind {
             NewAnnotationKind::Highlight { quads } => (subtype::HIGHLIGHT, Some(quads)),
@@ -1439,6 +1439,7 @@ impl Engine {
             NewAnnotationKind::Note { .. } => (subtype::TEXT, None),
             NewAnnotationKind::Ink { .. } => (subtype::INK, None),
             NewAnnotationKind::FreeText { .. } => (subtype::FREETEXT, None),
+            NewAnnotationKind::Stamp { .. } => (subtype::STAMP, None),
         };
         let annot = api.FPDFPage_CreateAnnot(page, sub);
         if annot.is_null() {
@@ -1517,6 +1518,7 @@ impl Engine {
                 );
                 api.FPDFAnnot_SetStringValue_str(annot, "DA", &da);
             }
+            NewAnnotationKind::Stamp { rect, .. } => bounds = Some(*rect),
             _ => {}
         }
         let Some(bounds) = bounds.filter(Rect::is_finite) else {
@@ -1525,6 +1527,16 @@ impl Engine {
         let rect = to_fs_rect(bounds);
         if api.FPDFAnnot_SetRect(annot, &raw const rect) == 0 {
             return fail("setting the annotation rectangle failed");
+        }
+        if let NewAnnotationKind::Stamp {
+            strokes,
+            stroke_width,
+            text,
+            ..
+        } = &a.kind
+            && !self.stamp_appearance(doc, annot, a.color, strokes, *stroke_width, text)
+        {
+            return fail("drawing the stamp appearance failed");
         }
         if !matches!(a.kind, NewAnnotationKind::FreeText { .. }) {
             let c = a.color;
@@ -1551,6 +1563,67 @@ impl Engine {
         }
         api.FPDFPage_CloseAnnot(annot);
         Ok(())
+    }
+
+    /// Build a stamp's appearance from page objects; pdfium writes them as
+    /// the annotation's appearance stream with the resources they need.
+    fn stamp_appearance(
+        &self,
+        doc: FPDF_DOCUMENT,
+        annot: FPDF_ANNOTATION,
+        color: Rgba,
+        strokes: &[Vec<Point>],
+        stroke_width: f32,
+        text: &[crate::edits::StampText],
+    ) -> bool {
+        const FILL_NONE: c_int = 0;
+        const ROUND: c_int = 1;
+        let api = self.api();
+        let [red, green, blue, alpha] = [color.r, color.g, color.b, color.a].map(u32::from);
+        for stroke in strokes {
+            let Some((first, rest)) = stroke.split_first() else {
+                continue;
+            };
+            let path = api.FPDFPageObj_CreateNewPath(first.x, first.y);
+            if path.is_null() {
+                return false;
+            }
+            for p in rest {
+                api.FPDFPath_LineTo(path, p.x, p.y);
+            }
+            api.FPDFPageObj_SetStrokeColor(path, red, green, blue, alpha);
+            api.FPDFPageObj_SetStrokeWidth(path, stroke_width.max(0.1));
+            api.FPDFPageObj_SetLineCap(path, ROUND);
+            api.FPDFPageObj_SetLineJoin(path, ROUND);
+            api.FPDFPath_SetDrawMode(path, FILL_NONE, 1);
+            if api.FPDFAnnot_AppendObject(annot, path) == 0 {
+                api.FPDFPageObj_Destroy(path);
+                return false;
+            }
+        }
+        for line in text.iter().filter(|l| !l.text.is_empty()) {
+            let obj = api.FPDFPageObj_NewTextObj(doc, "Helvetica", line.size.max(1.0));
+            if obj.is_null() {
+                return false;
+            }
+            let w = wide(&line.text);
+            api.FPDFText_SetText(obj, w.as_ptr());
+            api.FPDFPageObj_SetFillColor(obj, red, green, blue, alpha);
+            api.FPDFPageObj_Transform(
+                obj,
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                f64::from(line.at.x),
+                f64::from(line.at.y),
+            );
+            if api.FPDFAnnot_AppendObject(annot, obj) == 0 {
+                api.FPDFPageObj_Destroy(obj);
+                return false;
+            }
+        }
+        true
     }
 
     fn apply_form_values(&self, doc: FPDF_DOCUMENT, form: FPDF_FORMHANDLE, edits: &Edits) {

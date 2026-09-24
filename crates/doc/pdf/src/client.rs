@@ -113,9 +113,21 @@ struct Connection {
 }
 
 impl Connection {
-    fn kill(mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+    /// Stop the helper and describe how it ended.
+    fn kill(mut self) -> String {
+        let status = if let Ok(Some(status)) = self.child.try_wait() {
+            Some(status)
+        } else {
+            let _ = self.child.kill();
+            self.child.wait().ok()
+        };
+        status.map_or_else(|| "unknown exit".to_string(), |s| s.to_string())
+    }
+
+    /// Whether the helper has already exited (it may die between requests,
+    /// for example after a request it answered brought it down on exit).
+    fn exited(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(Some(_)))
     }
 }
 
@@ -189,8 +201,7 @@ impl Sandboxed {
                 command.env(key, value);
             }
         }
-        let child = command
-            .spawn()
+        let child = spawn_from_spawner_thread(command)
             .map_err(|e| Error::Unavailable(format!("starting {}: {e}", self.helper.display())))?;
         ours.set_read_timeout(Some(START_TIMEOUT))
             .map_err(Error::Io)?;
@@ -202,19 +213,19 @@ impl Sandboxed {
         match connection.channel.recv::<Response>() {
             Ok(Response::Ready { version }) if version == PROTOCOL_VERSION => {}
             Ok(Response::Failed { message, .. }) => {
-                connection.kill();
+                let _ = connection.kill();
                 return Err(Error::Unavailable(format!(
                     "the PDF helper could not start: {message}"
                 )));
             }
             Ok(_) => {
-                connection.kill();
+                let _ = connection.kill();
                 return Err(Error::Unavailable(
                     "the PDF helper speaks another protocol".into(),
                 ));
             }
             Err(e) => {
-                connection.kill();
+                let _ = connection.kill();
                 return Err(Error::Unavailable(format!(
                     "the PDF helper did not start: {e}"
                 )));
@@ -260,6 +271,7 @@ impl Sandboxed {
     /// Make sure a live helper has document `id` open. Returns the info when
     /// this call opened it.
     fn ensure_open(&self, state: &mut State, id: u64) -> Result<Option<DocumentInfo>, Error> {
+        self.ensure_running(state)?;
         if state.connection.is_none() {
             let connection = self.spawn(state)?;
             state.connection = Some(connection);
@@ -293,6 +305,22 @@ impl Sandboxed {
             }
             (other, _) => Err(unexpected(&other)),
         }
+    }
+
+    /// Replace a helper that has exited since the last request with a fresh
+    /// one, so a request that never reached the dead helper does not fail.
+    fn ensure_running(&self, state: &mut State) -> Result<(), Error> {
+        if state.connection.as_mut().is_some_and(Connection::exited)
+            && let Some(dead) = state.connection.take()
+        {
+            let how = dead.kill();
+            eprintln!("tilo-pdf: the PDF helper exited between requests ({how}); restarting");
+        }
+        if state.connection.is_none() {
+            let connection = self.spawn(state)?;
+            state.connection = Some(connection);
+        }
+        Ok(())
     }
 
     /// Send one request (after its optional descriptor) and read the reply.
@@ -331,9 +359,10 @@ impl Sandboxed {
                     e.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 );
-                if let Some(connection) = state.connection.take() {
-                    connection.kill();
-                }
+                let how = state
+                    .connection
+                    .take()
+                    .map_or_else(String::new, Connection::kill);
                 for id in docs {
                     if let Some(entry) = state.docs.get_mut(id) {
                         entry.crashes = entry.crashes.saturating_add(1);
@@ -342,7 +371,7 @@ impl Sandboxed {
                 Err(if timed_out {
                     Error::Timeout
                 } else {
-                    Error::Crashed(format!("the PDF helper stopped: {e}"))
+                    Error::Crashed(format!("the PDF helper stopped ({how}): {e}"))
                 })
             }
         }
@@ -355,6 +384,7 @@ impl Sandboxed {
         timeout: Duration,
     ) -> Result<(Response, Payload), Error> {
         let mut state = self.lock();
+        self.ensure_running(&mut state)?;
         for id in docs {
             self.ensure_open(&mut state, *id)?;
         }
@@ -548,6 +578,14 @@ impl Sandboxed {
         }
     }
 
+    /// Send the development-only abort request.
+    pub fn abort_helper(&self) -> Error {
+        match self.call(&[], &Request::Abort, REQUEST_TIMEOUT) {
+            Ok((other, _)) => unexpected(&other),
+            Err(e) => e,
+        }
+    }
+
     /// Process id of the live helper, if one is running.
     pub fn helper_pid(&self) -> Option<u32> {
         self.lock().connection.as_ref().map(|c| c.child.id())
@@ -563,9 +601,44 @@ impl Drop for Sandboxed {
     fn drop(&mut self) {
         let connection = self.lock().connection.take();
         if let Some(connection) = connection {
-            connection.kill();
+            let _ = connection.kill();
         }
     }
+}
+
+/// Start a helper from one thread that lives as long as the process.
+///
+/// The helper asks the kernel to kill it when its parent goes away
+/// (`PR_SET_PDEATHSIG`), and "parent" there means the *thread* that forked
+/// it. Spawning from whichever thread happened to need a helper would kill
+/// the helper as soon as that thread finished.
+fn spawn_from_spawner_thread(command: Command) -> std::io::Result<Child> {
+    type Job = (Command, std::sync::mpsc::Sender<std::io::Result<Child>>);
+    static SPAWNER: std::sync::OnceLock<Mutex<std::sync::mpsc::Sender<Job>>> =
+        std::sync::OnceLock::new();
+    let sender = SPAWNER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let started = std::thread::Builder::new()
+            .name("tilo-pdf-spawner".into())
+            .spawn(move || {
+                for (mut command, reply) in rx {
+                    let _ = reply.send(command.spawn());
+                }
+            });
+        if let Err(e) = started {
+            eprintln!("tilo-pdf: cannot start the helper spawner thread: {e}");
+        }
+        Mutex::new(tx)
+    });
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    sender
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .send((command, reply_tx))
+        .map_err(|_| std::io::Error::other("the helper spawner thread is gone"))?;
+    reply_rx
+        .recv()
+        .map_err(|_| std::io::Error::other("the helper spawner thread is gone"))?
 }
 
 fn unexpected(response: &Response) -> Error {
