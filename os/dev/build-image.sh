@@ -38,6 +38,7 @@
 #         the UKI sealing it, and installs again. Only the UKI stage rebuilds — the
 #         rootfs digest is unchanged, which is why two passes converge.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+warn_slow_podman_storage
 
 # Fail loudly: a broken container build must NOT silently fall through to imaging
 # a stale container (which previously produced a misleadingly "successful" qcow2
