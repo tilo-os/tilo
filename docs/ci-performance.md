@@ -53,6 +53,21 @@ release selection and the coordinator's trusted source hashes. Actual verifier
 changes still require current acceptance and currently rebuild apps; reusing
 binaries for verification-only changes remains separate work.
 
+Root `Cargo.lock` and `Cargo.toml` changes are attributed rather than treated
+as repository-wide when the difference can be proved. Changed, added or removed
+lockfile records are propagated through the old and new locked graphs (which
+cover every feature, target and dependency kind); workspace packages whose own
+record changed or that depend directly on a changed external record are tested,
+and every package the change reaches is checked with its reverse dependencies.
+In the root manifest, `[workspace] members` edits select the added members and
+the dependants of removed ones, and `[workspace.dependencies]` edits select the
+members using those dependencies. Everything else (lints, profiles, patches,
+`workspace.package`, `exclude`, glob members, a malformed or missing file, or a
+lockfile header change) and every other global input keep the full workspace.
+The native dependency job runs for an attributed lockfile change only when it
+reaches the vendored `openh264-sys2` graph. App release planning shares the
+same lockfile attribution.
+
 To inspect the committed branch's selection locally, without starting a build
 or requesting a runner, run from the checkout:
 
