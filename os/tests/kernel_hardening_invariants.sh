@@ -813,7 +813,7 @@ for required in \
   'LimitCORE=0' \
   'NoNewPrivileges=yes' \
   'KeyringMode=private' \
-  'CapabilityBoundingSet=CAP_SYS_ADMIN' \
+  'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH' \
   'AmbientCapabilities=' \
   'DevicePolicy=closed' \
   'DeviceAllow=/dev/fuse rw' \
