@@ -59,6 +59,7 @@ private-fs = { path = "../../crates/system/private-fs" }
 # Render otpauth QR codes in tests to exercise the rqrr decode path.
 qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

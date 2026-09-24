@@ -68,6 +68,7 @@ mod tests {
     use super::*;
     use automerge::{ReadDoc, Value};
     use tilo_automerge::ApplyIncoming;
+    use ui::widget::Widget;
 
     fn note(doc: &Doc) -> String {
         doc.get(&ROOT, "store.report_note.so.tilo.notes")
@@ -76,6 +77,81 @@ mod tests {
             .and_then(|id| doc.text(&id).ok())
             .unwrap_or_default()
     }
+
+    fn registry() -> ActionRegistry {
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+    }
+
+    fn encode(action: &StoreDocumentAction) -> tilo_actions::EncodedAction {
+        tilo_actions::EncodedAction::encode(STORE_DOCUMENT_ACTION_TYPE, action)
+            .expect("store document actions serialize")
+    }
+
+    /// The Store as the live host holds it: the screenshot catalogue, with
+    /// report records hydrated from `doc` the way every frame's `sync` does.
+    fn synced_app(doc: &mut Doc) -> crate::app::StoreApp {
+        let mut app = crate::app::StoreApp::new();
+        app.set_flatpak_available(true);
+        app.set_items(crate::shots::fixture_catalog());
+        app.sync(doc, &ROOT);
+        app.sync(doc, &ROOT);
+        app
+    }
+
+    /// A document holding one report draft for Notes, written by the
+    /// dispatched draft action and then reconciled by the app's own sync
+    /// (which materialises the draft's shared note text).
+    fn seeded_doc() -> Doc {
+        let mut doc = Doc::new();
+        let draft = StoreDocumentAction::CreateReportDraft {
+            app_id: "so.tilo.notes".into(),
+        };
+        tilo_actions::apply_local(&mut doc, &draft, encode(&draft)).expect("draft applies");
+        synced_app(&mut doc);
+        doc.commit();
+        doc
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| synced_app(&mut doc.clone()).resources(doc),
+        palette: ["Create report draft", "Set report concern", "Refresh catalog", "Search apps"],
+        replay: [
+            draft_report => |_| encode(&StoreDocumentAction::CreateReportDraft {
+                app_id: "so.tilo.terminal".into(),
+            }),
+            set_report_note => |_| encode(&StoreDocumentAction::SetReportNote {
+                app_id: "so.tilo.notes".into(),
+                note: "The listing omits a network dependency.".into(),
+            }),
+        ],
+        undo: [
+            set_report_note => |_| encode(&StoreDocumentAction::SetReportNote {
+                app_id: "so.tilo.notes".into(),
+                note: "The listing omits a network dependency.".into(),
+            }),
+            draft_report => |_| encode(&StoreDocumentAction::CreateReportDraft {
+                app_id: "so.tilo.files".into(),
+            }),
+        ],
+        encodes: [
+            draft_report => ("app:so.tilo.terminal", "draft-report", |_, _| {
+                encode(&StoreDocumentAction::CreateReportDraft {
+                    app_id: "so.tilo.terminal".into(),
+                })
+            }),
+            set_report_note => ("report:so.tilo.notes", "set-note", arg: "Unsigned binary", |_, _| {
+                encode(&StoreDocumentAction::SetReportNote {
+                    app_id: "so.tilo.notes".into(),
+                    note: "Unsigned binary".into(),
+                })
+            }),
+        ],
+    }
+
     #[test]
     fn report_draft_is_a_replayable_document_resource() {
         let mut doc = Doc::new();

@@ -293,7 +293,6 @@ pub fn export_selected_spec() -> ActionSpec {
     .expect("unit payload serializes")
     .with_contract(ActionContract {
         discovery: DiscoveryScope::Launchable,
-        execution: tilo_actions::ExecutionMode::Background { cancellable: false },
         tags: vec!["appearance".into(), "theme".into(), "export".into()],
         ..ActionContract::default()
     })
@@ -544,7 +543,6 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             .expect("theme id is serializable")
             .with_contract(ActionContract {
                 discovery: DiscoveryScope::Launchable,
-                execution: tilo_actions::ExecutionMode::Background { cancellable: false },
                 tags: vec!["appearance".into(), "theme".into(), "export".into()],
                 ..ActionContract::default()
             }),
@@ -649,27 +647,14 @@ impl ResourceProvider for crate::app::ThemesApp {
 mod tests {
     use super::*;
     use crate::app::ThemesApp;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
+    use ui::testing::action_contract::{find_spec, spec_encoding};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
     }
 
     /// A document seeded with the demo catalog (the presets plus one editable
@@ -682,6 +667,42 @@ mod tests {
 
     fn catalog(doc: &AutoCommit) -> Vec<ThemeSpec> {
         doc::load_catalog(doc, &ROOT).unwrap()
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| provide_resources(doc),
+        palette: ["New theme", "Apply as system theme", "Delete theme", "Rename theme"],
+        replay: [
+            create_theme => |_| encode(&upsert_custom_theme_action(&new_theme_spec(
+                "11112222-3333-4444-5555-666677778888",
+                "Ocean",
+                200,
+            ))),
+            recolor => |_| encode(&set_custom_theme_token_action(
+                "sunset",
+                TokenId::Accent,
+                [1, 2, 3],
+            )),
+        ],
+        undo: [
+            delete_custom => |_| encode(&delete_custom_theme_action("sunset")),
+        ],
+        encodes: [
+            delete => ("themes.theme:sunset", "delete", |_, _| {
+                encode(&delete_custom_theme_action("sunset"))
+            }),
+            reset => ("themes.theme:sunset", "reset", |_, _| {
+                encode(&reset_custom_theme_action("sunset"))
+            }),
+            rename => ("themes.theme:sunset", "edit", arg: "Twilight", |_, _| {
+                encode(&set_custom_theme_name_action("sunset", "Twilight"))
+            }),
+            set_accent => ("themes.theme:sunset", "set-accent", arg: "#010203", |_, _| {
+                encode(&set_custom_theme_token_action("sunset", TokenId::Accent, [1, 2, 3]))
+            }),
+        ],
     }
 
     /// Ctrl+K on Themes yields the tree: the library with a "New theme" action,
@@ -753,136 +774,6 @@ mod tests {
             tilo_actions::ExecutionMode::Background { cancellable: true }
         );
         assert_eq!(apply.contract.result, tilo_actions::ResultSpec::Job);
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New theme")), "{labels:?}");
-        assert!(
-            labels.iter().any(|l| l.contains("Apply as system theme")),
-            "{labels:?}"
-        );
-    }
-
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        state.doc = seeded_doc();
-        let before_heads = state.doc.get_heads();
-        let before_len = catalog(&state.doc).len();
-        assert!(
-            catalog(&state.doc).iter().any(|s| s.id == "sunset"),
-            "custom present"
-        );
-
-        let action = delete_custom_theme_action("sunset");
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            catalog(&state.doc).len(),
-            before_len - 1,
-            "the action deleted a theme"
-        );
-        assert!(
-            !catalog(&state.doc).iter().any(|s| s.id == "sunset"),
-            "the right theme is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            catalog(&state.doc).len(),
-            before_len,
-            "undo reverted the deletion"
-        );
-        assert!(
-            catalog(&state.doc).iter().any(|s| s.id == "sunset"),
-            "the theme is back after undo"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = seeded_doc();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Create a new custom theme (id minted at authoring time, carried in the
-        // payload — apply never touches the RNG).
-        let spec = new_theme_spec("11112222-3333-4444-5555-666677778888", "Ocean", 200);
-        let action = upsert_custom_theme_action(&spec);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            catalog(&a)
-                .iter()
-                .any(|s| s.id == spec.id && s.name == "Ocean")
-        );
-        assert!(
-            catalog(&b)
-                .iter()
-                .any(|s| s.id == spec.id && s.name == "Ocean")
-        );
-    }
-
-    /// Recolouring a custom theme also replays byte-identically — the colour-edit
-    /// path (committed), not just create/delete.
-    #[test]
-    fn recolor_replays_byte_identical() {
-        let mut a = seeded_doc();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let sunset = catalog(&a).into_iter().find(|s| s.id == "sunset").unwrap();
-        let action = set_custom_theme_token_action(&sunset.id, TokenId::Accent, [1, 2, 3]);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "recolour replayed identically"
-        );
-        assert_eq!(
-            catalog(&b)
-                .iter()
-                .find(|s| s.id == "sunset")
-                .unwrap()
-                .accent,
-            [1, 2, 3]
-        );
     }
 
     /// Deleting a built-in preset through the action is a safe no-op: the catalog
@@ -943,55 +834,17 @@ mod tests {
         );
     }
 
-    /// Single source of truth: the palette's per-theme specs and the builders the
-    /// on-screen affordances call encode byte-identically.
+    /// Applying is an external store effect; the spec carries the stable theme
+    /// id to the widget operation handler.
     #[test]
-    fn palette_and_builder_encode_identically() {
-        let doc = seeded_doc();
-        let resources = provide_resources(&doc);
-        let lib = &resources[0];
-
-        // The custom theme's delete spec == the delete builder.
-        let custom = lib
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "themes.theme:sunset")
-            .unwrap();
-        let delete_spec = custom.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_custom_theme_action("sunset"));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        // Applying is an external store effect; the spec carries the stable
-        // theme id to the widget operation handler.
-        let builtin = lib
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == "themes.theme:tilo-blue")
-            .unwrap();
-        let apply_spec = builtin.actions.iter().find(|a| a.id == "apply").unwrap();
-        let from_spec = immediate_encode(apply_spec);
+    fn apply_effect_carries_the_stable_theme_id() {
+        let resources = provide_resources(&seeded_doc());
+        let (_, apply) = find_spec(&resources, "themes.theme:tilo-blue", "apply");
+        let from_spec = spec_encoding(apply, None);
         assert_eq!(from_spec.type_id, "themes.apply");
         assert_eq!(
             serde_json::from_slice::<String>(&from_spec.payload).unwrap(),
             "tilo-blue"
-        );
-
-        // The rename spec == the rename builder for the same name.
-        let sunset = catalog(&doc)
-            .into_iter()
-            .find(|s| s.id == "sunset")
-            .unwrap();
-        let edit_spec = custom.actions.iter().find(|a| a.id == "edit").unwrap();
-        let from_spec = prompted_encode(edit_spec, "Twilight");
-        let from_builder = encode(&set_custom_theme_name_action(&sunset.id, "Twilight"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
         );
     }
 
@@ -1010,7 +863,7 @@ mod tests {
                 .iter()
                 .find(|action| action.id == id)
                 .unwrap();
-            serde_json::from_slice(&immediate_encode(spec).payload).unwrap()
+            serde_json::from_slice(&spec_encoding(spec, None).payload).unwrap()
         };
         assert!(matches!(
             decode("duplicate"),
@@ -1029,7 +882,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "set-accent")
             .unwrap();
-        let encoded = prompted_encode(accent, "#010203");
+        let encoded = spec_encoding(accent, Some("#010203"));
         assert!(matches!(
             serde_json::from_slice::<ThemesAction>(&encoded.payload).unwrap(),
             ThemesAction::SetCustomThemeToken { id, token: TokenId::Accent, rgb: [1, 2, 3] } if id == "sunset"
@@ -1067,7 +920,12 @@ mod tests {
             .unwrap();
         let before = catalog(&doc).len();
 
-        let encoded = prompted_encode(spec, "Aurora");
+        // The prompted build mints a fresh theme id per call, so this drives
+        // the palette's build directly rather than comparing two builds.
+        let tilo_actions::ActionInput::Prompted { build, .. } = &spec.input else {
+            panic!("new-theme is prompted");
+        };
+        let encoded = build("Aurora");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();

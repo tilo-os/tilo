@@ -53,6 +53,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 # (selecting text sets the primary selection, which a middle-click paste test
 # then reads — they must not interleave).
 serial_test.workspace = true
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true
