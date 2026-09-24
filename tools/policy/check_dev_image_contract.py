@@ -37,10 +37,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 DEV_CONTAINERFILE = "os/Containerfile.dev"
 DEV_REPOSITORY = "code.sandbox.example/qos/tilo-vm"
+# Unsigned OS images from main integration builds; dev disks build on them.
+INTEGRATION_REPOSITORY = "code.sandbox.example/qos/tilo-ci"
 RERUN = "python3 tools/policy/check_dev_image_contract.py   (or tools/policy/run.sh)"
 WHY_FLAVOUR = ("the dev image accepts a fixed lock-screen password, opens a session-driving socket and "
                "runs sshd; if it is ever tagged, pushed or installed as the production image, every "
                "machine that updates from it inherits all three")
+WHY_INTEGRATION = ("tilo-ci holds unsigned OS images that skipped the release signing, attestation and "
+                   "generation gates; the default policy would let an installed system switch to one")
 WHY_LEAK = ("production images are built from os/Containerfile* and must never contain dev-only "
             "components, dev features or dev-image files; each one weakens the shipped system")
 # Dev-image sources that only os/Containerfile.dev may use.
@@ -222,16 +226,22 @@ def check_production_policy(repo: Path) -> list[Finding]:
         policy = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         return [Finding(shown, f"cannot be read: {error}", WHY_FLAVOUR, "restore a valid policy.json.")]
-    scope = policy.get("transports", {}).get("docker", {}).get(DEV_REPOSITORY)
-    if scope != [{"type": "reject"}]:
-        line = next((n for n, t in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-                     if DEV_REPOSITORY in t), 1)
-        return [Finding(f"{shown}:{line}", f"production policy does not reject {DEV_REPOSITORY} "
-                        f"(it has {scope!r})", WHY_FLAVOUR + "; dev images are unsigned by design, and the "
-                        "default policy would accept them",
-                        f'set transports.docker["{DEV_REPOSITORY}"] to [{{"type": "reject"}}]; only the dev '
-                        "image's own policy (os/scripts/finalize-dev-image.py) admits it.")]
-    return []
+    findings = []
+    docker = policy.get("transports", {}).get("docker", {})
+    for repository, why, admitted in (
+        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images are unsigned by design, and the default policy "
+         "would accept them", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits it."),
+        (INTEGRATION_REPOSITORY, WHY_INTEGRATION, "nothing on an installed system may pull it."),
+    ):
+        scope = docker.get(repository)
+        if scope != [{"type": "reject"}]:
+            line = next((n for n, t in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                         if f'"{repository}"' in t), 1)
+            findings.append(Finding(f"{shown}:{line}", f"production policy does not reject {repository} "
+                                    f"(it has {scope!r})", why,
+                                    f'set transports.docker["{repository}"] to [{{"type": "reject"}}]; '
+                                    + admitted))
+    return findings
 
 
 # ---- 2. production images carry nothing dev-only ------------------------------
