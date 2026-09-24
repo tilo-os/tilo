@@ -57,7 +57,11 @@ pub enum DaemonError {
     #[error("slot '{slot}' session differs from a greetd session: {detail}")]
     SessionParity { slot: String, detail: String },
     #[error("slot '{slot}' session did not start (unit is {state}); its journal ends with:\n{log}")]
-    SessionFailed { slot: String, state: String, log: String },
+    SessionFailed {
+        slot: String,
+        state: String,
+        log: String,
+    },
     #[error("no component '{name}' in the synced os/components.toml")]
     UnknownComponent { name: String, known: Vec<String> },
     #[error("no app 'apps/{dir}' (with a tilo-app.toml) in the synced sources")]
@@ -112,7 +116,9 @@ impl DaemonError {
             | Self::NoSession(_)
             | Self::HeadlessInput(_) => code::INVALID,
             Self::ScopeMismatch { .. } => code::SCOPE,
-            Self::Apply { .. } | Self::SessionParity { .. } | Self::SessionFailed { .. } => code::APPLY,
+            Self::Apply { .. } | Self::SessionParity { .. } | Self::SessionFailed { .. } => {
+                code::APPLY
+            }
             Self::Io { .. } => code::IO,
             Self::Job { .. } => code::JOB,
             Self::ToolMissing { .. } => code::TOOL,
