@@ -108,14 +108,35 @@ impl Node {
 
 #[derive(Clone, Debug)]
 pub enum ChangeOp {
-    Upsert { path: PathBuf, node: Node },
-    Remove { path: PathBuf, is_dir: bool },
+    Upsert {
+        path: PathBuf,
+        node: Node,
+    },
+    Remove {
+        path: PathBuf,
+        is_dir: bool,
+    },
+    /// The inode at `from` now lives at `path`, and a directory brings
+    /// everything below it. The record keeps its identity: history, access
+    /// and references follow it. `changed` says the moved node's replicated
+    /// state (content, size, mtime, mode) also changed; `node` is its state
+    /// at `path`.
+    ///
+    /// `from` is in the coordinates of the tree as the preceding operations
+    /// of the changeset left it; every other path is where the node is at
+    /// the end of the changeset.
+    Move {
+        from: PathBuf,
+        path: PathBuf,
+        node: Node,
+        changed: bool,
+    },
 }
 
 impl ChangeOp {
     pub fn path(&self) -> &Path {
         match self {
-            Self::Upsert { path, .. } | Self::Remove { path, .. } => path,
+            Self::Upsert { path, .. } | Self::Remove { path, .. } | Self::Move { path, .. } => path,
         }
     }
 }
@@ -356,6 +377,31 @@ impl EpochCapture {
         Ok(())
     }
 
+    /// Records that `from` and everything below it now live at `to`, for
+    /// renames the consumer made itself (a remote move). A later local
+    /// change is diffed against the moved nodes.
+    pub fn track_move(&mut self, from: &Path, to: &Path) {
+        if let Some(prev) = self.prev.as_mut() {
+            move_nodes(&mut prev.nodes, None, from, to);
+        }
+    }
+
+    /// The captured node of one path.
+    pub fn node(&self, rel: &Path) -> Option<Node> {
+        self.prev.as_ref()?.nodes.get(rel).cloned()
+    }
+
+    /// Paths tracked at or below `rel`.
+    pub fn paths_below(&self, rel: &Path) -> Vec<PathBuf> {
+        self.prev.as_ref().map_or_else(Vec::new, |p| {
+            p.nodes
+                .range(rel.to_path_buf()..)
+                .take_while(|(k, _)| k.starts_with(rel))
+                .map(|(k, _)| k.clone())
+                .collect()
+        })
+    }
+
     /// Forgets `rel` and everything below it, for removals the consumer
     /// made itself.
     pub fn untrack(&mut self, rel: &Path) {
@@ -460,7 +506,7 @@ impl EpochCapture {
     ) -> io::Result<Changeset> {
         let full = self.prev.is_none() || batch.rescan.is_some() || self.rescan_next;
         self.rescan_next = false;
-        let (candidates, order) = self.candidates(&snapshot, batch, full)?;
+        let (candidates, mut order) = self.candidates(&snapshot, batch, full)?;
 
         let empty = BTreeMap::new();
         let prev_nodes = self.prev.as_ref().map_or(&empty, |p| &p.nodes);
@@ -484,9 +530,10 @@ impl EpochCapture {
         upserts.extend(hashed);
         let t_hash = t0.elapsed();
 
-        // Drop no-op upserts, then order everything.
+        // Pair renames, drop no-op upserts, then order everything.
+        let (mut upserts, removes, moves) = pair_moves(upserts, removes, prev_nodes, &mut order);
         upserts.retain(|(p, n)| prev_nodes.get(p).is_none_or(|old| !old.same_replicated(n)));
-        let ops = order_ops(upserts, removes, &order, full);
+        let ops = order_ops(upserts, removes, moves, &order, full);
         let mut new_nodes = next_state(prev_nodes, &ops, full, &snapshot);
         let tracked_paths: Vec<PathBuf> = tracked.iter().map(|(p, _)| p.clone()).collect();
         new_nodes.extend(tracked);
@@ -671,6 +718,38 @@ impl EpochCapture {
                     }
                 }
             }
+            // A write through one hard link changes every path of the
+            // inode, but the journal names only the one written through.
+            if let Some(prev) = &self.prev {
+                let mut by_ino: HashMap<u64, Vec<&PathBuf>> = HashMap::new();
+                for (p, n) in &prev.nodes {
+                    if n.kind == NodeKind::File {
+                        by_ino.entry(n.ino).or_default().push(p);
+                    }
+                }
+                let linked: Vec<(PathBuf, u64)> = candidates
+                    .iter()
+                    .filter_map(|p| {
+                        let ino = prev.nodes.get(p)?.ino;
+                        let seq = order.get(p).copied().unwrap_or(u64::MAX);
+                        Some(
+                            by_ino
+                                .get(&ino)
+                                .filter(|paths| paths.len() > 1)?
+                                .iter()
+                                .filter(|s| **s != p)
+                                .map(|s| ((*s).clone(), seq))
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .flatten()
+                    .collect();
+                for (p, seq) in linked {
+                    let at = order.entry(p.clone()).or_insert(seq);
+                    *at = (*at).max(seq);
+                    candidates.insert(p);
+                }
+            }
         }
         candidates.remove(Path::new(""));
         Ok((candidates, order))
@@ -698,6 +777,165 @@ fn untrack_in(nodes: &mut BTreeMap<PathBuf, Node>, rel: &Path) {
     }
 }
 
+/// Whether two nodes are the same kind of thing, so one can be the other
+/// renamed.
+fn same_class(a: &NodeKind, b: &NodeKind) -> bool {
+    matches!(
+        (a, b),
+        (NodeKind::File, NodeKind::File)
+            | (NodeKind::Dir, NodeKind::Dir)
+            | (NodeKind::Symlink(_), NodeKind::Symlink(_))
+    )
+}
+
+/// `path` with its `from` prefix replaced by `to`, if it lies below `from`.
+fn rebase(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    path.strip_prefix(from).ok().map(|rest| {
+        if rest.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(rest)
+        }
+    })
+}
+
+type Paired = (Vec<(PathBuf, Node)>, Vec<(PathBuf, bool)>, Vec<ChangeOp>);
+
+/// Turns a removal and an upsert of the same inode into a move.
+///
+/// A renamed file or directory keeps its inode, so the previous epoch's
+/// node at the old path and the new node at the new path share it. Only a
+/// path that is gone is a rename source: an inode still present at its old
+/// path as well is a hard link, captured as a separate file. Moves implied
+/// by a directory's move (its descendants, at the same relative path) are
+/// not repeated; a descendant that also changed stays an upsert at its new
+/// path. A removal below a moved directory is rewritten to where the
+/// directory went, since that is where peers will have it.
+fn pair_moves(
+    upserts: Vec<(PathBuf, Node)>,
+    removes: Vec<(PathBuf, bool)>,
+    prev: &BTreeMap<PathBuf, Node>,
+    order: &mut HashMap<PathBuf, u64>,
+) -> Paired {
+    let mut removed_by_ino: HashMap<u64, Option<&PathBuf>> = HashMap::new();
+    for (path, _) in &removes {
+        if let Some(old) = prev.get(path) {
+            // Two removed paths with one inode (hard links both gone):
+            // ambiguous, so neither becomes a move.
+            removed_by_ino
+                .entry(old.ino)
+                .and_modify(|p| *p = None)
+                .or_insert(Some(path));
+        }
+    }
+    let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (path, node) in &upserts {
+        if prev.get(path).is_some_and(|old| old.ino == node.ino) {
+            continue;
+        }
+        let Some(Some(from)) = removed_by_ino.get(&node.ino) else {
+            continue;
+        };
+        let Some(old) = prev.get(*from) else { continue };
+        if same_class(&old.kind, &node.kind) {
+            candidates.push(((*from).clone(), path.clone()));
+        }
+    }
+    // A move is implied when a moved ancestor explains it.
+    let implied = |from: &Path, to: &Path| {
+        candidates.iter().any(|(pf, pt)| {
+            pf.as_path() != from
+                && from.starts_with(pf)
+                && rebase(from, pf, pt).as_deref() == Some(to)
+        })
+    };
+    let mut direct: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let mut consumed_from: HashSet<PathBuf> = HashSet::new();
+    let mut consumed_to: HashMap<PathBuf, bool> = HashMap::new();
+    for (from, to) in &candidates {
+        consumed_from.insert(from.clone());
+        if implied(from, to) {
+            consumed_to.insert(to.clone(), false);
+        } else {
+            consumed_to.insert(to.clone(), true);
+            direct.push((from.clone(), to.clone()));
+        }
+    }
+    let mut kept = Vec::with_capacity(upserts.len());
+    let mut moves = Vec::new();
+    for (path, node) in upserts {
+        match consumed_to.get(&path) {
+            None => kept.push((path, node)),
+            Some(is_direct) => {
+                let Some((from, _)) = candidates.iter().find(|(_, t)| *t == path) else {
+                    kept.push((path, node));
+                    continue;
+                };
+                let changed = prev.get(from).is_none_or(|old| !old.same_replicated(&node));
+                if *is_direct {
+                    moves.push(ChangeOp::Move {
+                        from: from.clone(),
+                        path,
+                        node,
+                        changed,
+                    });
+                } else if changed {
+                    kept.push((path, node));
+                }
+            }
+        }
+    }
+    // Longest source first, so the innermost move rewrites a removal.
+    direct.sort_by_key(|(from, _)| std::cmp::Reverse(from.components().count()));
+    let removes = removes
+        .into_iter()
+        .filter(|(path, _)| !consumed_from.contains(path))
+        .map(|(path, is_dir)| {
+            let moved = direct
+                .iter()
+                .find_map(|(from, to)| rebase(&path, from, to).filter(|_| path != *from));
+            match moved {
+                Some(new) => {
+                    // It keeps its journal position.
+                    if let Some(seq) = order.get(&path).copied() {
+                        order.insert(new.clone(), seq);
+                    }
+                    (new, is_dir)
+                }
+                None => (path, is_dir),
+            }
+        })
+        .collect();
+    (kept, removes, moves)
+}
+
+/// Applies a move to a node table: `from` and everything below it now live
+/// under `to`. Entries are taken from `source` (the table being built, or
+/// the previous epoch's after a full comparison, which starts empty).
+fn move_nodes(
+    next: &mut BTreeMap<PathBuf, Node>,
+    source: Option<&BTreeMap<PathBuf, Node>>,
+    from: &Path,
+    to: &Path,
+) {
+    let taken: Vec<(PathBuf, Node)> = {
+        let table = source.unwrap_or(next);
+        table
+            .range(from.to_path_buf()..)
+            .take_while(|(k, _)| k.starts_with(from))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    };
+    for (k, _) in &taken {
+        next.remove(k);
+    }
+    for (k, v) in taken {
+        if let Some(moved) = rebase(&k, from, to) {
+            next.insert(moved, v);
+        }
+    }
+}
+
 /// The captured state after applying `ops`. A full rescan starts from
 /// nothing but keeps the previous node of every path that still exists
 /// and did not change, so unchanged manifests are carried over.
@@ -709,14 +947,41 @@ fn next_state(
 ) -> BTreeMap<PathBuf, Node> {
     let mut next = if full { BTreeMap::new() } else { prev.clone() };
     let mut gone = HashSet::new();
+    // After a full comparison `next` starts empty; a move's unchanged
+    // descendants come from the previous table, in its coordinates.
+    let mut moved_prev: Vec<(PathBuf, PathBuf)> = Vec::new();
     for op in ops {
         match op {
             ChangeOp::Upsert { path, node } => {
                 next.insert(path.clone(), node.clone());
             }
             ChangeOp::Remove { path, .. } => {
-                next.remove(path);
+                untrack_in(&mut next, path);
                 gone.insert(path.as_path());
+            }
+            ChangeOp::Move {
+                from, path, node, ..
+            } => {
+                if full {
+                    // Back to the previous table's coordinates.
+                    let original = moved_prev
+                        .iter()
+                        .filter(|(_, t)| from.starts_with(t))
+                        .max_by_key(|(_, t)| t.components().count())
+                        .and_then(|(f, t)| rebase(from, t, f))
+                        .unwrap_or_else(|| from.clone());
+                    let mut staged = BTreeMap::new();
+                    move_nodes(&mut staged, Some(prev), &original, path);
+                    untrack_in(&mut next, from);
+                    for (k, v) in staged {
+                        next.entry(k).or_insert(v);
+                    }
+                    moved_prev.push((original, path.clone()));
+                    gone.insert(from.as_path());
+                } else {
+                    move_nodes(&mut next, None, from, path);
+                }
+                next.insert(path.clone(), node.clone());
             }
         }
     }
@@ -923,11 +1188,13 @@ fn run_jobs(
 /// With a journal, operations follow the position of each path's last
 /// journal entry (the writer's order). After a rescan there is no journal
 /// order, and change time stands in for it. In both cases a directory is
-/// created before anything inside it and removed after everything inside
-/// it.
+/// created (or moved into place) before anything inside it and removed
+/// after everything inside it. A move's source is then rewritten to where
+/// the moves before it left it.
 fn order_ops(
     upserts: Vec<(PathBuf, Node)>,
     removes: Vec<(PathBuf, bool)>,
+    moves: Vec<ChangeOp>,
     order: &HashMap<PathBuf, u64>,
     full: bool,
 ) -> Vec<ChangeOp> {
@@ -943,10 +1210,19 @@ fn order_ops(
             Key::Seq(order.get(p).copied().unwrap_or(u64::MAX))
         }
     };
-    let mut items: Vec<(Key, ChangeOp)> =
-        Vec::with_capacity(upserts.len().saturating_add(removes.len()));
+    let mut items: Vec<(Key, ChangeOp)> = Vec::with_capacity(
+        upserts
+            .len()
+            .saturating_add(removes.len())
+            .saturating_add(moves.len()),
+    );
     for (path, node) in upserts {
         items.push((key_upsert(&path, &node), ChangeOp::Upsert { path, node }));
+    }
+    for op in moves {
+        if let ChangeOp::Move { path, node, .. } = &op {
+            items.push((key_upsert(path, node), op));
+        }
     }
     for (path, is_dir) in removes {
         let k = if full {
@@ -958,56 +1234,103 @@ fn order_ops(
     }
     items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.path().cmp(b.1.path())));
 
-    let mut upsert_at: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    // What must be in place before a path can be touched: its ancestors,
+    // created or moved there.
+    let mut provides: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
     let mut remove_at: BTreeMap<PathBuf, usize> = BTreeMap::new();
     for (i, (_, op)) in items.iter().enumerate() {
         match op {
-            ChangeOp::Upsert { path, .. } => upsert_at.insert(path.clone(), i),
-            ChangeOp::Remove { path, .. } => remove_at.insert(path.clone(), i),
-        };
+            ChangeOp::Upsert { path, .. } | ChangeOp::Move { path, .. } => {
+                provides.entry(path.clone()).or_default().push(i);
+            }
+            ChangeOp::Remove { path, .. } => {
+                remove_at.insert(path.clone(), i);
+            }
+        }
     }
     let mut slots: Vec<Option<ChangeOp>> = items.into_iter().map(|(_, op)| Some(op)).collect();
     let mut out = Vec::with_capacity(slots.len());
-    let emit = |i: usize, slots: &mut Vec<Option<ChangeOp>>, out: &mut Vec<ChangeOp>| {
-        if let Some(op) = slots.get_mut(i).and_then(Option::take) {
-            out.push(op);
-        }
-    };
+    let mut visiting = vec![false; slots.len()];
     for i in 0..slots.len() {
-        let Some(op) = slots.get(i).and_then(Option::as_ref) else {
-            continue;
-        };
-        match op {
-            ChangeOp::Upsert { path, .. } => {
-                // Ancestors first, outermost first.
-                let path = path.clone();
-                let mut chain: Vec<&Path> = path.ancestors().skip(1).collect();
-                chain.reverse();
-                for a in chain {
-                    if let Some(&at) = upsert_at.get(a) {
-                        emit(at, &mut slots, &mut out);
-                    }
-                }
-            }
-            ChangeOp::Remove { path, is_dir: true } => {
-                // Descendants first, deepest first.
-                let path = path.clone();
-                let mut desc: Vec<(usize, usize)> = remove_at
-                    .range(path.clone()..)
-                    .skip(1)
-                    .take_while(|(k, _)| k.starts_with(&path))
-                    .map(|(k, v)| (k.components().count(), *v))
-                    .collect();
-                desc.sort_by_key(|d| std::cmp::Reverse(d.0));
-                for (_, d) in desc {
-                    emit(d, &mut slots, &mut out);
-                }
-            }
-            ChangeOp::Remove { .. } => {}
-        }
-        emit(i, &mut slots, &mut out);
+        place(
+            i,
+            &mut slots,
+            &mut visiting,
+            &provides,
+            &remove_at,
+            &mut out,
+        );
     }
+    rewrite_move_sources(&mut out);
     out
+}
+
+/// Emits operation `i` after everything it depends on.
+fn place(
+    i: usize,
+    slots: &mut Vec<Option<ChangeOp>>,
+    visiting: &mut Vec<bool>,
+    provides: &BTreeMap<PathBuf, Vec<usize>>,
+    remove_at: &BTreeMap<PathBuf, usize>,
+    out: &mut Vec<ChangeOp>,
+) {
+    let Some(op) = slots.get(i).and_then(Option::as_ref) else {
+        return;
+    };
+    if visiting.get(i).copied().unwrap_or(true) {
+        return;
+    }
+    if let Some(v) = visiting.get_mut(i) {
+        *v = true;
+    }
+    let path = op.path().to_path_buf();
+    let mut before: Vec<usize> = Vec::new();
+    // Ancestors first, outermost first.
+    let mut chain: Vec<&Path> = path.ancestors().skip(1).collect();
+    chain.reverse();
+    for a in chain {
+        if let Some(at) = provides.get(a) {
+            before.extend(at.iter().copied());
+        }
+    }
+    if let ChangeOp::Remove { is_dir: true, .. } = op {
+        // Descendants first, deepest first.
+        let mut desc: Vec<(usize, usize)> = remove_at
+            .range(path.clone()..)
+            .skip(1)
+            .take_while(|(k, _)| k.starts_with(&path))
+            .map(|(k, v)| (k.components().count(), *v))
+            .collect();
+        desc.sort_by_key(|d| std::cmp::Reverse(d.0));
+        before.extend(desc.into_iter().map(|(_, d)| d));
+    }
+    for b in before {
+        if b != i {
+            place(b, slots, visiting, provides, remove_at, out);
+        }
+    }
+    if let Some(op) = slots.get_mut(i).and_then(Option::take) {
+        out.push(op);
+    }
+}
+
+/// Moves are paired in the previous epoch's coordinates; each source is
+/// rewritten through the moves emitted before it.
+fn rewrite_move_sources(ops: &mut [ChangeOp]) {
+    let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for op in ops.iter_mut() {
+        if let ChangeOp::Move { from, path, .. } = op {
+            let original = from.clone();
+            let innermost = done
+                .iter()
+                .filter(|(f, _)| original.starts_with(f))
+                .max_by_key(|(f, _)| f.components().count());
+            if let Some(moved) = innermost.and_then(|(f, t)| rebase(&original, f, t)) {
+                *from = moved;
+            }
+            done.push((original, path.clone()));
+        }
+    }
 }
 
 /// When to cut the next epoch.
@@ -1120,6 +1443,9 @@ mod tests {
             .map(|o| match o {
                 ChangeOp::Upsert { path, .. } => format!("+{}", path.display()),
                 ChangeOp::Remove { path, .. } => format!("-{}", path.display()),
+                ChangeOp::Move { from, path, .. } => {
+                    format!("{}>{}", from.display(), path.display())
+                }
             })
             .collect()
     }
@@ -1136,6 +1462,7 @@ mod tests {
                 ("a/obj".into(), node(NodeKind::File, 0)),
                 ("a".into(), node(NodeKind::Dir, 0)),
             ],
+            vec![],
             vec![],
             &order,
             false,
@@ -1157,6 +1484,7 @@ mod tests {
                 ("d/y".into(), true),
                 ("d/y/z".into(), false),
             ],
+            vec![],
             &order,
             false,
         );
@@ -1171,10 +1499,102 @@ mod tests {
                 ("early".into(), node(NodeKind::File, 10)),
             ],
             vec![("gone".into(), false)],
+            vec![],
             &HashMap::new(),
             true,
         );
         assert_eq!(paths(&ops), ["+early", "+late", "-gone"]);
+    }
+
+    fn prev(entries: &[(&str, NodeKind, u64)]) -> BTreeMap<PathBuf, Node> {
+        entries
+            .iter()
+            .map(|(p, k, ino)| {
+                (
+                    PathBuf::from(p),
+                    Node {
+                        ino: *ino,
+                        ..node(k.clone(), 0)
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn at(path: &str, kind: NodeKind, ino: u64) -> (PathBuf, Node) {
+        (
+            path.into(),
+            Node {
+                ino,
+                ..node(kind, 0)
+            },
+        )
+    }
+
+    #[test]
+    fn a_directory_move_carries_its_subtree_and_rewrites_removals_inside_it() {
+        let before = prev(&[
+            ("a", NodeKind::Dir, 1),
+            ("a/f", NodeKind::File, 2),
+            ("a/gone", NodeKind::File, 3),
+            ("a/out", NodeKind::File, 4),
+        ]);
+        let mut order: HashMap<PathBuf, u64> = [
+            ("z", 2),
+            ("a", 2),
+            ("a/gone", 1),
+            ("elsewhere", 3),
+            ("a/out", 3),
+        ]
+        .into_iter()
+        .map(|(p, s)| (PathBuf::from(p), s))
+        .collect();
+        let (ups, rms, mv) = pair_moves(
+            vec![
+                at("z", NodeKind::Dir, 1),
+                at("z/f", NodeKind::File, 2),
+                at("elsewhere", NodeKind::File, 4),
+            ],
+            vec![
+                ("a".into(), true),
+                ("a/f".into(), false),
+                ("a/gone".into(), false),
+                ("a/out".into(), false),
+            ],
+            &before,
+            &mut order,
+        );
+        assert!(ups.is_empty(), "the unchanged descendant is implied");
+        assert_eq!(rms, [(PathBuf::from("z/gone"), false)]);
+        assert_eq!(order.get(Path::new("z/gone")), Some(&1));
+        let ops = order_ops(ups, rms, mv, &order, false);
+        assert_eq!(paths(&ops), ["a>z", "-z/gone", "z/out>elsewhere"]);
+        let next = next_state(&before, &ops, false, Path::new("/nonexistent"));
+        let keys: Vec<&str> = next.keys().filter_map(|p| p.to_str()).collect();
+        assert_eq!(keys, ["elsewhere", "z", "z/f"]);
+    }
+
+    #[test]
+    fn an_inode_still_at_its_old_path_is_a_hard_link_not_a_move() {
+        let before = prev(&[("a", NodeKind::File, 7)]);
+        let (ups, rms, mv) = pair_moves(
+            vec![at("a", NodeKind::File, 7), at("b", NodeKind::File, 7)],
+            vec![],
+            &before,
+            &mut HashMap::new(),
+        );
+        assert_eq!(ups.len(), 2);
+        assert!(rms.is_empty() && mv.is_empty());
+        // A file replaced by a directory of the same inode number is not a
+        // move either.
+        let (ups, _, mv) = pair_moves(
+            vec![at("d", NodeKind::Dir, 7)],
+            vec![("a".into(), false)],
+            &before,
+            &mut HashMap::new(),
+        );
+        assert_eq!(ups.len(), 1);
+        assert!(mv.is_empty());
     }
 
     #[test]

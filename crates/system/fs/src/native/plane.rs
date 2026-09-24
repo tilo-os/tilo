@@ -195,6 +195,15 @@ fn bind(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// What publishing one changeset did, persisted with its epoch.
+#[derive(Default)]
+struct Published {
+    nodes: Vec<(PathBuf, Option<fs_native::capture::NodeState>)>,
+    mats: Vec<(PathBuf, Option<Materialized>)>,
+    bytes: u64,
+    moves: usize,
+}
+
 struct Engine {
     cfg: NativeConfig,
     fs: Arc<QuickFS>,
@@ -555,10 +564,23 @@ impl Engine {
                     ChangeOp::Remove { path, .. } => {
                         eprintln!("  epoch {} remove {}", cs.epoch, path.display());
                     }
+                    ChangeOp::Move { from, path, .. } => {
+                        eprintln!(
+                            "  epoch {} move {} -> {}",
+                            cs.epoch,
+                            from.display(),
+                            path.display()
+                        );
+                    }
                 }
             }
         }
-        let (node_changes, mat_updates, bytes) = self.publish(&cs, &snapshot);
+        let Published {
+            nodes: node_changes,
+            mats: mat_updates,
+            bytes,
+            moves,
+        } = self.publish(&cs, &snapshot);
 
         if let Some(old) = &previous_snapshot {
             self.detect_in_place(&cs, &in_place, old, &snapshot);
@@ -592,9 +614,10 @@ impl Engine {
         }
         if !cs.ops.is_empty() {
             println!(
-                "epoch {}: {} change(s), {} bytes published in {} ms (snapshot {} ms{})",
+                "epoch {}: {} change(s), {} move(s), {} bytes published in {} ms (snapshot {} ms{})",
                 cs.epoch,
                 cs.ops.len(),
+                moves,
                 bytes,
                 t.elapsed().as_millis(),
                 cs.stats.snapshot.as_millis(),
@@ -610,89 +633,29 @@ impl Engine {
     }
 
     /// Applies each operation through the record plane, in order.
-    #[allow(
-        clippy::type_complexity,
-        reason = "the three outputs are persisted together with the epoch"
-    )]
-    fn publish(
-        &mut self,
-        cs: &Changeset,
-        snapshot: &Path,
-    ) -> (
-        Vec<(PathBuf, Option<fs_native::capture::NodeState>)>,
-        Vec<(PathBuf, Option<Materialized>)>,
-        u64,
-    ) {
-        let mut nodes = Vec::new();
-        let mut mats = Vec::new();
-        let mut bytes = 0u64;
+    fn publish(&mut self, cs: &Changeset, snapshot: &Path) -> Published {
+        let mut out = Published::default();
         let retry: Vec<PathBuf> = self.retry_removals.drain().collect();
         for path in retry {
             if self.fs.apply_local_remove(&path).is_err() {
                 self.retry_removals.insert(path);
                 continue;
             }
-            self.forget_materialized(&path, &mut mats);
+            self.forget_materialized(&path, &mut out.mats);
         }
         for op in &cs.ops {
             match op {
                 ChangeOp::Upsert { path, node } => {
-                    let applied = match &node.kind {
-                        NodeKind::Dir => self.fs.apply_local_dir(path),
-                        NodeKind::File => match std::fs::read(snapshot.join(path)) {
-                            Ok(data) => {
-                                bytes = bytes.saturating_add(data.len() as u64);
-                                let mtime_ms = u64::try_from(node.mtime_ns.div_euclid(1_000_000))
-                                    .unwrap_or_else(|_| QuickFS::record_clock_ms());
-                                self.fs.apply_local_file(path, &data, mtime_ms)
-                            }
-                            Err(error) => Err(error.raw_os_error().unwrap_or(libc::EIO)),
-                        },
-                        NodeKind::Symlink(_) => {
-                            if !self.symlink_warned {
-                                eprintln!(
-                                    "symlinks stay on this device: the record plane has no symlink record yet ({})",
-                                    path.display()
-                                );
-                                self.symlink_warned = true;
-                            }
-                            nodes.push((path.clone(), self.capture.node_state(path)));
-                            continue;
-                        }
-                    };
-                    match applied {
-                        Ok(()) => {
-                            let captured = self.capture.node_state(path);
-                            let entry = self.fs.entry_at(path);
-                            let record = Materialized {
-                                dir: node.kind == NodeKind::Dir,
-                                hash: entry.as_ref().and_then(|e| e.hash).map(|h| *h.as_bytes()),
-                                size: entry.as_ref().map_or(0, |e| e.size),
-                                mtime_ms: entry.as_ref().map_or(0, |e| e.mtime_ms),
-                                placeholder: false,
-                                local: captured.as_ref().map(|n| LocalStat {
-                                    ino: n.ino,
-                                    size: n.size,
-                                    mtime_ns: n.mtime_ns,
-                                }),
-                            };
-                            self.materialized.insert(path.clone(), record.clone());
-                            mats.push((path.clone(), Some(record)));
-                            nodes.push((path.clone(), captured));
-                        }
-                        Err(errno) => {
-                            eprintln!(
-                                "publishing {} failed (errno {errno}); retrying next epoch",
-                                path.display()
-                            );
-                            self.capture.invalidate(path);
-                            self.retry_at = Instant::now().checked_add(RETRY_AFTER);
-                            nodes.push((path.clone(), self.capture.node_state(path)));
-                        }
-                    }
+                    self.publish_upsert(path, node, snapshot, &mut out);
                 }
+                ChangeOp::Move {
+                    from,
+                    path,
+                    node,
+                    changed,
+                } => self.publish_move(from, path, node, *changed, snapshot, &mut out),
                 ChangeOp::Remove { path, .. } => {
-                    nodes.push((path.clone(), None));
+                    out.nodes.push((path.clone(), None));
                     if let Err(errno) = self.fs.apply_local_remove(path) {
                         eprintln!(
                             "publishing the removal of {} failed (errno {errno}); retrying next epoch",
@@ -704,11 +667,161 @@ impl Engine {
                         self.retry_at = Instant::now().checked_add(RETRY_AFTER);
                         continue;
                     }
-                    self.forget_materialized(path, &mut mats);
+                    self.forget_materialized(path, &mut out.mats);
                 }
             }
         }
-        (nodes, mats, bytes)
+        out
+    }
+
+    /// Publishes a rename as a move of the record, so the file keeps its
+    /// identity. When the record plane refuses (the source is not a record
+    /// here, a destination it cannot replace), the rename is published as a
+    /// removal and the creation of everything now at `path`.
+    fn publish_move(
+        &mut self,
+        from: &Path,
+        path: &Path,
+        node: &fs_native::capture::Node,
+        changed: bool,
+        snapshot: &Path,
+        out: &mut Published,
+    ) {
+        let below = self.capture.paths_below(path);
+        match self.fs.apply_local_move(from, path) {
+            Ok(()) => {
+                out.moves = out.moves.saturating_add(1);
+                self.rename_materialized(from, path, &mut out.mats);
+                self.leases.moved(from, path);
+                if let Err(error) = self.state.move_lease(from, path) {
+                    self.note_error(&error);
+                }
+                for p in &below {
+                    if let Some(old) = project::rebase(p, path, from) {
+                        out.nodes.push((old, None));
+                    }
+                    out.nodes.push((p.clone(), self.capture.node_state(p)));
+                }
+                if changed && node.kind != NodeKind::Dir {
+                    self.publish_upsert(path, node, snapshot, out);
+                } else if let Some(record) = self.materialized.get_mut(path) {
+                    record.local = self.capture.node_state(path).map(|n| LocalStat {
+                        ino: n.ino,
+                        size: n.size,
+                        mtime_ns: n.mtime_ns,
+                    });
+                    out.mats.push((path.to_path_buf(), Some(record.clone())));
+                }
+            }
+            Err(errno) => {
+                eprintln!(
+                    "publishing the rename of {} to {} as a move failed (errno {errno}); publishing a removal and a creation",
+                    from.display(),
+                    path.display()
+                );
+                out.nodes.push((from.to_path_buf(), None));
+                if let Err(errno) = self.fs.apply_local_remove(from) {
+                    eprintln!(
+                        "publishing the removal of {} failed (errno {errno}); retrying next epoch",
+                        from.display()
+                    );
+                    self.retry_removals.insert(from.to_path_buf());
+                    self.retry_at = Instant::now().checked_add(RETRY_AFTER);
+                } else {
+                    self.forget_materialized(from, &mut out.mats);
+                }
+                // Everything the move brought along is created anew.
+                for p in below {
+                    let Some(n) = self.capture.node(&p) else {
+                        continue;
+                    };
+                    let n = if p == path { node.clone() } else { n };
+                    self.publish_upsert(&p, &n, snapshot, out);
+                }
+            }
+        }
+    }
+
+    fn publish_upsert(
+        &mut self,
+        path: &Path,
+        node: &fs_native::capture::Node,
+        snapshot: &Path,
+        out: &mut Published,
+    ) {
+        let applied = match &node.kind {
+            NodeKind::Dir => self.fs.apply_local_dir(path),
+            NodeKind::File => match std::fs::read(snapshot.join(path)) {
+                Ok(data) => {
+                    out.bytes = out.bytes.saturating_add(data.len() as u64);
+                    let mtime_ms = u64::try_from(node.mtime_ns.div_euclid(1_000_000))
+                        .unwrap_or_else(|_| QuickFS::record_clock_ms());
+                    self.fs.apply_local_file(path, &data, mtime_ms)
+                }
+                Err(error) => Err(error.raw_os_error().unwrap_or(libc::EIO)),
+            },
+            NodeKind::Symlink(_) => {
+                if !self.symlink_warned {
+                    eprintln!(
+                        "symlinks stay on this device: the record plane has no symlink record yet ({})",
+                        path.display()
+                    );
+                    self.symlink_warned = true;
+                }
+                out.nodes
+                    .push((path.to_path_buf(), self.capture.node_state(path)));
+                return;
+            }
+        };
+        match applied {
+            Ok(()) => {
+                let captured = self.capture.node_state(path);
+                let entry = self.fs.entry_at(path);
+                let record = Materialized {
+                    dir: node.kind == NodeKind::Dir,
+                    hash: entry.as_ref().and_then(|e| e.hash).map(|h| *h.as_bytes()),
+                    size: entry.as_ref().map_or(0, |e| e.size),
+                    mtime_ms: entry.as_ref().map_or(0, |e| e.mtime_ms),
+                    placeholder: false,
+                    local: captured.as_ref().map(|n| LocalStat {
+                        ino: n.ino,
+                        size: n.size,
+                        mtime_ns: n.mtime_ns,
+                    }),
+                    record: entry
+                        .as_ref()
+                        .and_then(|e| e.record)
+                        .map(|r| *r.0.as_bytes()),
+                };
+                self.materialized.insert(path.to_path_buf(), record.clone());
+                out.mats.push((path.to_path_buf(), Some(record)));
+                out.nodes.push((path.to_path_buf(), captured));
+            }
+            Err(errno) => {
+                eprintln!(
+                    "publishing {} failed (errno {errno}); retrying next epoch",
+                    path.display()
+                );
+                self.capture.invalidate(path);
+                self.retry_at = Instant::now().checked_add(RETRY_AFTER);
+                out.nodes
+                    .push((path.to_path_buf(), self.capture.node_state(path)));
+            }
+        }
+    }
+
+    /// Moves the materialised records of `from` and everything below it to
+    /// `to`.
+    fn rename_materialized(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        mats: &mut Vec<(PathBuf, Option<Materialized>)>,
+    ) {
+        for (old, new, record) in project::rename_entries(&mut self.materialized, from, to) {
+            mats.push((old, None));
+            mats.push((new, Some(record)));
+        }
     }
 
     /// Drops the materialised records of `path` and everything below it.
@@ -789,6 +902,19 @@ impl Engine {
     fn project(&mut self) {
         let tree = self.fs.tree_snapshot();
         let out = self.projector.project(&tree, &self.materialized);
+        for (from, to) in &out.moved {
+            for old in self.capture.paths_below(from) {
+                self.node_dirty.insert(old);
+            }
+            self.capture.track_move(from, to);
+            for new in self.capture.paths_below(to) {
+                self.node_dirty.insert(new);
+            }
+            self.leases.moved(from, to);
+            if let Err(error) = self.state.move_lease(from, to) {
+                self.note_error(&error);
+            }
+        }
         for rel in &out.written {
             if let Err(error) = self.capture.track(rel) {
                 eprintln!("tracking {}: {error}", rel.display());
@@ -825,11 +951,12 @@ impl Engine {
         for e in &out.errors {
             eprintln!("materialising {e}");
         }
-        if !out.written.is_empty() || !out.removed.is_empty() {
+        if !out.written.is_empty() || !out.removed.is_empty() || !out.moved.is_empty() {
             println!(
-                "applied remote changes: {} file(s), {} placeholder(s), {} removal(s), {} kept local",
+                "applied remote changes: {} file(s), {} placeholder(s), {} move(s), {} removal(s), {} kept local",
                 out.files,
                 out.placeholders,
+                out.moved.len(),
                 out.removed.len(),
                 out.skipped_dirty.len()
             );
