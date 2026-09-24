@@ -109,7 +109,16 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual(install_line, 'install_items+=" ' + " ".join(
             f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
         ) + ' /usr/lib/firmware/qcom/a740_sqe.fw.xz "')
-        outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, *(installed / name for name in NAMES)]
+        parser = self.root / prepare.PARSER_PATH
+        self.assertIn(b"FIELDS_V2", parser.read_bytes())
+        self.assertNotIn(b"\r", parser.read_bytes())
+        installed_spec = importlib.util.spec_from_file_location("installed_hardware_profile", parser)
+        installed_parser = importlib.util.module_from_spec(installed_spec)
+        installed_spec.loader.exec_module(installed_parser)
+        definition = json.loads((self.root / prepare.DEFINITION_PATH).read_text())
+        self.assertEqual(installed_parser.validate_definition(definition)["id"], "lenovo-83ed")
+        outputs = [profile_path, self.root / prepare.DEFINITION_PATH, parser, dracut,
+                   *(installed / name for name in NAMES)]
         self.assertEqual(self.ownership.call_count, len(outputs))
         for output in outputs:
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
