@@ -47,6 +47,12 @@ Type=simple
 # a session, which is why reading it only at mount time was equivalent to
 # not reading it at all.
 #
+# `--blob-sock` serves document media (images in notes, chat, photos, …)
+# from the same content store. The launcher connects to it for each app and
+# names the app and room before the app receives the descriptor, so apps only
+# ever hold a scoped capability; the socket is group-connectable like the
+# storage socket and never bound into a sandbox.
+#
 # `--principal person:local` is the subject the shipped list grants to.
 # The shipped default uses a human-readable local principal. The mount also
 # has the machine's durable certified device key, shared with the shell, so
@@ -59,7 +65,7 @@ Type=simple
 # /var/lib/tilo/fs-capabilities.json actually bites, and so a mount joined
 # from a peer's ticket has somewhere to put a narrower policy.
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
-    --storage-sock /run/tilo/fs-storage.sock \
+    --storage-sock /run/tilo/fs-storage.sock --blob-sock /run/tilo/fs-blobs.sock \
     --acl /var/lib/tilo/fs-capabilities.json --principal person:local
 # `fusermount -u` is preferable to plain `umount` because it doesn't
 # need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client

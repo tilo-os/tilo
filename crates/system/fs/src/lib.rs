@@ -31,6 +31,8 @@ pub mod content;
 pub mod control;
 #[cfg(feature = "filesystem")]
 pub mod docstore;
+#[cfg(feature = "document-media")]
+pub mod document_media;
 #[cfg(feature = "filesystem")]
 pub mod durable_backup;
 #[cfg(feature = "filesystem")]
