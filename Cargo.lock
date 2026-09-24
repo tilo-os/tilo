@@ -2102,6 +2102,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cloud-source-dropbox"
+version = "0.1.0"
+dependencies = [
+ "cloud-source",
+ "cloud-source-dropbox",
+ "hex",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "test-http",
+ "tilo-net",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "cloud-source-gdrive"
 version = "0.1.0"
 dependencies = [

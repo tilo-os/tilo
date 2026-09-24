@@ -203,6 +203,7 @@ members = [
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
     "crates/system/cloud-source-gdrive",
+    "crates/system/cloud-source-dropbox",
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
