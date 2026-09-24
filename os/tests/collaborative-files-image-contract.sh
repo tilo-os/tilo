@@ -167,18 +167,43 @@ require_text /usr/lib/tmpfiles.d/tilo.conf "C  /var/lib/tilo/fs-capabilities.jso
 # Files must be installed through the same registry/payload route the launcher
 # consumes.  A loose /usr/bin copy alone does not make it launchable as an app.
 registry=/usr/share/tilo-apps/registry.toml
-payload=/usr/share/tilo-apps/payloads/so.tilo.file-explorer
 require_file "$registry"
-require_file "$payload/manifest.toml"
-require_exec "$payload/bin/file-explorer"
 require_text "$registry" 'id = "so.tilo.file-explorer"'
-require_text "$registry" 'payload_root = "/usr/share/tilo-apps/payloads/so.tilo.file-explorer"'
-require_text "$registry" 'manifest_path = "/usr/share/tilo-apps/payloads/so.tilo.file-explorer/manifest.toml"'
+# The package store names each tree by its signed package id, so read where
+# the row points instead of assuming a path.
+registry_field() {
+  python3 - "$(at "$registry")" "$1" "$2" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+rows = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for row in rows.get("entry", []):
+    if row.get("id") == sys.argv[2]:
+        print(row[sys.argv[3]])
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+payload="$(registry_field so.tilo.file-explorer payload_root)" \
+  || die "registry has no payload root for Files"
+manifest="$(registry_field so.tilo.file-explorer manifest_path)" \
+  || die "registry has no manifest for Files"
+case "$payload" in
+  /usr/share/tilo-apps/pkgs/*) ;;
+  *) die "Files payload $payload is outside the system package store" ;;
+esac
+case "$manifest" in
+  /usr/share/tilo-apps/pkgs/*.pkg/manifest.toml) ;;
+  *) die "Files manifest $manifest is not the signed record" ;;
+esac
+require_file "$manifest"
+require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
-require_toml_string "$payload/manifest.toml" package.id "so.tilo.file-explorer"
-require_toml_string "$payload/manifest.toml" sandbox.services.tilo-fs "optional@1"
-require_toml_string "$payload/manifest.toml" package.runtime "tilo-runtime/2026.07"
+require_toml_string "$manifest" package.id "so.tilo.file-explorer"
+require_toml_string "$manifest" sandbox.services.tilo-fs "optional@1"
+require_toml_string "$manifest" package.runtime "tilo-runtime/2026.07"
 # These are deliberately allowed to be distinct signed build artifacts.  The
 # loose binary is the privileged recovery surface built with the OS, while the
 # launcher resolves the checksum-pinned app-collection payload.  Requiring
