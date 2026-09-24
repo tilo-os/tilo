@@ -3314,14 +3314,13 @@ mod tests {
                 page: 0,
             })
             .expect("text for the same page is distinct work");
-        {
-            let state = handle.session.queue.state.lock().expect("queue lock");
-            assert_eq!(state.texts.len(), 2);
-            assert!(matches!(
-                &state.texts[0].command,
-                RasterCommand::Links(queued) if *queued == request
-            ));
-        }
+        let state = handle.session.queue.state.lock().expect("queue lock");
+        assert_eq!(state.texts.len(), 2);
+        assert!(matches!(
+            &state.texts[0].command,
+            RasterCommand::Links(queued) if *queued == request
+        ));
+        drop(state);
         // Results for one page coalesce; text and links for it do not.
         let links = |n: usize| RasterEvent::LinksRead {
             request,
