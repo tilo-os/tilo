@@ -65,7 +65,7 @@ struct Participant {
 impl Participant {
     /// The participant who opens the project.
     fn opening() -> Self {
-        ui::portal::suppress_for_tests();
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let mut p = Participant {
             app: VideoEditorApp::new_for_shot(ShotScenario::Live),
             doc: AutoCommit::new(),
@@ -77,7 +77,7 @@ impl Participant {
     /// A participant who joins and is handed the project, the way a late
     /// joiner is answered with the document.
     fn joining(from: &Participant) -> Self {
-        ui::portal::suppress_for_tests();
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let mut p = Participant {
             app: VideoEditorApp::new(),
             doc: AutoCommit::load(&from.doc.clone().save()).expect("the handed-over document"),

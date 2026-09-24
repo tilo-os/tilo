@@ -9209,7 +9209,7 @@ mod tests {
 
     #[test]
     fn portal_cancel_cancels_the_paused_engine_download() {
-        ui::portal::suppress_for_tests();
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         engine.send(WebViewCommand::StartDownload {
@@ -9230,7 +9230,7 @@ mod tests {
 
     #[test]
     fn portal_worker_failure_cancels_webkit_but_preserves_the_actionable_error() {
-        ui::portal::suppress_for_tests();
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         engine.send(WebViewCommand::StartDownload {

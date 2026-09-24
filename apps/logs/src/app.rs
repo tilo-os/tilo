@@ -164,8 +164,6 @@ pub struct LogsApp {
     /// content is published through resources or collaboration state.
     export_rx: Option<PortalChannel>,
     pending_export: Option<Vec<LogEntry>>,
-    #[cfg(test)]
-    controlled_export_portal: Option<Box<dyn Fn(PickRequest) -> PortalChannel>>,
     /// Concise local outcome for the portal write, announced through an a11y
     /// live region. It never includes a chosen path or log contents.
     export_status: Option<String>,
@@ -219,8 +217,6 @@ impl LogsApp {
             source_loading: false,
             export_rx: None,
             pending_export: None,
-            #[cfg(test)]
-            controlled_export_portal: None,
             export_status: None,
             rect: Rect::ZERO,
             node: None,
@@ -504,24 +500,8 @@ impl LogsApp {
                     .glob("*.jsonl"),
             );
         self.pending_export = Some(entries);
-        #[cfg(test)]
-        let export_rx = if let Some(portal) = &self.controlled_export_portal {
-            portal(request)
-        } else {
-            request.send()
-        };
-        #[cfg(not(test))]
-        let export_rx = request.send();
-        self.export_rx = Some(export_rx);
+        self.export_rx = Some(request.send());
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_controlled_export_portal(
-        &mut self,
-        portal: impl Fn(PickRequest) -> PortalChannel + 'static,
-    ) {
-        self.controlled_export_portal = Some(Box::new(portal));
     }
 
     /// Complete a non-blocking host Save portal request. No selected path is
@@ -3791,17 +3771,24 @@ mod tests {
 
     #[test]
     fn portal_export_writes_the_snapshot_selected_before_the_picker() {
-        let mut app = LogsApp::new(sample_entries(), true);
+        let mut app = LogsApp::new(sample_entries().into_iter().take(2).collect(), true);
         let path = std::env::temp_dir().join(format!(
             "tilo-logs-portal-export-{}-{}.jsonl",
             std::process::id(),
             app.entries[0].realtime_us
         ));
         let _ = std::fs::remove_file(&path);
-        app.pending_export = Some(app.entries.iter().take(2).cloned().collect());
-        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || {
+            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+        });
+        assert_eq!(
+            recorder.pick_requests()[0].suggested_name(),
+            Some("journal-filtered.jsonl")
+        );
+        // Entries arriving after the picker opened are not part of the export.
+        app.entries.extend(sample_entries().into_iter().skip(2));
         app.drain_export_portal();
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
         assert_eq!(
@@ -3813,11 +3800,12 @@ mod tests {
 
     #[test]
     fn portal_export_write_failure_is_announced_without_path_details() {
-        let mut app = LogsApp::new(sample_entries(), true);
-        app.pending_export = Some(app.entries.iter().take(1).cloned().collect());
-        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            std::env::temp_dir(),
-        )));
+        let mut app = LogsApp::new(sample_entries().into_iter().take(1).collect(), true);
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
+        ui::host::scoped(&services, || {
+            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+        });
         app.drain_export_portal();
         assert_eq!(app.export_status.as_deref(), Some("Export failed."));
         let tree = app.accessibility_tree();

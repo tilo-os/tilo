@@ -1913,10 +1913,7 @@ impl StoreApp {
             .with_accessible_name(&format!("Copy full publisher key {full_key}"))
             .tooltip(format!("Copy full publisher key {full_key}"))
             .on_effect(move || {
-                if let Some(clipboard) = ui::clipboard::clipboard_backend() {
-                    let _ = clipboard
-                        .set_text(ui::clipboard::ClipboardTarget::Clipboard, &clipboard_key);
-                }
+                ui::text_selection::clipboard_copy(&clipboard_key);
             });
             publisher_facts = publisher_facts.push(Box::new(key_button));
         } else {
