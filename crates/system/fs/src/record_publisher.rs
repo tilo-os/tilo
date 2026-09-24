@@ -24,8 +24,8 @@ use crate::record_replication::{
     RecordSnapshot,
 };
 use crate::record_repository::{
-    MAX_RECORD_CONFLICTS, MAX_RECORD_VERSIONS, RecordRepository, RecordRepositoryError,
-    RecordRepositoryKey,
+    MAX_RECORD_BATCH_OPERATIONS, MAX_RECORD_CONFLICTS, MAX_RECORD_VERSIONS, RecordRepository,
+    RecordRepositoryError, RecordRepositoryKey,
 };
 
 const MAX_SEQUENCE_RETRIES: usize = 8;
@@ -628,6 +628,12 @@ impl RecordPublisher {
             published_conflicts: 0,
             skipped_conflicts: 0,
         };
+        // Every operation this publication still needs, in the order they
+        // were applied one by one before: versions, the content revision,
+        // conflicts and their resolutions, metadata. They are signed with
+        // consecutive sequences and committed as one batch: one durable
+        // write of the record instead of one per operation.
+        let mut pending: Vec<(Pending, RecordOperationV1)> = Vec::new();
         for version in versions {
             match existing_versions.get(&version.id) {
                 Some(existing) if existing == version => {
@@ -637,16 +643,10 @@ impl RecordPublisher {
                 Some(_) => return Err(RecordPublisherError::VersionCollision(version.id)),
                 None => {}
             }
-            let published = self.apply_idempotent(
-                key,
+            pending.push((
+                Pending::Version,
                 RecordOperationV1::AppendVersion(version.clone()),
-                &authorizer,
-            )?;
-            if published {
-                report.published_versions = report.published_versions.saturating_add(1);
-            } else {
-                report.skipped_versions = report.skipped_versions.saturating_add(1);
-            }
+            ));
             existing_versions.insert(version.id, version.clone());
         }
 
@@ -667,15 +667,14 @@ impl RecordPublisher {
                 byte_len: metadata.byte_len,
                 metadata_hash: current_version.metadata_hash,
             };
-            let current_revision = self
-                .snapshot_if_present(key, &authorizer)?
+            let current_revision = initial
+                .as_ref()
                 .and_then(|snapshot| snapshot.content_revision);
             if current_revision != Some(revision) {
-                let _ = self.apply_idempotent(
-                    key,
+                pending.push((
+                    Pending::Revision,
                     RecordOperationV1::SetContentRevision(revision),
-                    &authorizer,
-                )?;
+                ));
             }
         }
 
@@ -690,45 +689,107 @@ impl RecordPublisher {
             let mut open = conflict.clone();
             open.status = ConflictStatus::Open;
             open.resolution = None;
-            if self.apply_idempotent(key, RecordOperationV1::AppendConflict(open), &authorizer)? {
-                report.published_conflicts = report.published_conflicts.saturating_add(1);
-            } else {
+            let append = RecordOperationV1::AppendConflict(open);
+            if operation_is_present(&append, initial.as_ref())? {
                 report.skipped_conflicts = report.skipped_conflicts.saturating_add(1);
+            } else {
+                pending.push((Pending::Conflict, append));
             }
             if let Some(resolution) = &conflict.resolution {
-                if self.apply_idempotent(
-                    key,
-                    RecordOperationV1::ResolveConflict {
-                        conflict_id: conflict.id,
-                        resolution: resolution.clone(),
-                    },
-                    &authorizer,
-                )? {
-                    report.published_conflicts = report.published_conflicts.saturating_add(1);
-                } else {
+                let resolve = RecordOperationV1::ResolveConflict {
+                    conflict_id: conflict.id,
+                    resolution: resolution.clone(),
+                };
+                if operation_is_present(&resolve, initial.as_ref())? {
                     report.skipped_conflicts = report.skipped_conflicts.saturating_add(1);
+                } else {
+                    pending.push((Pending::Conflict, resolve));
                 }
             }
         }
 
-        let current_metadata = self
-            .snapshot_if_present(key, &authorizer)?
-            .and_then(|snapshot| snapshot.metadata);
-        if current_metadata.as_ref() == Some(metadata) {
-            report.metadata = MetadataPublishStatus::Unchanged;
-        } else if current_metadata
-            .as_ref()
-            .is_some_and(|current| current.observed_at_ms > metadata.observed_at_ms)
-        {
+        let current_metadata = initial.and_then(|snapshot| snapshot.metadata);
+        let stale = current_metadata.as_ref() != Some(metadata)
+            && current_metadata
+                .as_ref()
+                .is_some_and(|current| current.observed_at_ms > metadata.observed_at_ms);
+        if current_metadata.as_ref() != Some(metadata) && !stale {
+            pending.push((
+                Pending::Metadata,
+                RecordOperationV1::SetMetadata(metadata.clone()),
+            ));
+        }
+        let applied = self.apply_all(key, pending, &authorizer)?;
+        for (kind, published) in applied {
+            match (kind, published) {
+                (Pending::Version, true) => {
+                    report.published_versions = report.published_versions.saturating_add(1);
+                }
+                (Pending::Version, false) => {
+                    report.skipped_versions = report.skipped_versions.saturating_add(1);
+                }
+                (Pending::Conflict, true) => {
+                    report.published_conflicts = report.published_conflicts.saturating_add(1);
+                }
+                (Pending::Conflict, false) => {
+                    report.skipped_conflicts = report.skipped_conflicts.saturating_add(1);
+                }
+                (Pending::Metadata, true) => report.metadata = MetadataPublishStatus::Published,
+                (Pending::Revision | Pending::Metadata, _) => {}
+            }
+        }
+        if stale {
             return Err(RecordPublisherError::StaleMetadata);
-        } else if self.apply_idempotent(
-            key,
-            RecordOperationV1::SetMetadata(metadata.clone()),
-            &authorizer,
-        )? {
-            report.metadata = MetadataPublishStatus::Published;
         }
         Ok(report)
+    }
+
+    /// Signs `operations` with consecutive sequences and commits them as one
+    /// batch. When another publisher took a sequence meanwhile, each is
+    /// applied on its own instead, as [`Self::apply_idempotent`] does.
+    /// Returns, per operation, whether this call published it.
+    fn apply_all(
+        &self,
+        key: RecordRepositoryKey,
+        operations: Vec<(Pending, RecordOperationV1)>,
+        authorizer: &LocalOwnerAuthorizer,
+    ) -> Result<Vec<(Pending, bool)>, RecordPublisherError> {
+        let mut applied = Vec::with_capacity(operations.len());
+        for chunk in operations.chunks(MAX_RECORD_BATCH_OPERATIONS) {
+            let first = self
+                .repository
+                .highest_sequence(key, &self.actor)
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or(RecordPublisherError::SequenceExhausted)?;
+            let mut envelopes = Vec::with_capacity(chunk.len());
+            for (offset, (_, operation)) in chunk.iter().enumerate() {
+                let sequence = first
+                    .checked_add(offset as u64)
+                    .ok_or(RecordPublisherError::SequenceExhausted)?;
+                envelopes.push(RecordEnvelopeV1::signed(
+                    key.record_id,
+                    self.actor,
+                    sequence,
+                    operation.clone(),
+                    &self.signing_key,
+                )?);
+            }
+            match self.repository.apply_batch(key, &envelopes, authorizer) {
+                Ok(()) => applied.extend(chunk.iter().map(|(kind, _)| (*kind, true))),
+                Err(RecordRepositoryError::Replication(RecordReplicationError::Replay {
+                    ..
+                })) => {
+                    for (kind, operation) in chunk {
+                        let published =
+                            self.apply_idempotent(key, operation.clone(), authorizer)?;
+                        applied.push((*kind, published));
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(applied)
     }
 
     fn snapshot_if_present(
@@ -858,6 +919,15 @@ fn operation_is_present(
             Ok(false)
         }
     }
+}
+
+/// What a pending operation of a publication is, for its report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pending {
+    Version,
+    Revision,
+    Conflict,
+    Metadata,
 }
 
 fn validate_record(record_id: FileRecordId) -> Result<(), RecordPublisherError> {
