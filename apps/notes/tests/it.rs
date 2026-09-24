@@ -61,6 +61,9 @@ mod canonical_component;
 #[path = "support/component.rs"]
 mod component_support;
 
+#[path = "framework_history.rs"]
+mod framework_history;
+
 #[path = "canonical_actions.rs"]
 mod canonical_actions;
 
