@@ -1,0 +1,34 @@
+[package]
+name = "tilo-relay-protocol"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "Shared value types of the Tilo host + relay: mesh roles and placement, relay configuration, home-peer registrations, room shard ids and the metrics snapshot."
+license = "MIT OR Apache-2.0"
+
+# Clients of the relay (the shell, Settings, Remote) read and write these
+# records without linking the daemon. Keep this crate free of the relay's
+# transport, storage and sandbox dependencies: anything that needs a runtime,
+# an iroh endpoint or the filesystem daemon belongs in `tilo-relay`.
+[dependencies]
+# Crash-safe replacement of the metrics snapshot.
+atomic-file = { path = "../../system/atomic-file" }
+# Certificates embedded in home-peer registrations and checked by the
+# trust policy.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+# `EndpointAddr` in mesh profiles and home-peer registrations.
+iroh-base = { workspace = true, features = ["key"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+hex.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+
+[lints]
+workspace = true
