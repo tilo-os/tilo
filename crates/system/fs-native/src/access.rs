@@ -30,7 +30,7 @@ pub enum Access {
 /// its number and its six arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Syscall {
-    pub nr: i64,
+    pub nr: libc::c_long,
     pub args: [u64; 6],
 }
 
@@ -38,7 +38,7 @@ pub struct Syscall {
 /// `running` or a negative number (not in a call) yields `None`.
 pub fn parse_syscall(text: &str) -> Option<Syscall> {
     let mut fields = text.split_whitespace();
-    let nr: i64 = fields.next()?.parse().ok()?;
+    let nr: libc::c_long = fields.next()?.parse().ok()?;
     if nr < 0 {
         return None;
     }
@@ -87,7 +87,7 @@ pub fn classify_call(
 ) -> Access {
     let [a0, a1, a2, a3, ..] = call.args;
     let nr = call.nr;
-    let is = |n: libc::c_long| nr == i64::from(n);
+    let is = |n: libc::c_long| nr == n;
     if is(libc::SYS_read)
         || is(libc::SYS_pread64)
         || is(libc::SYS_readv)
@@ -190,10 +190,7 @@ mod tests {
     use super::*;
 
     fn call(nr: libc::c_long, args: [u64; 6]) -> Syscall {
-        Syscall {
-            nr: i64::from(nr),
-            args,
-        }
+        Syscall { nr, args }
     }
 
     fn of(c: &Syscall) -> Access {
@@ -217,7 +214,17 @@ mod tests {
             Access::Write
         );
         let map = |prot: i32, flags: i32| {
-            call(libc::SYS_mmap, [0, 4096, prot as u64, flags as u64, 3, 0])
+            call(
+                libc::SYS_mmap,
+                [
+                    0,
+                    4096,
+                    u64::from(prot.cast_unsigned()),
+                    u64::from(flags.cast_unsigned()),
+                    3,
+                    0,
+                ],
+            )
         };
         assert_eq!(of(&map(libc::PROT_READ, libc::MAP_SHARED)), Access::Read);
         assert_eq!(

@@ -50,7 +50,7 @@ pub enum WriteGate {
     /// Refuse writes with this errno (`EBUSY` while another device holds
     /// the file's write lease), and refuse opening it for writing, so a
     /// program that falls back to a read-only open when a read-write one
-    /// fails (SQLite does) reads normally and reports a read-only file
+    /// fails (`SQLite` does) reads normally and reports a read-only file
     /// when it tries to write.
     Deny(i32),
     /// Ask the [`WritePolicy`] at the first write, which may grant it

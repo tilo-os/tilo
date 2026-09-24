@@ -739,12 +739,13 @@ async fn peer_may_read_blob(
 /// chunk lists are kept across namespace changes.
 #[derive(Default)]
 struct ReadableBlobs {
-    by_caller: std::sync::Mutex<
-        std::collections::HashMap<(IdentityKey, Option<IdentityKey>), Arc<CallerReadable>>,
-    >,
+    by_caller: std::sync::Mutex<std::collections::HashMap<Caller, Arc<CallerReadable>>>,
     manifests:
         std::sync::Mutex<std::collections::HashMap<iroh_blobs::Hash, Arc<Vec<iroh_blobs::Hash>>>>,
 }
+
+/// A blob caller: its device and the person certifying it.
+type Caller = (IdentityKey, Option<IdentityKey>);
 
 struct CallerReadable {
     acl_revision: u64,
@@ -838,14 +839,16 @@ impl ReadableBlobs {
                 .map(|chunk| iroh_blobs::Hash::from(chunk.hash))
                 .collect(),
         );
-        let mut cache = self
-            .manifests
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if cache.len() >= MAX_CACHED_MANIFESTS {
-            cache.clear();
+        {
+            let mut cache = self
+                .manifests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cache.len() >= MAX_CACHED_MANIFESTS {
+                cache.clear();
+            }
+            cache.insert(manifest_hash, Arc::clone(&chunks));
         }
-        cache.insert(manifest_hash, Arc::clone(&chunks));
         Some(chunks)
     }
 

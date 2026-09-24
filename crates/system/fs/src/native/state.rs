@@ -102,6 +102,10 @@ impl LocalStat {
 }
 
 /// The record version a path of the live tree corresponds to.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one materialised path, persisted as they are"
+)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Materialized {
     pub dir: bool,

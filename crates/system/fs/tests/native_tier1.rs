@@ -1505,9 +1505,16 @@ fn the_lease_authority_gives_a_free_lease_to_one_of_two_devices_asking_at_once()
     let t = Instant::now();
     let peer = contend(f2.clone(), b"pz".to_vec(), start, Duration::ZERO);
     assert_eq!(peer.join().unwrap(), Ok(()));
-    eprintln!("the peer's first write waited {:?} for the grant", t.elapsed());
+    eprintln!(
+        "the peer's first write waited {:?} for the grant",
+        t.elapsed()
+    );
     pair.peer.wait_line("granted by the lease authority");
-    assert!(pair.host.log_count("granted the write lease of shared.db to device") >= 1);
+    assert!(
+        pair.host
+            .log_count("granted the write lease of shared.db to device")
+            >= 1
+    );
     for daemon in [&pair.host, &pair.peer] {
         assert_eq!(daemon.log_count("fenced version"), 0, "no conflict");
         assert_eq!(daemon.log_count("tenancy its author did not hold"), 0);

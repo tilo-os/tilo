@@ -319,7 +319,7 @@ impl LeaseKeeper {
                         .strip_prefix(&live)
                         .ok()
                         .and_then(rebase)
-                        .map_or(abs.clone(), |rel| live.join(rel));
+                        .map_or_else(|| abs.clone(), |rel| live.join(rel));
                     (moved, g)
                 })
                 .collect();

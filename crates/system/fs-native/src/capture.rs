@@ -891,10 +891,10 @@ fn pair_moves(
         .into_iter()
         .filter(|(path, _)| !consumed_from.contains(path))
         .map(|(path, is_dir)| {
-            let moved = direct
+            let target = direct
                 .iter()
                 .find_map(|(from, to)| rebase(&path, from, to).filter(|_| path != *from));
-            match moved {
+            match target {
                 Some(new) => {
                     // It keeps its journal position.
                     if let Some(seq) = order.get(&path).copied() {
