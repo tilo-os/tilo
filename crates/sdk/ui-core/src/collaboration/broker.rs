@@ -4293,7 +4293,7 @@ mod tests {
             );
             let _ = result_tx.send(result.map(drop));
         });
-        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        started_rx.recv_timeout(HANG_GUARD).unwrap();
         let result = result_rx
             .recv_timeout(SHOVEL_INIT_TIMEOUT * 2)
             .expect("a pending host handoff must not hang its caller");
@@ -4305,7 +4305,7 @@ mod tests {
             _ => panic!("a pending handoff cannot produce a connected session"),
         }
         dropped_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(HANG_GUARD)
             .expect("timed-out async handoff must release its owned resources");
     }
 
@@ -4423,13 +4423,13 @@ mod tests {
         assert_eq!(presentation.workspace_id, cluster_id.to_string());
         assert_eq!(presentation.device_certificate, b"fixture certificate");
         assert_eq!(presentation.proof, vec![7; 64]);
-        let requests = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let requests = requests_rx.recv_timeout(HANG_GUARD).unwrap();
         manager.send(CollabRequest::document_incremental(
             b"fixture document change".to_vec(),
         ));
         assert!(wait_until(
             || host_identity_requests(&requests.lock().unwrap()).len() == 3,
-            Duration::from_secs(2)
+            HANG_GUARD
         ));
         let requests = host_identity_requests(&requests.lock().unwrap());
         assert!(
@@ -4580,7 +4580,7 @@ mod tests {
             _ => panic!("stream and identity bootstrap must not bypass refused Hello"),
         }
         assert_eq!(
-            attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
             channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -4589,7 +4589,7 @@ mod tests {
             "must not retry another route"
         );
         stop_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(HANG_GUARD)
             .expect("fixture broker stops after failed manager");
     }
 
@@ -4643,7 +4643,7 @@ mod tests {
             "must wait for the worker-side route deadline"
         );
         assert_eq!(
-            attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            attempt_rx.recv_timeout(HANG_GUARD).unwrap(),
             channel_key::format("so.tilo.notes", &cluster_id.to_string(), "note")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -4652,7 +4652,7 @@ mod tests {
             "must not retry another route"
         );
         stop_rx
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(HANG_GUARD)
             .expect("timed-out primary join must cancel and close the fixture broker");
         drop(release);
     }
@@ -4733,19 +4733,28 @@ mod tests {
         CollaborationManager::from_sdk_fd_for_test(fd, "lifecycle-test", Uuid::new_v4())
     }
 
-    fn drain_events(mgr: &mut CollaborationManager, deadline: Duration) -> Vec<CollabEvent> {
+    /// Upper bound for waits on the fake broker. Every wait returns as soon
+    /// as its condition holds; the guard only turns a lost message into a
+    /// failure instead of a hang, so it can be generous without slowing a
+    /// passing run.
+    const HANG_GUARD: Duration = Duration::from_secs(30);
+
+    /// Poll until the events received so far satisfy `done`, or
+    /// [`HANG_GUARD`] passes. Returns everything received either way, so the
+    /// caller's assertions report what did arrive.
+    fn poll_until(
+        mgr: &mut CollaborationManager,
+        mut done: impl FnMut(&[CollabEvent]) -> bool,
+    ) -> Vec<CollabEvent> {
         let start = crate::time::now();
         let mut events = Vec::new();
-        while start.elapsed() < deadline {
+        loop {
             events.extend(mgr.poll());
-            if !events.is_empty() {
-                thread::sleep(Duration::from_millis(5));
-                events.extend(mgr.poll());
-                break;
+            if done(&events) || start.elapsed() >= HANG_GUARD {
+                return events;
             }
             thread::sleep(Duration::from_millis(5));
         }
-        events
     }
 
     fn wait_until<F: FnMut() -> bool>(mut cond: F, deadline: Duration) -> bool {
@@ -5115,10 +5124,7 @@ mod tests {
         );
 
         assert!(
-            wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                Duration::from_secs(2),
-            ),
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD,),
             "join_channel must be observed"
         );
         let joined = captures.lock().unwrap().joined.clone();
@@ -5141,10 +5147,7 @@ mod tests {
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", cluster);
 
         assert!(
-            wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                Duration::from_secs(2)
-            ),
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
             "join_channel must be observed"
         );
         let joined = captures.lock().unwrap().joined.clone();
@@ -5173,7 +5176,7 @@ mod tests {
         assert!(
             wait_until(
                 || !captures.lock().unwrap().signed_ops.is_empty(),
-                Duration::from_secs(2),
+                HANG_GUARD,
             ),
             "send() must reach the SDK",
         );
@@ -5215,7 +5218,7 @@ mod tests {
         assert!(
             wait_until(
                 || captures.lock().unwrap().signed_ops.len() == 2,
-                Duration::from_secs(2)
+                HANG_GUARD
             ),
             "both raw requests reach SDK signed RPC"
         );
@@ -5267,10 +5270,7 @@ mod tests {
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
         assert!(
-            wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                Duration::from_secs(2)
-            ),
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
             "join_channel must be observed",
         );
 
@@ -5315,7 +5315,7 @@ mod tests {
                         && c.arrived.len() == 1
                         && c.left.len() == 1
                 },
-                Duration::from_secs(2),
+                HANG_GUARD,
             ),
             "every presence variant must reach the corresponding SDK method",
         );
@@ -5412,7 +5412,11 @@ mod tests {
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let events = drain_events(&mut mgr, Duration::from_secs(2));
+        let events = poll_until(&mut mgr, |events| {
+            events
+                .iter()
+                .any(|e| matches!(e, CollabEvent::Document { .. }))
+        });
 
         let signed: Vec<_> = events
             .into_iter()
@@ -5534,7 +5538,11 @@ mod tests {
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let events = drain_events(&mut mgr, Duration::from_secs(2));
+        let events = poll_until(&mut mgr, |events| {
+            events
+                .iter()
+                .any(|e| matches!(e, CollabEvent::Context { .. }))
+        });
 
         let ctx = events
             .iter()
@@ -5610,12 +5618,21 @@ mod tests {
         };
         let (fd, _captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
-        let start = crate::time::now();
-        let mut events = Vec::new();
-        while events.len() < 7 && start.elapsed() < Duration::from_secs(2) {
-            events.extend(mgr.poll());
-            thread::sleep(Duration::from_millis(5));
-        }
+        // Other events (connection state, context) can arrive in between, so
+        // wait for the seven presence events themselves, not for any seven.
+        let events = poll_until(&mut mgr, |events| {
+            events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        CollabEvent::RemoteCursorMoved { .. }
+                            | CollabEvent::RemotePresenceUpdate { .. }
+                    )
+                })
+                .count()
+                >= 7
+        });
 
         let mut cursor_moves = Vec::new();
         let mut updates = Vec::new();
@@ -5691,10 +5708,7 @@ mod tests {
         let (fd, captures, _th) = stand_up_fake_broker(broker);
         let mut mgr = CollaborationManager::from_sdk_fd_for_test(fd, "alice", Uuid::nil());
         assert!(
-            wait_until(
-                || !captures.lock().unwrap().joined.is_empty(),
-                Duration::from_secs(2)
-            ),
+            wait_until(|| !captures.lock().unwrap().joined.is_empty(), HANG_GUARD),
             "join_channel must precede scrollback fetch",
         );
 
@@ -5704,19 +5718,18 @@ mod tests {
             before_seq: 10,
             max: 50,
         });
-        // `drain_events` returns with the first burst of events, which can be
-        // unrelated to the fetch; keep draining until the batch arrives.
-        let start = crate::time::now();
-        let mut batch = None;
-        while batch.is_none() && start.elapsed() < Duration::from_secs(10) {
-            batch = drain_events(&mut mgr, Duration::from_millis(500))
-                .into_iter()
-                .find_map(|e| match e {
-                    CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
-                    _ => None,
-                });
-        }
-        let batch = batch.expect("must receive a ScrollbackBatch event");
+        let events = poll_until(&mut mgr, |events| {
+            events
+                .iter()
+                .any(|e| matches!(e, CollabEvent::ScrollbackBatch { .. }))
+        });
+        let batch = events
+            .into_iter()
+            .find_map(|e| match e {
+                CollabEvent::ScrollbackBatch { ops, exhausted, .. } => Some((ops, exhausted)),
+                _ => None,
+            })
+            .expect("must receive a ScrollbackBatch event");
         assert_eq!(batch.0.len(), 1);
         assert_eq!(
             collab_types::DocumentMutation::decode(&batch.0[0].payload).unwrap(),
