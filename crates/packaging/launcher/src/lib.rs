@@ -42,6 +42,7 @@ pub mod capabilities;
 pub mod capture;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
+pub mod dev_env;
 pub mod gpu;
 pub mod hardening;
 #[cfg(target_os = "linux")]
