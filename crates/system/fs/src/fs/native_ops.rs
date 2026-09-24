@@ -12,7 +12,7 @@
 use std::path::{Component, Path};
 
 use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
-use crate::namespace::{ContentAuthority, ROOT_INO, WriteLease};
+use crate::namespace::{ContentAuthority, PosixAttrs, ROOT_INO, WriteLease};
 
 /// One file or directory of the workspace tree as the record plane sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +34,9 @@ pub struct TreeEntry {
     pub known: bool,
     /// The stable record this path is. A rename keeps it.
     pub record: Option<collab_types::FileRecordId>,
+    /// Replicated permission bits and whether the content is a symbolic
+    /// link's target.
+    pub posix: PosixAttrs,
 }
 
 /// Splits a root-relative path into its name components. Anything that is
@@ -52,6 +55,13 @@ pub fn path_components(rel: &Path) -> Result<Vec<Vec<u8>>, i32> {
         })
         .filter(|c| !matches!(c, Ok(v) if v.is_empty()))
         .collect()
+}
+
+/// The published POSIX attributes of the record at `ino`, else the default.
+fn posix_of(ns: &crate::namespace::Namespace, ino: u64, dir: bool) -> PosixAttrs {
+    ns.record_id_for(ino)
+        .and_then(|r| ns.posix_attrs(r))
+        .unwrap_or_else(|| PosixAttrs::default_for(dir))
 }
 
 fn to_errno(error: &std::io::Error) -> i32 {
@@ -89,17 +99,48 @@ impl QuickFS {
         Ok(cur)
     }
 
-    /// Applies a locally captured directory.
+    /// Applies a locally captured directory with its default mode.
     ///
     /// # Errors
     ///
     /// The errno of the directory creation that failed.
     pub fn apply_local_dir(&self, rel: &Path) -> Result<(), i32> {
+        self.apply_local_dir_as(rel, PosixAttrs::default_for(true))
+    }
+
+    /// Applies a locally captured directory with mode bits `attrs`.
+    ///
+    /// # Errors
+    ///
+    /// The errno of the directory creation that failed.
+    pub fn apply_local_dir_as(&self, rel: &Path, attrs: PosixAttrs) -> Result<(), i32> {
         let components = path_components(rel)?;
         if components.is_empty() {
             return Ok(());
         }
-        self.ensure_dir_components(&components).map(|_| ())
+        let ino = self.ensure_dir_components(&components)?;
+        self.set_posix(ino, attrs, true)
+    }
+
+    /// Publishes `attrs` for the record at `ino` when they differ from what
+    /// it has.
+    fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
+        let delta = {
+            let mut ns = self.ns();
+            let record = ns.record_id_for(ino).ok_or(EIO)?;
+            let current = ns
+                .posix_attrs(record)
+                .unwrap_or_else(|| PosixAttrs::default_for(dir));
+            if current == attrs {
+                return Ok(());
+            }
+            if !ns.put_posix_attrs(record, &attrs) {
+                return Err(EIO);
+            }
+            ns.save_incremental()
+        };
+        self.publish(delta);
+        Ok(())
     }
 
     /// Applies a locally captured file version with content `data`, written
@@ -112,6 +153,24 @@ impl QuickFS {
     /// The errno of the record operation that failed (`EDQUOT` when the
     /// record's history is full, `EIO` when publication failed).
     pub fn apply_local_file(&self, rel: &Path, data: &[u8], mtime_ms: u64) -> Result<(), i32> {
+        self.apply_local_file_as(rel, data, mtime_ms, PosixAttrs::default_for(false))
+    }
+
+    /// [`Self::apply_local_file`] with the file's mode bits, or for a
+    /// symbolic link (`attrs.symlink`) whose target bytes are `data`. The
+    /// attributes are published before the content, so a peer never shows
+    /// the new content with the old type or mode.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply_local_file`].
+    pub fn apply_local_file_as(
+        &self,
+        rel: &Path,
+        data: &[u8],
+        mtime_ms: u64,
+        attrs: PosixAttrs,
+    ) -> Result<(), i32> {
         let components = path_components(rel)?;
         let Some((name, parents)) = components.split_last() else {
             return Err(EISDIR);
@@ -132,6 +191,7 @@ impl QuickFS {
                 ino
             }
         };
+        self.set_posix(ino, attrs, false)?;
         self.commit_content_at(ino, data, mtime_ms)
             .map_err(|e| to_errno(&e))
     }
@@ -239,7 +299,7 @@ impl QuickFS {
                 }
                 let mut path = prefix.clone();
                 path.push(name.to_vec());
-                let (hash, size, mtime_ms, known, record) = {
+                let (hash, size, mtime_ms, known, record, posix) = {
                     let ns = self.ns();
                     let attr = ns.getattr(ino);
                     let mtime_ms = attr
@@ -255,6 +315,7 @@ impl QuickFS {
                         mtime_ms,
                         known,
                         ns.record_id_for(ino),
+                        posix_of(&ns, ino, kind == FileType::Directory),
                     )
                 };
                 let dir_entry = kind == FileType::Directory;
@@ -266,6 +327,7 @@ impl QuickFS {
                     mtime_ms,
                     known,
                     record,
+                    posix,
                 });
                 if dir_entry {
                     stack.push((ino, path));
@@ -309,6 +371,7 @@ impl QuickFS {
             mtime_ms,
             known,
             record: ns.record_id_for(ino),
+            posix: posix_of(&ns, ino, attr.kind == FileType::Directory),
         })
     }
 

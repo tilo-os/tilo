@@ -32,9 +32,17 @@ use fs_native::hydrate::{Hydrator as Placeholders, PlaceholderSpec, STAGING_PREF
 use super::state::{LocalStat, Materialized};
 use crate::fs::native_ops::TreeEntry;
 use crate::hydration::Hydrator;
+use crate::namespace::PosixAttrs;
 
-const FILE_MODE: u32 = 0o644;
-const DIR_MODE: u32 = 0o755;
+/// Largest symbolic link target (`PATH_MAX`).
+const MAX_LINK_TARGET: u64 = 4096;
+
+/// The permission bits of a local path, as the record plane keeps them.
+fn local_mode(path: &Path) -> Option<u32> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    let ft = meta.file_type();
+    Some(PosixAttrs::of_local(meta.permissions().mode(), ft.is_dir(), ft.is_symlink()).mode)
+}
 
 pub fn rel_path(components: &[Vec<u8>]) -> PathBuf {
     components
@@ -328,14 +336,25 @@ impl Projector {
             dir: true,
             mtime_ms: e.mtime_ms,
             record: record_key(e),
+            mode: Some(e.posix.mode),
             ..Materialized::default()
         };
         match fs::symlink_metadata(&abs) {
             Ok(meta) if meta.is_dir() => {
-                if materialized
-                    .get(rel)
-                    .is_none_or(|m| m.record != record.record)
-                {
+                let previous = materialized.get(rel);
+                let now = local_mode(&abs);
+                if now != Some(e.posix.mode) {
+                    // Only a mode the daemon set (or published) is changed;
+                    // a local chmod not captured yet wins.
+                    let ours = previous.is_some_and(|m| m.mode.is_none() || m.mode == now);
+                    if !ours {
+                        out.skipped_dirty.push(rel.to_path_buf());
+                        return Ok(());
+                    }
+                    fs::set_permissions(&abs, fs::Permissions::from_mode(e.posix.mode))?;
+                    out.written.push(rel.to_path_buf());
+                }
+                if previous != Some(&record) {
                     out.updates.push((rel.to_path_buf(), Some(record)));
                 }
                 Ok(())
@@ -350,7 +369,7 @@ impl Projector {
                     return Ok(());
                 }
                 fs::remove_file(&abs)?;
-                self.make_dir(&abs)?;
+                self.make_dir_as(&abs, e.posix.mode)?;
                 out.written.push(rel.to_path_buf());
                 out.updates.push((rel.to_path_buf(), Some(record)));
                 Ok(())
@@ -365,7 +384,7 @@ impl Projector {
                 if let Some(parent) = abs.parent() {
                     self.make_dirs(parent)?;
                 }
-                self.make_dir(&abs)?;
+                self.make_dir_as(&abs, e.posix.mode)?;
                 out.written.push(rel.to_path_buf());
                 out.updates.push((rel.to_path_buf(), Some(record)));
                 Ok(())
@@ -375,13 +394,18 @@ impl Projector {
     }
 
     fn make_dir(&self, abs: &Path) -> io::Result<()> {
+        self.make_dir_as(abs, crate::namespace::DEFAULT_DIR_MODE)
+    }
+
+    fn make_dir_as(&self, abs: &Path, mode: u32) -> io::Result<()> {
         match fs::create_dir(abs) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
             Err(e) => return Err(e),
         }
-        fs::set_permissions(abs, fs::Permissions::from_mode(DIR_MODE))?;
-        self.chown(abs)
+        self.chown(abs)?;
+        // After the chown, which clears setgid.
+        fs::set_permissions(abs, fs::Permissions::from_mode(mode))
     }
 
     fn project_file(
@@ -397,16 +421,28 @@ impl Projector {
             && !m.dir
             && m.hash == hash
             && m.size == e.size
+            && m.symlink == e.posix.symlink
         {
-            if m.record != record_key(e) {
-                // Same bytes, and now known as this record.
-                out.updates.push((
-                    rel.to_path_buf(),
-                    Some(Materialized {
-                        record: record_key(e),
-                        ..m.clone()
-                    }),
-                ));
+            let mut next = Materialized {
+                record: record_key(e),
+                ..m.clone()
+            };
+            if !e.posix.symlink && m.mode != Some(e.posix.mode) {
+                // Same bytes, new mode: change it in place unless the file
+                // changed here since the daemon last wrote it.
+                let abs = self.live.join(rel);
+                let untouched = m.local.is_some() && m.local == LocalStat::of(&abs);
+                let mode_ours = m.mode.is_none() || m.mode == local_mode(&abs);
+                if !(untouched && mode_ours) {
+                    out.skipped_dirty.push(rel.to_path_buf());
+                    return Ok(true);
+                }
+                fs::set_permissions(&abs, fs::Permissions::from_mode(e.posix.mode))?;
+                next.mode = Some(e.posix.mode);
+                out.written.push(rel.to_path_buf());
+            }
+            if next != *m {
+                out.updates.push((rel.to_path_buf(), Some(next)));
             }
             return Ok(true);
         }
@@ -445,6 +481,8 @@ impl Projector {
                 placeholder,
                 local: LocalStat::of(&abs),
                 record: record_key(e),
+                mode: Some(e.posix.mode),
+                symlink: e.posix.symlink,
             }),
         ));
         Ok(true)
@@ -461,10 +499,17 @@ impl Projector {
         replace: bool,
     ) -> io::Result<Option<bool>> {
         let Some(content) = hash.filter(|_| e.size > 0) else {
-            self.write_staged(abs, &[], e.mtime_ms)?;
+            if e.posix.symlink {
+                // A link needs a target; an empty one is not one.
+                return Err(io::Error::from_raw_os_error(libc::EINVAL));
+            }
+            self.write_staged(abs, &[], e.mtime_ms, e.posix.mode)?;
             return Ok(Some(false));
         };
-        if e.size <= self.eager_bytes {
+        if e.posix.symlink && e.size > MAX_LINK_TARGET {
+            return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+        }
+        if e.size <= self.eager_bytes || e.posix.symlink {
             let hydrator = Arc::clone(&self.content);
             let parallel = self.parallel_chunks;
             let deadline = self.eager_deadline;
@@ -478,7 +523,11 @@ impl Projector {
             });
             return match fetched {
                 Ok(Ok(bytes)) if bytes.len() as u64 == e.size => {
-                    self.write_staged(abs, &bytes, e.mtime_ms)?;
+                    if e.posix.symlink {
+                        self.link_staged(abs, &bytes, e.mtime_ms)?;
+                    } else {
+                        self.write_staged(abs, &bytes, e.mtime_ms, e.posix.mode)?;
+                    }
                     Ok(Some(false))
                 }
                 Ok(Ok(bytes)) => {
@@ -498,7 +547,7 @@ impl Projector {
         let spec = PlaceholderSpec {
             content,
             size: e.size,
-            mode: FILE_MODE,
+            mode: e.posix.mode,
             mtime: mtime_of(e.mtime_ms),
             owner: self.owner,
         };
@@ -521,10 +570,36 @@ impl Projector {
         self.last_unavailable.lock().ok()?.take()
     }
 
-    fn write_staged(&self, abs: &Path, bytes: &[u8], mtime_ms: u64) -> io::Result<()> {
+    fn staging_path(&self, abs: &Path) -> PathBuf {
         let dir = abs.parent().unwrap_or_else(|| Path::new("."));
         let n = self.seq.fetch_add(1, Ordering::Relaxed);
-        let staging = dir.join(format!("{STAGING_PREFIX}{}-{n}", std::process::id()));
+        dir.join(format!("{STAGING_PREFIX}{}-{n}", std::process::id()))
+    }
+
+    /// Creates a symbolic link to `target` next to `abs` and renames it
+    /// into place, owned by the local person, with the version's mtime.
+    fn link_staged(&self, abs: &Path, target: &[u8], mtime_ms: u64) -> io::Result<()> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let staging = self.staging_path(abs);
+        let result = (|| {
+            std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), &staging)?;
+            if let Some((uid, gid)) = self.owner {
+                std::os::unix::fs::lchown(&staging, Some(uid), Some(gid))?;
+            }
+            set_link_mtime(&staging, mtime_ms)?;
+            if fs::symlink_metadata(abs).is_ok_and(|m| m.is_dir()) {
+                return Err(io::Error::from_raw_os_error(libc::EISDIR));
+            }
+            fs::rename(&staging, abs)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&staging);
+        }
+        result
+    }
+
+    fn write_staged(&self, abs: &Path, bytes: &[u8], mtime_ms: u64, mode: u32) -> io::Result<()> {
+        let staging = self.staging_path(abs);
         let result = (|| {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -532,10 +607,10 @@ impl Projector {
                 .mode(0o600)
                 .open(&staging)?;
             file.write_all(bytes)?;
-            file.set_permissions(fs::Permissions::from_mode(FILE_MODE))?;
             if let Some((uid, gid)) = self.owner {
                 std::os::unix::fs::fchown(&file, Some(uid), Some(gid))?;
             }
+            file.set_permissions(fs::Permissions::from_mode(mode))?;
             file.set_modified(mtime_of(mtime_ms))?;
             drop(file);
             let denied = self.write_denied.lock().is_ok_and(|d| d.contains(abs));
@@ -580,6 +655,40 @@ impl Projector {
             Some(_) => out.skipped_dirty.push(rel.to_path_buf()),
         }
         out.updates.push((rel.to_path_buf(), None));
+    }
+}
+
+/// Sets a symbolic link's own mtime (not its target's).
+fn set_link_mtime(path: &Path, mtime_ms: u64) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
+    let secs = i64::try_from(mtime_ms / 1000).unwrap_or(i64::MAX);
+    let nanos = i64::try_from((mtime_ms % 1000) * 1_000_000).unwrap_or(0);
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+        libc::timespec {
+            tv_sec: secs,
+            tv_nsec: nanos,
+        },
+    ];
+    // SAFETY: `c` is a valid NUL-terminated path and `times` holds two
+    // timespecs, as utimensat requires.
+    let rc = unsafe {
+        libc::utimensat(
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            times.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 

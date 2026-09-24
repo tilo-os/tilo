@@ -115,6 +115,11 @@ pub struct Materialized {
     /// The record this path is, so a rename moves the local file instead
     /// of writing it again.
     pub record: Option<[u8; 16]>,
+    /// Replicated permission bits the path had when the daemon last wrote
+    /// or published it; a local `chmod` since is a change of its own.
+    pub mode: Option<u32>,
+    /// Materialised as a symbolic link.
+    pub symlink: bool,
 }
 
 /// The row format before records, modes and fences were kept.
@@ -420,6 +425,8 @@ mod tests {
                                 mtime_ns: 8,
                             }),
                             record: Some([4; 16]),
+                            mode: Some(0o644),
+                            symlink: false,
                         }),
                     )],
                 )

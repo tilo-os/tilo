@@ -36,6 +36,11 @@ use tilo_user_identity::{
 
 const TIMEOUT: Duration = Duration::from_secs(180);
 
+/// The local person who owns each room (as the installer would set it up).
+/// The daemons run as root; everything they materialise must belong to
+/// this account, never to root or to the author's uid.
+const LOCAL_OWNER: (u32, u32) = (4242, 4242);
+
 fn required() -> bool {
     std::env::var("TILO_REQUIRE_FANOTIFY").is_ok_and(|v| v == "1")
 }
@@ -410,6 +415,11 @@ fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
         false,
     );
     full_access_acl(&dir.join("acl.json"), person);
+    for mount in ["host-mount", "peer-mount"] {
+        let m = dir.join(mount);
+        std::fs::create_dir_all(&m).unwrap();
+        std::os::unix::fs::chown(&m, Some(LOCAL_OWNER.0), Some(LOCAL_OWNER.1)).unwrap();
+    }
     let mut host = Daemon::spawn(
         "host",
         "host",
@@ -749,12 +759,18 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     files.insert("README.md", b"# demo\n".to_vec());
     files.insert("src/lib.rs", b"pub fn f() {}\n".to_vec());
     files.insert("assets/blob.bin", pattern(7, 2 * 1024 * 1024));
+    // An executable and a symbolic link: git compares both.
+    files.insert("tool.sh", b"#!/bin/sh\necho tool\n".to_vec());
+    std::os::unix::fs::symlink("README.md", repo1.join("latest")).unwrap();
     for round in 0..3u8 {
         for (path, data) in &mut files {
             data.extend_from_slice(format!("round {round}\n").as_bytes());
             let p = repo1.join(path);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(p, &data).unwrap();
+            std::fs::write(&p, &data).unwrap();
+            if *path == "tool.sh" {
+                set_mode(&p, 0o755);
+            }
         }
         git(&repo1, &["add", "-A"]).unwrap();
         git(&repo1, &["commit", "-q", "-m", &format!("round {round}")]).unwrap();
@@ -804,6 +820,151 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     for (path, data) in &files {
         assert!(std::fs::read(repo2.join(path)).unwrap() == *data, "{path}");
     }
+    assert_eq!(mode_of(&repo2.join("tool.sh")), 0o755);
+    assert_eq!(
+        std::fs::read_link(repo2.join("latest")).unwrap(),
+        Path::new("README.md")
+    );
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+fn mode_of(path: &Path) -> u32 {
+    std::fs::symlink_metadata(path).unwrap().mode() & 0o7777
+}
+
+/// Every path below `root`, links not followed.
+/// The daemon's own staging entries come and go; they are not part of the
+/// tree.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tilo-staging-")
+            {
+                continue;
+            }
+            let Ok(ft) = entry.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(entry.path());
+            }
+            if std::fs::symlink_metadata(entry.path()).is_ok() {
+                out.push(entry.path());
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn modes_links_and_ownership_replicate_and_hard_links_stay_consistent() {
+    let Some((a, b)) = stores("native_posix") else {
+        return;
+    };
+    let mut pair = start_pair(&a, &b, 0x71);
+    let m1 = pair.host.mount.clone();
+    let m2 = pair.peer.mount.clone();
+
+    std::fs::create_dir_all(m1.join("bin")).unwrap();
+    std::fs::write(m1.join("bin/run.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+    set_mode(&m1.join("bin/run.sh"), 0o755);
+    std::fs::write(m1.join("secret"), b"s").unwrap();
+    set_mode(&m1.join("secret"), 0o600);
+    std::fs::create_dir(m1.join("shared")).unwrap();
+    set_mode(&m1.join("shared"), 0o2775);
+    std::fs::create_dir(m1.join("private")).unwrap();
+    std::fs::write(m1.join("private/note"), b"n").unwrap();
+    set_mode(&m1.join("private"), 0o700);
+    std::os::unix::fs::symlink("bin/run.sh", m1.join("link-rel")).unwrap();
+    std::os::unix::fs::symlink("/etc/hostname", m1.join("link-abs")).unwrap();
+    std::os::unix::fs::symlink("missing/target", m1.join("link-dangling")).unwrap();
+    std::fs::write(m1.join("a"), b"linked").unwrap();
+    std::fs::hard_link(m1.join("a"), m1.join("b")).unwrap();
+
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the tree on the peer",
+        || {
+            (std::fs::symlink_metadata(m2.join("link-dangling")).is_ok()
+                && std::fs::read(m2.join("b")).ok()? == b"linked"
+                && std::fs::read(m2.join("private/note")).ok()? == b"n"
+                && mode_of(&m2.join("private")) == 0o700)
+                .then_some(())
+        },
+    );
+    assert_eq!(mode_of(&m2.join("bin/run.sh")), 0o755);
+    assert_eq!(mode_of(&m2.join("secret")), 0o600);
+    assert_eq!(mode_of(&m2.join("shared")), 0o2775);
+    for (link, target) in [
+        ("link-rel", "bin/run.sh"),
+        ("link-abs", "/etc/hostname"),
+        ("link-dangling", "missing/target"),
+    ] {
+        assert_eq!(
+            std::fs::read_link(m2.join(link)).unwrap(),
+            Path::new(target),
+            "{link}"
+        );
+    }
+    let out = Command::new(m2.join("link-rel")).output().unwrap();
+    assert_eq!(out.stdout, b"hi\n", "the replicated script runs");
+    for path in walk(&m2) {
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(
+            (meta.uid(), meta.gid()),
+            LOCAL_OWNER,
+            "{} belongs to the local person",
+            path.display()
+        );
+    }
+    // Hard links arrive as separate files with the same bytes; a write
+    // through one link reaches both.
+    assert_eq!(std::fs::read(m2.join("a")).unwrap(), b"linked");
+    std::fs::write(m1.join("b"), b"written through b").unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "both links updated on the peer",
+        || {
+            (std::fs::read(m2.join("a")).ok()? == b"written through b"
+                && std::fs::read(m2.join("b")).ok()? == b"written through b")
+                .then_some(())
+        },
+    );
+
+    // Changes of mode and target only, both ways.
+    set_mode(&m1.join("bin/run.sh"), 0o644);
+    std::fs::remove_file(m1.join("link-rel")).unwrap();
+    std::os::unix::fs::symlink("secret", m1.join("link-rel")).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "mode and target changes on the peer",
+        || {
+            (mode_of(&m2.join("bin/run.sh")) == 0o644
+                && std::fs::read_link(m2.join("link-rel")).ok()? == Path::new("secret"))
+            .then_some(())
+        },
+    );
+    set_mode(&m2.join("secret"), 0o640);
+    set_mode(&m2.join("shared"), 0o755);
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's mode changes on the host",
+        || {
+            (mode_of(&m1.join("secret")) == 0o640 && mode_of(&m1.join("shared")) == 0o755)
+                .then_some(())
+        },
+    );
+    assert_eq!(std::fs::read(m1.join("secret")).unwrap(), b"s");
 }
 
 #[test]

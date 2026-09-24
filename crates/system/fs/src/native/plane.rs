@@ -45,6 +45,7 @@ use super::project::{self, Projector};
 use super::state::{LocalStat, Materialized, NativeState, NodeUpdate, StoredLease};
 use crate::fs::QuickFS;
 use crate::hydration::Hydrator;
+use crate::namespace::PosixAttrs;
 use crate::sync::SyncHandle;
 
 /// How often the record plane is re-projected without a change signal.
@@ -226,7 +227,6 @@ struct Engine {
     modified: HashSet<PathBuf>,
     replaced: HashSet<PathBuf>,
     status: Arc<Mutex<PlaneStatus>>,
-    symlink_warned: bool,
     /// Removals the record plane refused, retried every epoch.
     retry_removals: HashSet<PathBuf>,
     /// When to cut an epoch for failed publications even without new changes.
@@ -378,7 +378,6 @@ impl Engine {
             modified: HashSet::new(),
             replaced: HashSet::new(),
             status,
-            symlink_warned: false,
             retry_removals: HashSet::new(),
             retry_at: None,
             waiting: false,
@@ -749,28 +748,25 @@ impl Engine {
         snapshot: &Path,
         out: &mut Published,
     ) {
+        let dir = node.kind == NodeKind::Dir;
+        let symlink = matches!(node.kind, NodeKind::Symlink(_));
+        let attrs = PosixAttrs::of_local(node.mode, dir, symlink);
+        let mtime_ms = u64::try_from(node.mtime_ns.div_euclid(1_000_000))
+            .unwrap_or_else(|_| QuickFS::record_clock_ms());
         let applied = match &node.kind {
-            NodeKind::Dir => self.fs.apply_local_dir(path),
+            NodeKind::Dir => self.fs.apply_local_dir_as(path, attrs),
             NodeKind::File => match std::fs::read(snapshot.join(path)) {
                 Ok(data) => {
                     out.bytes = out.bytes.saturating_add(data.len() as u64);
-                    let mtime_ms = u64::try_from(node.mtime_ns.div_euclid(1_000_000))
-                        .unwrap_or_else(|_| QuickFS::record_clock_ms());
-                    self.fs.apply_local_file(path, &data, mtime_ms)
+                    self.fs.apply_local_file_as(path, &data, mtime_ms, attrs)
                 }
                 Err(error) => Err(error.raw_os_error().unwrap_or(libc::EIO)),
             },
-            NodeKind::Symlink(_) => {
-                if !self.symlink_warned {
-                    eprintln!(
-                        "symlinks stay on this device: the record plane has no symlink record yet ({})",
-                        path.display()
-                    );
-                    self.symlink_warned = true;
-                }
-                out.nodes
-                    .push((path.to_path_buf(), self.capture.node_state(path)));
-                return;
+            // A link is a record whose content is its target, verbatim.
+            NodeKind::Symlink(target) => {
+                let bytes = target.as_os_str().as_encoded_bytes();
+                out.bytes = out.bytes.saturating_add(bytes.len() as u64);
+                self.fs.apply_local_file_as(path, bytes, mtime_ms, attrs)
             }
         };
         match applied {
@@ -792,6 +788,8 @@ impl Engine {
                         .as_ref()
                         .and_then(|e| e.record)
                         .map(|r| *r.0.as_bytes()),
+                    mode: Some(attrs.mode),
+                    symlink,
                 };
                 self.materialized.insert(path.to_path_buf(), record.clone());
                 out.mats.push((path.to_path_buf(), Some(record)));
