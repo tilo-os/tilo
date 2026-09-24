@@ -22,7 +22,12 @@ SHA = "0123456789abcdef0123456789abcdef01234567"
 
 
 def plan(
-    ref: str, event: str, requested: str, published: str = ""
+    ref: str,
+    event: str,
+    requested: str,
+    published: str = "",
+    configured: str = "true",
+    integration: str = "",
 ) -> tuple[bool, bool, list[dict[str, str]]]:
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "output"
@@ -35,6 +40,8 @@ def plan(
                 "GITHUB_SHA": SHA,
                 "REQUESTED_PUBLISH": requested,
                 "PUBLISHED_REVISION": published,
+                "PUBLICATION_CONFIGURED": configured,
+                "INTEGRATION_REVISION": integration,
             }
         )
         subprocess.run(["bash", "-c", matrix_script()], env=environment, check=True)
@@ -107,6 +114,22 @@ class OsReleaseMatrixTests(unittest.TestCase):
         self.assertFalse(publish)
         self.assertFalse(skip)
         self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-disk-100g"}])
+
+    def test_unconfigured_nightly_runs_a_main_integration_build(self):
+        publish, skip, lanes = plan("refs/heads/main", "schedule", "", "", "false")
+        self.assertFalse(publish)
+        self.assertFalse(skip)
+        self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-disk-100g"}])
+
+    def test_unconfigured_nightly_skips_an_already_built_integration_image(self):
+        publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "false", SHA)
+        self.assertFalse(publish)
+        self.assertTrue(skip)
+
+    def test_configured_nightly_publishes_despite_an_integration_image(self):
+        publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "true", SHA)
+        self.assertTrue(publish)
+        self.assertFalse(skip)
 
     def test_explicit_publication_ignores_the_published_revision(self):
         publish, skip, _ = plan("refs/heads/main", "workflow_dispatch", "true", SHA)
