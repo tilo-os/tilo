@@ -1,12 +1,14 @@
 name: Release / OS
 
-# Capacity relief: full OS builds are explicit or weekly, never per main push/PR.
-# Preserve the build/release implementation for deliberate native rehearsals.
-# Publish versions through v* tags or an explicit main-branch dispatch.
+# Capacity relief: full OS builds are explicit or nightly, never per main push/PR.
+# Publish versions through v* tags, an explicit main-branch dispatch, or the
+# nightly main run. The nightly run publishes through the same path as a
+# protected manual main publication, and builds nothing when the latest
+# published image already carries the current main revision.
 on:
   schedule:
-    # Keep the heavyweight image build away from Sunday's static-quality run.
-    - cron: "0 5 * * 6"
+    # Before the 03:00 UTC nightly checks, so a fresh image is ready by morning.
+    - cron: "0 2 * * *"
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -43,9 +45,13 @@ on:
 
 concurrency:
   # Generations are a single dense security series. This workflow can publish
-  # from a tag or a manual main run. Every invocation shares the lock so
-  # concurrent explicit releases cannot allocate the same generation.
-  group: tilo-os-image-series
+  # from a tag, a manual main run or the nightly main run. Every run that may
+  # publish shares the series lock so concurrent releases cannot allocate the
+  # same generation; a scheduled run holds it even when it then skips, so its
+  # freshness check sees a publication queued ahead of it. Validation builds
+  # allocate nothing and must not hold up a release, so they serialize per ref.
+  # Job outputs are unavailable here; this mirrors the plan job's rule.
+  group: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series' || format('tilo-os-image-validate-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -55,28 +61,76 @@ jobs:
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       publish: ${{ steps.matrix.outputs.publish }}
+      skip: ${{ steps.matrix.outputs.skip }}
     steps:
+      # The nightly run exists to keep a fresh image available, not to spend a
+      # generation and two native lanes on a revision that is already out.
+      # Every published image carries its source commit as the OCI revision
+      # label, and `latest` moves only after a complete publication. Any
+      # failure to read it (no image yet, registry trouble) publishes rather
+      # than risking a stale channel; a redundant release costs runner time
+      # only.
+      - name: Read the revision of the latest published image
+        id: published
+        if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+        env:
+          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              export DEBIAN_FRONTEND=noninteractive
+              { sudo -n apt-get -o Acquire::Retries=3 update \
+                && sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo; } || true
+            elif command -v dnf >/dev/null; then
+              sudo -n dnf --setopt=retries=3 install -y skopeo || true
+            fi
+          fi
+          revision=""
+          if command -v skopeo >/dev/null; then
+            revision="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" \
+              --override-os linux --override-arch amd64 \
+              docker://code.sandbox.example/qos/tilo:latest 2>/dev/null \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || revision=""
+          else
+            echo '::warning::skopeo is unavailable; publishing without a freshness check'
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "::notice::latest published OS revision: ${revision:-unknown}; main: $GITHUB_SHA"
+
       - name: Select validation or native publication lanes
         id: matrix
         env:
-          # Intentionally disabled during alpha; preserve the implementation for later.
+          # Per-push publication stays disabled; the nightly run keeps the
+          # channel fresh at bounded runner cost.
           CONTINUOUS_RELEASE: "0"
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
         run: |
           set -euo pipefail
           publish=false
+          skip=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                      && ${REQUESTED_PUBLISH:-false} == true ) \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
                      && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
+          elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then
+            # Nightly publication: the protected manual main path, unless main
+            # has not moved since the last published image.
+            if [[ -n ${PUBLISHED_REVISION:-} && $PUBLISHED_REVISION == "$GITHUB_SHA" ]]; then
+              skip=true
+              echo "::notice::latest already publishes $GITHUB_SHA; skipping the nightly build"
+            else
+              publish=true
+            fi
           fi
           if [[ $publish == true ]]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
             else
-              # A protected manual main publication uses the same native,
+              # A protected manual or nightly main publication uses the same native,
               # large-disk fleet as the proven integration build. Its VM gate
               # already falls back to TCG inside Kata when KVM is unavailable.
               # Tags retain the dedicated release fleet above.
@@ -88,6 +142,7 @@ jobs:
             matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}'
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   signing-preflight:
@@ -126,7 +181,7 @@ jobs:
 
   build-and-push:
     needs: [plan, signing-preflight]
-    if: ${{ always() && needs.plan.result == 'success' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
     strategy:
       fail-fast: true
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
@@ -159,22 +214,39 @@ jobs:
           fi
           command -v skopeo >/dev/null
 
-      - name: Require a compositor-capable native publication host
-        if: needs.plan.outputs.publish == 'true'
+      # The installed-desktop gate boots the image with a virgl GPU when the
+      # host exposes a usable DRM render node, and with a plain virtio GPU
+      # otherwise. Tilo's DRM backend paints on the CPU into dumb buffers and
+      # the guest carries Mesa software rendering, so the compositor, OOBE and
+      # AT-SPI gates run -- and must pass -- in either mode. Runners whose
+      # confined kernel has no DRM subsystem use the 2D display.
+      - name: Select the installed-desktop display for this host
         run: |
           set -euo pipefail
-          sudo -n true
-          command -v apt-get >/dev/null || command -v dnf >/dev/null
-          rendernode="$(compgen -G '/dev/dri/renderD*' | head -n 1 || true)"
-          test -n "$rendernode" && test -c "$rendernode" \
-            && test -r "$rendernode" && test -w "$rendernode" || {
-              echo '::error::OS publication requires a readable/writable DRI render node for the installed compositor gate'
-              exit 1
-            }
-          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
-            echo '::notice::OS publication will use KVM acceleration'
+          if [[ '${{ needs.plan.outputs.publish }}' == true ]]; then
+            sudo -n true
+            command -v apt-get >/dev/null || command -v dnf >/dev/null
+          fi
+          display=2d
+          rendernode=""
+          for candidate in /dev/dri/renderD*; do
+            if test -c "$candidate" && test -r "$candidate" && test -w "$candidate"; then
+              rendernode="$candidate"
+              display=gl
+              break
+            fi
+          done
+          echo "TILO_VM_DISPLAY=$display" >> "$GITHUB_ENV"
+          if [[ $display == gl ]]; then
+            echo "TILO_RENDERNODE=$rendernode" >> "$GITHUB_ENV"
+            echo "::notice::installed-desktop gate will use virgl on $rendernode"
           else
-            echo '::notice::OS publication will use the bounded QEMU TCG fallback'
+            echo '::notice::no usable DRI render node; installed-desktop gate will use the 2D virtio GPU with guest software rendering'
+          fi
+          if test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm; then
+            echo '::notice::installed-desktop gate will use KVM acceleration'
+          else
+            echo '::notice::installed-desktop gate will use the bounded QEMU TCG fallback'
           fi
 
       - name: Restore checksum-verified GitHub build inputs
@@ -467,6 +539,10 @@ jobs:
             *)
               if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
                 with_browser=${REQUESTED_BROWSER:-1}
+              elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+                # The nightly release ships the same full image as a
+                # default manual publication.
+                with_browser=1
               else
                 with_browser=0
               fi
@@ -555,17 +631,23 @@ jobs:
       - name: Select build, validation, or publication mode
         id: release-mode
         env:
-          # Intentionally disabled during alpha; preserve the implementation for later.
+          # Per-push publication stays disabled; the nightly run keeps the
+          # channel fresh at bounded runner cost.
           CONTINUOUS_RELEASE: "0"
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
-          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
-          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
+          # The plan job has already skipped a nightly run whose revision is
+          # published, so a scheduled main build that reaches here publishes.
+          PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}
+          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
+          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
         run: |
           publish=false
           validate=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                      && ${REQUESTED_PUBLISH:-false} == true ) \
+                || ( $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main \
+                     && ${PLANNED_PUBLISH:-false} == true ) \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
                      && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
@@ -912,9 +994,12 @@ jobs:
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the running Tilo compositor.
-          # vm.sh documents that its 2D mode may not start that compositor;
-          # egl-headless + virgl is the release-test configuration that does.
-          ./os/dev/vm.sh boot --gl
+          # The display was selected for this host above; every gate below is
+          # mandatory in both modes.
+          case "${TILO_VM_DISPLAY:-}" in
+            gl|2d) ./os/dev/vm.sh boot "--$TILO_VM_DISPLAY" ;;
+            *) echo '::error::no installed-desktop display was selected'; exit 1 ;;
+          esac
           ./os/dev/vm.sh wait
           ./os/dev/vm.sh login "$TILO_USER" "$TILO_PASS"
           for attempt in $(seq 1 60); do
