@@ -3,11 +3,14 @@ use super::*;
 use qos_agent_control_protocol::{AgentRequest, canonical_request, decode_request};
 use std::collections::BTreeSet;
 
-/// Current agent package id, plus the pre-rename id retained in persisted
-/// private runtime facts written before first-party ids moved to `so.tilo.*`.
+/// Current agent package id, plus the retired ids of the same first-party
+/// family retained in private runtime facts persisted before the rename.
 fn is_agent_app(id: &str) -> bool {
-    id == "so.tilo.agent" || id == "dev.tilo.agent"
+    collab_types::first_party_app_ids::lookup_compatible_first_party_app_ids(id, AGENT_APP_ID)
 }
+
+/// Agent package id written into every new private runtime fact.
+const AGENT_APP_ID: &str = "so.tilo.agent";
 
 pub(super) fn encoded_size(value: &impl Serialize) -> Result<usize, String> {
     struct Count(usize);
@@ -840,4 +843,17 @@ fn step_fact<'a>(
     }
     let _ = key;
     Ok(())
+}
+
+#[cfg(test)]
+mod agent_app_id_tests {
+    #[test]
+    fn persisted_agent_ids_resolve_through_the_shared_rename_table() {
+        for id in ["so.tilo.agent", "so.tilo.agent", "so.tilo.agent"] {
+            assert!(super::is_agent_app(id), "{id}");
+        }
+        for id in ["so.tilo.chat", "so.tilo.chat", "agent", ""] {
+            assert!(!super::is_agent_app(id), "{id}");
+        }
+    }
 }
