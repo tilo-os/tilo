@@ -42,6 +42,8 @@ taffy.workspace = true
 # client behind live CalDAV sync (REPORT and ETag-guarded PUT/DELETE) is gated
 # by `live`, so the default headless build stays off the TLS stack.
 tilo-dav = { path = "../../crates/system/tilo-dav", default-features = false }
+# RFC 5545 content lines: folding, parameter quoting and TEXT escaping.
+pim-lines = { path = "../../crates/text/pim-lines" }
 
 [features]
 thin = ["dep:runtime-dylib"]
