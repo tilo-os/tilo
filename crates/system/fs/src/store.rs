@@ -331,6 +331,34 @@ impl ContentStore {
         Ok(())
     }
 
+    /// [`Self::store_fetched`] for many blobs with one durability barrier:
+    /// a batch of small files costs one database sync instead of one per
+    /// blob. Every blob is checked against its hash before anything is
+    /// stored; a mismatch rejects the whole batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a hash mismatch or when the blob store fails.
+    pub async fn store_fetched_batch(&self, blobs: Vec<(Hash, Bytes)>) -> Result<()> {
+        if blobs.is_empty() {
+            return Ok(());
+        }
+        let mut seen = HashSet::with_capacity(blobs.len());
+        let mut unique = Vec::with_capacity(blobs.len());
+        for (hash, data) in blobs {
+            let actual = Hash::new(&data);
+            anyhow::ensure!(
+                actual == hash,
+                "fetched blob hash mismatch: expected {hash}, got {actual}"
+            );
+            if seen.insert(hash) {
+                unique.push(data);
+            }
+        }
+        self.persist_owned_batch(unique).await?;
+        Ok(())
+    }
+
     /// Remove only selected physical blobs while preserving every other blob.
     ///
     /// # Errors
