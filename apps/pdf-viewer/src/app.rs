@@ -155,6 +155,18 @@ const SEED_DATE: &str = "2026-06-30";
 
 /// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
 /// the real signing date stamped on a signature the user places at runtime.
+/// The reader's app id, the scope its permissions are decided in.
+const APP_ID: &str = "org.tilo.PdfViewer";
+
+/// Wall-clock unix milliseconds, for stamping authored markup.
+fn now_ms() -> i64 {
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
+}
+
 fn today_ymd() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -343,6 +355,22 @@ enum EditTarget {
     CommentBody(String),
     Reply(String),
     Signer,
+    /// A text form field, by fully qualified name.
+    FormField(String),
+}
+
+/// A form field widget on a displayed page, in card space.
+#[derive(Clone, Debug)]
+pub(crate) struct FieldWidgetHit {
+    pub(crate) name: String,
+    pub(crate) kind: tilo_pdf::FieldKind,
+    pub(crate) rect: PtRect,
+    pub(crate) export: String,
+    pub(crate) options: Vec<String>,
+    pub(crate) read_only: bool,
+    /// The PDF's own value and check state for this widget.
+    pub(crate) pdf_value: String,
+    pub(crate) pdf_checked: bool,
 }
 
 /// A live inline text edit (comment body, thread reply, or signer name),
@@ -456,6 +484,8 @@ pub struct PdfApp {
     legacy_page_nonce: u64,
     tool: Tool,
     swatch: Swatch,
+    /// How the highlight tool marks text: highlight, underline or strike-out.
+    markup_style: model::MarkupStyle,
     sidebar_tab: SidebarTab,
     show_sidebar: bool,
     /// Thumbnail rail: independently resizable + collapsible, persisted in
@@ -661,6 +691,21 @@ pub struct PdfApp {
     /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
     /// action, and records the last one for parity checks with the palette.
     actions: ui::ActionHost,
+    /// How each displayed page maps between the engine's page space, PDF
+    /// user space and its card in the stack (rotation and fit included).
+    page_maps: Vec<model::PageMap>,
+    /// Recorded rotation of each displayed page, parallel to
+    /// `resource_page_ids`.
+    resource_page_rotations: Vec<i32>,
+    /// The open document's form fields (widgets in engine page space).
+    form_fields: Vec<tilo_pdf::FormField>,
+    /// Form values recorded in the document's record, by field name.
+    form_values: std::collections::BTreeMap<String, model::FormEntry>,
+    /// Content hash and length of the open document's bytes.
+    source_blob: Option<(String, u64)>,
+    /// The acting user's rights over this document, as the host decided
+    /// them for the current frame.
+    permissions: PermissionContext,
 }
 
 impl PdfApp {
@@ -683,6 +728,11 @@ impl PdfApp {
         match crate::source::open(path) {
             Ok(loaded) => {
                 let mut app = Self::build(loaded.doc, false);
+                app.source_blob = Some((
+                    loaded.raster.source_hash().to_string(),
+                    loaded.raster.source_len(),
+                ));
+                app.form_fields = loaded.raster.form_fields();
                 app.raster = Some(loaded.raster);
                 app.has_document = true;
                 app.doc_name = loaded.name;
@@ -1005,6 +1055,13 @@ impl PdfApp {
             sel_hud: None,
             marker_drag: None,
             actions: ui::ActionHost::new(),
+            page_maps: Vec::new(),
+            resource_page_rotations: Vec::new(),
+            form_fields: Vec::new(),
+            form_values: std::collections::BTreeMap::new(),
+            source_blob: None,
+            permissions: PermissionContext::permissive(),
+            markup_style: model::MarkupStyle::Highlight,
         }
     }
 
@@ -1020,6 +1077,11 @@ impl PdfApp {
         state: &mut AutoCommit,
         action: &crate::actions::PdfViewerAction,
     ) {
+        if !self.may(action.required_verb()) {
+            self.status_note = Some("You can view this document but not change it".to_string());
+            self.dirty = true;
+            return;
+        }
         self.actions.dispatch_with_context(
             state,
             crate::actions::PDF_VIEWER_ACTION_TYPE,
@@ -1057,6 +1119,7 @@ impl PdfApp {
             page_ids: self.resource_page_ids.clone(),
             page_sources: self.resource_page_sources.clone(),
             page_imports: self.resource_page_imports.clone(),
+            page_rotations: self.resource_page_rotations.clone(),
             author: self.author.clone(),
             signature_date: today_ymd(),
             created_seed: self.created_counter,
@@ -1125,8 +1188,135 @@ impl PdfApp {
         }
     }
 
+    /// Whether the acting user may perform `verb` on this document.
+    pub(crate) fn may(&self, verb: ui::permissions::Verb) -> bool {
+        self.permissions
+            .check(&ui::permissions::PermissionScope::app(APP_ID, verb))
+    }
+
+    /// Replace the permission context (the host hands one over every frame).
+    pub fn set_permissions(&mut self, permissions: PermissionContext) {
+        if self.permissions != permissions {
+            self.permissions = permissions;
+            self.dirty = true;
+        }
+    }
+
+    // ---- page maps ---------------------------------------------------
+
+    /// The map for 1-based displayed `page`.
+    fn page_map(&self, page: usize) -> model::PageMap {
+        page.checked_sub(1)
+            .and_then(|i| self.page_maps.get(i).copied())
+            .unwrap_or_else(|| model::PageMap::identity(self.pw(), self.ph()))
+    }
+
+    /// Recompute every page's map from the renderer's geometry and the
+    /// recorded rotations.
+    fn rebuild_page_maps(&mut self) {
+        let (card_w, card_h) = (self.pw(), self.ph());
+        let (geometries, rotations): (Vec<Option<tilo_pdf::PageGeometry>>, Vec<i32>) = {
+            #[cfg(test)]
+            let from_sync = self
+                .raster
+                .as_ref()
+                .map(crate::source::Rasterizer::page_layout);
+            #[cfg(not(test))]
+            let from_sync: Option<(Vec<Option<tilo_pdf::PageGeometry>>, Vec<i32>)> = None;
+            from_sync
+                .or_else(|| {
+                    self.raster_document
+                        .as_ref()
+                        .map(|d| (d.geometries.clone(), d.rotations.clone()))
+                })
+                .unwrap_or_default()
+        };
+        self.page_maps = (0..self.doc.page_count())
+            .map(|i| match geometries.get(i).copied().flatten() {
+                Some(own) => {
+                    model::PageMap::new(own, rotations.get(i).copied().unwrap_or(0), card_w, card_h)
+                }
+                None => model::PageMap::identity(card_w, card_h),
+            })
+            .collect();
+    }
+
+    /// The durable occurrence id of 1-based displayed `page`.
+    fn page_id_of(&self, page: usize) -> Option<String> {
+        page.checked_sub(1)
+            .and_then(|i| self.resource_page_ids.get(i))
+            .cloned()
+    }
+
+    /// A page's text layer shown in its card space.
+    fn text_for_card(&self, page: usize, text: Arc<PageText>) -> Arc<PageText> {
+        let map = self.page_map(page);
+        if map.is_identity() {
+            text
+        } else {
+            Arc::new(text.with_map(map))
+        }
+    }
+
+    /// Author a new annotation drawn in card space: store its geometry in
+    /// the page's PDF user space, anchored to the page occurrence.
+    fn author_annotation(&mut self, state: &mut AutoCommit, a: &Annotation) {
+        let user = Annotation {
+            created_ms: now_ms(),
+            ..self.page_map(a.page).annotation_to_user(a)
+        };
+        let page_id = self.page_id_of(a.page);
+        self.perform_action(
+            state,
+            &crate::actions::add_annotation_on(&user, page_id.as_deref()),
+        );
+    }
+
+    /// Pin the open document's bytes in its record the first time the
+    /// record meets them; say so when the file no longer matches.
+    fn pin_source(&mut self, state: &mut AutoCommit) {
+        let Some((hash, len)) = self.source_blob.clone() else {
+            return;
+        };
+        match PdfDoc::source(state) {
+            None if self.may(ui::permissions::Verb::Write) => {
+                self.perform_action(state, &crate::actions::pin_source_action(&hash, len));
+            }
+            Some((pinned, _, _)) if pinned != hash => {
+                self.status_note = Some(
+                    "This file has changed since its markup was made; annotations may not line up"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// The markup to export, in PDF user space.
+    fn export_markup(&self) -> crate::source::ExportMarkup {
+        crate::source::ExportMarkup {
+            annotations: self
+                .annotations
+                .iter()
+                .map(|a| self.page_map(a.page).annotation_to_user(a))
+                .collect(),
+            comments: self.comments.clone(),
+            signatures: self
+                .signatures
+                .iter()
+                .map(|s| self.page_map(s.page).signature_to_user(s))
+                .collect(),
+            form_values: self
+                .form_values
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
     // ---- seeding + cache refresh ------------------------------------
 
+    #[allow(clippy::too_many_lines, reason = "one literal demonstration seed")]
     fn seed(&mut self, state: &mut AutoCommit) {
         PdfDoc::set_meta(state, &self.doc.title, &self.doc.author);
 
@@ -1137,20 +1327,22 @@ impl PdfApp {
         let highlight = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Highlight {
-                rect: PtRect::new(64.0, 196.0, 420.0, 14.0),
-            },
+            kind: AnnoKind::highlight(PtRect::new(64.0, 196.0, 420.0, 14.0)),
             color: Swatch::Yellow,
             author: "Bob".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         let highlight2 = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::Highlight {
-                rect: PtRect::new(64.0, 210.0, 300.0, 14.0),
-            },
+            kind: AnnoKind::highlight(PtRect::new(64.0, 210.0, 300.0, 14.0)),
             color: Swatch::Yellow,
             author: "Bob".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         let note = Annotation {
             id: Annotation::new_id(),
@@ -1158,6 +1350,9 @@ impl PdfApp {
             kind: AnnoKind::Note { x: 506.0, y: 300.0 },
             color: Swatch::Blue,
             author: "Alice".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         let sig = Signature {
             id: Signature::new_id(),
@@ -1168,14 +1363,15 @@ impl PdfApp {
             ink: SignatureInk::Drawn {
                 strokes: sample_drawn_signature(),
             },
+            space: crate::model::GeomSpace::Page,
         };
 
         let note_id = note.id.clone();
         let hl_id = highlight.id.clone();
         for a in [&highlight, &highlight2, &note] {
-            PdfDoc::add_annotation(state, a);
+            PdfDoc::add_annotation(state, a, None);
         }
-        PdfDoc::add_signature(state, &sig);
+        PdfDoc::add_signature(state, &sig, None);
 
         // This comment stands in for the one the user "just placed": the
         // demo view-state below selects its note and reveals it in the rail.
@@ -1242,9 +1438,19 @@ impl PdfApp {
     }
 
     fn reload(&mut self, state: &AutoCommit) {
-        self.annotations = PdfDoc::list_annotations(state);
+        if self.page_maps.len() != self.doc.page_count() {
+            self.rebuild_page_maps();
+        }
+        self.annotations = PdfDoc::list_annotations(state)
+            .iter()
+            .map(|a| self.page_map(a.page).annotation_to_card(a))
+            .collect();
         self.comments = PdfDoc::list_comments(state);
-        self.signatures = PdfDoc::list_signatures(state);
+        self.signatures = PdfDoc::list_signatures(state)
+            .iter()
+            .map(|s| self.page_map(s.page).signature_to_card(s))
+            .collect();
+        self.form_values = PdfDoc::form_values(state);
     }
 
     // ---- geometry ---------------------------------------------------
@@ -1512,6 +1718,7 @@ impl PdfApp {
                             id: id.clone(),
                             source_page,
                             imported: self.resource_page_imports.get(i).cloned().flatten(),
+                            rotation: 0,
                         });
                     self.perform_action(state, &action);
                 }
@@ -1555,6 +1762,10 @@ impl PdfApp {
     /// local renderer is available. A peer without source bytes still keeps
     /// the shared intent in its record; a renderer with the original source
     /// can immediately materialise duplicates, deletes and order changes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass per renderer keeps the plan adoption auditable"
+    )]
     fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
         let source_count = self.source_pages.len().max(1);
         PdfDoc::ensure_page_plan(state, source_count);
@@ -1565,8 +1776,12 @@ impl PdfApp {
         }
         let plan_ids: Vec<String> = plan.iter().map(|entry| entry.id.clone()).collect();
         let sources: Vec<usize> = plan.iter().map(|entry| entry.source_page).collect();
-        let plan_changed =
-            self.resource_page_ids != plan_ids || self.resource_page_sources != sources;
+        let rotations: Vec<i32> = plan.iter().map(|entry| entry.rotation).collect();
+        let plan_changed = self.resource_page_ids != plan_ids
+            || self.resource_page_sources != sources
+            || (self.resource_page_rotations != rotations
+                && !(self.resource_page_rotations.is_empty() && rotations.iter().all(|r| *r == 0)));
+        self.resource_page_rotations = rotations;
         #[cfg(test)]
         #[cfg(test)]
         #[cfg(test)]
@@ -1603,6 +1818,12 @@ impl PdfApp {
                     blocks: Vec::new(),
                 })
                 .collect();
+            self.resource_page_ids = plan_ids;
+            self.resource_page_sources = sources;
+            self.resource_page_imports = plan.iter().map(|entry| entry.imported.clone()).collect();
+            self.pages_dirty |= plan_changed;
+            self.raster_text.clear();
+            self.rebuild_page_maps();
             return;
         }
         if let Some(document) = self.raster_document.as_ref() {
@@ -1857,6 +2078,7 @@ impl PdfApp {
                     width_milli: (width * 1000.0).round() as u32,
                     height_milli: (height * 1000.0).round() as u32,
                 }),
+                rotation: 0,
             })
             .collect();
         let after = self
@@ -2183,6 +2405,7 @@ impl PdfApp {
         #[cfg(test)]
         if let Some(raster) = self.raster.as_mut() {
             let layer = raster.page_text(page - 1);
+            let layer = self.text_for_card(page, layer);
             self.raster_text.insert(page, layer.clone());
             return Some(layer);
         }
@@ -2528,9 +2751,7 @@ impl PdfApp {
             let request = SaveRequest {
                 id,
                 document_id: document.id,
-                annotations: self.annotations.clone(),
-                comments: self.comments.clone(),
-                signatures: self.signatures.clone(),
+                markup: self.export_markup(),
                 path: path.to_path_buf(),
             };
             match self
@@ -2562,7 +2783,7 @@ impl PdfApp {
         };
         // Scope the (immutable) raster borrow tightly so the toast update below
         // can take its mutable borrow of `self`.
-        let result = rz.save_annotated(&self.annotations, &self.comments, &self.signatures, path);
+        let result = rz.save_annotated(&self.export_markup(), path);
         match result {
             Ok(()) => {
                 let name = path
@@ -2606,9 +2827,7 @@ impl PdfApp {
         let request = SaveRequest {
             id,
             document_id: document.id,
-            annotations: self.annotations.clone(),
-            comments: self.comments.clone(),
-            signatures: self.signatures.clone(),
+            markup: self.export_markup(),
             path: path.to_path_buf(),
         };
         match self
@@ -2691,35 +2910,46 @@ impl PdfApp {
                 }
                 // Default: stick to text. Fall back to free-form only when
                 // the drag isn't near any text line.
-                let snapped = self.snap_highlights(d.page, drag_rect);
-                let rects = if snapped.is_empty() {
-                    vec![drag_rect]
+                // On a page with a text layer the drag selects text: the
+                // highlight covers exactly those characters and remembers
+                // their range. Otherwise it snaps to laid-out lines, or is a
+                // free-form band.
+                let text = self.ensure_raster_text(d.page);
+                let anchored = text.as_ref().and_then(|t| t.range_between(d.start, d.cur));
+                let (quads, chars) = if let (Some((s, e)), Some(t)) = (anchored, text.as_ref()) {
+                    (t.bands_for_range(s, e), t.source_range(s, e))
                 } else {
-                    snapped
-                };
-                let mut last_id = None;
-                for r in rects {
-                    let a = Annotation {
-                        id: Annotation::new_id(),
-                        page: d.page,
-                        kind: AnnoKind::Highlight { rect: r },
-                        color: self.swatch,
-                        author: self.author.clone(),
+                    let snapped = self.snap_highlights(d.page, drag_rect);
+                    let quads = if snapped.is_empty() {
+                        vec![drag_rect]
+                    } else {
+                        snapped
                     };
-                    last_id = Some(a.id.clone());
-                    self.perform_action(state, &crate::actions::add_annotation_action(&a));
-                }
-                self.selected_anno = last_id;
+                    (quads, None)
+                };
+                let a = Annotation {
+                    chars,
+                    ..Annotation::new(
+                        d.page,
+                        AnnoKind::Markup {
+                            style: self.markup_style,
+                            quads,
+                        },
+                        self.swatch,
+                        self.author.clone(),
+                    )
+                };
+                self.selected_anno = Some(a.id.clone());
+                self.author_annotation(state, &a);
             }
             Tool::Ink if d.points.len() >= 2 => {
-                let a = Annotation {
-                    id: Annotation::new_id(),
-                    page: d.page,
-                    kind: AnnoKind::Ink { points: d.points },
-                    color: self.swatch,
-                    author: self.author.clone(),
-                };
-                self.perform_action(state, &crate::actions::add_annotation_action(&a));
+                let a = Annotation::new(
+                    d.page,
+                    AnnoKind::Ink { points: d.points },
+                    self.swatch,
+                    self.author.clone(),
+                );
+                self.author_annotation(state, &a);
             }
             _ => {}
         }
@@ -2733,9 +2963,19 @@ impl PdfApp {
         let comment_id = Comment::new_id();
         // One action creates the note marker *and* its (empty) comment thread —
         // one undo boundary, replayed atomically on peers.
-        self.perform_action(
-            state,
-            &crate::actions::create_note_action(
+        let action = match self.page_id_of(page) {
+            Some(page_id) => crate::actions::create_note_on_action(
+                &anno_id,
+                &comment_id,
+                page,
+                &page_id,
+                self.page_map(page).card_to_user(pt),
+                self.swatch,
+                &self.author.clone(),
+                self.created_counter,
+                "",
+            ),
+            None => crate::actions::create_note_action(
                 &anno_id,
                 &comment_id,
                 page,
@@ -2746,7 +2986,8 @@ impl PdfApp {
                 self.created_counter,
                 "",
             ),
-        );
+        };
+        self.perform_action(state, &action);
         self.selected_anno = Some(anno_id);
         self.selected_sig = None;
         // Open the Comments rail, scroll the brand-new thread into view, and
@@ -2767,7 +3008,7 @@ impl PdfApp {
         // texts at, so the editor's glyphs are the glyphs it replaces.
         let size = match target {
             EditTarget::CommentBody(_) | EditTarget::Reply(_) => self.type_px.sm,
-            EditTarget::Signer => self.type_px.base,
+            EditTarget::Signer | EditTarget::FormField(_) => self.type_px.base,
         };
         let mut input = TextInput::local()
             .multiline(true)
@@ -2825,6 +3066,11 @@ impl PdfApp {
                 } else {
                     name.to_string()
                 };
+            }
+            EditTarget::FormField(name) => {
+                let value = model::FormEntry::Text(text.trim_end().to_string());
+                self.perform_action(state, &crate::actions::set_form_value_action(&name, &value));
+                self.reload(state);
             }
         }
         self.dirty = true;
@@ -2905,8 +3151,14 @@ impl PdfApp {
             signer: self.signer_name.clone(),
             date: today_ymd(),
             ink,
+            space: crate::model::GeomSpace::Page,
         };
-        self.perform_action(state, &crate::actions::add_signature_action(&s));
+        let user = self.page_map(page).signature_to_user(&s);
+        let page_id = self.page_id_of(page);
+        self.perform_action(
+            state,
+            &crate::actions::add_signature_on(&user, page_id.as_deref()),
+        );
         self.selected_sig = Some(sig_id.clone());
         self.selected_anno = None;
         // Land the user on the Signatures rail, scrolled to the new field.
@@ -2914,6 +3166,131 @@ impl PdfApp {
         self.commit_pending = true;
         self.reload(state);
         self.dirty = true;
+    }
+
+    // ---- form fields ------------------------------------------------
+
+    /// The form widgets shown on 1-based displayed `page`. Fields belong to
+    /// the originally opened document, so only its pages carry them.
+    pub(crate) fn field_widgets_on(&self, page: usize) -> Vec<FieldWidgetHit> {
+        let Some(index) = page.checked_sub(1) else {
+            return Vec::new();
+        };
+        if self
+            .resource_page_imports
+            .get(index)
+            .is_some_and(Option::is_some)
+        {
+            return Vec::new();
+        }
+        let Some(source) = self.resource_page_sources.get(index).copied() else {
+            return Vec::new();
+        };
+        let map = self.page_map(page);
+        let mut out = Vec::new();
+        for field in &self.form_fields {
+            for widget in field.widgets.iter().filter(|w| w.page + 1 == source) {
+                let r = &widget.rect;
+                let rect = map.layer_rect_to_card(&PtRect::new(
+                    f64::from(r.x0),
+                    f64::from(r.y0),
+                    f64::from(r.width()),
+                    f64::from(r.height()),
+                ));
+                out.push(FieldWidgetHit {
+                    name: field.name.clone(),
+                    kind: field.kind,
+                    rect,
+                    export: widget.export_value.clone(),
+                    options: field.options.clone(),
+                    read_only: field.read_only,
+                    pdf_value: field.value.clone(),
+                    pdf_checked: widget.checked,
+                });
+            }
+        }
+        out
+    }
+
+    /// The widget under card point `pt` on `page`.
+    pub(crate) fn field_at(&self, page: usize, pt: (f64, f64)) -> Option<FieldWidgetHit> {
+        self.field_widgets_on(page)
+            .into_iter()
+            .find(|w| w.rect.contains(pt.0, pt.1))
+    }
+
+    /// The text a widget currently shows: the record's value when there is
+    /// one, else the document's own.
+    pub(crate) fn field_text(&self, w: &FieldWidgetHit) -> String {
+        match self.form_values.get(&w.name) {
+            Some(model::FormEntry::Text(t) | model::FormEntry::Choice(t)) => t.clone(),
+            _ => w.pdf_value.clone(),
+        }
+    }
+
+    /// Whether a check box or radio widget is on, record first.
+    pub(crate) fn field_checked(&self, w: &FieldWidgetHit) -> bool {
+        match self.form_values.get(&w.name) {
+            Some(model::FormEntry::Checked { on, export }) => match (w.kind, export) {
+                (tilo_pdf::FieldKind::RadioButton, Some(e)) => *on && *e == w.export,
+                _ => *on,
+            },
+            _ => w.pdf_checked,
+        }
+    }
+
+    /// Act on a click on a form widget: edit text, toggle a check box, pick
+    /// a radio button, or step a choice field to its next option.
+    fn activate_field(&mut self, state: &mut AutoCommit, w: &FieldWidgetHit) {
+        if w.read_only {
+            self.status_note = Some(format!("“{}” is read-only", w.name));
+            self.dirty = true;
+            return;
+        }
+        let value = match w.kind {
+            tilo_pdf::FieldKind::Text => {
+                let current = self.field_text(w);
+                self.begin_edit(EditTarget::FormField(w.name.clone()), &current);
+                return;
+            }
+            tilo_pdf::FieldKind::CheckBox => model::FormEntry::Checked {
+                on: !self.field_checked(w),
+                export: None,
+            },
+            tilo_pdf::FieldKind::RadioButton => model::FormEntry::Checked {
+                on: true,
+                export: Some(w.export.clone()),
+            },
+            tilo_pdf::FieldKind::ComboBox | tilo_pdf::FieldKind::ListBox => {
+                if w.options.is_empty() {
+                    return;
+                }
+                let current = self.field_text(w);
+                let next = w
+                    .options
+                    .iter()
+                    .position(|o| *o == current)
+                    .map_or(0, |i| (i + 1) % w.options.len());
+                model::FormEntry::Choice(w.options.get(next).cloned().unwrap_or_default())
+            }
+            _ => return,
+        };
+        self.perform_action(
+            state,
+            &crate::actions::set_form_value_action(&w.name, &value),
+        );
+        self.reload(state);
+        self.dirty = true;
+    }
+
+    /// A click on a page with the select tool: form widgets first, then
+    /// markup.
+    pub(crate) fn click_page(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+        if let Some(widget) = self.field_at(page, pt) {
+            self.activate_field(state, &widget);
+            return;
+        }
+        self.select_at(page, pt);
     }
 
     fn select_at(&mut self, page: usize, pt: (f64, f64)) {
@@ -2926,7 +3303,9 @@ impl PdfApp {
                         hit = Some(a.id.clone());
                     }
                 }
-                AnnoKind::Highlight { rect } if rect.contains(pt.0, pt.1) && hit.is_none() => {
+                kind @ AnnoKind::Markup { .. }
+                    if kind.markup_contains(pt.0, pt.1) && hit.is_none() =>
+                {
                     hit = Some(a.id.clone());
                 }
                 _ => {}
@@ -3044,20 +3423,26 @@ impl PdfApp {
         if bands.is_empty() {
             return false;
         }
-        let mut last = None;
-        for r in bands {
-            let a = Annotation {
-                id: Annotation::new_id(),
-                page: sel.page,
-                kind: AnnoKind::Highlight { rect: r },
-                color: swatch,
-                author: self.author.clone(),
-            };
-            last = Some(a.id.clone());
-            self.perform_action(state, &crate::actions::add_annotation_action(&a));
-        }
+        let (start, end) = sel.range();
+        let chars = self
+            .raster_text
+            .get(&sel.page)
+            .and_then(|t| t.source_range(start, end));
+        let a = Annotation {
+            chars,
+            ..Annotation::new(
+                sel.page,
+                AnnoKind::Markup {
+                    style: self.markup_style,
+                    quads: bands,
+                },
+                swatch,
+                self.author.clone(),
+            )
+        };
         self.swatch = swatch;
-        self.selected_anno = last;
+        self.selected_anno = Some(a.id.clone());
+        self.author_annotation(state, &a);
         self.clear_selection();
         self.reload(state);
         self.dirty = true;
@@ -3196,7 +3581,7 @@ impl PdfApp {
                         return Some(DeleteTarget::Annotation(a.id.clone()));
                     }
                 }
-                AnnoKind::Highlight { rect } if rect.contains(pt.0, pt.1) => {
+                kind @ AnnoKind::Markup { .. } if kind.markup_contains(pt.0, pt.1) => {
                     return Some(DeleteTarget::Annotation(a.id.clone()));
                 }
                 _ => {}
@@ -3423,6 +3808,10 @@ impl PdfApp {
                     {
                         self.raster = None;
                     }
+                    self.form_fields.clone_from(&raster.form_fields);
+                    self.source_blob = Some((raster.source_hash.clone(), raster.source_len));
+                    self.form_values.clear();
+                    self.resource_page_rotations.clear();
                     self.raster_document = Some(raster);
                     self.raster_images.clear();
                     self.raster_render_pending.clear();
@@ -3474,6 +3863,7 @@ impl PdfApp {
                     self.reconcile_overlay();
                     self.recompute_regions();
                     self.sync_viewport_frame();
+                    self.rebuild_page_maps();
                     self.dirty = true;
                     if let Some(handle) = self.raster_handle.as_ref()
                         && let Err(error) = handle.activate_document(request.id)
@@ -3557,6 +3947,7 @@ impl PdfApp {
                         .is_some_and(|doc| doc.id == request.document_id) =>
                 {
                     self.raster_text_pending.remove(&request.page);
+                    let text = self.text_for_card(request.page + 1, text);
                     self.raster_text.insert(request.page + 1, text);
                     if self.search_active {
                         self.recompute_matches();
@@ -3579,6 +3970,8 @@ impl PdfApp {
                 RasterEvent::Reconciled {
                     request,
                     page_sizes,
+                    geometries,
+                    rotations,
                 } if self
                     .raster_document
                     .as_ref()
@@ -3591,10 +3984,12 @@ impl PdfApp {
                     self.raster_render_pending.clear();
                     self.raster_text.clear();
                     self.raster_text_pending.clear();
-                    if let Some((width, height)) = page_sizes.first().copied() {
-                        self.doc.page_w = width;
-                        self.doc.page_h = height;
+                    if let Some(document) = self.raster_document.as_mut() {
+                        document.page_sizes = page_sizes;
+                        document.geometries = geometries;
+                        document.rotations = rotations;
                     }
+                    self.rebuild_page_maps();
                     self.dirty = true;
                 }
                 RasterEvent::ReconcileFailed { request, error }
@@ -3633,6 +4028,7 @@ impl PdfApp {
                                 width_milli: (width * 1000.0).round() as u32,
                                 height_milli: (height * 1000.0).round() as u32,
                             }),
+                            rotation: 0,
                         })
                         .collect();
                     self.pending_import = None;
@@ -3800,6 +4196,13 @@ impl Widget for PdfApp {
             PdfOperation::ToggleRail => self.toggle_rail(),
             PdfOperation::OpenSearch => self.open_search(),
             PdfOperation::GoToPage { page } => self.go_to_page(page),
+            PdfOperation::MarkupStyle { style } => {
+                if let Some(style) = model::MarkupStyle::parse(&style) {
+                    self.markup_style = style;
+                    self.tool = Tool::Highlight;
+                    self.dirty = true;
+                }
+            }
             PdfOperation::GoToSearchResult {
                 query,
                 whole_word,
@@ -4028,6 +4431,7 @@ impl Widget for PdfApp {
         }
         if self.has_document {
             self.reconcile_shared_page_plan(state);
+            self.pin_source(state);
         }
         self.reload(state);
         self.refresh_search_catalog(state);
@@ -4906,12 +5310,20 @@ impl Widget for PdfApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-        _permissions: &PermissionContext,
+        permissions: &PermissionContext,
     ) {
+        // The host's decision about this user's rights gates every edit this
+        // widget dispatches (see `perform_action`).
+        if &self.permissions != permissions {
+            self.permissions = permissions.clone();
+        }
         // Root fills the whole window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 }
+
+#[cfg(test)]
+mod records_tests;
 
 #[cfg(test)]
 mod tests {
@@ -5638,6 +6050,7 @@ mod tests {
             id: "imported-occurrence".into(),
             source_page: 1,
             imported: Some(imported.clone()),
+            rotation: 0,
         };
         app.perform_action(
             &mut state.doc,
@@ -5657,6 +6070,9 @@ mod tests {
             kind: AnnoKind::Note { x: 12.0, y: 24.0 },
             color: Swatch::Yellow,
             author: "You".into(),
+            chars: None,
+            created_ms: 0,
+            space: crate::model::GeomSpace::Page,
         };
         app.perform_action(&mut state.doc, &add_annotation_action(&annotation));
         app.perform_action(
@@ -5733,6 +6149,7 @@ mod tests {
                         width_milli: 612_000,
                         height_milli: 408_000,
                     }),
+                    rotation: 0,
                 }],
             ),
         );
@@ -6022,7 +6439,7 @@ mod tests {
         assert!(
             app.annotations
                 .iter()
-                .any(|a| matches!(a.kind, AnnoKind::Highlight { .. })),
+                .any(|a| matches!(a.kind, AnnoKind::Markup { .. })),
             "seeded highlights remain"
         );
 
@@ -6218,7 +6635,7 @@ mod tests {
         let hl = |st: &ui::State| {
             PdfDoc::list_annotations(&st.doc)
                 .into_iter()
-                .filter(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+                .filter(|a| matches!(a.kind, AnnoKind::Markup { .. }))
                 .count()
         };
         let before = hl(&st);
@@ -6566,7 +6983,7 @@ mod tests {
             "the marker follows the pointer live"
         );
         // Release persists the new anchor to the shared document.
-        PdfDoc::set_annotation_position(&mut st.doc, &id, nx, ny);
+        PdfDoc::set_annotation_position(&mut st.doc, &id, nx, ny, crate::model::GeomSpace::Page);
         app.reload(&st.doc);
         let (x, y) = app.note_pos(&id).expect("the note survives the reposition");
         assert!(
@@ -6767,11 +7184,14 @@ mod tests {
             points: vec![],
         });
         app.commit_drag(&mut st.doc);
-        // Two covered lines -> two text-shaped bands (not one free rectangle).
-        assert_eq!(
-            app.annotations.len(),
-            a0 + 2,
-            "drag over two lines snaps to two bands"
+        // Two covered lines -> one highlight with two text-shaped bands (not
+        // one free rectangle).
+        assert_eq!(app.annotations.len(), a0 + 1, "one highlight");
+        let added = app.annotations.last().unwrap();
+        assert!(
+            matches!(&added.kind, AnnoKind::Markup { quads, .. } if quads.len() == 2),
+            "drag over two lines snaps to two bands: {:?}",
+            added.kind
         );
     }
 
@@ -6813,7 +7233,7 @@ mod tests {
         let hl = app
             .annotations
             .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
             .unwrap()
             .clone();
         let n = app.annotations.len();
@@ -7728,7 +8148,7 @@ mod tests {
         assert!(
             app.annotations
                 .iter()
-                .any(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+                .any(|a| matches!(a.kind, AnnoKind::Markup { .. }))
         );
         assert!(app.signatures.iter().any(|s| s.signer == "Grace Hopper"));
 

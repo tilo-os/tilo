@@ -572,6 +572,7 @@ impl PdfApp {
             tr.set_text_scale(1.0);
         }
         self.draw_canvas(scene, base, tr, theme, &page_imgs);
+        self.draw_field_editor(scene, base, tr, theme);
         tr.set_text_scale(chrome_text_scale);
 
         // The floating selection HUD over the page (shared `ui` component).
@@ -876,6 +877,7 @@ impl PdfApp {
             for i in want {
                 if let Some(rz) = self.raster.as_mut() {
                     let pt = rz.page_text(i);
+                    let pt = self.text_for_card(i + 1, pt);
                     self.raster_text.insert(i + 1, pt);
                 }
             }
@@ -1187,6 +1189,7 @@ impl PdfApp {
             );
 
             self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
+            self.draw_form_fields(scene, base, tr, theme, page_num, *origin);
 
             // Raster backend: draw search-hit + selection bands over the page
             // image, using the real glyph geometry so they land on the text.
@@ -1243,6 +1246,135 @@ impl PdfApp {
         // kernel so they match the other document apps (they appear only when
         // the content overflows the viewport on that axis).
         self.viewport.draw_scrollbars(scene, base, theme);
+    }
+
+    /// Form widgets on a page: a quiet outline so fields are discoverable,
+    /// and any value recorded in the document's record drawn over the PDF's
+    /// own appearance (the export writes the same value into the file).
+    fn draw_form_fields(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        page: usize,
+        origin: Point,
+    ) {
+        let z = self.zoom();
+        for w in self.field_widgets_on(page) {
+            let r = Rect::new(
+                origin.x + w.rect.x * z,
+                origin.y + w.rect.y * z,
+                origin.x + (w.rect.x + w.rect.w) * z,
+                origin.y + (w.rect.y + w.rect.h) * z,
+            );
+            if self.is_editing(&EditTarget::FormField(w.name.clone())) {
+                continue;
+            }
+            scene.stroke(
+                &Stroke::new(1.0),
+                base,
+                render::alpha(theme.accent_primary, 140),
+                None,
+                &r,
+            );
+            if !self.form_values.contains_key(&w.name) {
+                continue;
+            }
+            // Cover the document's own appearance with the recorded value.
+            scene.fill(
+                Fill::NonZero,
+                base,
+                render::paper(theme),
+                None,
+                &r.inflate(-1.0, -1.0),
+            );
+            match w.kind {
+                tilo_pdf::FieldKind::CheckBox | tilo_pdf::FieldKind::RadioButton => {
+                    if self.field_checked(&w) {
+                        let inset = r.inflate(-r.width() * 0.22, -r.height() * 0.22);
+                        let mut tick = BezPath::new();
+                        tick.move_to((inset.x0, inset.center().y));
+                        tick.line_to((inset.x0 + inset.width() * 0.4, inset.y1));
+                        tick.line_to((inset.x1, inset.y0));
+                        scene.stroke(
+                            &Stroke::new((r.height() * 0.12).max(1.2)),
+                            base,
+                            render::ink(),
+                            None,
+                            &tick,
+                        );
+                    }
+                }
+                _ => {
+                    let size = (r.height() * 0.6).clamp(6.0, 14.0 * z.max(1.0)) as f32;
+                    let text = self.field_text(&w);
+                    tr.draw_text(
+                        scene,
+                        &text,
+                        size,
+                        render::ink(),
+                        base * Affine::translate((
+                            r.x0 + 3.0 * z,
+                            r.center().y - f64::from(size) * 0.6,
+                        )),
+                        Some((r.width() - 6.0 * z).max(1.0) as f32),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The inline editor over the text field being edited, if any.
+    fn draw_field_editor(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(EditTarget::FormField(name)) = self.editing.as_ref().map(|e| e.target.clone())
+        else {
+            return;
+        };
+        let origins = self.page_origins();
+        let z = self.zoom();
+        let Some((origin, widget)) = origins.iter().enumerate().find_map(|(i, o)| {
+            self.field_widgets_on(i + 1)
+                .into_iter()
+                .find(|w| w.name == name)
+                .map(|w| (*o, w))
+        }) else {
+            return;
+        };
+        let r = Rect::new(
+            origin.x + widget.rect.x * z,
+            origin.y + widget.rect.y * z,
+            origin.x + (widget.rect.x + widget.rect.w) * z,
+            origin.y + (widget.rect.y + widget.rect.h) * z,
+        );
+        scene.fill(
+            Fill::NonZero,
+            base,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &r,
+        );
+        scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &r);
+        if let Some(editing) = self.editing.as_mut() {
+            draw_inline_editor(
+                &mut editing.input,
+                scene,
+                base,
+                tr,
+                theme,
+                Point::new(r.x0 + 4.0, r.y0 + 2.0),
+                (
+                    (r.width() - 8.0).max(8.0) as f32,
+                    (r.height() - 4.0).max(8.0),
+                ),
+            );
+        }
     }
 
     /// Cover a page-shaped imported occurrence whose verified blob has not
