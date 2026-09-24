@@ -230,13 +230,13 @@ fn internal_and_external_links_resolve_with_their_areas() {
     let size = doc.page_size(0).unwrap();
     let links = doc.links(0).unwrap();
     assert_eq!(links.len(), 2, "{links:?}");
-    let internal = links
+    let (internal, page, at) = links
         .iter()
-        .find(|l| matches!(l.destination, Destination::Page { .. }))
+        .find_map(|l| match l.destination {
+            Destination::Page { page, at } => Some((l, page, at)),
+            _ => None,
+        })
         .expect("an internal link");
-    let Destination::Page { page, at } = internal.destination else {
-        unreachable!()
-    };
     assert_eq!(page, 2, "the appendix is on the third page");
     // The heading sits part way down its page, in display space (y down).
     let at = at.expect("the destination names a point");
