@@ -33,10 +33,12 @@ impl FormatProvider for MarkdownCodec {
     }
 
     fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
-        let src = std::str::from_utf8(bytes).map_err(|e| CodecError::Parse(e.to_string()))?;
-        let body = apply_front_matter(src, doc);
-        import_md(body, doc);
-        Ok(())
+        doc.bulk(|doc| {
+            let src = std::str::from_utf8(bytes).map_err(|e| CodecError::Parse(e.to_string()))?;
+            let body = apply_front_matter(src, doc);
+            import_md(body, doc);
+            Ok(())
+        })
     }
 
     fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {

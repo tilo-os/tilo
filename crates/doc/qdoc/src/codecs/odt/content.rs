@@ -1125,7 +1125,7 @@ fn apply_deferred_marks(
 
 /// The character length of a body block's text (0 if absent).
 fn doc_block_len(doc: &DocMut, block_id: &str) -> usize {
-    crate::model::block_text(doc.doc, doc.c, block_id).map_or(0, |t| t.chars().count())
+    doc.block_text_len(block_id)
 }
 
 #[cfg(test)]

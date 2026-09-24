@@ -1,0 +1,13 @@
+[package]
+name = "pim-lines"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "RFC 5545/6350 content-line codec shared by iCalendar and vCard: folding, parameters and TEXT escaping."
+
+# Pure string handling; no dependencies.
+[dependencies]
+
+[lints]
+workspace = true

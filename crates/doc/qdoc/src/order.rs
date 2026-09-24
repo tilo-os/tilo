@@ -72,33 +72,43 @@ pub fn key_between(lo: Option<&[u8]>, hi: Option<&[u8]>) -> Vec<u8> {
     }
 }
 
-/// A key strictly greater than `l`, for "append after `l`" (no upper bound). A naive `l + [128]`
-/// grows the key by a byte on every append, making a run of `n` appends O(n) bytes long and every
-/// [`cmp_keys`] O(key length) — O(n²) to build/sort `n` blocks. This instead increments `l` as a
-/// base-256 value and truncates, so keys grow ~1 byte per 128 appends (128× shorter), turning the
-/// quadratic back into near-linear; the result is still strictly greater than `l`, and concurrent appends after the same `l` still converge (ties broken by block id downstream).
+/// Digits an appended key counts in: appending after a key shorter than this counts in its
+/// last digit, so that many bytes hold about `256^APPEND_DIGITS` appends before one more
+/// group of digits is needed.
+const APPEND_DIGITS: usize = 3;
+
+/// A key strictly greater than `l`, for "append after `l`" (no upper bound).
+///
+/// Counts: `l`, padded to at least [`APPEND_DIGITS`] digits, plus one in its last digit, with
+/// the carry running up through digits already at 255 (dropped, as trailing zeros are
+/// insignificant). Only when every digit is 255 does the key grow, by another
+/// [`APPEND_DIGITS`] digits. A run of `n` appends therefore keeps keys O(log n) bytes long —
+/// incrementing only the existing digits would exhaust a one-byte key after 127 appends and
+/// grow a byte every ~128 more, making keys, every [`cmp_keys`] and the order index O(n).
+/// Concurrent appends after the same `l` still converge (ties broken by block id downstream).
 fn key_after(l: &[u8]) -> Vec<u8> {
     let mut v = l.to_vec();
-    // Trailing zeros are insignificant as a fraction; drop them so the increment
-    // lands on a significant digit (keeps the result minimal).
     while v.len() > 1 && v.last() == Some(&0) {
         v.pop();
     }
-    // Increment the least-significant byte that isn't already 0xFF, dropping the
-    // bytes after it — the shortest fraction greater than `l` at that position.
+    if v.len() < APPEND_DIGITS {
+        v.resize(APPEND_DIGITS, 0);
+    }
     if let Some(i) = v.iter().rposition(|&b| b < 255) {
         v.truncate(i.saturating_add(1));
         if let Some(last) = v.last_mut() {
-            // `rposition` chose this byte because it is below 255, so the
+            // `rposition` chose this digit because it is below 255, so the
             // increment is exact and the saturation is unreachable.
             *last = last.saturating_add(1);
         }
         return v;
     }
-    // `l` is all 0xFF (≈ 1.0): no shorter key exceeds it, so extend by one mid byte.
-    let mut out = l.to_vec();
-    out.push(128);
-    out
+    // Every digit is 255 (≈ 1.0): nothing this long exceeds it, so count in fresh digits.
+    v.resize(v.len().saturating_add(APPEND_DIGITS), 0);
+    if let Some(last) = v.last_mut() {
+        *last = 1;
+    }
+    v
 }
 
 #[cfg(test)]
@@ -161,7 +171,7 @@ mod tests {
         // one byte per insert — that is the O(n²) trap (every cmp_keys is O(len)).
         let mut key = key_between(None, None);
         let mut max_len = key.len();
-        for _ in 0..4_000 {
+        for _ in 0..1_000_000 {
             let next = key_between(Some(&key), None);
             assert_eq!(
                 cmp_keys(&key, &next),
@@ -171,9 +181,9 @@ mod tests {
             key = next;
             max_len = max_len.max(key.len());
         }
-        // ~128 appends per byte of width → ~32 bytes for 4000, versus a naive ~4000.
+        // Logarithmic: a million appends fit in three digits.
         assert!(
-            max_len <= 40,
+            max_len <= APPEND_DIGITS,
             "append keys must stay short (got {max_len} bytes) or insertion is O(n²)"
         );
     }

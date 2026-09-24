@@ -1637,16 +1637,16 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "mail",
- "reqwest 0.13.2",
- "roxmltree 0.20.0",
+ "pim-lines",
  "runtime-dylib",
  "serde",
  "serde_json",
  "serial_test",
  "taffy",
+ "test-http",
  "tilo-actions",
  "tilo-app",
- "tilo-net",
+ "tilo-dav",
  "tilo-test-env",
  "tracing",
  "url",
@@ -2490,6 +2490,7 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "pim-lines",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3923,6 +3924,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd2e7510819d6fbf51a5545c8f922716ecfb14df168a3242f7d33e0239efe6a1"
 
 [[package]]
+name = "fastcdc"
+version = "3.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf51ceb43e96afbfe4dd5c6f6082af5dfd60e220820b8123792d61963f2ce6bc"
+
+[[package]]
 name = "fastdivide"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4136,8 +4143,6 @@ dependencies = [
  "libc",
  "mime_guess",
  "qdoc",
- "reqwest 0.13.2",
- "roxmltree 0.20.0",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -4149,7 +4154,7 @@ dependencies = [
  "thumbnail",
  "tilo-actions",
  "tilo-app",
- "tilo-net",
+ "tilo-dav",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -4162,7 +4167,6 @@ dependencies = [
  "winit",
  "xattr",
  "xdg-paths",
- "zeroize",
  "zip",
 ]
 
@@ -4539,6 +4543,15 @@ dependencies = [
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
+]
+
+[[package]]
+name = "fs-native"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "fastcdc",
+ "libc",
 ]
 
 [[package]]
@@ -8099,6 +8112,7 @@ dependencies = [
  "lettre",
  "mail-builder",
  "mail-parser",
+ "pim-lines",
  "qdoc",
  "rcgen",
  "reqwest 0.13.2",
@@ -8269,9 +8283,9 @@ dependencies = [
 
 [[package]]
 name = "memmap2"
-version = "0.9.10"
+version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
 ]
@@ -10267,6 +10281,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 
 [[package]]
+name = "pim-lines"
+version = "0.1.0"
+
+[[package]]
 name = "pin-project"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11625,7 +11643,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "des",
- "iroh",
+ "iroh-base",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -11636,7 +11654,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-callstream",
- "tilo-relay",
+ "tilo-relay-protocol",
  "tokio",
  "uuid",
  "vello",
@@ -11971,6 +11989,7 @@ dependencies = [
  "collab-types",
  "comemo",
  "desktop-policy",
+ "fs",
  "iroh",
  "launcher",
  "media",
@@ -11991,7 +12010,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-model-gateway",
- "tilo-relay",
+ "tilo-relay-protocol",
  "tilo-ui",
  "tilo-user-identity",
  "tiny-skia",
@@ -12491,9 +12510,9 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
+ "blake3",
  "dirs 6.0.0",
  "fs",
- "iroh-blobs",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -12878,6 +12897,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "agent-provider-config",
+ "async-imap",
  "atomic-file",
  "automerge",
  "bounded-command",
@@ -12890,7 +12910,6 @@ dependencies = [
  "os-actions",
  "quick-xml 0.41.0",
  "rcgen",
- "reqwest 0.13.2",
  "runtime-dylib",
  "runtime-fs",
  "runtime-identity",
@@ -12901,15 +12920,19 @@ dependencies = [
  "settings-store",
  "taffy",
  "tempfile",
+ "test-http",
  "tilo-actions",
  "tilo-app",
  "tilo-bluez",
+ "tilo-dav",
  "tilo-desktop-entry",
  "tilo-model-gateway",
  "tilo-net",
- "tilo-relay",
+ "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-user-identity",
+ "tokio",
+ "tokio-rustls",
  "tracing",
  "uuid",
  "vello",
@@ -13150,6 +13173,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
+ "tilo-relay-protocol",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -14262,6 +14286,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-http"
+version = "0.1.0"
+
+[[package]]
 name = "themes"
 version = "0.1.0"
 dependencies = [
@@ -14543,6 +14571,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-dav"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.2",
+ "roxmltree 0.20.0",
+ "test-http",
+ "tilo-net",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
@@ -14693,6 +14732,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-actions",
  "tilo-app-package",
+ "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
@@ -14700,6 +14740,24 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "x25519-dalek 3.0.0",
+]
+
+[[package]]
+name = "tilo-relay-protocol"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "blake3",
+ "hex",
+ "iroh-base",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-user-identity",
+ "toml 1.0.6+spec-1.1.0",
+ "uuid",
 ]
 
 [[package]]

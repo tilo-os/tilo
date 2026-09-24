@@ -14,6 +14,11 @@ on:
         type: boolean
         required: false
         default: false
+      installer_only:
+        description: "Run installer-media cycles only; skip host-app packaging and publication jobs."
+        type: boolean
+        required: false
+        default: false
       published_os_image:
         description: "Optional signed Tilo manifest-list digest; empty uses vars.TILO_INSTALLER_OS_IMAGE."
         type: string
@@ -41,6 +46,7 @@ jobs:
     runs-on: runner
     outputs:
       linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
+      medium-matrix: ${{ steps.lanes.outputs.medium-matrix }}
     steps:
       - name: Select native Linux lanes
         id: lanes
@@ -52,22 +58,34 @@ jobs:
           else
             echo 'linux-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"}]}' >> "$GITHUB_OUTPUT"
           fi
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}' >> "$GITHUB_OUTPUT"
+          elif [[ ${FULL_NATIVE:-false} == true ]]; then
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'medium-matrix={"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}' >> "$GITHUB_OUTPUT"
+          fi
 
   medium:
     timeout-minutes: 240
-    # Build and boot-test install media only on dedicated, native hosts. The
-    # generic `runner` label executes in a container without Podman, KVM, or
-    # DRI and must never be eligible for this job.
+    # Build and boot-test install media only on architecture-matched native
+    # hosts. Tags use the dedicated KVM/DRI fleet; manual rehearsals may use
+    # the isolated large-disk fleet with Podman plus software QEMU installed
+    # inside the job. The small generic `runner` label is never eligible.
     needs: plan
     strategy:
-      matrix: ${{ fromJSON(needs.plan.outputs.linux-matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.medium-matrix) }}
     runs-on: ${{ matrix.runner }}
     enable-openid-connect: true
     env:
       REGISTRY_AUTH_FILE: /tmp/tilo-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
       TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
       TILO_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.TILO_INSTALLER_OS_IMAGE }}
-      TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}
+      # A release tag must use an OS release from the identical source commit.
+      # Manual rehearsals intentionally layer this checkout's installer/rootfs
+      # overlay onto the most recent signed published generation, so they stay
+      # runnable before a candidate commit is itself publishable.
+      TILO_EXPECTED_OS_SOURCE_REVISION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && github.sha || '' }}
       # A manual rehearsal receives no production signing interface. The
       # protected-tag broker is exposed only for the release path that requires
       # newly signed live/target UKIs in the installer overlay.
@@ -109,10 +127,12 @@ jobs:
               native_packages='ovmf python3-virt-firmware qemu-system-x86 swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
+              software_display_device=virtio-vga
             else
               native_packages='qemu-efi-aarch64 qemu-system-arm'
               qemu_binary=qemu-system-aarch64
               display_device=virtio-gpu-gl-pci
+              software_display_device=virtio-gpu-pci
             fi
             sudo -n apt-get install -y --no-install-recommends \
               clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g podman fuse-overlayfs \
@@ -122,10 +142,12 @@ jobs:
               native_packages='edk2-ovmf python3-virt-firmware qemu-device-display-virtio-vga-gl qemu-system-x86-core swtpm'
               qemu_binary=qemu-system-x86_64
               display_device=virtio-vga-gl
+              software_display_device=virtio-vga
             else
               native_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
               qemu_binary=qemu-system-aarch64
               display_device=virtio-gpu-gl-pci
+              software_display_device=virtio-gpu-pci
             fi
             sudo -n dnf install -y clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux podman fuse-overlayfs slirp4netns \
               qemu-img qemu-ui-egl-headless qemu-ui-opengl socat tesseract $native_packages
@@ -139,10 +161,15 @@ jobs:
           if [ "${{ matrix.arch }}" = x86_64 ]; then
             command -v swtpm virt-fw-vars >/dev/null
           fi
-          "$qemu_binary" -display help | grep -Fq egl-headless
-          "$qemu_binary" -device help | grep -Fq "$display_device"
-          test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
-          compgen -G '/dev/dri/renderD*' >/dev/null
+          "$qemu_binary" -device help | grep -Fq "$software_display_device"
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            "$qemu_binary" -display help | grep -Fq egl-headless
+            "$qemu_binary" -device help | grep -Fq "$display_device"
+            test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+            compgen -G '/dev/dri/renderD*' >/dev/null
+          else
+            echo '::notice::manual rehearsal uses QEMU TCG plus the capturable software framebuffer'
+          fi
       - name: Authenticate the native image builder
         env:
           TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
@@ -161,7 +188,11 @@ jobs:
             exit 1
           }
           generation="$(./os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE")"
-          echo "::notice::installer source is verified published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            echo "::notice::installer source is exact-commit published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+          else
+            echo "::notice::rehearsal overlays $GITHUB_SHA onto verified published generation $generation ($TILO_PUBLISHED_OS_IMAGE)"
+          fi
           ./os/dev/build-custom-installer.sh
           package_args=(os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}")
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
@@ -214,17 +245,27 @@ jobs:
           TILO_VM_CYCLE: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
         run: |
           set -euo pipefail
+          cycle_graphics=()
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            export TILO_ACCEL=kvm
+          else
+            export TILO_ACCEL=tcg
+            cycle_graphics=(--graphics software)
+          fi
           ./os/dev/test-installer-cycle.sh \
             os/output/installer/qcow2/disk.qcow2 \
+            "${cycle_graphics[@]}" \
             --out dist/installer-cycle
           TILO_VM_CYCLE="${TILO_VM_CYCLE}-alongside" \
             ./os/dev/test-installer-cycle.sh \
               os/output/installer/qcow2/disk.qcow2 \
+              "${cycle_graphics[@]}" \
               --prepared-alongside \
               --out dist/installer-alongside-cycle
           TILO_VM_CYCLE="${TILO_VM_CYCLE}-guided-alongside" \
             ./os/dev/test-installer-cycle.sh \
               os/output/installer/qcow2/disk.qcow2 \
+              "${cycle_graphics[@]}" \
               --guided-alongside \
               --out dist/installer-guided-alongside-cycle
           if [[ "$GITHUB_REF" == refs/tags/imager-v* && "${{ matrix.arch }}" == x86_64 ]]; then
@@ -318,7 +359,9 @@ jobs:
   internal-install-cycle:
     timeout-minutes: 480
     needs: medium
-    if: vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish'
+    # Needs the dedicated KVM release host, which installer-only rehearsals
+    # deliberately do not use.
+    if: github.event.inputs.installer_only != 'true' && (vars.IMAGER_INTERNAL_BUNDLE == 'export' || vars.IMAGER_INTERNAL_BUNDLE == 'publish')
     runs-on: imager-linux-x86_64
     env:
       FEDORA_URL: ${{ vars.TILO_INTERNAL_CYCLE_FEDORA_URL }}
@@ -409,6 +452,7 @@ jobs:
 
   linux:
     timeout-minutes: 240
+    if: github.event.inputs.installer_only != 'true'
     needs: catalog
     # Forgejo injects ACTIONS_ID_TOKEN_REQUEST_* only when this native setting
     # is enabled; GitHub's `permissions: id-token: write` is not sufficient.
@@ -480,9 +524,6 @@ jobs:
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_LINUX_CREDENTIAL_BROKER }}
-          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
-          SIGNING_KEY_B64: ${{ secrets.IMAGER_LINUX_SIGNING_KEY_B64 }}
-          SIGNING_KEY_ID: ${{ secrets.IMAGER_LINUX_SIGNING_KEY_ID }}
           EXPECTED_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}
         run: |
           set -euo pipefail
@@ -491,21 +532,12 @@ jobs:
               version="${GITHUB_REF_NAME#imager-v}"
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
                 || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
-              if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-                apps/imager/packaging/acquire-release-credentials.sh \
-                  linux "$CREDENTIAL_BROKER" >> "$GITHUB_ENV"
-              elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ]; then
-                test -n "${SIGNING_KEY_B64:-}" && test -n "${SIGNING_KEY_ID:-}"
-                signing_key="$RUNNER_TEMP/tilo-imager-signing-key.asc"
-                test ! -e "$signing_key"
-                (umask 077; printf '%s' "$SIGNING_KEY_B64" | base64 --decode > "$signing_key")
-                gpg --batch --import "$signing_key"
-                rm -f "$signing_key"
-                echo "TILO_LINUX_SIGNING_KEY=$SIGNING_KEY_ID" >> "$GITHUB_ENV"
-              else
-                printf 'configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap\n' >&2
+              test -n "${CREDENTIAL_BROKER:-}" || {
+                printf 'configure IMAGER_LINUX_CREDENTIAL_BROKER; release signing is OIDC-broker-only\n' >&2
                 exit 1
-              fi
+              }
+              apps/imager/packaging/acquire-release-credentials.sh \
+                linux "$CREDENTIAL_BROKER" >> "$GITHUB_ENV"
               [[ "${EXPECTED_FINGERPRINT^^}" =~ ^([A-F0-9]{40}|[A-F0-9]{64})$ ]] \
                 || { printf 'configure IMAGER_LINUX_SIGNING_FINGERPRINT with the full release-key fingerprint\n' >&2; exit 1; }
               echo "TILO_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
@@ -526,9 +558,6 @@ jobs:
         run: |
           apps/imager/packaging/package-host.sh
           apps/imager/packaging/package-flatpak.sh
-      - name: Remove bootstrap Linux signing material
-        if: always()
-        run: rm -f "$RUNNER_TEMP/tilo-imager-signing-key.asc"
       - name: Sign the directly downloadable installer payloads
         if: startsWith(github.ref, 'refs/tags/imager-v')
         run: |
@@ -585,7 +614,7 @@ jobs:
 
   windows:
     timeout-minutes: 240
-    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
+    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -620,33 +649,17 @@ jobs:
       - name: Configure release signing
         shell: powershell
         env:
-          CERT_PFX_B64: ${{ secrets.IMAGER_WINDOWS_CERT_PFX_B64 }}
-          CERT_PASSWORD: ${{ secrets.IMAGER_WINDOWS_CERT_PASSWORD }}
-          EXTERNAL_SIGNER: ${{ vars.IMAGER_WINDOWS_SIGNER }}
           CREDENTIAL_BROKER: ${{ vars.IMAGER_WINDOWS_CREDENTIAL_BROKER }}
-          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
           EXPECTED_PUBLISHER: ${{ vars.IMAGER_WINDOWS_PUBLISHER }}
         run: |
           if ($env:GITHUB_REF -like "refs/tags/imager-v*") {
             $Version = $env:GITHUB_REF_NAME -replace '^imager-v', ''
             if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "release tag must be imager-vMAJOR.MINOR.PATCH" }
-            if ($env:CREDENTIAL_BROKER) {
-              & apps/imager/packaging/Acquire-ReleaseCredentials.ps1 broker $env:CREDENTIAL_BROKER |
-                Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            } elseif ($env:EXTERNAL_SIGNER) {
-              & apps/imager/packaging/Acquire-ReleaseCredentials.ps1 signer $env:EXTERNAL_SIGNER |
-                Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            } elseif ($env:ALLOW_STATIC_BOOTSTRAP -eq "1") {
-              if (-not $env:CERT_PFX_B64 -or -not $env:CERT_PASSWORD) { throw "bootstrap PFX secrets are missing" }
-              if ($env:CERT_PASSWORD -match "[`r`n]") { throw "bootstrap PFX password must be a single line" }
-              $Pfx = Join-Path $env:RUNNER_TEMP "tilo-imager-signing.pfx"
-              if (Test-Path -LiteralPath $Pfx) { throw "bootstrap PFX path already exists" }
-              [IO.File]::WriteAllBytes($Pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
-              "TILO_WINDOWS_CERT_PFX=$Pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-              "TILO_WINDOWS_CERT_PASSWORD=$env:CERT_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            } else {
-              throw "Configure IMAGER_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap"
+            if (-not $env:CREDENTIAL_BROKER) {
+              throw "Configure IMAGER_WINDOWS_CREDENTIAL_BROKER; release signing is OIDC-broker-only"
             }
+            & apps/imager/packaging/Acquire-ReleaseCredentials.ps1 broker $env:CREDENTIAL_BROKER |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             "TILO_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             if (-not $env:EXPECTED_PUBLISHER) { throw "Configure IMAGER_WINDOWS_PUBLISHER" }
             if ($env:EXPECTED_PUBLISHER -match "[`r`n]") { throw "Windows publisher policy must be a single line" }
@@ -672,12 +685,6 @@ jobs:
           & apps/imager/packaging/test-package-host.ps1
           & apps/imager/packaging/test-package-architecture.ps1
           & tools/tests/windows_runner_architecture.ps1
-      - name: Remove bootstrap Windows signing material
-        if: always()
-        shell: powershell
-        run: |
-          Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP "tilo-imager-signing.pfx") `
-            -Force -ErrorAction SilentlyContinue
       - name: Install and launch the packaged Windows UI offscreen
         shell: powershell
         run: |
@@ -720,7 +727,7 @@ jobs:
 
   macos:
     timeout-minutes: 240
-    if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
+    if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
     strategy:
@@ -741,13 +748,6 @@ jobs:
       - name: Configure release signing
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_MACOS_CREDENTIAL_BROKER }}
-          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
-          CERT_P12_B64: ${{ secrets.IMAGER_MAC_CERT_P12_B64 }}
-          CERT_PASSWORD: ${{ secrets.IMAGER_MAC_CERT_PASSWORD }}
-          SIGNING_IDENTITY: ${{ secrets.IMAGER_MAC_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.IMAGER_APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.IMAGER_APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.IMAGER_APPLE_APP_PASSWORD }}
           EXPECTED_TEAM_ID: ${{ vars.IMAGER_MAC_TEAM_ID }}
           EXPECTED_CERT_SHA256: ${{ vars.IMAGER_MAC_CERT_SHA256 }}
         run: |
@@ -757,34 +757,12 @@ jobs:
               version="${GITHUB_REF_NAME#imager-v}"
               [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
                 || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 1; }
-              if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-                apps/imager/packaging/acquire-release-credentials.sh \
-                  macos "$CREDENTIAL_BROKER" >> "$GITHUB_ENV"
-              elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ]; then
-                test -n "${CERT_P12_B64:-}" && test -n "${CERT_PASSWORD:-}"
-                test -n "${SIGNING_IDENTITY:-}" && test -n "${APPLE_ID:-}"
-                test -n "${APPLE_TEAM_ID:-}" && test -n "${APPLE_APP_PASSWORD:-}"
-                keychain="$RUNNER_TEMP/tilo-imager-signing.keychain-db"
-                keychain_list="$RUNNER_TEMP/tilo-imager-original-keychains"
-                p12="$RUNNER_TEMP/tilo-imager-signing.p12"
-                test ! -e "$p12" && test ! -e "$keychain" && test ! -e "$keychain_list"
-                (umask 077; printf '%s' "$CERT_P12_B64" | base64 --decode > "$p12")
-                security list-keychains -d user > "$keychain_list"
-                security create-keychain -p tilo-ci "$keychain"
-                security unlock-keychain -p tilo-ci "$keychain"
-                security import "$p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
-                rm -f "$p12"
-                security set-key-partition-list -S apple-tool:,apple: -s -k tilo-ci "$keychain"
-                security list-keychains -d user -s "$keychain"
-                echo "TILO_MAC_BOOTSTRAP_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-                echo "TILO_MAC_SIGNING_IDENTITY=$SIGNING_IDENTITY" >> "$GITHUB_ENV"
-                echo "TILO_APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
-                echo "TILO_APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
-                echo "TILO_APPLE_APP_PASSWORD=$APPLE_APP_PASSWORD" >> "$GITHUB_ENV"
-              else
-                printf 'configure IMAGER_MACOS_CREDENTIAL_BROKER or explicitly enable static-signing bootstrap\n' >&2
+              test -n "${CREDENTIAL_BROKER:-}" || {
+                printf 'configure IMAGER_MACOS_CREDENTIAL_BROKER; release signing is OIDC-broker-only\n' >&2
                 exit 1
-              fi
+              }
+              apps/imager/packaging/acquire-release-credentials.sh \
+                macos "$CREDENTIAL_BROKER" >> "$GITHUB_ENV"
               echo "TILO_REQUIRE_SIGNING=1" >> "$GITHUB_ENV"
               [[ "${EXPECTED_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] \
                 || { printf 'configure IMAGER_MAC_TEAM_ID\n' >&2; exit 1; }
@@ -809,24 +787,10 @@ jobs:
         if: always()
         run: |
           set +e
-          rm -f "$RUNNER_TEMP/tilo-imager-signing.p12"
           if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
             security delete-generic-password -s com.apple.gke.notary.tool \
               -a "$TILO_NOTARY_KEYCHAIN_PROFILE" 2>/dev/null
           fi
-          keychain_list="$RUNNER_TEMP/tilo-imager-original-keychains"
-          if [ -f "$keychain_list" ]; then
-            original_keychains=()
-            while IFS= read -r original; do
-              original="${original#\"}"
-              original="${original%\"}"
-              [ -z "$original" ] || original_keychains+=("$original")
-            done < "$keychain_list"
-            security list-keychains -d user -s "${original_keychains[@]}"
-            rm -f "$keychain_list"
-          fi
-          security delete-keychain \
-            "$RUNNER_TEMP/tilo-imager-signing.keychain-db" 2>/dev/null
           true
       - name: Mount and launch the packaged macOS UI offscreen
         run: |
@@ -974,22 +938,17 @@ jobs:
       - name: Publish the Tilo Homebrew tap
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_HOMEBREW_CREDENTIAL_BROKER }}
-          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
-          BOOTSTRAP_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
           token_file="$RUNNER_TEMP/tilo-homebrew-tap-token"
           trap 'rm -f "$token_file"' EXIT
           test ! -e "$token_file"
-          if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-            apps/imager/packaging/acquire-release-token.sh \
-              homebrew "$CREDENTIAL_BROKER" "$token_file"
-          elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_TAP_TOKEN:-}" ]; then
-            (umask 077; printf '%s' "$BOOTSTRAP_TAP_TOKEN" > "$token_file")
-          else
+          if [ -z "${CREDENTIAL_BROKER:-}" ]; then
             printf 'configure the OIDC credential broker for Homebrew publication\n' >&2
             exit 1
           fi
+          apps/imager/packaging/acquire-release-token.sh \
+            homebrew "$CREDENTIAL_BROKER" "$token_file"
           tap_token="$(cat "$token_file")"
           revoke() {
             GITHUB_INSTALLATION_TOKEN="$tap_token" \
@@ -1075,23 +1034,18 @@ jobs:
       - name: Submit Tilo Imager to the public WinGet index
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_WINGET_CREDENTIAL_BROKER }}
-          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
-          BOOTSTRAP_WINGET_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
           WINGET_GITHUB_USER: ${{ vars.WINGET_GITHUB_USER }}
         run: |
           set -euo pipefail
           token_file="$RUNNER_TEMP/tilo-winget-token"
           trap 'rm -f "$token_file"' EXIT
           test ! -e "$token_file"
-          if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-            apps/imager/packaging/acquire-release-token.sh \
-              winget "$CREDENTIAL_BROKER" "$token_file"
-          elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_WINGET_TOKEN:-}" ]; then
-            (umask 077; printf '%s' "$BOOTSTRAP_WINGET_TOKEN" > "$token_file")
-          else
+          if [ -z "${CREDENTIAL_BROKER:-}" ]; then
             printf 'configure the OIDC credential broker for WinGet publication\n' >&2
             exit 1
           fi
+          apps/imager/packaging/acquire-release-token.sh \
+            winget "$CREDENTIAL_BROKER" "$token_file"
           WINGET_GITHUB_TOKEN="$(cat "$token_file")" \
             apps/imager/packaging/publish-winget.sh release-assets
 
@@ -1106,8 +1060,6 @@ jobs:
       - name: Advance the landing page to this verified release
         env:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_SITE_CREDENTIAL_BROKER }}
-          ALLOW_STATIC_BOOTSTRAP: ${{ vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP }}
-          BOOTSTRAP_SITE_TOKEN: ${{ secrets.SITE_RELEASE_TOKEN }}
           TILO_SITE_GIT_USER: ${{ vars.SITE_RELEASE_USER }}
           TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}
         run: |
@@ -1115,14 +1067,11 @@ jobs:
           token_file="$RUNNER_TEMP/tilo-site-release-token"
           trap 'rm -f "$token_file"' EXIT
           test ! -e "$token_file"
-          if [ -n "${CREDENTIAL_BROKER:-}" ]; then
-            apps/imager/packaging/acquire-release-token.sh \
-              site "$CREDENTIAL_BROKER" "$token_file"
-          elif [ "${ALLOW_STATIC_BOOTSTRAP:-}" = 1 ] && [ -n "${BOOTSTRAP_SITE_TOKEN:-}" ]; then
-            (umask 077; printf '%s' "$BOOTSTRAP_SITE_TOKEN" > "$token_file")
-          else
+          if [ -z "${CREDENTIAL_BROKER:-}" ]; then
             printf 'configure the OIDC credential broker for website publication\n' >&2
             exit 1
           fi
+          apps/imager/packaging/acquire-release-token.sh \
+            site "$CREDENTIAL_BROKER" "$token_file"
           TILO_SITE_GIT_TOKEN="$(cat "$token_file")" \
             apps/imager/packaging/publish-site-release.sh

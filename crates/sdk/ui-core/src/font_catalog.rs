@@ -120,6 +120,10 @@ pub(crate) fn fixture_font_system() -> FontSystem {
 }
 
 #[cfg(any(test, all(feature = "native", feature = "test-support")))]
+#[allow(
+    clippy::expect_used,
+    reason = "test support only: the checked-in fixture fonts always load, and a test cannot run without them"
+)]
 pub(crate) fn fixture_renderer() -> crate::text_render::TextRenderer {
     crate::text_render::TextRenderer::with_font_catalog(&fixture_catalog())
         .expect("checked-in canonical renderer fixture")
