@@ -37,6 +37,9 @@ pub struct PageText {
     /// The engine's analysed layer this text came from, index-aligned with
     /// `chars`; `None` for synthetic text.
     pub layer: Option<std::sync::Arc<tilo_pdf::TextLayer>>,
+    /// How the layer's boxes map into the page's card space, when the page
+    /// is rotated or fitted into its slot; `chars` are already mapped.
+    pub map: Option<crate::model::PageMap>,
 }
 
 /// A search hit expressed as a run of glyphs on a page. `page` is 1-based to
@@ -69,7 +72,25 @@ impl PageText {
             text,
             chars,
             layer: None,
+            map: None,
         }
+    }
+
+    /// This page text shown through `map` (a rotated or fitted page). The
+    /// character boxes move into card space; hit-testing maps back.
+    #[must_use]
+    pub fn with_map(&self, map: crate::model::PageMap) -> Self {
+        if map.is_identity() {
+            return self.clone();
+        }
+        let mut out = self.clone();
+        for c in &mut out.chars {
+            if c.rect.w > 0.0 || c.rect.h > 0.0 {
+                c.rect = map.layer_rect_to_card(&c.rect);
+            }
+        }
+        out.map = Some(map);
+        out
     }
 
     /// The reader's view of an engine text layer. Positions are shared: glyph
@@ -88,6 +109,28 @@ impl PageText {
         }));
         page.layer = Some(layer);
         page
+    }
+
+    /// The glyph range a drag from `a` to `b` (card space) selects, through
+    /// the engine layer's reading-order selection. `None` without a layer or
+    /// when nothing is selected.
+    pub fn range_between(&self, a: (f64, f64), b: (f64, f64)) -> Option<(usize, usize)> {
+        let layer = self.layer.as_ref()?;
+        let to_layer = |p: (f64, f64)| {
+            let (x, y) = self.map.map_or(p, |m| m.card_to_layer(p));
+            tilo_pdf::Point::new(x as f32, y as f32)
+        };
+        let span = layer.select_between(to_layer(a), to_layer(b)).span()?;
+        (span.end > span.start).then_some((span.start, span.end))
+    }
+
+    /// The engine char range `[first, last + 1)` behind glyphs `[start, end)`
+    /// — the durable text anchor of markup made from them.
+    pub fn source_range(&self, start: usize, end: usize) -> Option<(u32, u32)> {
+        let sources: Vec<u32> = (start..end).filter_map(|i| self.source_index(i)).collect();
+        let first = sources.iter().min()?;
+        let last = sources.iter().max()?;
+        Some((*first, last.saturating_add(1)))
     }
 
     /// The engine char index (stable for a given document) of glyph `i`.
@@ -130,6 +173,7 @@ impl PageText {
     /// hit-test a selection drag uses to find where the caret landed.
     pub fn char_at(&self, x: f64, y: f64) -> Option<usize> {
         if let Some(layer) = &self.layer {
+            let (x, y) = self.map.map_or((x, y), |m| m.card_to_layer((x, y)));
             return layer.hit_test(tilo_pdf::Point::new(x as f32, y as f32));
         }
         // Exact containment first.
@@ -182,12 +226,13 @@ impl PageText {
                 .rects_for(&layer.select_range(start..end))
                 .into_iter()
                 .map(|r| {
-                    PtRect::new(
+                    let rect = PtRect::new(
                         f64::from(r.x0),
                         f64::from(r.y0),
                         f64::from(r.width()),
                         f64::from(r.height()),
-                    )
+                    );
+                    self.map.map_or(rect, |m| m.layer_rect_to_card(&rect))
                 })
                 .collect();
         }

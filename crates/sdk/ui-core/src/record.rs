@@ -454,6 +454,94 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
         .collect()
 }
 
+/// A content-addressed blob a record depends on: immutable bytes the
+/// record's content is about or embeds (the PDF an annotation set marks up,
+/// an image a document shows). Kept in the record's metadata next to its
+/// record references, so sync, retention and history can see which blobs a
+/// record keeps alive without knowing the record's own schema.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobRef {
+    /// Lowercase hex BLAKE3 of the bytes — the blob store's key.
+    pub hash: String,
+    pub len: u64,
+    pub mime: String,
+    /// What the blob is to the record — `source`, `embedded`, `import`.
+    pub relation: String,
+}
+
+fn valid_blob_hash(hash: &str) -> bool {
+    hash.len() == 64 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn blobs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
+    let m = meta_obj(doc)?;
+    match doc.get(&m, "blobs") {
+        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+        _ => doc.put_object(&m, "blobs", ObjType::List).ok(),
+    }
+}
+
+/// Record that this record depends on `blob`. Idempotent on
+/// `(hash, relation)`. Returns whether a reference was added.
+pub fn add_blob_reference(doc: &mut AutoCommit, blob: &BlobRef) -> bool {
+    if !valid_blob_hash(&blob.hash)
+        || !valid_label(&blob.relation, MAX_RECORD_RELATION_BYTES)
+        || blob.mime.len() > MAX_RECORD_RELATION_BYTES
+    {
+        return false;
+    }
+    if blob_references(doc)
+        .iter()
+        .any(|b| b.hash == blob.hash && b.relation == blob.relation)
+    {
+        return false;
+    }
+    let Some(list) = blobs_obj(doc) else {
+        return false;
+    };
+    let n = doc.length(&list);
+    let Ok(entry) = doc.insert_object(&list, n, ObjType::Map) else {
+        return false;
+    };
+    let _ = doc.put(&entry, "hash", blob.hash.as_str());
+    let _ = doc.put(&entry, "len", i64::try_from(blob.len).unwrap_or(i64::MAX));
+    let _ = doc.put(&entry, "mime", blob.mime.as_str());
+    let _ = doc.put(&entry, "relation", blob.relation.as_str());
+    true
+}
+
+/// Every blob this record depends on.
+pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
+    let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, META) else {
+        return Vec::new();
+    };
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&m, "blobs") else {
+        return Vec::new();
+    };
+    (0..doc.length(&list))
+        .filter_map(|i| {
+            let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&list, i) else {
+                return None;
+            };
+            let hash = str_at(doc, &entry, "hash").filter(|h| valid_blob_hash(h))?;
+            let len = match doc.get(&entry, "len") {
+                Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                    ScalarValue::Int(n) => u64::try_from(*n).ok(),
+                    ScalarValue::Uint(n) => Some(*n),
+                    _ => None,
+                },
+                _ => None,
+            }?;
+            Some(BlobRef {
+                hash,
+                len,
+                mime: str_at(doc, &entry, "mime").unwrap_or_default(),
+                relation: str_at(doc, &entry, "relation")?,
+            })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // The room index: which records a room holds.
 // ---------------------------------------------------------------------------
@@ -2218,6 +2306,31 @@ pub fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blob_references_are_idempotent_and_validated() {
+        let mut doc = AutoCommit::new();
+        let blob = BlobRef {
+            hash: "ab".repeat(32),
+            len: 1234,
+            mime: "application/pdf".into(),
+            relation: "source".into(),
+        };
+        assert!(add_blob_reference(&mut doc, &blob));
+        assert!(
+            !add_blob_reference(&mut doc, &blob),
+            "a reference is a fact"
+        );
+        assert!(!add_blob_reference(
+            &mut doc,
+            &BlobRef {
+                hash: "not-a-hash".into(),
+                ..blob.clone()
+            }
+        ));
+        let reloaded = AutoCommit::load(&doc.save()).expect("reload");
+        assert_eq!(blob_references(&reloaded), vec![blob]);
+    }
     use crate::state::State;
 
     /// The native store over one test's own directory: no process

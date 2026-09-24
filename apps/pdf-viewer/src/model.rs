@@ -259,11 +259,42 @@ impl PtRect {
 // Annotations
 // ----------------------------------------------------------------------
 
+/// How text markup is drawn and exported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkupStyle {
+    Highlight,
+    Underline,
+    StrikeOut,
+}
+
+impl MarkupStyle {
+    pub fn key(self) -> &'static str {
+        match self {
+            MarkupStyle::Highlight => "highlight",
+            MarkupStyle::Underline => "underline",
+            MarkupStyle::StrikeOut => "strikeout",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "highlight" => Some(MarkupStyle::Highlight),
+            "underline" => Some(MarkupStyle::Underline),
+            "strikeout" => Some(MarkupStyle::StrikeOut),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum AnnoKind {
-    /// A translucent highlight over a region of the page.
-    Highlight { rect: PtRect },
-    /// A freehand ink stroke — a polyline in page-point space.
+    /// Text markup (highlight, underline, strike-through) over one band per
+    /// line it covers.
+    Markup {
+        style: MarkupStyle,
+        quads: Vec<PtRect>,
+    },
+    /// A freehand ink stroke — a polyline.
     Ink { points: Vec<(f64, f64)> },
     /// A sticky note anchored at a point. The body text is mirrored into
     /// the linked top-level comment so the comments rail can thread it.
@@ -271,13 +302,37 @@ pub enum AnnoKind {
 }
 
 impl AnnoKind {
+    /// A highlight over a single band.
+    pub fn highlight(rect: PtRect) -> Self {
+        AnnoKind::Markup {
+            style: MarkupStyle::Highlight,
+            quads: vec![rect],
+        }
+    }
+
     pub fn type_key(&self) -> &'static str {
         match self {
-            AnnoKind::Highlight { .. } => "highlight",
+            AnnoKind::Markup { style, .. } => style.key(),
             AnnoKind::Ink { .. } => "ink",
             AnnoKind::Note { .. } => "note",
         }
     }
+
+    /// Whether `(x, y)` lies on one of the markup's bands.
+    pub fn markup_contains(&self, x: f64, y: f64) -> bool {
+        matches!(self, AnnoKind::Markup { quads, .. } if quads.iter().any(|q| q.contains(x, y)))
+    }
+}
+
+/// Which space an annotation's geometry is in. Records store PDF user space
+/// (exact however the page is displayed); records written before that stored
+/// the reader's page-point space. Everything the reader holds for drawing is
+/// in page-point space.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GeomSpace {
+    #[default]
+    Page,
+    User,
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +342,12 @@ pub struct Annotation {
     pub kind: AnnoKind,
     pub color: Swatch,
     pub author: String,
+    /// The engine character range `[start, end)` the markup covers, for
+    /// text-anchored markup.
+    pub chars: Option<(u32, u32)>,
+    /// When it was authored (unix milliseconds; 0 when unknown).
+    pub created_ms: i64,
+    pub space: GeomSpace,
 }
 
 impl Annotation {
@@ -294,11 +355,25 @@ impl Annotation {
         Uuid::new_v4().to_string()
     }
 
+    /// An annotation in page-point space with no text anchor.
+    pub fn new(page: usize, kind: AnnoKind, color: Swatch, author: impl Into<String>) -> Self {
+        Self {
+            id: Self::new_id(),
+            page,
+            kind,
+            color,
+            author: author.into(),
+            chars: None,
+            created_ms: 0,
+            space: GeomSpace::Page,
+        }
+    }
+
     /// The anchor point (page-point space) used to position the comment
     /// connector and selection chrome.
     pub fn anchor(&self) -> (f64, f64) {
         match &self.kind {
-            AnnoKind::Highlight { rect } => (rect.x, rect.y),
+            AnnoKind::Markup { quads, .. } => quads.first().map_or((0.0, 0.0), |r| (r.x, r.y)),
             AnnoKind::Ink { points } => points.first().copied().unwrap_or((0.0, 0.0)),
             AnnoKind::Note { x, y } => (*x, *y),
         }
@@ -380,12 +455,218 @@ pub struct Signature {
     pub date: String,
     /// The real signature content (typed name or drawn strokes).
     pub ink: SignatureInk,
+    /// Which space `rect` is in (see [`GeomSpace`]).
+    pub space: GeomSpace,
 }
 
 impl Signature {
     pub fn new_id() -> String {
         Uuid::new_v4().to_string()
     }
+}
+
+/// The scale that fits a `w` × `h` page into a `card_w` × `card_h` slot.
+/// Pages fill the slot's width unless that would overflow its height by
+/// more than 1% (a rotated or differently shaped page), in which case they
+/// fit the height; the renderer and the page maps share this rule.
+pub fn fit_scale(card_w: f64, card_h: f64, w: f64, h: f64) -> f64 {
+    if !(w > 0.0 && h > 0.0 && card_w > 0.0 && card_h > 0.0) {
+        return 1.0;
+    }
+    let by_width = card_w / w;
+    if h * by_width <= card_h * 1.01 {
+        by_width
+    } else {
+        card_h / h
+    }
+}
+
+/// How one displayed page maps between the spaces the reader works in.
+///
+/// - *layer* space: the engine's display space for the source page (its own
+///   `/Rotate` applied) — where text-layer and form-widget boxes arrive;
+/// - PDF *user* space — where records store geometry;
+/// - *card* space: the page-point space of the page's slot in the reader's
+///   uniform page stack, after the page occurrence's recorded rotation and a
+///   centred fit into the slot. Everything drawn and hit-tested is in card
+///   space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PageMap {
+    /// The source page's own geometry.
+    pub own: tilo_pdf::PageGeometry,
+    /// `own` with the occurrence's recorded rotation added.
+    pub effective: tilo_pdf::PageGeometry,
+    /// Fit of the effective page into the card: `card = display * scale + offset`.
+    pub scale: f64,
+    pub offset: (f64, f64),
+}
+
+impl PageMap {
+    /// The map for a page of geometry `own`, rotated by `rotation` degrees,
+    /// shown in a `card_w` × `card_h` slot.
+    pub fn new(own: tilo_pdf::PageGeometry, rotation: i32, card_w: f64, card_h: f64) -> Self {
+        let extra = tilo_pdf::Rotation::from_degrees(rotation).unwrap_or_default();
+        let effective = tilo_pdf::PageGeometry {
+            rotation: own.rotation.then(extra),
+            ..own
+        };
+        let size = effective.size();
+        let (w, h) = (f64::from(size.width), f64::from(size.height));
+        let scale = fit_scale(card_w, card_h, w, h);
+        // A page the size of its slot maps exactly; tiny float drift in page
+        // boxes must not blur every overlay.
+        let scale = if (scale - 1.0).abs() < 1e-6 {
+            1.0
+        } else {
+            scale
+        };
+        let offset = (
+            ((card_w - w * scale) / 2.0).max(0.0),
+            ((card_h - h * scale) / 2.0).max(0.0),
+        );
+        Self {
+            own,
+            effective,
+            scale,
+            offset,
+        }
+    }
+
+    /// The map of a plain page exactly filling a `w` × `h` slot (the reader's
+    /// bundled sample document, or a page whose geometry is not known yet).
+    pub fn identity(w: f64, h: f64) -> Self {
+        let own = tilo_pdf::PageGeometry {
+            user_box: tilo_pdf::Rect::from_xywh(0.0, 0.0, w as f32, h as f32),
+            rotation: tilo_pdf::Rotation::None,
+        };
+        Self::new(own, 0, w, h)
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.own == self.effective
+            && (self.scale - 1.0).abs() < f64::EPSILON
+            && self.offset.0.abs() < f64::EPSILON
+            && self.offset.1.abs() < f64::EPSILON
+    }
+
+    fn fit(&self, p: tilo_pdf::Point) -> (f64, f64) {
+        (
+            f64::from(p.x) * self.scale + self.offset.0,
+            f64::from(p.y) * self.scale + self.offset.1,
+        )
+    }
+
+    fn unfit(&self, (x, y): (f64, f64)) -> tilo_pdf::Point {
+        tilo_pdf::Point::new(
+            ((x - self.offset.0) / self.scale) as f32,
+            ((y - self.offset.1) / self.scale) as f32,
+        )
+    }
+
+    pub fn user_to_card(&self, (x, y): (f64, f64)) -> (f64, f64) {
+        self.fit(
+            self.effective
+                .to_display(tilo_pdf::Point::new(x as f32, y as f32)),
+        )
+    }
+
+    pub fn card_to_user(&self, p: (f64, f64)) -> (f64, f64) {
+        let u = self.effective.to_user(self.unfit(p));
+        (f64::from(u.x), f64::from(u.y))
+    }
+
+    pub fn layer_to_card(&self, (x, y): (f64, f64)) -> (f64, f64) {
+        let u = self.own.to_user(tilo_pdf::Point::new(x as f32, y as f32));
+        self.fit(self.effective.to_display(u))
+    }
+
+    pub fn card_to_layer(&self, p: (f64, f64)) -> (f64, f64) {
+        let d = self.own.to_display(self.effective.to_user(self.unfit(p)));
+        (f64::from(d.x), f64::from(d.y))
+    }
+
+    fn map_rect(r: &PtRect, f: impl Fn((f64, f64)) -> (f64, f64)) -> PtRect {
+        let (ax, ay) = f((r.x, r.y));
+        let (bx, by) = f((r.x + r.w, r.y + r.h));
+        PtRect::from_corners(ax, ay, bx, by)
+    }
+
+    pub fn layer_rect_to_card(&self, r: &PtRect) -> PtRect {
+        Self::map_rect(r, |p| self.layer_to_card(p))
+    }
+
+    /// An annotation held in page (card) space, whichever space its record
+    /// uses.
+    pub fn annotation_to_card(&self, a: &Annotation) -> Annotation {
+        match a.space {
+            GeomSpace::Page => a.clone(),
+            GeomSpace::User => Self::map_annotation(a, GeomSpace::Page, |p| self.user_to_card(p)),
+        }
+    }
+
+    /// An annotation in user space, whichever space it is held in.
+    pub fn annotation_to_user(&self, a: &Annotation) -> Annotation {
+        match a.space {
+            GeomSpace::User => a.clone(),
+            GeomSpace::Page => Self::map_annotation(a, GeomSpace::User, |p| self.card_to_user(p)),
+        }
+    }
+
+    fn map_annotation(
+        a: &Annotation,
+        to: GeomSpace,
+        f: impl Fn((f64, f64)) -> (f64, f64),
+    ) -> Annotation {
+        let kind = match &a.kind {
+            AnnoKind::Markup { style, quads } => AnnoKind::Markup {
+                style: *style,
+                quads: quads.iter().map(|q| Self::map_rect(q, &f)).collect(),
+            },
+            AnnoKind::Ink { points } => AnnoKind::Ink {
+                points: points.iter().copied().map(&f).collect(),
+            },
+            AnnoKind::Note { x, y } => {
+                let (x, y) = f((*x, *y));
+                AnnoKind::Note { x, y }
+            }
+        };
+        Annotation {
+            kind,
+            space: to,
+            ..a.clone()
+        }
+    }
+
+    pub fn signature_to_card(&self, s: &Signature) -> Signature {
+        match s.space {
+            GeomSpace::Page => s.clone(),
+            GeomSpace::User => Signature {
+                rect: Self::map_rect(&s.rect, |p| self.user_to_card(p)),
+                space: GeomSpace::Page,
+                ..s.clone()
+            },
+        }
+    }
+
+    pub fn signature_to_user(&self, s: &Signature) -> Signature {
+        match s.space {
+            GeomSpace::User => s.clone(),
+            GeomSpace::Page => Signature {
+                rect: Self::map_rect(&s.rect, |p| self.card_to_user(p)),
+                space: GeomSpace::User,
+                ..s.clone()
+            },
+        }
+    }
+}
+
+/// A form field value held in the document's record, keyed by the field's
+/// fully qualified name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FormEntry {
+    Text(String),
+    Checked { on: bool, export: Option<String> },
+    Choice(String),
 }
 
 // ----------------------------------------------------------------------

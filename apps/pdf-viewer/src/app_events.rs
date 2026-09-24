@@ -849,10 +849,12 @@ impl PdfApp {
         if let Some(mdrag) = self.marker_drag.take() {
             if mdrag.moved() {
                 if let Some((x, y)) = self.note_pos(&mdrag.id) {
-                    self.perform_action(
-                        state,
-                        &crate::actions::set_annotation_position_action(&mdrag.id, x, y),
-                    );
+                    self.perform_action(state, &{
+                        let (ux, uy) = self
+                            .page_map(self.anno_page(&mdrag.id).unwrap_or(1))
+                            .card_to_user((x, y));
+                        crate::actions::set_annotation_position_user_action(&mdrag.id, ux, uy)
+                    });
                     self.reload(state);
                 }
             } else {
@@ -892,7 +894,7 @@ impl PdfApp {
             let was_active = self.selection.is_some_and(|s| s.is_active());
             self.finish_selection();
             if !was_active && let Some((page, pt)) = self.hit_page(self.last_mouse) {
-                self.select_at(page, pt);
+                self.click_page(state, page, pt);
             }
             *handled = true;
         } else if self.rail_drag.take().is_some() {
@@ -902,7 +904,7 @@ impl PdfApp {
             // A press that never moved is a selection click.
             if !pan.moved {
                 if let Some((page, pt)) = self.hit_page(pan.start) {
-                    self.select_at(page, pt);
+                    self.click_page(state, page, pt);
                 } else {
                     self.selected_anno = None;
                     self.selected_sig = None;
@@ -1374,7 +1376,7 @@ mod event_tests {
         let hl = app
             .annotations
             .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
             .unwrap()
             .clone();
         app.selected_anno = Some(hl.id.clone());
@@ -2893,12 +2895,13 @@ mod event_tests {
         let hl = app
             .annotations
             .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
             .unwrap()
             .clone();
-        let AnnoKind::Highlight { rect } = hl.kind else {
+        let AnnoKind::Markup { quads, .. } = hl.kind else {
             unreachable!()
         };
+        let rect = quads[0];
         let origin = app.page_origins()[0];
         let (cx, cy) = rect.center();
         let p = (origin.x + cx * app.zoom(), origin.y + cy * app.zoom());
