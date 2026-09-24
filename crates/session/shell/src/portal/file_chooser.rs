@@ -456,6 +456,7 @@ mod tests {
         let grant_count = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)
@@ -495,6 +496,7 @@ mod tests {
         let granted_fs = {
             let guard = tree.read();
             let ws = guard
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == ws_id)

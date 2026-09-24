@@ -328,8 +328,14 @@ impl Harness {
     fn active_window(&self) -> (GroupId, u64) {
         let st = self.chrome.borrow();
         let tree = st.tree();
-        let gid = tree.active_group_for(self.strip).expect("an active group");
-        let ws = tree.active_workspace().expect("an active workspace");
+        let gid = tree
+            .desktop
+            .active_group_for(self.strip)
+            .expect("an active group");
+        let ws = tree
+            .desktop
+            .active_workspace()
+            .expect("an active workspace");
         let strip = ws
             .strips
             .iter()
@@ -697,24 +703,25 @@ fn ctrl_tab_cycles_tabs_inside_the_focused_group() {
 #[test]
 fn conventional_workspace_page_keys_use_the_same_clamped_workspace_axis() {
     let mut h = Harness::new();
-    let first = h.chrome.borrow().tree().active;
+    let first = h.chrome.borrow().tree().desktop.active;
     let second = WorkspaceId::new();
     h.chrome
         .borrow_mut()
         .tree_mut()
+        .desktop
         .workspaces
         .push(Workspace::new(second, "Second"));
 
     h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
-    assert_eq!(h.chrome.borrow().tree().active, second);
+    assert_eq!(h.chrome.borrow().tree().desktop.active, second);
     h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
     assert_eq!(
-        h.chrome.borrow().tree().active,
+        h.chrome.borrow().tree().desktop.active,
         second,
         "Super+PageDown clamps at the final workspace"
     );
     h.key(Key::Named(NamedKey::PageUp), ModifiersState::SUPER);
-    assert_eq!(h.chrome.borrow().tree().active, first);
+    assert_eq!(h.chrome.borrow().tree().desktop.active, first);
 }
 
 #[test]
@@ -722,14 +729,14 @@ fn keyboard_resize_changes_the_persisted_fraction() {
     let mut h = Harness::new();
     let before = {
         let state = h.chrome.borrow();
-        state.tree().workspaces[0].strips[0].window_groups[0]
+        state.tree().desktop.workspaces[0].strips[0].window_groups[0]
             .width
             .permille()
     };
     h.key(Key::Character("=".into()), ModifiersState::SUPER);
     let after = {
         let state = h.chrome.borrow();
-        state.tree().workspaces[0].strips[0].window_groups[0]
+        state.tree().desktop.workspaces[0].strips[0].window_groups[0]
             .width
             .permille()
     };
@@ -745,7 +752,7 @@ fn shifted_arrow_reorders_the_focused_group() {
     );
     let order: Vec<_> = {
         let state = h.chrome.borrow();
-        state.tree().workspaces[0].strips[0]
+        state.tree().desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .map(|group| group.id)
@@ -769,7 +776,7 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
         let state = h.chrome.borrow_mut();
         let mut tree = state.tree_mut();
         tree.persist_path = Some(state_path.clone());
-        tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+        tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
             app_id: "com.openai.chatgpt".into(),
             surface_id: 41,
         };
@@ -790,7 +797,7 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
     {
         let state = h.chrome.borrow();
         let tree = state.tree();
-        let live_tabs = &tree.workspaces[0].strips[0].window_groups[0].tabs;
+        let live_tabs = &tree.desktop.workspaces[0].strips[0].window_groups[0].tabs;
         assert!(
             live_tabs.iter().all(|candidate| candidate.id != tab),
             "the pointer close must remove the tab from the durable tree in the same event"
@@ -808,7 +815,7 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
     h.chrome.borrow_mut().bump();
     h.tick();
     assert!(
-        h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+        h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
             .all(|candidate| candidate.id != tab),
@@ -817,7 +824,7 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("pointer close must atomically persist a loadable state");
     assert!(
-        restarted.workspaces[0].strips[0].window_groups[0]
+        restarted.desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
             .all(|candidate| candidate.id != tab),
@@ -836,7 +843,7 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
         .expect("remaining tab must expose a close hit target after resync");
     h.click(close.center());
     assert!(
-        h.chrome.borrow().tree().workspaces[0].strips[0]
+        h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .all(|group| group.id != h.groups[0]),
@@ -847,7 +854,7 @@ fn clicking_close_commits_the_exact_surface_and_survives_restart() {
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("last-tab close must atomically persist a loadable state");
     assert!(
-        restarted.workspaces[0].strips[0]
+        restarted.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .all(|group| group.id != h.groups[0]),
@@ -862,9 +869,9 @@ fn alt_f4_uses_the_same_exact_durable_close_as_the_frame_and_super_w() {
     let second = h.tabs[0][1];
     {
         let state = h.chrome.borrow_mut();
-        let ws = state.tree().active;
+        let ws = state.tree().desktop.active;
         let mut tree = state.tree_mut();
-        let group = tree.workspaces[0].strips[0]
+        let group = tree.desktop.workspaces[0].strips[0]
             .window_groups
             .iter_mut()
             .find(|group| group.id == h.groups[0])
@@ -878,7 +885,7 @@ fn alt_f4_uses_the_same_exact_durable_close_as_the_frame_and_super_w() {
             app_id: "org.example.Second".into(),
         };
         group.active_tab = first;
-        tree.active = ws;
+        tree.desktop.active = ws;
     }
 
     h.key(Key::Named(NamedKey::F4), ModifiersState::ALT);
@@ -888,7 +895,7 @@ fn alt_f4_uses_the_same_exact_durable_close_as_the_frame_and_super_w() {
     );
     assert_eq!(h.active_window(), (h.groups[0], second));
     assert!(
-        h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
+        h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .iter()
             .all(|tab| tab.id != first),
@@ -910,7 +917,7 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         let mut tree = state.tree_mut();
         tree.persist_path = Some(state_path.clone());
         for (tab, surface_id) in [(h.tabs[0][0], 0xA11CE_u64), (h.tabs[0][1], 0xA11CF_u64)] {
-            let tab = tree.workspaces[0].strips[0].window_groups[0]
+            let tab = tree.desktop.workspaces[0].strips[0].window_groups[0]
                 .tabs
                 .iter_mut()
                 .find(|candidate| candidate.id == tab)
@@ -947,7 +954,7 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
     h.tick();
 
     assert!(
-        !h.chrome.borrow().tree().workspaces[0].strips[0]
+        !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .any(|group| group.id == h.groups[0]),
@@ -960,7 +967,7 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         ModifiersState::SUPER | ModifiersState::SHIFT,
     );
     h.tick();
-    let reordered: Vec<_> = h.chrome.borrow().tree().workspaces[0].strips[0]
+    let reordered: Vec<_> = h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
         .window_groups
         .iter()
         .map(|group| group.id)
@@ -987,7 +994,7 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
     h.tick();
     let restarted = shell::shell::persist::load_tree_from(&state_path)
         .expect("the complete interaction sequence persists a loadable state");
-    let restarted_groups = &restarted.workspaces[0].strips[0].window_groups;
+    let restarted_groups = &restarted.desktop.workspaces[0].strips[0].window_groups;
     assert!(restarted_groups.iter().all(|group| group.id != h.groups[0]));
     assert_eq!(
         restarted_groups
@@ -999,6 +1006,7 @@ fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
         "restart retains keyboard reorder after pointer and keyboard closes"
     );
     let active = restarted
+        .desktop
         .active_group_for(h.strip)
         .expect("restart keeps an active group");
     assert!(restarted_groups.iter().any(|group| group.id == active));

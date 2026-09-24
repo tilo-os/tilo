@@ -236,7 +236,7 @@ mod identity_fs_tests {
             Scope::FsPath("/var/workspace/files".into()),
             Verb::Write,
         ));
-        tree.workspaces.push(workspace);
+        tree.desktop.workspaces.push(workspace);
         let output = temp.path().join("fs-caps.json");
         tree.fs_acl_path = Some(output.clone());
         tree.export_fs_capabilities();
@@ -360,7 +360,7 @@ mod identity_fs_tests {
                 && capability.scope == Scope::FsPath("/var/workspace/a".into())
         }));
 
-        tree.workspaces[0]
+        tree.desktop.workspaces[0]
             .capabilities
             .retain(|capability| !matches!(&capability.scope, Scope::Room(room) if room == &room_a_id.to_string()));
         tree.export_fs_capabilities();
@@ -950,23 +950,6 @@ impl Default for WorkspaceTree {
             persist_path: None,
             fs_acl_path: None,
         }
-    }
-}
-
-/// The portable desktop is read through the tree while callers migrate to
-/// [`WorkspaceTree::desktop`]; the tree's own methods name `self.desktop`
-/// explicitly.
-impl std::ops::Deref for WorkspaceTree {
-    type Target = DesktopTree;
-
-    fn deref(&self) -> &DesktopTree {
-        &self.desktop
-    }
-}
-
-impl std::ops::DerefMut for WorkspaceTree {
-    fn deref_mut(&mut self) -> &mut DesktopTree {
-        &mut self.desktop
     }
 }
 
@@ -3475,7 +3458,12 @@ impl WorkspaceTree {
         // Research and Design add empty strips for the overview's 3-card
         // grid; Research also gets two invented collaborators to render.
         let research_id = tree.append_empty_workspace("Research");
-        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == research_id) {
+        if let Some(ws) = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == research_id)
+        {
             ws.collaborators.push(
                 Collaborator::new("alice", "Alice")
                     .with_cursor_color("#ec4899")
@@ -4221,7 +4209,7 @@ pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
     // both are claims that people are *in* the workspace — an invitation
     // that has not been redeemed is not one of them.
     let present = |c: &&Collaborator| c.id != "me" && !c.invited;
-    tree.active_workspace().map_or(0, |workspace| {
+    tree.desktop.active_workspace().map_or(0, |workspace| {
         workspace.collaborators.iter().filter(present).count()
     })
 }
@@ -4243,11 +4231,15 @@ mod bootstrap_tests {
     fn bootstrap_default_invents_no_people() {
         let tree = WorkspaceTree::bootstrap_default();
         assert!(
-            tree.collaborators.is_empty(),
+            tree.desktop.collaborators.is_empty(),
             "first-boot tree carries tree-level collaborators: {:?}",
-            tree.collaborators.iter().map(|c| &c.id).collect::<Vec<_>>()
+            tree.desktop
+                .collaborators
+                .iter()
+                .map(|c| &c.id)
+                .collect::<Vec<_>>()
         );
-        for ws in &tree.workspaces {
+        for ws in &tree.desktop.workspaces {
             assert!(
                 ws.collaborators.is_empty(),
                 "first-boot workspace {:?} carries collaborators {:?} — a \
@@ -4262,7 +4254,7 @@ mod bootstrap_tests {
     #[test]
     fn bootstrap_default_opens_no_windows() {
         let tree = WorkspaceTree::bootstrap_default();
-        for ws in &tree.workspaces {
+        for ws in &tree.desktop.workspaces {
             for strip in &ws.strips {
                 assert!(
                     strip.window_groups.is_empty(),
@@ -4275,7 +4267,7 @@ mod bootstrap_tests {
             }
         }
         assert!(
-            tree.active_group.is_empty(),
+            tree.desktop.active_group.is_empty(),
             "first-boot tree points at an active group with no groups to point at"
         );
     }
@@ -4286,24 +4278,29 @@ mod bootstrap_tests {
         // Exactly one: two would mean naming a second one, and every name
         // ("Research", "Design") is a claim about what this person does.
         assert_eq!(
-            tree.workspaces.len(),
+            tree.desktop.workspaces.len(),
             1,
             "first boot should be a single empty workspace; got {:?}",
-            tree.workspaces.iter().map(|w| &w.name).collect::<Vec<_>>()
+            tree.desktop
+                .workspaces
+                .iter()
+                .map(|w| &w.name)
+                .collect::<Vec<_>>()
         );
         // Empty, but not structurally broken: the active pointer resolves,
         // and the workspace has a strip for the first window to land in.
         let active = tree
+            .desktop
             .active_workspace()
             .expect("first boot must have a resolvable active workspace");
-        assert_eq!(active.id, tree.workspaces[0].id);
+        assert_eq!(active.id, tree.desktop.workspaces[0].id);
         assert_eq!(
             active.strips.len(),
             1,
             "the empty workspace still needs a strip to place a window into"
         );
         assert_eq!(
-            tree.active_strip.get(&active.id).copied(),
+            tree.desktop.active_strip.get(&active.id).copied(),
             Some(active.strips[0].id),
             "the active-strip pointer must resolve to the workspace's strip"
         );
@@ -4313,15 +4310,18 @@ mod bootstrap_tests {
     fn bootstrap_demo_carries_three_workspaces() {
         let tree = WorkspaceTree::bootstrap_demo();
         assert!(
-            tree.workspaces.len() >= 3,
+            tree.desktop.workspaces.len() >= 3,
             "demo tree should carry at least 3 workspaces (Home / Research / \
              Design) so the overview has meaningful content; got {}",
-            tree.workspaces.len()
+            tree.desktop.workspaces.len()
         );
         // This fixture's whole purpose is to be populated —
         // `bootstrap_default`, what a real boot reaches, is pinned empty.
         assert!(
-            tree.workspaces.iter().any(|w| !w.collaborators.is_empty()),
+            tree.desktop
+                .workspaces
+                .iter()
+                .any(|w| !w.collaborators.is_empty()),
             "at least one demo workspace should carry >=1 collaborator"
         );
     }
@@ -4332,10 +4332,13 @@ mod bootstrap_tests {
     #[test]
     fn admitting_the_same_person_twice_is_one_row() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let ws = tree.active;
+        let ws = tree.desktop.active;
         assert!(tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
         assert!(!tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
-        assert_eq!(tree.active_workspace().unwrap().collaborators.len(), 1);
+        assert_eq!(
+            tree.desktop.active_workspace().unwrap().collaborators.len(),
+            1
+        );
         assert_eq!(active_workspace_peer_count(&tree), 1);
     }
 
@@ -4345,7 +4348,7 @@ mod bootstrap_tests {
     #[test]
     fn a_peer_is_admitted_to_the_workspace_that_addresses_the_room() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.active_workspace().unwrap().room;
+        let room = tree.desktop.active_workspace().unwrap().room;
         assert!(tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob")));
         assert_eq!(active_workspace_peer_count(&tree), 1);
 
@@ -4360,14 +4363,14 @@ mod bootstrap_tests {
     #[test]
     fn a_named_presence_frame_replaces_the_session_handle_row() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let ws = tree.active;
-        let room = tree.active_workspace().unwrap().room;
+        let ws = tree.desktop.active;
+        let room = tree.desktop.active_workspace().unwrap().room;
         let peer = 0x2a_u64;
         let handle = session_handle(peer);
         assert!(tree.admit_collaborator(ws, Collaborator::new(handle.clone(), handle)));
 
         assert!(tree.note_peer_present(room, peer, "alice"));
-        let roster = &tree.active_workspace().unwrap().collaborators;
+        let roster = &tree.desktop.active_workspace().unwrap().collaborators;
         assert_eq!(
             roster.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
             vec!["alice"],
@@ -4376,7 +4379,10 @@ mod bootstrap_tests {
         );
         // And repeating it is idempotent.
         assert!(!tree.note_peer_present(room, peer, "alice"));
-        assert_eq!(tree.active_workspace().unwrap().collaborators.len(), 1);
+        assert_eq!(
+            tree.desktop.active_workspace().unwrap().collaborators.len(),
+            1
+        );
     }
 
     /// A publisher that names nobody keeps its handle — inventing a
@@ -4384,9 +4390,9 @@ mod bootstrap_tests {
     #[test]
     fn an_unnamed_session_stays_under_its_handle() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.active_workspace().unwrap().room;
+        let room = tree.desktop.active_workspace().unwrap().room;
         assert!(tree.note_peer_present(room, 0x2a, ""));
-        let roster = &tree.active_workspace().unwrap().collaborators;
+        let roster = &tree.desktop.active_workspace().unwrap().collaborators;
         assert_eq!(roster.len(), 1);
         assert_eq!(roster[0].id, "p000000000000002a");
         assert_eq!(roster[0].name, "p000000000000002a");
@@ -4397,7 +4403,7 @@ mod bootstrap_tests {
     #[test]
     fn a_peer_can_be_taken_off_the_roster() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.active_workspace().unwrap().room;
+        let room = tree.desktop.active_workspace().unwrap().room;
         tree.admit_collaborator_in_room(room, Collaborator::new("alice", "Alice"));
         tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob"));
         assert_eq!(active_workspace_peer_count(&tree), 2);
@@ -4422,7 +4428,7 @@ mod bootstrap_tests {
     #[test]
     fn a_session_going_quiet_takes_its_person_off_the_roster() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.active_workspace().unwrap().room;
+        let room = tree.desktop.active_workspace().unwrap().room;
         let alice = 0x11_u64;
         let bob = 0x22_u64;
         assert!(tree.note_peer_present(room, alice, "alice"));
@@ -4430,7 +4436,7 @@ mod bootstrap_tests {
         assert_eq!(active_workspace_peer_count(&tree), 2);
 
         assert!(tree.retire_session(alice), "alice's session left");
-        let left = &tree.active_workspace().unwrap().collaborators;
+        let left = &tree.desktop.active_workspace().unwrap().collaborators;
         assert_eq!(
             left.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
             vec!["bob"],
@@ -4451,7 +4457,7 @@ mod bootstrap_tests {
         // so the "nobody left" assertion isn't confused by seeded people.
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.append_empty_workspace("Second");
-        let rooms: Vec<RoomId> = tree.workspaces.iter().map(|w| w.room).collect();
+        let rooms: Vec<RoomId> = tree.desktop.workspaces.iter().map(|w| w.room).collect();
         assert!(
             rooms.len() >= 2,
             "need two rooms to tell a sweep from a hit"
@@ -4461,7 +4467,7 @@ mod bootstrap_tests {
             assert!(tree.note_peer_present(*r, peer, "dana"));
         }
         assert!(tree.retire_session(peer));
-        for ws in &tree.workspaces {
+        for ws in &tree.desktop.workspaces {
             assert!(
                 ws.collaborators.is_empty(),
                 "workspace {:?} still shows a peer whose session left: {:?}",
@@ -4477,14 +4483,14 @@ mod bootstrap_tests {
     #[test]
     fn a_presence_frame_teaches_an_existing_row_which_session_it_is() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.active_workspace().unwrap().room;
+        let room = tree.desktop.active_workspace().unwrap().room;
         let peer = 0x44_u64;
 
         // A row that got here without a session — what a persisted
         // roster looks like after a restart.
         assert!(tree.admit_collaborator_in_room(room, Collaborator::new("erin", "Erin")));
         assert_eq!(
-            tree.active_workspace().unwrap().collaborators[0].session,
+            tree.desktop.active_workspace().unwrap().collaborators[0].session,
             None,
             "fixture precondition: the row starts with no session"
         );
@@ -4492,7 +4498,7 @@ mod bootstrap_tests {
         // Erin publishes presence from a live session.
         tree.note_peer_present(room, peer, "erin");
         assert_eq!(
-            tree.active_workspace().unwrap().collaborators.len(),
+            tree.desktop.active_workspace().unwrap().collaborators.len(),
             1,
             "the same person is one row, not two"
         );
@@ -4505,9 +4511,13 @@ mod bootstrap_tests {
              bar for the rest of the session"
         );
         assert!(
-            tree.active_workspace().unwrap().collaborators.is_empty(),
+            tree.desktop
+                .active_workspace()
+                .unwrap()
+                .collaborators
+                .is_empty(),
             "got {:?}",
-            tree.active_workspace().unwrap().collaborators
+            tree.desktop.active_workspace().unwrap().collaborators
         );
     }
 
@@ -4569,7 +4579,7 @@ mod bootstrap_tests {
     #[test]
     fn bootstrap_default_seeds_nobody_into_any_roster() {
         let tree = WorkspaceTree::bootstrap_default();
-        for ws in &tree.workspaces {
+        for ws in &tree.desktop.workspaces {
             assert!(
                 ws.collaborators.is_empty(),
                 "workspace {:?} boots with {} collaborator(s) nobody invited: \
@@ -4581,9 +4591,10 @@ mod bootstrap_tests {
             );
         }
         assert!(
-            tree.collaborators.is_empty(),
+            tree.desktop.collaborators.is_empty(),
             "the tree-level roster fallback boots non-empty: {:?}",
-            tree.collaborators
+            tree.desktop
+                .collaborators
                 .iter()
                 .map(|c| &c.name)
                 .collect::<Vec<_>>(),
@@ -4599,7 +4610,11 @@ mod bootstrap_tests {
     #[test]
     fn bootstrap_demo_first_group_uses_wide_or_larger() {
         let tree = WorkspaceTree::bootstrap_demo();
-        let first_ws = tree.workspaces.first().expect("at least one workspace");
+        let first_ws = tree
+            .desktop
+            .workspaces
+            .first()
+            .expect("at least one workspace");
         let first_strip = first_ws.strips.first().expect("at least one strip");
         let first_group = first_strip
             .window_groups
@@ -4681,10 +4696,10 @@ mod automerge_foundation_tests {
         // both peers concurrently creating the `workspaces` list at
         // ROOT — seeding isn't diff-aware.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
-        let initial_count = tree_a.workspaces.len();
+        let initial_count = tree_a.desktop.workspaces.len();
 
         tree_a.append_empty_workspace("Project X");
-        assert_eq!(tree_a.workspaces.len(), initial_count + 1);
+        assert_eq!(tree_a.desktop.workspaces.len(), initial_count + 1);
 
         let changes = tree_a.export_changes_since(&[]);
         assert!(
@@ -4696,10 +4711,15 @@ mod automerge_foundation_tests {
         tree_b.apply_changes(&changes).expect("apply changes");
 
         assert!(
-            tree_b.workspaces.iter().any(|w| w.name == "Project X"),
+            tree_b
+                .desktop
+                .workspaces
+                .iter()
+                .any(|w| w.name == "Project X"),
             "tree B should observe the appended workspace after sync; \
              got names: {:?}",
             tree_b
+                .desktop
                 .workspaces
                 .iter()
                 .map(|w| &w.name)
@@ -4723,6 +4743,7 @@ mod automerge_foundation_tests {
         tree_b.apply_changes(&changes).expect("apply changes");
 
         let hydrated = tree_b
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.name == "Project X")
@@ -4736,6 +4757,7 @@ mod automerge_foundation_tests {
         assert_eq!(
             hydrated.collab_cluster_id(),
             tree_a
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == new_id)
@@ -4750,7 +4772,7 @@ mod automerge_foundation_tests {
     #[test]
     fn set_room_propagates_via_apply_changes() {
         let mut tree_a = WorkspaceTree::bootstrap_demo();
-        let id = tree_a.workspaces[0].id;
+        let id = tree_a.desktop.workspaces[0].id;
         let inviters_room = RoomId::new();
         assert!(tree_a.set_room(id, inviters_room), "set_room must apply");
 
@@ -4770,12 +4792,12 @@ mod automerge_foundation_tests {
     /// from the side that did not make it.
     fn two_in_a_room() -> (WorkspaceTree, WorkspaceTree, RoomId) {
         let mut host = WorkspaceTree::bootstrap_demo();
-        let host_ws = host.workspaces[0].id;
+        let host_ws = host.desktop.workspaces[0].id;
         let room = host.room_of(host_ws).expect("bootstrap mints a room");
         host.adopt_ownerless_workspaces(&"ada".to_string());
 
         let mut guest = WorkspaceTree::bootstrap_demo();
-        let guest_ws = guest.workspaces[0].id;
+        let guest_ws = guest.desktop.workspaces[0].id;
         assert!(guest.set_room(guest_ws, room));
         guest.adopt_ownerless_workspaces(&"bob".to_string());
         (host, guest, room)
@@ -4798,9 +4820,14 @@ mod automerge_foundation_tests {
             (&mut host, HOST, "Host window"),
             (&mut guest, GUEST, "Guest window"),
         ] {
-            let ws = tree.workspaces.iter().position(|w| w.room == room).unwrap();
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter()
+                .position(|w| w.room == room)
+                .unwrap();
             let tab_id = salted(salt, 3);
-            tree.workspaces[ws].strips = vec![Strip {
+            tree.desktop.workspaces[ws].strips = vec![Strip {
                 id: StripId::from(salted(salt, 1)),
                 name: "Main".into(),
                 window_groups: vec![WindowGroup {
@@ -4822,23 +4849,33 @@ mod automerge_foundation_tests {
         }
 
         let guest_workspace = guest
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
             .expect("guest workspace")
             .id;
         let guest_strip = guest
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
             .and_then(|workspace| workspace.strips.first())
             .expect("guest strip")
             .id;
-        guest.active_strip.insert(guest_workspace, guest_strip);
+        guest
+            .desktop
+            .active_strip
+            .insert(guest_workspace, guest_strip);
 
         ship(&mut host, &mut guest, room, 1);
 
-        let ws = guest.workspaces.iter().find(|w| w.room == room).unwrap();
+        let ws = guest
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .unwrap();
         let titles: Vec<&str> = ws
             .strips
             .iter()
@@ -4869,7 +4906,7 @@ mod automerge_foundation_tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            guest.active_strip.get(&guest_workspace),
+            guest.desktop.active_strip.get(&guest_workspace),
             Some(&guest_strip),
             "layout is shared; personal focus is not",
         );
@@ -5014,11 +5051,11 @@ mod automerge_foundation_tests {
         host.set_room_records(room, held(("file:/docs/plan.md", "document")));
         // Put this session somewhere specific, so anything that leaked
         // would have a value to leak.
-        let ws = host.workspaces[0].id;
-        let strip = host.workspaces[0].strips[0].id;
-        let group = host.workspaces[0].strips[0].window_groups[0].id;
-        host.active_strip.insert(ws, strip);
-        host.set_active_group(strip, group);
+        let ws = host.desktop.workspaces[0].id;
+        let strip = host.desktop.workspaces[0].strips[0].id;
+        let group = host.desktop.workspaces[0].strips[0].window_groups[0].id;
+        host.desktop.active_strip.insert(ws, strip);
+        host.desktop.set_active_group(strip, group);
         host.sync_room_doc(room);
 
         let doc = host.room_docs.get(&room).expect("a room document");
@@ -5062,7 +5099,12 @@ mod automerge_foundation_tests {
             .expect("the guest merges");
 
         // The window opened for the guest.
-        let gws = guest.workspaces.iter().find(|w| w.room == room).unwrap();
+        let gws = guest
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .unwrap();
         let landed = gws
             .strips
             .iter()
@@ -5094,12 +5136,12 @@ mod automerge_foundation_tests {
              elsewhere in the room must not move them off it",
         );
         assert_eq!(
-            guest.active_strip.get(&guest_ws).copied(),
+            guest.desktop.active_strip.get(&guest_ws).copied(),
             Some(guest_strip),
             "the guest's scrolled-to strip must not follow the host",
         );
         assert_eq!(
-            guest.active_group.get(&guest_strip).copied(),
+            guest.desktop.active_group.get(&guest_strip).copied(),
             Some(guest_group),
             "the guest's focus must not follow the host",
         );
@@ -5121,6 +5163,7 @@ mod automerge_foundation_tests {
         // The guest chooses a deliberately different presentation for the
         // host's shared group. This must survive all later room updates.
         let guest_ws = guest
+            .desktop
             .workspaces
             .iter_mut()
             .find(|ws| ws.room == room)
@@ -5137,6 +5180,7 @@ mod automerge_foundation_tests {
         // The host makes both a presentation change and an intentional shared
         // topology change. Only the new tab is allowed to cross the room.
         let host_ws = host
+            .desktop
             .workspaces
             .iter_mut()
             .find(|ws| ws.room == room)
@@ -5161,6 +5205,7 @@ mod automerge_foundation_tests {
         ship(&mut host, &mut guest, room, 1);
 
         let guest_host_group = guest
+            .desktop
             .workspaces
             .iter()
             .find(|ws| ws.room == room)
@@ -5195,8 +5240,13 @@ mod automerge_foundation_tests {
         let strip = StripId::from(salted(salt, 1));
         let group = salted(salt, 2);
         let tab = salted(salt, 3);
-        let i = tree.workspaces.iter().position(|w| w.room == room).unwrap();
-        tree.workspaces[i].strips = vec![Strip {
+        let i = tree
+            .desktop
+            .workspaces
+            .iter()
+            .position(|w| w.room == room)
+            .unwrap();
+        tree.desktop.workspaces[i].strips = vec![Strip {
             id: strip,
             name: "Main".into(),
             window_groups: vec![WindowGroup {
@@ -5232,9 +5282,14 @@ mod automerge_foundation_tests {
         let group = salted(salt, 2);
         let tab_a = salted(salt, 3);
         let tab_b = salted(salt, 4);
-        let i = tree.workspaces.iter().position(|w| w.room == room).unwrap();
-        let ws = tree.workspaces[i].id;
-        tree.workspaces[i].strips = vec![Strip {
+        let i = tree
+            .desktop
+            .workspaces
+            .iter()
+            .position(|w| w.room == room)
+            .unwrap();
+        let ws = tree.desktop.workspaces[i].id;
+        tree.desktop.workspaces[i].strips = vec![Strip {
             id: strip,
             name: "Mine".into(),
             window_groups: vec![WindowGroup {
@@ -5262,8 +5317,8 @@ mod automerge_foundation_tests {
                 maximized: false,
             }],
         }];
-        tree.active_strip.insert(ws, strip);
-        tree.set_active_group(strip, group);
+        tree.desktop.active_strip.insert(ws, strip);
+        tree.desktop.set_active_group(strip, group);
         (ws, strip, group, tab_a, tab_b)
     }
 
@@ -5280,8 +5335,13 @@ mod automerge_foundation_tests {
         let strip = StripId::from(salted(HOST, 1));
         let group = salted(HOST, 2);
         let tab = salted(HOST, 3);
-        let hi = host.workspaces.iter().position(|w| w.room == room).unwrap();
-        host.workspaces[hi].strips = vec![Strip {
+        let hi = host
+            .desktop
+            .workspaces
+            .iter()
+            .position(|w| w.room == room)
+            .unwrap();
+        host.desktop.workspaces[hi].strips = vec![Strip {
             id: strip,
             name: "Main".into(),
             window_groups: vec![WindowGroup {
@@ -5343,7 +5403,7 @@ mod automerge_foundation_tests {
             "a batch rewriting our own window must be refused"
         );
         assert_eq!(
-            host.workspaces[hi].strips[0].window_groups[0].tabs[0].title, "Plan",
+            host.desktop.workspaces[hi].strips[0].window_groups[0].tabs[0].title, "Plan",
             "and nothing about it may be stored",
         );
     }
@@ -5360,11 +5420,16 @@ mod automerge_foundation_tests {
         host.set_salt_override(HOST);
         // Spelled out under a real salt: what `bootstrap_default` made
         // carries salt 0, which is nobody's and is never projected.
-        let ws_idx = host.workspaces.iter().position(|w| w.room == room).unwrap();
+        let ws_idx = host
+            .desktop
+            .workspaces
+            .iter()
+            .position(|w| w.room == room)
+            .unwrap();
         let strip_id = StripId::from(salted(HOST, 1));
         let group_id = salted(HOST, 2);
         let tab_id = salted(HOST, 3);
-        host.workspaces[ws_idx].strips = vec![Strip {
+        host.desktop.workspaces[ws_idx].strips = vec![Strip {
             id: strip_id,
             name: "Main".into(),
             window_groups: vec![WindowGroup {
@@ -5426,12 +5491,12 @@ mod automerge_foundation_tests {
             // with, so the host actually administers it — the room being
             // synced has a governance to be right about.
             let mut host = WorkspaceTree::bootstrap_demo();
-            let host_ws = host.workspaces[0].id;
+            let host_ws = host.desktop.workspaces[0].id;
             let room = host.room_of(host_ws).expect("bootstrap mints a room");
             host.adopt_ownerless_workspaces(&"alice".to_string());
 
             let mut guest = WorkspaceTree::bootstrap_demo();
-            let guest_ws = guest.workspaces[0].id;
+            let guest_ws = guest.desktop.workspaces[0].id;
             assert!(guest.set_room(guest_ws, room));
             guest.adopt_ownerless_workspaces(&"bob".to_string());
 
@@ -5451,6 +5516,7 @@ mod automerge_foundation_tests {
             // higher.
             assert_eq!(
                 guest
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|w| w.id == guest_ws)
@@ -5466,6 +5532,7 @@ mod automerge_foundation_tests {
             );
             assert!(
                 !guest
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|w| w.id == guest_ws)
@@ -5527,6 +5594,7 @@ mod automerge_foundation_tests {
         guest.room_authority.insert(room, RoomAuthority::Local);
         {
             let ws = guest
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|w| w.id == guest_ws)
@@ -5759,6 +5827,7 @@ mod automerge_foundation_tests {
         guest.room_authority.insert(room, RoomAuthority::Local);
         {
             let ws = guest
+                .desktop
                 .workspaces
                 .iter_mut()
                 .find(|w| w.id == guest_ws)
@@ -5961,6 +6030,7 @@ mod automerge_foundation_tests {
                 // The receiver's cache: who the host believes administers
                 // its own room, and what it believes is granted in it.
                 let ws = host
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|w| w.id == host_ws)
@@ -6035,6 +6105,7 @@ mod automerge_foundation_tests {
                 .expect("the host's document parses");
             assert_eq!(
                 carol
+                    .desktop
                     .workspaces
                     .iter()
                     .find(|w| w.id == carol_ws)
@@ -6053,6 +6124,7 @@ mod automerge_foundation_tests {
                 .expect("well-formed change blobs parse");
 
             let ws = carol
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == carol_ws)
@@ -6107,6 +6179,7 @@ mod automerge_foundation_tests {
         assert!(changed, "the round must change the guest's copy");
 
         let ws = guest
+            .desktop
             .workspaces
             .iter()
             .find(|w| w.id == guest_ws)
@@ -6142,6 +6215,7 @@ mod automerge_foundation_tests {
         // upgrade from a state file written before joining looks like. The
         // ownership check alone would say yes here.
         guest
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == guest_ws)
@@ -6149,6 +6223,7 @@ mod automerge_foundation_tests {
             .set_owner(ROOM_GUEST.to_string());
         assert!(
             guest
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == guest_ws)
@@ -6173,6 +6248,7 @@ mod automerge_foundation_tests {
         );
         assert!(
             !guest
+                .desktop
                 .workspaces
                 .iter()
                 .find(|w| w.id == guest_ws)
@@ -6209,7 +6285,7 @@ mod automerge_foundation_tests {
     #[test]
     fn set_room_refuses_the_nil_room() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let id = tree.workspaces[0].id;
+        let id = tree.desktop.workspaces[0].id;
         let before = tree.room_of(id).expect("bootstrap mints a room");
         assert!(
             !tree.set_room(id, RoomId::nil()),
@@ -6228,19 +6304,20 @@ mod automerge_foundation_tests {
         // `bootstrap_default` calls would race on the workspaces list.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target = tree_a
+            .desktop
             .workspaces
             .iter()
-            .find(|w| w.id != tree_a.active)
+            .find(|w| w.id != tree_a.desktop.active)
             .map(|w| w.id)
             .expect("bootstrap seeds >=2 workspaces");
         tree_a.set_active(target);
-        assert_eq!(tree_a.active, target);
+        assert_eq!(tree_a.desktop.active, target);
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
         tree_b.apply_changes(&changes).expect("apply changes");
         assert_eq!(
-            tree_b.active, target,
+            tree_b.desktop.active, target,
             "tree B's active should match peer A's after sync"
         );
     }
@@ -6249,21 +6326,22 @@ mod automerge_foundation_tests {
     fn maximization_stays_on_the_local_desktop_when_topology_syncs() {
         // Tree B starts from `default()`, same reason as the append test.
         let mut tree_a = WorkspaceTree::bootstrap_demo();
-        let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
+        let target_group = tree_a.desktop.workspaces[0].strips[0].window_groups[0].id;
         assert!(
-            !tree_a.workspaces[0].strips[0].window_groups[0].maximized,
+            !tree_a.desktop.workspaces[0].strips[0].window_groups[0].maximized,
             "bootstrap_default seeds the first group un-maximized"
         );
 
         // This is local presentation state. Synchronizing the workspace's
         // topology must not carry this maximize decision to a second desktop.
-        tree_a.workspaces[0].strips[0].window_groups[0].maximized = true;
+        tree_a.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
         tree_b.apply_changes(&changes).expect("apply changes");
 
         let target = tree_b
+            .desktop
             .workspaces
             .iter()
             .flat_map(|w| w.strips.iter())
@@ -6282,16 +6360,18 @@ mod automerge_foundation_tests {
     #[test]
     fn width_stays_on_the_local_desktop_when_topology_syncs() {
         let mut tree_a = WorkspaceTree::bootstrap_demo();
-        let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
+        let target_group = tree_a.desktop.workspaces[0].strips[0].window_groups[0].id;
         let new_share: u16 = 600;
 
-        tree_a.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(new_share);
+        tree_a.desktop.workspaces[0].strips[0].window_groups[0].width =
+            WindowWidth::Fraction(new_share);
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
         tree_b.apply_changes(&changes).expect("apply changes");
 
         let target = tree_b
+            .desktop
             .workspaces
             .iter()
             .flat_map(|w| w.strips.iter())
@@ -6315,7 +6395,7 @@ mod automerge_foundation_tests {
         // somewhere to land; re-seed so the doc carries it too.
         let dst_strip_id = StripId::new();
         let dst_group_id = next_id();
-        tree_a.workspaces[0].strips.push(Strip {
+        tree_a.desktop.workspaces[0].strips.push(Strip {
             id: dst_strip_id,
             name: "Dest".into(),
             window_groups: vec![WindowGroup {
@@ -6328,8 +6408,8 @@ mod automerge_foundation_tests {
         });
         tree_a.seed_doc_from_cache();
 
-        let src_strip_id = tree_a.workspaces[0].strips[0].id;
-        let target_tab = tree_a.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let src_strip_id = tree_a.desktop.workspaces[0].strips[0].id;
+        let target_tab = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
 
         let new_group_id = next_id();
         assert!(tree_a.move_tab_across_strips(
@@ -6345,6 +6425,7 @@ mod automerge_foundation_tests {
         tree_b.apply_changes(&changes).expect("apply changes");
 
         let dst_strip_in_b = tree_b
+            .desktop
             .workspaces
             .iter()
             .flat_map(|w| w.strips.iter())
@@ -6386,9 +6467,9 @@ mod automerge_foundation_tests {
     #[test]
     fn moving_a_tab_across_strips_into_existing_group_preserves_exact_index() {
         let mut tree_a = WorkspaceTree::bootstrap_demo();
-        let src_strip_id = tree_a.workspaces[0].strips[0].id;
-        let target_tab = tree_a.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        let template = tree_a.workspaces[0].strips[0].window_groups[0].tabs[1].clone();
+        let src_strip_id = tree_a.desktop.workspaces[0].strips[0].id;
+        let target_tab = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let template = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[1].clone();
         let mut before = template.clone();
         before.id = next_id();
         before.title = "Before".into();
@@ -6398,7 +6479,7 @@ mod automerge_foundation_tests {
         let expected = vec![before.id, target_tab, after.id];
         let dst_strip_id = StripId::new();
         let dst_group_id = next_id();
-        tree_a.workspaces[0].strips.push(Strip {
+        tree_a.desktop.workspaces[0].strips.push(Strip {
             id: dst_strip_id,
             name: "Dest".into(),
             window_groups: vec![WindowGroup {
@@ -6421,7 +6502,7 @@ mod automerge_foundation_tests {
                 tab_index: 1,
             },
         ));
-        let cache_group = &tree_a.workspaces[0]
+        let cache_group = &tree_a.desktop.workspaces[0]
             .strips
             .iter()
             .find(|strip| strip.id == dst_strip_id)
@@ -6441,6 +6522,7 @@ mod automerge_foundation_tests {
         let mut tree_b = WorkspaceTree::default();
         tree_b.apply_changes(&changes).expect("apply changes");
         let peer_group = &tree_b
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
@@ -6458,14 +6540,14 @@ mod automerge_foundation_tests {
     fn cross_strip_move_rolls_back_when_document_cannot_commit() {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let dst_strip_id = StripId::new();
-        tree.workspaces[0].strips.push(Strip {
+        tree.desktop.workspaces[0].strips.push(Strip {
             id: dst_strip_id,
             name: "Dest".into(),
             window_groups: Vec::new(),
         });
-        let src_strip_id = tree.workspaces[0].strips[0].id;
-        let target_tab = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        let before = tree.workspaces.clone();
+        let src_strip_id = tree.desktop.workspaces[0].strips[0].id;
+        let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let before = tree.desktop.workspaces.clone();
         // Model a stale/unavailable replication document after the cache was
         // loaded. The move must not become a cache-only layout.
         tree.doc = automerge::AutoCommit::new();
@@ -6478,7 +6560,7 @@ mod automerge_foundation_tests {
             DropTarget::GroupGap { gap_index: 0 },
         ));
         assert_eq!(
-            serde_json::to_value(&tree.workspaces).unwrap(),
+            serde_json::to_value(&tree.desktop.workspaces).unwrap(),
             serde_json::to_value(&before).unwrap(),
             "failed document commit must restore the exact source layout"
         );
@@ -6550,7 +6632,8 @@ mod active_group_tests {
     }
 
     fn group_order(tree: &WorkspaceTree, strip_id: StripId) -> Vec<u64> {
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
             .find(|s| s.id == strip_id)
@@ -6579,12 +6662,12 @@ mod active_group_tests {
                 label: title.into(),
             },
         };
-        tree.workspaces[0].strips[0].window_groups[0].tabs = vec![
+        tree.desktop.workspaces[0].strips[0].window_groups[0].tabs = vec![
             make_tab(10, "Notes"),
             make_tab(11, "Files"),
             make_tab(12, "Terminal"),
         ];
-        tree.workspaces[0].strips[0].window_groups[0].active_tab = 10;
+        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = 10;
         tree.seed_doc_from_cache();
 
         let topology = vec![
@@ -6603,7 +6686,7 @@ mod active_group_tests {
         ];
         assert!(tree.reconcile_strip_topology(strip_id, &topology));
 
-        let groups = &tree.workspaces[0].strips[0].window_groups;
+        let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
         assert_eq!(groups.len(), 2);
         assert_eq!(
             groups[0].tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
@@ -6632,7 +6715,7 @@ mod active_group_tests {
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("same-strip topology creates valid durable state");
-        let restarted_groups = &restarted.workspaces[0].strips[0].window_groups;
+        let restarted_groups = &restarted.desktop.workspaces[0].strips[0].window_groups;
         assert_eq!(restarted_groups.len(), 2);
         assert_eq!(
             restarted_groups[0]
@@ -6652,7 +6735,7 @@ mod active_group_tests {
     fn reconcile_strip_topology_rejects_a_snapshot_that_would_lose_tabs() {
         let (mut tree, strip_id, ids) = tree_with_n_groups(1);
         let before = 10;
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: before,
             title: "Notes".into(),
@@ -6670,7 +6753,7 @@ mod active_group_tests {
         }];
 
         assert!(!tree.reconcile_strip_topology(strip_id, &invalid));
-        let group = &tree.workspaces[0].strips[0].window_groups[0];
+        let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
         assert_eq!(group.tabs.len(), 1);
         assert_eq!(group.tabs[0].id, before);
     }
@@ -6694,7 +6777,7 @@ mod active_group_tests {
             },
         };
         {
-            let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             g.tabs = vec![mk(10, "A"), mk(11, "B"), mk(12, "C")];
             g.active_tab = 10;
         }
@@ -6703,7 +6786,7 @@ mod active_group_tests {
         tree.persist_path = Some(state_dir.path().join("state.json"));
 
         let tab_order = |t: &WorkspaceTree| -> Vec<u64> {
-            t.workspaces[0].strips[0].window_groups[0]
+            t.desktop.workspaces[0].strips[0].window_groups[0]
                 .tabs
                 .iter()
                 .map(|tb| tb.id)
@@ -6798,7 +6881,7 @@ mod active_group_tests {
         // With the doc seeded from the cache, a reorder must also reshuffle
         // the doc's `window_groups` list so peer-sync ships the new order.
         let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-        for group in &mut tree.workspaces[0].strips[0].window_groups {
+        for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
             let tab_id = 10_000 + group.id;
             group.tabs.push(Tab {
                 id: tab_id,
@@ -6865,6 +6948,7 @@ mod active_group_tests {
         let reloaded = load_tree_from(&state_path).expect("workspace creation persisted");
         assert!(
             reloaded
+                .desktop
                 .workspaces
                 .iter()
                 .any(|workspace| workspace.id == second),
@@ -6872,7 +6956,7 @@ mod active_group_tests {
         );
 
         tree.set_active(second);
-        let second_strip = tree.active_strip[&second];
+        let second_strip = tree.desktop.active_strip[&second];
         let first_tab = adopt_toplevel_at(
             &mut tree,
             101,
@@ -6884,7 +6968,10 @@ mod active_group_tests {
         // compositor checkpoint carries across restart.
         tree.seed_doc_from_cache();
         tree.flush_to_disk();
-        let first_group = tree.active_group_for(second_strip).expect("first group");
+        let first_group = tree
+            .desktop
+            .active_group_for(second_strip)
+            .expect("first group");
         let second_tab = adopt_toplevel_at(
             &mut tree,
             202,
@@ -6893,7 +6980,10 @@ mod active_group_tests {
         );
         tree.seed_doc_from_cache();
         tree.flush_to_disk();
-        let second_group = tree.active_group_for(second_strip).expect("second group");
+        let second_group = tree
+            .desktop
+            .active_group_for(second_strip)
+            .expect("second group");
 
         assert!(tree.reorder_group_within_strip(second_strip, second_group, 0));
         let reloaded = load_tree_from(&state_path).expect("group reorder persisted");
@@ -6905,13 +6995,14 @@ mod active_group_tests {
 
         assert!(tree.move_tab_across_strips(
             second_strip,
-            tree.active_strip[&tree.workspaces[0].id],
+            tree.desktop.active_strip[&tree.desktop.workspaces[0].id],
             first_tab,
             90_001,
             DropTarget::GroupGap { gap_index: 0 },
         ));
         let reloaded = load_tree_from(&state_path).expect("cross-strip move persisted");
         let first_tab_locations = reloaded
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
@@ -6926,7 +7017,7 @@ mod active_group_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             first_tab_locations,
-            vec![tree.active_strip[&tree.workspaces[0].id]],
+            vec![tree.desktop.active_strip[&tree.desktop.workspaces[0].id]],
             "a moved tab must exist exactly once in its destination after restart"
         );
 
@@ -6935,6 +7026,7 @@ mod active_group_tests {
         let reloaded = load_tree_from(&state_path).expect("close persisted");
         assert!(
             reloaded
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|workspace| &workspace.strips)
@@ -6945,9 +7037,11 @@ mod active_group_tests {
         );
         assert!(
             reloaded
+                .desktop
                 .active_group
                 .get(&second_strip)
                 .is_none_or(|group| reloaded
+                    .desktop
                     .workspaces
                     .iter()
                     .flat_map(|workspace| &workspace.strips)
@@ -7051,9 +7145,11 @@ mod next_id_seed_tests {
         let _guard = SaltGuard::new();
         NEXT_ID_PEER_SALT.store(0, AtomicOrdering::Relaxed);
         let mut tree = WorkspaceTree::default();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .push(Workspace::new(WorkspaceId::from(1), "First"));
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .push(Workspace::new(WorkspaceId::from(50), "Fiftieth"));
 
         tree.seed_next_id_from_self();
@@ -7171,13 +7267,14 @@ mod next_id_seed_tests {
         // two distinct rows into one (strips collide, names overwrite,
         // grants merge).
         for (label, tree) in [("A", &tree_a), ("B", &tree_b)] {
-            let has_a = tree.workspaces.iter().any(|w| w.id == id_a);
-            let has_b = tree.workspaces.iter().any(|w| w.id == id_b);
+            let has_a = tree.desktop.workspaces.iter().any(|w| w.id == id_a);
+            let has_b = tree.desktop.workspaces.iter().any(|w| w.id == id_b);
             assert!(
                 has_a && has_b,
                 "peer {label} must see both workspaces after sync; \
                  has_a={has_a} has_b={has_b}, workspaces={:?}",
-                tree.workspaces
+                tree.desktop
+                    .workspaces
                     .iter()
                     .map(|w| (w.id.raw(), &w.name))
                     .collect::<Vec<_>>()
@@ -7200,9 +7297,11 @@ mod next_id_seed_tests {
         let local_id_raw = ((0x1111u64) << PEER_ID_SALT_SHIFT) | 5;
         let remote_id_raw = ((0x2222u64) << PEER_ID_SALT_SHIFT) | 0x3E8;
         let mut tree = WorkspaceTree::default();
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .push(Workspace::new(WorkspaceId::from(local_id_raw), "Local"));
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .push(Workspace::new(WorkspaceId::from(remote_id_raw), "Remote"));
 
         tree.seed_next_id_from_self();
@@ -7309,9 +7408,12 @@ mod permission_profile_assignment {
             ..WorkspaceTree::default()
         };
         tree.seed_doc_from_cache();
-        tree.workspaces[0].permission_profiles.clear();
+        tree.desktop.workspaces[0].permission_profiles.clear();
         tree.rebuild_cache_from_doc();
-        assert_eq!(tree.workspaces[0].permission_profiles, vec![profile()]);
+        assert_eq!(
+            tree.desktop.workspaces[0].permission_profiles,
+            vec![profile()]
+        );
     }
 }
 
@@ -7400,6 +7502,7 @@ mod workspace_tree_lifecycle_tests {
             collab_types::OwnershipTransferAcceptanceV1::new(&proposal, 101, &bob_key).unwrap();
         let audit = collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, 102).unwrap();
         let recipient_admin = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.id == workspace_id)
@@ -7439,6 +7542,7 @@ mod workspace_tree_lifecycle_tests {
             Err(OwnershipTransferStateError::ProposalUnavailable)
         ));
         let ws = tree
+            .desktop
             .workspaces
             .iter()
             .find(|ws| ws.id == workspace_id)
@@ -7506,13 +7610,14 @@ mod workspace_tree_lifecycle_tests {
     #[test]
     fn continuity_room_is_dormant_and_does_not_steal_focus() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let active_before = tree.active;
+        let active_before = tree.desktop.active;
         let room = RoomId::new();
 
         assert!(tree.adopt_continuation_room(room, "Laptop"));
         assert!(!tree.adopt_continuation_room(room, "Laptop"));
-        assert_eq!(tree.active, active_before);
+        assert_eq!(tree.desktop.active, active_before);
         let adopted = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -7583,7 +7688,7 @@ mod workspace_tree_lifecycle_tests {
         assert!(!tree.continuation_tabs.contains(&0x9a));
         assert!(!tree.continuation_rooms.contains(&room));
         assert!(!tree.reconcile_continuation_tabs(&BTreeSet::new()));
-        assert!(tree.workspaces.iter().any(|workspace| {
+        assert!(tree.desktop.workspaces.iter().any(|workspace| {
             workspace
                 .strips
                 .iter()
@@ -7630,6 +7735,7 @@ mod workspace_tree_lifecycle_tests {
             },
         );
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -7665,12 +7771,14 @@ mod workspace_tree_lifecycle_tests {
         assert!(tree.reconcile_continuation_rooms(&BTreeSet::new()));
         assert!(
             !tree
+                .desktop
                 .workspaces
                 .iter()
                 .any(|workspace| workspace.room == offered)
         );
         assert!(
-            tree.workspaces
+            tree.desktop
+                .workspaces
                 .iter()
                 .any(|workspace| workspace.room == claimed)
         );
@@ -7743,6 +7851,7 @@ mod workspace_tree_lifecycle_tests {
         ));
         assert!(!tree.continuation_file_references.contains_key(&id.0));
         let replacement = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -7791,6 +7900,7 @@ mod workspace_tree_lifecycle_tests {
             },
         ));
         let workspace = tree
+            .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room == room)
@@ -7809,7 +7919,7 @@ mod workspace_tree_lifecycle_tests {
     #[test]
     fn workspace_task_is_durable_and_carries_action_provenance() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let workspace = tree.active;
+        let workspace = tree.desktop.active;
         let id = tree
             .create_workspace_task(
                 workspace,
@@ -7827,7 +7937,13 @@ mod workspace_tree_lifecycle_tests {
             )
             .expect("non-empty task is created");
 
-        let task = tree.active_workspace().unwrap().tasks.first().unwrap();
+        let task = tree
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .tasks
+            .first()
+            .unwrap();
         assert_eq!(task.id, id);
         assert_eq!(task.route, WorkspaceTaskRoute::RulesOnly);
         let context = task.action_context();
@@ -7844,9 +7960,9 @@ mod workspace_tree_lifecycle_tests {
         );
 
         tree.resync_cache_from_doc();
-        assert_eq!(tree.active_workspace().unwrap().tasks.len(), 1);
+        assert_eq!(tree.desktop.active_workspace().unwrap().tasks.len(), 1);
         assert_eq!(
-            tree.active_workspace().unwrap().tasks[0].title,
+            tree.desktop.active_workspace().unwrap().tasks[0].title,
             "Review the release brief"
         );
     }
@@ -7854,7 +7970,7 @@ mod workspace_tree_lifecycle_tests {
     #[test]
     fn task_status_changes_append_a_truthful_audit_event() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let workspace = tree.active;
+        let workspace = tree.desktop.active;
         let id = tree
             .create_workspace_task(
                 workspace,
@@ -7872,7 +7988,13 @@ mod workspace_tree_lifecycle_tests {
             "ada"
         ));
         assert!(tree.set_workspace_task_status(workspace, &id, WorkspaceTaskStatus::Done, "ada"));
-        let task = tree.active_workspace().unwrap().tasks.first().unwrap();
+        let task = tree
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .tasks
+            .first()
+            .unwrap();
         assert_eq!(task.status, WorkspaceTaskStatus::Done);
         assert_eq!(task.audit.len(), 3);
         assert_eq!(task.audit.last().unwrap().summary, "Status · Done");
@@ -7881,7 +8003,7 @@ mod workspace_tree_lifecycle_tests {
     #[test]
     fn effect_receipt_is_durable_semantic_activity_not_an_app_edit() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let workspace = tree.active;
+        let workspace = tree.desktop.active;
         let mut app_document = automerge::AutoCommit::new();
         let app_heads_before = app_document.get_heads();
         let invocation = tilo_actions::InvocationId::new();
@@ -7912,7 +8034,7 @@ mod workspace_tree_lifecycle_tests {
         assert_eq!(app_document.get_heads(), app_heads_before);
 
         tree.resync_cache_from_doc();
-        let receipt = &tree.active_workspace().unwrap().effect_receipts[0];
+        let receipt = &tree.desktop.active_workspace().unwrap().effect_receipts[0];
         assert_eq!(receipt.invocation, invocation);
         assert_eq!(receipt.status.label(), "Failed");
         assert!(receipt.context.action_label.starts_with("Failed · Send"));

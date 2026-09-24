@@ -913,7 +913,7 @@ mod tests {
 
         let mut tree = WorkspaceTree::default();
         let local = WorkspaceId(99);
-        tree.workspaces.push(workspace(99));
+        tree.desktop.workspaces.push(workspace(99));
         accept_invite_into(&mut tree, local, &encoded).expect("accept");
         let collab_types::caps::Principal::Person(person) =
             collab_types::caps::Principal::person_from_key(
@@ -923,7 +923,7 @@ mod tests {
             unreachable!()
         };
         assert!(
-            tree.workspaces[0]
+            tree.desktop.workspaces[0]
                 .collaborators
                 .iter()
                 .any(|member| member.id == person)
@@ -1067,13 +1067,16 @@ mod tests {
         let encoded = make_invite_token(&key, &host, &endpoint(&key, 3), 3600).unwrap();
         let mut guest = WorkspaceTree::default();
         let guest_id = WorkspaceId(4242);
-        guest.workspaces.push(Workspace::new(guest_id, "guest"));
+        guest
+            .desktop
+            .workspaces
+            .push(Workspace::new(guest_id, "guest"));
         assert_eq!(
             accept_invite_into(&mut guest, guest_id, &encoded).unwrap(),
             host.room
         );
         assert_eq!(guest.room_of(guest_id), Some(host.room));
-        assert_eq!(guest.workspaces[0].collaborators.len(), 1);
+        assert_eq!(guest.desktop.workspaces[0].collaborators.len(), 1);
     }
 
     #[test]

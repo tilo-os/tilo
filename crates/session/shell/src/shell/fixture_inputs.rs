@@ -62,7 +62,7 @@ pub(crate) fn validate(
             ),
         ));
     }
-    for workspace in &tree.workspaces {
+    for workspace in &tree.desktop.workspaces {
         for strip in &workspace.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
@@ -223,7 +223,7 @@ mod tests {
     }
 
     fn rebuild(frame: &mut FrameBuilder, document: &mut automerge::AutoCommit) {
-        let original = frame.chrome().tree().active;
+        let original = frame.chrome().tree().desktop.active;
         frame.with_chrome(|chrome| {
             chrome.add_workspace("Fixture room");
         });
@@ -242,13 +242,13 @@ mod tests {
         let inputs = inputs(parent.path());
         let guard = DenyAmbientStarts::new();
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.workspaces[0].name = "Home".into();
+        tree.desktop.workspaces[0].name = "Home".into();
         tree.append_empty_workspace("Work");
         tree.append_empty_workspace("Play");
         let mut frame = FrameBuilder::with_fixture_inputs(tree, (3840, 2160), inputs).unwrap();
         let mut document = automerge::AutoCommit::new();
         frame.pump_apps(&mut document, &automerge::ROOT);
-        assert_eq!(frame.chrome().tree().workspaces.len(), 3);
+        assert_eq!(frame.chrome().tree().desktop.workspaces.len(), 3);
         assert!(frame.chrome().records().open_records().is_empty());
         assert_eq!(
             frame.host().fixture_provider_ids(),
@@ -270,9 +270,9 @@ mod tests {
         let child = inputs.hosted.files.as_ref().unwrap().initial_dir.clone();
         let guard = DenyAmbientStarts::new();
         let tree = WorkspaceTree::bootstrap_demo();
-        let strip = tree.workspaces[0].strips[0].id;
-        let note = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-        let files = tree.workspaces[0].strips[0].window_groups[0].tabs[1].id;
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        let note = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let files = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[1].id;
         let mut frame = FrameBuilder::with_fixture_inputs(tree, (3840, 2160), inputs).unwrap();
         let mut document = automerge::AutoCommit::new();
         frame.pump_apps(&mut document, &automerge::ROOT);
@@ -298,7 +298,13 @@ mod tests {
             Some("Retained fixture note")
         );
         let room_index = frame.host().room_records();
-        let home = frame.chrome().tree().active_workspace().unwrap().room;
+        let home = frame
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room;
         let record = crate::shell::tab_documents::scratch_tab_record(note);
         room_index
             .borrow_mut()
@@ -320,6 +326,7 @@ mod tests {
             frame
                 .chrome()
                 .tree()
+                .desktop
                 .workspaces
                 .last()
                 .unwrap()
@@ -449,30 +456,31 @@ mod tests {
                 0 => tree.persist_path = Some(parent.path().join("state.json")),
                 1 => tree.fs_acl_path = Some(parent.path().join("acl.json")),
                 _ => {
-                    tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = match variant {
-                        2 => TileContent::AppPlaceholder {
-                            kind: AppKind::Browser,
-                            label: "Browser".into(),
-                        },
-                        3 => TileContent::Foreign {
-                            app_id: "foreign".into(),
-                            surface_id: 1,
-                        },
-                        4 => TileContent::LocalApp {
-                            app_id: "local".into(),
-                            label: "Local".into(),
-                            note: String::new(),
-                        },
-                        5 => TileContent::PeerWindow {
-                            app_id: "peer".into(),
-                            label: "Peer".into(),
-                            note: String::new(),
-                        },
-                        _ => TileContent::AppPlaceholder {
-                            kind: AppKind::Other("live".into()),
-                            label: "Unsupported".into(),
-                        },
-                    }
+                    tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
+                        match variant {
+                            2 => TileContent::AppPlaceholder {
+                                kind: AppKind::Browser,
+                                label: "Browser".into(),
+                            },
+                            3 => TileContent::Foreign {
+                                app_id: "foreign".into(),
+                                surface_id: 1,
+                            },
+                            4 => TileContent::LocalApp {
+                                app_id: "local".into(),
+                                label: "Local".into(),
+                                note: String::new(),
+                            },
+                            5 => TileContent::PeerWindow {
+                                app_id: "peer".into(),
+                                label: "Peer".into(),
+                                note: String::new(),
+                            },
+                            _ => TileContent::AppPlaceholder {
+                                kind: AppKind::Other("live".into()),
+                                label: "Unsupported".into(),
+                            },
+                        }
                 }
             }
             assert!(matches!(

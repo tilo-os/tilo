@@ -357,7 +357,10 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
         use shell::shell::state::{Effect, Scope, Subject};
         let st = chrome.borrow();
         let tree = st.tree();
-        let ws = tree.active_workspace().expect("an active workspace");
+        let ws = tree
+            .desktop
+            .active_workspace()
+            .expect("an active workspace");
         let want = Subject::app("so.tilo.word-processor");
         let scopes: Vec<&Scope> = ws
             .capabilities
@@ -415,7 +418,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     launcher::set_wayland_socket(OsStr::new("wayland-test"));
 
     let tree = WorkspaceTree::bootstrap_demo();
-    let strip_id = tree.workspaces[0].strips[0].id;
+    let strip_id = tree.desktop.workspaces[0].strips[0].id;
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let mut session = Session::new();
@@ -423,7 +426,9 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let tabs_before: usize = {
         let st = chrome.borrow();
         let t = st.tree();
-        t.workspaces[0].strips[0].window_groups[0].tabs.len()
+        t.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .len()
     };
 
     // winit's `DroppedFile` carries no coordinate, so put the pointer over
@@ -462,7 +467,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     // the tab, and it arrives when the app does.
     let st = chrome.borrow();
     let t = st.tree();
-    let group = &t.workspaces[0].strips[0].window_groups[0];
+    let group = &t.desktop.workspaces[0].strips[0].window_groups[0];
     assert_eq!(
         group.tabs.len(),
         tabs_before,
