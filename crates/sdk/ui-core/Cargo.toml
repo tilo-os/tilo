@@ -125,6 +125,7 @@ rustc-hash.workspace = true
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
 tokio = { workspace = true, features = ["full"] }
+tilo-rt.workspace = true
 vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
