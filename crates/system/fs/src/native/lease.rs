@@ -416,6 +416,8 @@ impl LeaseKeeper {
             let lease = leases.get(&rel).copied();
             match lease {
                 Some(l) if l.holder != self.me && l.is_live(now_ms) => {
+                    // Gated first: the notice means the file is read-only.
+                    self.set_gate(&rel, Some(Gate::Deny));
                     if self.notified.insert((rel.clone(), l.epoch)) {
                         eprintln!(
                             "{} is read-only here: device {} holds its write lease (epoch {})",
@@ -424,7 +426,6 @@ impl LeaseKeeper {
                             l.epoch
                         );
                     }
-                    self.set_gate(&rel, Some(Gate::Deny));
                 }
                 Some(l) if l.holder == self.me && l.is_live(now_ms) => {
                     self.set_gate(&rel, None);
