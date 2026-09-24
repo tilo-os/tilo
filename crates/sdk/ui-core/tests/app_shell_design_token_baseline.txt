@@ -13,7 +13,6 @@ apps/containers/src/panels.rs white_or_black 6
 apps/db-client/src/app.rs white_or_black 3
 apps/db-client/src/theme_ext.rs white_or_black 2
 apps/ebook/src/app.rs literal_color 4
-apps/ebook/src/color_picker.rs literal_color 3
 apps/ebook/src/reader_theme.rs literal_color 25
 apps/feeds/src/app.rs literal_color 1
 apps/feeds/src/app.rs white_or_black 1
