@@ -299,6 +299,7 @@ pub fn spawn_render_thread(
     let join = std::thread::Builder::new()
         .name("ui-render".into())
         .spawn(move || {
+            tilo_rt::mark_ui_thread();
             // `QUICK_UI_PRESENT=1` logs per-frame encode/acquire/present timings
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
