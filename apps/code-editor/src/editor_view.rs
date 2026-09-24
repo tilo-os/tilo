@@ -1626,7 +1626,7 @@ impl EditorView {
                     if x + seg.chars().count() as f64 * self.cell_w < self.rect.x0 + gutter_w {
                         continue;
                     }
-                    let color = crate::highlight::token_color(span.kind, theme);
+                    let color = theme.tokens.syntax.color(span.kind);
                     let weight = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
                         TextWeight::Semibold
                     } else {

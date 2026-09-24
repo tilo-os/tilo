@@ -3,38 +3,21 @@
 //! marked in every language so the expand-variables affordance reads the same
 //! everywhere.
 //!
-//! Colours are resolved against the [`ui::theme::Theme`] at draw time, so the
-//! preview tracks whatever palette the OS hands the app.
+//! Colours come from the theme's shared syntax palette
+//! (`theme.tokens.syntax`) at draw time, so the preview tracks whatever
+//! palette the OS hands the app and matches every other code surface.
 
 use std::ops::Range;
 
-use ui::theme::Theme;
 use ui::widget::code_editor::{
     Highlighter, HlState, LineSpans, Span as KindSpan, SyntaxHighlighter, TokenKind,
 };
-use vello::peniko::Color;
 
 use crate::model::Language;
 
-/// Placeholders borrow the heading role, which both the editable body and the
-/// preview paint in the accent colour.
+/// Placeholders borrow the markup-heading role, which the syntax palette
+/// paints in the primary accent in both the editable body and the preview.
 pub const PLACEHOLDER: TokenKind = TokenKind::Heading;
-
-/// The preview's colour for a token kind; every branch reads a theme token.
-pub fn token_color(kind: TokenKind, theme: &Theme) -> Color {
-    let c = &theme.tokens.colors;
-    match kind {
-        TokenKind::Keyword => c.accent[6],
-        TokenKind::StringLit | TokenKind::CharLit => c.semantic.success,
-        TokenKind::Number | TokenKind::Constant => c.semantic.warning,
-        TokenKind::Comment => c.text_dim,
-        PLACEHOLDER => c.accent[5],
-        TokenKind::Function => c.semantic.info,
-        TokenKind::Type => c.accent[7],
-        TokenKind::Attribute | TokenKind::Preprocessor => c.semantic.danger,
-        _ => c.text_primary,
-    }
-}
 
 /// A contiguous run of preview text sharing one [`TokenKind`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,11 +221,13 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_uses_accent_color_from_theme() {
-        let theme = Theme::dark();
+    fn placeholder_uses_the_palette_markup_role() {
+        use ui::ColorCompat;
+        let theme = ui::theme::Theme::dark();
+        let rgb = |c: vello::peniko::Color| [c.r(), c.g(), c.b()];
         assert_eq!(
-            token_color(PLACEHOLDER, &theme),
-            theme.tokens.colors.accent[5]
+            rgb(theme.tokens.syntax.color(PLACEHOLDER)),
+            rgb(theme.tokens.syntax.markup)
         );
     }
 }
