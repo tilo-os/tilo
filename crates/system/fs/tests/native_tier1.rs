@@ -488,9 +488,12 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
         "small object on the peer",
     );
 
-    assert_placeholder_hydrates(&m2.join("objects/2"), &m1.join("objects/2"), &big);
+    let placeholder = m2.join("objects/2");
+    assert_placeholder_hydrates(&placeholder, &m1.join("objects/2"), &big);
 
-    // Rename and delete.
+    // Rename and delete. The rename is a move of the record: on the peer
+    // the file is renamed, so its inode and its resident bytes stay.
+    let peer_ino = std::fs::metadata(&placeholder).unwrap().ino();
     std::fs::rename(m1.join("objects/2"), m1.join("objects/3")).unwrap();
     std::fs::remove_file(m1.join("objects/1")).unwrap();
     wait_for(
@@ -503,10 +506,62 @@ fn local_changes_publish_in_journal_order_and_arrive_as_placeholders_and_files()
             .then_some(())
         },
     );
+    assert_eq!(
+        std::fs::metadata(m2.join("objects/3")).unwrap().ino(),
+        peer_ino,
+        "the peer renamed the file rather than writing it again"
+    );
+    assert!(
+        residency_xattr(&m2.join("objects/3")).is_none(),
+        "still resident"
+    );
     assert_same_bytes(
         &std::fs::read(m2.join("objects/3")).unwrap(),
         &big,
         "renamed object on the peer",
+    );
+
+    // A directory rename moves the subtree in one operation, both ways.
+    std::fs::create_dir_all(m1.join("tree/sub")).unwrap();
+    std::fs::write(m1.join("tree/sub/leaf"), b"leaf").unwrap();
+    std::fs::write(m1.join("tree/top"), b"top").unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the tree on the peer",
+        || (std::fs::read(m2.join("tree/sub/leaf")).ok()? == b"leaf").then_some(()),
+    );
+    let tree_ino = std::fs::metadata(m2.join("tree")).unwrap().ino();
+    let leaf_ino = std::fs::metadata(m2.join("tree/sub/leaf")).unwrap().ino();
+    std::fs::rename(m1.join("tree"), m1.join("renamed")).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the renamed tree on the peer",
+        || (m2.join("renamed/sub/leaf").exists() && !m2.join("tree").exists()).then_some(()),
+    );
+    assert_eq!(
+        std::fs::metadata(m2.join("renamed")).unwrap().ino(),
+        tree_ino
+    );
+    assert_eq!(
+        std::fs::metadata(m2.join("renamed/sub/leaf"))
+            .unwrap()
+            .ino(),
+        leaf_ino
+    );
+    assert_eq!(std::fs::read(m2.join("renamed/top")).unwrap(), b"top");
+    std::fs::rename(m2.join("renamed/sub"), m2.join("moved-back")).unwrap();
+    wait_for(
+        &mut [&mut pair.host, &mut pair.peer],
+        "the peer's move on the host",
+        || {
+            (std::fs::read(m1.join("moved-back/leaf")).ok()? == b"leaf"
+                && !m1.join("renamed/sub").exists())
+            .then_some(())
+        },
+    );
+    assert!(
+        pair.host.log_count("1 move(s)") >= 2,
+        "renames were published as moves"
     );
 
     // The other direction.
@@ -588,6 +643,14 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
         versions.windows(2).all(|w| w[0] <= w[1]),
         "record versions follow the writer's order: {versions:?}"
     );
+    // The renamed file is the record created as objects/2: its history
+    // runs from that creation through the rename.
+    let history = provenance(&pair.dir.join("host-cache"), "objects/3");
+    assert!(
+        history.first() == Some(&collab_types::FileProvenance::Create)
+            && history.contains(&collab_types::FileProvenance::Rename),
+        "history follows the renamed record: {history:?}"
+    );
     assert!(pair.host.log_count("epoch ") >= 1);
     assert!(
         !m1.join("ref").exists(),
@@ -595,15 +658,31 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
     );
 }
 
-/// The time of the first content version of each path, from the host's
-/// persisted namespace and history.
-fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
+fn persisted_namespace(cache: &Path) -> fs::Namespace {
     let outcome = fs::durable_backup::read_or_recover(&cache.join("namespace.bin"), |bytes| {
         fs::Namespace::from_bytes("reader", bytes).is_ok()
     })
     .unwrap()
     .unwrap();
-    let ns = fs::Namespace::from_bytes("reader", &outcome.bytes).unwrap();
+    fs::Namespace::from_bytes("reader", &outcome.bytes).unwrap()
+}
+
+/// The provenance of every version of the record at `path`, oldest first.
+fn provenance(cache: &Path, path: &str) -> Vec<collab_types::FileProvenance> {
+    let ns = persisted_namespace(cache);
+    let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
+    let entry = ns
+        .entry_at(path)
+        .unwrap_or_else(|| panic!("{path} is not a record"));
+    let mut versions = history.snapshot(entry.record_id).unwrap().versions;
+    versions.sort_by_key(|v| v.timestamp_ms);
+    versions.into_iter().map(|v| v.provenance).collect()
+}
+
+/// The time of the first content version of each path, from the host's
+/// persisted namespace and history.
+fn first_versions(cache: &Path, paths: &[&str]) -> Vec<u64> {
+    let ns = persisted_namespace(cache);
     let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
     paths
         .iter()
