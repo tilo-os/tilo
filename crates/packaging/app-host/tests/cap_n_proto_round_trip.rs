@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use app_host::app_host_capnp::{Pinning as WirePinning, app_host as capnp_app_host};
+use app_host::service::SystemCatalog;
 use app_host::store::Store;
 use app_host::transport;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -33,12 +34,17 @@ impl Harness {
         let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("app-host.sock");
         let store = Arc::new(Store::open(tmp.path())?);
+        // An empty image catalog: the host's own preinstalled packages must
+        // not appear in what this store lists.
+        let system_dir = tmp.path().join("system");
+        std::fs::create_dir_all(&system_dir)?;
+        let catalog = Arc::new(SystemCatalog::at(&system_dir, &system_dir));
         let listener = transport::bind(&socket)?;
         // `serve` loops forever accepting connections; the handle is
         // deliberately not awaited, but must still be bound (not
         // discarded outright) so the task isn't detached-and-forgotten
         // in a way that hides a panic.
-        let _handle = tokio::task::spawn_local(transport::serve(listener, store, 0));
+        let _handle = tokio::task::spawn_local(transport::serve(listener, store, catalog, 0));
         Ok(Self { socket, _tmp: tmp })
     }
 

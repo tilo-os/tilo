@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 
+use app_host::service::SystemCatalog;
 use app_host::{default_socket_path, default_store_root, gc, store::Store, transport};
 
 #[derive(Debug, Parser)]
@@ -64,6 +65,7 @@ fn main() -> anyhow::Result<()> {
     // Open / create the store + registry; persistent state lives
     // under `root`. The store builds its on-disk layout lazily.
     let store = Arc::new(Store::open(&root)?);
+    let catalog = Arc::new(SystemCatalog::from_env());
 
     // capnp-rpc + tokio LocalSet (one task per connection, single
     // event-loop Vat). Matches `format-host`'s shape.
@@ -93,7 +95,7 @@ fn main() -> anyhow::Result<()> {
                 tracing::warn!(%error, "startup gc sweep failed");
             }
         });
-        transport::serve(listener, store, cli.max_store_bytes).await
+        transport::serve(listener, store, catalog, cli.max_store_bytes).await
     })
 }
 
