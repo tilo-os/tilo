@@ -23,6 +23,10 @@
 //!   doing.
 //! - **Roll back** makes the previous image the one this machine boots, after
 //!   showing what a rollback does not undo.
+//! - **Additional codecs** installs or removes the opt-in codec pack, which
+//!   the device downloads from RPM Fusion and Cisco ([`crate::codec_pack`]),
+//!   and shows the helper's status, including a hardware H.264/HEVC part that
+//!   waits for a Mesa build matching the image.
 //
 // CRDT keys this pane reads / writes:
 //   `updates.check`             — bool, "Check for updates" button
@@ -30,6 +34,8 @@
 //   `updates.auto`              — bool, automatic-updates toggle
 //   `updates.rollback`          — bool, "Roll back…" (opens the explanation)
 //   `updates.rollback.confirm`  — bool, the second click, which acts
+//   `updates.codecs.install`    — bool, "Install additional codecs"
+//   `updates.codecs.remove`     — bool, "Remove additional codecs"
 
 use std::collections::HashMap;
 use std::fs;
@@ -49,6 +55,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::codec_pack::{CodecAction, CodecPackStatus};
 use crate::prefs::{SystemPrefs, UpdatePrefs};
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 
@@ -63,6 +70,8 @@ pub const FIRMWARE_REFRESH_KEY: &str = "updates.firmware.refresh";
 pub const FIRMWARE_INSTALL_KEY: &str = "updates.firmware.install";
 pub const SCHEDULE_KEY: &str = "updates.schedule";
 pub const METERED_KEY: &str = "updates.metered";
+pub const CODECS_INSTALL_KEY: &str = "updates.codecs.install";
+pub const CODECS_REMOVE_KEY: &str = "updates.codecs.remove";
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -633,6 +642,17 @@ impl Rebooter for RealRebooter {
 type StatusProvider = Arc<dyn Fn() -> UpdateStatus + Send + Sync>;
 type Clock = Arc<dyn Fn() -> String + Send + Sync>;
 type DetailsProvider = Arc<dyn Fn(Option<&str>) -> UpdateDetails + Send + Sync>;
+/// Runs one codec-pack unit to completion (a stub in tests).
+pub type CodecRunner = Arc<dyn Fn(CodecAction) -> Result<(), String> + Send + Sync>;
+/// Reads the codec-pack helper's status file (a fixture in tests).
+pub type CodecStatusProvider = Arc<dyn Fn() -> CodecPackStatus + Send + Sync>;
+
+const CODECS_CARD_TITLE: &str = "Additional codecs";
+const CODECS_EXPLANATION: &str = "H.264, HEVC and other patented video and audio formats are not part \
+of Tilo. If you choose to install them, this device downloads them directly from RPM Fusion and from \
+Cisco (OpenH264), under those projects' own licences. Tilo does not host or distribute these packages.";
+const CODECS_RESTART_CAPTION: &str = "New codecs work in apps right away. Hardware video decoding \
+applies to apps started after installation: sign out and back in to use it everywhere.";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum FirmwareUiState {
@@ -696,6 +716,12 @@ pub struct UpdatesPane {
     firmware_refresh_events: Option<Receiver<FirmwareRefreshEvent>>,
     check_pending: bool,
     firmware_refresh_pending: bool,
+    codec_status: CodecPackStatus,
+    codec_status_provider: CodecStatusProvider,
+    codec_runner: CodecRunner,
+    /// The codec-pack unit currently running, and its completion.
+    codec_pending: Option<CodecAction>,
+    codec_events: Option<Receiver<Result<(), String>>>,
     wake: WakeHandle,
     /// Set once the person has asked to roll back and been shown what it does
     /// not undo; cleared when they leave the pane's structure alone long
@@ -763,6 +789,11 @@ impl UpdatesPane {
             firmware_refresh_events: None,
             check_pending: false,
             firmware_refresh_pending: false,
+            codec_status: CodecPackStatus::read(),
+            codec_status_provider: Arc::new(CodecPackStatus::read),
+            codec_runner: Arc::new(crate::codec_pack::run),
+            codec_pending: None,
+            codec_events: None,
             wake: WakeHandle::new(),
             rollback_armed: false,
             notice: None,
@@ -842,6 +873,11 @@ impl UpdatesPane {
             firmware_refresh_events: None,
             check_pending: false,
             firmware_refresh_pending: false,
+            codec_status: CodecPackStatus::default(),
+            codec_status_provider: Arc::new(CodecPackStatus::default),
+            codec_runner: Arc::new(|_| Err("the codec pack is unavailable in this test".into())),
+            codec_pending: None,
+            codec_events: None,
             wake: WakeHandle::new(),
             rollback_armed: false,
             notice: None,
@@ -856,6 +892,165 @@ impl UpdatesPane {
             composed: None,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Replace the codec-pack status source and unit runner (tests).
+    #[must_use]
+    pub fn with_codec_pack(mut self, status: CodecStatusProvider, runner: CodecRunner) -> Self {
+        self.codec_status = status();
+        self.codec_status_provider = status;
+        self.codec_runner = runner;
+        self
+    }
+
+    pub fn codec_status(&self) -> &CodecPackStatus {
+        &self.codec_status
+    }
+
+    /// The codec card's title and lines, in order, as the person reads them.
+    pub fn codecs_card_lines(&self) -> Vec<String> {
+        let mut out = vec![
+            CODECS_CARD_TITLE.to_string(),
+            CODECS_EXPLANATION.to_string(),
+            format!("Status: {}", self.codec_status_line()),
+        ];
+        if let Some(problem) = self.codec_status.refresh_problem() {
+            out.push(problem);
+        }
+        if self.codec_status.state == crate::codec_pack::PackState::Installed {
+            out.push(CODECS_RESTART_CAPTION.to_string());
+        }
+        if let Some((label, _, _)) = self.codec_button() {
+            out.push(label.to_string());
+        }
+        out
+    }
+
+    fn codec_status_line(&self) -> String {
+        match self.codec_pending {
+            Some(CodecAction::Install) => "Downloading and installing\u{2026}".into(),
+            Some(CodecAction::Remove) => "Removing\u{2026}".into(),
+            None => self.codec_status.summary(),
+        }
+    }
+
+    /// (label, control id, action id) of the one button the card offers.
+    fn codec_button(&self) -> Option<(&'static str, &'static str, &'static str)> {
+        if self.codec_pending.is_some() {
+            return None;
+        }
+        self.codec_status
+            .offered_action()
+            .map(|action| match action {
+                CodecAction::Install => (
+                    "Install additional codecs",
+                    "settings.updates.codecs.install",
+                    "install-codecs",
+                ),
+                CodecAction::Remove => (
+                    "Remove additional codecs",
+                    "settings.updates.codecs.remove",
+                    "remove-codecs",
+                ),
+            })
+    }
+
+    fn codecs_card(&self) -> El {
+        let mut body = vec![
+            caption(CODECS_EXPLANATION),
+            value_row("Status", &self.codec_status_line()),
+        ];
+        if let Some(problem) = self.codec_status.refresh_problem() {
+            body.push(caption(&problem));
+        }
+        if self.codec_status.state == crate::codec_pack::PackState::Installed {
+            body.push(caption(CODECS_RESTART_CAPTION));
+        }
+        if let Some((label, control_id, action_id)) = self.codec_button() {
+            body.push(Box::new(
+                Row::new()
+                    .push(Box::new(operation_button(control_id, label, action_id)))
+                    .push(Box::new(Spacer::new())),
+            ));
+        }
+        card(CODECS_CARD_TITLE, rows(body))
+    }
+
+    fn handle_codecs(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let mut requested = None;
+        for (key, action) in [
+            (CODECS_INSTALL_KEY, CodecAction::Install),
+            (CODECS_REMOVE_KEY, CodecAction::Remove),
+        ] {
+            if read_bool(state, root, key).unwrap_or(false) {
+                let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
+                requested = Some(action);
+            }
+        }
+        let Some(action) = requested else {
+            return;
+        };
+        let operation = Self::codec_operation(action);
+        if self.codec_pending.is_some() {
+            self.operation_failed(operation, "the codec pack is already being changed");
+            self.structure_dirty = true;
+            return;
+        }
+        let runner = Arc::clone(&self.codec_runner);
+        let wake = self.wake.clone();
+        let (tx, rx) = mpsc::channel();
+        if std::thread::Builder::new()
+            .name("tilo-codec-pack".into())
+            .spawn(move || {
+                let _ = tx.send(runner(action));
+                wake.wake();
+            })
+            .is_err()
+        {
+            self.notice =
+                Some("The codec pack could not be changed: worker could not start".into());
+            self.operation_failed(operation, "codec pack worker could not start");
+        } else {
+            self.codec_events = Some(rx);
+            self.codec_pending = Some(action);
+        }
+        self.structure_dirty = true;
+    }
+
+    const fn codec_operation(action: CodecAction) -> crate::actions::UpdateOperation {
+        match action {
+            CodecAction::Install => crate::actions::UpdateOperation::InstallCodecs,
+            CodecAction::Remove => crate::actions::UpdateOperation::RemoveCodecs,
+        }
+    }
+
+    fn drain_codec_events(&mut self) {
+        let (Some(events), Some(action)) = (self.codec_events.as_ref(), self.codec_pending) else {
+            return;
+        };
+        let result = match events.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("codec pack worker stopped".into()),
+        };
+        self.codec_events = None;
+        self.codec_pending = None;
+        self.codec_status = (self.codec_status_provider)();
+        let operation = Self::codec_operation(action);
+        match result {
+            Ok(()) => {
+                self.notice = None;
+                self.operation_succeeded(operation, "codec pack changed");
+            }
+            Err(error) => {
+                self.notice = Some(format!("The codec pack could not be changed: {error}"));
+                self.operation_failed(
+                    operation,
+                    format!("The codec pack could not be changed: {error}"),
+                );
+            }
+        }
+        self.structure_dirty = true;
     }
 
     /// Is the machine's update timer on, as this pane last read it?
@@ -893,6 +1088,7 @@ impl UpdatesPane {
         self.handle_check(local, &root);
         self.handle_firmware_refresh(local, &root);
         self.handle_firmware_install(local, &root);
+        self.handle_codecs(local, &root);
         self.handle_restart(local, &root);
         self.handle_auto_toggle(local, &root);
         self.handle_schedule(local, &root);
@@ -954,6 +1150,8 @@ impl UpdatesPane {
             ROLLBACK_CONFIRM_KEY,
             FIRMWARE_REFRESH_KEY,
             FIRMWARE_INSTALL_KEY,
+            CODECS_INSTALL_KEY,
+            CODECS_REMOVE_KEY,
         ] {
             let _ = state.put(root, key, false);
         }
@@ -983,6 +1181,12 @@ impl UpdatesPane {
             }
             Op::InstallFirmware => {
                 let _ = state.put(root, FIRMWARE_INSTALL_KEY, true);
+            }
+            Op::InstallCodecs => {
+                let _ = state.put(root, CODECS_INSTALL_KEY, true);
+            }
+            Op::RemoveCodecs => {
+                let _ = state.put(root, CODECS_REMOVE_KEY, true);
             }
             Op::SetAutomatic { enabled } => {
                 let _ = state.put(root, AUTO_KEY, *enabled);
@@ -1080,6 +1284,7 @@ impl UpdatesPane {
             self.overview_card(),
             self.status_card(),
             self.firmware_card(),
+            self.codecs_card(),
             self.detail_card(),
             self.lifecycle_card(),
             self.rollback_card(),
@@ -1679,6 +1884,9 @@ impl UpdatesPane {
             FIRMWARE_INSTALL_KEY,
             automerge::ScalarValue::Boolean(false),
         );
+        for key in [CODECS_INSTALL_KEY, CODECS_REMOVE_KEY] {
+            let _ = state.put(root, key, automerge::ScalarValue::Boolean(false));
+        }
         if let Some(schedule) = &self.schedule {
             let _ = state.put(root, SCHEDULE_KEY, schedule.as_str());
         }
@@ -2042,6 +2250,7 @@ impl Widget for UpdatesPane {
         self.drain_check_events();
         self.drain_firmware_refresh_events();
         self.drain_firmware_events();
+        self.drain_codec_events();
         self.seed(&mut state, &root);
         if let Some(crate::actions::LocalPaneCommand::Updates(operation)) = self.command_state.get()
         {
@@ -2064,6 +2273,7 @@ impl Widget for UpdatesPane {
             self.handle_check(&mut state, &root);
             self.handle_firmware_refresh(&mut state, &root);
             self.handle_firmware_install(&mut state, &root);
+            self.handle_codecs(&mut state, &root);
             self.handle_restart(&mut state, &root);
             self.handle_auto_toggle(&mut state, &root);
             self.handle_schedule(&mut state, &root);
@@ -2243,6 +2453,118 @@ mod tests {
             Arc::new(|| "CHECKED-NOW".to_string()),
             rebooter,
         )
+    }
+
+    fn codec_pane(
+        status: Arc<Mutex<&'static str>>,
+        runs: Arc<Mutex<Vec<CodecAction>>>,
+        outcome: Result<(), String>,
+    ) -> UpdatesPane {
+        let reader = Arc::clone(&status);
+        pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
+            Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
+            Arc::new(move |action| {
+                runs.lock().unwrap().push(action);
+                *status.lock().unwrap() = match (action, outcome.is_ok()) {
+                    (CodecAction::Install, true) => r#"{"state":"installed","mesa":"waiting"}"#,
+                    (CodecAction::Install, false) => r#"{"state":"failed","last_error":"offline"}"#,
+                    (CodecAction::Remove, _) => r#"{"state":"not-installed"}"#,
+                };
+                outcome.clone()
+            }),
+        )
+    }
+
+    fn press_until(pane: &mut UpdatesPane, key: &str, done: impl Fn(&UpdatesPane) -> bool) {
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let _ = doc.put(&root, key, automerge::ScalarValue::Boolean(true));
+        for _ in 0..1000 {
+            pane.sync(&mut doc, &root);
+            if done(pane) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("codec pack operation did not finish");
+    }
+
+    #[test]
+    fn codec_card_explains_the_source_and_offers_install() {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let pane = codec_pane(Arc::new(Mutex::new("")), runs, Ok(()));
+        let lines = pane.codecs_card_lines();
+        assert_eq!(lines.first().map(String::as_str), Some("Additional codecs"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("RPM Fusion") && line.contains("Cisco"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Tilo does not host or distribute"))
+        );
+        assert!(lines.contains(&"Status: Not installed".to_string()));
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("Install additional codecs")
+        );
+    }
+
+    #[test]
+    fn install_runs_the_unit_and_shows_the_waiting_mesa_part() {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = codec_pane(Arc::new(Mutex::new("")), Arc::clone(&runs), Ok(()));
+        press_until(&mut pane, CODECS_INSTALL_KEY, |pane| {
+            pane.codec_status().state == crate::codec_pack::PackState::Installed
+        });
+        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Install]);
+        let lines = pane.codecs_card_lines();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("waiting for a matching Mesa build from RPM Fusion"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("sign out and back in"))
+        );
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("Remove additional codecs")
+        );
+        assert_eq!(pane.notice(), None);
+    }
+
+    #[test]
+    fn failed_install_surfaces_the_helper_error() {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let mut pane = codec_pane(Arc::new(Mutex::new("")), runs, Err("offline".into()));
+        press_until(&mut pane, CODECS_INSTALL_KEY, |pane| {
+            pane.notice().is_some()
+        });
+        assert_eq!(
+            pane.notice(),
+            Some("The codec pack could not be changed: offline")
+        );
+        assert!(
+            pane.codecs_card_lines()
+                .contains(&"Status: Installation failed: offline".to_string())
+        );
+    }
+
+    #[test]
+    fn remove_returns_to_not_installed() {
+        let runs = Arc::new(Mutex::new(Vec::new()));
+        let status = Arc::new(Mutex::new(r#"{"state":"installed","mesa":"enabled"}"#));
+        let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
+        press_until(&mut pane, CODECS_REMOVE_KEY, |pane| {
+            pane.codec_status().state == crate::codec_pack::PackState::NotInstalled
+        });
+        assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Remove]);
     }
 
     #[test]
