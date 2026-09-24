@@ -530,6 +530,7 @@ impl PdfApp {
             // Raster backend: refresh the real `PDFium` text layer for the
             // visible pages so selection + search overlays line up with glyphs.
             self.refresh_raster_text();
+            self.refresh_raster_links();
         } else {
             self.refresh_text_lines(tr, theme);
         }
@@ -988,6 +989,25 @@ impl PdfApp {
             } else if !batch.is_empty() {
                 self.status_note = Some("PDF render worker is unavailable".to_string());
             }
+        }
+    }
+
+    /// Ask for the link areas of the pages currently in view (raster backend
+    /// only). Links are cheap to read and must be ready before the pointer
+    /// reaches them, so unlike the text layer they are fetched on idle and
+    /// scroll frames too; each page is read once per document and plan.
+    fn refresh_raster_links(&mut self) {
+        let pageh = self.ph() * self.zoom();
+        let canvas = self.canvas_rect;
+        let visible: Vec<usize> = self
+            .page_origins()
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.y <= canvas.y1 && o.y + pageh >= canvas.y0)
+            .map(|(i, _)| i)
+            .collect();
+        for i in visible {
+            self.ensure_page_links(i + 1);
         }
     }
 

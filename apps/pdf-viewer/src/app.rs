@@ -456,6 +456,12 @@ pub struct PdfApp {
     /// entries leave it as their results arrive.
     raster_tile_batch: Vec<crate::source::TileRequest>,
     raster_text_pending: HashSet<usize>,
+    /// Link areas per displayed page (1-based), in the page's display space;
+    /// mapped into card space when hit-tested so they follow the current
+    /// page map.
+    raster_links: std::collections::HashMap<usize, Arc<Vec<crate::source::PageLink>>>,
+    /// Pages (0-based) whose links have been requested from the owner worker.
+    raster_links_pending: HashSet<usize>,
     pending_worker_plan: Option<Vec<PagePlanEntry>>,
     applied_worker_plan: Option<Vec<PagePlanEntry>>,
     worker_plan_blobs: Vec<qdoc::blobstore::BlobState>,
@@ -983,6 +989,8 @@ impl PdfApp {
             raster_tiles: crate::tiles::TileCache::new(crate::tiles::MAX_TILE_CACHE_BYTES),
             raster_tile_batch: Vec::new(),
             raster_text_pending: HashSet::new(),
+            raster_links: std::collections::HashMap::new(),
+            raster_links_pending: HashSet::new(),
             pending_worker_plan: None,
             applied_worker_plan: None,
             worker_plan_blobs: Vec::new(),
@@ -1871,6 +1879,8 @@ impl PdfApp {
             self.resource_page_imports = plan.iter().map(|entry| entry.imported.clone()).collect();
             self.pages_dirty |= plan_changed;
             self.raster_text.clear();
+            self.raster_links.clear();
+            self.raster_links_pending.clear();
             self.rebuild_page_maps();
             return;
         }
@@ -3338,7 +3348,154 @@ impl PdfApp {
             self.activate_field(state, &widget);
             return;
         }
+        // Markup the reader drew over a link keeps its own click (select and
+        // reveal its thread); a link underneath is reached where no markup is.
+        if self.annotation_at(page, pt).is_none()
+            && let Some(link) = self.link_at(page, pt)
+        {
+            self.selected_anno = None;
+            self.selected_sig = None;
+            self.activate_link(page, &link);
+            return;
+        }
         self.select_at(page, pt);
+    }
+
+    // ---- links -------------------------------------------------------
+
+    /// The link under screen point `p`, when a click there would follow it:
+    /// the Select tool, on the canvas, with no markup or form field on top.
+    pub(crate) fn link_under(&self, p: Point) -> Option<crate::source::PageLink> {
+        if self.tool != Tool::Select || !self.canvas_rect.contains(p) {
+            return None;
+        }
+        let (page, pt) = self.hit_page(p)?;
+        if self.field_at(page, pt).is_some() || self.annotation_at(page, pt).is_some() {
+            return None;
+        }
+        self.link_at(page, pt)
+    }
+
+    /// Make sure displayed page `page`'s link areas are loaded or requested:
+    /// read from the owner worker in production, directly from the test
+    /// backend in unit tests.
+    pub(crate) fn ensure_page_links(&mut self, page: usize) {
+        if page == 0 || self.raster_links.contains_key(&page) {
+            return;
+        }
+        #[cfg(test)]
+        if let Some(raster) = self.raster.as_mut() {
+            let links = raster.page_links(page - 1);
+            self.raster_links.insert(page, links);
+            return;
+        }
+        let Some(document) = self.raster_document.as_ref() else {
+            return;
+        };
+        if self.raster_links_pending.insert(page - 1)
+            && !self.raster_handle.as_ref().is_some_and(|handle| {
+                handle
+                    .request_links(crate::source::LinksRequest {
+                        document_id: document.id,
+                        page: page - 1,
+                    })
+                    .is_ok()
+            })
+        {
+            // A full queue is retried on a later frame.
+            self.raster_links_pending.remove(&(page - 1));
+        }
+    }
+
+    /// The link whose area (mapped into card space) contains card point
+    /// `pt` on displayed page `page`. The smallest area wins, so a link
+    /// nested in a larger one stays reachable.
+    pub(crate) fn link_at(&self, page: usize, pt: (f64, f64)) -> Option<crate::source::PageLink> {
+        let links = self.raster_links.get(&page)?;
+        let map = self.page_map(page);
+        links
+            .iter()
+            .map(|link| (map.layer_rect_to_card(&link.rect), link))
+            .filter(|(rect, _)| rect.contains(pt.0, pt.1))
+            .min_by(|(a, _), (b, _)| (a.w * a.h).total_cmp(&(b.w * b.h)))
+            .map(|(_, link)| link.clone())
+    }
+
+    /// The id of the markup or note under card point `pt`, using the same
+    /// hit rules as [`Self::select_at`].
+    fn annotation_at(&self, page: usize, pt: (f64, f64)) -> Option<String> {
+        self.annotations
+            .iter()
+            .filter(|a| a.page == page)
+            .find(|a| match &a.kind {
+                AnnoKind::Note { x, y } => (pt.0 - x).abs() < 24.0 && (pt.1 - y).abs() < 24.0,
+                kind @ AnnoKind::Markup { .. } => kind.markup_contains(pt.0, pt.1),
+                AnnoKind::Ink { .. } => false,
+            })
+            .map(|a| a.id.clone())
+    }
+
+    /// Follow a link clicked on displayed page `from`.
+    fn activate_link(&mut self, from: usize, link: &crate::source::PageLink) {
+        match &link.target {
+            crate::source::LinkTarget::Page { page, at } => {
+                let Some(target) = self.link_destination_page(from, *page) else {
+                    self.status_note =
+                        Some("The page this link points to is no longer in the document".into());
+                    self.dirty = true;
+                    return;
+                };
+                self.go_to_page(target);
+                if let Some(at) = *at {
+                    // Put the destination point at the top of the view.
+                    let (_, y) = self.page_map(target).layer_to_card(at);
+                    let top = (target - 1) as f64 * self.stack_unit() + y.max(0.0);
+                    self.viewport
+                        .set_scroll(self.viewport.scroll_x(), top * self.viewport.zoom());
+                    self.current_page = self.nearest_page();
+                }
+                self.dirty = true;
+            }
+            crate::source::LinkTarget::Uri(uri) => {
+                let scheme = uri
+                    .split_once(':')
+                    .map(|(scheme, _)| scheme.to_ascii_lowercase());
+                if matches!(scheme.as_deref(), Some("http" | "https" | "mailto")) {
+                    self.status_note = match ui::widget::try_open_external_url(uri) {
+                        Ok(()) => Some(format!("Opening {uri}")),
+                        Err(error) => Some(format!("Couldn't open {uri}: {error}")),
+                    };
+                } else {
+                    self.status_note = Some(format!("Links like {uri} are not opened"));
+                }
+                self.dirty = true;
+            }
+            crate::source::LinkTarget::File(path) => {
+                self.status_note = Some(format!("Links to other files are not opened ({path})"));
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// The displayed page (1-based) an internal link on displayed page
+    /// `from` leads to: the first occurrence, in the current page plan, of
+    /// page `page` (0-based) of the document `from` comes from. `None` when
+    /// that page has been deleted.
+    fn link_destination_page(&self, from: usize, page: usize) -> Option<usize> {
+        let origin = |i: usize| {
+            self.resource_page_imports
+                .get(i)
+                .cloned()
+                .flatten()
+                .map(|imported| (imported.hash, imported.kind))
+        };
+        let from_origin = origin(from.checked_sub(1)?);
+        (0..self.doc.page_count())
+            .find(|&i| {
+                self.resource_page_sources.get(i).copied() == Some(page + 1)
+                    && origin(i) == from_origin
+            })
+            .map(|i| i + 1)
     }
 
     fn select_at(&mut self, page: usize, pt: (f64, f64)) {
@@ -3809,6 +3966,8 @@ impl PdfApp {
                 self.matches.clear();
                 self.raster_matches.clear();
                 self.raster_text.clear();
+                self.raster_links.clear();
+                self.raster_links_pending.clear();
                 self.text_lines.clear();
                 self.prev_overlay = None; // re-derive panel docking for the new doc
                 self.reconcile_overlay();
@@ -3917,6 +4076,8 @@ impl PdfApp {
                     self.matches.clear();
                     self.raster_matches.clear();
                     self.raster_text.clear();
+                    self.raster_links.clear();
+                    self.raster_links_pending.clear();
                     self.text_lines.clear();
                     self.prev_overlay = None;
                     self.reconcile_overlay();
@@ -4036,6 +4197,26 @@ impl PdfApp {
                     }
                     self.dirty = true;
                 }
+                RasterEvent::LinksRead { request, links }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    self.raster_links_pending.remove(&request.page);
+                    self.raster_links.insert(request.page + 1, links);
+                    self.dirty = true;
+                }
+                RasterEvent::LinksFailed { request, .. }
+                    if self
+                        .raster_document
+                        .as_ref()
+                        .is_some_and(|doc| doc.id == request.document_id) =>
+                {
+                    // A page whose links cannot be read simply has none.
+                    self.raster_links_pending.remove(&request.page);
+                    self.raster_links.insert(request.page + 1, Arc::default());
+                }
                 RasterEvent::TextFailed { request, error }
                     if self
                         .raster_document
@@ -4067,6 +4248,8 @@ impl PdfApp {
                     self.raster_tiles.clear();
                     self.raster_tile_batch.clear();
                     self.raster_text.clear();
+                    self.raster_links.clear();
+                    self.raster_links_pending.clear();
                     self.raster_text_pending.clear();
                     if let Some(document) = self.raster_document.as_mut() {
                         document.page_sizes = page_sizes;
@@ -5313,7 +5496,8 @@ impl Widget for PdfApp {
         {
             return Some(cursor);
         }
-        None
+        self.link_under(point)
+            .map(|_| winit::window::CursorIcon::Pointer)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -5408,6 +5592,9 @@ impl Widget for PdfApp {
 
 #[cfg(test)]
 mod records_tests;
+
+#[cfg(test)]
+mod links_tests;
 
 #[cfg(test)]
 mod tests {
