@@ -10,7 +10,13 @@
 //!   filled range by range on first access through the pre-content group;
 //! - directories are created before anything inside them, files follow in
 //!   the order their versions were made (the author's commit time), and
-//!   removals come last, deepest first.
+//!   removals come last, deepest first;
+//! - a pass first prepares every version it will apply (fetching small
+//!   files into staging), and applies them only then, paths that are new
+//!   here before paths that change, so the tree moves from one state to
+//!   the next in one quick step. When a version is not available yet, the
+//!   rest of its author's changeset waits with it (`storage.md` §10, V3):
+//!   a git ref is never shown with its index still missing.
 //!
 //! A path the local user changed since the daemon last wrote it is never
 //! overwritten: the change is captured and published as a local version,
@@ -91,6 +97,44 @@ fn record_key(e: &TreeEntry) -> Option<[u8; 16]> {
     e.record.map(|r| *r.0.as_bytes())
 }
 
+/// How long a pass holds a changeset back for one version that does not
+/// arrive, before applying what it can in version order.
+const HOLD_LIMIT: Duration = Duration::from_secs(60);
+
+/// Directory at the room's root where versions are prepared before they
+/// are renamed into place. Its name, like every staging name, is never
+/// captured.
+pub const STAGING_AREA: &str = ".tilo-staging-area";
+
+/// How a prepared version reaches its path.
+enum Install {
+    /// A staged file or link, renamed into place.
+    Staged(PathBuf),
+    Placeholder {
+        spec: PlaceholderSpec,
+        replace: bool,
+    },
+    /// Same content, new mode bits.
+    Chmod(u32),
+}
+
+/// One version prepared for the commit step.
+struct Pending {
+    rel: PathBuf,
+    /// Nothing is at the path yet.
+    new: bool,
+    mtime_ms: u64,
+    install: Install,
+    record: Materialized,
+}
+
+enum Prepared {
+    Done,
+    Pending(Pending),
+    /// Its bytes are not reachable right now.
+    Unavailable,
+}
+
 /// What one projection pass did.
 #[derive(Debug, Default)]
 pub struct Projection {
@@ -132,6 +176,8 @@ pub struct Projector {
     /// there is no instant at which a writer could get through.
     write_denied: Arc<std::sync::Mutex<HashSet<PathBuf>>>,
     last_unavailable: std::sync::Mutex<Option<String>>,
+    /// The version the last pass stopped at, and since when.
+    held: std::sync::Mutex<Option<(PathBuf, u64, std::time::Instant)>>,
 }
 
 fn mtime_of(ms: u64) -> SystemTime {
@@ -161,6 +207,7 @@ impl Projector {
             seq: AtomicU64::new(0),
             write_denied,
             last_unavailable: std::sync::Mutex::new(None),
+            held: std::sync::Mutex::new(None),
         }
     }
 
@@ -172,10 +219,14 @@ impl Projector {
     }
 
     /// Brings the live tree to `tree`, the record plane's current state.
+    /// `changesets` are the version-time spans of other devices' latest
+    /// changesets: a version that cannot be applied yet holds back the rest
+    /// of the changeset it belongs to.
     pub fn project(
         &self,
         tree: &[TreeEntry],
         materialized: &HashMap<PathBuf, Materialized>,
+        changesets: &[(u64, u64)],
     ) -> Projection {
         let mut out = Projection::default();
         let desired: HashSet<PathBuf> = tree.iter().map(|e| rel_path(&e.path)).collect();
@@ -197,31 +248,43 @@ impl Projector {
                 .cmp(&b.mtime_ms)
                 .then_with(|| a.path.cmp(&b.path))
         });
+        let mut pending: Vec<Pending> = Vec::new();
+        let mut stopped_at: Option<(PathBuf, u64)> = None;
         for e in files {
+            let rel = rel_path(&e.path);
             if !e.known {
                 // Content revisions arrive per record, in no particular
                 // order. Nothing made after a version this device cannot
                 // verify yet is shown before it: the next pass continues.
-                out.waiting = true;
-                out.waiting_for = Some(rel_path(&e.path));
+                stopped_at = Some((rel, e.mtime_ms));
                 break;
             }
-            let rel = rel_path(&e.path);
-            match self.project_file(&rel, e, materialized, &mut out) {
-                Ok(true) => {}
-                Ok(false) => {
+            match self.prepare_file(&rel, e, materialized, &mut out) {
+                Ok(Prepared::Done) => {}
+                Ok(Prepared::Pending(p)) => pending.push(p),
+                Ok(Prepared::Unavailable) => {
                     // Its bytes are not reachable right now; what follows it
                     // waits, as for an unverified version.
-                    out.waiting = true;
-                    out.waiting_for = Some(rel);
+                    stopped_at = Some((rel, e.mtime_ms));
                     break;
                 }
                 Err(error) => out.errors.push(format!("{}: {error}", rel.display())),
             }
         }
-        if out.waiting {
+        if let Some((rel, mtime_ms)) = stopped_at {
+            let cut = self.hold_cut(&rel, mtime_ms, changesets);
+            let (apply, hold): (Vec<Pending>, Vec<Pending>) =
+                pending.into_iter().partition(|p| p.mtime_ms < cut);
+            self.discard(hold);
+            self.commit(apply, &mut out);
+            out.waiting = true;
+            out.waiting_for = Some(rel);
             return out;
         }
+        if let Ok(mut held) = self.held.lock() {
+            *held = None;
+        }
+        self.commit(pending, &mut out);
 
         let mut gone: Vec<(&PathBuf, &Materialized)> = materialized
             .iter()
@@ -408,13 +471,116 @@ impl Projector {
         fs::set_permissions(abs, fs::Permissions::from_mode(mode))
     }
 
-    fn project_file(
+    /// From which version time on the pass waits, when it stopped at `rel`
+    /// (version time `mtime_ms`): the start of the changeset that version
+    /// belongs to, or the version itself when no known changeset spans it
+    /// or it has been waited for too long.
+    fn hold_cut(&self, rel: &Path, mtime_ms: u64, changesets: &[(u64, u64)]) -> u64 {
+        let since = {
+            let Ok(mut held) = self.held.lock() else {
+                return mtime_ms;
+            };
+            match held.as_ref() {
+                Some((p, t, since)) if p == rel && *t == mtime_ms => *since,
+                _ => {
+                    let now = std::time::Instant::now();
+                    *held = Some((rel.to_path_buf(), mtime_ms, now));
+                    now
+                }
+            }
+        };
+        if since.elapsed() >= HOLD_LIMIT {
+            return mtime_ms;
+        }
+        changesets
+            .iter()
+            .filter(|(first, last)| (*first..=*last).contains(&mtime_ms))
+            .map(|(first, _)| *first)
+            .min()
+            .unwrap_or(mtime_ms)
+            .min(mtime_ms)
+    }
+
+    /// Applies prepared versions: paths new here first, then changed ones,
+    /// each group in version order.
+    fn commit(&self, pending: Vec<Pending>, out: &mut Projection) {
+        let (new, changed): (Vec<Pending>, Vec<Pending>) = pending.into_iter().partition(|p| p.new);
+        for p in new.into_iter().chain(changed) {
+            self.install(p, out);
+        }
+    }
+
+    fn install(&self, p: Pending, out: &mut Projection) {
+        let Pending {
+            rel,
+            install,
+            mut record,
+            ..
+        } = p;
+        let abs = self.live.join(&rel);
+        let result = (|| -> io::Result<()> {
+            if let Some(parent) = abs.parent() {
+                self.make_dirs(parent)?;
+            }
+            match &install {
+                Install::Staged(staging) => {
+                    let denied = self.write_denied.lock().is_ok_and(|d| d.contains(&abs));
+                    if denied && !record.symlink {
+                        self.placeholders
+                            .gate(staging, fs_native::hydrate::WriteGate::Deny(libc::EBUSY))?;
+                    }
+                    if record.symlink && fs::symlink_metadata(&abs).is_ok_and(|m| m.is_dir()) {
+                        return Err(io::Error::from_raw_os_error(libc::EISDIR));
+                    }
+                    fs::rename(staging, &abs)
+                }
+                Install::Placeholder { spec, replace } => {
+                    if *replace {
+                        self.placeholders.replace_with_placeholder(&abs, spec)
+                    } else {
+                        self.placeholders.create_placeholder(&abs, spec)
+                    }
+                }
+                Install::Chmod(mode) => {
+                    fs::set_permissions(&abs, fs::Permissions::from_mode(*mode))
+                }
+            }
+        })();
+        if let Err(error) = result {
+            if let Install::Staged(staging) = &install {
+                let _ = fs::remove_file(staging);
+            }
+            out.errors.push(format!("{}: {error}", rel.display()));
+            return;
+        }
+        match install {
+            Install::Placeholder { .. } => {
+                out.placeholders = out.placeholders.saturating_add(1);
+            }
+            Install::Staged(_) => out.files = out.files.saturating_add(1),
+            Install::Chmod(_) => {}
+        }
+        record.local = LocalStat::of(&abs);
+        out.written.push(rel.clone());
+        out.updates.push((rel, Some(record)));
+    }
+
+    /// Drops prepared versions that are held back.
+    fn discard(&self, pending: Vec<Pending>) {
+        for p in pending {
+            if let Install::Staged(staging) = p.install {
+                let _ = fs::remove_file(staging);
+            }
+        }
+    }
+
+    fn prepare_file(
         &self,
         rel: &Path,
         e: &TreeEntry,
         materialized: &HashMap<PathBuf, Materialized>,
         out: &mut Projection,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Prepared> {
         let hash = e.hash.map(|h| *h.as_bytes());
         let previous = materialized.get(rel);
         if let Some(m) = previous
@@ -435,16 +601,21 @@ impl Projector {
                 let mode_ours = m.mode.is_none() || m.mode == local_mode(&abs);
                 if !(untouched && mode_ours) {
                     out.skipped_dirty.push(rel.to_path_buf());
-                    return Ok(true);
+                    return Ok(Prepared::Done);
                 }
-                fs::set_permissions(&abs, fs::Permissions::from_mode(e.posix.mode))?;
                 next.mode = Some(e.posix.mode);
-                out.written.push(rel.to_path_buf());
+                return Ok(Prepared::Pending(Pending {
+                    rel: rel.to_path_buf(),
+                    new: false,
+                    mtime_ms: e.mtime_ms,
+                    install: Install::Chmod(e.posix.mode),
+                    record: next,
+                }));
             }
             if next != *m {
                 out.updates.push((rel.to_path_buf(), Some(next)));
             }
-            return Ok(true);
+            return Ok(Prepared::Done);
         }
         let abs = self.live.join(rel);
         let local = LocalStat::of(&abs);
@@ -457,54 +628,49 @@ impl Projector {
         };
         if dirty {
             out.skipped_dirty.push(rel.to_path_buf());
-            return Ok(true);
+            return Ok(Prepared::Done);
         }
-        if let Some(parent) = abs.parent() {
-            self.make_dirs(parent)?;
-        }
-        let Some(placeholder) = self.materialize(&abs, hash, e, local.is_some())? else {
-            return Ok(false);
+        let Some(install) = self.prepare_content(hash, e, local.is_some())? else {
+            return Ok(Prepared::Unavailable);
         };
-        if placeholder {
-            out.placeholders = out.placeholders.saturating_add(1);
-        } else {
-            out.files = out.files.saturating_add(1);
-        }
-        out.written.push(rel.to_path_buf());
-        out.updates.push((
-            rel.to_path_buf(),
-            Some(Materialized {
+        let placeholder = matches!(install, Install::Placeholder { .. });
+        Ok(Prepared::Pending(Pending {
+            rel: rel.to_path_buf(),
+            new: local.is_none(),
+            mtime_ms: e.mtime_ms,
+            install,
+            record: Materialized {
                 dir: false,
                 hash,
                 size: e.size,
                 mtime_ms: e.mtime_ms,
                 placeholder,
-                local: LocalStat::of(&abs),
+                local: None,
                 record: record_key(e),
                 mode: Some(e.posix.mode),
                 symlink: e.posix.symlink,
-            }),
-        ));
-        Ok(true)
+            },
+        }))
     }
 
-    /// Writes one version at `abs`. Returns whether it is a placeholder, or
-    /// `None` when a small file's bytes could not be fetched: a small file
-    /// only appears complete.
-    fn materialize(
+    /// Prepares one version off to the side: a small file or a link is
+    /// fetched and staged, a large file becomes a placeholder when it is
+    /// installed. `None` when a small file's bytes could not be fetched: a
+    /// small file only appears complete.
+    fn prepare_content(
         &self,
-        abs: &Path,
         hash: Option<[u8; 32]>,
         e: &TreeEntry,
         replace: bool,
-    ) -> io::Result<Option<bool>> {
+    ) -> io::Result<Option<Install>> {
         let Some(content) = hash.filter(|_| e.size > 0) else {
             if e.posix.symlink {
                 // A link needs a target; an empty one is not one.
                 return Err(io::Error::from_raw_os_error(libc::EINVAL));
             }
-            self.write_staged(abs, &[], e.mtime_ms, e.posix.mode)?;
-            return Ok(Some(false));
+            return self
+                .stage_file(&[], e.mtime_ms, e.posix.mode)
+                .map(|s| Some(Install::Staged(s)));
         };
         if e.posix.symlink && e.size > MAX_LINK_TARGET {
             return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
@@ -523,12 +689,12 @@ impl Projector {
             });
             return match fetched {
                 Ok(Ok(bytes)) if bytes.len() as u64 == e.size => {
-                    if e.posix.symlink {
-                        self.link_staged(abs, &bytes, e.mtime_ms)?;
+                    let staged = if e.posix.symlink {
+                        self.stage_link(&bytes, e.mtime_ms)?
                     } else {
-                        self.write_staged(abs, &bytes, e.mtime_ms, e.posix.mode)?;
-                    }
-                    Ok(Some(false))
+                        self.stage_file(&bytes, e.mtime_ms, e.posix.mode)?
+                    };
+                    Ok(Some(Install::Staged(staged)))
                 }
                 Ok(Ok(bytes)) => {
                     self.note_unavailable(format!("{} of {} bytes", bytes.len(), e.size));
@@ -551,12 +717,7 @@ impl Projector {
             mtime: mtime_of(e.mtime_ms),
             owner: self.owner,
         };
-        if replace {
-            self.placeholders.replace_with_placeholder(abs, &spec)?;
-        } else {
-            self.placeholders.create_placeholder(abs, &spec)?;
-        }
-        Ok(Some(true))
+        Ok(Some(Install::Placeholder { spec, replace }))
     }
 
     fn note_unavailable(&self, why: String) {
@@ -570,36 +731,43 @@ impl Projector {
         self.last_unavailable.lock().ok()?.take()
     }
 
-    fn staging_path(&self, abs: &Path) -> PathBuf {
-        let dir = abs.parent().unwrap_or_else(|| Path::new("."));
+    /// A fresh name in the staging area, which exists afterwards.
+    fn staging_path(&self) -> io::Result<PathBuf> {
+        let area = self.live.join(STAGING_AREA);
+        if !area.is_dir() {
+            match fs::create_dir(&area) {
+                Ok(()) => fs::set_permissions(&area, fs::Permissions::from_mode(0o700))?,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
         let n = self.seq.fetch_add(1, Ordering::Relaxed);
-        dir.join(format!("{STAGING_PREFIX}{}-{n}", std::process::id()))
+        Ok(area.join(format!("{STAGING_PREFIX}{}-{n}", std::process::id())))
     }
 
-    /// Creates a symbolic link to `target` next to `abs` and renames it
-    /// into place, owned by the local person, with the version's mtime.
-    fn link_staged(&self, abs: &Path, target: &[u8], mtime_ms: u64) -> io::Result<()> {
+    /// Stages a symbolic link to `target`, owned by the local person, with
+    /// the version's mtime.
+    fn stage_link(&self, target: &[u8], mtime_ms: u64) -> io::Result<PathBuf> {
         use std::os::unix::ffi::OsStrExt as _;
-        let staging = self.staging_path(abs);
+        let staging = self.staging_path()?;
         let result = (|| {
             std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), &staging)?;
             if let Some((uid, gid)) = self.owner {
                 std::os::unix::fs::lchown(&staging, Some(uid), Some(gid))?;
             }
-            set_link_mtime(&staging, mtime_ms)?;
-            if fs::symlink_metadata(abs).is_ok_and(|m| m.is_dir()) {
-                return Err(io::Error::from_raw_os_error(libc::EISDIR));
-            }
-            fs::rename(&staging, abs)
+            set_link_mtime(&staging, mtime_ms)
         })();
-        if result.is_err() {
+        if let Err(error) = result {
             let _ = fs::remove_file(&staging);
+            return Err(error);
         }
-        result
+        Ok(staging)
     }
 
-    fn write_staged(&self, abs: &Path, bytes: &[u8], mtime_ms: u64, mode: u32) -> io::Result<()> {
-        let staging = self.staging_path(abs);
+    /// Stages a complete file with the version's bytes, mode and mtime,
+    /// owned by the local person.
+    fn stage_file(&self, bytes: &[u8], mtime_ms: u64, mode: u32) -> io::Result<PathBuf> {
+        let staging = self.staging_path()?;
         let result = (|| {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -611,19 +779,13 @@ impl Projector {
                 std::os::unix::fs::fchown(&file, Some(uid), Some(gid))?;
             }
             file.set_permissions(fs::Permissions::from_mode(mode))?;
-            file.set_modified(mtime_of(mtime_ms))?;
-            drop(file);
-            let denied = self.write_denied.lock().is_ok_and(|d| d.contains(abs));
-            if denied {
-                self.placeholders
-                    .gate(&staging, fs_native::hydrate::WriteGate::Deny(libc::EBUSY))?;
-            }
-            fs::rename(&staging, abs)
+            file.set_modified(mtime_of(mtime_ms))
         })();
-        if result.is_err() {
+        if let Err(error) = result {
             let _ = fs::remove_file(&staging);
+            return Err(error);
         }
-        result
+        Ok(staging)
     }
 
     fn project_removal(&self, rel: &Path, m: &Materialized, out: &mut Projection) {
