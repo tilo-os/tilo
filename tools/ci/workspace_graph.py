@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import subprocess
-from typing import Iterable
+import tomllib
+from typing import Iterable, NamedTuple
 
 
 def run(*args: str, cwd: Path) -> str:
@@ -73,6 +75,132 @@ def reverse_dependencies(packages: dict[str, dict], root: Path) -> dict[str, set
             if provider:
                 reverse[provider].add(consumer)
     return reverse
+
+def file_at(root: Path, revision: str, path: str) -> bytes | None:
+    """Return a committed file's bytes, or None when it is absent or unreadable."""
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{path}"],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    return None if result.returncode else result.stdout
+
+
+LockId = tuple[str, str, str]
+
+
+class LockfileChange(NamedTuple):
+    """Package names affected by a Cargo.lock difference.
+
+    ``seeds`` are workspace packages whose own locked record changed or which
+    depend directly on a changed external record. ``reached`` names every
+    locked package (workspace or external) whose dependency graph reaches a
+    changed record in either lockfile.
+    """
+    seeds: frozenset[str]
+    reached: frozenset[str]
+
+
+def _lock_graph(raw: bytes) -> tuple[dict, dict[LockId, tuple]]:
+    """Parse Cargo.lock into its non-package keys and normalized package records.
+
+    Dependency strings are resolved to exact package ids, so a second version
+    of a crate turning ``"syn"`` into ``"syn 2.0.1"`` does not count as a
+    change to every consumer. Unresolvable or ambiguous references raise
+    ValueError: the caller must not guess.
+    """
+    parsed = tomllib.loads(raw.decode("utf-8"))
+    entries = parsed.pop("package", [])
+    if not isinstance(entries, list):
+        raise ValueError("Cargo.lock package table is not a list")
+    by_name: dict[str, list[LockId]] = {}
+    raw_records: dict[LockId, dict] = {}
+    for entry in entries:
+        name, version = entry["name"], entry["version"]
+        if not isinstance(name, str) or not isinstance(version, str):
+            raise ValueError("Cargo.lock package name/version must be strings")
+        package_id = (name, version, entry.get("source", ""))
+        if package_id in raw_records:
+            raise ValueError(f"duplicate Cargo.lock package {package_id}")
+        raw_records[package_id] = entry
+        by_name.setdefault(name, []).append(package_id)
+
+    def resolve(spec: str) -> LockId:
+        match = re.fullmatch(r"(\S+)(?: (\S+))?(?: \((.+)\))?", spec)
+        if not match:
+            raise ValueError(f"unparseable Cargo.lock dependency {spec!r}")
+        name, version, source = match.groups()
+        candidates = [
+            package_id for package_id in by_name.get(name, [])
+            if (version is None or package_id[1] == version)
+            and (source is None or package_id[2] == source)
+        ]
+        if len(candidates) != 1:
+            raise ValueError(f"Cargo.lock dependency {spec!r} matches {len(candidates)} packages")
+        return candidates[0]
+
+    records = {}
+    for package_id, entry in raw_records.items():
+        dependencies = entry.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise ValueError(f"Cargo.lock dependencies of {package_id} are not a list")
+        rest = tuple(sorted(
+            (key, json.dumps(value, sort_keys=True)) for key, value in entry.items()
+            if key != "dependencies"
+        ))
+        records[package_id] = (rest, frozenset(resolve(spec) for spec in dependencies))
+    return parsed, records
+
+
+def lockfile_change(before: bytes | None, after: bytes | None,
+                    workspace: Iterable[str]) -> LockfileChange | None:
+    """Attribute a Cargo.lock difference to the packages whose inputs it changes.
+
+    Cargo writes the lockfile from a resolve with every feature, target and
+    dependency kind (normal, build and dev) enabled, so its graph is a superset
+    of what any single build uses. A changed, added or removed record is
+    propagated to its consumers in both the old and the new graph: additions
+    reach new consumers and removals reach former ones.
+
+    ``None`` means the difference cannot be attributed (missing or malformed
+    file, or a change outside the package records). Callers must then treat
+    the lockfile as a repository-wide input.
+    """
+    if before is None or after is None:
+        return None
+    try:
+        old_meta, old = _lock_graph(before)
+        new_meta, new = _lock_graph(after)
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+    if old_meta != new_meta:
+        return None
+    changed = {package_id for package_id in old.keys() | new.keys()
+               if old.get(package_id) != new.get(package_id)}
+    reverse: dict[LockId, set[LockId]] = {}
+    for graph in (old, new):
+        for consumer, (_, dependencies) in graph.items():
+            for dependency in dependencies:
+                reverse.setdefault(dependency, set()).add(consumer)
+    reached: set[LockId] = set(changed)
+    pending = list(changed)
+    while pending:
+        for consumer in reverse.get(pending.pop(), ()):
+            if consumer not in reached:
+                reached.add(consumer)
+                pending.append(consumer)
+    workspace = set(workspace)
+    local = {package_id for package_id in old.keys() | new.keys()
+             if package_id[0] in workspace and not package_id[2]}
+    external_reached = reached - local
+    seeds = {
+        package_id[0] for package_id in local
+        if package_id in changed
+        or any(dependency in external_reached
+               for graph in (old, new) if package_id in graph
+               for dependency in graph[package_id][1])
+    }
+    return LockfileChange(frozenset(seeds), frozenset(name for name, _, _ in reached))
+
 
 def closure(seeds: Iterable[str], reverse: dict[str, set[str]]) -> set[str]:
     selected = set(seeds)
