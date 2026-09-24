@@ -15,6 +15,8 @@ workflow="$root/../../../.forgejo/workflows/tilo-relay.yaml"
 compose="$root/compose.yaml"
 entrypoint="$root/tilo-home-peer"
 
+bash "$root/test-base-retry.sh"
+
 fail() { echo "tilo-relay container contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
 

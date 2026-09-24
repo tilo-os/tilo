@@ -263,13 +263,7 @@ fn tab_bar_renders_pills_inside_six_px_insets() {
     if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
         let path = std::path::Path::new(&dir).join("tab_bar.png");
         std::fs::create_dir_all(&dir).ok();
-        let file = std::fs::File::create(&path).expect("create screenshot png");
-        let mut bw = std::io::BufWriter::new(file);
-        let mut enc = png::Encoder::new(&mut bw, bar_w, bar_h);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut writer = enc.write_header().expect("png header");
-        writer.write_image_data(&rgba).expect("png write");
+        tilo_ui::png::write_rgba8(&path, bar_w, bar_h, &rgba).expect("write screenshot png");
         eprintln!("wrote tab-bar screenshot to {}", path.display());
     }
 

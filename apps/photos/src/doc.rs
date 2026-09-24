@@ -22,6 +22,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLibrary, PhotoLocation};
 
@@ -134,7 +135,7 @@ impl PhotosDoc {
     /// open shows an empty state; content arrives from an opened file.
     /// Idempotent — only writes fields that are missing.
     pub fn seed(doc: &mut AutoCommit) {
-        if Self::get_str(doc, "image").is_none() {
+        if read_str(doc, &ROOT, "image").is_none() {
             Self::write_json(doc, "image", &Option::<OpenImage>::None);
         }
         let _ = Self::ensure_structured_edits(doc);
@@ -227,7 +228,7 @@ impl PhotosDoc {
     fn ensure_structured_edits(doc: &mut AutoCommit) -> Option<ObjId> {
         let roots = Self::edits_roots(doc);
         if let [root] = roots.as_slice() {
-            if Self::get_str(doc, "edits").is_some() {
+            if read_str(doc, &ROOT, "edits").is_some() {
                 let _ = doc.delete(&ROOT, "edits");
             }
             return Some(root.clone());
@@ -249,7 +250,7 @@ impl PhotosDoc {
         let root = doc.put_object(&ROOT, EDITS_KEY, ObjType::Map).ok()?;
         Self::write_json_at(doc, &root, "crop", &legacy.crop);
         Self::write_json_at(doc, &root, "rotate_quarters", &legacy.rotate_quarters);
-        if Self::get_str(doc, "edits").is_some() {
+        if read_str(doc, &ROOT, "edits").is_some() {
             let _ = doc.delete(&ROOT, "edits");
         }
         Some(root)
@@ -452,7 +453,7 @@ impl PhotosDoc {
             }
             let _ = Self::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY);
             let _ = Self::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY);
-            if Self::get_str(doc, "library").is_some() {
+            if read_str(doc, &ROOT, "library").is_some() {
                 let _ = doc.delete(&ROOT, "library");
             }
             return Some(root.clone());
@@ -496,7 +497,7 @@ impl PhotosDoc {
         // A non-empty legacy value has now been copied fieldwise. Delete an
         // empty scalar too, so a newly seeded document has exactly one library
         // representation and no later code can accidentally write the blob.
-        if Self::get_str(doc, "library").is_some() {
+        if read_str(doc, &ROOT, "library").is_some() {
             let _ = doc.delete(&ROOT, "library");
         }
         Some(root)
@@ -699,23 +700,23 @@ impl PhotosDoc {
 
     fn read_photo(doc: &AutoCommit, photos: &ObjId, id: &str) -> Option<LibraryPhoto> {
         let row = Self::map_at(doc, photos, id)?;
-        let name = Self::str_at(doc, &row, "name")?;
-        let width = Self::int_at(doc, &row, "width").unwrap_or(0).max(0) as u32;
-        let height = Self::int_at(doc, &row, "height").unwrap_or(0).max(0) as u32;
+        let name = read_str(doc, &row, "name")?;
+        let width = read_i64_coerced(doc, &row, "width").unwrap_or(0).max(0) as u32;
+        let height = read_i64_coerced(doc, &row, "height").unwrap_or(0).max(0) as u32;
         Some(LibraryPhoto {
             id: id.to_owned(),
             image: OpenImage {
-                path: Self::str_at(doc, &row, "path").unwrap_or_else(|| name.clone()),
+                path: read_str(doc, &row, "path").unwrap_or_else(|| name.clone()),
                 name,
                 width,
                 height,
-                content: Self::str_at(doc, &row, "content"),
+                content: read_str(doc, &row, "content"),
             },
-            favorite: Self::bool_at(doc, &row, "favorite").unwrap_or(false),
-            folder: Self::str_at(doc, &row, "folder"),
+            favorite: read_bool(doc, &row, "favorite").unwrap_or(false),
+            folder: read_str(doc, &row, "folder"),
             people: Self::string_list(doc, &row, "people"),
             tags: Self::string_list(doc, &row, "tags"),
-            captured_at: Self::str_at(doc, &row, "captured_at"),
+            captured_at: read_str(doc, &row, "captured_at"),
             analysis: Self::conflicting_at::<ImageAnalysis>(doc, &row, "analysis")
                 .into_iter()
                 .next(),
@@ -893,7 +894,7 @@ impl PhotosDoc {
         let row = Self::map_at(doc, albums, id)?;
         Some(crate::model::Album {
             id: id.to_owned(),
-            name: Self::str_at(doc, &row, "name")?,
+            name: read_str(doc, &row, "name")?,
             // Current documents store the complete absolute membership as a
             // scalar. Concurrent replacements therefore resolve to one
             // deterministic authored set instead of Automerge interleaving
@@ -914,10 +915,7 @@ impl PhotosDoc {
             return Vec::new();
         };
         (0..doc.length(&list))
-            .filter_map(|index| match doc.get(&list, index).ok().flatten() {
-                Some((Value::Scalar(value), _)) => value.to_str().map(str::to_owned),
-                _ => None,
-            })
+            .filter_map(|index| read_str(doc, &list, index))
             .collect()
     }
 
@@ -1006,33 +1004,6 @@ impl PhotosDoc {
             for row in &rows {
                 let _ = doc.put(row, label, true);
             }
-        }
-    }
-
-    fn str_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<String> {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Str(value) => Some(value.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn bool_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<bool> {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
-                ScalarValue::Boolean(value) => Some(*value),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn int_at(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<i64> {
-        match doc.get(parent, key) {
-            Ok(Some((Value::Scalar(value), _))) => value.to_i64(),
-            _ => None,
         }
     }
 
@@ -1313,7 +1284,10 @@ impl PhotosDoc {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one delta writes every columnar map of a photo row; each is a separate CRDT object"
+    )]
     fn write_columnar_photo_delta(
         doc: &mut AutoCommit,
         core: &ObjId,
@@ -1459,21 +1433,11 @@ impl PhotosDoc {
 
     fn string_values(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
         (0..doc.length(list))
-            .filter_map(|index| match doc.get(list, index).ok().flatten() {
-                Some((Value::Scalar(value), _)) => value.to_str().map(str::to_owned),
-                _ => None,
-            })
+            .filter_map(|index| read_str(doc, list, index))
             .collect()
     }
 
     // -- scalar helpers ----------------------------------------------------
-
-    fn get_str(doc: &AutoCommit, key: &str) -> Option<String> {
-        match doc.get(&ROOT, key) {
-            Ok(Some((Value::Scalar(s), _))) => s.to_str().map(std::string::ToString::to_string),
-            _ => None,
-        }
-    }
 
     fn write_json<T: serde::Serialize>(doc: &mut AutoCommit, key: &str, value: &T) {
         if let Ok(s) = serde_json::to_string(value) {
@@ -1536,7 +1500,7 @@ impl PhotosDoc {
         values
             .into_iter()
             .filter_map(|(value, _)| match value {
-                Value::Scalar(s) => s.to_str().and_then(|raw| serde_json::from_str(raw).ok()),
+                Value::Scalar(s) => s.as_str().and_then(|raw| serde_json::from_str(raw).ok()),
                 Value::Object(_) => None,
             })
             .collect()
@@ -1589,7 +1553,7 @@ mod tests {
         };
         PhotosDoc::set_edits(&mut doc, &e);
         assert_eq!(PhotosDoc::edits(&doc), e);
-        assert!(PhotosDoc::get_str(&doc, "edits").is_none());
+        assert!(read_str(&doc, &ROOT, "edits").is_none());
         assert!(!PhotosDoc::edits_roots(&doc).is_empty());
     }
 
@@ -1615,7 +1579,7 @@ mod tests {
         assert!((restored.crop.w - legacy.crop.w).abs() <= f64::EPSILON);
         assert!((restored.crop.h - legacy.crop.h).abs() <= f64::EPSILON);
         assert_eq!(restored.rotate_quarters, legacy.rotate_quarters);
-        assert!(PhotosDoc::get_str(&doc, "edits").is_none());
+        assert!(read_str(&doc, &ROOT, "edits").is_none());
         assert!(!PhotosDoc::edits_roots(&doc).is_empty());
     }
 
@@ -1704,9 +1668,9 @@ mod tests {
 
         PhotosDoc::set_image(&mut doc, Some(&image));
 
-        let image_json = PhotosDoc::get_str(&doc, "image").expect("image JSON");
+        let image_json = read_str(&doc, &ROOT, "image").expect("image JSON");
         assert!(!image_json.contains(origin));
-        assert!(PhotosDoc::get_str(&doc, "library").is_none());
+        assert!(read_str(&doc, &ROOT, "library").is_none());
         let open = PhotosDoc::image(&doc).expect("imported image");
         assert_eq!(open.path, "harbour.png");
         assert_eq!(open.content.as_deref(), Some(hash.as_str()));
@@ -1732,7 +1696,7 @@ mod tests {
 
         PhotosDoc::seed(&mut doc);
 
-        assert!(PhotosDoc::get_str(&doc, "library").is_none());
+        assert!(read_str(&doc, &ROOT, "library").is_none());
         let root = PhotosDoc::library_roots(&doc)
             .into_iter()
             .next()

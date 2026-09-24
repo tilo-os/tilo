@@ -1,4 +1,5 @@
 //! Versioned private receipts. A receipt is a hint to revalidate, never overwrite authority.
+use super::advisory_lock::ExclusiveLock;
 use super::migration::{self, CopyProgress, CopyReport, OwnedTemporary, PinnedDirectory, changed};
 use super::{
     destination_security,
@@ -337,7 +338,7 @@ pub struct MigrationJournal {
     sequence: u64,
     parent: Arc<PinnedDirectory>,
     name: OsString,
-    file: File,
+    file: ExclusiveLock,
     identity: Metadata,
     resume: bool,
     seen: BTreeSet<PathBuf>,
@@ -478,7 +479,7 @@ impl MigrationJournal {
             document
         } else {
             let mut data = Vec::new();
-            (&mut file).take(MAX_JOURNAL + 1).read_to_end(&mut data)?;
+            (&mut *file).take(MAX_JOURNAL + 1).read_to_end(&mut data)?;
             if data.len() as u64 > MAX_JOURNAL {
                 return Err(changed("legacy journal exceeds size bound"));
             }
@@ -849,9 +850,7 @@ impl MigrationJournal {
             Self::write_outcome(&mut temporary.file, &mut sequence, outcome)?;
         }
         durability::sync_file(&temporary.file)?;
-        temporary
-            .file
-            .try_lock()
+        let file = ExclusiveLock::try_new(temporary.file.try_clone()?)
             .map_err(|e| changed(&format!("journal is busy: {e}")))?;
         self.validate()?;
         #[cfg(test)]
@@ -863,7 +862,7 @@ impl MigrationJournal {
             Path::new(&self.name),
         )?;
         durability::sync_directory(&self.parent.file)?;
-        self.file = temporary.file.try_clone()?;
+        self.file = file;
         self.identity = Metadata::from_file(&self.file)?;
         self.sequence = sequence;
         self.document.version = 2;

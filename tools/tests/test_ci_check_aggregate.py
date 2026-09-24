@@ -49,14 +49,18 @@ class CheckAggregateTests(unittest.TestCase):
 
     def aggregate(self, builder="success", select="success", security="success", affected="success",
                   required="true", security_required="true", count="4",
-                  event="pull_request", native_required="false", native="skipped"):
+                  event="pull_request", native_required="false", native="skipped",
+                  test=None, check=None, clippy=None):
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "summary"
             result = subprocess.run(
                 [self.bash, "-c", step_script(self.workflow, "aggregate")],
                 env={**os.environ, "BUILDER_RESULT": builder,
                      "SELECT_RESULT": select, "SECURITY_RESULT": security,
-                     "AFFECTED_RESULT": affected, "RUST_REQUIRED": required,
+                     "TEST_RESULT": affected if test is None else test,
+                     "CHECK_RESULT": affected if check is None else check,
+                     "CLIPPY_RESULT": affected if clippy is None else clippy,
+                     "RUST_REQUIRED": required,
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "NATIVE_DEPENDENCIES_REQUIRED": native_required,
                      "NATIVE_DEPENDENCIES_RESULT": native,
@@ -110,6 +114,20 @@ class CheckAggregateTests(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 self.assertNotEqual(self.aggregate(**overrides)[0], 0)
 
+    def test_every_shard_job_must_pass_or_be_skipped_together(self):
+        for results in (("failure", "success", "success"), ("success", "failure", "success"),
+                        ("success", "success", "failure"), ("success", "success", "skipped"),
+                        ("skipped", "success", "success"), ("success", "cancelled", "success"),
+                        ("success", "success", "")):
+            test, check, clippy = results
+            with self.subTest(results=results):
+                self.assertNotEqual(self.aggregate(test=test, check=check, clippy=clippy)[0], 0)
+        for results in (("skipped", "skipped", "failure"), ("skipped", "success", "skipped")):
+            test, check, clippy = results
+            with self.subTest(results=results, required="false"):
+                self.assertNotEqual(self.aggregate(test=test, check=check, clippy=clippy,
+                                                   required="false", count="0")[0], 0)
+
     def test_design_skip_does_not_mask_security_or_selector_failure(self):
         for job, results in (
             ("select", ("failure", "cancelled", "skipped", "")),
@@ -162,13 +180,19 @@ class CheckAggregateTests(unittest.TestCase):
                 self.assertNotEqual(self.aggregate(native_required="true", native="failure")[0], 0)
 
     def test_wiring_and_failed_selector_pipeline(self):
-        affected = section(self.workflow, "affected", 2)
-        self.assertIn("if: needs.select.outputs.rust_required == 'true'", affected)
-        self.assertIn("fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix ||", affected)
-        self.assertIn('{"include":[{"runner":"runner"}]}', affected)
+        for name, matrix in (("test", "matrix"), ("check", "matrix"), ("clippy", "clippy_matrix")):
+            with self.subTest(job=name):
+                job = section(self.workflow, name, 2)
+                self.assertIn("if: needs.select.outputs.rust_required == 'true'", job)
+                self.assertIn("needs: [builder, select]", job)
+                self.assertIn(
+                    f"fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.{matrix} ||", job)
+                self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', job)
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
-        self.assertIn("needs: [builder, select, security, affected, native-dependencies]", checks)
+        self.assertIn("needs: [builder, select, security, test, check, clippy, native-dependencies]", checks)
+        for name in ("test", "check", "clippy"):
+            self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
         self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
         self.assertIn('test "$BUILDER_RESULT" = success', checks)
         security = section(self.workflow, "security", 2)

@@ -19,6 +19,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_str};
 
 use crate::attachment_store;
 use crate::model::{Draft, DraftAttachment, Folder, Mailbox, Message};
@@ -42,26 +43,6 @@ impl MailDoc {
             _ => doc
                 .put_object(parent, key, ObjType::Map)
                 .expect("put_object map never fails"),
-        }
-    }
-
-    fn read_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn read_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
-        match doc.get(obj, key) {
-            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Boolean(b) => Some(*b),
-                _ => None,
-            },
-            _ => None,
         }
     }
 
@@ -118,17 +99,15 @@ impl MailDoc {
             };
             let mut changed = false;
             if let Some(m) = mb.get_mut(id) {
-                if let Some(r) = Self::read_bool(doc, &entry, "read") {
+                if let Some(r) = read_bool(doc, &entry, "read") {
                     changed |= m.read != r;
                     m.read = r;
                 }
-                if let Some(s) = Self::read_bool(doc, &entry, "starred") {
+                if let Some(s) = read_bool(doc, &entry, "starred") {
                     changed |= m.starred != s;
                     m.starred = s;
                 }
-                if let Some(f) =
-                    Self::read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s))
-                {
+                if let Some(f) = read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s)) {
                     changed |= m.folder != f;
                     m.folder = f;
                 }
@@ -172,15 +151,15 @@ impl MailDoc {
             return Draft::default();
         };
         Draft {
-            to: Self::read_str(doc, &d, "to").unwrap_or_default(),
-            cc: Self::read_str(doc, &d, "cc").unwrap_or_default(),
-            bcc: Self::read_str(doc, &d, "bcc").unwrap_or_default(),
-            subject: Self::read_str(doc, &d, "subject").unwrap_or_default(),
-            body: Self::read_str(doc, &d, "body").unwrap_or_default(),
-            html_body: Self::read_str(doc, &d, "html_body"),
-            calendar_ics: Self::read_str(doc, &d, "calendar_ics")
+            to: read_str(doc, &d, "to").unwrap_or_default(),
+            cc: read_str(doc, &d, "cc").unwrap_or_default(),
+            bcc: read_str(doc, &d, "bcc").unwrap_or_default(),
+            subject: read_str(doc, &d, "subject").unwrap_or_default(),
+            body: read_str(doc, &d, "body").unwrap_or_default(),
+            html_body: read_str(doc, &d, "html_body"),
+            calendar_ics: read_str(doc, &d, "calendar_ics")
                 .filter(|value| crate::actions::valid_calendar_invitation(value)),
-            attachments: Self::read_str(doc, &d, "attachments")
+            attachments: read_str(doc, &d, "attachments")
                 .and_then(|raw| serde_json::from_str::<Vec<DraftAttachment>>(&raw).ok())
                 .map(|items| attachment_store::bounded(&items))
                 .unwrap_or_default(),
@@ -233,7 +212,7 @@ impl MailDoc {
         // a permanent delete on another replica; it may still write `present`,
         // but it can never clear this marker and so can never revive the
         // message as an action target or projection.
-        if Self::read_bool(doc, &entry, "purged") == Some(true) {
+        if read_bool(doc, &entry, "purged") == Some(true) {
             return;
         }
         ui::doc::put_if_changed(doc, &entry, "present", true);
@@ -253,10 +232,10 @@ impl MailDoc {
         if let Ok(Some((Value::Object(ObjType::Map), messages))) = doc.get(&ROOT, "messages")
             && let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id)
         {
-            if Self::read_bool(doc, &entry, "purged") == Some(true) {
+            if read_bool(doc, &entry, "purged") == Some(true) {
                 return false;
             }
-            return Self::read_bool(doc, &entry, "present").unwrap_or(false);
+            return read_bool(doc, &entry, "present").unwrap_or(false);
         }
         Self::flag_entry_ref(doc, id).is_some()
     }
@@ -278,10 +257,10 @@ impl MailDoc {
         let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&messages, id) else {
             return false;
         };
-        Self::read_bool(doc, &entry, "purged") == Some(true)
+        read_bool(doc, &entry, "purged") == Some(true)
             // Documents written before the explicit `purged` field retain
             // their original `present: false` tombstones on upgrade.
-            || Self::read_bool(doc, &entry, "present") == Some(false)
+            || read_bool(doc, &entry, "present") == Some(false)
     }
 
     // ---- granular per-message flag writers (the action apply path) ----
@@ -329,19 +308,19 @@ impl MailDoc {
     /// The stored read flag for a message, or `None` if unset.
     pub fn get_read(doc: &AutoCommit, id: &str) -> Option<bool> {
         let entry = Self::flag_entry_ref(doc, id)?;
-        Self::read_bool(doc, &entry, "read")
+        read_bool(doc, &entry, "read")
     }
 
     /// The stored starred flag for a message, or `None` if unset.
     pub fn get_starred(doc: &AutoCommit, id: &str) -> Option<bool> {
         let entry = Self::flag_entry_ref(doc, id)?;
-        Self::read_bool(doc, &entry, "starred")
+        read_bool(doc, &entry, "starred")
     }
 
     /// The stored folder for a message, or `None` if unset / an unknown key.
     pub fn get_folder_for(doc: &AutoCommit, id: &str) -> Option<Folder> {
         let entry = Self::flag_entry_ref(doc, id)?;
-        Self::read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s))
+        read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s))
     }
 
     // ---- per-message labels/tags (`flags/<id>/labels`) ----
@@ -447,7 +426,7 @@ impl MailDoc {
         };
         let mut out: Vec<(String, String)> = doc
             .keys(&folders)
-            .filter_map(|k| Self::read_str(doc, &folders, &k).map(|name| (k, name)))
+            .filter_map(|k| read_str(doc, &folders, &k).map(|name| (k, name)))
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out

@@ -35,7 +35,7 @@ pub fn run(args: &[String]) {
 #[cfg(feature = "webview-wpe")]
 mod bench {
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use tilo_ui::webview::wpe::WpeEngine;
     use tilo_ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
@@ -118,7 +118,7 @@ mod bench {
 
         let url = args.first().cloned().unwrap_or_else(|| DEFAULT_URL.into());
 
-        let boot_start = Instant::now();
+        let boot_start = tilo_ui::time::now();
         let engine = match WpeEngine::new() {
             Ok(e) => e,
             Err(e) => {
@@ -137,7 +137,7 @@ mod bench {
         engine.send(WebViewCommand::Navigate(url.clone()));
 
         // ---- Load: wait for LoadFinished AND a painted frame ----
-        let load_start = Instant::now();
+        let load_start = tilo_ui::time::now();
         let mut load_finished = false;
         let mut painted = false;
         while !(load_finished && painted) {
@@ -187,10 +187,10 @@ mod bench {
         let mut frames = 0u64;
         let mut last_key = frame_key(&slot);
         let mut flip = false;
-        let t0 = Instant::now();
+        let t0 = tilo_ui::time::now();
         let mut next_scroll = t0;
         while t0.elapsed() < THROUGHPUT_WINDOW {
-            if Instant::now() >= next_scroll {
+            if tilo_ui::time::now() >= next_scroll {
                 engine.send(scroll_cmd(flip));
                 flip = !flip;
                 next_scroll += SCROLL_INTERVAL;
@@ -219,7 +219,7 @@ mod bench {
             // a paint that landed during the inter-sample settle isn't
             // credited to this command.
             let before = frame_key(&slot);
-            let sent = Instant::now();
+            let sent = tilo_ui::time::now();
             engine.send(scroll_cmd(flip));
             flip = !flip;
 

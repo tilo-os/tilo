@@ -97,7 +97,7 @@ fn main() {
                 // REPRO_LISTS=easylist,easyprivacy restricts to those lists
                 // (name prefix match); default = all cached lists.
                 let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-                let dir = dirs::cache_dir()
+                let dir = xdg_paths::cache_dir()
                     .unwrap()
                     .join("tilo-browser")
                     .join("filters");
@@ -195,7 +195,7 @@ fn main() {
 /// stylesheets), which is how a generic list can kill a page's own assets.
 fn analyze() {
     let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-    let dir = dirs::cache_dir()
+    let dir = xdg_paths::cache_dir()
         .unwrap()
         .join("tilo-browser")
         .join("filters");

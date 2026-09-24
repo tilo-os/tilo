@@ -600,6 +600,7 @@ mod tests {
 
     #[test]
     fn narrow_app_selects_region_formats() {
+        let _config = crate::prefs::test_env::ConfigGuard::new();
         // The width hint + shot flag are applied; the resolved
         // narrow/overlay layout is asserted in the layout-driven tests once a
         // frame is laid out (see settings_app tests).
@@ -608,11 +609,13 @@ mod tests {
 
     #[test]
     fn wide_app_selects_visible_appearance_row() {
+        let _config = crate::prefs::test_env::ConfigGuard::new();
         assert_eq!(Scenario::Wide.app().selected(), Category::Appearance);
     }
 
     #[test]
     fn responsive_capture_uses_exact_width_to_select_navigation_mode() {
+        let _config = crate::prefs::test_env::ConfigGuard::new();
         let phone = responsive_app((390, 844), 1.0);
         assert!(phone.is_narrow());
         assert_eq!(phone.selected(), Category::RegionFormats);

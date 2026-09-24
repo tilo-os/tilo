@@ -10,9 +10,9 @@
     reason = "plot projection and vector geometry are bounded floating-point arithmetic"
 )]
 
+use crate::time::{Duration, Instant};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -763,7 +763,7 @@ impl CartesianPlot {
             pan_last: None,
             brushed: None,
             transition_from: None,
-            transition_started: Instant::now(),
+            transition_started: crate::time::now(),
             reduce_motion: false,
             domain_cache: RefCell::new(None),
             touch: ChartTouchTracker::default(),
@@ -817,7 +817,7 @@ impl CartesianPlot {
             && !self.style.animation.duration.is_zero()
         {
             self.transition_from = Some(previous);
-            self.transition_started = Instant::now();
+            self.transition_started = crate::time::now();
         } else {
             self.transition_from = None;
         }
@@ -1558,7 +1558,7 @@ impl CartesianPlot {
         }
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut nearest: Option<(f64, Hovered)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
             if self.hidden_series.contains(&series.id) {
@@ -2761,7 +2761,7 @@ impl CartesianPlot {
                     self.plot_rect(),
                     self.domain(&self.style.x_axis, true),
                     self.domain(&self.style.y_axis, false),
-                    Instant::now(),
+                    crate::time::now(),
                 )
                 .map(|point| Hovered {
                     series,
@@ -2955,7 +2955,7 @@ impl Widget for CartesianPlot {
         _presence: &PresenceCtx,
     ) {
         self.reduce_motion = theme.reduce_motion;
-        let now = Instant::now();
+        let now = crate::time::now();
         let plot = self.plot_rect();
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
@@ -3754,7 +3754,7 @@ mod tests {
             color,
             vec![PlotDatum::new("point", 100.0, 30.0)],
         )]);
-        let midpoint = Instant::now();
+        let midpoint = crate::time::now();
         plot.transition_started = midpoint.checked_sub(Duration::from_millis(100)).unwrap();
         let (x, y) = plot.animated_xy(0, 0, midpoint).unwrap();
         assert!(x > 50.0 && x < 100.0, "ease-out midpoint: {x}");

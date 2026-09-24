@@ -5,9 +5,6 @@
 //! session client weaken policy, so D-Bus setters reject all writes. Tilo
 //! Settings uses [`LockdownBackend::set_policy`] in-process.
 
-use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -41,10 +38,7 @@ impl LockdownBackend {
     }
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let policy = fs::read(&path)
-            .ok()
-            .and_then(|v| serde_json::from_slice(&v).ok())
-            .unwrap_or_default();
+        let policy = atomic_file::json::load_or_default(&path);
         Self {
             policy: Arc::new(Mutex::new(policy)),
             path: Arc::new(path),
@@ -59,32 +53,8 @@ impl LockdownBackend {
             .policy
             .lock()
             .map_err(|_| failed("lockdown policy lock poisoned"))?;
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| failed("lockdown policy path has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|e| failed(&format!("cannot create lockdown directory: {e}")))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|e| failed(&format!("cannot protect lockdown directory: {e}")))?;
-        let tmp = self.path.with_extension("tmp");
-        let encoded = serde_json::to_vec(&policy)
-            .map_err(|e| failed(&format!("cannot encode lockdown policy: {e}")))?;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| failed(&format!("cannot create lockdown policy: {e}")))?;
-        file.write_all(&encoded)
-            .and_then(|()| file.sync_all())
-            .map_err(|e| failed(&format!("cannot write lockdown policy: {e}")))?;
-        fs::rename(&tmp, self.path.as_ref())
+        atomic_file::json::write_private(&self.path, &policy)
             .map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|e| failed(&format!("cannot sync lockdown policy: {e}")))?;
         *held = policy;
         Ok(())
     }
@@ -94,11 +64,7 @@ impl LockdownBackend {
 /// enforce Lockdown themselves; merely exposing these properties would let a
 /// policy controller report a restriction while privileged work still runs.
 pub fn current_policy() -> LockdownPolicy {
-    let path = default_path();
-    fs::read(path)
-        .ok()
-        .and_then(|value| serde_json::from_slice(&value).ok())
-        .unwrap_or_default()
+    atomic_file::json::load_or_default(&default_path())
 }
 
 #[interface(name = "org.freedesktop.impl.portal.Lockdown")]
@@ -178,6 +144,8 @@ fn denied() -> zbus::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     #[test]
     fn trusted_policy_persists() {
         let dir = tempfile::tempdir().unwrap();

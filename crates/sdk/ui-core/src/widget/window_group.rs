@@ -4,6 +4,7 @@ use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
 use crate::widget::{
@@ -11,7 +12,6 @@ use crate::widget::{
 };
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -19,56 +19,19 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
-/// Per-mille (not px) so a tier means the same fraction on every monitor.
-/// Thirds tile the strip cleanly; `Wide` is the full usable width.
-pub const WIDTH_NARROW_PERMILLE: u16 = 333;
-pub const WIDTH_NORMAL_PERMILLE: u16 = 667;
-pub const WIDTH_WIDE_PERMILLE: u16 = 1000;
-
-/// [`WIDTH_FLOOR_PX`] backs this up on outputs too small for 15% to be
-/// usable pixels.
-pub const WIDTH_MIN_PERMILLE: u16 = 150;
-pub const WIDTH_MAX_PERMILLE: u16 = 1000;
-
-/// A pure fraction has no floor — 15% of an 800px strip is 120px, too
-/// narrow for a tab pill or scrollbar — so resolved width clamps up to
-/// this (and back down to the strip width if that's narrower still).
-pub const WIDTH_FLOOR_PX: f64 = 240.0;
+/// Group widths are the desktop model's: a fraction of the strip, never
+/// pixels, with one set of tiers and clamps for every host.
+pub use tilo_desktop_model::width::{
+    WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE, WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE,
+    WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE, WindowWidth, max_group_px, min_group_px,
+    permille_for_px,
+};
 
 /// Only reached from a bare `ui` host with no output spans; the shell
 /// always pushes real geometry first.
 pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
 
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
-
-pub fn min_group_px(strip_usable_px: f64) -> f64 {
-    let usable = strip_usable_px.max(1.0);
-    (usable * f64::from(WIDTH_MIN_PERMILLE) / 1000.0)
-        .max(WIDTH_FLOOR_PX)
-        .min(usable)
-}
-
-pub fn max_group_px(strip_usable_px: f64) -> f64 {
-    strip_usable_px.max(1.0)
-}
-
-/// Inverse of [`WindowWidth::resolve`]: how a pointer drag (pixels)
-/// becomes a stored resolution-independent width.
-pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
-    let usable = strip_usable_px.max(1.0);
-    let raw = (px.max(0.0) / usable * 1000.0).round();
-    let clamped = raw.clamp(f64::from(WIDTH_MIN_PERMILLE), f64::from(WIDTH_MAX_PERMILLE));
-    // Safe: `clamped` is bounded to [WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE]
-    // (150..=1000) above, well within u16 range and never negative.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to [150.0, 1000.0] above, which fits losslessly in u16"
-    )]
-    {
-        clamped as u16
-    }
-}
 
 const SPAWN_ANIM_MS: u64 = 420;
 /// Kept inside the row's visible margin during the spawn animation.
@@ -96,14 +59,14 @@ fn spawn_anim_secs() -> f64 {
 }
 
 /// Test-only helper: an [`Instant`] `ms` milliseconds in the past, for
-/// backdating a timestamp instead of sleeping. Falls back to `Instant::now`
+/// backdating a timestamp instead of sleeping. Falls back to `crate::time::now`
 /// on the practically-unreachable case that the subtraction would underflow
 /// the clock's epoch.
 #[cfg(test)]
 fn instant_ago_ms(ms: u64) -> Instant {
-    Instant::now()
+    crate::time::now()
         .checked_sub(Duration::from_millis(ms))
-        .unwrap_or_else(Instant::now)
+        .unwrap_or_else(crate::time::now)
 }
 
 /// Narrows a screen-space coordinate, length or eased animation factor
@@ -121,54 +84,6 @@ fn px_f32(v: f64) -> f32 {
 /// Pointer band that reveals the floating title/restore/close controls.
 /// Hit-testing is unaffected; only paint is gated.
 const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
-
-/// A width only becomes pixels through [`WindowWidth::resolve`], against
-/// the strip's usable width, so the same stored value means the same
-/// proportion of the screen regardless of output resolution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowWidth {
-    Narrow,
-    Normal,
-    Wide,
-    /// What a manual resize produces: measured in pixels, converted back
-    /// to a fraction so it survives a restart and a differently-sized
-    /// output.
-    Fraction(u16),
-}
-
-impl WindowWidth {
-    pub fn permille(&self) -> u16 {
-        match self {
-            WindowWidth::Narrow => WIDTH_NARROW_PERMILLE,
-            WindowWidth::Normal => WIDTH_NORMAL_PERMILLE,
-            WindowWidth::Wide => WIDTH_WIDE_PERMILLE,
-            WindowWidth::Fraction(p) => (*p).clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE),
-        }
-    }
-
-    pub fn fraction(&self) -> f64 {
-        f64::from(self.permille()) / 1000.0
-    }
-
-    /// Clamped into `[min_group_px, max_group_px]` so a fraction can
-    /// neither collapse a group below usability nor push it past the
-    /// output's right edge.
-    pub fn resolve(&self, strip_usable_px: f64) -> f64 {
-        let usable = strip_usable_px.max(1.0);
-        // Rounded: a Wayland client's geometry is integers, and a
-        // fractional width would leave sub-pixel seams between groups.
-        (usable * self.fraction())
-            .round()
-            .clamp(min_group_px(usable), max_group_px(usable))
-    }
-
-    /// Always a [`WindowWidth::Fraction`] — records the proportion the
-    /// user landed on rather than a coincident tier, so a later tier
-    /// retune doesn't silently move their window.
-    pub fn from_px(px: f64, strip_usable_px: f64) -> Self {
-        WindowWidth::Fraction(permille_for_px(px, strip_usable_px))
-    }
-}
 
 // Each bool below is an independent UI flag (resize-hover, maximized,
 // search-open, focus, ...), not a bitset encoding related states, and the
@@ -385,7 +300,7 @@ impl WindowGroup {
     }
 
     pub fn start_spawn_animation(&mut self) {
-        self.spawned_at = Some(Instant::now());
+        self.spawned_at = Some(crate::time::now());
     }
 
     /// The same eased factor `draw` uses for alpha, scale and offset.
@@ -403,7 +318,7 @@ impl WindowGroup {
     }
 
     pub fn start_closing(&mut self) {
-        self.closing_at = Some(Instant::now());
+        self.closing_at = Some(crate::time::now());
     }
 
     pub fn is_closing(&self) -> bool {
@@ -832,7 +747,7 @@ impl WindowGroup {
         if let Some(close_id) = self.bar.take_close() {
             self.closing_hosts
                 .entry(close_id)
-                .or_insert_with(Instant::now);
+                .or_insert_with(crate::time::now);
         }
         true
     }
@@ -985,7 +900,7 @@ impl WindowGroup {
                 let _ = self.bar.take_close();
                 self.closing_hosts
                     .entry(active_id)
-                    .or_insert_with(Instant::now);
+                    .or_insert_with(crate::time::now);
                 if !self.pending_close_commit.contains(&active_id) {
                     self.pending_close_commit.push(active_id);
                 }
@@ -1090,7 +1005,7 @@ impl WindowGroup {
         if let Some(close_id) = self.bar.take_close() {
             self.closing_hosts
                 .entry(close_id)
-                .or_insert_with(Instant::now);
+                .or_insert_with(crate::time::now);
             if !self.pending_close_commit.contains(&close_id) {
                 self.pending_close_commit.push(close_id);
             }
@@ -1739,7 +1654,7 @@ impl Widget for WindowGroup {
         // before the app has drawn — without restarting it here the fade
         // would already have run its course against an invisible group.
         if std::mem::take(&mut self.held_back) {
-            self.spawned_at = Some(Instant::now());
+            self.spawned_at = Some(crate::time::now());
         }
         // Close checked first (mutually exclusive with spawn in practice):
         // `opacity 0→1, scale 0.92→1, x -16→0` over `SPAWN_ANIM_MS`
@@ -3262,7 +3177,7 @@ mod tests {
         // Seed `closing_hosts` directly with tab id 1 to simulate the
         // leak: still present in `bar.tabs` and `hosts`, but the
         // side-table erroneously carries a fade timestamp.
-        g.closing_hosts.insert(1, Instant::now());
+        g.closing_hosts.insert(1, crate::time::now());
         assert!(
             g.closing_hosts.contains_key(&1),
             "precondition: closing_hosts carries the moved tab id",
@@ -3469,7 +3384,7 @@ mod tests {
             g.close_complete(),
             "close_complete must flip true after the fade window elapses",
         );
-        g.set_closing_at_for_tests(Instant::now());
+        g.set_closing_at_for_tests(crate::time::now());
         assert!(
             !g.close_complete(),
             "a just-latched close must not report complete",
@@ -3657,7 +3572,7 @@ mod tests {
         // Seed `closing_hosts` directly to simulate what `handle_event`
         // does after draining a `pending_close`, bypassing the full event
         // drive.
-        g.closing_hosts.insert(1, Instant::now());
+        g.closing_hosts.insert(1, crate::time::now());
         assert!(
             g.needs_animation_frame(),
             "a fresh closing host must pump the run loop",
@@ -3732,12 +3647,7 @@ mod tests {
 
     /// Writes an RGBA frame as a PNG — the by-eye half of the evidence.
     fn write_png(rgba: &[u8], w: u32, h: u32, path: &std::path::Path) {
-        let file = std::fs::File::create(path).expect("create evidence png");
-        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("png header");
-        writer.write_image_data(rgba).expect("png data");
+        crate::png::write_rgba8(path, w, h, rgba).expect("write evidence png");
     }
 
     /// The composited colour at (`x`, `y`) of a `w`-wide RGBA frame.

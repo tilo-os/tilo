@@ -1377,7 +1377,10 @@ where
         let mut route = self.catalogue.resolver()?.resolve(query, vm_fallback);
         if route.record_id.is_none() && route.runtime.layer == Layer::Wine {
             let digest = Sha256::digest(app_id.as_bytes());
-            route.runtime.id = format!("wine-{}", hex_lower(digest.iter().take(16).copied()));
+            // The first 16 digest bytes, i.e. 32 hex digits.
+            let mut suffix = hex::encode(digest);
+            suffix.truncate(32);
+            route.runtime.id = format!("wine-{suffix}");
         }
         Ok(route)
     }
@@ -1500,36 +1503,6 @@ fn install_detail(status: InstallationStatus, programs: usize) -> String {
         }
         InstallationStatus::Installing => "Installation is running.".to_string(),
         InstallationStatus::Uninstalling => "Vendor uninstall is running.".to_string(),
-    }
-}
-
-fn hex_lower(bytes: impl IntoIterator<Item = u8>) -> String {
-    let mut output = String::new();
-    for byte in bytes {
-        output.push(hex_digit(byte >> 4));
-        output.push(hex_digit(byte & 0x0f));
-    }
-    output
-}
-
-fn hex_digit(value: u8) -> char {
-    match value {
-        0 => '0',
-        1 => '1',
-        2 => '2',
-        3 => '3',
-        4 => '4',
-        5 => '5',
-        6 => '6',
-        7 => '7',
-        8 => '8',
-        9 => '9',
-        10 => 'a',
-        11 => 'b',
-        12 => 'c',
-        13 => 'd',
-        14 => 'e',
-        _ => 'f',
     }
 }
 
@@ -1740,7 +1713,7 @@ mod tests {
                     "could not read retained test installer: {error}"
                 ))
             })?;
-            if hex_lower(Sha256::digest(&bytes)) != input.sha256 {
+            if hex::encode(Sha256::digest(&bytes)) != input.sha256 {
                 return Err(windows_vm::LaunchError::InvalidRequest(
                     "test retained installer digest",
                 ));

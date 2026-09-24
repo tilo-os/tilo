@@ -410,77 +410,11 @@ impl Image {
 
 /// Decode a PNG byte slice into an `(rgba, width, height)` triple. The
 /// returned buffer is always 8-bit-per-channel RGBA, regardless of the
-/// PNG's source colour type.
+/// PNG's source colour type or bit depth.
 fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), ImageDecodeError> {
-    // png 0.18 requires `Seek` on the decoder source; wrap the byte slice in
-    // a `std::io::Cursor` so it satisfies both `Read` and `Seek`.
-    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    let mut reader = decoder
-        .read_info()
-        .map_err(|e| ImageDecodeError::Decode(e.to_string()))?;
-    // png 0.18: output_buffer_size / buffer_size return Option<usize>.
-    let buf_size = reader
-        .output_buffer_size()
-        .ok_or_else(|| ImageDecodeError::Decode("png output buffer size unavailable".into()))?;
-    let mut buf = vec![0; buf_size];
-    let info = reader
-        .next_frame(&mut buf)
-        .map_err(|e| ImageDecodeError::Decode(e.to_string()))?;
-    let bytes = buf.get(..info.buffer_size()).ok_or_else(|| {
-        ImageDecodeError::Decode("png buffer_size exceeds the decoded output buffer".into())
-    })?;
-
-    let (width, height) = (info.width, info.height);
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => bytes.to_vec(),
-        png::ColorType::Rgb => {
-            let mut out = Vec::with_capacity(rgba_capacity_hint(width, height));
-            for chunk in bytes.chunks_exact(3) {
-                out.extend_from_slice(chunk);
-                out.push(0xFF);
-            }
-            out
-        }
-        png::ColorType::GrayscaleAlpha => {
-            let mut out = Vec::with_capacity(rgba_capacity_hint(width, height));
-            for chunk in bytes.chunks_exact(2) {
-                let Some(&[gray, alpha]) = chunk.first_chunk::<2>() else {
-                    continue;
-                };
-                out.extend_from_slice(&[gray, gray, gray, alpha]);
-            }
-            out
-        }
-        png::ColorType::Grayscale => {
-            let mut out = Vec::with_capacity(rgba_capacity_hint(width, height));
-            for &v in bytes {
-                out.extend_from_slice(&[v, v, v, 0xFF]);
-            }
-            out
-        }
-        png::ColorType::Indexed => {
-            return Err(ImageDecodeError::Decode(
-                "indexed-colour PNGs are not supported; re-export as RGB(A)".into(),
-            ));
-        }
-    };
-
-    Ok((rgba, width, height))
-}
-
-/// Best-effort `width * height * 4` as a `Vec` capacity hint. `width`
-/// and `height` come straight from the decoded PNG header, so a
-/// crafted file could claim dimensions that overflow the
-/// multiplication; overflow is treated as "no hint" (falls back to an
-/// empty capacity, which just means the `Vec` grows via reallocation)
-/// rather than wrapping or panicking.
-fn rgba_capacity_hint(width: u32, height: u32) -> usize {
-    usize::try_from(width)
-        .ok()
-        .zip(usize::try_from(height).ok())
-        .and_then(|(w, h)| w.checked_mul(h))
-        .and_then(|wh| wh.checked_mul(4))
-        .unwrap_or(0)
+    let decoded =
+        crate::png::decode_rgba8(bytes).map_err(|e| ImageDecodeError::Decode(e.to_string()))?;
+    Ok((decoded.rgba, decoded.width, decoded.height))
 }
 
 impl Widget for Image {
@@ -597,13 +531,7 @@ mod tests {
             }
         }
 
-        let file = std::fs::File::create(FIXTURE_PATH).unwrap();
-        let w = std::io::BufWriter::new(file);
-        let mut encoder = png::Encoder::new(w, 16, 16);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().unwrap();
-        writer.write_image_data(&rgba).unwrap();
+        crate::png::write_rgba8(FIXTURE_PATH, 16, 16, &rgba).unwrap();
     }
 
     #[test]

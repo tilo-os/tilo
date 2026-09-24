@@ -5,19 +5,12 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use ui::ColorCompat;
+pub use ui::paint::with_alpha;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-
-/// Same colour with a replaced 8-bit alpha. Lets us tint theme colours
-/// for fills/grids without depending on `ui`'s internal colour-compat
-/// trait.
-pub fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
 
 /// Theme type sizes (`theme.tokens.typography.scale.*`) already carry the
 /// accessibility text scale, and the legacy size-based renderer APIs

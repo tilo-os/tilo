@@ -159,7 +159,8 @@ fn active_row_count(app: &SettingsApp) -> usize {
 /// default category, click `target`'s row through the production path and
 /// assert navigation reached it.
 fn click_navigates_to(target: Category) {
-    let mut app = SettingsApp::new();
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app();
     let (taffy, node) = lay_out(&mut app);
 
     assert_eq!(
@@ -297,7 +298,8 @@ nav_test!(click_navigates_about, Category::About);
 /// navigation keeps working (not just the first switch off the default).
 #[test]
 fn two_consecutive_clicks_navigate() {
-    let mut app = SettingsApp::new();
+    let config = crate::support::ScratchConfig::new();
+    let mut app = config.app();
     let (taffy, node) = lay_out(&mut app);
     let mut doc = AutoCommit::new();
     let root = automerge::ROOT;

@@ -10,8 +10,6 @@
 //!   * Forecast:  <https://api.open-meteo.com/v1/forecast>
 //!   * Geocoding: <https://geocoding-api.open-meteo.com/v1/search>
 
-use std::fmt::Write as _;
-
 use serde::Deserialize;
 
 use crate::model::{
@@ -53,28 +51,8 @@ pub fn air_quality_url(lat: f64, lon: f64) -> String {
 
 /// Build the geocoding search URL.
 pub fn geocode_url(query: &str) -> String {
-    let encoded = url_encode(query.trim());
+    let encoded = ui::uri::encode_component(query.trim());
     format!("{GEOCODE_BASE}?name={encoded}&count=8&language=en&format=json")
-}
-
-/// Minimal percent-encoder for the geocoding `name` query parameter.
-/// Only spaces and a handful of reserved chars appear in city names, so
-/// a full URL crate is overkill.
-fn url_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            b' ' => out.push_str("%20"),
-            // `String`'s `Write` impl never fails, so the result is inert.
-            other => {
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------

@@ -46,12 +46,41 @@ as a cheap repeat of ordinary feedback: dispatch explicitly selects the entire
 workspace on both architectures. Submit the updated task branch/PR normally;
 the [scheduler owns admission and runner slots](../AGENTS.md#ci).
 
+Each shard runs as three parallel jobs: `test` (nextest on the shard's tested
+packages, on `runner-large` when a tilo-ui test link needs it), `check` (the
+all-target check and the portable tilo-ui check) and `clippy` (the
+differential Clippy gate, x86-64 rows only). Before this split they ran one
+after another in one job. Run #21842, a 74-package shard, took about 29 minutes
+that way: 12.5 of test execution after a 3-minute test compile, 2.6 of check and
+8.5 of Clippy. Now the critical path is the test job alone. `check` and
+`clippy` use the architecture's ordinary runner because they link nothing. The
+three jobs no longer share a warm target tree. Each fetches dependency
+artifacts from sccache instead, and compiles proc-macro and build-script
+crates, which sccache does not store, once per job. That is the CPU cost of the
+shorter wall time. The `checks` aggregate accepts the three only when all
+succeed, or when all were skipped because Rust is not applicable.
+
 Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
 only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
 check shard counts does not invalidate apps. Graph changes still invalidate
 release selection and the coordinator's trusted source hashes. Actual verifier
 changes still require current acceptance and currently rebuild apps; reusing
 binaries for verification-only changes remains separate work.
+
+Root `Cargo.lock` and `Cargo.toml` changes are attributed rather than treated
+as repository-wide when the difference can be proved. Changed, added or removed
+lockfile records are propagated through the old and new locked graphs (which
+cover every feature, target and dependency kind); workspace packages whose own
+record changed or that depend directly on a changed external record are tested,
+and every package the change reaches is checked with its reverse dependencies.
+In the root manifest, `[workspace] members` edits select the added members and
+the dependants of removed ones, and `[workspace.dependencies]` edits select the
+members using those dependencies. Everything else (lints, profiles, patches,
+`workspace.package`, `exclude`, glob members, a malformed or missing file, or a
+lockfile header change) and every other global input keep the full workspace.
+The native dependency job runs for an attributed lockfile change only when it
+reaches the vendored `openh264-sys2` graph. App release planning shares the
+same lockfile attribution.
 
 To inspect the committed branch's selection locally, without starting a build
 or requesting a runner, run from the checkout:
@@ -133,6 +162,42 @@ policy/dependency checks. A future dependency-audit reuse optimization must bind
 an accepted result to all relevant source/manifests, policy and tool identities;
 path-only skipping of cargo-machete would hide pre-existing failures. That reuse
 is not implemented or claimed here.
+
+## Differential Clippy
+
+`tools/ci/clippy-diff.sh` fails a change only for Clippy diagnostics that are
+new relative to the comparison base. It counts one fingerprint per lint, file
+and message. Threshold lints (`too_many_lines`, `cognitive_complexity`,
+`too_many_arguments`, the size lints, and similar) report a measurement in their
+message, such as `(104/100)`. The numbers are replaced before counting, so a
+function that was already over its limit can change length without being
+reported. A function that newly goes from under to over a limit adds a
+fingerprint in its file and fails. A function that is already over its limit
+and grows further is deliberately accepted.
+
+Pull requests usually compare with the current `main` commit. The `clippy-base`
+job in `check.yml` runs on every push to `main`. It lints the complete workspace
+once and stores the normalized diagnostics in the Forgejo Actions cache. The
+cache key includes the commit, builder image, `rustc`/Clippy versions, compiler
+flags and the hashes of both Clippy helpers. The affected shard restores that
+exact key and restricts the record to the workspace members `cargo clippy` lints
+for its selected packages, so it does not have to check out and lint the base
+itself.
+
+A missing, stale or mismatched record falls back to the fresh base checkout,
+as does a pull request whose base is not a recorded `main` commit. A comparison
+against the record that finds new sites is repeated against a fresh base
+checkout before the job fails, so the record never rejects a change that the
+per-package comparison accepts. The reverse is a small, accepted gap. The
+workspace-wide run unifies Cargo features across all members and also lints
+the test targets of dependencies that are not themselves selected. The record
+can therefore hold a few extra base sites. A new site is hidden only if it has
+the same lint and message, in the same file, as one of those extra sites.
+Affected selection always selects changed packages themselves, and those are
+linted with every target in both runs.
+
+The record follows the shared-cache trust model described below: any job can
+write the Actions cache. The Clippy diff is a lint ratchet, not a security gate.
 
 ## Cache layers
 

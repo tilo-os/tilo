@@ -868,7 +868,7 @@ impl TerminalWidget {
             .ok()
             .flatten()
             .and_then(|(value, _)| match value {
-                Value::Scalar(value) => value.to_str().map(ToOwned::to_owned),
+                Value::Scalar(value) => value.as_str().map(ToOwned::to_owned),
                 Value::Object(_) => None,
             });
         if stored_session.as_deref() == Some(session_id) {
@@ -996,7 +996,7 @@ impl TerminalWidget {
             .ok()?
             .into_iter()
             .filter_map(|(value, _)| match value {
-                Value::Scalar(value) => value.to_str().map(str::to_owned),
+                Value::Scalar(value) => value.as_str().map(str::to_owned),
                 Value::Object(_) => None,
             })
             .filter(|value| uuid::Uuid::parse_str(value).is_ok())
@@ -2128,7 +2128,7 @@ impl TerminalWidget {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "cursor") {
                 self.cursor_id = Some(id.clone());
                 if let Ok(Some((Value::Scalar(v), _))) = state.get(&id, "y")
-                    && let Some(y) = v.to_i64()
+                    && let Some(y) = v.as_i64()
                 {
                     let abs_y = y as usize;
                     let history_offset = self.line_ids.len().saturating_sub(self.height);
@@ -3745,7 +3745,7 @@ impl TerminalWidget {
     /// [`Widget::sync`].
     fn refresh_title_and_links(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title")
-            && let Some(t) = v.to_str()
+            && let Some(t) = v.as_str()
             && let Some(t) = safe_osc_text(t.as_bytes(), MAX_OSC_TITLE_BYTES)
         {
             self.title = t;
@@ -3755,7 +3755,7 @@ impl TerminalWidget {
             self.next_link_id = 0;
             for key in state.keys(&links_id).take(MAX_OSC_LINKS) {
                 if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key)
-                    && let (Ok(id), Some(url)) = (key.parse::<u16>(), v.to_str())
+                    && let (Ok(id), Some(url)) = (key.parse::<u16>(), v.as_str())
                     && let Some(url) = safe_osc_text(url.as_bytes(), MAX_OSC_LINK_BYTES)
                 {
                     self.next_link_id = self.next_link_id.max(id);
@@ -3773,13 +3773,13 @@ impl TerminalWidget {
             let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
                 return None;
             };
-            value.to_u64()
+            value.as_u64()
         };
         let scalar_string = |id: &ObjId, key: &str| -> Option<String> {
             let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
                 return None;
             };
-            value.to_str().map(ToOwned::to_owned)
+            value.as_str().map(ToOwned::to_owned)
         };
         let scalar_bool = |id: &ObjId, key: &str| -> Option<bool> {
             let (Value::Scalar(value), _) = state.get(id, key).ok()?? else {
@@ -3836,12 +3836,12 @@ impl TerminalWidget {
     fn refresh_cursor_from_crdt(&mut self, state: &AutoCommit, active_len: usize) {
         if let Some(cursor_id) = self.cursor_id.as_ref() {
             if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x")
-                && let Some(x) = v.to_i64()
+                && let Some(x) = v.as_i64()
             {
                 self.cursor_x = x as usize;
             }
             if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "y")
-                && let Some(y) = v.to_i64()
+                && let Some(y) = v.as_i64()
             {
                 let abs_y = y as usize;
                 let history_offset = active_len.saturating_sub(self.height);
@@ -5965,7 +5965,7 @@ impl TerminalPerformer<'_> {
                 .ok()
                 .flatten()
                 .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| value.to_u64())
+                .and_then(|value| value.as_u64())
                 .and_then(|value| usize::try_from(value).ok())
                 .unwrap_or(0);
             if row < removed_rows {

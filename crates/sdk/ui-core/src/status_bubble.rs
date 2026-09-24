@@ -8,7 +8,7 @@
 //! its fade, on an injected wall clock so it is unit-testable without an
 //! event loop.
 
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Stroke, Vec2};
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn poke_reveals_then_fades_after_linger() {
         let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         assert!(!b.is_visible(t0), "hidden until poked");
         assert!(b.poke(t0), "poke reveals and reports the change");
         assert!(b.is_visible(t0), "visible right after a poke");
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn hover_pins_open_then_lingers_after_leave() {
         let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         b.set_hover(true, t0);
         // Pinned open regardless of time while the pointer stays over it.
         assert!(
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn a_fresh_poke_restarts_the_countdown() {
         let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         b.poke(t0);
         // Almost expired…
         assert!(b.is_visible(t0 + Duration::from_millis(900)));

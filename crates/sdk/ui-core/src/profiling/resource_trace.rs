@@ -9,8 +9,8 @@
 //! The environment switch is read once per process. Disabled spans read no
 //! clock and serialize nothing. Diagnostic I/O can perturb subsequent timing.
 
+use crate::time::Instant;
 use std::sync::OnceLock;
-use std::time::Instant;
 
 use serde::Serialize;
 
@@ -69,7 +69,7 @@ impl Span {
         enabled: bool,
     ) -> Self {
         Self {
-            start: enabled.then(Instant::now),
+            start: enabled.then(crate::time::now),
             stage,
             generation,
             permission_generation,

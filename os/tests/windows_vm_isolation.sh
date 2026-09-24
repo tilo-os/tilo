@@ -180,19 +180,10 @@ has "$OWNER" 'systemctl start tilo-windows-vm-network.service' 'Windows network 
 lacks "$CONTAINERFILE" 'systemctl enable tilo-windows-vm-network.service' 'Windows network setup is absent from the normal boot transaction'
 has "$CONTAINERFILE" 'tilo-windows-vm-egress-reaper.timer' 'image enables crash-safe egress lease reaper'
 has "$CONTAINERFILE" 'tilo-windows-provision' 'image wires provision tool'
-if python3 - "$CONTAINERFILE" <<'PY'
-import pathlib, shlex, sys
-source = pathlib.Path(sys.argv[1]).read_text().replace("\\\n", " ")
-for line in source.splitlines():
-    if not line.startswith("COPY "):
-        continue
-    words = shlex.split(line, comments=True)
-    if words[:2] == ["COPY", "--from=builder"] and "/out/tilo-windows-vm-control" in words[2:-1]:
-        if words[-1] in ("/usr/libexec/", "/usr/libexec/tilo-windows-vm-control"):
-            sys.exit(0)
-sys.exit(1)
-PY
-then
+# shellcheck source=lib/containerfile.sh
+. "$HERE/lib/containerfile.sh"
+if containerfile_installs_output "$CONTAINERFILE" tilo-windows-vm-control \
+     /usr/libexec/tilo-windows-vm-control; then
     ok 'image ships the singleton VM controller'
 else
     fail 'image ships the singleton VM controller'

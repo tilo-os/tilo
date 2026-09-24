@@ -294,6 +294,7 @@ impl App {
         self.history_changed(revision, open);
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn history_needs_redraw(&mut self) -> bool {
         if !self.history_chrome_enabled {
             return false;
@@ -473,6 +474,7 @@ impl App {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn apply_history_presentation(&mut self, root: taffy::NodeId) {
         if let Some(history) = &mut self.history {
             history.apply_composition(
@@ -735,6 +737,7 @@ impl App {
         result.map_err(|error| format!("History is unavailable: {error:?}"))
     }
 
+    #[cfg(feature = "native")]
     pub(super) fn restore_history_focus(&mut self) {
         if self.history_focus_pending {
             self.history_focus_pending = false;

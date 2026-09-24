@@ -96,12 +96,6 @@ impl MusicApp {
                     .glob("*.wma"),
             )
             .all_files();
-        #[cfg(test)]
-        let receiver = self
-            .test_local_file_pick
-            .take()
-            .map_or_else(|| request.send(), ui::portal::inject_for_test);
-        #[cfg(not(test))]
         let receiver = request.send();
         self.local_file_pick = Some((invocation, receiver));
         self.dirty = true;
@@ -285,7 +279,9 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let before = doc.get_heads();
-            app.test_local_file_pick = Some(if cancelled {
+            let (services, recorder) = ui::host::HostServices::recording();
+            let _host = ui::host::enter(&services);
+            recorder.respond_to_pick(if cancelled {
                 ui::portal::PortalOutcome::Cancelled
             } else {
                 ui::portal::PortalOutcome::Failed("test picker failure".into())
@@ -415,7 +411,9 @@ mod tests {
     fn home_picker_is_in_host_focus_order_only_while_visible() {
         let mut music = MusicApp::new_for_shot();
         music.set_offline_for_shot();
-        music.test_local_file_pick = Some(ui::portal::PortalOutcome::Cancelled);
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
         let mut state = ui::State::new();
         music.sync(&mut state.doc, &automerge::ROOT);
         let mut host = ui::App::new(state, Box::new(music));
@@ -452,7 +450,8 @@ mod tests {
                 .unwrap();
             let id = path.last().unwrap().clone();
             assert!(host.invoke_semantic_action(&id, "activate", None).unwrap());
-            host.refresh_focus_order(); // consume the injected cancellation; never open a dialog
+            host.refresh_focus_order(); // consume the recorded cancellation; never open a dialog
+            assert_eq!(recorder.pick_requests()[0].title(), "Open audio file");
         }
     }
 
@@ -1102,7 +1101,9 @@ mod tests {
         assert_eq!(action.kind, tilo_actions::OperationKind::Effect);
         assert_eq!(action.locus, tilo_actions::ExecutionLocus::ClientLocal);
         assert!(action.params().is_empty());
-        app.test_local_file_pick = Some(ui::portal::PortalOutcome::Opened(path.clone()));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
         let encoded = action.build_json(&serde_json::Map::new()).unwrap();
         let payload = encoded.payload;
         assert_eq!(
@@ -1306,7 +1307,9 @@ mod tests {
         let mut doc = automerge::AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         let invocation = tilo_actions::InvocationId::new();
-        app.test_local_file_pick = Some(ui::portal::PortalOutcome::Opened(path.clone()));
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
         let payload = serde_json::to_vec(&crate::actions::MusicOperation::ChooseAudioFile).unwrap();
         assert_eq!(
             app.start_resource_operation(

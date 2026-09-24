@@ -1585,7 +1585,6 @@ impl Widget for DiffMergeApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::portal::inject_for_test;
 
     fn app_with_state() -> (DiffMergeApp, ui::State) {
         let mut app = DiffMergeApp::new();
@@ -1600,6 +1599,19 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    /// Press the "Open files" toolbar action under a recording host that
+    /// answers the file chooser with `outcome`.
+    fn open_with_outcome(app: &mut DiffMergeApp, outcome: PortalOutcome) {
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(outcome);
+        ui::host::scoped(&services, || app.act(Action::Open));
+        assert_eq!(
+            recorder.pick_requests().len(),
+            1,
+            "one chooser was requested"
+        );
     }
 
     #[test]
@@ -1639,17 +1651,23 @@ mod tests {
     }
 
     /// The "Open files" toolbar action must reach the host portal, never an
-    /// in-app dialog. A sentinel channel is pre-armed so applying Open cannot
-    /// launch a real host dialog; the in-flight guard must preserve it.
+    /// in-app dialog. A recording host stands in for the desktop, and the
+    /// in-flight guard must keep a second press from stacking another dialog.
     #[test]
     fn open_action_routes_to_the_host_portal() {
         let (mut app, _st) = app_with_state();
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
-        app.act(Action::Open);
+        let (services, recorder) = ui::host::HostServices::recording();
+        ui::host::scoped(&services, || {
+            app.act(Action::Open);
+            app.act(Action::Open);
+        });
         assert!(
             app.portal_rx.is_some(),
             "Open routes through the host-portal request path (not an in-app picker)"
         );
+        let picks = recorder.pick_requests();
+        assert_eq!(picks.len(), 1, "the in-flight guard drops the second press");
+        assert_eq!(picks[0].title(), "Open a file to compare");
     }
 
     /// The first file of a diff pair is stashed and a follow-up pick is
@@ -1679,7 +1697,7 @@ mod tests {
         app.pending_left = Some(("left.txt".into(), "alpha\nbeta\ngamma\n".into()));
         let right = write_temp("right.txt", "alpha\nBETA\ngamma\ndelta\n");
 
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Opened(right.clone())));
+        open_with_outcome(&mut app, PortalOutcome::Opened(right.clone()));
         // The per-frame sync drains the portal channel and builds the diff.
         app.sync(&mut st.doc, &st.root);
 
@@ -1709,7 +1727,7 @@ mod tests {
     fn portal_cancel_clears_pending_selection() {
         let (mut app, mut st) = app_with_state();
         app.pending_left = Some(("left.txt".into(), "x\n".into()));
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Cancelled));
+        open_with_outcome(&mut app, PortalOutcome::Cancelled);
         app.sync(&mut st.doc, &st.root);
         assert!(
             app.pending_left.is_none(),
@@ -1726,7 +1744,7 @@ mod tests {
     #[test]
     fn portal_failure_surfaces_on_the_status_line() {
         let (mut app, mut st) = app_with_state();
-        app.portal_rx = Some(inject_for_test(PortalOutcome::Failed("no portal".into())));
+        open_with_outcome(&mut app, PortalOutcome::Failed("no portal".into()));
         app.sync(&mut st.doc, &st.root);
         assert!(app.pending_left.is_none());
         assert!(app.portal_rx.is_none());

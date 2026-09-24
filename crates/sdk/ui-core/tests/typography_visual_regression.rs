@@ -2,8 +2,18 @@
 //! card. The matrix exercises palette, fractional display scaling, and
 //! independent text scaling through the real widget/layout/render pipeline.
 //!
-//! Update intentional changes with:
-//! `UPDATE_TYPOGRAPHY_BASELINES=1 cargo test -p ui --test it typography_visual_regression`
+//! The baselines are Mesa llvmpipe renders; other adapters rasterise
+//! antialiasing differently, so the comparison refuses to run on them.
+//! Regenerate intentional changes with the "Render visual baseline
+//! candidates" workflow (`refresh-visual-baselines.yml`), which pins the
+//! builder image and llvmpipe, and review its candidates before committing.
+//! Locally, inside that image:
+//! `UPDATE_TYPOGRAPHY_BASELINES=1 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+//! WGPU_ADAPTER_NAME=llvmpipe cargo test -p tilo-ui --test it typography_visual_regression`
+//!
+//! `typography_baseline_geometry` checks the same layouts against the
+//! baselines' dimensions without a GPU, so a layout change that needs new
+//! baselines fails in every run rather than only where llvmpipe renders.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,8 +26,6 @@
 )]
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
@@ -37,14 +45,14 @@ mod gallery_scene;
 const LOGICAL_WIDTH: u32 = 1160;
 
 #[derive(Clone, Copy)]
-struct Case {
-    name: &'static str,
+pub(crate) struct Case {
+    pub(crate) name: &'static str,
     light: bool,
     display_scale: f64,
     text_scale: f32,
 }
 
-const CASES: &[Case] = &[
+pub(crate) const CASES: &[Case] = &[
     Case {
         name: "dark-display-1-text-1",
         light: false,
@@ -90,6 +98,15 @@ struct Frame {
     adapter: String,
 }
 
+/// A laid-out typography card, ready to paint.
+struct Laid {
+    theme: Theme,
+    widget: Box<dyn Widget>,
+    text_renderer: TextRenderer,
+    width: u32,
+    height: u32,
+}
+
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -98,7 +115,7 @@ struct Frame {
               (at most a few thousand px, scale <= 1.5), always positive and well within f32's \
               exact-integer range and u32's range"
 )]
-fn render(case: Case) -> Frame {
+fn lay_out(case: Case) -> Laid {
     let theme = if case.light {
         Theme::light()
     } else {
@@ -140,7 +157,35 @@ fn render(case: Case) -> Frame {
         .ceil()
         .max(1.0) as u32;
     widget.apply_layout(&taffy, node, Point::ZERO);
+    Laid {
+        theme,
+        widget,
+        text_renderer,
+        width: (f64::from(LOGICAL_WIDTH) * case.display_scale).round() as u32,
+        height: (f64::from(logical_height) * case.display_scale).round() as u32,
+    }
+}
 
+/// Pixel size of a case's frame, from layout alone.
+pub(crate) fn frame_size(case: Case) -> (u32, u32) {
+    let laid = lay_out(case);
+    (laid.width, laid.height)
+}
+
+pub(crate) fn baseline_path(case: Case) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/typography")
+        .join(format!("{}.png", case.name))
+}
+
+fn render(case: Case) -> Frame {
+    let Laid {
+        theme,
+        mut widget,
+        mut text_renderer,
+        width,
+        height,
+    } = lay_out(case);
     let mut scene = Scene::new();
     widget.draw(
         &mut scene,
@@ -149,11 +194,17 @@ fn render(case: Case) -> Frame {
         &theme,
         &PresenceCtx::default(),
     );
-    let width = (f64::from(LOGICAL_WIDTH) * case.display_scale).round() as u32;
-    let height = (f64::from(logical_height) * case.display_scale).round() as u32;
     let mut renderer = OffscreenRenderer::try_new(width, height)
         .expect("typography golden qualification requires an actual offscreen adapter");
-    let adapter = format!("{:?}", renderer.adapter_info());
+    let info = renderer.adapter_info();
+    assert!(
+        info.as_ref()
+            .is_some_and(|info| info.name.contains("llvmpipe")),
+        "typography baselines are Mesa llvmpipe renders, but this run got adapter {info:?}; \
+         run with VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+         WGPU_ADAPTER_NAME=llvmpipe (see this file's header)"
+    );
+    let adapter = format!("{info:?}");
     Frame {
         width,
         height,
@@ -169,36 +220,22 @@ fn write_png(path: &Path, frame: &Frame) {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("create typography snapshot directory");
     }
-    let file = File::create(path).expect("create typography snapshot");
-    let mut encoder = png::Encoder::new(BufWriter::new(file), frame.width, frame.height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder
-        .write_header()
-        .expect("write typography PNG header")
-        .write_image_data(&frame.rgba)
-        .expect("write typography PNG pixels");
+    tilo_ui::png::write_rgba8(path, frame.width, frame.height, &frame.rgba)
+        .expect("write typography snapshot");
 }
 
 fn read_png(path: &Path) -> Frame {
-    let decoder = png::Decoder::new(BufReader::new(File::open(path).unwrap_or_else(|error| {
+    let bytes = std::fs::read(path).unwrap_or_else(|error| {
         panic!(
             "missing typography baseline {}: {error}; regenerate with UPDATE_TYPOGRAPHY_BASELINES=1",
             path.display()
         )
-    })));
-    let mut reader = decoder.read_info().expect("read typography PNG header");
-    let mut bytes = vec![0; reader.output_buffer_size().expect("PNG buffer size")];
-    let info = reader
-        .next_frame(&mut bytes)
-        .expect("decode typography PNG");
-    assert_eq!(info.color_type, png::ColorType::Rgba);
-    assert_eq!(info.bit_depth, png::BitDepth::Eight);
-    bytes.truncate(info.buffer_size());
+    });
+    let decoded = tilo_ui::png::decode_rgba8(&bytes).expect("decode typography PNG");
     Frame {
-        width: info.width,
-        height: info.height,
-        rgba: bytes,
+        width: decoded.width,
+        height: decoded.height,
+        rgba: decoded.rgba,
         adapter: String::new(),
     }
 }
@@ -259,14 +296,15 @@ fn record_evidence(case: Case, frame: &Frame) {
 #[test]
 fn multilingual_gallery_matches_scale_matrix() {
     tilo_ui::i18n::I18nManager::init("en-US");
-    let baseline_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/typography");
+    let diagnostics =
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("typography-visual-regression");
     let update = std::env::var_os("UPDATE_TYPOGRAPHY_BASELINES").is_some();
     let mut failures = Vec::new();
 
     for &case in CASES {
         let actual = render(case);
         record_evidence(case, &actual);
-        let baseline = baseline_dir.join(format!("{}.png", case.name));
+        let baseline = baseline_path(case);
         if update {
             write_png(&baseline, &actual);
             eprintln!("updated {}", baseline.display());
@@ -275,7 +313,6 @@ fn multilingual_gallery_matches_scale_matrix() {
 
         let expected = read_png(&baseline);
         if (actual.width, actual.height) != (expected.width, expected.height) {
-            let diagnostics = std::env::temp_dir().join("typography-visual-regression");
             let actual_path = diagnostics.join(format!("{}-actual.png", case.name));
             write_png(&actual_path, &actual);
             failures.push(format!(
@@ -291,7 +328,6 @@ fn multilingual_gallery_matches_scale_matrix() {
         }
         let differing = OffscreenRenderer::pixels_differing_beyond_aa(&actual.rgba, &expected.rgba);
         if differing > 0 {
-            let diagnostics = std::env::temp_dir().join("typography-visual-regression");
             let actual_path = diagnostics.join(format!("{}-actual.png", case.name));
             let diff_path = diagnostics.join(format!("{}-diff.png", case.name));
             write_png(&actual_path, &actual);

@@ -5,7 +5,8 @@
 //! fields, an Automerge order list, and a separate delete-wins tombstone map.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{read_bool, read_str, read_str_or_text};
 
 use crate::model::{Action, FirewallConfig, Matcher, Proto, Rule, RuleId, Target, Zone, ZoneKind};
 
@@ -41,36 +42,6 @@ fn text(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
         return;
     };
     ui::doc::splice_text_diffed(doc, &id, value);
-}
-fn str_value(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<String> {
-    if let Some(id) = get_text(doc, parent, key) {
-        return Some(doc.text(&id).unwrap_or_default());
-    }
-    match doc.get(parent, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-fn bool_value(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<bool> {
-    match doc.get(parent, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Boolean(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-fn at_str(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<String> {
-    match doc.get(list, index) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => Some(s.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 fn target_name(value: Target) -> &'static str {
     match value {
@@ -130,20 +101,20 @@ fn write_rule(doc: &mut AutoCommit, row: &ObjId, rule: &Rule) {
     let _ = doc.put(row, "enabled", rule.enabled);
 }
 fn read_rule(doc: &AutoCommit, row: &ObjId, id: RuleId) -> Option<Rule> {
-    let matcher = match str_value(doc, row, "matcher_kind")?.as_str() {
-        "service" => Matcher::Service(str_value(doc, row, "service")?),
+    let matcher = match read_str_or_text(doc, row, "matcher_kind")?.as_str() {
+        "service" => Matcher::Service(read_str_or_text(doc, row, "service")?),
         "port" => Matcher::Port {
-            port: str_value(doc, row, "port")?,
-            proto: proto(&str_value(doc, row, "proto")?)?,
+            port: read_str_or_text(doc, row, "port")?,
+            proto: proto(&read_str_or_text(doc, row, "proto")?)?,
         },
         _ => return None,
     };
     Some(Rule {
         id,
         matcher,
-        action: action(&str_value(doc, row, "action")?)?,
-        source: str_value(doc, row, "source")?,
-        enabled: bool_value(doc, row, "enabled")?,
+        action: action(&read_str_or_text(doc, row, "action")?)?,
+        source: read_str_or_text(doc, row, "source")?,
+        enabled: read_bool(doc, row, "enabled")?,
     })
 }
 
@@ -164,29 +135,30 @@ impl FirewallDoc {
         }
     }
     fn read_native(doc: &AutoCommit, root: &ObjId) -> Option<FirewallConfig> {
-        let enabled = bool_value(doc, root, "enabled")?;
-        let panic_mode = bool_value(doc, root, "panic_mode")?;
-        let default_zone = ZoneKind::from_name(&str_value(doc, root, "default_zone")?)?;
+        let enabled = read_bool(doc, root, "enabled")?;
+        let panic_mode = read_bool(doc, root, "panic_mode")?;
+        let default_zone = ZoneKind::from_name(&read_str_or_text(doc, root, "default_zone")?)?;
         let zones = get_map(doc, root, "zones")?;
         let mut result = Vec::new();
         for kind in ZoneKind::ALL {
             let Some(zone) = get_map(doc, &zones, kind.name()) else {
                 continue;
             };
-            let Some(target) = str_value(doc, &zone, "target").and_then(|v| target(&v)) else {
+            let Some(target) = read_str_or_text(doc, &zone, "target").and_then(|v| target(&v))
+            else {
                 continue;
             };
             let interfaces = get_map(doc, &zone, "interfaces")
                 .map(|m| {
                     doc.keys(&m)
-                        .filter(|id| bool_value(doc, &m, id) == Some(true))
+                        .filter(|id| read_bool(doc, &m, id) == Some(true))
                         .collect()
                 })
                 .unwrap_or_default();
             let services = get_map(doc, &zone, "services")
                 .map(|m| {
                     doc.keys(&m)
-                        .filter(|id| bool_value(doc, &m, id) == Some(true))
+                        .filter(|id| read_bool(doc, &m, id) == Some(true))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -196,7 +168,7 @@ impl FirewallDoc {
                 interfaces,
                 services,
                 rules: Self::rules(doc, &zone),
-                masquerade: bool_value(doc, &zone, "masquerade").unwrap_or(false),
+                masquerade: read_bool(doc, &zone, "masquerade").unwrap_or(false),
             });
         }
         Some(FirewallConfig {
@@ -215,7 +187,7 @@ impl FirewallDoc {
         for key in doc.keys(&rows) {
             if tombs
                 .as_ref()
-                .is_some_and(|m| bool_value(doc, m, &key) == Some(true))
+                .is_some_and(|m| read_bool(doc, m, &key) == Some(true))
             {
                 continue;
             }
@@ -229,7 +201,7 @@ impl FirewallDoc {
         let mut ordered = Vec::new();
         if let Some(order) = get_list(doc, zone, "rule_order") {
             for index in 0..doc.length(&order) {
-                if let Some(key) = at_str(doc, &order, index)
+                if let Some(key) = read_str(doc, &order, index)
                     && let Some(rule) = remaining.remove(&key)
                 {
                     ordered.push(rule);
@@ -354,7 +326,7 @@ impl FirewallDoc {
     }
     fn tombstoned(doc: &AutoCommit, zone: &ObjId, id: RuleId) -> bool {
         get_map(doc, zone, "rule_tombstones")
-            .is_some_and(|m| bool_value(doc, &m, &id.to_string()) == Some(true))
+            .is_some_and(|m| read_bool(doc, &m, id.to_string()) == Some(true))
     }
     pub fn add_rule(doc: &mut AutoCommit, kind: ZoneKind, rule: &Rule) {
         let Some(root) = map(doc, &ROOT, ROOT_KEY) else {
@@ -390,7 +362,8 @@ impl FirewallDoc {
                 Err(_) => return,
             },
         };
-        if !(0..doc.length(&order)).any(|i| at_str(doc, &order, i).as_deref() == Some(key.as_str()))
+        if !(0..doc.length(&order))
+            .any(|i| read_str(doc, &order, i).as_deref() == Some(key.as_str()))
         {
             let _ = doc.insert(&order, doc.length(&order), key);
         }
@@ -504,7 +477,7 @@ impl FirewallDoc {
         };
         let key = id.to_string();
         let Some(index) = (0..doc.length(&order))
-            .find(|i| at_str(doc, &order, *i).as_deref() == Some(key.as_str()))
+            .find(|i| read_str(doc, &order, *i).as_deref() == Some(key.as_str()))
         else {
             return;
         };
@@ -571,7 +544,10 @@ mod tests {
         assert!(!zone.interfaces.iter().any(|interface| interface == "eth0"));
         assert!(!zone.rules.iter().any(|rule| rule.id == stale_rule));
     }
-    #[allow(clippy::many_single_char_names)]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "two replicas, a config, a zone and a rule read best as a, b, c, z and r"
+    )]
     #[test]
     fn independent_fields_merge() {
         let mut a = AutoCommit::new();
@@ -623,7 +599,10 @@ mod tests {
         );
         assert!(z.has_service("ssh") && z.has_service("https"));
     }
-    #[allow(clippy::many_single_char_names)]
+    #[allow(
+        clippy::many_single_char_names,
+        reason = "two replicas, a config, a zone and a rule read best as a, b, c, z and r"
+    )]
     #[test]
     fn delete_wins_stale_edit() {
         let mut a = AutoCommit::new();

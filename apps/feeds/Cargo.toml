@@ -32,7 +32,8 @@ taffy.workspace = true
 # RSS/Atom/JSON-feed parsing; pure-Rust TLS avoids a
 # system OpenSSL build dep inside the distrobox.
 feed-rs = "2.4"
-reqwest = { workspace = true, features = ["rustls-tls", "gzip", "brotli"] }
+reqwest = { workspace = true, features = ["gzip", "brotli"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["http"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
 # org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its own
 # file picker; OPML import goes through the host portal so the compositor's
@@ -42,6 +43,9 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", 
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 # Raw TLS for the gemini:// fetcher (TOFU, accepts self-signed certs).
 tokio-rustls.workspace = true
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

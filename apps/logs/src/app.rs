@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -55,8 +55,9 @@ use ui::widget::{TextInput, Widget};
 use crate::actions::{self, LogsOperation};
 use crate::doc::LogsDoc;
 use crate::model::{Filter, LogEntry, Priority};
-use crate::responsive::{Pane, PushNav};
 use crate::theme_ext::{ThemeColors, tint};
+use ui::paint::{fill_rect, fill_round, stroke_round};
+use ui::widget::{PushNav, PushPane};
 
 const PAD: f64 = 16.0;
 const HEADER_H: f64 = 60.0;
@@ -164,8 +165,6 @@ pub struct LogsApp {
     /// content is published through resources or collaboration state.
     export_rx: Option<PortalChannel>,
     pending_export: Option<Vec<LogEntry>>,
-    #[cfg(test)]
-    controlled_export_portal: Option<Box<dyn Fn(PickRequest) -> PortalChannel>>,
     /// Concise local outcome for the portal write, announced through an a11y
     /// live region. It never includes a chosen path or log contents.
     export_status: Option<String>,
@@ -219,8 +218,6 @@ impl LogsApp {
             source_loading: false,
             export_rx: None,
             pending_export: None,
-            #[cfg(test)]
-            controlled_export_portal: None,
             export_status: None,
             rect: Rect::ZERO,
             node: None,
@@ -264,7 +261,7 @@ impl LogsApp {
     /// eased slide so a headless frame captures a settled pane. A no-op
     /// effect on wide windows, where both panes are docked anyway.
     pub fn shots_show_detail(&mut self) {
-        self.push.snap(Pane::Detail);
+        self.push.snap(PushPane::Detail);
         self.dirty = true;
     }
 
@@ -504,24 +501,8 @@ impl LogsApp {
                     .glob("*.jsonl"),
             );
         self.pending_export = Some(entries);
-        #[cfg(test)]
-        let export_rx = if let Some(portal) = &self.controlled_export_portal {
-            portal(request)
-        } else {
-            request.send()
-        };
-        #[cfg(not(test))]
-        let export_rx = request.send();
-        self.export_rx = Some(export_rx);
+        self.export_rx = Some(request.send());
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_controlled_export_portal(
-        &mut self,
-        portal: impl Fn(PickRequest) -> PortalChannel + 'static,
-    ) {
-        self.controlled_export_portal = Some(Box::new(portal));
     }
 
     /// Complete a non-blocking host Save portal request. No selected path is
@@ -739,7 +720,7 @@ impl LogsApp {
     /// as much 2× text as a half-width 1× window. One predicate for layout,
     /// paint and the event path, so they never disagree about the pane mode.
     fn narrow_at(&self, w: f64) -> bool {
-        PushNav::is_narrow(w / self.m.k.max(f64::from(f32::EPSILON)))
+        crate::responsive::is_narrow(w / self.m.k.max(f64::from(f32::EPSILON)))
     }
 
     /// The filters need more width than the docked journal split. Keep this
@@ -896,28 +877,6 @@ impl LogsApp {
 // ===================================================================
 // Drawing helpers (free functions so borrows stay simple)
 // ===================================================================
-
-fn fill_rect(scene: &mut Scene, t: Affine, r: Rect, c: Color) {
-    scene.fill(Fill::NonZero, t, c, None, &r);
-}
-fn fill_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color) {
-    scene.fill(
-        Fill::NonZero,
-        t,
-        c,
-        None,
-        &RoundedRect::from_rect(r, radius.into()),
-    );
-}
-fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: impl Into<f64>, c: Color, w: f64) {
-    scene.stroke(
-        &Stroke::new(w),
-        t,
-        c,
-        None,
-        &RoundedRect::from_rect(r, radius.into()),
-    );
-}
 fn fill_circle(scene: &mut Scene, t: Affine, center: Point, radius: f64, c: Color) {
     scene.fill(Fill::NonZero, t, c, None, &Circle::new(center, radius));
 }
@@ -1061,37 +1020,6 @@ impl Metrics {
     }
 }
 
-/// Trim `s` with a trailing ellipsis until it fits `max_w` px at `size`.
-fn elide(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64, mono: bool) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-    let measure = |tr: &mut TextRenderer, t: &str| {
-        if mono {
-            tr.measure_styled(t, size, None, TextWeight::Regular, false, true)
-                .0
-        } else {
-            tr.measure(t, size, None).0
-        }
-    };
-    if f64::from(measure(tr, s)) <= max_w {
-        return s.to_string();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let full = f64::from(measure(tr, s));
-    let mut keep = (((max_w / full) * chars.len() as f64) as usize).min(chars.len());
-    loop {
-        if keep == 0 {
-            return "…".to_string();
-        }
-        let cand: String = chars.get(..keep).unwrap_or(&[]).iter().collect::<String>() + "…";
-        if f64::from(measure(tr, &cand)) <= max_w {
-            return cand;
-        }
-        keep -= 1;
-    }
-}
-
 impl LogsApp {
     fn draw_header(
         &self,
@@ -1141,14 +1069,14 @@ impl LogsApp {
                 scene,
                 t,
                 reg.clear_btn,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 tint(theme.accent_primary, 40),
             );
             stroke_round(
                 scene,
                 t,
                 reg.clear_btn,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 theme.accent_primary,
                 1.0,
             );
@@ -1282,7 +1210,13 @@ impl LogsApp {
             c.lift(0.35)
         };
         if on {
-            fill_round(scene, t, reg.live_pill, theme.tokens.radii.full, pill_bg);
+            fill_round(
+                scene,
+                t,
+                reg.live_pill,
+                f64::from(theme.tokens.radii.full),
+                pill_bg,
+            );
         } else {
             ui::surface::card(
                 scene,
@@ -1351,7 +1285,7 @@ impl LogsApp {
                 scene,
                 t,
                 reg.overflow_trigger,
-                theme.tokens.radii.full,
+                f64::from(theme.tokens.radii.full),
                 c.border_focus,
                 1.5,
             );
@@ -1443,7 +1377,7 @@ impl LogsApp {
                 scene,
                 t,
                 reg.search,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 c.border_focus,
                 1.5,
             );
@@ -1555,10 +1489,29 @@ impl LogsApp {
             let active = p.level() <= self.filter.min_priority;
             let col = p.color(&tc);
             if active {
-                fill_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 235));
+                fill_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    tint(col, 235),
+                );
             } else {
-                fill_round(scene, t, *chip, theme.tokens.radii.md, c.lift(0.35));
-                stroke_round(scene, t, *chip, theme.tokens.radii.md, tint(col, 90), 1.0);
+                fill_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    c.lift(0.35),
+                );
+                stroke_round(
+                    scene,
+                    t,
+                    *chip,
+                    f64::from(theme.tokens.radii.md),
+                    tint(col, 90),
+                    1.0,
+                );
             }
             let tag = p.tag();
             let label_c = if active {
@@ -1614,7 +1567,7 @@ impl LogsApp {
                 scene,
                 t,
                 rect,
-                theme.tokens.radii.md,
+                f64::from(theme.tokens.radii.md),
                 if open {
                     c.border_focus
                 } else {
@@ -1639,7 +1592,7 @@ impl LogsApp {
         );
         // The value stacks on the caption's measured line (16 px at 1×).
         let value_top = rect.y0 + 4.0 + m.line_h(ts(tr, theme.tokens.typography.scale.xs)) - 0.5;
-        let val = elide(tr, label, sz, rect.width() - 38.0, false);
+        let val = tr.elide_to_width(label, sz, ui::num::f32_of_f64(rect.width() - 38.0));
         text_at(
             tr,
             scene,
@@ -2006,7 +1959,8 @@ impl LogsApp {
             if !cols.compact {
                 // Unit is promoted on desktop; compact rows reserve that
                 // width for the message and expose the unit in detail/a11y.
-                let unit_shown = elide(tr, e.unit_short(), tsz, cols.unit_w - 6.0, false);
+                let unit_shown =
+                    tr.elide_to_width(e.unit_short(), tsz, ui::num::f32_of_f64(cols.unit_w - 6.0));
                 text_at(
                     tr,
                     scene,
@@ -2021,7 +1975,7 @@ impl LogsApp {
                 );
             }
             // message
-            let msg_shown = elide(tr, &e.message, tsz, cols.msg_w, false);
+            let msg_shown = tr.elide_to_width(&e.message, tsz, ui::num::f32_of_f64(cols.msg_w));
             let msg_c = if is_sel {
                 theme.text_primary
             } else {
@@ -2152,7 +2106,13 @@ impl LogsApp {
             inner_x + f64::from(blw) + 24.0,
             layout.y + 22.0,
         );
-        fill_round(scene, t, badge, theme.tokens.radii.full, tint(col, 235));
+        fill_round(
+            scene,
+            t,
+            badge,
+            f64::from(theme.tokens.radii.full),
+            tint(col, 235),
+        );
         text_at(
             tr,
             scene,
@@ -2184,7 +2144,7 @@ impl LogsApp {
 
         // Unit title.
         let title_sz = ts(tr, theme.tokens.typography.scale.lg);
-        let title = elide(tr, &e.unit, title_sz, inner_w, false);
+        let title = tr.elide_to_width(&e.unit, title_sz, ui::num::f32_of_f64(inner_w));
         text_at(
             tr,
             scene,
@@ -2299,7 +2259,7 @@ impl LogsApp {
                 TextWeight::Semibold,
                 true,
             );
-            let val = elide(tr, &v, vsz, inner_w - key_w - 8.0, false);
+            let val = tr.elide_to_width(&v, vsz, ui::num::f32_of_f64(inner_w - key_w - 8.0));
             text_at(
                 tr,
                 scene,
@@ -2531,7 +2491,7 @@ impl LogsApp {
                 .with_hashed_key("logs.entries")
                 .with_children(rows),
         );
-        if reg.narrow && reg.back_btn.width() > 0.0 && self.push.pane() == Pane::Detail {
+        if reg.narrow && reg.back_btn.width() > 0.0 && self.push.pane() == PushPane::Detail {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name("Back to entries")
@@ -2803,7 +2763,7 @@ impl Widget for LogsApp {
 
         if theme.reduce_motion {
             self.push.snap(self.push.pane());
-        } else if self.push.tick() {
+        } else if self.push.tick(false) {
             self.dirty = true;
         }
 
@@ -3002,7 +2962,7 @@ impl Widget for LogsApp {
             return true;
         }
         if target == "logs.back" && activate {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             return true;
         }
@@ -3240,7 +3200,7 @@ impl LogsApp {
             scene,
             transform,
             panel,
-            theme.tokens.radii.md,
+            f64::from(theme.tokens.radii.md),
             ui::chrome::panel_ground(theme),
         );
         scene.stroke(
@@ -3282,7 +3242,7 @@ impl LogsApp {
             } else {
                 theme.text_primary
             };
-            let shown = elide(tr, label, sz, irect.width() - 30.0, false);
+            let shown = tr.elide_to_width(label, sz, ui::num::f32_of_f64(irect.width() - 30.0));
             text_at(
                 tr,
                 scene,
@@ -3392,7 +3352,7 @@ impl LogsApp {
         // Narrow-window Back affordance: when the detail pane is pushed in,
         // tapping Back slides the list back.
         if reg.narrow && reg.back_btn.width() > 0.0 && reg.back_btn.contains(pt) {
-            self.push.show_list();
+            self.push.show_master();
             self.dirty = true;
             *handled = true;
             return;
@@ -3522,12 +3482,12 @@ impl LogsApp {
             }
             Key::Named(NamedKey::Escape) => {
                 let narrow_in_detail =
-                    self.narrow_at(self.rect.width()) && self.push.pane() == Pane::Detail;
+                    self.narrow_at(self.rect.width()) && self.push.pane() == PushPane::Detail;
                 if self.popup.is_some() {
                     self.popup = None;
                 } else if narrow_in_detail {
                     // Back out of the pushed detail pane to the list.
-                    self.push.show_list();
+                    self.push.show_master();
                 } else if !self.filter.search.is_empty() {
                     self.apply_view_operation(LogsOperation::SetSearch {
                         value: String::new(),
@@ -3791,17 +3751,24 @@ mod tests {
 
     #[test]
     fn portal_export_writes_the_snapshot_selected_before_the_picker() {
-        let mut app = LogsApp::new(sample_entries(), true);
+        let mut app = LogsApp::new(sample_entries().into_iter().take(2).collect(), true);
         let path = std::env::temp_dir().join(format!(
             "tilo-logs-portal-export-{}-{}.jsonl",
             std::process::id(),
             app.entries[0].realtime_us
         ));
         let _ = std::fs::remove_file(&path);
-        app.pending_export = Some(app.entries.iter().take(2).cloned().collect());
-        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            path.clone(),
-        )));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || {
+            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+        });
+        assert_eq!(
+            recorder.pick_requests()[0].suggested_name(),
+            Some("journal-filtered.jsonl")
+        );
+        // Entries arriving after the picker opened are not part of the export.
+        app.entries.extend(sample_entries().into_iter().skip(2));
         app.drain_export_portal();
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
         assert_eq!(
@@ -3813,11 +3780,12 @@ mod tests {
 
     #[test]
     fn portal_export_write_failure_is_announced_without_path_details() {
-        let mut app = LogsApp::new(sample_entries(), true);
-        app.pending_export = Some(app.entries.iter().take(1).cloned().collect());
-        app.export_rx = Some(ui::portal::inject_for_test(PortalOutcome::Opened(
-            std::env::temp_dir(),
-        )));
+        let mut app = LogsApp::new(sample_entries().into_iter().take(1).collect(), true);
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
+        ui::host::scoped(&services, || {
+            app.perform_effect(LogsOperation::ExportFiltered).unwrap();
+        });
         app.drain_export_portal();
         assert_eq!(app.export_status.as_deref(), Some("Export failed."));
         let tree = app.accessibility_tree();

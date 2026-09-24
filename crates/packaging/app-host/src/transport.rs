@@ -13,7 +13,7 @@ use tokio::net::UnixListener;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::app_host_capnp::app_host;
-use crate::service::AppHostServer;
+use crate::service::{AppHostServer, SystemCatalog};
 use crate::store::Store;
 
 /// Bind the Unix socket. Ensures the parent directory exists, drops a
@@ -39,7 +39,8 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
 }
 
 /// Run an accept loop forever. Each accepted stream gets its own
-/// capnp-rpc system + service instance backed by the shared `Store`.
+/// capnp-rpc system + service instance backed by the shared `Store` and
+/// system `catalog`.
 ///
 /// # Errors
 ///
@@ -47,13 +48,15 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
 pub async fn serve(
     listener: UnixListener,
     store: Arc<Store>,
+    catalog: Arc<SystemCatalog>,
     max_store_bytes: u64,
 ) -> anyhow::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let store = Arc::clone(&store);
+        let catalog = Arc::clone(&catalog);
         tokio::task::spawn_local(async move {
-            if let Err(e) = handle_connection(stream, store, max_store_bytes).await {
+            if let Err(e) = handle_connection(stream, store, catalog, max_store_bytes).await {
                 tracing::warn!(error = %e, "app-host connection terminated");
             }
         });
@@ -77,6 +80,7 @@ pub async fn serve(
 pub async fn handle_connection(
     mut stream: tokio::net::UnixStream,
     store: Arc<Store>,
+    catalog: Arc<SystemCatalog>,
     max_store_bytes: u64,
 ) -> anyhow::Result<()> {
     let mut magic = [0u8; 4];
@@ -106,7 +110,7 @@ pub async fn handle_connection(
         rpc_twoparty_capnp::Side::Server,
         capnp::message::ReaderOptions::default(),
     ));
-    let service = AppHostServer::new(store, max_store_bytes);
+    let service = AppHostServer::new(store, catalog, max_store_bytes);
     let client: app_host::Client = capnp_rpc::new_client(service);
     let rpc_system = RpcSystem::new(network, Some(client.client));
     rpc_system.await.map_err(|e| anyhow::anyhow!("{e}"))

@@ -3,7 +3,6 @@
 //! The socket belongs to this Wayland socket inode and is never unlinked on
 //! startup. A crashed import process leaves the saved continuation untouched.
 use std::ffi::OsStr;
-use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -72,10 +71,7 @@ impl SessionContinuation {
         if !wayland.file_type().is_socket() || wayland.uid() != uid {
             return Err(io::Error::other("invalid Wayland socket identity"));
         }
-        let key = bytes.iter().fold(String::new(), |mut key, byte| {
-            let _ = write!(key, "{byte:02x}");
-            key
-        });
+        let key = hex::encode(bytes);
         let socket_path = runtime.join(format!("qos-import-{key}-{}.sock", wayland.ino()));
         if socket_path.as_os_str().as_bytes().len() >= 104 {
             return Err(io::Error::other("import readiness socket path too long"));

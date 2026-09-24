@@ -29,7 +29,8 @@
 //! can browse the same list while looking at different machines.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+use ui::doc::{read_bool, read_i64_coerced, read_str};
 
 use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind, Presence};
 
@@ -180,15 +181,15 @@ impl RemoteDoc {
                 _ => String::new(),
             };
 
-            let host = str_field(doc, &conn, "host");
-            let user = str_field(doc, &conn, "user");
-            let group = str_field(doc, &conn, "group");
-            let last_used = str_field(doc, &conn, "last_used");
-            let kind = ConnectionKind::from_tag(&str_field(doc, &conn, "kind"));
-            let auth = AuthMethod::from_label(&str_field(doc, &conn, "auth"));
-            let presence = presence_from_tag(&str_field(doc, &conn, "presence"));
-            let port = int_field(doc, &conn, "port") as u16;
-            let favorite = bool_field(doc, &conn, "favorite");
+            let host = read_str(doc, &conn, "host").unwrap_or_default();
+            let user = read_str(doc, &conn, "user").unwrap_or_default();
+            let group = read_str(doc, &conn, "group").unwrap_or_default();
+            let last_used = read_str(doc, &conn, "last_used").unwrap_or_default();
+            let kind = ConnectionKind::from_tag(&read_str(doc, &conn, "kind").unwrap_or_default());
+            let auth = AuthMethod::from_label(&read_str(doc, &conn, "auth").unwrap_or_default());
+            let presence = presence_from_tag(&read_str(doc, &conn, "presence").unwrap_or_default());
+            let port = read_i64_coerced(doc, &conn, "port").unwrap_or(0) as u16;
+            let favorite = read_bool(doc, &conn, "favorite").unwrap_or(false);
 
             out.push(Connection {
                 id,
@@ -221,30 +222,6 @@ fn presence_from_tag(s: &str) -> Presence {
         "online" => Presence::Online,
         "offline" => Presence::Offline,
         _ => Presence::Unknown,
-    }
-}
-
-fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
-fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> i64 {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => v.to_i64().unwrap_or(0),
-        _ => 0,
-    }
-}
-
-fn bool_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
-        _ => false,
     }
 }
 

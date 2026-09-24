@@ -1130,6 +1130,7 @@ impl SearchProvider for CallContinuityActionsProvider {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::state::FreshId as _;
     use std::cell::RefCell;
     use std::sync::Arc;
 
@@ -1226,9 +1227,10 @@ mod tests {
     fn chrome() -> crate::shell::chrome_state::Chrome {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::new();
-        tree.workspaces
-            .push(Workspace::test_default(id, "Continuity"));
-        tree.active = id;
+        tree.desktop
+            .workspaces
+            .push(Workspace::new(id, "Continuity"));
+        tree.desktop.active = id;
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
         ChromeState::new_with_handle(handle)
     }

@@ -17,7 +17,7 @@
 //!    stays in the engine; the widget only mirrors what the chrome
 //!    displays.
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -134,27 +134,12 @@ fn decode_favicon_png(
     expected_width: u32,
     expected_height: u32,
 ) -> Option<vello::peniko::ImageData> {
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    if reader.output_color_type() != (png::ColorType::Rgba, png::BitDepth::Eight) {
+    let decoded = ui::png::decode_rgba8_within(bytes, 64 * 64).ok()?;
+    if decoded.width != expected_width || decoded.height != expected_height {
         return None;
     }
-    let size = reader.output_buffer_size()?;
-    if size > 64 * 64 * 4 {
-        return None;
-    }
-    let mut rgba = vec![0; size];
-    let info = reader.next_frame(&mut rgba).ok()?;
-    if info.width != expected_width
-        || info.height != expected_height
-        || info.buffer_size() != expected_width as usize * expected_height as usize * 4
-    {
-        return None;
-    }
-    rgba.truncate(info.buffer_size());
     Some(vello::peniko::ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(rgba)),
+        data: vello::peniko::Blob::new(std::sync::Arc::new(decoded.rgba)),
         format: vello::peniko::ImageFormat::Rgba8,
         alpha_type: vello::peniko::ImageAlphaType::Alpha,
         width: expected_width,
@@ -456,33 +441,17 @@ fn local_output(message: impl Into<String>) -> ui::tilo_actions::ActionOutput {
     }
 }
 
-fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    let bytes = bytes as f64;
-    if bytes >= GIB {
-        format!("{:.1} GB", bytes / GIB)
-    } else if bytes >= MIB {
-        format!("{:.1} MB", bytes / MIB)
-    } else if bytes >= KIB {
-        format!("{:.1} KB", bytes / KIB)
-    } else {
-        format!("{bytes:.0} B")
-    }
-}
-
 fn download_status_text(entry: &crate::downloads::DownloadEntry) -> String {
     match entry.status {
         DownloadStatus::AwaitingDestination => "Waiting for a save destination…".into(),
         DownloadStatus::Downloading => match entry.total_bytes {
             Some(total) => format!(
                 "{} of {} · {:.0}%",
-                format_bytes(entry.received_bytes),
-                format_bytes(total),
+                ui::format::bytes_si(entry.received_bytes),
+                ui::format::bytes_si(total),
                 entry.progress * 100.0
             ),
-            None => format!("{} downloaded", format_bytes(entry.received_bytes)),
+            None => format!("{} downloaded", ui::format::bytes_si(entry.received_bytes)),
         },
         DownloadStatus::Completed => entry.destination.as_deref().map_or_else(
             || "Download complete".into(),
@@ -3127,34 +3096,21 @@ impl BrowserWidget {
     /// event writes the document here: `BrowserAction` is the sole mutation
     /// path, preserving action history and collaboration attribution.
     fn sync_settings_from_document(&mut self, state: &AutoCommit, root: &ObjId) {
-        fn boolean(state: &AutoCommit, root: &ObjId, key: &str) -> Option<bool> {
-            state
-                .get(root, key)
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| value.to_bool())
-        }
-        fn text(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-            let (value, object) = state.get(root, key).ok()??;
-            matches!(value, Value::Object(automerge::ObjType::Text))
-                .then(|| state.text(&object).ok())
-                .flatten()
-        }
+        use ui::doc::{read_bool, read_text};
 
         let mut next = self.settings.clone();
-        if let Some(enabled) = boolean(state, root, crate::settings::ADBLOCK_PATH) {
+        if let Some(enabled) = read_bool(state, root, crate::settings::ADBLOCK_PATH) {
             next.adblock_enabled = enabled;
         }
-        if let Some(enabled) = boolean(state, root, crate::settings::CLEAR_ON_EXIT_PATH) {
+        if let Some(enabled) = read_bool(state, root, crate::settings::CLEAR_ON_EXIT_PATH) {
             next.clear_on_exit = enabled;
         }
-        if let Some(value) = text(state, root, crate::settings::HOMEPAGE_PATH)
+        if let Some(value) = read_text(state, root, crate::settings::HOMEPAGE_PATH)
             && is_supported_web_url(&value)
         {
             next.homepage = value;
         }
-        if let Some(value) = text(state, root, crate::settings::SEARCH_ENGINE_PATH)
+        if let Some(value) = read_text(state, root, crate::settings::SEARCH_ENGINE_PATH)
             && is_supported_web_url(&value)
         {
             next.search_engine = value;
@@ -9209,7 +9165,7 @@ mod tests {
 
     #[test]
     fn portal_cancel_cancels_the_paused_engine_download() {
-        ui::portal::suppress_for_tests();
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         engine.send(WebViewCommand::StartDownload {
@@ -9230,7 +9186,7 @@ mod tests {
 
     #[test]
     fn portal_worker_failure_cancels_webkit_but_preserves_the_actionable_error() {
-        ui::portal::suppress_for_tests();
+        ui::host::install_default(ui::host::HostServices::recording().0);
         let engine = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         engine.send(WebViewCommand::StartDownload {

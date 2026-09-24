@@ -929,18 +929,20 @@ fn importing_a_picked_file_adds_a_real_clip_to_the_bin() {
 
 #[test]
 fn portal_import_action_adds_the_clip_through_the_document() {
-    // Drive the exact per-frame path a real portal pick feeds — an injected
-    // multi-select outcome carrying one real file, installed on `import_rx`
-    // exactly as `portal::request_import()` would. This proves the import
-    // code path is compiled into the default build (no feature wall) and
-    // that draining it routes the clip through the `UpsertMedia` action on
-    // `ui::ActionHost`, so it lands in the shared document a peer replicates.
+    // Drive the exact per-frame path a real portal pick feeds — the import
+    // trigger asks the host chooser, which answers a multi-select outcome
+    // carrying one real file. This proves the import code path is compiled
+    // into the default build (no feature wall) and that draining it routes
+    // the clip through the `UpsertMedia` action on `ui::ActionHost`, so it
+    // lands in the shared document a peer replicates.
     let f = write_real_png(480, 270);
     let mut app = VideoEditorApp::new();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.import_rx = Some(portal::inject_for_test(ImportOutcome::Selected(vec![
-        f.clone(),
-    ])));
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    recorder.respond_to_pick_multiple(ImportOutcome::Selected(vec![f.clone()]));
+    app.trigger_import();
+    assert_eq!(recorder.pick_requests()[0].title(), "Import media");
 
     let mut doc = AutoCommit::new();
     assert!(
@@ -1389,7 +1391,7 @@ fn the_shortcut_sheet_names_the_range_marks_and_redo() {
 
 /// A blank editor on an empty document — the live app's opening state.
 fn blank_app_and_doc() -> (VideoEditorApp, AutoCommit) {
-    ui::portal::suppress_for_tests();
+    ui::host::install_default(ui::host::HostServices::recording().0);
     let mut doc = AutoCommit::new();
     let mut app = VideoEditorApp::new();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -1663,10 +1665,11 @@ fn app_and_doc() -> (VideoEditorApp, AutoCommit) {
     // No test may put a real file chooser on the person's screen. Several
     // here press the shortcuts that ask for one (Ctrl+O, Ctrl+Shift+O,
     // Ctrl+Shift+S) and assert only that the app *asked*; without this the
-    // request reached D-Bus and a full run opened four real dialogs.
-    // Suppression is process-wide and one-way, so setting it from the one
-    // fixture every test builds through covers the suite.
-    ui::portal::suppress_for_tests();
+    // request reached D-Bus and a full run opened four real dialogs. A
+    // recording host answers every request instead; it is the process default,
+    // so installing it from the one fixture every test builds through covers
+    // the suite.
+    ui::host::install_default(ui::host::HostServices::recording().0);
     let mut doc = AutoCommit::new();
     VideoDoc::seed_sample(&mut doc);
     let mut app = VideoEditorApp::new();
@@ -2079,8 +2082,8 @@ fn a_project_whose_footage_is_not_here_says_which_in_the_words_the_app_already_u
     // Media is referenced, not copied, so this is the ordinary case after
     // opening a project somewhere else — and it must be disclosed in the
     // same vocabulary the bin and the timeline use, not a third phrasing.
-    // Safety: single-threaded test mutation of process env.
-    unsafe { std::env::remove_var("TILO_VE_MEDIA_DIR") };
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("TILO_VE_MEDIA_DIR");
     let dir = scratch("moved");
     let path = dir.join("Moved.qvp");
     let mut p = Project::new("Moved");
@@ -2399,9 +2402,10 @@ fn a_chosen_destination_arriving_from_the_portal_saves_where_it_said() {
     let dir = scratch("portal");
     let path = dir.join("Portal.qvp");
     let (mut app, mut doc) = app_and_doc();
-    app.project_rx = Some(portal::inject_project_for_test(
-        portal::ProjectOutcome::Save(path.clone()),
-    ));
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+    app.request_save_as();
     app.sync(&mut doc, &automerge::ROOT);
     assert_eq!(
         app.project_path.as_ref(),
@@ -2415,10 +2419,15 @@ fn a_chosen_destination_arriving_from_the_portal_saves_where_it_said() {
     let mut fresh = VideoEditorApp::new();
     fresh.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     fresh.sync(&mut fresh_doc, &automerge::ROOT);
-    fresh.project_rx = Some(portal::inject_project_for_test(
-        portal::ProjectOutcome::Open(path.clone()),
-    ));
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+    fresh.request_open_project();
     fresh.sync(&mut fresh_doc, &automerge::ROOT);
+    let titles: Vec<String> = recorder
+        .pick_requests()
+        .iter()
+        .map(|r| r.title().to_string())
+        .collect();
+    assert_eq!(titles, ["Save project", "Open project"]);
     assert_eq!(fresh.project.clips.len(), 7, "the whole timeline arrived");
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -2427,10 +2436,13 @@ fn a_chosen_destination_arriving_from_the_portal_saves_where_it_said() {
 fn a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open() {
     let (mut app, mut doc) = app_and_doc();
     app.save_then_open = Some(PathBuf::from("/p/Q.qvp"));
-    app.project_notice = Some(Notice::ok("Choose where to save…"));
-    app.project_rx = Some(portal::inject_project_for_test(
-        portal::ProjectOutcome::Cancelled,
-    ));
+    // An unanswered chooser on the recording host comes back cancelled.
+    let (services, _recorder) = ui::host::HostServices::recording();
+    ui::host::scoped(&services, || app.request_save_as());
+    assert_eq!(
+        app.project_notice.as_ref().map(|n| n.text.as_str()),
+        Some("Choose where to save…"),
+    );
     app.sync(&mut doc, &automerge::ROOT);
     assert!(
         app.project_notice.is_none(),
@@ -4300,9 +4312,10 @@ fn a_refusal_reads_as_one_whatever_words_it_happens_to_use() {
 
     // Import side.
     let (mut app, mut doc) = app_and_doc();
-    app.import_rx = Some(portal::inject_for_test(ImportOutcome::Failed(
-        REFUSAL.to_string(),
-    )));
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
+    recorder.respond_to_pick_multiple(ImportOutcome::Failed(REFUSAL.to_string()));
+    app.trigger_import();
     app.sync(&mut doc, &automerge::ROOT);
     let notice = app.import_notice.clone().expect("the refusal is on screen");
     assert_eq!(notice.text, REFUSAL, "in the picker's own words");
@@ -4327,9 +4340,8 @@ fn a_refusal_reads_as_one_whatever_words_it_happens_to_use() {
 
     // Project side: the same picker, the same refusal, the same rule.
     let (mut app, mut doc) = app_and_doc();
-    app.project_rx = Some(portal::inject_project_for_test(
-        portal::ProjectOutcome::Failed(REFUSAL.to_string()),
-    ));
+    recorder.respond_to_pick(ui::portal::PortalOutcome::Failed(REFUSAL.to_string()));
+    app.request_open_project();
     app.sync(&mut doc, &automerge::ROOT);
     let notice = app
         .project_notice
@@ -8103,7 +8115,7 @@ fn the_folded_markers_header_counts_every_marker_the_panel_lists() {
 /// that was plainly on the screen.
 #[test]
 fn an_empty_project_still_lists_its_markers_to_a_reader() {
-    ui::portal::suppress_for_tests();
+    ui::host::install_default(ui::host::HostServices::recording().0);
     let mut doc = AutoCommit::new();
     let mut app = VideoEditorApp::new();
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

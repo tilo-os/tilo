@@ -367,17 +367,7 @@ pub fn default_revoked_keys_path() -> Option<PathBuf> {
 }
 
 fn config_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME")
-        && !xdg.is_empty()
-    {
-        return Some(PathBuf::from(xdg).join("tilo"));
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return Some(PathBuf::from(home).join(".config").join("tilo"));
-    }
-    None
+    Some(xdg_paths::xdg::config_home()?.join("tilo"))
 }
 
 fn parse_pubkey_hex(s: &str) -> Result<[u8; 32], TrustLoadError> {

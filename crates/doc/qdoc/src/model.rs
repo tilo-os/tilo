@@ -612,7 +612,7 @@ pub fn note_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 pub fn note_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<NoteKind> {
     let note = note_obj(doc, c, id)?;
     match doc.get(&note, NOTE_KIND) {
-        Ok(Some((v, _))) => v.to_str().map(NoteKind::from_str),
+        Ok(Some((v, _))) => v.as_str().map(NoteKind::from_str),
         _ => None,
     }
 }
@@ -666,7 +666,7 @@ pub fn comment_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool
         return false;
     };
     let key = format!("{COMMENT_TOMBSTONE_PREFIX}{id}");
-    matches!(doc.get(&comments, key), Ok(Some((value, _))) if value.to_bool() == Some(true))
+    matches!(doc.get(&comments, key), Ok(Some((value, _))) if value.as_bool() == Some(true))
 }
 
 /// Resolve a single comment's sub-map object by id.
@@ -700,7 +700,7 @@ fn comment_reply_obj(
     match doc.get(&comments, reply_id) {
         Ok(Some((Value::Object(ObjType::Map), reply))) => {
             match doc.get(&reply, COMMENT_REPLY_PARENT) {
-                Ok(Some((parent, _))) if parent.to_str() == Some(comment_id) => Some(reply),
+                Ok(Some((parent, _))) if parent.as_str() == Some(comment_id) => Some(reply),
                 _ => None,
             }
         }
@@ -744,7 +744,7 @@ pub fn comment_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
     match doc.get(&comment, COMMENT_AUTHOR) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -753,7 +753,7 @@ pub fn comment_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<Stri
 pub fn comment_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let comment = comment_obj(doc, c, id)?;
     match doc.get(&comment, COMMENT_DATE) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -789,7 +789,7 @@ pub fn comment_reply_ids(doc: &AutoCommit, c: &Containers, comment_id: &str) -> 
             matches!(
                 doc.get(&replies, id),
                 Ok(Some((Value::Object(ObjType::Map), reply)))
-                    if matches!(doc.get(&reply, COMMENT_REPLY_PARENT), Ok(Some((parent, _))) if parent.to_str() == Some(comment_id))
+                    if matches!(doc.get(&reply, COMMENT_REPLY_PARENT), Ok(Some((parent, _))) if parent.as_str() == Some(comment_id))
             )
         })
         .collect();
@@ -805,7 +805,7 @@ pub fn comment_reply_author(
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
     match doc.get(&reply, COMMENT_REPLY_AUTHOR) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -818,7 +818,7 @@ pub fn comment_reply_date(
 ) -> Option<String> {
     let reply = comment_reply_obj(doc, c, comment_id, reply_id)?;
     match doc.get(&reply, COMMENT_REPLY_DATE) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -963,7 +963,7 @@ pub fn change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
     match doc.get(&change, CHANGE_AUTHOR) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -972,7 +972,7 @@ pub fn change_author(doc: &AutoCommit, c: &Containers, id: &str) -> Option<Strin
 pub fn change_date(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let change = change_obj(doc, c, id)?;
     match doc.get(&change, CHANGE_DATE) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -985,7 +985,7 @@ pub fn change_kind(
 ) -> Option<crate::snapshot::ChangeKind> {
     let change = change_obj(doc, c, id)?;
     match doc.get(&change, CHANGE_KIND) {
-        Ok(Some((v, _))) => v.to_str().map(crate::snapshot::ChangeKind::from_str),
+        Ok(Some((v, _))) => v.as_str().map(crate::snapshot::ChangeKind::from_str),
         _ => None,
     }
 }
@@ -1191,7 +1191,7 @@ pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
 /// Read a document-level meta string (e.g. the serialized stylesheet).
 pub fn meta_str(doc: &AutoCommit, c: &Containers, key: &str) -> Option<String> {
     match doc.get(&c.meta, key) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -1231,7 +1231,7 @@ pub fn columns(doc: &AutoCommit, c: &Containers) -> (u32, Option<f64>) {
 pub fn language(doc: &AutoCommit, c: &Containers) -> Option<String> {
     match doc.get(&c.meta, META_LANGUAGE) {
         Ok(Some((v, _))) => v
-            .to_str()
+            .as_str()
             .filter(|s| !s.is_empty())
             .map(std::string::ToString::to_string),
         _ => None,
@@ -1250,7 +1250,7 @@ fn props_obj(doc: &AutoCommit, c: &Containers) -> Option<ObjId> {
 pub fn doc_prop(doc: &AutoCommit, c: &Containers, name: &str) -> Option<String> {
     let props = props_obj(doc, c)?;
     match doc.get(&props, name) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -1261,7 +1261,7 @@ pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
     if let Some(props) = props_obj(doc, c) {
         for k in doc.keys(&props) {
             if let Ok(Some((v, _))) = doc.get(&props, &k)
-                && let Some(s) = v.to_str()
+                && let Some(s) = v.as_str()
             {
                 out.insert(k, s.to_string());
             }
@@ -1273,7 +1273,7 @@ pub fn doc_props(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, String> {
 pub fn block_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<String> {
     let obj = block_obj(doc, &c.blocks, id)?;
     match doc.get(&obj, BLOCK_KIND) {
-        Ok(Some((v, _))) => v.to_str().map(std::string::ToString::to_string),
+        Ok(Some((v, _))) => v.as_str().map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -1698,7 +1698,7 @@ pub fn style_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 
 pub fn style_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool {
     let key = format!("{STYLE_TOMBSTONE_PREFIX}{id}");
-    matches!(doc.get(&c.styles, key), Ok(Some((value, _))) if value.to_bool() == Some(true))
+    matches!(doc.get(&c.styles, key), Ok(Some((value, _))) if value.as_bool() == Some(true))
 }
 
 /// The scalar properties of a single style (`name`/`font`/`size`/… → value), or an empty map if the style id is unknown.
@@ -1731,7 +1731,7 @@ fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView
         };
     };
     let kind = match doc.get(&obj, BLOCK_KIND) {
-        Ok(Some((v, _))) => v.to_str().unwrap_or("").to_string(),
+        Ok(Some((v, _))) => v.as_str().unwrap_or("").to_string(),
         _ => String::new(),
     };
     let text = match doc.get(&obj, BLOCK_TEXT) {
