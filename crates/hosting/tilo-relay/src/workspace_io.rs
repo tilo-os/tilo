@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{MutexGuard, OwnedSemaphorePermit, Semaphore, watch};
 
 use crate::peer::WorkspaceRegistry;
-use crate::store::{StoreError, WorkspaceStore};
+use crate::store::{GovernedAccessRecord, StoreError, WorkspaceStore};
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
 
 const AUTHORIZATION_CAPACITY: usize = 64;
@@ -251,6 +251,58 @@ pub(crate) async fn replace_membership(
         runtime.membership.set(members);
         runtime.membership_ceiling = None;
         drop(runtime);
+        Ok(())
+    })
+    .await
+    .map_err(|error| io_error(error.to_string()))?
+}
+
+/// Replace the native governor's exact devices and handshake roots as one
+/// durable projection. Removals narrow the live room before filesystem work;
+/// additions appear only after the atomic record commits. A failed write
+/// therefore leaves a fail-closed in-process ceiling until a later successful
+/// replacement.
+pub(crate) async fn replace_governed_access(
+    workspace: &SharedWorkspace,
+    access: GovernedAccessRecord,
+) -> Result<(), StoreError> {
+    let slot = admit_work()?;
+    let workspace = workspace.clone();
+    tokio::spawn(async move {
+        let _slot = slot;
+        let (store, lane) = authority_handles(&workspace).await;
+        let _lane = lane.lock_owned().await;
+        {
+            let mut runtime = workspace.lock().await;
+            runtime.membership_revision = runtime
+                .membership_revision
+                .checked_add(1)
+                .ok_or_else(|| io_error("workspace membership revision exhausted"))?;
+            let requested_devices: std::collections::HashSet<_> =
+                access.member_devices.iter().copied().collect();
+            if let Some(ceiling) = &mut runtime.membership_ceiling {
+                ceiling.retain(|device| requested_devices.contains(device));
+            } else {
+                runtime.membership_ceiling = Some(requested_devices);
+            }
+            runtime
+                .membership
+                .devices
+                .retain(|device| access.member_devices.contains(device));
+            runtime
+                .governed_user_roots
+                .retain(|root| access.member_user_roots.contains(root));
+            runtime.governed_access = true;
+            runtime.admit_authenticated = false;
+        }
+        let saved = access.clone();
+        authorization_io(move || store.save_governed_access(&saved), None).await?;
+        let mut runtime = workspace.lock().await;
+        runtime.membership.set(access.member_devices);
+        runtime.governed_user_roots = access.member_user_roots.into_iter().collect();
+        runtime.governed_access = true;
+        runtime.admit_authenticated = false;
+        runtime.membership_ceiling = None;
         Ok(())
     })
     .await

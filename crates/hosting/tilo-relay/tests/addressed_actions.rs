@@ -1,6 +1,294 @@
 //! Certified relay v2 transport tests. No action executor is installed here.
 use crate::common::{TestUser, client_endpoint, spawn_relay};
-use tilo_user_identity::DeviceCapabilities;
+use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_read_new_alpn_is_explicitly_served() {
+    let user = TestUser::fresh("Agent reads");
+    let relay = spawn_relay(
+        &user,
+        user.enrol("relay", DeviceCapabilities::host()),
+        &[7],
+        &[],
+    )
+    .await;
+    let endpoint = client_endpoint().await;
+    let connection = endpoint
+        .connect(relay.relay.node_addr(), b"tilo-relay/3")
+        .await;
+    assert!(
+        connection.is_ok(),
+        "read extension requires explicit negotiation: {connection:?}"
+    );
+    endpoint.close().await;
+    let device = user.enrol("negotiated caller", DeviceCapabilities::primary());
+    let client = RelayClient::connect_v2_to_enrolled_home_peer(
+        client_endpoint().await,
+        relay.relay.node_addr(),
+        user.user_pk,
+        relay.relay.handle().mesh_profile().device,
+        device.cert,
+        device.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    assert!(client.supports_agent_reads_v1());
+    client.send(Envelope::Ping).unwrap();
+    assert_eq!(next_state(&client).await, Envelope::Pong);
+    client.close().await;
+    relay.relay.shutdown().await;
+}
+
+struct AgentReadWire {
+    endpoint: iroh::Endpoint,
+    connection: iroh::endpoint::Connection,
+    send: iroh::endpoint::SendStream,
+    receive: iroh::endpoint::RecvStream,
+}
+impl AgentReadWire {
+    async fn join(relay: &TestRelay, device: &TestDevice, room: Uuid, alpn: &'static [u8]) -> Self {
+        use tilo_relay::{
+            auth,
+            framing::{read_frame, write_frame},
+        };
+        let endpoint = client_endpoint().await;
+        let connection = endpoint
+            .connect(relay.relay.node_addr(), alpn)
+            .await
+            .unwrap();
+        let (mut send, mut receive) = connection.open_bi().await.unwrap();
+        let nonce = [7; 32];
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&auth::Hello {
+                cert: device.cert.clone(),
+                client_nonce: nonce,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let ack: auth::HelloAck = postcard::from_bytes(
+            &read_frame(&mut receive, tilo_relay::transport::MAX_FRAME_BYTES)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let verified = auth::verify_hello_ack(
+            auth::AuthDomain::Tilo,
+            &ack,
+            &relay.relay.own_user_public_key(),
+            &RevocationList::new(),
+            tilo_relay::clock::now_ns(),
+            &nonce,
+        )
+        .unwrap();
+        assert_eq!(
+            verified.device_public_key,
+            relay.relay.handle().mesh_profile().device
+        );
+        write_frame(
+            &mut send,
+            &postcard::to_allocvec(&auth::build_hello_ack2(
+                auth::AuthDomain::Tilo,
+                &device.sk,
+                &ack.server_nonce,
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut wire = Self {
+            endpoint,
+            connection,
+            send,
+            receive,
+        };
+        wire.send(EnvelopeV2::State(Envelope::Subscribe {
+            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
+        }))
+        .await;
+        assert!(matches!(
+            wire.next().await,
+            EnvelopeV2::State(Envelope::Ready { .. })
+        ));
+        wire.send(EnvelopeV2::EnableActions { room }).await;
+        assert!(matches!(wire.next().await, EnvelopeV2::ActionsReady { .. }));
+        wire
+    }
+    async fn send(&mut self, frame: EnvelopeV2) {
+        self.send
+            .write_all(&tilo_relay::transport_v2::encode(&frame).unwrap())
+            .await
+            .unwrap();
+    }
+    async fn next(&mut self) -> EnvelopeV2 {
+        let bytes = tokio::time::timeout(
+            Duration::from_secs(5),
+            tilo_relay::framing::read_frame(
+                &mut self.receive,
+                tilo_relay::peer_actions::MAX_PRIVATE_BYTES,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tilo_relay::transport_v2::decode(&bytes).unwrap()
+    }
+    async fn close(self) {
+        self.connection.close(0u32.into(), b"test complete");
+        self.endpoint.close().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_read_both_legs_and_registered_host_are_required_on_real_wire() {
+    for (browser_new, broker_new) in [(false, false), (false, true), (true, false), (true, true)] {
+        let user = TestUser::fresh("Agent reads");
+        let browser = user.enrol("browser", DeviceCapabilities::primary());
+        let broker = user.enrol("broker", DeviceCapabilities::primary());
+        let room = Uuid::from_u128(80);
+        let host = Uuid::from_u128(81);
+        let workspace = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
+        let relay = spawn_relay(
+            &user,
+            user.enrol("relay", DeviceCapabilities::host()),
+            &[workspace],
+            &[browser.device_pubkey(), broker.device_pubkey()],
+        )
+        .await;
+        let alpn = |new| {
+            if new {
+                b"tilo-relay/3" as &'static [u8]
+            } else {
+                b"tilo-relay/2" as &'static [u8]
+            }
+        };
+        let mut caller = AgentReadWire::join(&relay, &browser, room, alpn(browser_new)).await;
+        let mut provider = AgentReadWire::join(&relay, &broker, room, alpn(broker_new)).await;
+        caller.send(EnvelopeV2::EnableBrokerClient { room }).await;
+        // EnableBrokerClient is deliberately unacknowledged; an ordered state
+        // ping confirms it was processed without inventing a protocol reply.
+        caller.send(EnvelopeV2::State(Envelope::Ping)).await;
+        assert_eq!(caller.next().await, EnvelopeV2::State(Envelope::Pong));
+        provider
+            .send(EnvelopeV2::RegisterBroker { room, host })
+            .await;
+        assert!(matches!(
+            provider.next().await,
+            EnvelopeV2::ActionsReady {
+                capability: ActionCapability::DurableBroker { .. },
+                ..
+            }
+        ));
+        let request = DirectedAction {
+            room,
+            request_id: Uuid::from_u128(82),
+            source: browser.device_pubkey(),
+            target: broker.device_pubkey(),
+            message: ActionMessage::AgentReadV1 {
+                host,
+                invocation: Uuid::from_u128(83),
+                request: qos_agent_control_protocol::AgentRequest::List {
+                    version: 1,
+                    cursor: None,
+                },
+            },
+        };
+        caller.send(EnvelopeV2::Directed(request.clone())).await;
+        let binding = tilo_relay::agent_reads::AgentReadBinding {
+            action_host: host.to_string(),
+            agent: qos_agent_control_protocol::AgentBinding {
+                machine: "machine".into(),
+                room: room.to_string(),
+                device: hex::encode(browser.device_pubkey()),
+                host: host.to_string(),
+            },
+            spawn: None,
+            message: None,
+        };
+        let result = DirectedAction {
+            source: request.target,
+            target: request.source,
+            message: ActionMessage::AgentReadResultV1 {
+                host,
+                invocation: Uuid::from_u128(83),
+                binding: binding.clone(),
+                response: qos_agent_control_protocol::AgentResponse::List {
+                    version: 1,
+                    invocation_id: Uuid::from_u128(83).to_string(),
+                    binding: binding.agent,
+                    agents: vec![],
+                    next_cursor: None,
+                    revision: "1".into(),
+                },
+            },
+            ..request.clone()
+        };
+        if browser_new && broker_new {
+            let EnvelopeV2::CertifiedDelivered {
+                action,
+                source_certificate,
+            } = provider.next().await
+            else {
+                panic!("read did not use certified ingress")
+            };
+            assert_eq!(action, request);
+            let cert: tilo_user_identity::DeviceCert =
+                serde_json::from_slice(&source_certificate).unwrap();
+            assert_eq!(cert, browser.cert);
+            provider.send(EnvelopeV2::Directed(result.clone())).await;
+            assert!(
+                matches!(caller.next().await,EnvelopeV2::Delivered {action,source_user} if action==result && source_user==user.user_pk)
+            );
+            let mut wrong = request.clone();
+            let ActionMessage::AgentReadV1 { host, .. } = &mut wrong.message else {
+                unreachable!()
+            };
+            *host = Uuid::from_u128(84);
+            caller.send(EnvelopeV2::Directed(wrong)).await;
+            assert!(matches!(
+                caller.next().await,
+                EnvelopeV2::Unavailable {
+                    reason: UnavailableReason::UnsupportedPeer,
+                    ..
+                }
+            ));
+        } else {
+            assert!(
+                matches!(
+                    caller.next().await,
+                    EnvelopeV2::Unavailable {
+                        invocation: None,
+                        reason: UnavailableReason::UnsupportedPeer,
+                        ..
+                    }
+                ),
+                "old leg accepted read extension"
+            );
+            // Even an unsolicited result cannot introduce a new tag on an old
+            // browser leg or originate from an unnegotiated broker leg.
+            provider.send(EnvelopeV2::Directed(result)).await;
+            assert!(matches!(
+                provider.next().await,
+                EnvelopeV2::Unavailable {
+                    invocation: None,
+                    reason: UnavailableReason::UnsupportedPeer,
+                    ..
+                }
+            ));
+        }
+        // A rejected extension must not kill ordinary state traffic on either leg.
+        caller.send(EnvelopeV2::State(Envelope::Ping)).await;
+        assert_eq!(caller.next().await, EnvelopeV2::State(Envelope::Pong));
+        provider.send(EnvelopeV2::State(Envelope::Ping)).await;
+        assert_eq!(provider.next().await, EnvelopeV2::State(Envelope::Pong));
+        caller.close().await;
+        provider.close().await;
+        relay.relay.shutdown().await;
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn addressed_actions_alpn_is_served_by_the_existing_relay() {
@@ -81,6 +369,164 @@ fn refresh(room: Uuid, sender: &TestDevice, target: &TestDevice) -> DirectedActi
         target: target.device_pubkey(),
         message: ActionMessage::CatalogueRefresh { scope: None },
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_relay_device_can_register_its_durable_broker() {
+    let user = TestUser::fresh("Provider");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let relay_cert = relay_device.cert.clone();
+    let relay_signing_key = relay_device.sk.clone();
+    let room = Uuid::from_u128(6);
+    let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
+    let relay = spawn_relay(&user, relay_device, &[workspace_id], &[relay_key]).await;
+    relay
+        .relay
+        .replace_governed_workspace_access(
+            workspace_id,
+            true,
+            qos_peer_state::GovernedAccess {
+                member_devices: vec![relay_key],
+                member_user_roots: vec![user.user_pk],
+            },
+            relay.state_root.clone(),
+        )
+        .await
+        .unwrap();
+    let client = RelayClient::connect_v2_to_enrolled_home_peer(
+        client_endpoint().await,
+        relay.relay.node_addr(),
+        user.user_pk,
+        relay_key,
+        relay_cert,
+        relay_signing_key,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client.send(Envelope::Subscribe { workspace_id }).unwrap();
+    assert!(matches!(next_state(&client).await, Envelope::Ready { .. }));
+    client
+        .send_action(EnvelopeV2::EnableActions { room })
+        .unwrap();
+    assert_eq!(
+        next_action(&client).await,
+        EnvelopeV2::ActionsReady {
+            room,
+            capability: ActionCapability::TransportOnly,
+        }
+    );
+    let broker_host = Uuid::from_u128(7);
+    client
+        .send_action(EnvelopeV2::RegisterBroker {
+            room,
+            host: broker_host,
+        })
+        .unwrap();
+    assert_eq!(
+        next_action(&client).await,
+        EnvelopeV2::ActionsReady {
+            room,
+            capability: ActionCapability::DurableBroker { host: broker_host },
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest() {
+    let user = TestUser::fresh("Provider");
+    let guest = TestUser::fresh("Guest");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let relay_cert = relay_device.cert.clone();
+    let relay_signing_key = relay_device.sk.clone();
+    let other_host = user.enrol("other-host", DeviceCapabilities::host());
+    let other_host_key = other_host.device_pubkey();
+    let unlisted_device = user.enrol("unlisted-device", DeviceCapabilities::primary());
+    let guest_device = guest.enrol("guest", DeviceCapabilities::primary());
+    let room = Uuid::from_u128(8);
+    let workspace_id = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
+    let relay = spawn_relay(
+        &user,
+        relay_device,
+        &[workspace_id],
+        &[relay_key, other_host_key],
+    )
+    .await;
+    relay
+        .relay
+        .replace_governed_workspace_access(
+            workspace_id,
+            true,
+            qos_peer_state::GovernedAccess {
+                member_devices: vec![relay_key, other_host_key],
+                member_user_roots: vec![user.user_pk],
+            },
+            relay.state_root.clone(),
+        )
+        .await
+        .unwrap();
+
+    for (cert, signing_key) in [(other_host.cert, other_host.sk), {
+        let mut different_cert = relay_cert;
+        different_cert.device_label = "same-key-other-certificate".into();
+        sign_device_cert(&mut different_cert, &user.user_sk).unwrap();
+        (different_cert, relay_signing_key)
+    }] {
+        let client = RelayClient::connect_v2_to_enrolled_home_peer(
+            client_endpoint().await,
+            relay.relay.node_addr(),
+            user.user_pk,
+            relay_key,
+            cert,
+            signing_key,
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        client.send(Envelope::Subscribe { workspace_id }).unwrap();
+        assert!(matches!(next_state(&client).await, Envelope::Ready { .. }));
+        client
+            .send_action(EnvelopeV2::EnableActions { room })
+            .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), client.recv_action()).await,
+            Ok(None)
+        ));
+    }
+
+    let unlisted = RelayClient::connect_v2_to_enrolled_home_peer(
+        client_endpoint().await,
+        relay.relay.node_addr(),
+        user.user_pk,
+        relay_key,
+        unlisted_device.cert,
+        unlisted_device.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    unlisted.send(Envelope::Subscribe { workspace_id }).unwrap();
+    assert!(matches!(
+        next_state(&unlisted).await,
+        Envelope::NotAuthorised { .. }
+    ));
+
+    assert!(
+        RelayClient::connect_v2_to_enrolled_home_peer(
+            client_endpoint().await,
+            relay.relay.node_addr(),
+            user.user_pk,
+            relay_key,
+            guest_device.cert,
+            guest_device.sk,
+            RevocationList::new(),
+        )
+        .await
+        .is_err(),
+        "an unrelated guest root must fail before private capability negotiation"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -58,6 +58,7 @@ pub struct Subscriber {
 
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
+    pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -79,6 +80,14 @@ pub struct WorkspaceRuntime {
     pub admit_authenticated: bool,
     /// Cross-user roots admitted by the signed authority for this exact room.
     pub admitted_users: HashSet<[u8; 32]>,
+    /// User roots needed only to pass the relay-wide handshake for devices in
+    /// this native-governed room. Exact room admission still uses
+    /// `membership`; keeping this separate from `admitted_users` prevents an
+    /// ungoverned sibling device under the same root from joining.
+    pub governed_user_roots: HashSet<[u8; 32]>,
+    /// Whether native governance owns this room's admission. Once set, the
+    /// same-owner autobind path must not auto-enrol handshake-admitted devices.
+    pub governed_access: bool,
     pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
@@ -120,7 +129,34 @@ impl WorkspaceRuntime {
         pinned: bool,
         membership: Membership,
     ) -> Result<Self, crate::store::StoreError> {
+        Self::open_inner(state_root, workspace_id, pinned, membership, false)
+    }
+
+    /// Open a pinned workspace only when its durable snapshot already exists.
+    /// Native interactive hosting uses this path so a missing baseline cannot
+    /// silently become a new empty authoritative document.
+    pub(crate) fn open_with_required_snapshot(
+        state_root: &std::path::Path,
+        workspace_id: u64,
+        pinned: bool,
+        membership: Membership,
+    ) -> Result<Self, crate::store::StoreError> {
+        Self::open_inner(state_root, workspace_id, pinned, membership, true)
+    }
+
+    fn open_inner(
+        state_root: &std::path::Path,
+        workspace_id: u64,
+        pinned: bool,
+        membership: Membership,
+        require_snapshot: bool,
+    ) -> Result<Self, crate::store::StoreError> {
         let store = WorkspaceStore::open(state_root, workspace_id, pinned)?;
+        let governed_access_record = store.load_governed_access()?;
+        let governed_access = governed_access_record.is_some();
+        let governed_user_roots = governed_access_record.map_or_else(HashSet::new, |access| {
+            access.member_user_roots.into_iter().collect()
+        });
         let mut membership = membership;
         for device in store.load_membership()? {
             if !membership.contains(&device) {
@@ -135,6 +171,12 @@ impl WorkspaceRuntime {
                         format!("automerge load: {e}"),
                     ))
                 })?),
+                None if require_snapshot => {
+                    return Err(crate::store::StoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "required durable workspace snapshot is missing",
+                    )));
+                }
                 None => Some(AutoCommit::new()),
             }
         } else {
@@ -150,6 +192,8 @@ impl WorkspaceRuntime {
             membership_revision: 0,
             admit_authenticated: false,
             admitted_users: HashSet::new(),
+            governed_user_roots,
+            governed_access,
             checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
@@ -158,6 +202,7 @@ impl WorkspaceRuntime {
             state_sessions: HashMap::new(),
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
+            sync_refresh: None,
         })
     }
 

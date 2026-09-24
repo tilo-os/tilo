@@ -286,12 +286,9 @@ fn verify_hello_ack_inner(
     now_ns: u64,
     challenge_client_nonce: &[u8; 32],
 ) -> Result<AuthenticatedPeer, AuthError> {
-    verify_device_cert_at(&ack.cert, now_ns)?;
+    verify_hello_ack_cryptographic(domain, ack, revocations, now_ns, challenge_client_nonce)?;
     if !ack.cert.capabilities.can_act_as_host {
         return Err(AuthError::PolicyReject);
-    }
-    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
-        return Err(AuthError::Revoked);
     }
     // A same-owner client pins the expected user root. A hosted-service
     // client instead pins the Iroh EndpointAddr and accepts any valid server
@@ -301,18 +298,60 @@ fn verify_hello_ack_inner(
     {
         return Err(AuthError::PolicyReject);
     }
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
-        .map_err(|_| AuthError::BadChallengeSig)?;
-    let digest = challenge_digest(domain, challenge_client_nonce);
-    let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
-    vk.verify(&digest, &sig)
-        .map_err(|_| AuthError::BadChallengeSig)?;
     Ok(AuthenticatedPeer {
         role: PeerRole::from_cert(&ack.cert),
         cert: ack.cert.clone(),
         user_public_key: ack.cert.user_public_key,
         device_public_key: ack.cert.device_public_key,
     })
+}
+
+/// Verify the exact primary device authorized by a signed, room-scoped
+/// interactive-owner hint. This exception does not grant host capability and
+/// cannot be reached from the generic pinned-host API.
+///
+/// # Errors
+///
+/// Returns [`AuthError`] unless the ACK certificate is the exact expected
+/// governor, is current and non-revoked, can govern workspaces, and proves the
+/// challenge with its certified device key.
+pub fn verify_interactive_owner_ack(
+    domain: AuthDomain,
+    ack: &HelloAck,
+    expected_governor: &DeviceCert,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<AuthenticatedPeer, AuthError> {
+    verify_hello_ack_cryptographic(domain, ack, revocations, now_ns, challenge_client_nonce)?;
+    if &ack.cert != expected_governor || !ack.cert.capabilities.can_own_workspaces {
+        return Err(AuthError::PolicyReject);
+    }
+    Ok(AuthenticatedPeer {
+        role: PeerRole::from_cert(&ack.cert),
+        cert: ack.cert.clone(),
+        user_public_key: ack.cert.user_public_key,
+        device_public_key: ack.cert.device_public_key,
+    })
+}
+
+fn verify_hello_ack_cryptographic(
+    domain: AuthDomain,
+    ack: &HelloAck,
+    revocations: &RevocationList,
+    now_ns: u64,
+    challenge_client_nonce: &[u8; 32],
+) -> Result<(), AuthError> {
+    verify_device_cert_at(&ack.cert, now_ns)?;
+    if revocations.is_revoked_at(&ack.cert.device_public_key, now_ns) {
+        return Err(AuthError::Revoked);
+    }
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&ack.cert.device_public_key)
+        .map_err(|_| AuthError::BadChallengeSig)?;
+    let digest = challenge_digest(domain, challenge_client_nonce);
+    let sig = ed25519_dalek::Signature::from_bytes(&ack.sig_over_client_nonce);
+    vk.verify(&digest, &sig)
+        .map_err(|_| AuthError::BadChallengeSig)
 }
 
 /// Server-side: verify the client's `HelloAck2` — its signature

@@ -258,6 +258,11 @@ impl RelayCoeditSession {
         })
     }
 
+    /// Read support belongs to this exact negotiated connection.
+    pub fn supports_agent_reads_v1(&self) -> bool {
+        self.client.supports_agent_reads_v1()
+    }
+
     /// Enable the private v2 lane on this same co-edit connection. Await its
     /// `ActionsReady` with `recv_action`; v1 sessions explicitly return an error.
     ///
@@ -381,6 +386,17 @@ impl RelayCoeditSession {
             .map_err(|_| CoeditError::Disconnected)
     }
 
+    /// Ask the current authenticated relay owner to refresh its genuine retained
+    /// checkpoint. Queue acceptance is neither durability nor a checkpoint ACK.
+    pub fn request_checkpoint_refresh(&self) -> Result<(), CoeditError> {
+        self.client
+            .send(Envelope::SyncRequest {
+                workspace_id: self.workspace_id,
+                have_heads: Vec::new(),
+            })
+            .map_err(|_| CoeditError::Disconnected)
+    }
+
     /// Publish an ephemeral presence payload — the toolkit `Presence`
     /// path. Rides an `Envelope::Presence`, so it is fanned out but
     /// never persisted.
@@ -417,7 +433,16 @@ impl RelayCoeditSession {
     /// (`None`).
     pub async fn recv(&self) -> Option<Inbound> {
         loop {
-            match self.client.recv().await? {
+            let envelope = self.client.recv().await?;
+            if matches!(&envelope,
+                Envelope::Delta { workspace_id, .. }
+                | Envelope::Presence { workspace_id, .. }
+                | Envelope::Ready { workspace_id, .. }
+                if *workspace_id != self.workspace_id)
+            {
+                return None;
+            }
+            match envelope {
                 Envelope::Delta {
                     author_device_public_key,
                     delta,
@@ -557,5 +582,95 @@ mod tests {
             CoeditPayload::decode(&raw_delta).is_none(),
             "a raw Automerge delta must not be mistaken for a CoeditPayload"
         );
+    }
+    #[tokio::test]
+    async fn coedit_rejects_wrong_workspace_before_emitting_any_input() {
+        use crate::auth::{self, AuthDomain};
+        use crate::session_carrier::{SessionCarrier, SessionChannels};
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
+        };
+        struct Carrier;
+        impl SessionCarrier for Carrier {
+            fn abort(&self, _: &'static [u8]) {}
+            fn disconnect(&self) -> n0_future::boxed::BoxFuture<()> {
+                Box::pin(async {})
+            }
+            fn close_owned(&self) -> n0_future::boxed::BoxFuture<()> {
+                Box::pin(async {})
+            }
+        }
+        let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+        let host = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: host.verifying_key().to_bytes(),
+            device_label: "coedit scoped receive".into(),
+            capabilities: DeviceCapabilities::host(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let ack = auth::build_hello_ack(AuthDomain::Tilo, cert.clone(), &host, [2; 32], &[1; 32]);
+        let peer = auth::verify_hello_ack(
+            AuthDomain::Tilo,
+            &ack,
+            &cert.user_public_key,
+            &RevocationList::new(),
+            crate::clock::now_ns(),
+            &[1; 32],
+        )
+        .unwrap();
+        let bad = [
+            Envelope::Delta {
+                workspace_id: 42,
+                author_device_public_key: [3; 32],
+                authored_at_ns: 1,
+                signature: [0; 64],
+                delta: CoeditPayload::RetainedDelta {
+                    channel: [4; 32],
+                    body: vec![5],
+                }
+                .encode()
+                .unwrap(),
+            },
+            Envelope::Presence {
+                workspace_id: 42,
+                payload: AttributedPresence {
+                    author: [3; 32],
+                    body: vec![5],
+                }
+                .encode()
+                .unwrap(),
+            },
+            Envelope::Ready {
+                workspace_id: 42,
+                pending_deltas: 0,
+            },
+        ];
+        for frame in bad {
+            let (outbound, _outgoing) = tokio::sync::mpsc::channel(4);
+            let (incoming, inbound) = tokio::sync::mpsc::channel(4);
+            let (_action_incoming, action_inbound) = tokio::sync::mpsc::channel(1);
+            let client = RelayClient::from_authenticated_session(
+                peer.clone(),
+                [9; 32],
+                SessionChannels {
+                    outbound,
+                    inbound,
+                    action_outbound: None,
+                    action_inbound,
+                },
+                Box::new(Carrier),
+            );
+            let session = RelayCoeditSession::join(client, 41, [9; 32]).unwrap();
+            incoming.send(frame).await.unwrap();
+            drop(incoming);
+            assert!(
+                session.recv().await.is_none(),
+                "wrong workspace must produce no coedit input"
+            );
+        }
     }
 }

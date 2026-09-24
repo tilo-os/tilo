@@ -410,6 +410,109 @@ async fn frozen_one_shot_router(alpn: &'static [u8], legacy: FrozenServer) -> Ro
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_read_fallback_retains_state_and_withholds_reads_on_old_relays() {
+    use tilo_relay::transport_v2::EnvelopeV2;
+    for (alpn, auth_tag) in [
+        (b"tilo-relay/2" as &'static [u8], CURRENT_AUTH_TAG),
+        (b"qos-relay/2" as &'static [u8], DEPLOYED_AUTH_TAG),
+    ] {
+        let user = TestUser::fresh("agent compatibility");
+        let host = user.enrol("old", tilo_user_identity::DeviceCapabilities::host());
+        let device = user.enrol("caller", tilo_user_identity::DeviceCapabilities::primary());
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let protocol = FrozenServer {
+            cert: host.cert.clone(),
+            signing_key: host.sk.clone(),
+            expected_client_user: user.user_pk,
+            auth_tag,
+            client_cert_tag: CURRENT_CERT_TAG,
+            accepted: accepted.clone(),
+            exchange: Some((
+                postcard::to_allocvec(&EnvelopeV2::State(Envelope::Ping)).unwrap(),
+                postcard::to_allocvec(&EnvelopeV2::State(Envelope::Pong)).unwrap(),
+            )),
+        };
+        let router = frozen_one_shot_router(alpn, protocol).await;
+        let client = RelayClient::connect_v2_to_enrolled_home_peer(
+            client_endpoint().await,
+            router.endpoint().addr(),
+            user.user_pk,
+            host.device_pubkey(),
+            device.cert.clone(),
+            device.sk.clone(),
+            RevocationList::new(),
+        )
+        .await
+        .unwrap();
+        assert!(!client.supports_agent_reads_v1());
+        let request = tilo_relay::peer_actions::DirectedAction {
+            room: uuid::Uuid::from_u128(1),
+            request_id: uuid::Uuid::from_u128(2),
+            source: device.device_pubkey(),
+            target: host.device_pubkey(),
+            message: tilo_relay::peer_actions::ActionMessage::AgentReadV1 {
+                host: uuid::Uuid::from_u128(3),
+                invocation: uuid::Uuid::from_u128(4),
+                request: qos_agent_control_protocol::AgentRequest::Capabilities { version: 1 },
+            },
+        };
+        assert!(client.send_action(EnvelopeV2::Directed(request)).is_err());
+        client.send(Envelope::Ping).unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), client.recv())
+                .await
+                .unwrap(),
+            Some(Envelope::Pong)
+        );
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        client.close().await;
+        router.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn agent_read_authentication_failure_never_dials_older_protocol() {
+    let user = TestUser::fresh("agent compatibility");
+    let host = user.enrol("host", tilo_user_identity::DeviceCapabilities::host());
+    let device = user.enrol("caller", tilo_user_identity::DeviceCapabilities::primary());
+    let new_count = Arc::new(AtomicUsize::new(0));
+    let old_count = Arc::new(AtomicUsize::new(0));
+    let bad = FrozenServer {
+        cert: host.cert.clone(),
+        signing_key: host.sk.clone(),
+        expected_client_user: user.user_pk,
+        auth_tag: DEPLOYED_AUTH_TAG,
+        client_cert_tag: CURRENT_CERT_TAG,
+        accepted: new_count.clone(),
+        exchange: None,
+    };
+    let old = FrozenServer {
+        auth_tag: CURRENT_AUTH_TAG,
+        accepted: old_count.clone(),
+        ..bad.clone()
+    };
+    let endpoint = client_endpoint().await;
+    let router = Router::builder(endpoint)
+        .accept(b"tilo-relay/3", bad)
+        .accept(b"tilo-relay/2", old)
+        .spawn();
+    let result = RelayClient::connect_v2_to_enrolled_home_peer(
+        client_endpoint().await,
+        router.endpoint().addr(),
+        user.user_pk,
+        host.device_pubkey(),
+        device.cert,
+        device.sk,
+        RevocationList::new(),
+    )
+    .await;
+    assert!(matches!(result, Err(ClientError::Auth(_))));
+    assert_eq!(new_count.load(Ordering::SeqCst), 1);
+    assert_eq!(old_count.load(Ordering::SeqCst), 0);
+    router.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn new_client_falls_back_only_after_actual_tls_no_application_protocol() {
     let user = TestUser::fresh("owner");
     let mut server = user.enrol("old home", tilo_user_identity::DeviceCapabilities::host());

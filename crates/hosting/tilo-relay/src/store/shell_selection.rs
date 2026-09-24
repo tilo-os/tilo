@@ -62,11 +62,14 @@ pub(crate) enum Publication {
     Original,
     Suppress,
     Activate(PathBuf),
+    /// Replay the committed fallback in place; no newer checkpoint was selected.
+    ReplayRequired(PathBuf),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectionOutcome {
     Published(Publication),
     BatchPublished {
+        supplemental_recovery: Option<PathBuf>,
         publication: Publication,
         dispositions: Vec<IncomingDisposition>,
     },
@@ -87,6 +90,7 @@ pub(crate) enum BatchProjectionReason {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BatchSelectionOutcome {
+    pub supplemental_recovery: Option<PathBuf>,
     pub publication: Publication,
     pub dispositions: Vec<IncomingDisposition>,
     pub reason: BatchProjectionReason,
@@ -256,6 +260,11 @@ pub(crate) struct Selection {
     historical: Option<(Meta, Frame, File, Option<VerifiedRoom>)>,
     prospective: Option<VerifiedRoom>,
     fallback: bool,
+    // A serial verified prefix may wait durably for its missing checkpoint pairs.
+    // Rejected cuts and incomplete projected batches still preserve originals.
+    staging_incomplete_pair: bool,
+    rejected_complete_cut: bool,
+    external_verified_checkpoint: bool,
     blocked: bool,
     staged: PathBuf,
     output: File,
@@ -371,6 +380,9 @@ impl Selection {
             historical: None,
             prospective: None,
             fallback: false,
+            staging_incomplete_pair: false,
+            rejected_complete_cut: false,
+            external_verified_checkpoint: false,
             blocked: false,
             output: File::create(staged.join("basis.manifest"))?,
             live_output: File::create(staged.join("live.manifest"))?,
@@ -396,8 +408,17 @@ impl Selection {
     /// A complete changed cut may already be visible if CURRENT's rename or
     /// directory barrier reports an error. The owner must fence its captured
     /// recipients on any later failure, even before an Activate result exists.
-    pub(crate) fn activation_on_error(&self) -> Option<PathBuf> {
-        (self.changed && self.switch_attempted).then(|| self.staged.clone())
+    pub(crate) fn publication_on_error(&self) -> Option<Publication> {
+        if !self.switch_attempted {
+            return None;
+        }
+        if self.changed {
+            Some(Publication::Activate(self.staged.clone()))
+        } else if self.recovery_required() || self.supplemental_recovery().is_some() {
+            Some(Publication::ReplayRequired(self.staged.clone()))
+        } else {
+            None
+        }
     }
     pub(crate) fn current_switch_attempted(&self) -> bool {
         self.switch_attempted
@@ -408,6 +429,27 @@ impl Selection {
     pub(crate) fn stats(&self) -> &WorkStats {
         &self.sorter.stats
     }
+    fn recovery_required(&self) -> bool {
+        !self.batch
+            && self.fallback
+            && !self.staging_incomplete_pair
+            && self
+                .incoming_dispositions
+                .contains(&Some(IncomingDisposition::Original))
+    }
+    // Storage cannot prove whether an earlier checkpoint reached the wire. A
+    // verified external prerequisite may have been held by a serial prefix;
+    // conservatively recover only a refused complete cut with a safe old basis.
+    fn supplemental_recovery(&self) -> Option<PathBuf> {
+        (self.batch
+            && self.rejected_complete_cut
+            && self.basis.complete()
+            && self.external_verified_checkpoint
+            && self
+                .incoming_dispositions
+                .contains(&Some(IncomingDisposition::Original)))
+        .then(|| self.staged.clone())
+    }
     fn batch_outcome(&self) -> BatchSelectionOutcome {
         let dispositions = self
             .incoming_dispositions
@@ -415,6 +457,7 @@ impl Selection {
             .map(|value| value.unwrap_or(IncomingDisposition::Original))
             .collect::<Vec<_>>();
         BatchSelectionOutcome {
+            supplemental_recovery: self.supplemental_recovery(),
             publication: if self.changed {
                 Publication::Activate(self.staged.clone())
             } else if self.incoming_staged
@@ -448,6 +491,7 @@ impl Selection {
             Step::More => Ok(Step::More),
             Step::Done(SelectionOutcome::UnresolvedTailDependencies) => {
                 Ok(Step::Done(BatchSelectionOutcome {
+                    supplemental_recovery: None,
                     publication: Publication::Original,
                     dispositions: vec![IncomingDisposition::Original; self.incoming.len()],
                     reason: BatchProjectionReason::UnresolvedTailDependencies,
@@ -552,7 +596,17 @@ impl Selection {
         }
     }
     fn stage_or_preserve_extra(&mut self, meta: &Meta, value: &Frame) -> Result<(), StoreError> {
-        if self.fallback {
+        if self.fallback && !self.staging_incomplete_pair {
+            if value.kind == RoomInput::Checkpoint
+                && !self.incoming.contains(&input_identity(
+                    value.source,
+                    value.channel,
+                    true,
+                    &value.body,
+                ))
+            {
+                self.external_verified_checkpoint = true;
+            }
             self.note_incoming(value, IncomingDisposition::Original);
             self.extra(meta)
         } else {
@@ -562,14 +616,16 @@ impl Selection {
     }
     fn extra(&mut self, meta: &Meta) -> Result<(), StoreError> {
         let mut extra = meta.clone();
-        extra.key = vec!["0".into(), format!("{:016x}", self.extras_ordinal).into()];
+        // Safe selected tails precede extras: an unpaired checkpoint may otherwise
+        // advance an author floor before a retained incremental is admitted.
+        extra.key = vec!["1".into(), format!("{:016x}", self.extras_ordinal).into()];
         bounded::increment(&mut self.extras_ordinal)?;
         write_meta(&mut self.extras, &extra)
     }
     fn tail(&mut self, meta: &Meta, value: &Frame, seq: u64) -> Result<(), StoreError> {
         let mut extra = meta.clone();
         extra.key = vec![
-            "1".into(),
+            "0".into(),
             hex::encode(value.channel).into(),
             hex::encode(value.source).into(),
             format!("{seq:016x}").into(),
@@ -776,6 +832,7 @@ impl Selection {
                     if !self.basis.complete() {
                         self.basis = self.old.clone();
                         self.fallback = true;
+                        self.staging_incomplete_pair = !self.batch;
                         self.incoming_dispositions.fill(None);
                         self.incoming_staged = false;
                     }
@@ -785,8 +842,10 @@ impl Selection {
             Phase::Check => {
                 let Some(meta) = read_meta(self.input.as_mut().unwrap())? else {
                     if self.blocked && !self.fallback {
+                        self.rejected_complete_cut = true;
                         self.basis = self.old.clone();
                         self.fallback = true;
+                        self.staging_incomplete_pair = false;
                         self.incoming_dispositions.fill(None);
                         self.incoming_staged = false;
                         self.blocked = false;
@@ -1038,7 +1097,7 @@ impl Selection {
                     self.phase = Phase::StageRoom;
                     return Ok(Step::More);
                 };
-                if !meta.key.first().is_some_and(|value| value == "1") {
+                if !meta.key.first().is_some_and(|value| value == "0") {
                     return Ok(Step::More);
                 }
                 let value = self
@@ -1077,8 +1136,10 @@ impl Selection {
                     if self.fallback || self.old.room.is_none() {
                         return Ok(Step::Done(SelectionOutcome::UnresolvedTailDependencies));
                     }
+                    self.rejected_complete_cut = true;
                     self.basis = self.old.clone();
                     self.fallback = true;
+                    self.staging_incomplete_pair = false;
                     self.incoming_dispositions.fill(None);
                     self.incoming_staged = false;
                     self.blocked = false;
@@ -1115,7 +1176,7 @@ impl Selection {
             }
             Phase::StageExtras => {
                 if let Some(meta) = read_meta(self.input.as_mut().unwrap())? {
-                    let tail = meta.key.first().is_some_and(|v| v == "1");
+                    let tail = meta.key.first().is_some_and(|v| v == "0");
                     self.add(&meta, if tail { "tail" } else { "extra" })?
                 } else {
                     self.input = if self.fallback {
@@ -1186,12 +1247,15 @@ impl Selection {
                     Publication::Activate(self.staged.clone())
                 } else if self.incoming_staged {
                     Publication::Suppress
+                } else if self.recovery_required() {
+                    Publication::ReplayRequired(self.staged.clone())
                 } else {
                     Publication::Original
                 };
                 if self.batch {
                     let outcome = self.batch_outcome();
                     return Ok(Step::Done(SelectionOutcome::BatchPublished {
+                        supplemental_recovery: outcome.supplemental_recovery,
                         publication: outcome.publication,
                         dispositions: outcome.dispositions,
                     }));

@@ -103,10 +103,12 @@ async fn writer_boundary(
         state_outbound: Some(&state_tx),
         connection_live: None,
         own_user_public_key: &user.public_key,
+        own_device_cert: &source_peer.cert,
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
         v2: false,
+        agent_reads_v1: false,
         private_tx: &private,
         revocations: &revocations,
     };
@@ -368,10 +370,12 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         state_outbound: Some(&state_tx),
         connection_live: None,
         own_user_public_key: &user.public_key,
+        own_device_cert: &source_peer.cert,
         metrics: &metrics,
         trust_policy: &policy,
         disconnect: &disconnect,
         v2: true,
+        agent_reads_v1: false,
         private_tx: &private,
         revocations: &revocations,
     };
@@ -488,7 +492,8 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
             catchup: Arc::new(ReplayCatchup::new()),
         })
         .collect();
-    let mut work = ReplayPendingWork::selected(&generation, targets).unwrap();
+    let mut work =
+        ReplayPendingWork::selected(&SelectedPublication::Activation(generation), targets).unwrap();
     let budget = crate::store::replay::ReplayBudget::new(64 * 1024 * 1024);
     let work_budget = budget.clone();
     let (release, reached) =

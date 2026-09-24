@@ -1217,15 +1217,25 @@ impl WorkReclaimer {
 #[path = "replay_tests.rs"]
 mod tests;
 
-/// One selected activation frame, sharing the normal process output budget.
+/// One selected publication frame, sharing the normal process output budget.
 /// The owner holds its ordered completion across this cursor; queued deliveries
 /// own the batch/permit, so subsequent GC cannot invalidate their bytes.
 pub(crate) struct PublicationCursor {
     workspace: PathBuf,
     input: File,
+    recovery: bool,
 }
 impl PublicationCursor {
     pub(crate) fn open(generation: &Path) -> Result<Self, StoreError> {
+        Self::open_manifest(generation, false)
+    }
+    /// The serialized workspace owner must retain its queue position through
+    /// the cursor's completion; it excludes generation GC while paths are read.
+    /// Delivered batches then own their bytes/permits independently of GC.
+    pub(crate) fn open_recovery(generation: &Path) -> Result<Self, StoreError> {
+        Self::open_manifest(generation, true)
+    }
+    fn open_manifest(generation: &Path, recovery: bool) -> Result<Self, StoreError> {
         #[cfg(test)]
         super::test_barrier::check(
             generation.parent().and_then(Path::parent).unwrap(),
@@ -1237,7 +1247,12 @@ impl PublicationCursor {
                 .and_then(Path::parent)
                 .ok_or_else(|| invalid("invalid publication generation"))?
                 .into(),
-            input: File::open(generation.join("live.manifest"))?,
+            input: File::open(generation.join(if recovery {
+                "basis.manifest"
+            } else {
+                "live.manifest"
+            }))?,
+            recovery,
         })
     }
     pub(crate) fn step(
@@ -1245,10 +1260,14 @@ impl PublicationCursor {
         budget: &ReplayBudget,
     ) -> Result<Step<Option<ReplayBatch>>, StoreError> {
         let offset = self.input.stream_position()?;
+        #[cfg(test)]
+        if self.recovery && offset > 0 {
+            super::test_barrier::check(&self.workspace, "shell-recovery-read")?;
+        }
         let Some(meta) = read_meta(&mut self.input)? else {
             return Ok(Step::Done(None));
         };
-        if meta.key.first().is_some_and(|v| v == "extra") {
+        if !self.recovery && meta.key.first().is_some_and(|v| v == "extra") {
             return Ok(Step::More);
         }
         // As with replay preparation, inspect one bounded legal frame to measure
@@ -1257,6 +1276,18 @@ impl PublicationCursor {
             .ok_or_else(|| invalid("invalid activation frame"))?;
         let envelope =
             transport::decode(&bytes[4..]).map_err(|_| invalid("invalid activation envelope"))?;
+        if self.recovery {
+            let workspace_id = self
+                .workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<u64>().ok())
+                .ok_or_else(|| invalid("invalid recovery workspace"))?;
+            if !matches!(&envelope, Envelope::Delta { workspace_id: actual, .. } if *actual == workspace_id)
+            {
+                return Err(invalid("recovery frame outside workspace"));
+            }
+        }
         let v1 = postcard::to_allocvec(&envelope).map_err(|_| invalid("activation encoding"))?;
         let mut charge = frame_charge(&envelope, bytes.len(), &v1, v1.capacity())?;
         drop(v1);

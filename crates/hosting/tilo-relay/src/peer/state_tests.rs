@@ -6,9 +6,13 @@ use crate::{
 };
 use tilo_user_identity::{RevocationList, UserIdentity};
 
+mod recovery;
+
 struct Fixture {
+    workers: Arc<tokio::sync::Semaphore>,
     _tmp: tempfile::TempDir,
     root_key: ed25519_dalek::SigningKey,
+    source_key: ed25519_dalek::SigningKey,
     workspace: SharedWorkspace,
     registry: WorkspaceRegistry,
     store: crate::store::WorkspaceStore,
@@ -51,7 +55,7 @@ impl Fixture {
         workspace_id: u64,
     ) -> Self {
         let (root, user) = UserIdentity::generate("owner", 1);
-        let (author, _) = certified_device(&root, user.public_key, "author");
+        let (author, source_key) = certified_device(&root, user.public_key, "author");
         let (recipient, _) = certified_device(&root, user.public_key, "recipient");
         let tmp = tempfile::tempdir().unwrap();
         let mut runtime =
@@ -59,7 +63,7 @@ impl Fixture {
         for peer in [&author, &recipient] {
             runtime.admit_device(peer.device_public_key).unwrap();
         }
-        crate::persistence::isolate_test_admission_with_workers(&mut runtime, workers);
+        crate::persistence::isolate_test_admission_with_workers(&mut runtime, workers.clone());
         let (source_tx, source_rx) = mpsc::channel(32);
         let (recipient_tx, recipient_state_rx) = mpsc::channel(32);
         let (delivery, recipient_rx) = mpsc::channel(delivery_capacity);
@@ -105,8 +109,10 @@ impl Fixture {
         )])));
         let (private, _) = mpsc::channel(8);
         Self {
+            workers,
             _tmp: tmp,
             root_key: root,
+            source_key,
             workspace,
             registry,
             store,
@@ -209,10 +215,12 @@ impl Fixture {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &self.source.own_user,
+            own_device_cert: &self.source.peer.cert,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
         };
@@ -1713,10 +1721,12 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 state_outbound: None,
                 connection_live: Some(&connection_live),
                 own_user_public_key: &source.own_user,
+                own_device_cert: &source.peer.cert,
                 metrics: &metrics,
                 trust_policy: &source.policy,
                 disconnect: &source.disconnect,
                 v2: true,
+                agent_reads_v1: false,
                 private_tx: &private,
                 revocations: &source.revocations,
             };
@@ -1825,10 +1835,12 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         state_outbound: None,
         connection_live: None,
         own_user_public_key: &fixture.source.own_user,
+        own_device_cert: &fixture.source.peer.cert,
         metrics: &fixture.metrics,
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         v2: true,
+        agent_reads_v1: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
     };
@@ -1946,10 +1958,12 @@ impl Fixture {
             state_outbound: Some(&state_tx),
             connection_live: None,
             own_user_public_key: &self.source.own_user,
+            own_device_cert: &self.source.peer.cert,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
         };
@@ -2206,10 +2220,12 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 state_outbound: None,
                 connection_live: None,
                 own_user_public_key: &writer.source.own_user,
+                own_device_cert: &writer.source.peer.cert,
                 metrics: &writer.metrics,
                 trust_policy: &writer.source.policy,
                 disconnect: &writer.source.disconnect,
                 v2: true,
+                agent_reads_v1: false,
                 private_tx: &writer.private,
                 revocations: &writer.source.revocations,
             };
@@ -2291,6 +2307,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             ActionTarget {
                 broker_host: None,
                 broker_protocol: false,
+                agent_reads_v1: false,
                 room,
                 peer: fixture.source.peer.clone(),
                 state_tx: fixture.source.tx.clone(),
@@ -2302,6 +2319,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             ActionTarget {
                 broker_host: None,
                 broker_protocol: false,
+                agent_reads_v1: false,
                 room,
                 peer: fixture.recipient.clone(),
                 state_tx: fixture.recipient_tx.clone(),
@@ -2340,10 +2358,12 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &writer.source.own_user,
+            own_device_cert: &writer.source.peer.cert,
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
         };
@@ -2466,10 +2486,12 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &writer.source.own_user,
+            own_device_cert: &writer.source.peer.cert,
             metrics: &writer.metrics,
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
         };
@@ -2891,10 +2913,12 @@ impl Fixture {
             state_outbound: Some(&state_tx),
             connection_live: None,
             own_user_public_key: &self.source.own_user,
+            own_device_cert: &self.source.peer.cert,
             metrics: &self.metrics,
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
         };
@@ -3220,4 +3244,94 @@ async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
             .unwrap(),
         257
     );
+}
+
+#[tokio::test]
+async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution() {
+    for change in [
+        "current",
+        "closed",
+        "replaced",
+        "unsubscribed",
+        "revoked",
+        "removed",
+        "expired",
+    ] {
+        let fixture = Fixture::new();
+        let (mailbox, mut inbox) = sync_refresh::Mailbox::bounded();
+        fixture.workspace.lock().await.sync_refresh = Some(mailbox);
+        let source = &fixture.source;
+        let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let session = SessionCtx {
+            workspaces: &fixture.registry,
+            autobind: None,
+            outbound: &source.tx,
+            state_outbound: None,
+            connection_live: Some(&live),
+            own_user_public_key: &source.own_user,
+            own_device_cert: &source.peer.cert,
+            metrics: &fixture.metrics,
+            trust_policy: &source.policy,
+            disconnect: &source.disconnect,
+            v2: true,
+            agent_reads_v1: false,
+            private_tx: &fixture.private,
+            revocations: &source.revocations,
+        };
+        handle_sync_request(&source.peer, &session, 7, vec![])
+            .await
+            .unwrap();
+        let request = inbox
+            .try_recv()
+            .expect("authenticated SyncRequest reaches actual owner mailbox");
+        match change {
+            "closed" => live.store(false, std::sync::atomic::Ordering::SeqCst),
+            "expired" => tokio::time::sleep(std::time::Duration::from_millis(3010)).await,
+            "unsubscribed" => {
+                fixture
+                    .workspace
+                    .lock()
+                    .await
+                    .remove_subscriber(&source.peer.device_public_key);
+            }
+            "replaced" => {
+                let (replacement, _rx) = mpsc::channel(32);
+                fixture.workspace.lock().await.add_subscriber(Subscriber {
+                    device_public_key: source.peer.device_public_key,
+                    role: source.peer.role,
+                    tx: replacement,
+                    disconnect: source.disconnect.clone(),
+                });
+            }
+            "revoked" => {
+                let mut entry = tilo_user_identity::RevocationEntry {
+                    user_public_key: source.own_user,
+                    revoked_device_public_key: source.peer.device_public_key,
+                    revoked_at_ns: 1,
+                    reason: tilo_user_identity::RevocationReason::Lost,
+                    signature: [0; 64],
+                };
+                tilo_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
+                source.revocations.write().unwrap().insert(entry).unwrap();
+            }
+            "removed" => crate::workspace_io::replace_membership(
+                &fixture.workspace,
+                vec![fixture.recipient.device_public_key],
+            )
+            .await
+            .unwrap(),
+            _ => {}
+        }
+        let mut ran = false;
+        let result = request
+            .execute(|workspace, cert| {
+                assert_eq!(workspace, 7);
+                assert_eq!(cert, &source.peer.cert);
+                ran = true;
+                Ok(())
+            })
+            .await;
+        assert_eq!(ran, change == "current", "{change}");
+        assert_eq!(result.is_ok(), change == "current", "{change}");
+    }
 }

@@ -50,6 +50,8 @@ pub const LOG_FILE: &str = "log.jsonl";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
+/// Atomic native-governance projection: exact room devices plus handshake roots.
+pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
@@ -165,6 +167,40 @@ pub struct WorkspaceStore {
     workspace_id: u64,
     pinned: bool,
     shell_authority: Option<qos_peer_state::retained_proof::RetentionAuthority>,
+}
+
+/// One server-local projection of the native room governor. Both sets share a
+/// single atomic file so a crash cannot pair new roots with old devices (or the
+/// reverse).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GovernedAccessRecord {
+    pub(crate) member_devices: Vec<[u8; 32]>,
+    pub(crate) member_user_roots: Vec<[u8; 32]>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GovernedAccessFile {
+    version: u8,
+    member_devices: Vec<String>,
+    member_user_roots: Vec<String>,
+}
+
+fn decode_public_keys(kind: &str, values: Vec<String>) -> Result<Vec<[u8; 32]>, StoreError> {
+    values
+        .into_iter()
+        .map(|value| {
+            let bytes = hex::decode(&value).map_err(|error| {
+                StoreError::Json(format!("invalid governed {kind} key {value:?}: {error}"))
+            })?;
+            bytes.try_into().map_err(|bytes: Vec<u8>| {
+                StoreError::Json(format!(
+                    "governed {kind} key must be 32 bytes, got {}",
+                    bytes.len()
+                ))
+            })
+        })
+        .collect()
 }
 
 /// One durable queue entry loaded for delivery but not yet acknowledged.
@@ -312,6 +348,9 @@ impl WorkspaceStore {
     /// to decode as JSON, or contains a device key that isn't valid
     /// hex or isn't exactly 32 bytes.
     pub fn load_membership(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        if let Some(access) = self.load_governed_access()? {
+            return Ok(access.member_devices);
+        }
         let path = self.root.join(MEMBERSHIP_FILE);
         if !path.exists() {
             return Ok(Vec::new());
@@ -344,12 +383,66 @@ impl WorkspaceStore {
     /// Returns an error if `devices` can't be JSON-encoded or the
     /// atomic write fails.
     pub fn save_membership(&self, devices: &[[u8; 32]]) -> Result<(), StoreError> {
+        if let Some(mut access) = self.load_governed_access()? {
+            access.member_devices = devices.to_vec();
+            return self.save_governed_access(&access);
+        }
         let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
         #[cfg(test)]
         test_barrier::pause(&self.root, "membership-write");
         atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        Ok(())
+    }
+
+    /// Load the atomic native-governance projection. Absence is an empty
+    /// handshake-root projection; legacy membership remains readable through
+    /// [`Self::load_membership`] but can never admit another user root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unreadable, malformed, wrong-version, or invalid
+    /// key data. Callers fail closed rather than partially applying it.
+    pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, StoreError> {
+        let path = self.root.join(GOVERNED_ACCESS_FILE);
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let encoded: GovernedAccessFile =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
+        if encoded.version != 1 {
+            return Err(StoreError::Json(format!(
+                "unsupported governed access version {}",
+                encoded.version
+            )));
+        }
+        Ok(Some(GovernedAccessRecord {
+            member_devices: decode_public_keys("device", encoded.member_devices)?,
+            member_user_roots: decode_public_keys("user root", encoded.member_user_roots)?,
+        }))
+    }
+
+    /// Atomically replace exact room devices and global-handshake roots in one
+    /// crash-safe record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if encoding or atomic replacement fails.
+    pub(crate) fn save_governed_access(
+        &self,
+        access: &GovernedAccessRecord,
+    ) -> Result<(), StoreError> {
+        let encoded = GovernedAccessFile {
+            version: 1,
+            member_devices: access.member_devices.iter().map(hex::encode).collect(),
+            member_user_roots: access.member_user_roots.iter().map(hex::encode).collect(),
+        };
+        let bytes = serde_json::to_vec_pretty(&encoded)
+            .map_err(|error| StoreError::Json(error.to_string()))?;
+        atomic_file::write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
         Ok(())
     }
 
@@ -849,6 +942,38 @@ mod tests {
         assert_eq!(out1, vec![b"a".to_vec()]);
         let out2 = store.drain_pending(&[2u8; 32]).unwrap();
         assert_eq!(out2, vec![b"b".to_vec()]);
+    }
+
+    #[test]
+    fn governed_access_is_one_authoritative_device_and_root_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+        store.save_membership(&[[9; 32]]).unwrap();
+        store
+            .save_governed_access(&GovernedAccessRecord {
+                member_devices: vec![[1; 32]],
+                member_user_roots: vec![[2; 32]],
+            })
+            .unwrap();
+
+        assert_eq!(store.load_membership().unwrap(), vec![[1; 32]]);
+        assert_eq!(
+            store.load_governed_access().unwrap().unwrap(),
+            GovernedAccessRecord {
+                member_devices: vec![[1; 32]],
+                member_user_roots: vec![[2; 32]],
+            }
+        );
+        store.save_membership(&[[3; 32]]).unwrap();
+        assert_eq!(
+            store.load_governed_access().unwrap().unwrap(),
+            GovernedAccessRecord {
+                member_devices: vec![[3; 32]],
+                member_user_roots: vec![[2; 32]],
+            },
+            "legacy membership writers must preserve the governed root half"
+        );
+        assert!(store.root().join(GOVERNED_ACCESS_FILE).exists());
     }
 
     fn retained(author: u8, channel: u8, checkpoint: bool, value: u8) -> Vec<u8> {

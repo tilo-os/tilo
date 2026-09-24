@@ -57,6 +57,9 @@ path = "src/home_peer_control.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
+qos-agent-control-protocol = { path = "../../agent/control-protocol" }
+web-time = { version = "1", features = ["serde"] }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
 tilo-actions = { path = "../../collab/actions" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 # Home-peer configuration is one signed filesystem bundle; the relay imports
@@ -136,7 +139,6 @@ qdoc = { path = "../../doc/qdoc" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
 qos-browser-runtime = { path = "../../browser/qos-browser-runtime" }
-web-time = { version = "1", features = ["serde"] }
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true
 tilo-app-package = { path = "../../packaging/tilo-app-package" }

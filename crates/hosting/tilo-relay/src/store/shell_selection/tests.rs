@@ -295,6 +295,109 @@ fn replacement_room_does_not_inherit_old_snapshot_proofs_before_pairing() {
 }
 
 #[test]
+fn serial_incomplete_checkpoint_pairs_wait_then_publish_each_route_once() {
+    fn contains_original(path: &Path, expected: &[u8]) -> bool {
+        fs::read_dir(path).unwrap().any(|entry| {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                contains_original(&entry.path(), expected)
+            } else if entry.path().extension().is_some_and(|ext| ext == "delta") {
+                replay::frame_bytes(&entry.path()).unwrap().as_deref() == Some(expected)
+            } else {
+                false
+            }
+        })
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let meta = producer_metadata();
+    let authority = RetentionAuthority::new(
+        meta["room"].as_str().unwrap(),
+        serde_json::from_value(meta["authority"].clone()).unwrap(),
+    )
+    .unwrap();
+    let mut store = WorkspaceStore::open(
+        tmp.path(),
+        crate::room_workspace_id(authority.room()).unwrap(),
+        true,
+    )
+    .unwrap();
+    store.bind_shell_authority(authority.clone()).unwrap();
+    for (generation, name) in [(1, "baseline"), (2, "checkpoint2")] {
+        let rows = meta[name].as_array().unwrap();
+        assert_eq!(
+            rows.len(),
+            4,
+            "real owner fixture is room plus three document routes"
+        );
+        let mut originals = Vec::new();
+        for (index, row) in rows.iter().enumerate() {
+            let bytes = producer_frame(&meta, row, generation);
+            let (_, CoeditPayload::Checkpoint { channel, .. }) =
+                retained::payload(&bytes, store.workspace_id()).unwrap()
+            else {
+                panic!("checkpoint fixture")
+            };
+            originals.push(bytes.clone());
+            let mut build = store.start_retain(&channel, None, bytes).unwrap();
+            let outcome = loop {
+                if let Step::Done(outcome) = build
+                    .step(WorkLimit {
+                        entries: 1,
+                        ..Default::default()
+                    })
+                    .unwrap()
+                {
+                    break outcome;
+                }
+            };
+            if index + 1 < rows.len() {
+                // Reopen and complete selected GC: suppression must not discard the
+                // only durable copy while the rest of the checkpoint is absent.
+                store = WorkspaceStore::open(tmp.path(), store.workspace_id(), true).unwrap();
+                store.bind_shell_authority(authority.clone()).unwrap();
+                let mut selected = SelectedRead::new(&store).unwrap().unwrap();
+                while matches!(selected.step().unwrap(), Step::More) {}
+                for original in &originals {
+                    assert!(
+                        contains_original(&store.root.join("retained"), original),
+                        "suppressed input lost durable retained custody"
+                    );
+                }
+                assert_eq!(
+                    outcome.publication,
+                    Publication::Suppress,
+                    "{name} input {index} is a verified incomplete pair, not an opaque original"
+                );
+            } else {
+                let Publication::Activate(path) = outcome.publication else {
+                    panic!("complete {name} must activate one coherent basis")
+                };
+                let mut cursor = replay::PublicationCursor::open(&path).unwrap();
+                let mut delivered = Vec::new();
+                loop {
+                    match cursor.step(crate::persistence::output_budget()).unwrap() {
+                        Step::More => {}
+                        Step::Done(None) => break,
+                        Step::Done(Some(mut batch)) => {
+                            while let Some(frame) = batch.front() {
+                                delivered.push(crate::transport::encode(frame).unwrap());
+                                batch.pop_written();
+                            }
+                        }
+                    }
+                }
+                originals.sort();
+                delivered.sort();
+                assert_eq!(
+                    delivered, originals,
+                    "each exact canonical frame must publish once"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn serial_checkpoint_refresh_reference_repeats_global_selection_per_frame() {
     let tmp = tempfile::tempdir().unwrap();
     let meta = producer_metadata();
@@ -356,12 +459,14 @@ fn projected_checkpoint_prefix_classifies_every_input_in_one_selection() {
         }
     };
     let SelectionOutcome::BatchPublished {
+        supplemental_recovery,
         publication,
         dispositions,
     } = outcome
     else {
         panic!("coherent checkpoint projection did not finish")
     };
+    assert!(supplemental_recovery.is_none());
     assert!(matches!(publication, Publication::Activate(_)));
     assert_eq!(dispositions.len(), 4);
     assert!(
@@ -463,12 +568,14 @@ fn unchanged_all_covered_projected_prefix_suppresses_and_switches_current() {
         }
     };
     let SelectionOutcome::BatchPublished {
+        supplemental_recovery,
         publication,
         dispositions,
     } = committed
     else {
         panic!("projected batch did not publish a batch outcome")
     };
+    assert_eq!(supplemental_recovery, projected.supplemental_recovery);
     assert_eq!(publication, Publication::Suppress);
     assert_eq!(dispositions, projected.dispositions);
     assert_ne!(
@@ -488,6 +595,15 @@ fn unchanged_all_covered_projected_prefix_suppresses_and_switches_current() {
 
 #[test]
 fn successful_old_basis_fallback_keeps_newer_checkpoint_original() {
+    rejected_checkpoint_fixture(false);
+}
+
+#[test]
+fn serial_suppressed_prefix_rejected_cut_requires_coherent_release_or_replay() {
+    rejected_checkpoint_fixture(true);
+}
+
+fn rejected_checkpoint_fixture(serial: bool) {
     use automerge::transaction::Transactable;
 
     fn signed(
@@ -658,6 +774,37 @@ fn successful_old_basis_fallback_keeps_newer_checkpoint_original() {
         .unwrap()
         .unwrap();
 
+    if serial {
+        for (index, message) in cp2.iter().enumerate() {
+            let bytes = frame(&authority, message, true);
+            let channel = qos_peer_state::transport::retention(message, true)
+                .unwrap()
+                .0;
+            let mut retain = store.start_retain(&channel, None, bytes).unwrap();
+            let outcome = loop {
+                if let Step::Done(outcome) = retain
+                    .step(WorkLimit {
+                        entries: 1,
+                        ..Default::default()
+                    })
+                    .unwrap()
+                {
+                    break outcome;
+                }
+            };
+            if index == 0 {
+                assert_eq!(outcome.publication, Publication::Suppress);
+            } else {
+                assert!(
+                    matches!(outcome.publication, Publication::ReplayRequired(_)),
+                    "previously suppressed serial prerequisite requires the complete fallback, got {:?}",
+                    outcome.publication
+                );
+            }
+        }
+        return;
+    }
+
     let root = store.root.join("store-work-v1").join(format!(
         "retain-{}",
         hex::encode(rand::random::<[u8; 16]>())
@@ -736,6 +883,10 @@ fn successful_old_basis_fallback_keeps_newer_checkpoint_original() {
         "fixture returned unresolved instead of completing the old-basis fallback"
     );
     assert_eq!(outcome.publication, Publication::Original);
+    assert!(
+        outcome.supplemental_recovery.is_none(),
+        "full rejected batch has no external prefix"
+    );
     assert_eq!(outcome.reason, BatchProjectionReason::FinalBasisOmission);
     assert!(
         outcome
@@ -876,7 +1027,7 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
                 Step::Done(other) => panic!("unexpected room checkpoint result: {other:?}"),
             }
         };
-        assert_eq!(room_publication, Publication::Original);
+        assert_eq!(room_publication, Publication::Suppress);
 
         let root = store.root.join("store-work-v1").join(format!(
             "retain-{}",
@@ -1585,4 +1736,45 @@ fn selected_generation_defers_hard_link_durability_to_the_commit_barrier() {
     let mut reopened = SelectedRead::new(&store).unwrap().unwrap();
     while matches!(reopened.step().unwrap(), Step::More) {}
     assert!(reopened.basis.complete());
+}
+
+#[test]
+fn recovery_cursor_rejects_other_workspace_before_publication() {
+    use crate::store::{
+        bounded::{Meta, write_meta},
+        replay::{PublicationCursor, ReplayBudget},
+    };
+    use crate::transport::Envelope;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = crate::store::WorkspaceStore::open(tmp.path(), 7, true).unwrap();
+    let generation = store.root().join("shell-selected-v1/test");
+    std::fs::create_dir_all(&generation).unwrap();
+    let frame = Envelope::Delta {
+        workspace_id: 8,
+        author_device_public_key: [1; 32],
+        authored_at_ns: 1,
+        delta: vec![255],
+        signature: [0; 64],
+    };
+    let bytes = crate::transport::encode(&frame).unwrap();
+    let source = generation.join("0.delta");
+    std::fs::write(&source, &bytes).unwrap();
+    let mut manifest = std::fs::File::create(generation.join("basis.manifest")).unwrap();
+    write_meta(
+        &mut manifest,
+        &Meta {
+            key: vec!["extra".into()],
+            source: source.strip_prefix(store.root()).unwrap().into(),
+            pin: 0,
+            len: bytes.len() as u64,
+            pending: false,
+        },
+    )
+    .unwrap();
+    drop(manifest);
+    let mut cursor = PublicationCursor::open_recovery(&generation).unwrap();
+    assert!(
+        cursor.step(&ReplayBudget::new(1024 * 1024)).is_err(),
+        "recovery emitted an envelope from another workspace"
+    );
 }
