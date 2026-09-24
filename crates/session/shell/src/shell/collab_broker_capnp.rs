@@ -4500,6 +4500,7 @@ impl collab_service::Server for CapnpCollabService {
                 "PROBE join_channel",
             );
             state.ensure_channel(&channel_id);
+            state.publisher().local_route(&route);
 
             let handle = CapnpChannelHandle {
                 state: state.clone(),
