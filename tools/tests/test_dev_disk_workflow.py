@@ -89,11 +89,21 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("-O qcow2 -c -o compression_type=zstd", convert)
         self.assertIn("-O vhdx -o subformat=dynamic", convert)
         publish = step(build, "Publish the immutable disks")
-        self.assertIn("vars.TILO_VM_DISK_RELEASE_AUDIENCE", publish)
+        self.assertIn("TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish)
         self.assertIn('"$package_api/tilo-vm-disk/$DEV_TAG/$file"', publish)
         self.assertIn("tools/upload_immutable_packages.sh", publish)
-        self.assertNotIn("REGISTRY_TOKEN", publish)
         self.assertNotIn("actions/cache", self.source)
+
+    def test_uploads_use_the_package_token_without_an_integration_audience(self) -> None:
+        manifest = step(job(self.source, "publish"), "Publish the disk manifest")
+        self.assertIn("TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", manifest)
+        self.assertIn("tools/upload_immutable_packages.sh", manifest)
+        # The token must reach the uploader only through the step environment,
+        # never on a command line.
+        self.assertNotIn('TILO_PACKAGE_TOKEN="', self.source)
+        self.assertNotIn("TILO_VM_DISK_RELEASE_AUDIENCE", self.source)
+        self.assertNotIn("ACTIONS_ID_TOKEN_REQUEST", self.source)
+        self.assertNotIn("enable-openid-connect", self.source)
 
     def test_manifest_commits_after_the_durable_tag_and_latest_moves_last(self) -> None:
         publish = job(self.source, "publish")
