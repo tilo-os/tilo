@@ -68,13 +68,15 @@ pub const CANONICAL_STRINGS: &[&str] = &[
 pub fn is_enabled() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        let Ok(raw) = std::env::var("TILO_STARTUP_WARM") else {
-            return true;
-        };
-        let normalized = raw.trim().to_ascii_lowercase();
-        !matches!(normalized.as_str(), "off" | "0" | "false" | "no")
-    })
+    *FLAG.get_or_init(|| enabled_by(std::env::var("TILO_STARTUP_WARM").ok().as_deref()))
+}
+
+fn enabled_by(raw: Option<&str>) -> bool {
+    let Some(raw) = raw else {
+        return true;
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    !matches!(normalized.as_str(), "off" | "0" | "false" | "no")
 }
 
 /// Shape every entry of [`CANONICAL_STRINGS`] through the supplied
@@ -163,28 +165,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_fonts_shape_the_startup_probe() {
-        let mut font_system = FontSystem::new();
+    fn bundled_fonts_shape_the_startup_probe() {
+        let mut font_system = crate::font_catalog::fixture_font_system();
         assert!(shape_canonical_strings(&mut font_system) > 0);
     }
 
-    /// The default is on — an unset env var must not silently skip the
-    /// win. Relies on the `OnceLock`-cached value, so this must be the
-    /// first test to read `TILO_STARTUP_WARM` in the process.
+    /// The default is on: an unset variable must not silently skip the win.
     #[test]
-    fn enabled_by_default_when_env_unset() {
-        // SAFETY: single-threaded test binary invocation; the harness
-        // runs one `#[test]` at a time under the default test main. We
-        // clear the var so the OnceLock initialiser sees the "unset"
-        // branch on a fresh process.
-        // (Setting env vars in tests is racy across threads — cargo
-        // test binaries run each #[test] in its own thread, and rustc
-        // 1.83 flagged it unsafe. We accept the risk here because the
-        // OnceLock caches on first read, and this is the only test
-        // reading it.)
-        unsafe {
-            std::env::remove_var("TILO_STARTUP_WARM");
+    fn enabled_unless_explicitly_switched_off() {
+        assert!(enabled_by(None));
+        assert!(enabled_by(Some("")));
+        assert!(enabled_by(Some("1")));
+        assert!(enabled_by(Some("vello")));
+        for off in ["off", "0", "false", "no", " OFF ", "No"] {
+            assert!(!enabled_by(Some(off)), "{off:?} disables warmup");
         }
-        assert!(is_enabled());
     }
 }
