@@ -7228,6 +7228,7 @@ dependencies = [
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "hex",
  "landlock",
  "libc",
  "package-store",
