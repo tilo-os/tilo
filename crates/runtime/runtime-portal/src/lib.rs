@@ -85,7 +85,9 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
     // Automatic native transfers belong to one exec process. Its later child
     // may reuse these descriptor numbers for unrelated files or sockets, even
     // in diagnostic/local modes that intentionally skip automatic bootstrap.
-    if (name.eq_ignore_ascii_case("collab") || name.eq_ignore_ascii_case("identity"))
+    if (name.eq_ignore_ascii_case("collab")
+        || name.eq_ignore_ascii_case("identity")
+        || name.eq_ignore_ascii_case("blobs"))
         && !native::connection_metadata_is_current()
     {
         return None;
