@@ -336,6 +336,31 @@ impl Hydrator {
         report.missing.extend(content.missing);
         report
     }
+
+    /// Stores content an authenticated peer sent along with the records
+    /// naming it. Every blob is hash-checked before anything is stored, and
+    /// counts as fetched from `peer`, as a verified download does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a hash mismatch or when the store fails.
+    pub async fn accept_inline(
+        &self,
+        peer: &EndpointAddr,
+        blobs: Vec<(Hash, Bytes)>,
+    ) -> Result<()> {
+        let hashes: Vec<Hash> = blobs.iter().map(|(hash, _)| *hash).collect();
+        self.store.store_fetched_batch(blobs).await?;
+        let mut sources = self
+            .remote_sources
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for hash in hashes {
+            sources.insert(hash, peer.clone());
+        }
+        drop(sources);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

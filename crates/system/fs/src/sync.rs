@@ -60,6 +60,7 @@ use crate::workspace_authority::{
     AuthorityRequest, AuthorityResponse, TILO_FS_AUTHORITY_ALPN, WorkspaceAuthority,
     read_frame as read_authority_frame, write_frame as write_authority_frame,
 };
+use session::{SessionPool, SessionProtocol};
 
 /// Custom ALPN for the document exchange (bootstrap + incremental sync).
 pub const TILO_FS_SYNC_ALPN: &[u8] = b"tilo-fs-sync/0";
@@ -1178,20 +1179,14 @@ impl ProtocolHandler for AuthorityProtocol {
         let request: AuthorityRequest = read_authority_frame(&mut recv)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let authority = if request.workspace == self.workspace_id {
-            let governor = peer.user_public_key == self.authority.governor();
-            if let Some(published) = request.publish
-                && governor
-            {
-                let _ = self.authority.apply(published);
-            }
-            (governor || authenticated_peer_may_read_whole_workspace(&self.policy, &peer))
-                .then(|| self.authority.current())
-                .flatten()
-        } else {
-            None
-        };
-        write_authority_frame(&mut send, &AuthorityResponse { authority })
+        let response = authority_response(
+            &self.authority,
+            &self.policy,
+            self.workspace_id,
+            &peer,
+            request,
+        );
+        write_authority_frame(&mut send, &response)
             .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         send.finish().map_err(AcceptError::from_err)?;
@@ -1200,6 +1195,31 @@ impl ProtocolHandler for AuthorityProtocol {
         // delivery and turn a valid publish into `connection lost`.
         connection.closed().await;
         Ok(())
+    }
+}
+
+/// The authority exchange: the governor may publish a newer signed
+/// revision; the governor and workspace readers receive the current one.
+fn authority_response(
+    authority: &WorkspaceAuthority,
+    policy: &PeerPolicy,
+    workspace_id: uuid::Uuid,
+    peer: &AuthenticatedFsPeer,
+    request: AuthorityRequest,
+) -> AuthorityResponse {
+    if request.workspace != workspace_id {
+        return AuthorityResponse { authority: None };
+    }
+    let governor = peer.user_public_key == authority.governor();
+    if let Some(published) = request.publish
+        && governor
+    {
+        let _ = authority.apply(published);
+    }
+    AuthorityResponse {
+        authority: (governor || authenticated_peer_may_read_whole_workspace(policy, peer))
+            .then(|| authority.current())
+            .flatten(),
     }
 }
 
@@ -1265,58 +1285,81 @@ impl ReplicaAckProtocol {
         peer: &AuthenticatedFsPeer,
         request: &ReplicaAckRequestV1,
     ) -> ReplicaAckResponseV1 {
-        if request.validate().is_err() || request.workspace_id != self.workspace_id {
-            return ReplicaAckResponseV1::Denied;
-        }
-        let requester = collab_types::FileActor {
-            person: collab_types::Ed25519PublicKey(peer.user_public_key),
-            device: collab_types::Ed25519PublicKey(peer.device_public_key),
-        };
-        let key = RecordRepositoryKey {
-            workspace_id: self.workspace_id,
-            record_id: request.revision.record_id,
-        };
-        let Ok(snapshot) = self.repository.snapshot(
-            key,
-            &requester,
-            &DirectMeshAuthorizer {
-                peer,
-                identity: &self.identity,
-                policy: &self.policy,
-            },
-        ) else {
-            return ReplicaAckResponseV1::Denied;
-        };
-        let version_matches = snapshot.versions.iter().any(|version| {
-            version.id == request.revision.version_id
-                && version.record_id == request.revision.record_id
-                && version.content_hash == request.revision.content_hash
-                && version.metadata_hash == request.revision.metadata_hash
-        });
-        if snapshot.content_revision != Some(request.revision) || !version_matches {
-            return ReplicaAckResponseV1::Unavailable;
-        }
-        if self
-            .store
-            .verify_durable_revision(&request.revision)
-            .await
-            .is_err()
-        {
-            return ReplicaAckResponseV1::Unavailable;
-        }
-        let actor = collab_types::FileActor {
-            person: collab_types::Ed25519PublicKey(self.identity.user_public_key()),
-            device: collab_types::Ed25519PublicKey(self.identity.device_public_key()),
-        };
-        match ReplicaAckV1::signed(
+        replica_ack_response(
+            &self.identity,
+            &self.policy,
+            self.workspace_id,
+            &self.repository,
+            &self.store,
+            peer,
             request,
-            actor,
-            unix_now_ms(),
-            self.identity.credentials().signing_key(),
-        ) {
-            Ok(receipt) => ReplicaAckResponseV1::Acknowledged(receipt),
-            Err(_) => ReplicaAckResponseV1::Unavailable,
-        }
+        )
+        .await
+    }
+}
+
+/// A signed receipt for `request` if this device durably holds the exact
+/// revision and `peer` may read the record; shared by the per-request
+/// receipt protocol and the session protocol.
+async fn replica_ack_response(
+    identity: &FsTransportIdentity,
+    policy: &PeerPolicy,
+    workspace_id: uuid::Uuid,
+    repository: &RecordRepository,
+    store: &ContentStore,
+    peer: &AuthenticatedFsPeer,
+    request: &ReplicaAckRequestV1,
+) -> ReplicaAckResponseV1 {
+    if request.validate().is_err() || request.workspace_id != workspace_id {
+        return ReplicaAckResponseV1::Denied;
+    }
+    let requester = collab_types::FileActor {
+        person: collab_types::Ed25519PublicKey(peer.user_public_key),
+        device: collab_types::Ed25519PublicKey(peer.device_public_key),
+    };
+    let key = RecordRepositoryKey {
+        workspace_id,
+        record_id: request.revision.record_id,
+    };
+    let Ok(snapshot) = repository.snapshot(
+        key,
+        &requester,
+        &DirectMeshAuthorizer {
+            peer,
+            identity,
+            policy,
+        },
+    ) else {
+        return ReplicaAckResponseV1::Denied;
+    };
+    let version_matches = snapshot.versions.iter().any(|version| {
+        version.id == request.revision.version_id
+            && version.record_id == request.revision.record_id
+            && version.content_hash == request.revision.content_hash
+            && version.metadata_hash == request.revision.metadata_hash
+    });
+    if snapshot.content_revision != Some(request.revision) || !version_matches {
+        return ReplicaAckResponseV1::Unavailable;
+    }
+    if store
+        .verify_durable_revision(&request.revision)
+        .await
+        .is_err()
+    {
+        return ReplicaAckResponseV1::Unavailable;
+    }
+    let actor = collab_types::FileActor {
+        person: collab_types::Ed25519PublicKey(identity.user_public_key()),
+        device: collab_types::Ed25519PublicKey(identity.device_public_key()),
+    };
+    match ReplicaAckV1::signed(
+        request,
+        actor,
+        unix_now_ms(),
+        identity.credentials().signing_key(),
+    ) {
+        Ok(receipt) => ReplicaAckResponseV1::Acknowledged(receipt),
+        Err(_) => ReplicaAckResponseV1::Unavailable,
     }
 }
 
@@ -1519,6 +1562,11 @@ impl Workspace {
             ticket.workspace_id(),
             records,
         )?;
+        let sessions = Arc::new(SessionPool::new(
+            endpoint.clone(),
+            identity.clone(),
+            ticket.workspace_id(),
+        ));
         let ws = Self::start(
             endpoint,
             lookup,
@@ -1527,9 +1575,10 @@ impl Workspace {
             namespace,
             identity,
             policy,
-            topic,
+            (topic, ticket.workspace_id()),
             vec![],
             record_plane,
+            sessions,
         )
         .await?;
         Ok((ws, ticket))
@@ -1626,15 +1675,22 @@ impl Workspace {
         // Pull that projection before exposing the mount: otherwise a fresh
         // collaborator can briefly observe real files as zero-byte entries,
         // and an eager application may cache that false empty state.
+        let sessions = Arc::new(SessionPool::new(
+            endpoint.clone(),
+            identity.clone(),
+            ticket.workspace_id(),
+        ));
         if let Some(records) = &record_plane {
             let initial_mesh = tokio::time::timeout(
                 Duration::from_secs(10),
-                pull_record_mesh_from_peer(
+                pull_records_from_peer(
+                    &sessions,
                     &endpoint,
                     ticket.node.clone(),
                     &identity,
                     &policy,
                     records,
+                    &hydrator,
                 ),
             )
             .await
@@ -1657,9 +1713,10 @@ impl Workspace {
             namespace,
             identity,
             policy,
-            topic,
+            (topic, ticket.workspace_id()),
             vec![ticket.node],
             record_plane,
+            sessions,
         )
         .await
     }
@@ -1680,9 +1737,10 @@ impl Workspace {
         namespace: Arc<Mutex<Namespace>>,
         identity: FsTransportIdentity,
         policy: PeerPolicy,
-        topic_bytes: [u8; 32],
+        (topic_bytes, workspace_id): ([u8; 32], uuid::Uuid),
         bootstrap: Vec<EndpointAddr>,
         record_plane: Option<RecordPlane>,
+        sessions: Arc<SessionPool>,
     ) -> Result<Workspace> {
         // After bootstrap/seed, set the delta watermark so future local
         // writes produce minimal deltas (and the seed isn't re-broadcast).
@@ -1706,17 +1764,30 @@ impl Workspace {
             repository: Arc::clone(&records.repository),
             store: Arc::clone(&store),
         });
+        let (announce_tx, announce_rx) = mpsc::unbounded_channel();
+        let session_proto = SessionProtocol {
+            endpoint: endpoint.clone(),
+            identity: identity.clone(),
+            policy: policy.clone(),
+            namespace: namespace.clone(),
+            store: Arc::clone(&store),
+            records: record_plane.clone(),
+            workspace_id,
+            announcements: announce_tx,
+        };
         let gossip = Gossip::builder().spawn(endpoint.clone());
-        let builder = Router::builder(endpoint.clone()).accept(
-            iroh_blobs::ALPN,
-            store.blobs_protocol(blob_guard(
-                policy.clone(),
-                namespace.clone(),
-                store.clone(),
-                record_plane.clone(),
-                Some(identity.clone()),
-            )),
-        );
+        let builder = Router::builder(endpoint.clone())
+            .accept(TILO_FS_SESSION_ALPN, session_proto)
+            .accept(
+                iroh_blobs::ALPN,
+                store.blobs_protocol(blob_guard(
+                    policy.clone(),
+                    namespace.clone(),
+                    store.clone(),
+                    record_plane.clone(),
+                    Some(identity.clone()),
+                )),
+            );
         let builder = crate::document_media::accept_media_protocol(
             builder, &endpoint, &identity, &policy, &store,
         );
@@ -1800,6 +1871,8 @@ impl Workspace {
             policy,
             records: record_plane,
             local_rx: reconcile_rx,
+            announcements: announce_rx,
+            sessions,
             sync: Arc::clone(&sync),
         }))));
 
@@ -2198,6 +2271,39 @@ async fn request_replica_ack(
     .map_err(|_| anyhow::anyhow!("replica acknowledgement exchange timed out"))?
 }
 
+/// A receipt with less than this left is renewed.
+const RECEIPT_RENEW_BEFORE_MS: u64 = 60 * 1000;
+
+/// Current revisions `device` has not acknowledged recently: receipts last
+/// minutes, so a pass asks only for new revisions and ones about to lapse,
+/// not for every record every few seconds.
+fn revisions_awaiting_receipt(
+    records: &RecordPlane,
+    registry: &Mutex<crate::availability::AvailabilityRegistry>,
+    device: collab_types::Ed25519PublicKey,
+) -> Vec<collab_types::ContentRevisionV1> {
+    let revisions = records
+        .repository
+        .current_content_revisions(records.workspace_id);
+    let renew_after = unix_now_ms().saturating_add(RECEIPT_RENEW_BEFORE_MS);
+    let registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    revisions
+        .into_iter()
+        .filter(|revision| {
+            !registry.get(revision.record_id).is_some_and(|record| {
+                record.current_version == Some(revision.version_id)
+                    && record.replica_observations.iter().any(|receipt| {
+                        receipt.device == device
+                            && receipt.version_id == revision.version_id
+                            && receipt.expires_at_ms > renew_after
+                    })
+            })
+        })
+        .collect()
+}
+
 async fn collect_replica_acks_from_peer(
     endpoint: &Endpoint,
     remote: EndpointAddr,
@@ -2208,13 +2314,8 @@ async fn collect_replica_acks_from_peer(
     let Some(registry) = &records.availability else {
         return;
     };
-    for key in records.repository.reconciliation_keys(records.workspace_id) {
-        let Some(batch) = records.repository.reconciliation_batch(key) else {
-            continue;
-        };
-        let Some(revision) = batch.snapshot.content_revision else {
-            continue;
-        };
+    let device = collab_types::Ed25519PublicKey(*remote.id.as_bytes());
+    for revision in revisions_awaiting_receipt(records, registry, device) {
         let Ok(request) = ReplicaAckRequestV1::new(records.workspace_id, revision) else {
             continue;
         };
@@ -2248,6 +2349,24 @@ fn persist_workspace_replica_observation(
     let mut registry = registry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    record_replica_observation(
+        &mut registry,
+        revision,
+        local_device,
+        observation,
+        observed_at,
+    )
+}
+
+/// Records a verified receipt for `revision`, tracking the revision first
+/// when this registry has no row for it yet.
+fn record_replica_observation(
+    registry: &mut crate::availability::AvailabilityRegistry,
+    revision: collab_types::ContentRevisionV1,
+    local_device: collab_types::Ed25519PublicKey,
+    observation: crate::availability::ReplicaObservation,
+    observed_at: u64,
+) -> Result<(), crate::availability::AvailabilityError> {
     // Whole-workspace records historically never created availability rows,
     // so valid NAS receipts were silently rejected as `UnknownRecord`.
     let parent = registry
@@ -2266,6 +2385,186 @@ fn persist_workspace_replica_observation(
     registry.observe_replica(revision.record_id, local_device, observation, observed_at)
 }
 
+/// How often every peer is reconciled without a change or announcement.
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(3);
+
+/// One peer's share of a reconciliation pass.
+struct PeerPass<'a> {
+    endpoint: &'a Endpoint,
+    namespace: &'a Arc<Mutex<Namespace>>,
+    hydrator: &'a Hydrator,
+    sender: Option<&'a GossipSender>,
+    identity: &'a FsTransportIdentity,
+    policy: &'a PeerPolicy,
+    records: Option<&'a RecordPlane>,
+    /// Both sides write the whole workspace: exchange namespace changes.
+    exchange_namespace: bool,
+    /// This device may not write: only take the peer's namespace changes.
+    read_only: bool,
+    /// Re-project every record even if nothing new arrives (first pass).
+    heal: bool,
+}
+
+impl PeerPass<'_> {
+    async fn broadcast(&self, delta: Vec<u8>) {
+        if !delta.is_empty()
+            && let Some(sender) = self.sender
+        {
+            let _ = sender.broadcast(Bytes::from(delta)).await;
+        }
+    }
+
+    /// The pass over the peer's session: every exchange on its one
+    /// connection. Returns whether namespace or records changed.
+    async fn over_session(&self, sessions: &SessionPool, peer: &session::Session) -> Result<bool> {
+        let mut changed = false;
+        if self.exchange_namespace {
+            // Automerge sync is symmetric; only between two writers, which
+            // the serving side checks independently.
+            changed |= session::sync_namespace(sessions, peer, self.namespace).await?;
+            let resolution = self
+                .namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .post_sync_resolve();
+            self.broadcast(resolution).await;
+        } else if self.read_only {
+            let (received, resolution) =
+                session::pull_namespace(sessions, peer, self.namespace).await?;
+            changed |= received;
+            self.broadcast(resolution).await;
+        }
+        if let Some(records) = self.records {
+            if let Some(authority) = &records.workspace_authority {
+                session::exchange_authority(
+                    sessions,
+                    peer,
+                    self.identity,
+                    authority,
+                    records.workspace_id,
+                )
+                .await?;
+            }
+            // A namespace change may place records that arrived earlier.
+            let heal = self.heal || changed;
+            changed |= session::pull_records(
+                sessions,
+                peer,
+                self.identity,
+                self.policy,
+                records,
+                self.hydrator,
+                heal,
+            )
+            .await?;
+            session::collect_replica_acks(sessions, peer, self.identity, records).await?;
+        }
+        Ok(changed)
+    }
+
+    /// The pass through the per-request protocols, for a peer without the
+    /// session protocol. Returns whether namespace or records changed.
+    async fn per_request(&self, peer: EndpointAddr) -> bool {
+        let mut changed = false;
+        if self.exchange_namespace {
+            if let Ok(received_change) =
+                sync_with_peer(self.endpoint, peer.clone(), self.namespace, self.identity).await
+            {
+                changed |= received_change;
+                let resolution = self
+                    .namespace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .post_sync_resolve();
+                self.broadcast(resolution).await;
+            }
+        } else if self.read_only
+            && let Ok(doc) = fetch_remote_doc(self.endpoint, peer.clone(), self.identity).await
+        {
+            // Read-only peers pull a full snapshot and never upload local
+            // changes. Full snapshots are safe here because the remote
+            // serves them only to workspace-root readers.
+            let before_merge = namespace_generation(self.namespace);
+            let resolution = self
+                .namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .merge_remote_and_resolve(&doc)
+                .unwrap_or_default();
+            // A clean merge commonly needs no conflict-resolution delta;
+            // compare the document generation so its previews are still
+            // scheduled on a fresh collaborator.
+            changed |= before_merge != namespace_generation(self.namespace);
+            self.broadcast(resolution).await;
+        }
+        if let Some(records) = self.records {
+            if let Some(authority) = &records.workspace_authority
+                && let Err(error) = pull_workspace_authority_from_peer(
+                    self.endpoint,
+                    peer.clone(),
+                    self.identity,
+                    authority,
+                    records.workspace_id,
+                )
+                .await
+                && !self.identity.partitioned()
+            {
+                eprintln!("workspace authority reconciliation failed: {error}");
+            }
+            match pull_record_mesh_from_peer(
+                self.endpoint,
+                peer.clone(),
+                self.identity,
+                self.policy,
+                records,
+            )
+            .await
+            {
+                Ok(pulled) => changed |= pulled,
+                Err(error) if !self.identity.partitioned() => {
+                    eprintln!("record mesh reconciliation failed: {error}");
+                }
+                Err(_) => {}
+            }
+            collect_replica_acks_from_peer(
+                self.endpoint,
+                peer,
+                self.identity,
+                self.policy,
+                records,
+            )
+            .await;
+        }
+        changed
+    }
+}
+
+/// The records a peer holds that this device lacks, over a session when the
+/// peer speaks it and through the per-request mesh otherwise.
+async fn pull_records_from_peer(
+    sessions: &SessionPool,
+    endpoint: &Endpoint,
+    remote: EndpointAddr,
+    identity: &FsTransportIdentity,
+    policy: &PeerPolicy,
+    records: &RecordPlane,
+    hydrator: &Hydrator,
+) -> Result<bool> {
+    match sessions.get(&remote).await? {
+        Some(session) => {
+            let pulled = session::pull_records(
+                sessions, &session, identity, policy, records, hydrator, true,
+            )
+            .await;
+            if pulled.is_err() {
+                sessions.forget(&session).await;
+            }
+            pulled
+        }
+        None => pull_record_mesh_from_peer(endpoint, remote, identity, policy, records).await,
+    }
+}
+
 struct ReconcileLoop {
     endpoint: Endpoint,
     namespace: Arc<Mutex<Namespace>>,
@@ -2275,6 +2574,9 @@ struct ReconcileLoop {
     policy: PeerPolicy,
     records: Option<RecordPlane>,
     local_rx: Option<mpsc::UnboundedReceiver<Bytes>>,
+    /// Peers that announced new changes over a session.
+    announcements: mpsc::UnboundedReceiver<iroh_base::PublicKey>,
+    sessions: Arc<SessionPool>,
     sync: Arc<SyncHandle>,
 }
 
@@ -2292,6 +2594,8 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
         policy,
         records,
         mut local_rx,
+        mut announcements,
+        sessions,
         sync,
     } = reconcile;
     let may_write = peer_may_write_whole_workspace(&policy, &identity.user_public_key())
@@ -2300,19 +2604,31 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
     // `mount` bootstraps a namespace before this task starts, so schedule its
     // previews once even if the first anti-entropy exchange is clean.
     let mut refresh_thumbnails = true;
+    let mut first_pass = true;
     loop {
-        if let Some(receiver) = &mut local_rx {
-            tokio::select! {
-                () = tokio::time::sleep(Duration::from_secs(3)) => {}
-                mutation = receiver.recv() => {
-                    if mutation.is_none() {
-                        local_rx = None;
-                    }
+        // A local change or a peer's announcement starts a pass at once;
+        // otherwise the timer does.
+        let local_change = tokio::select! {
+            () = tokio::time::sleep(RECONCILE_INTERVAL) => false,
+            mutation = async {
+                match &mut local_rx {
+                    Some(receiver) => receiver.recv().await,
+                    None => std::future::pending().await,
                 }
+            } => {
+                if mutation.is_none() {
+                    local_rx = None;
+                }
+                true
             }
-        } else {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-        }
+            Some(_) = announcements.recv() => false,
+        };
+        // A burst of changes is one pass: what arrived meanwhile is covered.
+        let local_change = local_change
+            | local_rx.as_mut().is_some_and(|receiver| {
+                std::iter::from_fn(|| receiver.try_recv().ok()).count() > 0
+            });
+        while announcements.try_recv().is_ok() {}
 
         for peer in identity.authenticated_peer_addrs() {
             hydrator.add_peer(peer);
@@ -2326,88 +2642,44 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                     .is_some_and(|remote| {
                         authenticated_peer_may_write_whole_workspace(&policy, &remote)
                     });
-            if may_write && remote_may_write {
-                // Automerge sync is symmetric: even the responder sends its
-                // local changes. Never exchange with a read-only peer, or its
-                // unauthorised local document could hitch a ride on an
-                // authorised writer's reconciliation request.
-                // Only a workspace-wide writer may send Automerge sync
-                // messages. The responder independently checks the same fact.
-                if let Ok(received_change) =
-                    sync_with_peer(&endpoint, peer.clone(), &namespace, &identity).await
-                {
-                    namespace_changed |= received_change;
-                    let resolve_delta = {
-                        namespace
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .post_sync_resolve()
-                    };
-                    if !resolve_delta.is_empty()
-                        && let Some(sender) = &sender
-                    {
-                        let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
-                    }
-                }
-            } else if !may_write
-                && let Ok(doc) = fetch_remote_doc(&endpoint, peer.clone(), &identity).await
-            {
-                // Read-only peers pull a full snapshot and never upload local
-                // changes. Full snapshots are safe here because the remote
-                // serves them only to workspace-root readers.
-                let before_merge = namespace_generation(&namespace);
-                let resolve_delta = namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .merge_remote_and_resolve(&doc)
-                    .unwrap_or_default();
-                // A clean merge commonly needs no conflict-resolution delta;
-                // compare the document generation so its previews are still
-                // scheduled on a fresh collaborator.
-                namespace_changed |= before_merge != namespace_generation(&namespace);
-                if !resolve_delta.is_empty()
-                    && let Some(sender) = &sender
-                {
-                    let _ = sender.broadcast(Bytes::from(resolve_delta)).await;
-                }
-            }
-            if let Some(records) = &records {
-                if let Some(authority) = &records.workspace_authority
-                    && let Err(error) = pull_workspace_authority_from_peer(
-                        &endpoint,
-                        peer.clone(),
-                        &identity,
-                        authority,
-                        records.workspace_id,
-                    )
-                    .await
-                    && !identity.partitioned()
-                {
-                    eprintln!("workspace authority reconciliation failed: {error}");
-                }
-                match pull_record_mesh_from_peer(
-                    &endpoint,
-                    peer.clone(),
-                    &identity,
-                    &policy,
-                    records,
-                )
-                .await
-                {
+            let context = PeerPass {
+                endpoint: &endpoint,
+                namespace: &namespace,
+                hydrator: &hydrator,
+                sender: sender.as_ref(),
+                identity: &identity,
+                policy: &policy,
+                records: records.as_ref(),
+                exchange_namespace: may_write && remote_may_write,
+                read_only: !may_write,
+                heal: first_pass,
+            };
+            match sessions.get(&peer).await {
+                Ok(Some(session)) => match context.over_session(&sessions, &session).await {
                     Ok(changed) => namespace_changed |= changed,
-                    Err(error) if !identity.partitioned() => {
-                        eprintln!("record mesh reconciliation failed: {error}");
+                    Err(error) => {
+                        sessions.forget(&session).await;
+                        if !identity.partitioned() {
+                            eprintln!("session reconciliation with {} failed: {error:#}", peer.id);
+                        }
                     }
-                    Err(_) => {}
+                },
+                // The peer speaks only the per-request protocols.
+                Ok(None) => namespace_changed |= context.per_request(peer).await,
+                Err(error) if !identity.partitioned() => {
+                    eprintln!("no session with {}: {error:#}", peer.id);
                 }
-                collect_replica_acks_from_peer(
-                    &endpoint,
-                    peer.clone(),
-                    &identity,
-                    &policy,
-                    records,
-                )
-                .await;
+                Err(_) => {}
+            }
+        }
+        first_pass = false;
+        // Peers pull what this device just published without waiting for
+        // their own timer.
+        if local_change {
+            for session in sessions.open_sessions().await {
+                if let Err(error) = session::announce(&sessions, &session).await {
+                    eprintln!("announcing to {} failed: {error:#}", session.addr.id);
+                }
             }
         }
 
@@ -2541,6 +2813,9 @@ async fn bind_certified_test_endpoint_with_root() -> (
     let (endpoint, lookup) = bind_endpoint_with_key(mount.secret).await.unwrap();
     (endpoint, lookup, transport, root, device)
 }
+
+mod session;
+pub use session::TILO_FS_SESSION_ALPN;
 
 #[cfg(test)]
 mod tests;
