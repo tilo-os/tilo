@@ -13,6 +13,7 @@ license.workspace = true
 
 [dependencies]
 automerge.workspace = true
+blake3.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 serde.workspace = true

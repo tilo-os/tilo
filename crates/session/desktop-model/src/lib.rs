@@ -21,6 +21,7 @@ pub mod app;
 pub mod apps;
 pub mod capability;
 pub mod collaborator;
+pub mod desktop_doc;
 pub mod ids;
 pub mod layout;
 pub mod projection;
