@@ -2140,12 +2140,15 @@ mod tests {
         pane.set_reauth_password_for_test("candidate-password");
         commands.set(Some(AccountViewCommand::SubmitReauthentication));
         pane.sync(&mut doc, &automerge::ROOT);
-        for _ in 0..100 {
+        // The probe answers on a background thread; give it a generous
+        // deadline so a loaded test runner cannot outrun it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
             pane.sync(&mut doc, &automerge::ROOT);
             if pane.reauth_error_for_test() == Some("server rejected candidate") {
                 break;
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(
             pane.reauth_error_for_test(),
@@ -2179,12 +2182,15 @@ mod tests {
         pane.set_form_password_for_test("candidate-password");
         commands.set(Some(AccountViewCommand::Submit));
         pane.sync(&mut doc, &automerge::ROOT);
-        for _ in 0..100 {
+        // The probe answers on a background thread; give it a generous
+        // deadline so a loaded test runner cannot outrun it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
             pane.sync(&mut doc, &automerge::ROOT);
             if pane.form_error.as_deref() == Some("server rejected candidate") {
                 break;
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert_eq!(
             pane.form_error.as_deref(),
