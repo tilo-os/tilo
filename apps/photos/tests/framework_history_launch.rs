@@ -12,6 +12,128 @@ use photos::{
     model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary},
 };
 use ui::widget::Widget;
+
+/// The device content store as these launches see it: one capability server
+/// shared by every child process, reached through the descriptor the launcher
+/// would hand the app, so a photograph stored by one process is read by the
+/// next through the same scoped capability rather than a shared directory.
+mod content_store {
+    use runtime_fs::blobs::{
+        BlobBackend, BlobError, BlobFuture, BlobPrincipal, BlobRef, BlobScope, ReadOutcome,
+        spawn_blob_server, write_handoff,
+    };
+    use std::collections::HashMap;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Memory(Mutex<HashMap<(BlobScope, String), Vec<u8>>>);
+
+    impl BlobBackend for Memory {
+        fn put(
+            self: Arc<Self>,
+            scope: BlobScope,
+            bytes: Vec<u8>,
+            mime: String,
+        ) -> BlobFuture<Result<BlobRef, BlobError>> {
+            Box::pin(async move {
+                let hash = qdoc::blobstore::hash_bytes(&bytes);
+                let len = bytes.len() as u64;
+                self.0.lock().unwrap().insert((scope, hash.clone()), bytes);
+                Ok(BlobRef { hash, len, mime })
+            })
+        }
+        fn read(
+            self: Arc<Self>,
+            scope: BlobScope,
+            hash: String,
+            offset: u64,
+            max_len: u32,
+        ) -> BlobFuture<ReadOutcome> {
+            Box::pin(async move {
+                let map = self.0.lock().unwrap();
+                let Some(bytes) = map.get(&(scope, hash)) else {
+                    return ReadOutcome::Unavailable;
+                };
+                let start = usize::try_from(offset).unwrap().min(bytes.len());
+                let end = start.saturating_add(max_len as usize).min(bytes.len());
+                let outcome = ReadOutcome::Ready {
+                    bytes: bytes[start..end].to_vec(),
+                    total_len: bytes.len() as u64,
+                };
+                drop(map);
+                outcome
+            })
+        }
+        fn has(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<bool> {
+            Box::pin(async move { self.0.lock().unwrap().contains_key(&(scope, hash)) })
+        }
+        fn size(self: Arc<Self>, scope: BlobScope, hash: String) -> BlobFuture<Option<u64>> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .get(&(scope, hash))
+                    .map(|bytes| bytes.len() as u64)
+            })
+        }
+    }
+
+    pub struct Server {
+        socket: std::path::PathBuf,
+        _dir: tempfile::TempDir,
+        _runtime: tokio::runtime::Runtime,
+    }
+
+    impl Server {
+        pub fn start() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("fs-blobs.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap();
+            spawn_blob_server(
+                listener,
+                Arc::new(Memory::default()),
+                runtime.handle().clone(),
+            )
+            .unwrap();
+            Self {
+                socket,
+                _dir: dir,
+                _runtime: runtime,
+            }
+        }
+
+        /// Connect as the launcher does and hand the descriptor to `command`.
+        /// The returned stream must outlive the spawn.
+        pub fn attach(
+            &self,
+            command: &mut std::process::Command,
+        ) -> std::os::unix::net::UnixStream {
+            let mut stream = std::os::unix::net::UnixStream::connect(&self.socket).unwrap();
+            let scope = BlobScope::new("photos-launch-room", "so.tilo.photos").unwrap();
+            write_handoff(&mut stream, &BlobPrincipal::App(scope)).unwrap();
+            let fd = stream.as_raw_fd();
+            command.env("TILO_SVC_BLOBS_FD", fd.to_string());
+            // SAFETY: only async-signal-safe fcntl runs between fork and exec.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            stream
+        }
+    }
+}
 fn bounded_output(command: &mut std::process::Command) -> std::process::Output {
     command
         .stdout(std::process::Stdio::piped())
@@ -34,22 +156,22 @@ fn bounded_output(command: &mut std::process::Command) -> std::process::Output {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
-fn child(stage: &str, dir: &std::path::Path, kind: &str) {
-    let out = bounded_output(
-        std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import",
-                "--nocapture",
-            ])
-            .env("QOS_PHOTOS_LAUNCH_STAGE", stage)
-            .env("QOS_PHOTOS_LAUNCH_KIND", kind)
-            .env("QOS_PHOTOS_TEST_HOME", dir)
-            .env("XDG_DATA_HOME", dir)
-            .env("XDG_CONFIG_HOME", dir)
-            .env("TILO_BLOB_STORE", dir.join("blobs"))
-            .env("TILO_PACKAGE_ID", "so.tilo.photos"),
-    );
+fn child(store: &content_store::Server, stage: &str, dir: &std::path::Path, kind: &str) {
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import",
+            "--nocapture",
+        ])
+        .env("QOS_PHOTOS_LAUNCH_STAGE", stage)
+        .env("QOS_PHOTOS_LAUNCH_KIND", kind)
+        .env("QOS_PHOTOS_TEST_HOME", dir)
+        .env("XDG_DATA_HOME", dir)
+        .env("XDG_CONFIG_HOME", dir)
+        .env("TILO_PACKAGE_ID", "so.tilo.photos");
+    let _capability = store.attach(&mut command);
+    let out = bounded_output(&mut command);
     assert!(
         out.status.success(),
         "{stage}/{kind}: {} {}",
@@ -57,12 +179,17 @@ fn child(stage: &str, dir: &std::path::Path, kind: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
-fn binary(dir: &std::path::Path, actions: serde_json::Value, import: bool) {
+fn binary(
+    store: &content_store::Server,
+    dir: &std::path::Path,
+    actions: serde_json::Value,
+    import: bool,
+) {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_photos"));
+    let _capability = store.attach(&mut command);
     command
         .env("XDG_DATA_HOME", dir)
         .env("XDG_CONFIG_HOME", dir)
-        .env("TILO_BLOB_STORE", dir.join("blobs"))
         .env("TILO_PACKAGE_ID", "so.tilo.photos")
         .args([
             "--headless-drive",
@@ -91,6 +218,10 @@ fn binary(dir: &std::path::Path, actions: serde_json::Value, import: bool) {
 #[test]
 fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import() {
     if let Ok(stage) = std::env::var("QOS_PHOTOS_LAUNCH_STAGE") {
+        assert!(
+            ui::blobs::install_from_environment(),
+            "the child was handed the content-store capability"
+        );
         let dir = std::path::PathBuf::from(std::env::var_os("QOS_PHOTOS_TEST_HOME").unwrap());
         let kind = std::env::var("QOS_PHOTOS_LAUNCH_KIND").unwrap();
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.photos").unwrap();
@@ -228,29 +359,32 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
         }
         return;
     }
+    let store = content_store::Server::start();
     for kind in ["current", "legacy", "blank"] {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path();
-        child("seed", dir, kind);
+        child(&store, "seed", dir, kind);
         binary(
+            &store,
             dir,
             serde_json::json!([{"click_named":"history-open"}]),
             false,
         );
-        child("verify_unchanged", dir, kind);
-        child("change", dir, kind);
+        child(&store, "verify_unchanged", dir, kind);
+        child(&store, "change", dir, kind);
         let selected = std::fs::read_to_string(dir.join("selected")).unwrap();
         let target = format!(
             "timeline-entry:{}",
             ui::widget::history_group::hex16(&ui::history_source::entry_id_from_hash(&selected))
         );
         binary(
+            &store,
             dir,
             serde_json::json!([{"click_named":"history-open"},{"perform":{"target":"activity_timeline","semantic_target":target,"action":"activate"}},{"click_named":"history-restore"},{"key":"Enter"}]),
             false,
         );
-        child("verify_restored", dir, kind);
-        binary(dir, serde_json::json!([]), true);
-        child("verify_import", dir, kind);
+        child(&store, "verify_restored", dir, kind);
+        binary(&store, dir, serde_json::json!([]), true);
+        child(&store, "verify_import", dir, kind);
     }
 }

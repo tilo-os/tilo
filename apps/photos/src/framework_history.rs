@@ -365,9 +365,10 @@ impl HistoricalAssetSource for PhotoAssets {
                 if result.contains_key(&id) {
                     continue;
                 }
-                // Selected-source custody; local immutable content lookup has no
-                // transport request and never resolves an ambient historical path.
-                if let Some(bytes) = qdoc::blobstore::store().get(hash) {
+                // Selected-source custody: only content this app may read from
+                // the content store, never waiting on a peer and never resolving
+                // an ambient historical path.
+                if let qdoc::blobstore::Fetch::Ready(bytes) = qdoc::blobstore::store().fetch(hash) {
                     total = total.saturating_add(bytes.len());
                     if total > 128 * 1024 * 1024 {
                         return Err("Recorded Photos assets exceed byte budget".into());
