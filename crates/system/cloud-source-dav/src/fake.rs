@@ -272,6 +272,17 @@ impl FakeDav {
     pub fn requests(&self) -> Vec<Request> {
         self.responder.drain_requests()
     }
+
+    /// Block until a request matching `wanted` has been handled (its effect
+    /// is visible), skipping others. Panics if requests stop arriving.
+    pub fn wait_for(&self, wanted: impl Fn(&Request) -> bool) -> Request {
+        loop {
+            let request = self.responder.next_request();
+            if wanted(&request) {
+                return request;
+            }
+        }
+    }
 }
 
 fn join(parent: &str, name: &str) -> String {

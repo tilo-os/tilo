@@ -4193,6 +4193,7 @@ dependencies = [
 name = "fs"
 version = "0.1.0"
 dependencies = [
+ "accounts",
  "anyhow",
  "atomic-file",
  "automerge",
@@ -4201,6 +4202,8 @@ dependencies = [
  "bounded-command",
  "bytes",
  "clap",
+ "cloud-source",
+ "cloud-source-dav",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "fs-content",
@@ -4217,6 +4220,7 @@ dependencies = [
  "irpc",
  "libc",
  "moka",
+ "notify",
  "postcard",
  "qdoc",
  "qdoc-codecs",
@@ -4239,7 +4243,9 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
+ "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
