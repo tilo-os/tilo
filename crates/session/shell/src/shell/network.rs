@@ -5790,7 +5790,8 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
         workspace_topic: u64,
         peer: iroh::EndpointId,
         message: tilo_actions::remote::RemoteActionMessage,
-    ) -> Result<std::sync::mpsc::Receiver<tilo_actions::remote::RemoteActionMessage>, String> {
+    ) -> Result<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>, String>
+    {
         let key = crate::shell::remote_action_link::ReplyKey::for_request(&message)
             .ok_or_else(|| "only requests are sent to a remote action host".to_string())?;
         let answer = self.remote_action_replies.register(peer, key);
@@ -9971,6 +9972,7 @@ mod tests {
         }]);
         let mut app_invocations = broker.capture_invocations_for_test(9);
         let host_b = crate::shell::remote_actions::BrokerActionHost::new(broker);
+        let net_b = Arc::new(net_b);
 
         let id = tilo_actions::InvocationId::new();
         let request = RemoteActionMessage::Invoke(InvokeRequest {
@@ -10003,7 +10005,11 @@ mod tests {
             );
             crate::shell::collab_broker::answer_remote_actions(&net_b, Some(&host_b), inbound);
             deliver_remote_action(&device_b, &mut commands_b, &net_a, &device_a);
-            answer.try_recv().expect("A received B's answer")
+            let mut answer = answer;
+            match answer.poll_ready() {
+                tilo_actions::remote::PendingPoll::Ready(answer) => answer,
+                _ => panic!("A received B's answer"),
+            }
         };
 
         let RemoteActionMessage::Receipt(receipt) = round_trip(request.clone()) else {
@@ -10035,7 +10041,10 @@ mod tests {
         let (net, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 0xC);
         let stranger = iroh::SecretKey::from_bytes(&[0xC2; 32]);
         let frame = tilo_actions::remote::RemoteActionFrame::new(
-            tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation: 1 },
+            tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
+                correlation: 1,
+                query: tilo_actions::remote::CatalogueQuery::default(),
+            },
         )
         .encode()
         .expect("frame");

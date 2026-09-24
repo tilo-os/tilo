@@ -928,46 +928,25 @@ impl LocalActionDirectoryRegistry {
     }
 }
 
-/// Inert result returned from the broker `LocalSet` to shell chrome.  It never
-/// carries a Cap'n Proto capability or widget reference across threads.
+/// Inert result returned from the broker `LocalSet` to the action host.  It
+/// never carries a Cap'n Proto capability across threads.
 #[derive(Debug)]
-pub enum ActionDirectoryBridgeResponse {
+pub(crate) enum ActionDirectoryBridgeResponse {
     Page(runtime_collab::ActionDirectoryPage),
     Resolution(runtime_collab::ActionDirectoryResolution),
-    StartedDirectoryAction(StartedDirectoryAction),
-}
-
-/// Explicit consent supplied with an atomic directory invocation.  It is
-/// carried to the broker `LocalSet`, checked against the freshly resolved
-/// contract, and never retained in a shell search-result cache.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DirectoryActionConfirmation {
-    Confirmed,
-    Phrase(String),
-}
-
-/// Inert admission receipt for a directory action.  Progress remains
-/// available through the existing invocation-status subscription.
-#[derive(Debug, Clone, PartialEq)]
-pub struct StartedDirectoryAction {
-    pub invocation_id: u64,
-    pub initial_update: tilo_actions::InvocationUpdate,
 }
 
 /// A bounded bridge failure.  `Busy` is deliberate backpressure: palette
 /// code must retain its last cached results rather than blocking a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionDirectoryBridgeError {
+pub(crate) enum ActionDirectoryBridgeError {
     Busy,
     InvalidRequest,
     Unavailable,
     TimedOut,
-    StaleRevision,
-    NotFound,
-    ConfirmationRequired,
 }
 
-pub type ActionDirectoryBridgeReply =
+pub(crate) type ActionDirectoryBridgeReply =
     Result<ActionDirectoryBridgeResponse, ActionDirectoryBridgeError>;
 
 enum ActionDirectoryBridgeRequest {
@@ -975,7 +954,7 @@ enum ActionDirectoryBridgeRequest {
         actor: BrokerActor,
         cluster_id: String,
         query: runtime_collab::ActionDirectoryQuery,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+        reply: tilo_actions::remote::Completer<ActionDirectoryBridgeReply>,
     },
     Resolve {
         actor: BrokerActor,
@@ -984,26 +963,16 @@ enum ActionDirectoryBridgeRequest {
         revision: String,
         resource: String,
         action: String,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
-    },
-    Start {
-        actor: BrokerActor,
-        cluster_id: String,
-        peer_id: u64,
-        revision: String,
-        resource: String,
-        action: String,
-        argument: Option<String>,
-        confirmation: Option<DirectoryActionConfirmation>,
-        reply: tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>,
+        reply: tilo_actions::remote::Completer<ActionDirectoryBridgeReply>,
     },
 }
 
-/// Thread-safe sender for palette/search code.  The receiver is drained only
-/// by the broker's `LocalSet`, where its Rc-backed capability clients remain
-/// valid.  Callers receive a oneshot they may poll from any executor.
+/// The action host's way to an application's directory capability.  The
+/// receiver is drained only by the broker's `LocalSet`, where its Rc-backed
+/// capability clients remain valid; the answer arrives as a
+/// [`tilo_actions::remote::Pending`], completed on that `LocalSet`.
 #[derive(Clone)]
-pub struct ActionDirectoryRequestQueue {
+pub(crate) struct ActionDirectoryRequestQueue {
     sender: std::sync::mpsc::SyncSender<ActionDirectoryBridgeRequest>,
 }
 
@@ -1014,19 +983,17 @@ impl ActionDirectoryRequestQueue {
     ///
     /// Returns an error when the query is invalid, the bounded broker queue is
     /// full, or the broker is unavailable.
-    pub fn try_query(
+    pub(crate) fn try_query(
         &self,
         actor: BrokerActor,
         cluster_id: impl Into<String>,
         query: runtime_collab::ActionDirectoryQuery,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
+    ) -> Result<tilo_actions::remote::Pending<ActionDirectoryBridgeReply>, ActionDirectoryBridgeError>
+    {
         if validate_directory_query_input(&query).is_err() {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
-        let (reply, response) = tokio::sync::oneshot::channel();
+        let (reply, response) = tilo_actions::remote::pending();
         match self.sender.try_send(ActionDirectoryBridgeRequest::Query {
             actor,
             cluster_id: cluster_id.into(),
@@ -1049,7 +1016,7 @@ impl ActionDirectoryRequestQueue {
     ///
     /// Returns an error when the target is invalid, the bounded broker queue
     /// is full, or the broker is unavailable.
-    pub fn try_resolve(
+    pub(crate) fn try_resolve(
         &self,
         actor: BrokerActor,
         cluster_id: impl Into<String>,
@@ -1057,20 +1024,18 @@ impl ActionDirectoryRequestQueue {
         revision: impl Into<String>,
         resource: impl Into<String>,
         action: impl Into<String>,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
+    ) -> Result<tilo_actions::remote::Pending<ActionDirectoryBridgeReply>, ActionDirectoryBridgeError>
+    {
         let cluster_id = cluster_id.into();
         let revision = revision.into();
         let resource = resource.into();
         let action = action.into();
-        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None, None)
+        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None)
             .is_err()
         {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
-        let (reply, response) = tokio::sync::oneshot::channel();
+        let (reply, response) = tilo_actions::remote::pending();
         match self.sender.try_send(ActionDirectoryBridgeRequest::Resolve {
             actor,
             cluster_id,
@@ -1078,64 +1043,6 @@ impl ActionDirectoryRequestQueue {
             revision,
             resource,
             action,
-            reply,
-        }) {
-            Ok(()) => Ok(response),
-            Err(std::sync::mpsc::TrySendError::Full(_)) => Err(ActionDirectoryBridgeError::Busy),
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                Err(ActionDirectoryBridgeError::Unavailable)
-            }
-        }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Directory invocation carries actor and exact directory target fields plus the action argument and confirmation."
-    )]
-    /// # Errors
-    ///
-    /// Returns an error when invocation inputs are invalid, the bounded broker
-    /// queue is full, or the broker is unavailable.
-    pub fn try_start_resolved(
-        &self,
-        actor: BrokerActor,
-        cluster_id: impl Into<String>,
-        peer_id: u64,
-        revision: impl Into<String>,
-        resource: impl Into<String>,
-        action: impl Into<String>,
-        argument: Option<String>,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
-        let cluster_id = cluster_id.into();
-        let revision = revision.into();
-        let resource = resource.into();
-        let action = action.into();
-        if validate_directory_target_input(
-            &cluster_id,
-            &revision,
-            &resource,
-            &action,
-            argument.as_deref(),
-            confirmation.as_ref(),
-        )
-        .is_err()
-        {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
-        let (reply, response) = tokio::sync::oneshot::channel();
-        match self.sender.try_send(ActionDirectoryBridgeRequest::Start {
-            actor,
-            cluster_id,
-            peer_id,
-            revision,
-            resource,
-            action,
-            argument,
-            confirmation,
             reply,
         }) {
             Ok(()) => Ok(response),
@@ -1222,7 +1129,6 @@ fn validate_directory_target_input(
     resource: &str,
     action: &str,
     argument: Option<&str>,
-    confirmation: Option<&DirectoryActionConfirmation>,
 ) -> Result<(), capnp::Error> {
     validate_directory_identifier(
         cluster_id,
@@ -1254,14 +1160,6 @@ fn validate_directory_target_input(
             "directory argument",
             DIRECTORY_MAX_PARAMS_BYTES,
             false,
-        )?;
-    }
-    if let Some(DirectoryActionConfirmation::Phrase(phrase)) = confirmation {
-        validate_directory_text(
-            phrase,
-            "directory confirmation",
-            DIRECTORY_MAX_CONFIRMATION_BYTES,
-            true,
         )?;
     }
     Ok(())
@@ -2736,7 +2634,7 @@ impl CapnpBrokerState {
     /// enqueues inert values; the broker `LocalSet` rechecks authority when
     /// it later services the request.
     #[must_use]
-    pub fn action_directory_request_queue(&self) -> ActionDirectoryRequestQueue {
+    pub(crate) fn action_directory_request_queue(&self) -> ActionDirectoryRequestQueue {
         self.action_directory_bridge.clone()
     }
 
@@ -2824,9 +2722,6 @@ impl CapnpBrokerState {
                         query,
                         reply,
                     } => {
-                        if reply.is_closed() {
-                            return;
-                        }
                         let response = tokio::time::timeout(
                             Self::DIRECTORY_BRIDGE_TIMEOUT,
                             state.query_action_directory_for_actor(
@@ -2845,7 +2740,7 @@ impl CapnpBrokerState {
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
                             },
                         );
-                        let _ = reply.send(response);
+                        reply.complete(response);
                     }
                     ActionDirectoryBridgeRequest::Resolve {
                         actor,
@@ -2856,9 +2751,6 @@ impl CapnpBrokerState {
                         action,
                         reply,
                     } => {
-                        if reply.is_closed() {
-                            return;
-                        }
                         let response = tokio::time::timeout(
                             Self::DIRECTORY_BRIDGE_TIMEOUT,
                             state.resolve_action_directory_for_actor(
@@ -2880,44 +2772,7 @@ impl CapnpBrokerState {
                                     .map_err(|_| ActionDirectoryBridgeError::Unavailable)
                             },
                         );
-                        let _ = reply.send(response);
-                    }
-                    ActionDirectoryBridgeRequest::Start {
-                        actor,
-                        cluster_id,
-                        peer_id,
-                        revision,
-                        resource,
-                        action,
-                        argument,
-                        confirmation,
-                        reply,
-                    } => {
-                        if reply.is_closed() {
-                            return;
-                        }
-                        let response = tokio::time::timeout(
-                            Self::DIRECTORY_BRIDGE_TIMEOUT,
-                            state.start_action_directory_for_actor(
-                                &directories,
-                                &actor,
-                                &cluster_id,
-                                peer_id,
-                                &revision,
-                                &resource,
-                                &action,
-                                argument.as_deref(),
-                                confirmation,
-                            ),
-                        )
-                        .await
-                        .map_or_else(
-                            |_| Err(ActionDirectoryBridgeError::TimedOut),
-                            |result| {
-                                result.map(ActionDirectoryBridgeResponse::StartedDirectoryAction)
-                            },
-                        );
-                        let _ = reply.send(response);
+                        reply.complete(response);
                     }
                 }
             });
@@ -3020,7 +2875,7 @@ impl CapnpBrokerState {
         resource: &str,
         action: &str,
     ) -> Result<runtime_collab::ActionDirectoryResolution, String> {
-        validate_directory_target_input(cluster_id, revision, resource, action, None, None)
+        validate_directory_target_input(cluster_id, revision, resource, action, None)
             .map_err(|error| error.to_string())?;
         let registered = directories
             .registered(peer_id, cluster_id)
@@ -3057,155 +2912,6 @@ impl CapnpBrokerState {
             }
             other => Ok(other),
         }
-    }
-
-    /// Atomically resolve and start a directory action on the broker
-    /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
-    /// thread participates in admission.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::future_not_send,
-        reason = "Admission carries actor, exact directory target, argument, and confirmation through Rc-backed capabilities on the broker LocalSet."
-    )]
-    async fn start_action_directory_for_actor(
-        &self,
-        directories: &LocalActionDirectoryRegistry,
-        actor: &BrokerActor,
-        cluster_id: &str,
-        peer_id: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
-        validate_directory_target_input(
-            cluster_id,
-            revision,
-            resource,
-            action,
-            argument,
-            confirmation.as_ref(),
-        )
-        .map_err(|_| ActionDirectoryBridgeError::InvalidRequest)?;
-        let registered = directories
-            .registered(peer_id, cluster_id)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let resolved = self
-            .resolve_action_directory_for_actor(
-                directories,
-                actor,
-                cluster_id,
-                peer_id,
-                revision,
-                resource,
-                action,
-            )
-            .await
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let runtime_collab::ActionDirectoryResolution::Found(row) = resolved else {
-            return Err(match resolved {
-                runtime_collab::ActionDirectoryResolution::StaleRevision => {
-                    ActionDirectoryBridgeError::StaleRevision
-                }
-                _ => ActionDirectoryBridgeError::NotFound,
-            });
-        };
-        let published = published_directory_action(&row)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        // Resolve rechecked the current capability and actor.  Re-run the
-        // validation immediately before constructing the invocation surface
-        // so a future local caller cannot bypass the same boundary.
-        if !permits_directory_row(self, cluster_id, actor, &registered.app_id, &row)
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?
-        {
-            return Err(ActionDirectoryBridgeError::NotFound);
-        }
-        let confirmation_token = self.directory_confirmation_token(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            &published.contract,
-            confirmation,
-        )?;
-        let surface = PublishedSurface {
-            peer_id,
-            app_id: registered.app_id,
-            route: registered.route,
-            actions: vec![published.clone()],
-            live: true,
-        };
-        let job = self
-            .start_invocation_from_offered(
-                peer_id,
-                (surface, published),
-                argument,
-                actor,
-                confirmation_token.as_deref(),
-                None,
-            )
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let initial_update = self
-            .invocation_status(job.id)
-            .ok_or(ActionDirectoryBridgeError::Unavailable)?;
-        Ok(StartedDirectoryAction {
-            invocation_id: job.id,
-            initial_update,
-        })
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Confirmation grants bind peer/resource/action/argument and actor identity to the action contract and supplied approval."
-    )]
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
-    )]
-    fn directory_confirmation_token(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        contract: &tilo_actions::ActionContract,
-        confirmation: Option<DirectoryActionConfirmation>,
-    ) -> Result<Option<String>, ActionDirectoryBridgeError> {
-        match &contract.confirmation {
-            tilo_actions::ConfirmationPolicy::None => return Ok(None),
-            tilo_actions::ConfirmationPolicy::Confirm
-                if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) => {}
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
-                {}
-            _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
-        }
-        let token = uuid::Uuid::new_v4().to_string();
-        let mut grants = self
-            .confirmation_grants
-            .lock()
-            .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
-        let now = std::time::Instant::now();
-        grants.retain(|_, grant| grant.expires >= now);
-        grants.insert(
-            token.clone(),
-            ConfirmationGrant {
-                peer_id,
-                resource: resource.to_string(),
-                action: action.to_string(),
-                argument_digest: argument_digest(argument),
-                actor: actor.id.clone(),
-                expires: now
-                    .checked_add(std::time::Duration::from_secs(60))
-                    .ok_or(ActionDirectoryBridgeError::Unavailable)?,
-            },
-        );
-        // Token ownership is now in the registry; do not retain its mutex
-        // while the caller begins the invocation it authorizes.
-        drop(grants);
-        Ok(Some(token))
     }
 
     /// Check the descriptor returned by an untrusted app capability against
@@ -3404,11 +3110,13 @@ impl CapnpBrokerState {
         self.start_invocation_confirmed(peer_id, resource, action, argument, actor, None)
     }
 
-    /// Prepare a one-use confirmation token bound to this exact invocation.
+    /// Prepare a one-use confirmation token bound to this exact invocation
+    /// of an eager surface action.
     ///
     /// # Errors
     ///
     /// Returns an error when the action, phrase, or confirmation registry is invalid.
+    #[cfg(test)]
     pub fn prepare_confirmation(
         &self,
         peer_id: u64,
@@ -3429,39 +3137,67 @@ impl CapnpBrokerState {
                     })
                 })
                 .ok_or_else(|| "the application no longer publishes that action".to_string())?;
-        match &offered.contract.confirmation {
+        let evidence = match &offered.contract.confirmation {
             tilo_actions::ConfirmationPolicy::None => {
                 return Err("the action does not require confirmation".into());
             }
-            tilo_actions::ConfirmationPolicy::Confirm => {}
-            tilo_actions::ConfirmationPolicy::Phrase { phrase: expected } => {
-                if phrase != Some(expected.as_str()) {
-                    return Err("the confirmation phrase did not match".into());
-                }
+            tilo_actions::ConfirmationPolicy::Confirm => {
+                tilo_actions::remote::Confirmation::Confirmed
             }
+            tilo_actions::ConfirmationPolicy::Phrase { .. } => {
+                tilo_actions::remote::Confirmation::Phrase(phrase.unwrap_or_default().to_string())
+            }
+        };
+        self.confirmation_token(peer_id, &offered, argument, actor, Some(&evidence))
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "the action does not require confirmation".into())
+    }
+
+    /// Check `evidence` against the offered action's confirmation policy and,
+    /// when one is required, mint the one-use grant that binds it to this
+    /// exact peer, address, argument and actor. The one confirmation path
+    /// every caller goes through.
+    pub(crate) fn confirmation_token(
+        &self,
+        peer_id: u64,
+        offered: &PublishedAction,
+        argument: Option<&str>,
+        actor: &str,
+        evidence: Option<&tilo_actions::remote::Confirmation>,
+    ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
+        use tilo_actions::remote::{ActionHostError, Confirmation};
+        match (&offered.contract.confirmation, evidence) {
+            (tilo_actions::ConfirmationPolicy::None, _) => return Ok(None),
+            (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => {}
+            (
+                tilo_actions::ConfirmationPolicy::Phrase { phrase: expected },
+                Some(Confirmation::Phrase(phrase)),
+            ) if phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected => {}
+            _ => return Err(ActionHostError::ConfirmationRequired),
         }
+        let unavailable = || ActionHostError::Unavailable {
+            reason: "the confirmation registry is unavailable".into(),
+        };
         let token = uuid::Uuid::new_v4().to_string();
-        let mut grants = self
-            .confirmation_grants
-            .lock()
-            .map_err(|_| "the confirmation registry is unavailable".to_string())?;
         let now = std::time::Instant::now();
+        let expires = now
+            .checked_add(std::time::Duration::from_secs(60))
+            .ok_or_else(unavailable)?;
+        let mut grants = self.confirmation_grants.lock().map_err(|_| unavailable())?;
         grants.retain(|_, grant| grant.expires >= now);
         grants.insert(
             token.clone(),
             ConfirmationGrant {
                 peer_id,
-                resource: resource.to_string(),
-                action: action.to_string(),
+                resource: offered.resource.clone(),
+                action: offered.action.clone(),
                 argument_digest: argument_digest(argument),
                 actor: actor.to_string(),
-                expires: std::time::Instant::now()
-                    .checked_add(std::time::Duration::from_secs(60))
-                    .ok_or_else(|| "confirmation expiry overflowed".to_string())?,
+                expires,
             },
         );
         drop(grants);
-        Ok(token)
+        Ok(Some(token))
     }
 
     #[allow(
@@ -4995,13 +4731,18 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "only remote-action requests are answered".into(),
             ));
         };
-        match RemoteActionFrame::new(answer).encode() {
-            Ok(bytes) => {
-                results.get().set_frame(&bytes);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
+        // Awaited on this local set, which is also where an application's
+        // directory answers; the connection's other calls keep flowing.
+        Promise::from_future(async move {
+            let answer = answer.await.ok_or_else(|| {
+                capnp::Error::failed("the action host dropped the request".into())
+            })?;
+            let bytes = RemoteActionFrame::new(answer)
+                .encode()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_frame(&bytes);
+            Ok(())
+        })
     }
 
     fn request_document_snapshot(
@@ -8697,6 +8438,7 @@ pub(crate) mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::time::SystemTime;
+    use tilo_actions::remote::ActionHost as _;
 
     use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
     use crate::shell::search::providers::live_app_actions::LiveAppActionsProvider;
@@ -9828,7 +9570,7 @@ pub(crate) mod tests {
     #[test]
     fn directory_queue_refuses_oversized_query_text_and_cursor_before_contacting_the_app() {
         let fixture = local_directory_fixture();
-        let queue = fixture.broker.action_directory_request_queue();
+        let queue = fixture.state.action_directory_request_queue();
         let mut oversized_text = runtime_collab::ActionDirectoryQuery {
             peer_id: fixture.peer_id,
             revision: String::new(),
@@ -9869,33 +9611,28 @@ pub(crate) mod tests {
             ),
             Err(ActionDirectoryBridgeError::InvalidRequest)
         ));
+        let mut oversized_argument =
+            crate::shell::remote_actions::BrokerActionHost::new(fixture.broker.clone()).invoke(
+                &tilo_actions::remote::Caller::local_person("actor-a").in_room(&fixture.cluster_id),
+                tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::Text(
+                        "x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1)),
+                    ),
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                },
+            );
         assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
-                Some("x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1))),
-                None,
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
-        ));
-        assert!(matches!(
-            queue.try_start_resolved(
-                BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
-                None,
-                Some(DirectoryActionConfirmation::Phrase(
-                    "x".repeat(DIRECTORY_MAX_CONFIRMATION_BYTES.saturating_add(1)),
-                )),
-            ),
-            Err(ActionDirectoryBridgeError::InvalidRequest)
+            oversized_argument.poll_ready(),
+            tilo_actions::remote::PendingPoll::Ready(Err(
+                tilo_actions::remote::ActionHostError::InvalidRequest { .. }
+            ))
         ));
         assert_eq!(
             fixture.directory_state.borrow().query_count,
@@ -10007,42 +9744,48 @@ pub(crate) mod tests {
         let local = tokio::task::LocalSet::new();
         runtime.block_on(local.run_until(async {
             let mut fixture = local_directory_fixture();
-            let queue = fixture.broker.action_directory_request_queue();
             let room = crate::shell::state::RoomId::parse(&fixture.cluster_id)
                 .expect("fixture route is a room id");
             let directory_actor = fixture.chrome.borrow().local_user_for_room(&room);
 
-            // A request remains pending until the LocalSet drains it; no shell
-            // caller is allowed to block the compositor waiting for an RPC.
+            // A directory start stays pending until the LocalSet has the
+            // owner re-resolve the row; no caller blocks the compositor on
+            // an RPC. The shared confirmation check refuses it there.
             fixture.directory_state.borrow_mut().confirmation_required = true;
-            let mut confirmation = queue
-                .try_start_resolved(
-                    BrokerActor::person(&directory_actor),
-                    &fixture.cluster_id,
-                    fixture.peer_id,
-                    "directory-r1",
-                    "workspace:atlas",
-                    "open",
-                    None,
-                    None,
-                )
-                .expect("bounded queue accepts one request");
+            let mut confirmation = crate::shell::remote_actions::BrokerActionHost::new(
+                fixture.broker.clone(),
+            )
+            .invoke(
+                &tilo_actions::remote::Caller::local_person(&directory_actor)
+                    .in_room(&fixture.cluster_id),
+                tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                },
+            );
             assert!(matches!(
-                confirmation.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                confirmation.poll_ready(),
+                tilo_actions::remote::PendingPoll::Waiting
             ));
             drain_directory_bridge(&fixture).await;
-            let confirmation_reply = tokio::time::timeout(
-                Duration::from_millis(100),
-                confirmation,
-            )
-            .await
-            .expect("LocalSet reply deadline")
-            .expect("reply sender survives");
-            assert!(matches!(
-                confirmation_reply,
-                Err(ActionDirectoryBridgeError::ConfirmationRequired)
-            ), "unexpected confirmation reply: {confirmation_reply:?}");
+            let confirmation_reply = tokio::time::timeout(Duration::from_millis(100), confirmation)
+                .await
+                .expect("LocalSet reply deadline")
+                .expect("the host answers");
+            assert!(
+                matches!(
+                    confirmation_reply,
+                    Err(tilo_actions::remote::ActionHostError::ConfirmationRequired)
+                ),
+                "unexpected confirmation reply: {confirmation_reply:?}"
+            );
             fixture.directory_state.borrow_mut().confirmation_required = false;
 
             let provider = LiveAppActionsProvider::new(fixture.broker.clone());
@@ -11112,8 +10855,21 @@ pub(crate) mod tests {
     }
 
     /// The catalogue `caller` is offered, as searchable text.
-    fn catalogue_text(state: &CapnpBrokerState, caller: &tilo_actions::remote::Caller) -> String {
-        serde_json::to_string(&state.action_catalogue_for(caller)).expect("catalogue encodes")
+    fn catalogue_text(
+        state: &Arc<CapnpBrokerState>,
+        caller: &tilo_actions::remote::Caller,
+    ) -> String {
+        let mut page = state.action_query(
+            caller,
+            &tilo_actions::remote::CatalogueQuery {
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            },
+        );
+        let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = page.poll_ready() else {
+            panic!("the eager catalogue answers at once");
+        };
+        serde_json::to_string(&page).expect("catalogue encodes")
     }
 
     /// A workspace whose `agent` may save and assign permission profiles.

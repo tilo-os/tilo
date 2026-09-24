@@ -13,14 +13,13 @@
 //! [`ShellNetwork`]: crate::shell::network::ShellNetwork
 
 use std::collections::HashMap;
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, Catalogue, InvocationReceipt, InvocationState,
-    InvokeRequest, RemoteActionMessage,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Completer,
+    InvocationReceipt, InvocationState, InvokeRequest, Pending, RemoteActionMessage,
 };
 
 /// A request from an authenticated remote device, waiting for the broker.
@@ -50,7 +49,9 @@ impl ReplyKey {
     #[must_use]
     pub fn for_request(message: &RemoteActionMessage) -> Option<Self> {
         Some(match message {
-            RemoteActionMessage::CatalogueRequest { correlation } => Self::Catalogue(*correlation),
+            RemoteActionMessage::CatalogueRequest { correlation, .. } => {
+                Self::Catalogue(*correlation)
+            }
             RemoteActionMessage::Invoke(request) => Self::Invoke(request.invocation),
             RemoteActionMessage::Observe { invocation } => Self::Observe(*invocation),
             RemoteActionMessage::Cancel { invocation } => Self::Cancel(*invocation),
@@ -73,8 +74,13 @@ impl ReplyKey {
     }
 }
 
-/// Senders waiting for one answer from one device.
-type Waiting = HashMap<(iroh::EndpointId, ReplyKey), Vec<mpsc::Sender<RemoteActionMessage>>>;
+/// How long a device has to answer before its waiters are released. A lost
+/// frame then surfaces as an unavailable answer instead of waiting forever.
+pub const REPLY_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Answers owed by one device, each with the moment it stops being awaited.
+type Waiting =
+    HashMap<(iroh::EndpointId, ReplyKey), Vec<(Instant, Completer<RemoteActionMessage>)>>;
 
 /// Callers waiting for an answer from a specific device. An answer is only
 /// delivered to a waiter registered for the device it came from, so one
@@ -86,16 +92,22 @@ pub struct ReplyWaiters {
 
 impl ReplyWaiters {
     /// Wait for the answer `key` from `peer`.
-    pub fn register(
-        &self,
-        peer: iroh::EndpointId,
-        key: ReplyKey,
-    ) -> mpsc::Receiver<RemoteActionMessage> {
-        let (tx, rx) = mpsc::channel();
+    pub fn register(&self, peer: iroh::EndpointId, key: ReplyKey) -> Pending<RemoteActionMessage> {
+        let (completer, answer) = tilo_actions::remote::pending();
+        let now = Instant::now();
+        let deadline = now.checked_add(REPLY_DEADLINE).unwrap_or(now);
         if let Ok(mut waiting) = self.waiting.lock() {
-            waiting.entry((peer, key)).or_default().push(tx);
+            // Dropping an expired completer abandons its answer.
+            waiting.retain(|_, waiters| {
+                waiters.retain(|(until, _)| *until > now);
+                !waiters.is_empty()
+            });
+            waiting
+                .entry((peer, key))
+                .or_default()
+                .push((deadline, completer));
         }
-        rx
+        answer
     }
 
     /// Hand an answer from `peer` to everyone waiting for it. Returns
@@ -112,14 +124,14 @@ impl ReplyWaiters {
         else {
             return false;
         };
-        for waiter in waiters {
-            let _ = waiter.send(message.clone());
+        for (_, waiter) in waiters {
+            waiter.complete(message.clone());
         }
         true
     }
 }
 
-/// Sends one request to a peer and hands back where its answer arrives.
+/// Sends one request to a peer and hands back its answer, when it comes.
 pub trait RemoteActionLink: Send + Sync {
     /// Send `message` to `peer` on `workspace_topic`.
     ///
@@ -131,40 +143,67 @@ pub trait RemoteActionLink: Send + Sync {
         workspace_topic: u64,
         peer: iroh::EndpointId,
         message: RemoteActionMessage,
-    ) -> Result<mpsc::Receiver<RemoteActionMessage>, String>;
+    ) -> Result<Pending<RemoteActionMessage>, String>;
 }
 
 /// Another peer's actions, used as an [`ActionHost`].
 ///
 /// The remote host authorizes the transport-authenticated device this shell
 /// connects as; the `caller` argument names nobody on the wire, so it is not
-/// sent.
+/// sent. Nothing here blocks: every answer is the peer's reply, when it
+/// arrives.
 pub struct PeerActionHost<L> {
     link: L,
     workspace_topic: u64,
     peer: iroh::EndpointId,
-    timeout: Duration,
     next_correlation: std::sync::atomic::AtomicU64,
 }
 
 impl<L: RemoteActionLink> PeerActionHost<L> {
-    pub fn new(link: L, workspace_topic: u64, peer: iroh::EndpointId, timeout: Duration) -> Self {
+    pub fn new(link: L, workspace_topic: u64, peer: iroh::EndpointId) -> Self {
         Self {
             link,
             workspace_topic,
             peer,
-            timeout,
             next_correlation: std::sync::atomic::AtomicU64::new(1),
         }
     }
 
-    fn ask(&self, message: RemoteActionMessage) -> Result<RemoteActionMessage, ActionHostError> {
-        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
-        self.link
-            .request(self.workspace_topic, self.peer, message)
-            .map_err(unavailable)?
-            .recv_timeout(self.timeout)
-            .map_err(|_| unavailable("the peer did not answer in time".into()))
+    fn ask<T: Send + 'static>(
+        &self,
+        message: RemoteActionMessage,
+        answer: impl FnOnce(RemoteActionMessage) -> Result<T, ActionHostError> + Send + 'static,
+    ) -> Pending<Result<T, ActionHostError>> {
+        match self.link.request(self.workspace_topic, self.peer, message) {
+            Err(reason) => Pending::ready(Err(ActionHostError::Unavailable { reason })),
+            Ok(reply) => {
+                let (completer, result) = tilo_actions::remote::pending();
+                reply.then(move |reply| {
+                    completer.complete(reply.map_or_else(
+                        || {
+                            Err(ActionHostError::Unavailable {
+                                reason: "the peer did not answer in time".into(),
+                            })
+                        },
+                        answer,
+                    ));
+                });
+                result
+            }
+        }
+    }
+
+    fn ask_now<T: Send + 'static>(
+        &self,
+        message: RemoteActionMessage,
+        answer: impl FnOnce(RemoteActionMessage) -> Result<T, ActionHostError> + Send + 'static,
+    ) -> Result<T, ActionHostError> {
+        match self.ask(message, answer).wait_timeout(REPLY_DEADLINE) {
+            Ok(Some(result)) => result,
+            Ok(None) | Err(_) => Err(ActionHostError::Unavailable {
+                reason: "the peer did not answer in time".into(),
+            }),
+        }
     }
 }
 
@@ -175,52 +214,72 @@ fn unexpected() -> ActionHostError {
 }
 
 impl<L: RemoteActionLink> ActionHost for PeerActionHost<L> {
-    fn catalogue(&self, _caller: &Caller) -> Result<Catalogue, ActionHostError> {
+    fn query(
+        &self,
+        _caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
         let correlation = self
             .next_correlation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match self.ask(RemoteActionMessage::CatalogueRequest { correlation })? {
-            RemoteActionMessage::CatalogueResponse { result, .. } => result,
-            _ => Err(unexpected()),
-        }
+        self.ask(
+            RemoteActionMessage::CatalogueRequest { correlation, query },
+            |answer| match answer {
+                RemoteActionMessage::CatalogueResponse { result, .. } => result,
+                _ => Err(unexpected()),
+            },
+        )
     }
 
     fn invoke(
         &self,
         _caller: &Caller,
         request: InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
-        match self.ask(RemoteActionMessage::Invoke(request))? {
-            RemoteActionMessage::Receipt(receipt) => match receipt.status {
-                tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error),
-                _ => Ok(receipt),
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.ask(
+            RemoteActionMessage::Invoke(request),
+            |answer| match answer {
+                RemoteActionMessage::Receipt(receipt) => match receipt.status {
+                    tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error),
+                    _ => Ok(receipt),
+                },
+                _ => Err(unexpected()),
             },
-            _ => Err(unexpected()),
-        }
+        )
     }
 
+    /// Asks the peer and waits for its answer, as the trait's synchronous
+    /// shape requires; call it off any thread that delivers peer frames.
     fn observe(&self, _caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        match self.ask(RemoteActionMessage::Observe { invocation: *id }) {
-            Ok(RemoteActionMessage::Update { state, .. }) => state,
-            _ => None,
-        }
+        self.ask_now(
+            RemoteActionMessage::Observe { invocation: *id },
+            |answer| match answer {
+                RemoteActionMessage::Update { state, .. } => Ok(state),
+                _ => Err(unexpected()),
+            },
+        )
+        .ok()
+        .flatten()
     }
 
     fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        match self.ask(RemoteActionMessage::Cancel { invocation: *id })? {
-            RemoteActionMessage::CancelResponse { result, .. } => result,
-            _ => Err(unexpected()),
-        }
+        self.ask_now(
+            RemoteActionMessage::Cancel { invocation: *id },
+            |answer| match answer {
+                RemoteActionMessage::CancelResponse { result, .. } => result,
+                _ => Err(unexpected()),
+            },
+        )
     }
 }
 
-impl<L: RemoteActionLink> RemoteActionLink for Arc<L> {
+impl<L: RemoteActionLink> RemoteActionLink for std::sync::Arc<L> {
     fn request(
         &self,
         workspace_topic: u64,
         peer: iroh::EndpointId,
         message: RemoteActionMessage,
-    ) -> Result<mpsc::Receiver<RemoteActionMessage>, String> {
+    ) -> Result<Pending<RemoteActionMessage>, String> {
         (**self).request(workspace_topic, peer, message)
     }
 }

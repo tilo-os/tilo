@@ -76,7 +76,12 @@ fn start_action(
             confirmation: None,
             revision: None,
         },
-    )?;
+    );
+    // This thread does not drive the broker; waiting here blocks nothing.
+    let receipt = receipt
+        .wait_timeout(Duration::from_secs(30))
+        .map_err(|_| "the action host did not admit the action in time")?
+        .ok_or("the action host dropped the request")??;
     if let ReceiptStatus::Rejected { error } = receipt.status {
         return Err(error.into());
     }
@@ -132,6 +137,10 @@ fn wait_action(
     Err(format!("timed out waiting for {app}/{action}").into())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the proof is one linear scripted scenario whose emitted events are read in order"
+)]
 fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)

@@ -723,8 +723,10 @@ async fn handle_remote_action(
 }
 
 /// Answer a frame addressed to this relay through its app-serving plane,
-/// with the caller the connection authenticated. `Ok(None)` when the plane
-/// has nothing to say; `Err` when the frame cannot be used.
+/// with the caller the connection authenticated. The answer is written to
+/// the connection whenever the plane has it, so a request that needs an
+/// application's help never stalls this peer's other traffic. `Err` when
+/// the frame cannot be used.
 fn serve_locally(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -738,17 +740,25 @@ fn serve_locally(
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
         return Ok(None);
     };
-    let frame = RemoteActionFrame::new(reply)
-        .encode()
-        .map_err(|_| "the reply does not fit in a remote action frame")?;
-    Ok(Some(Envelope::RemoteAction {
-        workspace_id,
-        version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-        to_device_public_key: peer.device_public_key,
-        from_device_public_key: *session.own_device_public_key,
-        from_user_public_key: *session.own_user_public_key,
-        frame,
-    }))
+    let outbound = session.outbound.clone();
+    let to_device_public_key = peer.device_public_key;
+    let from_device_public_key = *session.own_device_public_key;
+    let from_user_public_key = *session.own_user_public_key;
+    reply.then(move |reply| {
+        let Some(frame) = reply.and_then(|reply| RemoteActionFrame::new(reply).encode().ok())
+        else {
+            return;
+        };
+        let _ = outbound.try_send(Envelope::RemoteAction {
+            workspace_id,
+            version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+            to_device_public_key,
+            from_device_public_key,
+            from_user_public_key,
+            frame,
+        });
+    });
+    Ok(None)
 }
 
 /// Handle `PeerRelayHello`: record the dialer as a federated peer

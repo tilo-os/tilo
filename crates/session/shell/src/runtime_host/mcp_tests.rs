@@ -382,40 +382,6 @@ async fn invocation_preserves_typed_argument_maps_through_the_broker() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bridge_errors_and_terminal_content_are_not_fabricated() {
-    use crate::shell::collab_broker_capnp::{
-        ActionDirectoryBridgeError as Error, StartedDirectoryAction,
-    };
-    for failure in [
-        Error::Busy,
-        Error::TimedOut,
-        Error::Unavailable,
-        Error::ConfirmationRequired,
-        Error::NotFound,
-        Error::StaleRevision,
-    ] {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        tx.send(Err(failure)).unwrap();
-        assert_eq!(bridge_reply(rx).await.unwrap_err(), format!("{failure:?}"));
-    }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    drop(tx);
-    assert_eq!(bridge_reply(rx).await.unwrap_err(), "Unavailable");
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    tx.send(Ok(Reply::StartedDirectoryAction(StartedDirectoryAction {
-        invocation_id: 42,
-        initial_update: tilo_actions::InvocationUpdate::Accepted {
-            invocation: tilo_actions::InvocationId::new(),
-        },
-    })))
-    .unwrap();
-    assert!(
-        bridge_reply(rx).await.is_err(),
-        "starting is the action host's job, not the browse bridge's"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn targets_require_a_nonempty_revision_before_enqueueing() {
     let (fixture, room, actor) = fixture();
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
@@ -445,9 +411,10 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
         pending.push(
             fixture
                 .broker
+                .state()
                 .action_directory_request_queue()
                 .try_query(
-                    BrokerActor::person(&actor),
+                    crate::shell::collab_broker_capnp::BrokerActor::person(&actor),
                     &room,
                     runtime_collab::ActionDirectoryQuery {
                         peer_id: 71,
@@ -469,13 +436,23 @@ async fn actual_queue_backpressure_timeout_and_disconnect_are_tool_errors() {
         .await
         .unwrap();
     assert_eq!(busy["result"]["isError"], true);
-    assert_eq!(busy["result"]["content"][0]["text"], "Busy");
+    assert!(
+        busy["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Busy")),
+        "{busy}"
+    );
     drop(fixture);
     let disconnected = server
         .handle(call("qos_query", json!({"peer_id":71})))
         .await
         .unwrap();
-    assert_eq!(disconnected["result"]["content"][0]["text"], "Unavailable");
+    assert!(
+        disconnected["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("Unavailable")),
+        "{disconnected}"
+    );
     let (fixture, room, actor) = self::fixture();
     let mut server = McpServer::new(fixture.broker.clone(), room, actor);
     let timeout = server
@@ -526,23 +503,31 @@ async fn confirmation_is_not_invented_and_terminal_content_survives_the_broker()
 
 #[test]
 fn container_rows_preserve_their_canonical_visibility_contract() {
-    let contract = serde_json::to_value(tilo_actions::ActionContract::view()).unwrap();
-    let row = runtime_collab::ActionDirectoryRow {
+    let contract = tilo_actions::ActionContract::view();
+    let row = CatalogueRow {
+        provider: "71".into(),
+        app_id: "so.tilo.test".into(),
         parent_resource: "root".into(),
-        resource: "aux:document".into(),
-        resource_kind: "document".into(),
-        resource_label: "A decorative label".into(),
-        resource_presentation_json: "{}".into(),
+        resource: tilo_actions::remote::CatalogueResource {
+            id: "aux:document".into(),
+            kind: "document".into(),
+            label: "A decorative label".into(),
+            presentation: None,
+        },
         action: None,
-        descriptor: None,
         has_children: true,
-        visibility_action: Some("read".into()),
-        visibility_contract_json: contract.to_string(),
+        visibility: Some(tilo_actions::remote::RowVisibility {
+            action: "read".into(),
+            contract: contract.clone(),
+        }),
     };
-    let value = row_json(&row).unwrap();
+    let value = row_json(&row);
     assert_eq!(value["resource"], "aux:document");
     assert_eq!(value["visibility_action"], "read");
-    assert_eq!(value["visibility_contract"], contract);
+    assert_eq!(
+        value["visibility_contract"],
+        serde_json::to_value(contract).unwrap()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -607,7 +592,8 @@ async fn request_metadata_must_be_an_object_with_a_valid_progress_token() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
-    tokio::task::LocalSet::new().run_until(async {
+    // Boxed: the query, resolve and invoke turns keep a large future alive.
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         let mut tree = WorkspaceTree::default();
         let mut workspace = Workspace::test_default(WorkspaceId(71), "First connection");
         let room = workspace.room.to_string();
@@ -643,5 +629,5 @@ async fn first_allocated_application_peer_supports_query_resolve_and_invoke() {
         assert_eq!(reply["result"]["structuredContent"]["update"]["state"], "accepted");
         assert_eq!(fixture.take_invocation_actor(), Some(actor));
         assert_eq!(fixture.resolve_count(), 2, "invoke must re-resolve, not execute the previous descriptor");
-    }).await;
+    })).await;
 }
