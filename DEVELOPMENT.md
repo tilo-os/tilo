@@ -41,14 +41,23 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result; those runs are keyed
 to the exact event and commit and are not cancelled when a newer commit arrives.
 
-A PR merges once its required status checks pass for the current head and the
-branch is up to date with `main`. The required checks are
-`CI / affected packages / checks (pull_request)` and
-`CI / fast quality / quality (pull_request)`. Branch protection enforces both
-conditions; there is no merge controller, `/merge` comment or operator step. A new
-push requires fresh checks. When `main` moves, rebase the branch onto it and let
-the checks rerun. Fast-forward merges keep a stacked series of PRs up to date as
-each lower PR lands.
+A ready (non-draft) PR lands by itself: within a minute of both required checks
+passing on its current head, the lander merges it with a merge commit. The
+required checks are `CI / affected packages / checks (pull_request)` and
+`CI / fast quality / quality (pull_request)`. The branch does not have to be up to
+date with `main`; Forgejo only refuses a PR with conflicts. Do not rebase just
+because `main` moved, and do not merge by hand or wait around for the merge.
+Opening the PR ready is the request to land it; open it as a draft, add the
+`hold` label or start the title with `WIP` to park it. PRs numbered below 342
+predate this and land only with the `land` label. In a stack, the upper PR
+brings the lower ones with it when it lands first.
+
+Every push to `main` runs the same checks. If they fail on a merge while the
+merge before it was green, which usually means two PRs that passed separately
+broke each other, the lander reverts that merge on `main` within a minute or two
+and comments on the PR. To reland, branch from `main`, `git revert` the revert
+commit, fix the failure and open a new PR. The lander logs every revert in
+qos/qos#376; see `apps/forgejo/lander` in PodestaAI/infra.
 
 Review is optional and informational for every change. Review requests,
 approvals and change requests never affect whether a PR can merge.
