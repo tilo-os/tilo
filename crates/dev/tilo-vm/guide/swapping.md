@@ -78,6 +78,7 @@ restarts. App installs are not generations: `rollback` does not undo them.
 | app (`app:<dir>`) | your slot's app store | nothing restarts; live at next app launch |
 | `vm` (fs, greeter, system services) | the `vm` slot | `systemd-sysext refresh`, its units restart, and **every slot's session restarts** |
 | `boot` (kernel, UKI, bootloader, initramfs, installer) | nothing | refused; use the scenario driver the error names |
+| not a component (Containerfile, units, `/etc`, packages) | the VM's image | `tilo-vm vm upgrade --from local`: new image, reboot (`tilo-vm guide images`) |
 
 A VM-wide swap interrupts other agents' sessions, so prefer session
 components in your own slot.

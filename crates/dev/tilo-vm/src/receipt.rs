@@ -81,6 +81,15 @@ impl Receipt {
         });
     }
 
+    /// `name 1.2s, name 3.4s` for the phases recorded so far.
+    pub fn summary(&self) -> String {
+        self.phases
+            .iter()
+            .map(|p| format!("{} {:.1}s", p.name, p.seconds))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// Phases over their goal, as human sentences.
     pub fn slow(&self) -> Vec<String> {
         exceeded(&self.phases)
