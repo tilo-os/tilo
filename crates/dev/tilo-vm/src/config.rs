@@ -13,7 +13,7 @@
 //! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
 //! [vms.dev]
-//! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv
+//! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv | whpx
 //! ssh = "root@127.0.0.1:2223"
 //! key = "/home/me/.config/tilo-vm/keys/dev_ed25519"   # made by vm create
 //! image = "/var/lib/images/tilo-vm.qcow2"
@@ -89,6 +89,13 @@ pub struct VmEntry {
     /// created: the one beside the adapter's own tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qemu_img: Option<String>,
+    /// Windows ARM64 WHPX: the QEMU binary and its matching EDK2 firmware.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qemu_system: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_vars: Option<String>,
     /// A host-built kernel the VM boots directly instead of its disk's boot
     /// loader (`tilo-vm swap kernel --direct`; libvirt). Cleared by
     /// `tilo-vm rollback --slot vm`.

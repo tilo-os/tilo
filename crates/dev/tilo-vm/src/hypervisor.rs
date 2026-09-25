@@ -307,9 +307,11 @@ pub fn adapter(name: &str) -> Result<Box<dyn Hypervisor>, CliError> {
         "qemu" => Ok(Box::new(Qemu)),
         "utm" => Ok(Box::new(Utm)),
         "hyperv" => Ok(Box::new(HyperV)),
+        "whpx" => Ok(Box::new(Whpx)),
         other => Err(CliError::Unsupported {
             what: format!("hypervisor '{other}'"),
-            alternative: "set `hypervisor` to libvirt, qemu, utm or hyperv in vms.toml".into(),
+            alternative: "set `hypervisor` to libvirt, qemu, utm, hyperv or whpx in vms.toml"
+                .into(),
         }),
     }
 }
@@ -756,6 +758,234 @@ impl Hypervisor for Utm {
     }
 }
 
+// ---- QEMU with WHPX (Windows ARM64) -----------------------------------------
+
+/// Windows ARM64 Home has WHPX even though it has no Hyper-V management
+/// module. QEMU is launched detached; the published qcow2 stays read-only.
+pub struct Whpx;
+
+fn whpx_file(disk: &str, suffix: &str) -> String {
+    format!("{disk}.{suffix}")
+}
+
+/// Quote one argument for the Windows C runtime command-line parser.
+fn win_arg(text: &str) -> String {
+    let mut result = String::from("\"");
+    let mut slashes = 0;
+    for c in text.chars() {
+        match c {
+            '\\' => slashes += 1,
+            '"' => {
+                result.push_str(&"\\".repeat(slashes * 2 + 1));
+                result.push('"');
+                slashes = 0;
+            }
+            _ => {
+                result.push_str(&"\\".repeat(slashes));
+                slashes = 0;
+                result.push(c);
+            }
+        }
+    }
+    result.push_str(&"\\".repeat(slashes * 2));
+    result.push('"');
+    result
+}
+
+impl Whpx {
+    fn pid(vm: &Vm<'_>) -> String {
+        whpx_file(vm.entry.disk.as_deref().unwrap_or_default(), "pid")
+    }
+
+    fn qmp_port(vm: &Vm<'_>) -> u16 {
+        20_000 + vm.ssh_port() % 40_000
+    }
+
+    fn qemu_args(vm: &Vm<'_>) -> Vec<String> {
+        let disk = vm.entry.disk.as_deref().unwrap_or_default();
+        let code = vm.entry.firmware_code.as_deref().unwrap_or_default();
+        let vars = whpx_file(disk, "vars.fd");
+        let tty = whpx_file(disk, "ttyS0.log");
+        let uart = whpx_file(disk, "uart.log");
+        vec![
+            "-name".into(),
+            vm.name.into(),
+            "-machine".into(),
+            "virt,gic-version=3,highmem=on".into(),
+            "-accel".into(),
+            "whpx".into(),
+            "-cpu".into(),
+            "host".into(),
+            "-smp".into(),
+            format!("cpus={}", vm.cpus()),
+            "-m".into(),
+            vm.memory().to_string(),
+            "-no-reboot".into(),
+            "-drive".into(),
+            format!("if=pflash,format=raw,readonly=on,file={code}"),
+            "-drive".into(),
+            format!("if=pflash,format=raw,file={vars}"),
+            "-drive".into(),
+            format!("if=none,id=osdisk,format=qcow2,file={disk},cache=writeback,aio=threads"),
+            "-device".into(),
+            "virtio-blk-pci,drive=osdisk,bootindex=1".into(),
+            "-device".into(),
+            "virtio-gpu-pci,edid=on,xres=1280,yres=1024".into(),
+            "-device".into(),
+            "qemu-xhci".into(),
+            "-device".into(),
+            "usb-kbd".into(),
+            "-device".into(),
+            "usb-tablet".into(),
+            "-netdev".into(),
+            format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", vm.ssh_port()),
+            "-device".into(),
+            "virtio-net-pci,netdev=net0".into(),
+            "-display".into(),
+            format!("vnc=127.0.0.1:{}", vm.ssh_port() % 1_000),
+            "-serial".into(),
+            format!("file:{uart}"),
+            "-chardev".into(),
+            format!("file,id=tilo-ttyS0,path={tty}"),
+            "-device".into(),
+            "pci-serial,chardev=tilo-ttyS0".into(),
+            "-qmp".into(),
+            format!("tcp:127.0.0.1:{},server=on,wait=off", Self::qmp_port(vm)),
+            "-monitor".into(),
+            "none".into(),
+        ]
+    }
+
+    fn qmp(vm: &Vm<'_>, action: &str) -> CommandLine {
+        let pid = ps_quote(&Self::pid(vm));
+        let script = format!(
+            "$ErrorActionPreference='Stop'; if (!(Test-Path -LiteralPath {pid})) {{ exit 0 }}; \
+             $id=[int](Get-Content -LiteralPath {pid}); if (!(Get-Process -Id $id -ErrorAction SilentlyContinue)) {{ exit 0 }}; \
+             $c=[Net.Sockets.TcpClient]::new('127.0.0.1',{}); \
+             try {{ $c.ReceiveTimeout=3000; $s=$c.GetStream(); \
+             $r=[IO.StreamReader]::new($s); $w=[IO.StreamWriter]::new($s); $w.AutoFlush=$true; \
+             $null=$r.ReadLine(); $w.WriteLine('{{\"execute\":\"qmp_capabilities\"}}'); \
+             $null=$r.ReadLine(); $w.WriteLine('{{\"execute\":\"{action}\"}}'); \
+             $null=$r.ReadLine() }} finally {{ $c.Dispose() }}",
+            Self::qmp_port(vm)
+        );
+        powershell(&script)
+    }
+}
+
+impl Hypervisor for Whpx {
+    fn name(&self) -> &'static str {
+        "whpx"
+    }
+
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        let disk = vm.disk()?;
+        let template = vm
+            .entry
+            .firmware_vars
+            .as_deref()
+            .ok_or_else(|| CliError::Config {
+                path: crate::config::registry_path().display().to_string(),
+                detail: "WHPX VM has no firmware_vars template".into(),
+            })?;
+        let mut commands: Vec<_> = overlay_disk(vm)?.into_iter().collect();
+        commands.push(powershell(&format!(
+            "Copy-Item -LiteralPath {} -Destination {} -ErrorAction Stop",
+            ps_quote(template),
+            ps_quote(&whpx_file(disk, "vars.fd"))
+        )));
+        Ok(commands)
+    }
+
+    fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        let disk = vm.entry.disk.as_deref().unwrap_or_default();
+        let qemu = vm
+            .entry
+            .qemu_system
+            .as_deref()
+            .unwrap_or("qemu-system-aarch64");
+        let mut args = Self::qemu_args(vm);
+        if let Some(key) = &vm.entry.key
+            && let Ok(public) = std::fs::read_to_string(format!("{key}.pub"))
+        {
+            args.extend([
+                "-smbios".into(),
+                format!("type=11,value={}", sshkey::smbios_credential(public.trim())),
+            ]);
+        }
+        let args = args
+            .iter()
+            .map(|s| win_arg(s))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let pid = ps_quote(&Self::pid(vm));
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $free=([IO.DriveInfo]::new([IO.Path]::GetPathRoot({}))).AvailableFreeSpace; \
+             if ($free -lt 15GB) {{ throw 'WHPX VM requires at least 15 GiB free on its disk volume' }}; \
+             if (Test-Path -LiteralPath {pid}) {{ $old=[int](Get-Content -LiteralPath {pid}); \
+             $oldProcess=Get-Process -Id $old -ErrorAction SilentlyContinue; \
+             if ($oldProcess -and $oldProcess.ProcessName -eq 'qemu-system-aarch64') {{ throw 'WHPX VM is already running' }} }}; \
+             $p=Start-Process -FilePath {} -ArgumentList {} -PassThru -WindowStyle Hidden; \
+             Set-Content -LiteralPath {pid} -Value $p.Id; Start-Sleep -Seconds 1; \
+             if ($p.HasExited) {{ throw ('QEMU exited immediately: '+$p.ExitCode) }}",
+            ps_quote(disk),
+            ps_quote(qemu),
+            ps_quote(&args)
+        );
+        vec![powershell(&script)]
+    }
+
+    fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        vec![Self::qmp(vm, "system_powerdown")]
+    }
+
+    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
+        let mut commands = vec![Self::qmp(vm, "quit")];
+        if let Some(disk) = &vm.entry.disk {
+            let paths = [disk.clone(), whpx_file(disk, "vars.fd"), Self::pid(vm)]
+                .iter()
+                .map(|p| ps_quote(p))
+                .collect::<Vec<_>>()
+                .join(",");
+            commands.push(powershell(&format!(
+                "Remove-Item -LiteralPath {paths} -ErrorAction SilentlyContinue"
+            )));
+        }
+        commands
+    }
+
+    fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
+        Ok(configured_endpoint(vm, "127.0.0.1", vm.ssh_port()))
+    }
+
+    fn running(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        let pid = ps_quote(&Self::pid(vm));
+        let script = format!(
+            "if (Test-Path -LiteralPath {pid}) {{ $id=[int](Get-Content -LiteralPath {pid}); $p=Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq 'qemu-system-aarch64') {{ 'yes' }} else {{ 'no' }} }} else {{ 'no' }}"
+        );
+        runner
+            .output(&powershell(&script))
+            .ok()
+            .map(|o| o.success && o.stdout.trim() == "yes")
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            serial: true,
+            credentials: Some("QEMU SMBIOS type 11"),
+            ..Capabilities::default()
+        }
+    }
+
+    fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(powershell(&format!(
+            "Get-Content -LiteralPath {} -Wait -Tail 100",
+            ps_quote(&whpx_file(vm.entry.disk.as_deref()?, "ttyS0.log"))
+        )))
+    }
+}
+
 // ---- Hyper-V (Windows) ----------------------------------------------------------
 
 pub struct HyperV;
@@ -913,6 +1143,65 @@ mod tests {
             ssh_port: Some(2223),
             ..VmEntry::default()
         }
+    }
+
+    #[test]
+    fn whpx_uses_a_child_fresh_vars_and_hardware_acceleration() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = temp.path().join("vm_key");
+        std::fs::write(format!("{}.pub", key.display()), KEY).unwrap();
+        let entry = VmEntry {
+            disk: Some(r"C:\vms\dev.qcow2".into()),
+            image: Some(r"C:\images\base.qcow2".into()),
+            qemu_img: Some(r"C:\msys64\clangarm64\bin\qemu-img.exe".into()),
+            qemu_system: Some(r"C:\msys64\clangarm64\bin\qemu-system-aarch64.exe".into()),
+            firmware_code: Some(r"C:\msys64\clangarm64\share\qemu\edk2-aarch64-code.fd".into()),
+            firmware_vars: Some(r"C:\msys64\clangarm64\share\qemu\edk2-arm-vars.fd".into()),
+            key: Some(key.display().to_string()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        let create = Whpx.create(&vm, KEY).unwrap();
+        assert_eq!(create.len(), 2);
+        assert_eq!(create[0].program, entry.qemu_img.clone().unwrap());
+        assert!(create[0].args.contains(&"-b".into()));
+        assert!(create[1].args.last().unwrap().contains("vars.fd"));
+        let args = Whpx::qemu_args(&vm);
+        assert!(args.windows(2).any(|p| p == ["-accel", "whpx"]));
+        assert!(args.windows(2).any(|p| p == ["-cpu", "host"]));
+        assert!(
+            args.iter()
+                .any(|a| a.contains("pci-serial,chardev=tilo-ttyS0"))
+        );
+        assert!(args.iter().any(|a| a == "vnc=127.0.0.1:223"));
+        assert!(!args.iter().any(|a| a.contains("tcg")));
+        let start = Whpx.start(&vm);
+        assert!(
+            start[0]
+                .args
+                .last()
+                .unwrap()
+                .contains("io.systemd.credential.binary")
+        );
+        assert!(start[0].args.last().unwrap().contains("15GB"));
+        assert!(
+            Whpx.stop(&vm)[0]
+                .args
+                .last()
+                .unwrap()
+                .contains("system_powerdown")
+        );
+        assert!(
+            Whpx.stop(&vm)[0]
+                .args
+                .last()
+                .unwrap()
+                .contains("$r.ReadLine()")
+        );
+        assert_eq!(Whpx.ssh_endpoint(&vm, &mut fake("")).unwrap().port, 2223);
     }
 
     fn vm_xml(entry: &VmEntry) -> String {
