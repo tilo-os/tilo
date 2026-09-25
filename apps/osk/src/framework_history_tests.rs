@@ -521,7 +521,7 @@ fn framework_history_shared_host_restore_undo_and_absence_preserve_unrelated_roo
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("live only")
         );
         if let Some(key) = deleted {

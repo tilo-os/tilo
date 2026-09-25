@@ -351,7 +351,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("preserved")
         );
         assert!(

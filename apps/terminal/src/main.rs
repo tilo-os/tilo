@@ -96,6 +96,7 @@ fn live_root(_args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
+#[cfg(test)]
 fn build_prepared_terminal_app(
     spec: &LaunchSpec,
     args: &LaunchArgs,

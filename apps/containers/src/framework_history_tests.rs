@@ -64,15 +64,15 @@ fn verify_restored(doc: &AutoCommit) {
     );
     let view = doc.get(ROOT, "view").unwrap().unwrap().1;
     assert_eq!(
-        doc.get(&view, "section").unwrap().unwrap().0.to_str(),
+        doc.get(&view, "section").unwrap().unwrap().0.as_str(),
         Some("images")
     );
     assert_eq!(
-        doc.get(&view, "selected").unwrap().unwrap().0.to_str(),
+        doc.get(&view, "selected").unwrap().unwrap().0.as_str(),
         Some("live-selection")
     );
     assert_eq!(
-        doc.get(&view, "tab").unwrap().unwrap().0.to_str(),
+        doc.get(&view, "tab").unwrap().unwrap().0.as_str(),
         Some("inspect")
     );
     assert_eq!(
@@ -81,13 +81,13 @@ fn verify_restored(doc: &AutoCommit) {
         "current filter"
     );
     assert_eq!(
-        doc.get(&view, "unrelated").unwrap().unwrap().0.to_str(),
+        doc.get(&view, "unrelated").unwrap().unwrap().0.as_str(),
         Some("keep current")
     );
     let create = doc.get(&view, "create").unwrap().unwrap().1;
     let future = doc.get(&create, "future").unwrap().unwrap().1;
     assert_eq!(
-        doc.get(&future, "mode").unwrap().unwrap().0.to_str(),
+        doc.get(&future, "mode").unwrap().unwrap().0.as_str(),
         Some("historical")
     );
 }
@@ -217,7 +217,7 @@ fn compatible_unknown_objects_lists_and_scalars_restore_exactly() {
         restored_deep = doc.get(&restored_deep, "next").unwrap().unwrap().1;
     }
     assert_eq!(
-        doc.get(&restored_deep, "leaf").unwrap().unwrap().0.to_str(),
+        doc.get(&restored_deep, "leaf").unwrap().unwrap().0.as_str(),
         Some("retained past old depth limit")
     );
     assert_eq!(doc.length(&restored_list), 4);
@@ -226,7 +226,7 @@ fn compatible_unknown_objects_lists_and_scalars_restore_exactly() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("nested object")
     );
     let counter = doc
@@ -234,7 +234,7 @@ fn compatible_unknown_objects_lists_and_scalars_restore_exactly() {
         .unwrap()
         .unwrap()
         .0
-        .to_scalar()
+        .as_scalar()
         .unwrap()
         .clone();
     assert!(matches!(counter, ScalarValue::Counter(value) if i64::from(value.clone()) == 7));
@@ -243,7 +243,7 @@ fn compatible_unknown_objects_lists_and_scalars_restore_exactly() {
         .unwrap()
         .unwrap()
         .0
-        .to_scalar()
+        .as_scalar()
         .unwrap()
         .clone();
     assert_eq!(restored_unknown, values[1]);
@@ -252,10 +252,10 @@ fn compatible_unknown_objects_lists_and_scalars_restore_exactly() {
         .unwrap()
         .unwrap()
         .0
-        .to_scalar()
+        .as_scalar()
         .unwrap()
         .clone()
-        .to_f64()
+        .as_f64()
         .unwrap();
     assert_eq!(restored_float.to_bits(), 0x7ff8_0000_0000_0123);
 }
@@ -275,7 +275,7 @@ fn whole_create_map_deletes_resurrects_and_creates_only_minimal_view() {
     let view = deletion.get(ROOT, "view").unwrap().unwrap().1;
     assert!(deletion.get(&view, "create").unwrap().is_none());
     assert_eq!(
-        deletion.get(&view, "section").unwrap().unwrap().0.to_str(),
+        deletion.get(&view, "section").unwrap().unwrap().0.as_str(),
         Some("images")
     );
 
@@ -309,7 +309,7 @@ fn whole_create_map_deletes_resurrects_and_creates_only_minimal_view() {
             .unwrap()
             .unwrap()
             .0
-            .to_str(),
+            .as_str(),
         Some("preserved")
     );
 }

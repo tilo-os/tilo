@@ -102,10 +102,12 @@ fn take_outcomes() -> Vec<(ParticipantId, ParticipantView)> {
 }
 
 impl ParticipantViews {
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -211,6 +213,7 @@ impl ParticipantViews {
     }
 
     /// Mark `participant` as active now (an invocation resolved its tree).
+    #[cfg(test)]
     pub(crate) fn touch(&mut self, participant: &ParticipantId, now: Instant) {
         if let Some(entry) = self.entries.get_mut(participant) {
             entry.touched = now;

@@ -86,7 +86,7 @@ fn preferences<const MASK: u8>(doc: &AutoCommit) -> Result<(String, bool, bool),
     let layout = match doc.get(ROOT, LAYOUT).map_err(|e| e.to_string())? {
         None => "qwerty".to_owned(),
         Some((v, _)) => v
-            .to_str()
+            .as_str()
             .ok_or("Saved keyboard layout must be a string")?
             .to_owned(),
     };
@@ -117,7 +117,7 @@ fn preferences<const MASK: u8>(doc: &AutoCommit) -> Result<(String, bool, bool),
         match doc.get(ROOT, key).map_err(|e| e.to_string())? {
             None => Ok(true),
             Some((v, _)) => v
-                .to_bool()
+                .as_bool()
                 .ok_or_else(|| format!("{key} must be a boolean")),
         }
     };

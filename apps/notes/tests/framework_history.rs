@@ -209,7 +209,7 @@ fn notebook_shared_history_previews_restores_and_undoes_saved_content() {
                 target.get(ROOT, "notes_schema_version").unwrap()
             );
             assert_eq!(
-                doc.get(ROOT, "workspace_json").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "workspace_json").unwrap().unwrap().0.as_str(),
                 Some("retained legacy metadata")
             );
         })

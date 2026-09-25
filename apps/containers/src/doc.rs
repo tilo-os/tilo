@@ -144,7 +144,7 @@ impl ViewDoc {
 
     fn get_str(doc: &AutoCommit, map: &ObjId, key: &str) -> Option<String> {
         match Self::single(doc, map, key) {
-            Ok(Some((Value::Scalar(s), _))) => s.to_str().map(ToOwned::to_owned),
+            Ok(Some((Value::Scalar(s), _))) => s.as_str().map(ToOwned::to_owned),
             Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).ok(),
             Ok(None | Some(_)) | Err(_) => None,
         }

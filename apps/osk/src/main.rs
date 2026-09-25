@@ -190,6 +190,7 @@ fn run_always_visible(args: &LaunchArgs, purpose: Option<InputPurpose>) -> Resul
 
 // Both production modes finish their builders before selecting an immutable
 // instance-matched declaration and transferring this exact root to the runner.
+#[cfg(test)]
 fn build_always_visible_app(
     spec: LaunchSpec,
     args: &LaunchArgs,
@@ -208,6 +209,7 @@ fn build_always_visible_app(
     }
     finish_prepared_app(spec, args, wake_scope, widget, build)
 }
+#[cfg(test)]
 fn build_auto_show_app(
     spec: LaunchSpec,
     args: &LaunchArgs,
@@ -227,6 +229,7 @@ fn build_auto_show_app(
     }
     finish_prepared_app(spec, args, wake_scope, widget, build)
 }
+#[cfg(test)]
 fn finish_prepared_app(
     spec: LaunchSpec,
     args: &LaunchArgs,
@@ -531,7 +534,7 @@ mod launch_tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str(),
+                        .as_str(),
                     Some("azerty")
                 );
                 let probe =
@@ -554,7 +557,7 @@ mod launch_tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str(),
+                        .as_str(),
                     Some("azerty")
                 );
                 assert_eq!(
@@ -562,7 +565,7 @@ mod launch_tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_str(),
+                        .as_str(),
                     Some("retained")
                 );
             }
@@ -829,7 +832,7 @@ mod launch_tests {
                         .unwrap()
                         .unwrap()
                         .0
-                        .to_bool(),
+                        .as_bool(),
                     Some(false)
                 );
                 app.rebuild_structure();
