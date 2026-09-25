@@ -579,9 +579,14 @@ jobs:
           # Podman's HOME/XDG_RUNTIME_DIR-dependent default under sudo.
           firmware_authfile=$(mktemp "${RUNNER_TEMP:-/tmp}/tilo-firmware-auth.XXXXXX")
           trap 'sudo -n rm -f -- "$firmware_authfile"' EXIT
+          # Podman reads an existing authfile before login; mktemp leaves it
+          # empty, which Podman rejects as invalid JSON.
+          printf '{}\n' > "$firmware_authfile"
           printf '%s' "$REGISTRY_TOKEN" | sudo -n podman login code.sandbox.example \
             --authfile "$firmware_authfile" \
             --username "${{ github.actor }}" --password-stdin
+          sudo -n python3 -c 'import json,sys; assert "code.sandbox.example" in json.load(open(sys.argv[1]))["auths"]' \
+            "$firmware_authfile"
           sudo -n env REGISTRY_AUTH_FILE="$firmware_authfile" \
             python3 os/dev/hardware-firmware-artifact.py import \
             --reference "$FIRMWARE_CANDIDATE" \
