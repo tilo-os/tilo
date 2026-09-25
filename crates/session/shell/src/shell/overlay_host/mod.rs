@@ -24879,8 +24879,10 @@ mod empty_workspace_tests {
 
     #[test]
     fn invite_card_opens_the_existing_signed_invite_composer() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
         let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
+        host.set_peer_sync_enabled(true);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let _ = doc.put(&root, crate::shell::EMPTY_WORKSPACE_INVITE, true);
@@ -27548,6 +27550,13 @@ mod palette_dispatch_tests {
     #[serial_test::serial(clipboard)]
     fn the_composer_mints_for_the_name_it_was_given_and_copies() {
         let (mut h, chrome) = host_with_chrome();
+        {
+            let state = chrome.borrow();
+            state
+                .tree_mut()
+                .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+        }
+        chrome.borrow_mut().peer_sync_enabled = true;
         h.set_peer_sync_bridge(std::rc::Rc::new(|req| match req {
             PeerSyncRequest::IssueInviteFor { name, .. } => {
                 Ok(PeerSyncResponse::Message(format!("token-for-{name}")))
@@ -27628,6 +27637,13 @@ mod palette_dispatch_tests {
     #[test]
     fn the_composer_refuses_to_mint_for_nobody() {
         let (mut h, chrome) = host_with_chrome();
+        {
+            let state = chrome.borrow();
+            state
+                .tree_mut()
+                .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+        }
+        chrome.borrow_mut().peer_sync_enabled = true;
         h.set_peer_sync_bridge(std::rc::Rc::new(|_| {
             Ok(PeerSyncResponse::Message("a-token".to_string()))
         }));
@@ -30797,10 +30813,10 @@ mod overlay_event_absorb_tests {
             .borrow_mut()
             .open_workspace_settings(WsTab::General);
         let lens = h.host.ws_settings_rect();
-        assert_eq!(lens.x1, 1580.0, "lens docks to the right inset");
-        assert!(lens.x0 > 700.0, "workspace remains visible beside {lens:?}");
+        assert_eq!(lens.x0, 20.0, "lens docks to the left inset");
+        assert!(lens.x1 < 900.0, "workspace remains visible beside {lens:?}");
 
-        let workspace_point = Point::new(120.0, 300.0);
+        let workspace_point = Point::new(1000.0, 300.0);
         assert!(!lens.contains(workspace_point));
         pump(&mut h, &cursor_moved_at(workspace_point));
         h.log.borrow_mut().clear();
