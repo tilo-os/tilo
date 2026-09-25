@@ -1152,7 +1152,7 @@ pub struct VideoEditorApp {
     /// the executor (so it replays byte-identically on peers), and remembers it
     /// for the affordance == `ActionSpec` covenant test. Ctrl+Z / Ctrl+Y are
     /// handled OS-wide by the toolkit off the recorded boundary.
-    actions: ui::ActionHost,
+    actions: crate::resource::ActionSink,
     /// Copied clips, ready to paste at the playhead (Ctrl+C / Ctrl+X / Ctrl+V).
     /// Holds full clip snapshots — trim window, filters and fades come along —
     /// and pasting preserves their relative offsets and lanes, so copying a
@@ -1497,7 +1497,7 @@ impl VideoEditorApp {
             pending_rename: None,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
-            actions: ui::ActionHost::new(),
+            actions: crate::resource::ActionSink::default(),
             clipboard: Vec::new(),
             shuttle: 0.0,
             bin_flap: FlapState::open_when_docked(),
@@ -6053,8 +6053,13 @@ impl Widget for VideoEditorApp {
         // The document's heads are the cheap "something actually changed"
         // signal. Reloading the model every frame says nothing; a new head
         // means a real edit, local or from a peer.
+        // Hosted by the framework, the project arrives through `present`;
+        // a refused edit (read-only participant) re-reads what is stored.
+        if self.actions.take_stale() {
+            self.project_sync.reload_pending = true;
+        }
         let heads = state.get_heads();
-        if heads != self.doc_heads {
+        if heads != self.doc_heads && !self.actions.is_hosted() {
             self.doc_heads = heads;
             self.project_sync.reload_pending = true;
             #[cfg(any(feature = "gst", feature = "decode"))]
@@ -9208,5 +9213,29 @@ impl VideoEditorApp {
             ModalAction::secondary("Open anyway"),
             ModalAction::primary("Save…"),
         ]
+    }
+}
+
+impl ui::framework::ResourceSurface<crate::resource::VideoProject> for VideoEditorApp {
+    /// The stored project changed: a local edit the host applied, a
+    /// collaborator's, an undo — or, in History mode, a past version. A drag
+    /// in flight keeps its live preview; the new project is loaded when it
+    /// lets go, exactly as for the standalone editor.
+    fn present(&mut self, project: &std::rc::Rc<Project>) {
+        if self.drag_is_editing() {
+            self.project_sync.reload_pending = true;
+            return;
+        }
+        self.project = Project::clone(project);
+        self.clip_edit_bases.clear();
+        self.project_sync.reload_pending = false;
+        #[cfg(any(feature = "gst", feature = "decode"))]
+        {
+            self.media_pipeline.monitor_stale = true;
+        }
+    }
+
+    fn attach(&mut self, cx: ui::framework::SurfaceCx<crate::resource::VideoProject>) {
+        self.actions.attach(cx.dispatcher());
     }
 }
