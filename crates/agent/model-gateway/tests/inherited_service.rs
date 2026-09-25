@@ -103,6 +103,7 @@ fn run_child(test: &str, case: &str) {
                     configured: Some(true),
                     output: None,
                     error: None,
+                    event: None,
                 },
             )
             .unwrap();

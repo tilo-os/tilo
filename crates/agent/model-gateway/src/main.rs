@@ -4,21 +4,29 @@
 //! planning call. It does not include a general `LiteLLM` control plane.
 
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, Read};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use accounts::{AccountId, Secret, SecretVault};
-use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol};
+use agent_provider_config::{
+    EndpointLocation, ProviderConfig, ProviderProfile, ProviderProtocol, ReasoningParam,
+};
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
+#[cfg(test)]
+use tilo_model_gateway::read_frame;
 use tilo_model_gateway::{
-    FaceImage, Frame, RPC_VERSION, Request, Response, VisionImage, read_frame, write_frame,
+    EVENT_TOOL_CALL, EVENT_TOOL_CALL_DELTA, FaceImage, Frame, MAX_DELTA_EVENTS, MAX_FRAME_BYTES,
+    MAX_STREAM_EVENTS, PlanTrace, RPC_VERSION, Request, Response, TraceEvent, VisionImage,
+    write_frame,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -58,6 +66,19 @@ const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 const MAX_FACE_IMAGES: usize = 12;
 const MAX_FACE_IMAGE_BYTES: usize = 128 * 1024;
 const VISION_TIMEOUT: Duration = Duration::from_secs(45);
+/// A connection must present its launcher handoff promptly. The launcher
+/// writes it right after connecting, so only a stuck or foreign client waits.
+const HANDOFF_TIMEOUT: Duration = Duration::from_secs(2);
+/// Once a request frame has started, the rest of it must arrive within this.
+/// There is deliberately no idle limit *between* frames: the agent's channel
+/// is one launcher-connected socket for the life of the process, with no way
+/// to reconnect, so closing an idle one would silently disable its model.
+/// Each connection has its own thread, so an idle one blocks nobody.
+const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
+/// A client that stops reading its responses cannot hold a thread forever.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Same-user connections served at once; more are closed on accept.
+const MAX_CONNECTIONS: usize = 64;
 
 #[derive(serde::Deserialize)]
 struct Handoff {
@@ -98,10 +119,46 @@ fn serve(socket: &PathBuf) -> Result<(), String> {
     } else {
         bind_listener(socket)?
     };
+    accept_loop(&listener, same_user)
+}
+
+/// Serve every accepted connection on its own thread, so one idle, slow or
+/// long-running client (a Plan in flight, a stalled handoff) never delays
+/// another. `authenticate` is the same-user peer check in production.
+fn accept_loop(
+    listener: &UnixListener,
+    authenticate: fn(&UnixStream) -> bool,
+) -> Result<(), String> {
+    static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+    struct Slot;
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
     for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => serve_client(stream),
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error.to_string()),
+        };
+        if !authenticate(&stream) {
+            continue;
+        }
+        if ACTIVE.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+            ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            continue;
+        }
+        let slot = Slot;
+        let spawned = std::thread::Builder::new()
+            .name("gateway-client".into())
+            .spawn(move || {
+                let _slot = slot;
+                serve_connection(stream);
+            });
+        if spawned.is_err() {
+            // The closure (and its slot) was dropped with the failed spawn.
+            continue;
         }
     }
     Ok(())
@@ -163,23 +220,70 @@ fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
     Ok(Some(listener))
 }
 
-fn serve_client(mut stream: UnixStream) {
-    if !same_user(&stream) {
+/// One authenticated connection: the launcher handoff, then framed requests
+/// in order. Framing, caller authorization and response shapes are unchanged
+/// from the single-threaded server.
+fn serve_connection(mut stream: UnixStream) {
+    if stream.set_write_timeout(Some(WRITE_TIMEOUT)).is_err()
+        || stream.set_read_timeout(Some(HANDOFF_TIMEOUT)).is_err()
+    {
         return;
     }
     let Ok(handoff) = read_handoff(&mut stream) else {
         return;
     };
     loop {
-        let response = match read_frame::<Frame<Request>>(&mut stream) {
-            Ok(frame) if frame.version == RPC_VERSION => handle(&handoff.app_id, frame.value),
+        let frame = match read_request_frame(&mut stream) {
+            Ok(frame) => frame,
+            Err(()) => return,
+        };
+        let response = match serde_json::from_slice::<Frame<Request>>(&frame) {
+            Ok(frame) if frame.version == RPC_VERSION => {
+                let mut broken = false;
+                let response = handle_streaming(&handoff.app_id, frame.value, &mut |event| {
+                    broken = broken || write_frame(&mut stream, event).is_err();
+                    !broken
+                });
+                if broken {
+                    return;
+                }
+                response
+            }
             Ok(_) => rejected("unsupported gateway RPC version"),
+            // The single-threaded server closed on an undecodable frame too.
             Err(_) => return,
         };
         if write_frame(&mut stream, &response).is_err() {
             return;
         }
     }
+}
+
+/// Read one length-prefixed request frame. Waiting for its first byte has no
+/// limit (see [`FRAME_TIMEOUT`]); the rest must follow promptly. The buffer
+/// is zeroized on drop because a Settings frame can carry an API key.
+fn read_request_frame(stream: &mut UnixStream) -> Result<Zeroizing<Vec<u8>>, ()> {
+    let mut length = [0_u8; 4];
+    stream.set_read_timeout(None).map_err(|_| ())?;
+    loop {
+        match stream.read(&mut length[..1]) {
+            Ok(0) => return Err(()),
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(()),
+        }
+    }
+    stream
+        .set_read_timeout(Some(FRAME_TIMEOUT))
+        .map_err(|_| ())?;
+    stream.read_exact(&mut length[1..]).map_err(|_| ())?;
+    let length = usize::try_from(u32::from_le_bytes(length)).map_err(|_| ())?;
+    if length > MAX_FRAME_BYTES {
+        return Err(());
+    }
+    let mut body = Zeroizing::new(vec![0_u8; length]);
+    stream.read_exact(&mut body).map_err(|_| ())?;
+    Ok(body)
 }
 
 fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
@@ -208,7 +312,19 @@ fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
     Ok(handoff)
 }
 
+#[cfg(test)]
 fn handle(app_id: &str, request: Request) -> Response {
+    handle_streaming(app_id, request, &mut |_| true)
+}
+
+/// Authorize and serve one request. `emit` writes an intermediate streaming
+/// frame and reports whether the client is still there; only a streaming
+/// Plan calls it.
+fn handle_streaming(
+    app_id: &str,
+    request: Request,
+    emit: &mut dyn FnMut(&Response) -> bool,
+) -> Response {
     let result = match request {
         Request::SelectionConfigured {
             profile_id,
@@ -220,6 +336,7 @@ fn handle(app_id: &str, request: Request) -> Response {
                 output: None,
                 configured: Some(true),
                 error: None,
+                event: None,
             })
         }
         Request::Plan {
@@ -227,19 +344,43 @@ fn handle(app_id: &str, request: Request) -> Response {
             model_id,
             body,
             timeout_ms,
+            stream,
+            deltas,
+            trace,
         } if app_id == AGENT_APP => plan(
-            &profile_id,
-            &model_id,
-            &body,
-            Duration::from_millis(timeout_ms),
+            &PlanCall {
+                profile_id: &profile_id,
+                model_id: &model_id,
+                timeout: Duration::from_millis(timeout_ms),
+                stream,
+                deltas: stream && deltas,
+                trace,
+            },
+            body,
+            emit,
         )
         .map(|output| Response {
             ok: true,
             output: Some(output),
             configured: None,
             error: None,
+            event: None,
         }),
         Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
+        Request::Trace {
+            trace,
+            event,
+            at_unix_ms,
+        } if app_id == AGENT_APP => {
+            log_mark(trace, event, at_unix_ms);
+            Ok(Response {
+                ok: true,
+                output: None,
+                configured: None,
+                error: None,
+                event: None,
+            })
+        }
         Request::AnalyzeImage {
             profile_id,
             model_id,
@@ -250,6 +391,7 @@ fn handle(app_id: &str, request: Request) -> Response {
                 output: Some(output),
                 configured: None,
                 error: None,
+                event: None,
             })
         }
         Request::AnalyzeImage { .. } => {
@@ -265,6 +407,7 @@ fn handle(app_id: &str, request: Request) -> Response {
                 output: Some(output),
                 configured: None,
                 error: None,
+                event: None,
             })
         }
         Request::ClusterFaces { .. } => {
@@ -276,6 +419,7 @@ fn handle(app_id: &str, request: Request) -> Response {
                 output: None,
                 configured: Some(configured),
                 error: None,
+                event: None,
             })
         }
         Request::SetApiKey {
@@ -286,6 +430,7 @@ fn handle(app_id: &str, request: Request) -> Response {
             output: None,
             configured: None,
             error: None,
+            event: None,
         }),
         Request::RemoveApiKey { profile_id } if app_id == SETTINGS_APP => remove_key(&profile_id)
             .map(|()| Response {
@@ -293,6 +438,7 @@ fn handle(app_id: &str, request: Request) -> Response {
                 output: None,
                 configured: None,
                 error: None,
+                event: None,
             }),
         _ => Err("caller is not authorized for this gateway operation".into()),
     };
@@ -305,6 +451,7 @@ fn rejected(error: &str) -> Response {
         output: None,
         configured: None,
         error: Some(error.into()),
+        event: None,
     }
 }
 
@@ -379,8 +526,15 @@ fn selection_configured(
     Ok(())
 }
 
+/// Vault writes are read-modify-write of one file; connections now run on
+/// separate threads, so they are serialized.
+static VAULT_WRITES: Mutex<()> = Mutex::new(());
+
 fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
     let _ = configured_profile(profile_id)?;
+    let _serial = VAULT_WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut key = Zeroizing::new(api_key);
     if key.trim().is_empty() || key.len() > 16 * 1024 {
         return Err("API key is empty or too large".into());
@@ -394,6 +548,9 @@ fn set_key(profile_id: &str, api_key: String) -> Result<(), String> {
 
 fn remove_key(profile_id: &str) -> Result<(), String> {
     let _ = configured_profile(profile_id)?;
+    let _serial = VAULT_WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut vault = SecretVault::open();
     vault.remove(&vault_id(profile_id)?);
     vault.save();
@@ -419,46 +576,84 @@ struct ProviderFailure {
     again: Again,
     /// False only when request construction proves no dispatch occurred.
     outcome_unknown: bool,
+    /// The provider's HTTP status, when one was received.
+    status: Option<u16>,
+}
+
+/// One Plan request's non-content parameters.
+struct PlanCall<'a> {
+    profile_id: &'a str,
+    model_id: &'a str,
+    timeout: Duration,
+    stream: bool,
+    /// Also emit coalesced `tool_call_delta` frames (streaming only).
+    deltas: bool,
+    trace: Option<PlanTrace>,
 }
 
 fn plan(
-    profile_id: &str,
-    model_id: &str,
-    body: &serde_json::Value,
-    requested_timeout: Duration,
+    call: &PlanCall<'_>,
+    body: serde_json::Value,
+    emit: &mut dyn FnMut(&Response) -> bool,
 ) -> Result<String, String> {
-    let profile = configured_profile(profile_id)?;
-    if !profile.models.iter().any(|model| model.id == model_id) {
+    let mut timing = PlanTiming::start();
+    let result = plan_dispatch(call, body, emit, &mut timing);
+    timing.log(call, result.as_ref().map(|_| ()));
+    result
+}
+
+fn plan_dispatch(
+    call: &PlanCall<'_>,
+    body: serde_json::Value,
+    emit: &mut dyn FnMut(&Response) -> bool,
+    timing: &mut PlanTiming,
+) -> Result<String, String> {
+    let profile = configured_profile(call.profile_id)?;
+    if !profile.models.iter().any(|model| model.id == call.model_id) {
         return Err("model is not configured for this provider".into());
     }
     let mut secret = SecretVault::open()
-        .get(&vault_id(profile_id)?)
+        .get(&vault_id(call.profile_id)?)
         .map(|secret| Zeroizing::new(secret.password))
         .filter(|secret| !secret.is_empty())
         .ok_or_else(|| "API key is not configured".to_string())?;
+    // Only the OpenAI-compatible stream is parsed here; an Anthropic Plan is
+    // always answered with one final frame, which streaming clients accept.
+    let streaming = call.stream && profile.protocol == ProviderProtocol::OpenAiCompatible;
+    timing.stream = streaming;
+    let body = outbound_body(&profile, call.model_id, body, streaming)?;
     let endpoint = provider_url(&profile);
-    let timeout = requested_timeout.min(MAX_PROVIDER_TIMEOUT);
-    let began = Instant::now();
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(8))
-        // Neither redirects nor protocol-nack retries establish provider
-        // idempotency. One Plan authorizes at most one provider POST.
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .build()
-        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    let timeout = call.timeout.min(MAX_PROVIDER_TIMEOUT);
+    let client = plan_client()?;
     let budget = timeout
-        .checked_sub(began.elapsed())
+        .checked_sub(timing.started.elapsed())
         .filter(|budget| !budget.is_zero())
         .ok_or_else(|| "provider request timed out".to_string())?;
-    let result = provider_attempt(
-        &client,
-        &profile,
-        &endpoint,
-        Some(secret.as_str()),
-        body,
-        budget,
-    )
+    let result = (|| {
+        let response = send_provider(
+            client,
+            &profile,
+            &endpoint,
+            Some(secret.as_str()),
+            &body,
+            budget,
+        )
+        .inspect_err(|failure| timing.status = failure.status)?;
+        timing.status = Some(response.status().as_u16());
+        timing.first_byte = Some(timing.started.elapsed());
+        if streaming {
+            read_stream(response, emit, timing, call.deltas)
+        } else {
+            let text = response.text().map_err(|_| ProviderFailure {
+                why: "provider response was unreadable".into(),
+                again: Again::Never,
+                outcome_unknown: true,
+                status: None,
+            })?;
+            timing.observe_body(&text);
+            Ok(text)
+        }
+    })()
     .map_err(|failure| {
         if failure.outcome_unknown {
             // There is no provider acceptance/status or idempotency authority.
@@ -473,6 +668,644 @@ fn plan(
     });
     secret.zeroize();
     result
+}
+
+/// The request actually sent. The gateway owns it: the checked `model_id`
+/// replaces whatever model the caller named (the allowlist cannot be
+/// bypassed through the body), and for OpenAI-compatible profiles the
+/// profile's configured reasoning setting and token-limit field name are
+/// applied here, so the model is configured in exactly one place (the
+/// profile). Nothing here depends on the endpoint's host.
+fn outbound_body(
+    profile: &ProviderProfile,
+    model_id: &str,
+    body: serde_json::Value,
+    streaming: bool,
+) -> Result<serde_json::Value, String> {
+    let serde_json::Value::Object(mut object) = body else {
+        return Err("plan body must be a JSON object".into());
+    };
+    object.insert("model".into(), serde_json::Value::String(model_id.into()));
+    match profile.protocol {
+        ProviderProtocol::OpenAiCompatible => {
+            // The profile names its provider's token-limit field; whichever
+            // one the caller sent is moved there. No host is inferred.
+            if let Some(param) = profile.token_limit_param {
+                let limit = object
+                    .remove("max_completion_tokens")
+                    .or_else(|| object.remove("max_tokens"));
+                object.remove("max_tokens");
+                if let Some(limit) = limit {
+                    object.insert(param.key().into(), limit);
+                }
+            }
+            // The profile's reasoning setting replaces any the caller sent.
+            if let Some(reasoning) = &profile.reasoning {
+                object.remove("reasoning_effort");
+                object.remove("reasoning");
+                let effort = serde_json::Value::String(reasoning.effort.clone());
+                match reasoning.param {
+                    ReasoningParam::ReasoningEffort => {
+                        object.insert("reasoning_effort".into(), effort);
+                    }
+                    ReasoningParam::ReasoningObject => {
+                        object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+                    }
+                    ReasoningParam::Omit => {}
+                }
+            }
+            if streaming {
+                object.insert("stream".into(), serde_json::Value::Bool(true));
+                object.insert(
+                    "stream_options".into(),
+                    serde_json::json!({ "include_usage": true }),
+                );
+            } else {
+                object.remove("stream");
+                object.remove("stream_options");
+            }
+            // Last: fields this provider rejects, whoever added them.
+            for param in &profile.omit_params {
+                object.remove(param.as_str());
+            }
+        }
+        ProviderProtocol::Anthropic => {
+            object.remove("stream");
+        }
+    }
+    Ok(serde_json::Value::Object(object))
+}
+
+/// One keep-alive HTTP client for every Plan, so consecutive model turns
+/// reuse the provider's TLS connection instead of handshaking each time.
+fn plan_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<Option<reqwest::blocking::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .connect_timeout(Duration::from_secs(8))
+                // Below common provider keep-alive limits, so a pooled
+                // connection is rarely one the provider already closed.
+                .pool_idle_timeout(Duration::from_secs(45))
+                .tcp_keepalive(Duration::from_secs(30))
+                // Neither redirects nor protocol-nack retries establish provider
+                // idempotency. One Plan authorizes at most one provider POST.
+                .redirect(reqwest::redirect::Policy::none())
+                .retry(reqwest::retry::never())
+                .build()
+                .ok()
+        })
+        .as_ref()
+        .ok_or_else(|| "gateway HTTP client is unavailable".to_string())
+}
+
+/// The largest provider stream read for one Plan.
+const MAX_STREAM_BYTES: u64 = 1024 * 1024;
+
+/// Consume an OpenAI-compatible SSE stream, emitting each tool call as soon
+/// as it is complete, and return the assembled non-streaming body.
+fn read_stream(
+    response: reqwest::blocking::Response,
+    emit: &mut dyn FnMut(&Response) -> bool,
+    timing: &mut PlanTiming,
+    deltas: bool,
+) -> Result<String, ProviderFailure> {
+    let mut reader = std::io::BufReader::new(response.take(MAX_STREAM_BYTES));
+    read_sse(&mut reader, emit, timing, deltas, &mut Instant::now)
+}
+
+fn stream_failure(why: &str) -> ProviderFailure {
+    ProviderFailure {
+        why: why.into(),
+        again: Again::Never,
+        outcome_unknown: true,
+        status: None,
+    }
+}
+
+/// The SSE loop of [`read_stream`] over any reader, with an injectable clock
+/// for the delta coalescing window.
+fn read_sse(
+    reader: &mut dyn BufRead,
+    emit: &mut dyn FnMut(&Response) -> bool,
+    timing: &mut PlanTiming,
+    deltas: bool,
+    clock: &mut dyn FnMut() -> Instant,
+) -> Result<String, ProviderFailure> {
+    let mut assembly = StreamAssembly::default();
+    let mut line = Vec::new();
+    let mut emitted = 0_usize;
+    let mut coalescer = deltas.then(DeltaCoalescer::default);
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::TimedOut
+                || error.to_string().contains("timed out")
+            {
+                stream_failure("provider request timed out")
+            } else {
+                stream_failure("provider response was unreadable")
+            }
+        })?;
+        if read == 0 {
+            break;
+        }
+        let Some(data) = line.trim_ascii().strip_prefix(b"data:") else {
+            continue;
+        };
+        let data = data.trim_ascii();
+        if data == b"[DONE]" {
+            break;
+        }
+        let chunk: serde_json::Value = serde_json::from_slice(data)
+            .map_err(|_| stream_failure("provider stream was unreadable"))?;
+        // Some providers (OpenRouter) report a failure after a 200 status as
+        // an error chunk inside the stream.
+        if chunk.get("error").is_some() {
+            return Err(stream_failure(&format!(
+                "provider stream failed{}",
+                provider_error_detail(data)
+            )));
+        }
+        if assembly.push(&chunk) && timing.first_token.is_none() {
+            timing.first_token = Some(timing.started.elapsed());
+        }
+        if assembly.reasoning_seen && timing.first_reasoning.is_none() {
+            timing.first_reasoning = Some(timing.started.elapsed());
+        }
+        let complete = assembly.complete();
+        emitted = emit_complete(
+            &assembly,
+            emitted,
+            complete,
+            emit,
+            timing,
+            coalescer.as_mut(),
+        )?;
+        if let Some(coalescer) = coalescer.as_mut() {
+            coalescer.pending(&assembly, emitted, clock(), false, emit)?;
+        }
+    }
+    if assembly.finish.is_none() {
+        return Err(stream_failure("provider stream ended early"));
+    }
+    emit_complete(
+        &assembly,
+        emitted,
+        assembly.calls.len(),
+        emit,
+        timing,
+        coalescer.as_mut(),
+    )?;
+    timing.observe_usage(assembly.usage.as_ref());
+    timing.tool_calls = assembly.calls.len();
+    Ok(assembly.into_completion().to_string())
+}
+
+/// The smallest gap between two delta frames of one tool call.
+const DELTA_WINDOW: Duration = Duration::from_millis(40);
+/// Buffered argument bytes that force a delta frame before the window ends.
+const DELTA_FLUSH_BYTES: usize = 256;
+
+/// Per-call argument deltas already sent, for `tool_call_delta` frames.
+#[derive(Default)]
+struct DeltaCoalescer {
+    /// `(argument bytes already sent, when the last frame went)` per index.
+    sent: Vec<(usize, Option<Instant>)>,
+    frames: usize,
+}
+
+impl DeltaCoalescer {
+    /// Emit coalesced delta frames for the in-progress calls at and after
+    /// `from`; `force` flushes every buffered byte (before a `tool_call`).
+    fn pending(
+        &mut self,
+        assembly: &StreamAssembly,
+        from: usize,
+        now: Instant,
+        force: bool,
+        emit: &mut dyn FnMut(&Response) -> bool,
+    ) -> Result<(), ProviderFailure> {
+        for index in from..assembly.calls.len() {
+            self.flush(assembly, index, now, force, emit)?;
+        }
+        Ok(())
+    }
+
+    fn flush(
+        &mut self,
+        assembly: &StreamAssembly,
+        index: usize,
+        now: Instant,
+        force: bool,
+        emit: &mut dyn FnMut(&Response) -> bool,
+    ) -> Result<(), ProviderFailure> {
+        let call = &assembly.calls[index];
+        while self.sent.len() <= index {
+            self.sent.push((0, None));
+        }
+        let (sent, last) = self.sent[index];
+        // `arguments` only grows by whole provider strings, so both offsets
+        // are character boundaries.
+        let buffered = call.arguments.len().saturating_sub(sent);
+        if buffered == 0 || self.frames >= MAX_DELTA_EVENTS {
+            return Ok(());
+        }
+        let due = force
+            || buffered >= DELTA_FLUSH_BYTES
+            || last.is_none_or(|last| now.saturating_duration_since(last) >= DELTA_WINDOW);
+        if !due {
+            return Ok(());
+        }
+        let event = Response {
+            ok: true,
+            output: Some(
+                serde_json::json!({
+                    "index": index,
+                    "id": (!call.id.is_empty()).then_some(call.id.as_str()),
+                    "name": call.name,
+                    "delta": &call.arguments[sent..],
+                })
+                .to_string(),
+            ),
+            configured: None,
+            error: None,
+            event: Some(EVENT_TOOL_CALL_DELTA.into()),
+        };
+        self.frames += 1;
+        self.sent[index] = (call.arguments.len(), Some(now));
+        if emit(&event) {
+            Ok(())
+        } else {
+            Err(stream_failure(
+                "the agent left before the provider finished",
+            ))
+        }
+    }
+}
+
+fn emit_complete(
+    assembly: &StreamAssembly,
+    emitted: usize,
+    complete: usize,
+    emit: &mut dyn FnMut(&Response) -> bool,
+    timing: &mut PlanTiming,
+    mut coalescer: Option<&mut DeltaCoalescer>,
+) -> Result<usize, ProviderFailure> {
+    let mut emitted = emitted;
+    while emitted < complete {
+        let call = &assembly.calls[emitted];
+        let now = timing.started.elapsed();
+        timing.first_tool_call.get_or_insert(now);
+        if call.name == "plan" {
+            timing.plan_call.get_or_insert(now);
+        }
+        if let Some(coalescer) = coalescer.as_deref_mut() {
+            // Every argument byte goes out as a delta before its call.
+            coalescer.flush(assembly, emitted, Instant::now(), true, emit)?;
+        }
+        if emitted < MAX_STREAM_EVENTS {
+            let event = Response {
+                ok: true,
+                output: Some(
+                    serde_json::json!({
+                        "id": call.id,
+                        "name": call.name,
+                        "arguments": call.arguments,
+                    })
+                    .to_string(),
+                ),
+                configured: None,
+                error: None,
+                event: Some(EVENT_TOOL_CALL.into()),
+            };
+            if !emit(&event) {
+                return Err(stream_failure(
+                    "the agent left before the provider finished",
+                ));
+            }
+        }
+        emitted += 1;
+    }
+    Ok(emitted)
+}
+
+#[derive(Default)]
+struct StreamCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Rebuilds a `chat.completion` body from `chat.completion.chunk` deltas.
+#[derive(Default)]
+struct StreamAssembly {
+    id: Option<serde_json::Value>,
+    created: Option<serde_json::Value>,
+    model: Option<serde_json::Value>,
+    content: Option<String>,
+    refusal: Option<String>,
+    calls: Vec<StreamCall>,
+    /// Tool calls at an index below this one are complete.
+    frontier: usize,
+    finish: Option<String>,
+    usage: Option<serde_json::Value>,
+    /// Whether a reasoning delta (never forwarded) has been seen.
+    reasoning_seen: bool,
+}
+
+impl StreamAssembly {
+    /// Fold one chunk in; true when it carried output (text or a tool call).
+    fn push(&mut self, chunk: &serde_json::Value) -> bool {
+        for (field, slot) in [
+            ("id", &mut self.id),
+            ("created", &mut self.created),
+            ("model", &mut self.model),
+        ] {
+            if slot.is_none() {
+                *slot = chunk.get(field).cloned();
+            }
+        }
+        if let Some(usage) = chunk.get("usage").filter(|usage| usage.is_object()) {
+            self.usage = Some(usage.clone());
+        }
+        let Some(choice) = chunk
+            .get("choices")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|choices| {
+                choices.iter().find(|choice| {
+                    choice
+                        .get("index")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                        == 0
+                })
+            })
+        else {
+            return false;
+        };
+        let mut output = false;
+        let delta = choice.get("delta");
+        let text = |key: &str| {
+            delta
+                .and_then(|delta| delta.get(key))
+                .and_then(serde_json::Value::as_str)
+        };
+        if let Some(content) = text("content").filter(|content| !content.is_empty()) {
+            self.content.get_or_insert_default().push_str(content);
+            output = true;
+        }
+        // Reasoning text is timed but neither assembled nor forwarded.
+        if text("reasoning")
+            .or_else(|| text("reasoning_content"))
+            .is_some_and(|reasoning| !reasoning.is_empty())
+        {
+            self.reasoning_seen = true;
+        }
+        if let Some(refusal) = text("refusal").filter(|refusal| !refusal.is_empty()) {
+            self.refusal.get_or_insert_default().push_str(refusal);
+            output = true;
+        }
+        for call in delta
+            .and_then(|delta| delta.get("tool_calls"))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(index) = call
+                .get("index")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|index| *index < MAX_STREAM_EVENTS)
+            else {
+                continue;
+            };
+            while self.calls.len() <= index {
+                self.calls.push(StreamCall::default());
+            }
+            // A delta for a later index means every earlier call is complete.
+            self.frontier = self.frontier.max(index);
+            let slot = &mut self.calls[index];
+            if let Some(id) = call.get("id").and_then(serde_json::Value::as_str) {
+                slot.id = id.into();
+            }
+            let function = call.get("function");
+            if let Some(name) = function
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str)
+            {
+                slot.name.push_str(name);
+            }
+            if let Some(arguments) = function
+                .and_then(|function| function.get("arguments"))
+                .and_then(serde_json::Value::as_str)
+            {
+                slot.arguments.push_str(arguments);
+            }
+            output = true;
+        }
+        if let Some(finish) = choice
+            .get("finish_reason")
+            .and_then(serde_json::Value::as_str)
+        {
+            self.finish = Some(finish.into());
+        }
+        output
+    }
+
+    /// How many leading tool calls are complete.
+    fn complete(&self) -> usize {
+        if self.finish.is_some() {
+            self.calls.len()
+        } else {
+            self.frontier.min(self.calls.len())
+        }
+    }
+
+    fn into_completion(self) -> serde_json::Value {
+        let mut message = serde_json::json!({
+            "role": "assistant",
+            "content": self.content,
+        });
+        if let Some(refusal) = self.refusal {
+            message["refusal"] = serde_json::Value::String(refusal);
+        }
+        if !self.calls.is_empty() {
+            message["tool_calls"] = self
+                .calls
+                .into_iter()
+                .map(|call| {
+                    serde_json::json!({
+                        "id": call.id,
+                        "type": "function",
+                        "function": { "name": call.name, "arguments": call.arguments },
+                    })
+                })
+                .collect();
+        }
+        serde_json::json!({
+            "id": self.id,
+            "object": "chat.completion",
+            "created": self.created,
+            "model": self.model,
+            "choices": [{ "index": 0, "message": message, "finish_reason": self.finish }],
+            "usage": self.usage,
+        })
+    }
+}
+
+/// Timing for one Plan, logged as one content-free line on stderr.
+struct PlanTiming {
+    started: Instant,
+    start_unix_ms: u128,
+    stream: bool,
+    status: Option<u16>,
+    first_byte: Option<Duration>,
+    first_token: Option<Duration>,
+    first_reasoning: Option<Duration>,
+    first_tool_call: Option<Duration>,
+    plan_call: Option<Duration>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    reasoning_tokens: Option<u64>,
+    /// Prompt tokens the provider served from its prompt cache.
+    cached_tokens: Option<u64>,
+    tool_calls: usize,
+}
+
+impl PlanTiming {
+    fn start() -> Self {
+        Self {
+            started: Instant::now(),
+            start_unix_ms: unix_ms(),
+            stream: false,
+            status: None,
+            first_byte: None,
+            first_token: None,
+            first_reasoning: None,
+            first_tool_call: None,
+            plan_call: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            reasoning_tokens: None,
+            cached_tokens: None,
+            tool_calls: 0,
+        }
+    }
+
+    /// Token counts and tool-call count from a non-streaming body.
+    fn observe_body(&mut self, text: &str) {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+            return;
+        };
+        self.observe_usage(value.get("usage"));
+        let openai = value
+            .pointer("/choices/0/message/tool_calls")
+            .and_then(serde_json::Value::as_array);
+        let anthropic = value.get("content").and_then(serde_json::Value::as_array);
+        self.tool_calls = match (openai, anthropic) {
+            (Some(calls), _) => calls.len(),
+            (None, Some(blocks)) => blocks
+                .iter()
+                .filter(|block| {
+                    block.get("type").and_then(serde_json::Value::as_str) == Some("tool_use")
+                })
+                .count(),
+            _ => 0,
+        };
+    }
+
+    fn observe_usage(&mut self, usage: Option<&serde_json::Value>) {
+        let Some(usage) = usage else { return };
+        let number = |pointer: &str| usage.pointer(pointer).and_then(serde_json::Value::as_u64);
+        self.prompt_tokens = number("/prompt_tokens").or_else(|| number("/input_tokens"));
+        self.completion_tokens = number("/completion_tokens").or_else(|| number("/output_tokens"));
+        self.reasoning_tokens = number("/completion_tokens_details/reasoning_tokens");
+        // OpenAI-compatible (Cerebras, OpenAI) and Anthropic spellings.
+        self.cached_tokens = number("/prompt_tokens_details/cached_tokens")
+            .or_else(|| number("/cache_read_input_tokens"));
+    }
+
+    fn log(&self, call: &PlanCall<'_>, outcome: Result<(), &String>) {
+        if std::env::var_os("TILO_MODEL_GATEWAY_TIMING").is_some_and(|value| value == "0") {
+            return;
+        }
+        let ms = |value: Option<Duration>| {
+            value.map_or_else(|| "-".to_string(), |value| value.as_millis().to_string())
+        };
+        let count = |value: Option<u64>| value.map_or_else(|| "-".to_string(), |v| v.to_string());
+        let trace = call.trace.map_or_else(
+            || "-".to_string(),
+            |trace| format!("{:016x}/{}", trace.id, trace.turn),
+        );
+        eprintln!(
+            "tilo-model-gateway: timing plan trace={trace} profile={} model={} stream={} status={} \
+             start_unix_ms={} first_byte_ms={} first_reasoning_ms={} first_token_ms={} first_tool_call_ms={} \
+             plan_call_ms={} done_ms={} prompt_tokens={} completion_tokens={} \
+             reasoning_tokens={} cached_tokens={} tool_calls={} outcome={}",
+            log_token(call.profile_id),
+            log_token(call.model_id),
+            self.stream,
+            self.status
+                .map_or_else(|| "-".to_string(), |status| status.to_string()),
+            self.start_unix_ms,
+            ms(self.first_byte),
+            ms(self.first_reasoning),
+            ms(self.first_token),
+            ms(self.first_tool_call),
+            ms(self.plan_call),
+            self.started.elapsed().as_millis(),
+            count(self.prompt_tokens),
+            count(self.completion_tokens),
+            count(self.reasoning_tokens),
+            count(self.cached_tokens),
+            self.tool_calls,
+            if outcome.is_ok() { "ok" } else { "error" },
+        );
+    }
+}
+
+/// Log an agent mark with the gateway's clock, next to its Plan lines.
+fn log_mark(trace: PlanTrace, event: TraceEvent, at_unix_ms: Option<u64>) {
+    if std::env::var_os("TILO_MODEL_GATEWAY_TIMING").is_some_and(|value| value == "0") {
+        return;
+    }
+    let event = match event {
+        TraceEvent::PlanReady => "plan_ready",
+        TraceEvent::PlanFailed => "plan_failed",
+        TraceEvent::ActionSubmitted => "action_submitted",
+        TraceEvent::ActionSettled => "action_settled",
+    };
+    // A held mark carries the time it happened; how late it arrived is
+    // logged apart so a timeline uses the true instant.
+    let now = unix_ms();
+    let at = at_unix_ms.map_or(now, u128::from).min(now);
+    eprintln!(
+        "tilo-model-gateway: timing mark trace={:016x}/{} event={event} unix_ms={at} delivered_late_ms={}",
+        trace.id,
+        trace.turn,
+        now - at
+    );
+}
+
+fn unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
+}
+
+/// A configuration identifier, reduced to a log-safe token.
+fn log_token(value: &str) -> String {
+    if !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        value.into()
+    } else {
+        "?".into()
+    }
 }
 
 /// Run Photos' one fixed local-only visual-analysis operation. No arbitrary
@@ -689,6 +1522,25 @@ fn provider_attempt(
     body: &serde_json::Value,
     budget: Duration,
 ) -> Result<String, ProviderFailure> {
+    send_provider(client, profile, endpoint, secret, body, budget)?
+        .text()
+        .map_err(|_| ProviderFailure {
+            why: "provider response was unreadable".into(),
+            again: Again::Never,
+            outcome_unknown: true,
+            status: None,
+        })
+}
+
+/// Send one provider POST and return the successful response unread.
+fn send_provider(
+    client: &reqwest::blocking::Client,
+    profile: &ProviderProfile,
+    endpoint: &str,
+    secret: Option<&str>,
+    body: &serde_json::Value,
+    budget: Duration,
+) -> Result<reqwest::blocking::Response, ProviderFailure> {
     let mut request = client
         .post(endpoint)
         .timeout(budget)
@@ -700,6 +1552,7 @@ fn provider_attempt(
                     why: "Anthropic requests require a configured credential".into(),
                     again: Again::Never,
                     outcome_unknown: false,
+                    status: None,
                 });
             };
             request = request
@@ -726,24 +1579,89 @@ fn provider_attempt(
         } else {
             Again::Never
         },
+        status: None,
     })?;
     let status = response.status();
     if !status.is_success() {
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok());
+        let again = again_after(
+            status.as_u16(),
+            response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+        );
+        // A bounded, numeric Retry-After is passed on so the caller can see
+        // when a rate-limited provider will take work again; Plan itself
+        // never replays.
+        let retry_after = match again {
+            Again::Soon(Some(wait)) if wait <= Duration::from_secs(3600) => {
+                format!(" retry_after_s={}", wait.as_secs_f32().ceil())
+            }
+            _ => String::new(),
+        };
+        let mut detail = Vec::new();
+        let _ = response.take(MAX_ERROR_BODY).read_to_end(&mut detail);
         return Err(ProviderFailure {
-            why: format!("provider returned HTTP {}", status.as_u16()),
-            again: again_after(status.as_u16(), retry_after),
+            why: format!(
+                "provider returned HTTP {}{}{retry_after}",
+                status.as_u16(),
+                provider_error_detail(&detail)
+            ),
+            again,
             outcome_unknown: true,
+            status: Some(status.as_u16()),
         });
     }
-    response.text().map_err(|_| ProviderFailure {
-        why: "provider response was unreadable".into(),
-        again: Again::Never,
-        outcome_unknown: true,
-    })
+    Ok(response)
+}
+
+/// The most of a provider error body read to classify it.
+const MAX_ERROR_BODY: u64 = 16 * 1024;
+
+/// The provider's machine-readable error classification, and nothing else:
+/// `error.type`, `error.code` and `error.param` (OpenAI) or `error.type`
+/// (Anthropic), each only when it is a short identifier. The free-text
+/// `message` is never passed on, because it can quote request content, and
+/// no header is ever read.
+fn provider_error_detail(body: &[u8]) -> String {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return String::new();
+    };
+    let Some(error) = value.get("error") else {
+        return String::new();
+    };
+    let identifier = |key: &str| {
+        error
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 48
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'_' | b'-' | b'.' | b'[' | b']')
+                    })
+            })
+    };
+    let parts = ["type", "code", "param"]
+        .into_iter()
+        .filter_map(|key| {
+            identifier(key)
+                .map(str::to_owned)
+                .or_else(|| {
+                    error
+                        .get(key)
+                        .and_then(serde_json::Value::as_u64)
+                        .map(|code| code.to_string())
+                })
+                .map(|value| format!("{key}={value}"))
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(" "))
+    }
 }
 
 fn again_after(status: u16, retry_after: Option<&str>) -> Again {
@@ -861,6 +1779,22 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn cached_prompt_tokens_are_read_from_either_usage_spelling() {
+        let mut timing = PlanTiming::start();
+        timing.observe_usage(Some(&serde_json::json!({
+            "prompt_tokens": 12000, "completion_tokens": 40,
+            "prompt_tokens_details": {"cached_tokens": 11520}
+        })));
+        assert_eq!(timing.cached_tokens, Some(11520));
+        timing.observe_usage(Some(&serde_json::json!({
+            "input_tokens": 900, "output_tokens": 5, "cache_read_input_tokens": 800
+        })));
+        assert_eq!(timing.cached_tokens, Some(800));
+        timing.observe_usage(Some(&serde_json::json!({"prompt_tokens": 1})));
+        assert_eq!(timing.cached_tokens, None);
+    }
+
     fn vision_image() -> VisionImage {
         VisionImage {
             media_type: "image/jpeg".into(),
@@ -967,6 +1901,7 @@ mod tests {
                         why: format!("provider returned HTTP {status}"),
                         again: again_after(status, retry_after),
                         outcome_unknown: true,
+                        status: Some(status),
                     }),
                 }
             },
@@ -1008,6 +1943,250 @@ mod tests {
             Again::Soon(Some(Duration::from_millis(250)))
         );
         assert_eq!(again_after(401, Some("1")), Again::Never);
+    }
+
+    fn hosted_openai() -> ProviderProfile {
+        let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+        profile.endpoint = "https://models.example.test/api/v1".into();
+        profile.models = vec![agent_provider_config::ModelDescriptor::new(
+            "vendor/model-a",
+        )];
+        profile
+    }
+
+    fn reasoning(
+        param: ReasoningParam,
+        effort: &str,
+    ) -> Option<agent_provider_config::ReasoningSetting> {
+        Some(agent_provider_config::ReasoningSetting {
+            param,
+            effort: effort.into(),
+        })
+    }
+
+    #[test]
+    fn outbound_body_is_owned_by_the_gateway() {
+        let caller = serde_json::json!({
+            "model": "other/model", "max_completion_tokens": 64, "stream": true,
+            "stream_options": {"include_usage": true}, "reasoning_effort": "high", "messages": []
+        });
+        // An unconfigured profile: only the model, and the caller's stream, change.
+        let body =
+            outbound_body(&hosted_openai(), "vendor/model-a", caller.clone(), false).unwrap();
+        assert_eq!(body["model"], "vendor/model-a");
+        assert_eq!(body["max_completion_tokens"], 64);
+        assert_eq!(body["reasoning_effort"], "high");
+        assert!(body.get("stream").is_none() && body.get("stream_options").is_none());
+
+        let streamed =
+            outbound_body(&hosted_openai(), "vendor/model-a", caller.clone(), true).unwrap();
+        assert_eq!(streamed["stream"], true);
+        assert_eq!(streamed["stream_options"]["include_usage"], true);
+
+        // OpenRouter-style: `max_tokens` and the reasoning object.
+        let mut router = hosted_openai();
+        router.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
+        router.reasoning = reasoning(ReasoningParam::ReasoningObject, "low");
+        let body = outbound_body(&router, "vendor/model-a", caller.clone(), false).unwrap();
+        assert_eq!(body["max_tokens"], 64);
+        assert!(body.get("max_completion_tokens").is_none());
+        assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
+        assert!(body.get("reasoning_effort").is_none());
+
+        // OpenAI-style: `max_completion_tokens` and top-level effort.
+        let mut openai = hosted_openai();
+        openai.token_limit_param =
+            Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
+        openai.reasoning = reasoning(ReasoningParam::ReasoningEffort, "none");
+        let legacy = serde_json::json!({"max_tokens": 9, "reasoning": {"effort": "high"}});
+        let body = outbound_body(&openai, "vendor/model-a", legacy, false).unwrap();
+        assert_eq!(body["max_completion_tokens"], 9);
+        assert!(body.get("max_tokens").is_none() && body.get("reasoning").is_none());
+        assert_eq!(body["reasoning_effort"], "none");
+
+        // Cerebras-style: fields the provider rejects are stripped last,
+        // including the gateway's own stream_options.
+        let mut strict = hosted_openai();
+        strict.omit_params = vec!["stream_options".into(), "parallel_tool_calls".into()];
+        let with_extras = serde_json::json!({"parallel_tool_calls": false, "messages": []});
+        let body = outbound_body(&strict, "vendor/model-a", with_extras, true).unwrap();
+        assert_eq!(body["stream"], true);
+        assert!(body.get("stream_options").is_none() && body.get("parallel_tool_calls").is_none());
+
+        // `none` strips every reasoning field.
+        let mut omit = hosted_openai();
+        omit.reasoning = reasoning(ReasoningParam::Omit, "");
+        let body = outbound_body(&omit, "vendor/model-a", caller, false).unwrap();
+        assert!(body.get("reasoning_effort").is_none() && body.get("reasoning").is_none());
+
+        let mut anthropic = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        anthropic.models = vec![agent_provider_config::ModelDescriptor::new("claude-x")];
+        anthropic.reasoning = reasoning(ReasoningParam::ReasoningEffort, "low");
+        anthropic.token_limit_param =
+            Some(agent_provider_config::TokenLimitParam::MaxCompletionTokens);
+        let body = outbound_body(
+            &anthropic,
+            "claude-x",
+            serde_json::json!({"model": "other", "max_tokens": 9, "stream": true}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(body["model"], "claude-x");
+        assert_eq!(body["max_tokens"], 9);
+        assert!(body.get("stream").is_none() && body.get("reasoning_effort").is_none());
+
+        assert!(
+            outbound_body(
+                &hosted_openai(),
+                "vendor/model-a",
+                serde_json::json!([]),
+                false
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_error_detail_passes_identifiers_never_messages() {
+        let openai = br#"{"error":{"message":"secret document text","type":"invalid_request_error","param":"messages[2].content","code":"unsupported_value"}}"#;
+        assert_eq!(
+            provider_error_detail(openai),
+            " (type=invalid_request_error code=unsupported_value param=messages[2].content)"
+        );
+        let anthropic =
+            br#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        assert_eq!(provider_error_detail(anthropic), " (type=overloaded_error)");
+        let router = br#"{"error":{"code":429,"message":"Rate limited upstream"}}"#;
+        assert_eq!(provider_error_detail(router), " (code=429)");
+        let hostile =
+            br#"{"error":{"type":"a b","code":"x\ny","param":"Authorization: Bearer k"}}"#;
+        assert_eq!(provider_error_detail(hostile), "");
+        let long = format!(r#"{{"error":{{"code":"{}"}}}}"#, "x".repeat(49));
+        assert_eq!(provider_error_detail(long.as_bytes()), "");
+        assert_eq!(provider_error_detail(b"<html>bad gateway</html>"), "");
+        assert_eq!(provider_error_detail(b""), "");
+    }
+
+    #[test]
+    fn stream_assembly_completes_tool_calls_in_order() {
+        let mut assembly = StreamAssembly::default();
+        let chunk = |value: serde_json::Value| value;
+        assert!(!assembly.push(&chunk(serde_json::json!({"id": "c", "choices": [{"index": 0, "delta": {"role": "assistant"}}]}))));
+        assert!(assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "a", "function": {"name": "list_", "arguments": "{\"x\""}}]}}]}))));
+        assert_eq!(assembly.complete(), 0);
+        assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"name": "operations", "arguments": ":1}"}}]}}]})));
+        assert_eq!(assembly.complete(), 0);
+        assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 1, "id": "b", "function": {"name": "plan", "arguments": "{}"}}]}}]})));
+        assert_eq!(
+            assembly.complete(),
+            1,
+            "a later index completes the earlier call"
+        );
+        assembly.push(&chunk(serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})));
+        assert_eq!(assembly.complete(), 2);
+        assembly.push(&chunk(
+            serde_json::json!({"choices": [], "usage": {"completion_tokens": 3}}),
+        ));
+        let completion = assembly.into_completion();
+        assert_eq!(completion["id"], "c");
+        let calls = &completion["choices"][0]["message"]["tool_calls"];
+        assert_eq!(calls[0]["function"]["name"], "list_operations");
+        assert_eq!(calls[0]["function"]["arguments"], "{\"x\":1}");
+        assert_eq!(calls[1]["id"], "b");
+        assert_eq!(
+            completion["choices"][0]["message"]["content"],
+            serde_json::Value::Null
+        );
+        assert_eq!(completion["usage"]["completion_tokens"], 3);
+
+        let mut thinking = StreamAssembly::default();
+        assert!(
+            !thinking.push(
+                &serde_json::json!({"choices": [{"index": 0, "delta": {"reasoning": "hm"}}]})
+            )
+        );
+        assert!(thinking.reasoning_seen);
+        assert!(!thinking.into_completion().to_string().contains("hm"));
+
+        let mut text = StreamAssembly::default();
+        text.push(&serde_json::json!({"choices": [{"index": 0, "delta": {"content": "he"}}]}));
+        text.push(&serde_json::json!({"choices": [{"index": 0, "delta": {"content": "llo"}, "finish_reason": "stop"}]}));
+        let completion = text.into_completion();
+        assert_eq!(completion["choices"][0]["message"]["content"], "hello");
+        assert!(
+            completion["choices"][0]["message"]
+                .get("tool_calls")
+                .is_none()
+        );
+    }
+
+    /// A client over the real accept loop (peer check stubbed: macOS has no
+    /// SO_PEERCRED, and the check itself is unchanged).
+    fn serve_test_socket() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("gw-{}-{nonce}.sock", std::process::id()));
+        let listener = UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || accept_loop(&listener, |_| true));
+        path
+    }
+
+    fn settings_client(path: &Path) -> UnixStream {
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_frame(
+            &mut stream,
+            &serde_json::json!({"protocol": 1, "app_id": AGENT_APP}),
+        )
+        .unwrap();
+        stream
+    }
+
+    fn unauthorized_round_trip(stream: &mut UnixStream) -> Duration {
+        let began = Instant::now();
+        // Answered without configuration or network: Agent may not read secrets.
+        write_frame(
+            stream,
+            &serde_json::json!({"version": RPC_VERSION, "verb": "secret_status", "profile_id": "p"}),
+        )
+        .unwrap();
+        let response: Response = tilo_model_gateway::read_frame(stream).unwrap();
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("caller is not authorized for this gateway operation")
+        );
+        began.elapsed()
+    }
+
+    #[test]
+    fn one_idle_or_stalled_client_never_blocks_another() {
+        let path = serve_test_socket();
+        // A connection that never sends its handoff, and one that sent it and
+        // then went idle (the agent's normal, process-long channel).
+        let mut silent = UnixStream::connect(&path).unwrap();
+        let mut idle = settings_client(&path);
+        std::thread::sleep(Duration::from_millis(100));
+        let mut active = settings_client(&path);
+        for _ in 0..3 {
+            assert!(unauthorized_round_trip(&mut active) < Duration::from_secs(1));
+        }
+        // The stalled handoff is closed after HANDOFF_TIMEOUT...
+        silent
+            .set_read_timeout(Some(HANDOFF_TIMEOUT + Duration::from_secs(3)))
+            .unwrap();
+        let began = Instant::now();
+        let mut byte = [0_u8; 1];
+        assert_eq!(silent.read(&mut byte).unwrap(), 0, "closed, not answered");
+        assert!(began.elapsed() < HANDOFF_TIMEOUT + Duration::from_secs(2));
+        // ...while the idle authenticated channel stays usable indefinitely.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(unauthorized_round_trip(&mut idle) < Duration::from_secs(1));
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

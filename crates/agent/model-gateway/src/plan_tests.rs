@@ -6,6 +6,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_model_gateway::{EVENT_TOOL_CALL_DELTA, MAX_DELTA_EVENTS};
 
 const OUTPUT: &str = r#"{"choices":[{"message":{"content":"nothing-fits"}}]}"#;
 const ANTHROPIC_OUTPUT: &str = r#"{"content":[{"type":"text","text":"nothing-fits"}]}"#;
@@ -22,7 +23,20 @@ struct Observed {
     response: Response,
     requests: Vec<String>,
     elapsed: Duration,
+    events: Vec<Response>,
 }
+
+const STREAM_REPLY: &str = concat!(
+    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+    "data: {\"id\":\"c1\",\"created\":1,\"model\":\"test-model-2026\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"list_operations\",\"arguments\":\"\"}}]}}]}\n\n",
+    "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"search\\\":\\\"x\\\"}\"}}]}}]}\n\n",
+    "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"plan\",\"arguments\":\"{}\"}}]}}]}\n\n",
+    "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+    "data: {\"id\":\"c1\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7}}\n\n",
+    "data: [DONE]\n\n",
+);
+
+const ERROR_BODY: &str = r#"{"error":{"message":"test instruction echoed back","type":"invalid_request_error","param":"max_tokens","code":"unsupported_parameter"}}"#;
 
 fn read_request(stream: &mut TcpStream) -> String {
     stream.set_nonblocking(false).unwrap();
@@ -61,6 +75,13 @@ fn child_plan(case: &str) {
     if case == "disabled" {
         profile.enabled = false;
     }
+    if case == "effort" {
+        profile.token_limit_param = Some(agent_provider_config::TokenLimitParam::MaxTokens);
+        profile.reasoning = Some(agent_provider_config::ReasoningSetting {
+            param: agent_provider_config::ReasoningParam::ReasoningObject,
+            effort: "low".into(),
+        });
+    }
     ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
@@ -84,7 +105,19 @@ fn child_plan(case: &str) {
                 .is_some()
         );
     }
-    let response = handle(
+    let body = match case {
+        // The caller names another model and asks for a raw stream; the
+        // gateway sends the checked model and a plain completion request.
+        "override" => serde_json::json!({
+            "model": "unlisted-model", "stream": true, "max_tokens": 64,
+            "messages": [{"role":"user", "content":"test instruction"}]
+        }),
+        _ => {
+            serde_json::json!({"model":"test-model", "messages":[{"role":"user", "content":"test instruction"}]})
+        }
+    };
+    let mut events = Vec::new();
+    let response = handle_streaming(
         if case == "unauthorized" {
             PHOTOS_APP
         } else {
@@ -98,17 +131,30 @@ fn child_plan(case: &str) {
                 "test-model"
             }
             .into(),
-            body: serde_json::json!({"model":"test-model", "messages":[{"role":"user", "content":"test instruction"}]}),
+            body,
             timeout_ms: match case {
                 "timeout" => 200,
                 "expired" => 0,
                 _ => 10_000,
             },
+            stream: case == "stream" || case == "stream-deltas",
+            deltas: case == "stream-deltas",
+            trace: Some(PlanTrace { id: 7, turn: 1 }),
+        },
+        &mut |event| {
+            events.push(serde_json::to_value(event).unwrap());
+            true
         },
     );
+    let root = std::env::var("XDG_CONFIG_HOME").unwrap();
     fs::write(
-        Path::new(&std::env::var("XDG_CONFIG_HOME").unwrap()).join("response.json"),
+        Path::new(&root).join("response.json"),
         serde_json::to_vec(&response).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        Path::new(&root).join("events.json"),
+        serde_json::to_vec(&events).unwrap(),
     )
     .unwrap();
 }
@@ -157,6 +203,11 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
                     "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{partial"
                         .into()
                 }
+                "stream" | "stream-deltas" => STREAM_REPLY.into(),
+                "400detail" => format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{ERROR_BODY}",
+                    ERROR_BODY.len()
+                ),
                 "redirect" => format!(
                     "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 ),
@@ -201,10 +252,12 @@ fn run_case(test: &str, case: &str) -> Option<Observed> {
     );
     let response =
         serde_json::from_slice(&fs::read(temp.0.join("response.json")).unwrap()).unwrap();
+    let events = serde_json::from_slice(&fs::read(temp.0.join("events.json")).unwrap()).unwrap();
     Some(Observed {
         response,
         requests,
         elapsed,
+        events,
     })
 }
 
@@ -317,4 +370,352 @@ fn plan_dispatch_validation_failures_send_nothing() {
 fn unsupported_gateway_host_refuses_peer_authentication() {
     let (stream, _peer) = UnixStream::pair().unwrap();
     assert!(!same_user(&stream));
+}
+
+fn request_body(request: &str) -> serde_json::Value {
+    // `read_request` keeps header lines, then the JSON body.
+    serde_json::from_str(&request[request.find('{').unwrap()..]).unwrap()
+}
+
+#[test]
+fn plan_dispatch_sends_the_checked_model_and_no_caller_stream() {
+    let Some(observed) = run_case(
+        "plan_dispatch_sends_the_checked_model_and_no_caller_stream",
+        "override",
+    ) else {
+        return;
+    };
+    assert!(observed.response.ok);
+    let body = request_body(&observed.requests[0]);
+    assert_eq!(body["model"], "test-model");
+    assert!(body.get("stream").is_none());
+    // A local (this-device) profile keeps the caller's token-limit name and
+    // gets no reasoning effort it did not configure.
+    assert_eq!(body["max_tokens"], 64);
+    assert!(body.get("reasoning_effort").is_none());
+    assert!(observed.events.is_empty());
+}
+
+#[test]
+fn plan_dispatch_applies_the_configured_reasoning_effort() {
+    let Some(observed) = run_case(
+        "plan_dispatch_applies_the_configured_reasoning_effort",
+        "effort",
+    ) else {
+        return;
+    };
+    assert!(observed.response.ok);
+    let body = request_body(&observed.requests[0]);
+    assert_eq!(body["reasoning"], serde_json::json!({"effort": "low"}));
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn plan_dispatch_streams_completed_tool_calls_then_the_assembled_body() {
+    let Some(observed) = run_case(
+        "plan_dispatch_streams_completed_tool_calls_then_the_assembled_body",
+        "stream",
+    ) else {
+        return;
+    };
+    assert_eq!(observed.requests.len(), 1);
+    let body = request_body(&observed.requests[0]);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["stream_options"]["include_usage"], true);
+    assert!(observed.response.ok, "{:?}", observed.response.error);
+    assert!(observed.response.event.is_none());
+    let events = observed
+        .events
+        .iter()
+        .map(|event| {
+            assert_eq!(event.event.as_deref(), Some(EVENT_TOOL_CALL));
+            serde_json::from_str::<serde_json::Value>(event.output.as_deref().unwrap()).unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["id"], "call_a");
+    assert_eq!(events[0]["name"], "list_operations");
+    assert_eq!(events[0]["arguments"], r#"{"search":"x"}"#);
+    assert_eq!(events[1]["name"], "plan");
+    let assembled: serde_json::Value =
+        serde_json::from_str(observed.response.output.as_deref().unwrap()).unwrap();
+    assert_eq!(assembled["object"], "chat.completion");
+    assert_eq!(assembled["model"], "test-model-2026");
+    assert_eq!(assembled["choices"][0]["finish_reason"], "tool_calls");
+    let calls = assembled["choices"][0]["message"]["tool_calls"]
+        .as_array()
+        .unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1]["id"], "call_b");
+    assert_eq!(calls[1]["function"]["arguments"], "{}");
+    assert_eq!(assembled["usage"]["completion_tokens"], 7);
+}
+
+#[test]
+fn plan_dispatch_reports_bounded_provider_error_identifiers_only() {
+    let Some(observed) = run_case(
+        "plan_dispatch_reports_bounded_provider_error_identifiers_only",
+        "400detail",
+    ) else {
+        return;
+    };
+    assert_eq!(observed.requests.len(), 1);
+    let error = observed.response.error.unwrap();
+    assert!(error.contains("provider returned HTTP 400"), "{error}");
+    assert!(
+        error.contains("type=invalid_request_error code=unsupported_parameter param=max_tokens"),
+        "{error}"
+    );
+    assert!(!error.contains("test instruction"), "{error}");
+    assert!(!error.contains("fabricated-test-key"), "{error}");
+}
+
+#[test]
+fn plan_dispatch_streams_argument_deltas_only_when_asked() {
+    let Some(observed) = run_case(
+        "plan_dispatch_streams_argument_deltas_only_when_asked",
+        "stream-deltas",
+    ) else {
+        return;
+    };
+    assert!(observed.response.ok, "{:?}", observed.response.error);
+    let events = observed
+        .events
+        .iter()
+        .map(|event| {
+            (
+                event.event.clone().unwrap(),
+                serde_json::from_str::<serde_json::Value>(event.output.as_deref().unwrap())
+                    .unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let kinds = events
+        .iter()
+        .map(|(kind, _)| kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            EVENT_TOOL_CALL_DELTA,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_CALL_DELTA,
+            EVENT_TOOL_CALL
+        ]
+    );
+    assert_eq!(
+        events[0].1,
+        serde_json::json!({"index": 0, "id": "call_a", "name": "list_operations", "delta": r#"{"search":"x"}"#})
+    );
+    assert_eq!(events[2].1["index"], 1);
+    assert_eq!(events[2].1["name"], "plan");
+    assert_eq!(events[2].1["delta"], "{}");
+    // The final body is unchanged by deltas.
+    let assembled: serde_json::Value =
+        serde_json::from_str(observed.response.output.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        assembled["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        r#"{"search":"x"}"#
+    );
+}
+
+/// SSE text for a list of `chat.completion.chunk` values.
+fn sse(chunks: &[serde_json::Value]) -> String {
+    let mut text = String::new();
+    for chunk in chunks {
+        text.push_str(&format!("data: {chunk}\n\n"));
+    }
+    text.push_str("data: [DONE]\n\n");
+    text
+}
+
+fn args_chunk(
+    index: usize,
+    id: Option<&str>,
+    name: Option<&str>,
+    arguments: &str,
+) -> serde_json::Value {
+    let mut call = serde_json::json!({"index": index, "function": {"arguments": arguments}});
+    if let Some(id) = id {
+        call["id"] = id.into();
+    }
+    if let Some(name) = name {
+        call["function"]["name"] = name.into();
+    }
+    serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [call]}}]})
+}
+
+fn finish_chunk() -> serde_json::Value {
+    serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]})
+}
+
+/// Run the SSE core over `chunks`; the clock reads `times_ms` (one per data
+/// line) from a fixed base. Returns every emitted frame as (event, output).
+fn feed(
+    chunks: &[serde_json::Value],
+    times_ms: &[u64],
+    deltas: bool,
+) -> (Vec<(String, serde_json::Value)>, String) {
+    let text = sse(chunks);
+    let mut reader = std::io::Cursor::new(text.into_bytes());
+    let base = Instant::now();
+    let mut times = times_ms.to_vec().into_iter();
+    let mut clock = move || base + Duration::from_millis(times.next().unwrap_or(u64::MAX / 4));
+    let mut frames = Vec::new();
+    let mut timing = PlanTiming::start();
+    let body = read_sse(
+        &mut reader,
+        &mut |event| {
+            frames.push((
+                event.event.clone().unwrap(),
+                serde_json::from_str(event.output.as_deref().unwrap()).unwrap(),
+            ));
+            true
+        },
+        &mut timing,
+        deltas,
+        &mut clock,
+    )
+    .unwrap_or_else(|failure| panic!("{}", failure.why));
+    (frames, body)
+}
+
+#[test]
+fn deltas_are_coalesced_by_window_and_size() {
+    let big = "y".repeat(300);
+    let chunks = [
+        args_chunk(0, Some("call_p"), Some("plan"), "{\"re"),
+        args_chunk(0, None, None, "ply"),
+        args_chunk(0, None, None, "\":\"h"),
+        args_chunk(0, None, None, "i"),
+        args_chunk(0, None, None, &big),
+        args_chunk(0, None, None, "\"}"),
+        finish_chunk(),
+    ];
+    // 0: first frame; 10, 20: inside the window; 45: window over;
+    // 50: 300 buffered bytes force a frame; 60: buffered until the call ends.
+    let (frames, body) = feed(&chunks, &[0, 10, 20, 45, 50, 60, 70], true);
+    let deltas = frames
+        .iter()
+        .filter(|(kind, _)| kind == EVENT_TOOL_CALL_DELTA)
+        .map(|(_, output)| output["delta"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        deltas,
+        ["{\"re", "ply\":\"hi", big.as_str(), "\"}"],
+        "coalesced at 40 ms / 256 bytes, flushed before the call"
+    );
+    let (kind, call) = frames.last().unwrap();
+    assert_eq!(kind, EVENT_TOOL_CALL);
+    assert_eq!(call["arguments"].as_str().unwrap(), deltas.concat());
+    for (_, output) in &frames[..frames.len() - 1] {
+        assert_eq!(output["index"], 0);
+        assert_eq!(output["id"], "call_p");
+        assert_eq!(output["name"], "plan");
+    }
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        deltas.concat()
+    );
+}
+
+#[test]
+fn every_delta_of_a_call_precedes_its_tool_call() {
+    let chunks = [
+        args_chunk(0, Some("a"), Some("list_operations"), "{\"search\""),
+        args_chunk(0, None, None, ":\"x\"}"),
+        args_chunk(1, Some("b"), Some("plan"), "{\"why\""),
+        args_chunk(1, None, None, ":\"z\"}"),
+        finish_chunk(),
+    ];
+    // Everything lands inside one window after the first frame of each call.
+    let (frames, _) = feed(&chunks, &[0, 1, 2, 3, 4], true);
+    let summary = frames
+        .iter()
+        .map(|(kind, output)| {
+            let text = if kind == EVENT_TOOL_CALL {
+                output["arguments"].as_str().unwrap()
+            } else {
+                output["delta"].as_str().unwrap()
+            };
+            (kind.as_str(), text.to_owned())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            (EVENT_TOOL_CALL_DELTA, "{\"search\"".to_owned()),
+            (EVENT_TOOL_CALL_DELTA, ":\"x\"}".to_owned()),
+            (EVENT_TOOL_CALL, "{\"search\":\"x\"}".to_owned()),
+            (EVENT_TOOL_CALL_DELTA, "{\"why\"".to_owned()),
+            (EVENT_TOOL_CALL_DELTA, ":\"z\"}".to_owned()),
+            (EVENT_TOOL_CALL, "{\"why\":\"z\"}".to_owned()),
+        ]
+    );
+    // A delta frame for a call without an id carries null.
+    let (frames, _) = feed(
+        &[args_chunk(0, None, Some("plan"), "{}"), finish_chunk()],
+        &[0, 1],
+        true,
+    );
+    assert_eq!(frames[0].1["id"], serde_json::Value::Null);
+}
+
+#[test]
+fn delta_frames_have_their_own_bound() {
+    let mut chunks = (0..MAX_DELTA_EVENTS + 100)
+        .map(|_| args_chunk(0, Some("a"), Some("plan"), "x"))
+        .collect::<Vec<_>>();
+    chunks.push(finish_chunk());
+    // Each chunk arrives a full window after the previous one.
+    let times = (0..chunks.len() as u64).map(|i| i * 50).collect::<Vec<_>>();
+    let (frames, _) = feed(&chunks, &times, true);
+    let deltas = frames
+        .iter()
+        .filter(|(kind, _)| kind == EVENT_TOOL_CALL_DELTA)
+        .count();
+    assert_eq!(deltas, MAX_DELTA_EVENTS);
+    let (kind, call) = frames.last().unwrap();
+    assert_eq!(kind, EVENT_TOOL_CALL, "the tool call still follows");
+    assert_eq!(
+        call["arguments"].as_str().unwrap().len(),
+        MAX_DELTA_EVENTS + 100
+    );
+}
+
+#[test]
+fn no_delta_frames_without_the_flag() {
+    let chunks = [
+        args_chunk(0, Some("a"), Some("plan"), "{\"reply\""),
+        args_chunk(0, None, None, ":\"hi\"}"),
+        finish_chunk(),
+    ];
+    let (frames, _) = feed(&chunks, &[0, 100, 200], false);
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].0, EVENT_TOOL_CALL);
+    assert_eq!(frames[0].1["arguments"], "{\"reply\":\"hi\"}");
+}
+
+#[test]
+fn old_plan_requests_decode_without_deltas_and_never_serialize_it() {
+    let old = serde_json::json!({
+        "verb": "plan", "profile_id": "p", "model_id": "m", "body": {},
+        "timeout_ms": 5, "stream": true
+    });
+    let Request::Plan { deltas, stream, .. } = serde_json::from_value(old).unwrap() else {
+        panic!("a plan request");
+    };
+    assert!(stream && !deltas);
+    let encoded = serde_json::to_value(Request::Plan {
+        profile_id: "p".into(),
+        model_id: "m".into(),
+        body: serde_json::json!({}),
+        timeout_ms: 5,
+        stream: true,
+        deltas: false,
+        trace: None,
+    })
+    .unwrap();
+    assert!(encoded.get("deltas").is_none());
 }
