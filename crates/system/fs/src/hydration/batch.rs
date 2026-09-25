@@ -138,7 +138,11 @@ impl Hydrator {
 
     /// Drops the pooled connection to `peer` after a failure, so the next
     /// request connects afresh.
-    async fn forget_blob_connection(&self, peer: iroh_base::PublicKey, failed: &Connection) {
+    pub(super) async fn forget_blob_connection(
+        &self,
+        peer: iroh_base::PublicKey,
+        failed: &Connection,
+    ) {
         let mut pool = self.blob_connections.lock().await;
         if pool
             .get(&peer)

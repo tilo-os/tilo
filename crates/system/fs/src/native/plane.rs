@@ -925,14 +925,19 @@ impl Engine {
             .unwrap_or_else(|_| QuickFS::record_clock_ms());
         let applied = match &node.kind {
             NodeKind::Dir => self.fs.apply_local_dir_as(path, attrs),
-            NodeKind::File => match std::fs::read(snapshot.join(path)) {
-                Ok(data) => {
-                    out.bytes = out.bytes.saturating_add(data.len() as u64);
-                    self.fs
-                        .apply_local_file_as(path, &data, mtime_ms, attrs, fence)
-                }
-                Err(error) => Err(error.raw_os_error().unwrap_or(libc::EIO)),
-            },
+            // The snapshot never changes, and the capture already chunked
+            // it: the content store clones it instead of reading it.
+            NodeKind::File => {
+                out.bytes = out.bytes.saturating_add(node.size);
+                self.fs.apply_local_snapshot(
+                    path,
+                    &snapshot.join(path),
+                    node.manifest.clone(),
+                    mtime_ms,
+                    attrs,
+                    fence,
+                )
+            }
             // A link is a record whose content is its target, verbatim.
             NodeKind::Symlink(target) => {
                 let bytes = target.as_os_str().as_encoded_bytes();
@@ -1272,7 +1277,9 @@ fn open_capture(
     persisted: Option<fs_native::capture::CaptureState>,
 ) -> Result<EpochCapture> {
     let mut cfg = CaptureConfig::new(live, epochs);
-    cfg.hash_content = false;
+    // The capture chunks what changed (re-hashing only changed extents of a
+    // file it chunked before); publishing reuses its manifests.
+    cfg.hash_content = true;
     cfg.defer_release = true;
     let Some(resume) = persisted else {
         remove_other_snapshots(epochs, None);
