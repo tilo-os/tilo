@@ -65,10 +65,7 @@ fn encrypted_signed_op_round_trips_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata {
-            epoch,
-            channel: cid,
-        },
+        EncryptionMetadata::mls_application(epoch, cid),
     );
     sign_op(&mut op, &sk).unwrap();
     // Outer signature verifies — the only contract verify_op cares
@@ -90,10 +87,7 @@ fn bob_decrypts_payload_after_verifying_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata {
-            epoch,
-            channel: cid,
-        },
+        EncryptionMetadata::mls_application(epoch, cid),
     );
     sign_op(&mut op, &sk).unwrap();
 
@@ -121,10 +115,7 @@ fn tampering_with_payload_breaks_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata {
-            epoch: alice_g.epoch(),
-            channel: cid,
-        },
+        EncryptionMetadata::mls_application(alice_g.epoch(), cid),
     );
     sign_op(&mut op, &sk).unwrap();
     // Tamper: flip a payload byte. Outer signature must fail.
@@ -149,16 +140,13 @@ fn tampering_with_encryption_metadata_breaks_outer_signature() {
         OpClass::Splice,
         SystemTime::UNIX_EPOCH,
         1,
-        EncryptionMetadata {
-            epoch: alice_g.epoch(),
-            channel: cid,
-        },
+        EncryptionMetadata::mls_application(alice_g.epoch(), cid),
     );
     sign_op(&mut op, &sk).unwrap();
-    op.encryption = Some(EncryptionMetadata {
-        epoch: alice_g.epoch(),
-        channel: ChannelId::new(),
-    });
+    op.encryption = Some(EncryptionMetadata::mls_application(
+        alice_g.epoch(),
+        ChannelId::new(),
+    ));
     assert!(verify_op(&op).is_err());
 }
 
@@ -189,10 +177,7 @@ fn epoch_in_metadata_matches_group_epoch_at_time_of_encrypt() {
     let (cid, mut alice_g, _bob_g, _sk, _pk) = fixture();
     let snapshot_epoch = alice_g.epoch();
     let ct = alice_g.encrypt(b"x").unwrap();
-    let meta = EncryptionMetadata {
-        epoch: snapshot_epoch,
-        channel: cid,
-    };
+    let meta = EncryptionMetadata::mls_application(snapshot_epoch, cid);
     // (No actual SignedOp built here — the invariant is just about
     // the per-encrypt epoch value mirroring `alice_g.epoch()` at
     // the moment of encrypt.)

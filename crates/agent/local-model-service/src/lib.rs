@@ -41,6 +41,12 @@ const MAX_SNAPSHOT_PATH_BYTES: usize = 1024;
 /// provides the already-open private partial file, so transports never choose
 /// arbitrary filesystem destinations.
 pub trait HttpsTransport {
+    /// Append the bytes of `url` from offset `start` to `destination`, never
+    /// more than `maximum_bytes`, and return how many were written.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::PartialTooLarge`] when the server would send
+    /// more than `maximum_bytes`, or a transport or I/O error.
     fn resume(
         &mut self,
         url: &str,
@@ -57,12 +63,25 @@ pub trait HttpsTransport {
 pub trait ProcessSupervisor {
     /// Import a verified OCI archive and prove that the local image carries
     /// the exact signed digest before it becomes launchable.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::Backend`] when the import fails or the local
+    /// image does not carry `signed_image`'s digest.
     fn install_runtime_image(
         &mut self,
         archive: &Path,
         signed_image: &str,
     ) -> Result<(), ServiceError>;
+    /// Launch `command` and return a handle once the endpoint accepts connections.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::Backend`] when the supervisor refuses the
+    /// command or the service does not become ready.
     fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError>;
+    /// Stop the process behind `handle`.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::Backend`] when the supervisor cannot stop it.
     fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError>;
 }
 
@@ -98,6 +117,11 @@ pub struct SignedRuntime {
 }
 
 impl SignedRuntime {
+    /// Check that the accepted extension is a local-model runtime and names
+    /// exactly this release and its artifact.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::RuntimeNotAccepted`] on any mismatch.
     pub fn validate(&self) -> Result<(), ServiceError> {
         if self.accepted.signed.manifest.kind != ExtensionKind::LocalModelRuntime {
             return Err(ServiceError::RuntimeNotAccepted);
@@ -157,6 +181,12 @@ pub struct LocalModelService<T, P> {
 }
 
 impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
+    /// Open (creating as needed) the model store under `root` and load its
+    /// persisted state.
+    ///
+    /// # Errors
+    /// Returns an I/O error when the store directories cannot be created, or
+    /// [`ServiceError::UnsafeStatePath`] / a decode error for the state file.
     pub fn open(
         root: impl Into<PathBuf>,
         transport: T,
@@ -180,6 +210,11 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         &self.state
     }
 
+    /// Path of the content-addressed object named by `sha256`.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::InvalidArtifact`] unless `sha256` is 64
+    /// lowercase hex digits.
     pub fn object_path(&self, sha256: &str) -> Result<PathBuf, ServiceError> {
         validate_sha256(sha256)?;
         Ok(self.root.join("sha256").join(sha256))
@@ -199,6 +234,11 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
 
     /// Resumes a pinned artifact, verifies its exact digest and size, then
     /// performs an atomic rename into the content-addressed object store.
+    ///
+    /// # Errors
+    /// Returns an error for a non-HTTPS or malformed pin, a partial file
+    /// larger than the pin, a transfer or I/O failure, an incomplete
+    /// download, or a digest mismatch.
     pub fn fetch_verified(&mut self, artifact: &PinnedArtifact) -> Result<PathBuf, ServiceError> {
         validate_artifact(artifact)?;
         let final_path = self.object_path(&artifact.sha256)?;
@@ -210,9 +250,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .root
             .join("partial")
             .join(format!("{}.part", artifact.sha256));
-        let start = fs::metadata(&partial)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let start = fs::metadata(&partial).map_or(0, |metadata| metadata.len());
         if start > artifact.size_bytes {
             return Err(ServiceError::PartialTooLarge);
         }
@@ -304,6 +342,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     }
 
     /// Record a catalog-verified model as available after placing its bytes.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::LicenseNotAccepted`] when the release needs a
+    /// recorded acceptance, or any fetch, unpack or persistence error.
     pub fn install_model(
         &mut self,
         model: &LocalModelRelease,
@@ -325,6 +367,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// Install the accepted, verified runtime before placing the model, so an
     /// `Installed` model never fails Start merely because its runtime bytes
     /// were omitted from the operation.
+    ///
+    /// # Errors
+    /// Returns an error when the runtime is not accepted, the license is not
+    /// accepted, or fetching, importing or installing fails.
     pub fn install_with_runtime(
         &mut self,
         runtime: &SignedRuntime,
@@ -341,6 +387,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// Background-worker variant that atomically publishes each received model
     /// byte count, then verification and installation phases. The transfer
     /// implementation calls `progress` for every chunk it actually writes.
+    ///
+    /// # Errors
+    /// As [`Self::install_with_runtime`], plus any failure to publish progress.
     pub fn install_with_runtime_progress(
         &mut self,
         runtime: &SignedRuntime,
@@ -409,9 +458,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .root
             .join("partial")
             .join(format!("{}.part", artifact.sha256));
-        let start = fs::metadata(&partial)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let start = fs::metadata(&partial).map_or(0, |metadata| metadata.len());
         if start > artifact.size_bytes {
             return Err(ServiceError::PartialTooLarge);
         }
@@ -450,6 +497,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     }
 
     /// Durable status written before a background worker begins transfer.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::LicenseNotAccepted`] or a persistence error.
     pub fn queue_install(&mut self, model: &LocalModelRelease) -> Result<(), ServiceError> {
         self.require_license_acceptance(model)?;
         self.state.models.insert(
@@ -470,6 +520,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// release. This is separate from UI state and survives a
     /// transient worker restart, while a changed catalog release must be
     /// confirmed again.
+    ///
+    /// # Errors
+    /// Returns an error when the state cannot be persisted.
     pub fn record_license_acceptance(
         &mut self,
         model: &LocalModelRelease,
@@ -502,6 +555,11 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         }
     }
 
+    /// Mark `model_id` failed with `message` and forget its process.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::ModelNotInstalled`] for an unknown model, or a
+    /// persistence error.
     pub fn record_failure(
         &mut self,
         model_id: &str,
@@ -522,12 +580,20 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// Persist a queued runtime start before the background worker is
     /// launched.  Settings can return to its event loop immediately and
     /// reconstruct progress after it is closed or restarted.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::ModelNotInstalled`] for an unknown model, or a
+    /// persistence error.
     pub fn mark_starting(&mut self, model_id: &str) -> Result<(), ServiceError> {
         self.update_status(model_id, LocalModelStatus::Starting, None)
     }
 
     /// Start vLLM under a supervisor. Runtime/model paths are content addressed
     /// and the runtime must have an accepted signed extension record.
+    ///
+    /// # Errors
+    /// Returns an error when the runtime is not accepted, `port` is zero, the
+    /// model or runtime is not installed, or the supervisor fails to start it.
     pub fn start(
         &mut self,
         runtime: &SignedRuntime,
@@ -592,6 +658,11 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         Ok(endpoint)
     }
 
+    /// Stop `model_id`'s running process, if any, and mark it installed.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::ModelNotInstalled`] for an unknown model, or a
+    /// supervisor or persistence error.
     pub fn stop(&mut self, model_id: &str) -> Result<LocalModelStatus, ServiceError> {
         let managed = self
             .state
@@ -608,6 +679,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
 
     /// Stop first, then delete only the exact content-addressed model object.
     /// Shared/runtime objects are never inferred from a model removal.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::ModelNotInstalled`] for an unknown model, or a
+    /// stop, filesystem or persistence error.
     pub fn remove(&mut self, model_id: &str) -> Result<(), ServiceError> {
         let managed = self
             .state
@@ -696,13 +771,14 @@ fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), ServiceErro
     }
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 32 * 1024];
+    let mut buffer = vec![0_u8; 32 * 1024];
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        hasher.update(&buffer[..read]);
+        // `Read` never reports more bytes than the buffer holds.
+        hasher.update(buffer.get(..read).ok_or(ServiceError::DigestMismatch)?);
     }
     if hex::encode(hasher.finalize()) == artifact.sha256 {
         Ok(())

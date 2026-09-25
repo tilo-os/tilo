@@ -3845,6 +3845,7 @@ fn document_envelopes_never_enter_generic_widget_notification_before_custody() {
     });
     app.apply_collab_event_for_test(CollabEvent::ScrollbackBatch {
         artifact: envelope.artifact,
+        oldest_seq: Some(envelope.seq),
         ops: vec![Box::new(envelope)],
         decrypted_payloads: vec![],
         exhausted: true,
@@ -3990,6 +3991,7 @@ fn native_scrollback_and_live_share_exact_primary_and_owned_route_admission() {
         .app
         .apply_collab_event_for_test(CollabEvent::ScrollbackBatch {
             artifact: first.artifact,
+            oldest_seq: None,
             ops: vec![
                 Box::new(first),
                 Box::new(foreign_op),

@@ -167,6 +167,7 @@ pub fn pump(relay: &mut MemoryRelay) {
                         artifact,
                         ops: Vec::new(),
                         decrypted_payloads: Vec::new(),
+                        oldest_seq: None,
                         exhausted: true,
                     });
                 }

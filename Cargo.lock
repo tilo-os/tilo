@@ -1947,20 +1947,18 @@ name = "channel-crypto"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
- "chacha20poly1305 0.11.0",
  "collab-types",
  "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
  "hex",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "openmls_traits",
  "postcard",
- "rand 0.10.1",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-seal",
  "zeroize",
 ]
 
@@ -13591,7 +13589,6 @@ dependencies = [
  "bytes",
  "capnp",
  "capnp-rpc",
- "chacha20poly1305 0.11.0",
  "channel-crypto",
  "chrono",
  "cli",
@@ -13672,6 +13669,7 @@ dependencies = [
  "tilo-relay",
  "tilo-relay-protocol",
  "tilo-rt",
+ "tilo-seal",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -13691,7 +13689,6 @@ dependencies = [
  "winit",
  "wire-frame",
  "word-processor",
- "x25519-dalek 3.0.0",
  "xattr",
  "xdg-paths",
  "zbus",
@@ -18949,7 +18946,6 @@ checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
 dependencies = [
  "curve25519-dalek 5.0.0",
  "rand_core 0.10.0",
- "zeroize",
 ]
 
 [[package]]

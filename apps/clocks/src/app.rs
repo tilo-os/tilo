@@ -62,7 +62,12 @@ fn remaining_fraction(remaining_ms: u64, duration_ms: u64) -> f32 {
     if duration_ms == 0 {
         return 0.0;
     }
-    (remaining_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a display fraction only needs f32 precision; timer durations are far below 2^24 ms granularity concerns"
+    )]
+    let fraction = remaining_ms as f32 / duration_ms as f32;
+    fraction.clamp(0.0, 1.0)
 }
 
 fn timer_label(input: &str) -> String {
@@ -86,7 +91,10 @@ fn custom_timer_duration_seconds(hours: &str, minutes: &str, seconds: &str) -> O
     let hours = duration_component(hours, 99)?;
     let minutes = duration_component(minutes, 59)?;
     let seconds = duration_component(seconds, 59)?;
-    Some(hours * 3_600 + minutes * 60 + seconds)
+    hours
+        .checked_mul(3_600)?
+        .checked_add(minutes.checked_mul(60)?)?
+        .checked_add(seconds)
 }
 
 fn alarm_label(input: &str) -> String {
@@ -119,14 +127,15 @@ pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
         .join(", ")
 }
 fn city_time(zone: &str) -> String {
-    zone.parse::<chrono_tz::Tz>()
-        .map(|z| {
+    zone.parse::<chrono_tz::Tz>().map_or_else(
+        |_| "Time unavailable".into(),
+        |z| {
             Utc::now()
                 .with_timezone(&z)
                 .format("%H:%M · %a %-d %b · %Z · UTC%:z")
                 .to_string()
-        })
-        .unwrap_or_else(|_| "Time unavailable".into())
+        },
+    )
 }
 
 fn timezone_label(zone: &str) -> String {
@@ -166,6 +175,10 @@ fn timezone_results(query: &str) -> Vec<String> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
+)]
 fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
     let list_state = state.clone();
     let list = ModelView::from_state(state, move |s| {
@@ -282,6 +295,10 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
+)]
 fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
     let draft = ui::LocalState::new(TimeValue::new(7, 30));
     let draft_label = ui::LocalState::new(String::new());
@@ -327,7 +344,7 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                             if let Some(a) = s.alarms.iter_mut().find(|a| a.id == id) {
                                 a.set_enabled(!a.enabled);
                             }
-                        })
+                        });
                     },
                 ))
                 .push(button(
@@ -428,7 +445,7 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
                                     enabled: true,
                                     last_fired_local_date: None,
                                     next_due_utc: None,
-                                })
+                                });
                             });
                             add_label.set(String::new());
                             add_repeat.set(BTreeSet::new());
@@ -438,6 +455,10 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
+)]
 fn timers_screen(
     state: &ui::LocalState<ClockState>,
     validation_error: &ui::LocalState<Option<String>>,
@@ -548,7 +569,7 @@ fn timers_screen(
                                                 t.ends_at_utc = None;
                                                 t.start(now);
                                             }
-                                        })
+                                        });
                                     }),
                                 ))
                                 .push(Box::new(
@@ -566,12 +587,12 @@ fn timers_screen(
                                                 s.timers.iter_mut().find(|t| t.id == id)
                                             {
                                                 if t.ends_at_utc.is_some() {
-                                                    t.pause(Utc::now())
+                                                    t.pause(Utc::now());
                                                 } else {
-                                                    t.start(Utc::now())
+                                                    t.start(Utc::now());
                                                 }
                                             }
-                                        })
+                                        });
                                     }),
                                 ))
                                 .push(Box::new(
@@ -603,7 +624,7 @@ fn timers_screen(
                                             {
                                                 t.pinned_overlay = !t.pinned_overlay;
                                             }
-                                        })
+                                        });
                                     }),
                                 ))
                                 .push(Box::new(
@@ -779,7 +800,7 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
         for (i, ms) in s.stopwatch.laps_ms.iter().enumerate().rev() {
             laps = laps.push(Box::new(Text::new(&format!(
                 "Lap {}   {}",
-                i + 1,
+                i.saturating_add(1),
                 duration(*ms)
             ))));
         }
@@ -813,11 +834,11 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
                             .on_effect(move || {
                                 a.update(|s| {
                                     if s.stopwatch.started_at_utc.is_some() {
-                                        s.stopwatch.pause(Utc::now())
+                                        s.stopwatch.pause(Utc::now());
                                     } else {
-                                        s.stopwatch.start(Utc::now())
+                                        s.stopwatch.start(Utc::now());
                                     }
-                                })
+                                });
                             }),
                         ))
                         .push(Box::new(
@@ -846,7 +867,7 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
                     .with_icon(Icon::PictureInPicture2)
                     .fit_content(44.0)
                     .on_effect(move || {
-                        d.update(|s| s.stopwatch.pinned_overlay = !s.stopwatch.pinned_overlay)
+                        d.update(|s| s.stopwatch.pinned_overlay = !s.stopwatch.pinned_overlay);
                     }),
                 ))
                 .push(Box::new(laps)),
@@ -984,10 +1005,8 @@ impl ClocksApp {
             2
         } else if value.stopwatch.started_at_utc.is_some() || value.stopwatch.accumulated_ms > 0 {
             3
-        } else if !value.alarms.is_empty() {
-            1
         } else {
-            0
+            usize::from(!value.alarms.is_empty())
         };
         Self::with_state(value, mode, true)
     }
@@ -1196,6 +1215,10 @@ impl Widget for ClocksApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat match arm per Clocks operation; each arm is a short state update"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -1249,14 +1272,14 @@ impl Widget for ClocksApp {
                             timezone,
                         });
                     }
-                })
+                });
             }
             crate::actions::ClockOperation::ToggleTimer { id } => self.state.update(|s| {
                 if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
                     if t.ends_at_utc.is_some() {
-                        t.pause(Utc::now())
+                        t.pause(Utc::now());
                     } else {
-                        t.start(Utc::now())
+                        t.start(Utc::now());
                     }
                 }
             }),
@@ -1267,7 +1290,7 @@ impl Widget for ClocksApp {
                         .saturating_add(Duration::from_secs(60));
                     t.paused_remaining_ms = Some(left.as_millis().try_into().unwrap_or(u64::MAX));
                     t.ends_at_utc = None;
-                    t.start(Utc::now())
+                    t.start(Utc::now());
                 }
             }),
             crate::actions::ClockOperation::SetTimerOverlay { id, pinned } => {
@@ -1275,10 +1298,10 @@ impl Widget for ClocksApp {
                     if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
                         t.pinned_overlay = pinned;
                     }
-                })
+                });
             }
             crate::actions::ClockOperation::RemoveTimer { id } => {
-                self.state.update(|s| s.timers.retain(|t| t.id != id))
+                self.state.update(|s| s.timers.retain(|t| t.id != id));
             }
             crate::actions::ClockOperation::ToggleAlarm { id } => self.state.update(|s| {
                 if let Some(alarm) = s.alarms.iter_mut().find(|alarm| alarm.id == id) {
@@ -1299,15 +1322,15 @@ impl Widget for ClocksApp {
                 }
             }),
             crate::actions::ClockOperation::ResetStopwatch => {
-                self.state.update(|s| s.stopwatch.reset())
+                self.state.update(|s| s.stopwatch.reset());
             }
             crate::actions::ClockOperation::Lap => {
-                self.state.update(|s| s.stopwatch.lap(Utc::now()))
+                self.state.update(|s| s.stopwatch.lap(Utc::now()));
             }
             crate::actions::ClockOperation::SetStopwatchOverlay { pinned } => {
-                self.state.update(|s| s.stopwatch.pinned_overlay = pinned)
+                self.state.update(|s| s.stopwatch.pinned_overlay = pinned);
             }
-        };
+        }
         Ok(true)
     }
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
@@ -1333,7 +1356,10 @@ impl Widget for ClocksApp {
             .with(|state| find(crate::actions::provide_resources(state), id))
     }
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
-        self.next_clock_tick = std::time::Instant::now() + Duration::from_secs(1);
+        let tick_base = std::time::Instant::now();
+        self.next_clock_tick = tick_base
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or(tick_base);
         let now = Utc::now();
         if let Some((cmd, activity_id)) = self
             .persistent
@@ -1407,7 +1433,7 @@ impl Widget for ClocksApp {
             self.last_saved = encoded;
         }
         self.state.update(|_| {});
-        self.inner.sync(d, p)
+        self.inner.sync(d, p);
     }
     fn build_layout(
         &mut self,
@@ -1418,7 +1444,7 @@ impl Widget for ClocksApp {
         self.inner.build_layout(t, th, m)
     }
     fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, o: Point) {
-        self.inner.apply_layout(t, n, o)
+        self.inner.apply_layout(t, n, o);
     }
     fn draw(
         &mut self,
@@ -1428,21 +1454,31 @@ impl Widget for ClocksApp {
         th: &Theme,
         p: &PresenceCtx,
     ) {
-        self.inner.draw(s, tf, tr, th, p)
+        self.inner.draw(s, tf, tr, th, p);
     }
     fn handle_event(
         &mut self,
-        e: &winit::event::WindowEvent,
-        sf: f64,
-        mo: &winit::event::Modifiers,
-        d: &mut AutoCommit,
-        p: &ObjId,
-        h: &mut bool,
-        f: &mut Option<NodeId>,
-        n: NodeId,
-        t: &TaffyTree<()>,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        tree: &TaffyTree<()>,
     ) {
-        self.inner.handle_event(e, sf, mo, d, p, h, f, n, t)
+        self.inner.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            doc,
+            path,
+            handled,
+            focus,
+            node,
+            tree,
+        );
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.inner.as_ref()]
@@ -1553,7 +1589,7 @@ mod tests {
         app.state.update(|state| {
             state
                 .timers
-                .push(Timer::new("Tea", Duration::from_secs(60)))
+                .push(Timer::new("Tea", Duration::from_secs(60)));
         });
         app.sync(&mut doc, &automerge::ROOT);
         assert!(
@@ -1703,6 +1739,19 @@ mod tests {
         assert_eq!(custom_timer_duration_seconds("100", "10", "00"), None);
         assert_eq!(custom_timer_duration_seconds("00", "60", "00"), None);
         assert_eq!(custom_timer_duration_seconds("00", "10", "-1"), None);
+    }
+
+    #[test]
+    fn custom_timer_duration_edges() {
+        assert_eq!(custom_timer_duration_seconds("0", "0", "0"), Some(0));
+        assert_eq!(
+            custom_timer_duration_seconds("99", "59", "59"),
+            Some(99 * 3_600 + 59 * 60 + 59)
+        );
+        assert_eq!(
+            custom_timer_duration_seconds("18446744073709551616", "0", "0"),
+            None
+        );
     }
 
     #[test]

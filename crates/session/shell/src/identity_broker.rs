@@ -806,10 +806,10 @@ mod tests {
             collab_types::OpClass::Splice,
             now,
             2,
-            collab_types::EncryptionMetadata {
-                epoch: 3,
-                channel: collab_types::document_channel_id(app_id, &workspace_id, record_id),
-            },
+            collab_types::EncryptionMetadata::mls_application(
+                3,
+                collab_types::document_channel_id(app_id, &workspace_id, record_id),
+            ),
         );
         let encrypted_unsigned = postcard::to_stdvec(&encrypted).expect("encrypted envelope");
         assert!(matches!(

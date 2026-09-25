@@ -68,6 +68,7 @@ pub mod event;
 pub mod file_invite;
 pub mod files;
 pub mod first_party_app_ids;
+pub mod history;
 pub mod identity;
 pub mod invite;
 pub mod mls_governance;
@@ -141,12 +142,12 @@ pub use mls_governance::{
     MlsGovernanceFrameV1,
 };
 pub use op::{
-    DecodedDocumentMutation, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
-    DocumentWireVersion, EncryptionMetadata, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
-    SignedOp, VersionedRoutedDocumentPayload, document_artifact_id,
-    document_artifact_id_for_version, document_attestation_id, document_attestation_id_for_version,
-    document_channel_id, document_channel_id_for_version, validate_document_payload_route,
-    validate_document_payload_route_versioned,
+    ContentRetention, DecodedDocumentMutation, DocumentMutation, DocumentMutationEncodeError,
+    DocumentMutationError, DocumentWireVersion, EncryptionMetadata, EncryptionScheme,
+    MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload, SignedOp, VersionedRoutedDocumentPayload,
+    document_artifact_id, document_artifact_id_for_version, document_attestation_id,
+    document_attestation_id_for_version, document_channel_id, document_channel_id_for_version,
+    validate_document_payload_route, validate_document_payload_route_versioned,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,

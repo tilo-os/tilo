@@ -1110,10 +1110,7 @@ fn expiry_cleanup_publishes_room_delta_while_preserving_encrypted_metadata() {
         OpClass::Splice,
         std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(now + 1),
         1,
-        EncryptionMetadata {
-            epoch: 1,
-            channel: document_channel_id(app, &room, record),
-        },
+        EncryptionMetadata::mls_application(1, document_channel_id(app, &room, record)),
     );
     collab_types::crypto::sign_op(&mut envelope, &stable).unwrap();
     drop(store);

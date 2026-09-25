@@ -5,6 +5,7 @@ pub mod agent_timing;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_core;
+pub mod collab_history;
 pub mod collab_outbound;
 pub mod collab_presence;
 pub mod collaboration_admin;

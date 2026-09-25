@@ -20,11 +20,17 @@ spec.loader.exec_module(preparer)
 ARCHITECTURES = {'aarch64': 'arm64', 'x86_64': 'amd64'}
 
 
-def command(*arguments):
+def command(*arguments, storage):
     environment = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'}
     if os.environ.get('REGISTRY_AUTH_FILE'):
         environment['REGISTRY_AUTH_FILE'] = os.environ['REGISTRY_AUTH_FILE']
-    result = subprocess.run(['podman', '--remote=false', *arguments], env=environment,
+    # CI jobs themselves run on overlayfs. A nested Podman overlay graph cannot
+    # be created there, even though the native ARM runner has the right CPU.
+    # This private VFS graph only holds the immutable firmware input for this
+    # import and is removed when the import finishes.
+    result = subprocess.run(['podman', '--remote=false', '--storage-driver=vfs',
+                             f'--root={storage / "graph"}', f'--runroot={storage / "run"}',
+                             *arguments], env=environment,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         # Podman does not receive the registry token in argv or env. Keep its
@@ -126,25 +132,29 @@ def import_artifact(args):
     definition = hardware.load_definition(args.profile, args.repo / 'os/hardware/profiles')
     if definition['architecture'] != args.architecture:
         raise ValueError('firmware profile architecture differs')
-    command('pull', '--platform=linux/' + ARCHITECTURES[args.architecture], '--tls-verify=true', args.reference)
-    images = json.loads(command('image', 'inspect', args.reference), object_pairs_hook=unique_object)
-    if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], dict):
-        raise ValueError('expected exactly one firmware image')
-    info = images[0]
-    identity = info.get('Id', '')
-    if (info.get('Os') != 'linux' or info.get('Architecture') != ARCHITECTURES[args.architecture]
-            or info.get('Digest') != args.reference.split('@')[1]
-            or args.reference not in info.get('RepoDigests', [])
-            or not isinstance(identity, str) or not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', identity)):
-        raise ValueError('firmware image identity or architecture differs')
-    root_text = command('image', 'mount', identity)
-    try:
-        root = Path(root_text)
-        if not root.is_absolute() or '\n' in root_text or root.is_symlink() or {p.name for p in root.iterdir()} != {'firmware'}:
-            raise ValueError('firmware artifact must contain only /firmware')
-        contents, hashes = payload(root / 'firmware', definition, args.manifest_sha256)
-    finally:
-        command('image', 'unmount', identity)
+    with tempfile.TemporaryDirectory(prefix='tilo-firmware-podman-') as temporary:
+        storage = Path(temporary)
+        command('pull', '--platform=linux/' + ARCHITECTURES[args.architecture],
+                '--tls-verify=true', args.reference, storage=storage)
+        images = json.loads(command('image', 'inspect', args.reference, storage=storage),
+                            object_pairs_hook=unique_object)
+        if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], dict):
+            raise ValueError('expected exactly one firmware image')
+        info = images[0]
+        identity = info.get('Id', '')
+        if (info.get('Os') != 'linux' or info.get('Architecture') != ARCHITECTURES[args.architecture]
+                or info.get('Digest') != args.reference.split('@')[1]
+                or args.reference not in info.get('RepoDigests', [])
+                or not isinstance(identity, str) or not re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', identity)):
+            raise ValueError('firmware image identity or architecture differs')
+        root_text = command('image', 'mount', identity, storage=storage)
+        try:
+            root = Path(root_text)
+            if not root.is_absolute() or '\n' in root_text or root.is_symlink() or {p.name for p in root.iterdir()} != {'firmware'}:
+                raise ValueError('firmware artifact must contain only /firmware')
+            contents, hashes = payload(root / 'firmware', definition, args.manifest_sha256)
+        finally:
+            command('image', 'unmount', identity, storage=storage)
     # No staged output survives a failed unmount or failed payload validation.
     stage(args.repo, args.profile, contents)
     return {'schema': 1, 'purpose': 'tilo-hardware-firmware-import', 'reference': args.reference,

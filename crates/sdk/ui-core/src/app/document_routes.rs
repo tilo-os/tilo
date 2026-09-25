@@ -689,7 +689,7 @@ mod legacy_route_tests {
             collab_types::OpClass::Splice,
             std::time::SystemTime::UNIX_EPOCH,
             1,
-            collab_types::EncryptionMetadata { epoch: 3, channel },
+            collab_types::EncryptionMetadata::mls_application(3, channel),
         );
         let payload = validated_route_payload(&route, &envelope).expect("legacy MLS route");
         let legacy_clear = collab_types::DocumentMutation::Incremental(b"legacy".to_vec())

@@ -143,6 +143,10 @@ pub struct ShellActivity {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the JSON wire format the shell reads; each flag is independent"
+)]
 pub struct ShellSnapshot {
     pub version: u8,
     #[serde(default = "snapshot_active_default")]
@@ -187,6 +191,12 @@ pub mod transport {
             .map(PathBuf::from)
             .map(|p| p.join("tilo/clocks.json"))
     }
+    /// Atomically writes `snapshot` to the private transport file.
+    ///
+    /// # Errors
+    ///
+    /// Fails when `XDG_RUNTIME_DIR` is unset, serialization fails, or the
+    /// file cannot be written.
     pub fn publish(snapshot: &ShellSnapshot) -> io::Result<()> {
         let path = path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR missing"))?;
@@ -196,6 +206,10 @@ pub mod transport {
     #[derive(serde::Deserialize)]
     struct Command {
         version: u8,
+        #[expect(
+            clippy::struct_field_names,
+            reason = "the field name is the JSON key the shell writes"
+        )]
         command: String,
         #[serde(default)]
         activity_id: Option<uuid::Uuid>,
@@ -248,7 +262,7 @@ impl Timer {
             return Duration::from_millis(ms);
         }
         self.ends_at_utc
-            .and_then(|end| (end - now).to_std().ok())
+            .and_then(|end| end.signed_duration_since(now).to_std().ok())
             .unwrap_or_default()
     }
 }
@@ -258,7 +272,7 @@ impl Stopwatch {
     pub fn elapsed(&self, now: DateTime<Utc>) -> Duration {
         let running = self
             .started_at_utc
-            .and_then(|start| (now - start).to_std().ok())
+            .and_then(|start| now.signed_duration_since(start).to_std().ok())
             .unwrap_or_default();
         Duration::from_millis(self.accumulated_ms).saturating_add(running)
     }
@@ -368,6 +382,12 @@ impl ClockState {
             .unwrap_or_default()
     }
 
+    /// Persists the state to the per-user state file with private permissions.
+    ///
+    /// # Errors
+    ///
+    /// Fails when no state directory is available, the directory cannot be
+    /// created, or the file cannot be written.
     pub fn save(&self) -> io::Result<()> {
         let path = state_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no state directory"))?;
@@ -473,12 +493,12 @@ impl ClockState {
 /// times advance minute-by-minute; ambiguous autumn times select the first.
 #[must_use]
 pub fn next_alarm_local(alarm: &Alarm, after: DateTime<Local>) -> Option<DateTime<Local>> {
-    next_alarm_in_timezone(alarm, after)
+    next_alarm_in_timezone(alarm, &after)
 }
 
 fn next_alarm_in_timezone<Tz: TimeZone>(
     alarm: &Alarm,
-    after: DateTime<Tz>,
+    after: &DateTime<Tz>,
 ) -> Option<DateTime<Tz>> {
     if !alarm.enabled {
         return None;
@@ -495,7 +515,7 @@ fn next_alarm_in_timezone<Tz: TimeZone>(
         let mut naive = date.and_time(alarm.local_time);
         for _ in 0..180 {
             if let Some(candidate) = after.timezone().from_local_datetime(&naive).earliest() {
-                if candidate > after {
+                if candidate > *after {
                     return Some(candidate);
                 }
                 // A valid occurrence that has passed belongs to another day.
@@ -718,17 +738,17 @@ mod tests {
         };
         let spring = zone.with_ymd_and_hms(2026, 3, 29, 1, 0, 0).unwrap();
         assert_eq!(
-            next_alarm_in_timezone(&alarm, spring),
+            next_alarm_in_timezone(&alarm, &spring),
             Some(zone.with_ymd_and_hms(2026, 3, 29, 3, 0, 0).unwrap())
         );
         let autumn = zone.with_ymd_and_hms(2026, 10, 25, 1, 0, 0).unwrap();
-        let first = next_alarm_in_timezone(&alarm, autumn).unwrap();
+        let first = next_alarm_in_timezone(&alarm, &autumn).unwrap();
         assert_eq!(
             first.with_timezone(&Utc),
             Utc.with_ymd_and_hms(2026, 10, 25, 0, 30, 0).unwrap()
         );
         assert_eq!(
-            next_alarm_in_timezone(&alarm, first),
+            next_alarm_in_timezone(&alarm, &first),
             Some(zone.with_ymd_and_hms(2026, 10, 26, 2, 30, 0).unwrap())
         );
     }
@@ -745,10 +765,10 @@ mod tests {
             last_fired_local_date: None,
             next_due_utc: None,
         };
-        assert_eq!(next_alarm_in_timezone(&alarm, after), None);
+        assert_eq!(next_alarm_in_timezone(&alarm, &after), None);
         alarm.enabled = true;
         assert_eq!(
-            next_alarm_in_timezone(&alarm, after),
+            next_alarm_in_timezone(&alarm, &after),
             Some(Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap())
         );
     }

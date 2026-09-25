@@ -67,6 +67,11 @@
 //!   the wrapped widget by default.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
+//!   with actions ([`ResourceApp::scenario`]) and view state where it lives:
+//!   [`ViewCx::on_stage`] for a view's local state, `ResourceSurface::stage`
+//!   for a custom surface's. [`stage`] runs a scenario on any harness, so a
+//!   test composes the exact frame `--shots` writes.
 
 mod app;
 mod controls;
@@ -75,6 +80,7 @@ mod each;
 mod live;
 mod preview;
 mod root;
+mod stage;
 mod surface;
 mod switch;
 // The test hosts discover native presentation, which the browser has not got.
@@ -91,5 +97,6 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
 pub use live::Live;
+pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use view::ViewCx;

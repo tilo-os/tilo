@@ -720,7 +720,8 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
                 let signer_key = &provisioned.governance_signer;
                 provisioned
                     .group
-                    .add_member_transactional(package, |group, welcome, commit, epoch| {
+                    .add_member_transactional(package, |group, addition| {
+                        let epoch = addition.epoch;
                         provider
                             .persist(vault, group, signer_key)
                             .map_err(authority_to_crypto)?;
@@ -730,10 +731,11 @@ impl<P: MlsVaultProvider> MlsAuthorityCoordinator<P> {
                             tx.expected_membership_revision,
                             head,
                             epoch,
-                            MlsGovernanceAction::Add {
+                            MlsGovernanceAction::AddWithKeyHistory {
                                 recipient: Ed25519PublicKey::from_bytes(recipient),
-                                welcome: welcome.to_vec(),
-                                existing_member_commit: commit.map(<[u8]>::to_vec),
+                                welcome: addition.welcome.clone(),
+                                existing_member_commit: addition.commit.clone(),
+                                key_history: addition.key_history.clone(),
                             },
                             signer_key,
                         )
@@ -1325,7 +1327,7 @@ mod tests {
             collab_types::OpClass::Compaction,
             std::time::SystemTime::UNIX_EPOCH,
             1,
-            collab_types::EncryptionMetadata { channel, epoch: 0 },
+            collab_types::EncryptionMetadata::mls_application(0, channel),
         );
         assert!(provider.mint_snapshot_receipt(channel, &encrypted).is_err());
         collab_types::sign_op(&mut encrypted, &snapshot_signer).unwrap();
@@ -1358,7 +1360,7 @@ mod tests {
             collab_types::OpClass::EditMeta,
             std::time::SystemTime::UNIX_EPOCH,
             3,
-            collab_types::EncryptionMetadata { channel, epoch: 0 },
+            collab_types::EncryptionMetadata::mls_application(0, channel),
         );
         collab_types::sign_op(&mut wrong_class, &snapshot_signer).unwrap();
         assert!(

@@ -231,15 +231,12 @@ fn encryption_gate_requires_durable_snapshot_ack_and_survives_restart() {
     let journal = GovernanceJournal::open(&path).unwrap();
     assert!(journal.encryption_required());
     assert!(!journal.accepts_document_encryption(None, channel));
-    assert!(
-        journal
-            .accepts_document_encryption(Some(&EncryptionMetadata { channel, epoch: 0 }), channel)
-    );
+    assert!(journal.accepts_document_encryption(
+        Some(&EncryptionMetadata::mls_application(0, channel)),
+        channel
+    ));
     assert!(!journal.accepts_document_encryption(
-        Some(&EncryptionMetadata {
-            channel: ChannelId::new(),
-            epoch: 0
-        }),
+        Some(&EncryptionMetadata::mls_application(0, ChannelId::new())),
         channel
     ));
 }
@@ -251,18 +248,19 @@ fn failed_durable_handoff_rolls_back_pending_add() {
     let bob = MemberKey::generate("bob").unwrap();
     let package = bob.fresh_key_package().unwrap();
     let epoch = alice.epoch();
-    let result = alice.add_member_transactional(package.clone(), |_, _, _, _| {
+    let result = alice.add_member_transactional(package.clone(), |_, _| {
         Err(channel_crypto::Error::Governance(
             "simulated disk failure".into(),
         ))
     });
     assert!(result.is_err());
     assert_eq!(alice.epoch(), epoch);
-    let (welcome, commit) = alice
-        .add_member_transactional(package, |_, _, _, _| Ok(()))
+    let addition = alice
+        .add_member_transactional(package, |_, _| Ok(()))
         .unwrap();
-    assert!(!welcome.is_empty());
-    assert!(commit.is_none());
+    assert!(!addition.welcome.is_empty());
+    assert!(!addition.key_history.is_empty());
+    assert!(addition.commit.is_none());
     assert_eq!(alice.epoch(), epoch + 1);
 }
 
@@ -333,4 +331,75 @@ fn governance_rejects_wrong_route_epoch_outsider_and_inconsistent_removal() {
             })
             .is_err()
     );
+}
+
+#[test]
+fn admission_with_key_history_targets_the_joiner_and_stale_content_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.log");
+    let channel = ChannelId::new();
+    let (alice_sk, alice) = generate_keypair();
+    let (_, bob) = generate_keypair();
+    let governors = BTreeSet::from([alice]);
+    let current = BTreeSet::from([alice]);
+    let desired = BTreeSet::from([alice, bob]);
+    let mut group = ChannelGroup::create(channel, MemberKey::generate("alice").unwrap()).unwrap();
+    let addition = group
+        .admit(
+            MemberKey::generate("bob")
+                .unwrap()
+                .fresh_key_package()
+                .unwrap(),
+        )
+        .unwrap();
+    let frame = MlsGovernanceFrameV1::signed(
+        channel,
+        [7; 32],
+        3,
+        [0; 32],
+        addition.epoch,
+        MlsGovernanceAction::AddWithKeyHistory {
+            recipient: bob,
+            welcome: addition.welcome.clone(),
+            existing_member_commit: None,
+            key_history: addition.key_history.clone(),
+        },
+        &alice_sk,
+    )
+    .unwrap();
+    let context = MlsGovernanceContext {
+        channel,
+        membership_revision: 3,
+        previous_frame_digest: [0; 32],
+        expected_epoch: addition.epoch,
+        governors: &governors,
+        desired_members: &desired,
+        current_mls_members: &current,
+        durable_snapshot_ack: None,
+    };
+    let mut journal = GovernanceJournal::open(&path).unwrap();
+    let digest = journal.enqueue(frame, &context).unwrap();
+    drop(journal);
+    let journal = GovernanceJournal::open(&path).unwrap();
+    let pending = journal.pending_for(bob);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].kind, DeliveryKind::Welcome);
+    let (_, _, _, history) = journal.frame(digest).unwrap().action.admission().unwrap();
+    assert_eq!(history, Some(addition.key_history.as_slice()));
+
+    // New content sealed under a content key older than the latest
+    // membership change is refused; current traffic passes.
+    let stale = EncryptionMetadata::content_key(
+        addition.epoch - 1,
+        channel,
+        collab_types::ContentRetention::Delta,
+    );
+    let fresh = EncryptionMetadata::content_key(
+        addition.epoch,
+        channel,
+        collab_types::ContentRetention::Delta,
+    );
+    assert_eq!(journal.head_epoch(), Some(addition.epoch));
+    assert!(!journal.accepts_document_encryption(Some(&stale), channel));
+    assert!(journal.accepts_document_encryption(Some(&fresh), channel));
 }
