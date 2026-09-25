@@ -1318,3 +1318,43 @@ fn marks_apply_and_inverted_mark_is_refused() {
     let mut target = doc.clone();
     semantic_refusal(&mut target, &inverted, "mark end before begin");
 }
+
+#[test]
+#[ignore = "0.12 ChangeCollector still panics on forged document chunks (collector.rs asserts); \
+            enable once the reconstruct hardening lands"]
+fn fuzz_mutated_document_and_bundle_bytes_never_panic() {
+    let mut rng = Rng(seed(0x7a3c_91e5_0b2d_4f68));
+    let mut source = random_doc(&mut rng);
+    let document = source.save_nocompress();
+    let mut target = AutoCommit::new();
+    let before = snapshot(&mut target);
+    let mut accepted = 0;
+    for _ in 0..rounds(1500) {
+        let mut bytes = document.clone();
+        for _ in 0..(1 + rng.below(2)) {
+            let at = 9 + rng.below(bytes.len() - 9);
+            bytes[at] = match rng.below(4) {
+                0 => rng.next() as u8,
+                1 => bytes[at].wrapping_add(1),
+                2 => bytes[at].wrapping_sub(1),
+                _ => bytes[at] ^ 0x80,
+            };
+        }
+        rechecksum(&mut bytes);
+        let mut doc = target.clone();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            incoming(&mut doc, &bytes, NativeDependencyPolicy::RetainOrphans)
+        }));
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => panic!("checked admission panicked on {}", hex::encode(&bytes)),
+        };
+        if result.is_err() {
+            assert_eq!(snapshot(&mut doc), before);
+        } else {
+            accepted += 1;
+            AutoCommit::load(&doc.save()).expect("accepted history reloads");
+        }
+    }
+    eprintln!("document fuzz: {accepted} accepted");
+}
