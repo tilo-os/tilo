@@ -33,7 +33,7 @@ impl Store {
         if let Some(raw) = std::env::var_os(STORE_ENV) {
             return Self::at(PathBuf::from(raw));
         }
-        let data = dirs::data_dir().unwrap_or_else(|| {
+        let data = xdg_paths::data_dir().unwrap_or_else(|| {
             // No `$HOME` and no `$XDG_DATA_HOME` is a broken session, but it is
             // not a reason to write into the current directory.
             PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() }))

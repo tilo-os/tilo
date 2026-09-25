@@ -367,7 +367,7 @@ impl FilesProvider {
     pub fn new() -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("Files search constructor");
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        let home = xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
         let name_index: Arc<Mutex<Arc<NameIndex>>> =
             Arc::new(Mutex::new(Arc::new(NameIndex::default())));
         {

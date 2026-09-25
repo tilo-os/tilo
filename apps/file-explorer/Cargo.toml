@@ -62,9 +62,7 @@ image = { workspace = true, features = ["png", "jpeg"] }
 zip.workspace = true
 tar.workspace = true
 flate2.workspace = true
-# `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
-# `home_dir`/`config_dir`/`cache_dir` API is identical.
-dirs.workspace = true
+# Home, config, cache and the localized user folders.
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 tracing.workspace = true
 tracing-subscriber.workspace = true

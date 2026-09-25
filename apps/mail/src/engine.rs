@@ -447,7 +447,7 @@ pub mod live {
     use std::sync::Arc;
 
     use accounts::{AccountId, SecretVault};
-    use futures::TryStreamExt;
+    use futures_util::TryStreamExt;
 
     use super::{
         AccountConfig, Draft, EngineEvent, EngineRequest, EngineRequestId, EngineRequestKind,

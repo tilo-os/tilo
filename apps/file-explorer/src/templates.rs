@@ -17,7 +17,7 @@ pub fn templates_dir() -> Option<PathBuf> {
             return Some(PathBuf::from(p));
         }
     }
-    dirs::home_dir().map(|h| h.join("Templates"))
+    xdg_paths::home().map(|h| h.join("Templates"))
 }
 
 /// The template files inside `dir`: regular files only (directories and

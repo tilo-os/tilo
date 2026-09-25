@@ -1,7 +1,7 @@
 //! Time-based one-time password generation — RFC 6238 (TOTP) layered on
 //! RFC 4226 (HOTP), implemented directly on the audited `RustCrypto`
 //! `hmac` + `sha1` + `sha2` primitives, with RFC 4648 base32 secret
-//! decoding via the `base32` crate.
+//! decoding via `data-encoding`.
 //!
 //! Why hand-rolled rather than `totp-rs`: the `RustCrypto` crates are
 //! already in the workspace lockfile (so no extra fetch), and the RFC
@@ -22,6 +22,14 @@ use zeroize::Zeroizing;
 
 use crate::model::{Account, Algorithm};
 
+/// RFC 4648 base32 without padding. Unused bits in the last symbol are
+/// ignored rather than required to be zero: authenticator apps accept such
+/// secrets, and vaults written by earlier builds may hold them.
+const SECRET_BASE32: data_encoding::Encoding = data_encoding_macro::new_encoding! {
+    symbols: "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+    check_trailing_bits: false,
+};
+
 /// Decode a normalised base32 (RFC 4648, no padding required) secret to
 /// raw key bytes. Returns `None` when the string isn't valid base32.
 pub fn decode_secret(secret: &str) -> Option<Vec<u8>> {
@@ -29,7 +37,22 @@ pub fn decode_secret(secret: &str) -> Option<Vec<u8>> {
     if normalised.is_empty() {
         return None;
     }
-    base32::decode(base32::Alphabet::Rfc4648 { padding: false }, &normalised)
+    decode_base32_lenient(&SECRET_BASE32, normalised.as_bytes())
+}
+
+/// Decode `symbols`, tolerating a length no encoder produces (1, 3 or 6
+/// symbols past a full block): such a final symbol holds no whole byte, so
+/// it is checked to be a symbol and then dropped, as earlier builds did.
+fn decode_base32_lenient(encoding: &data_encoding::Encoding, symbols: &[u8]) -> Option<Vec<u8>> {
+    match encoding.decode(symbols) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind == data_encoding::DecodeKind::Length => {
+            let (last, head) = symbols.split_last()?;
+            encoding.decode(&[*last, *last]).ok()?;
+            encoding.decode(head).ok()
+        }
+        Err(_) => None,
+    }
 }
 
 /// Seconds since the Unix epoch for "now". Centralised so tests and the
@@ -194,6 +217,36 @@ mod tests {
         // Crossing the 120s boundary into the next step changes the code
         // (overwhelmingly likely).
         assert_ne!(code_at(&a, 100.0), code_at(&a, 130.0));
+    }
+
+    /// RFC 4648 section 10 vectors, plus the inputs the lenient decoder
+    /// must keep accepting: unused trailing bits that are not zero, and a
+    /// stray final symbol that carries no whole byte.
+    #[test]
+    fn secrets_decode_like_rfc4648_and_stay_lenient() {
+        for (encoded, raw) in [
+            ("MY", &b"f"[..]),
+            ("MZXQ", b"fo"),
+            ("MZXW6", b"foo"),
+            ("MZXW6YQ", b"foob"),
+            ("MZXW6YTB", b"fooba"),
+            ("MZXW6YTBOI", b"foobar"),
+            ("mzxw 6ytb oi======", b"foobar"),
+            ("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", b"12345678901234567890"),
+            ("MZ", b"f"),
+            ("MZXW6YTBO", b"fooba"),
+            ("MZXW6YTBOIA", b"foobar"),
+            ("MZXW6YTBOIAAAA", b"foobar\0\0"),
+        ] {
+            assert_eq!(decode_secret(encoded).as_deref(), Some(raw), "{encoded}");
+        }
+        for invalid in ["", "MZXW6YTB1", "MZXW6YT!", "MZXW6YTBO!", "A"] {
+            let decoded = decode_secret(invalid);
+            assert!(
+                decoded.as_ref().is_none_or(Vec::is_empty),
+                "{invalid}: {decoded:?}"
+            );
+        }
     }
 
     #[test]
