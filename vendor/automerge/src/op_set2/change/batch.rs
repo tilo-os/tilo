@@ -1,3 +1,5 @@
+pub(crate) mod native_validation;
+
 use crate::change_queue::ChangeBatch;
 use crate::hydrate::Value;
 use crate::iter::RichTextDiff;
@@ -681,7 +683,7 @@ impl<'a> ValueState<'a> {
             match (self.doc.0.take(), self.change.0.take()) {
                 (None, Some(c)) => log.insert(obj, index, c.value, c.id, c.conflict),
                 (Some(d), Some(c)) if d.id == c.id => {
-                    let n = c.value.as_i64() - d.value.as_i64();
+                    let n = c.value.as_i64().wrapping_sub(d.value.as_i64());
                     if n != 0 {
                         log.increment_seq(obj, index, n, c.id);
                     }
@@ -821,7 +823,7 @@ impl<'a> ValueState<'a> {
                 }
             }
             (Some(d), Some(c)) if d.id == c.id => {
-                let n = c.value.as_i64() - d.value.as_i64();
+                let n = c.value.as_i64().wrapping_sub(d.value.as_i64());
                 if n != 0 {
                     log.increment_map(obj, key, n, c.id);
                 }
@@ -887,7 +889,7 @@ impl BatchApply {
             let obj_range = walker.seek_to_obj(os.obj);
             let doc_ops = doc.ops().iter_range(&obj_range);
             match obj_info.object_type(&os.obj) {
-                Some(ObjType::Map) => {
+                Some(ObjType::Map | ObjType::Table) => {
                     let mut walker = MapWalker::new(
                         os.obj,
                         doc_ops,
