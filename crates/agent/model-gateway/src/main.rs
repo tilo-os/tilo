@@ -4,7 +4,6 @@
 //! planning call. It does not include a general `LiteLLM` control plane.
 
 use std::fs;
-use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -45,7 +44,8 @@ enum Action {
     },
 }
 
-const MAX_HANDOFF: usize = 4096;
+/// The launcher's handoff: a little-endian `u32` length, then JSON.
+const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4096);
 const SETTINGS_APP: &str = "so.tilo.settings";
 const AGENT_APP: &str = "so.tilo.agent";
 const PHOTOS_APP: &str = "so.tilo.photos";
@@ -185,19 +185,14 @@ fn serve_client(mut stream: UnixStream) {
 }
 
 fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
-    let mut raw_length = [0_u8; 4];
-    stream
-        .read_exact(&mut raw_length)
-        .map_err(|_| "missing launcher authentication".to_string())?;
-    let length = usize::try_from(u32::from_le_bytes(raw_length))
-        .map_err(|_| "invalid launcher authentication".to_string())?;
-    if length > MAX_HANDOFF {
-        return Err("oversized launcher authentication".into());
-    }
-    let mut body = vec![0_u8; length];
-    stream
-        .read_exact(&mut body)
-        .map_err(|_| "truncated launcher authentication".to_string())?;
+    let body = match HANDOFF_FRAMING.read(stream) {
+        Ok(Some(body)) => body,
+        Ok(None) => return Err("missing launcher authentication".into()),
+        Err(wire_frame::FrameError::TooLarge(_)) => {
+            return Err("oversized launcher authentication".into());
+        }
+        Err(_) => return Err("truncated launcher authentication".into()),
+    };
     let handoff: Handoff =
         serde_json::from_slice(&body).map_err(|_| "invalid launcher authentication".to_string())?;
     if handoff.protocol != 1

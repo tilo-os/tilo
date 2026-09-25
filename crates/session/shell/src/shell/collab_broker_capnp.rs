@@ -64,10 +64,6 @@ use crate::shell::state::{
     WorkspaceTree, WorkspaceTreeHandle,
 };
 
-/// Launcher preambles are deliberately tiny: they only bind a socket to the
-/// shell's already-created process record. The cert presented by the
-/// app still decides workspace membership and delegated-agent authority.
-const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
 const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
@@ -8541,26 +8537,15 @@ async fn read_collab_launch_handoff<S: tokio::io::AsyncRead + Unpin>(
             "collaboration launch marker changed while being read".into(),
         ));
     }
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff length: {error}"
-        ))
-    })?;
-    let length = usize::try_from(u32::from_le_bytes(length)).map_err(|_| {
-        capnp::Error::failed("collaboration launch handoff length overflows usize".into())
-    })?;
-    if length == 0 || length > MAX_COLLAB_LAUNCH_HANDOFF_BYTES {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an invalid length".into(),
-        ));
-    }
-    let mut bytes = vec![0_u8; length];
-    stream.read_exact(&mut bytes).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff: {error}"
-        ))
-    })?;
+    let bytes = launcher::services::COLLAB_LAUNCH_FRAMING
+        .read_async(stream)
+        .await
+        .and_then(|bytes| bytes.ok_or(wire_frame::FrameError::Closed))
+        .map_err(|error| {
+            capnp::Error::failed(format!(
+                "could not read collaboration launch handoff: {error}"
+            ))
+        })?;
     serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })
