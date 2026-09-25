@@ -326,6 +326,9 @@ impl Table {
         });
     }
     fn finish(&self) {
+        self.finish_with_ratio(USEFUL_RATIO);
+    }
+    fn finish_with_ratio(&self, useful_ratio: f64) {
         println!(
             "{:<36} {:<16} {:>12} {:>12} {:>8}",
             "shape", "quantity", "measured", "bound", "ratio"
@@ -343,9 +346,9 @@ impl Table {
                     c.shape, c.what, c.measured, c.bound
                 ));
             }
-            if c.useful && c.measured > USEFUL_FLOOR && ratio > USEFUL_RATIO {
+            if c.useful && c.measured > USEFUL_FLOOR && ratio > useful_ratio {
                 failures.push(format!(
-                    "{} {}: bound/measured {:.2} > {USEFUL_RATIO}",
+                    "{} {}: bound/measured {:.2} > {useful_ratio}",
                     c.shape, c.what, ratio
                 ));
             }
@@ -713,6 +716,22 @@ fn typed_history(splices: usize, every: usize) -> AutoCommit {
     doc
 }
 
+/// Typing backwards: `splices` splices of "typed words " at the start of
+/// the text, committing every `every` splices. Document order is the
+/// reverse of op order, so the load collector queues nearly every op.
+fn reverse_typed_history(splices: usize, every: usize) -> AutoCommit {
+    let mut doc = AutoCommit::new().with_actor(actor(1));
+    let text = doc.put_object(ROOT, "t", ObjType::Text).unwrap();
+    for i in 0..splices {
+        doc.splice_text(&text, 0, 0, "typed words ").unwrap();
+        if (i + 1) % every == 0 {
+            doc.commit();
+        }
+    }
+    doc.commit();
+    doc
+}
+
 /// `n` single keystrokes, committing each.
 fn keystrokes(n: usize) -> AutoCommit {
     let mut doc = AutoCommit::new().with_actor(actor(1));
@@ -724,7 +743,7 @@ fn keystrokes(n: usize) -> AutoCommit {
     doc
 }
 
-fn measure_snapshot(t: &mut Table, name: &str, doc: &mut AutoCommit) {
+fn measure_snapshot(t: &mut Table, name: &str, doc: &mut AutoCommit, useful: bool) -> usize {
     let bytes = doc.save();
     let changes = doc.get_changes(&[]);
     let mut limits = NativeLimits::default();
@@ -739,32 +758,96 @@ fn measure_snapshot(t: &mut Table, name: &str, doc: &mut AutoCommit) {
         .unwrap();
     let parsed_bound = shape.native_parsed_probe().unwrap();
     let (loaded, load_peak) = peak_of(|| AutoCommit::load(&bytes).unwrap());
-    let (copy, retained) = retained_of(|| loaded.clone());
-    drop(copy);
     drop(loaded);
     let (held, parsed) = retained_of(|| changes.clone());
     drop(held);
     println!(
-        "{name}: {} ops, {} changes, {} bytes, retained {retained}",
+        "{name}: {} ops, {} changes, {} bytes",
         shape.operations(),
         changes.len(),
         bytes.len()
     );
-    t.add(name, "load peak", load_peak, load_bound, true);
-    t.add(name, "parsed changes", parsed, parsed_bound, true);
+    t.add(name, "load peak", load_peak, load_bound, useful);
+    t.add(name, "parsed changes", parsed, parsed_bound, useful);
+    load_bound
 }
 
+/// Typed-history snapshots (one document chunk), the common production
+/// load. Sound on every shape; `bound/measured` ≤ 3.5 where op order in the
+/// document matches change order closely enough. Two shapes are exempt from
+/// the ratio: a whole history in 2 changes (rebuilt change columns are
+/// charged at literal width per op, and the collector queue at one BTree
+/// entry per op, while forward typing encodes ~1 byte per op and queues
+/// nothing — reverse typing below shows the queue term is real).
 #[test]
 fn typed_history_snapshots_load_within_tight_bounds() {
-    println!("sizes {:?}", automerge::resource_limits::NativeShape::native_sizes_probe());
     let mut t = Table::default();
-    for (name, mut doc) in [
-        ("typed 1k splices /3", typed_history(1_000, 3)),
-        ("typed 4k splices /3", typed_history(4_000, 3)),
-        ("typed 4k splices in 2 changes", typed_history(4_000, 2_000)),
-        ("keystrokes 10k /1", keystrokes(10_000)),
+    for (name, mut doc, useful) in [
+        ("typed 1k splices /3", typed_history(1_000, 3), true),
+        ("typed 4k splices /3", typed_history(4_000, 3), true),
+        (
+            "typed 4k splices in 2 changes",
+            typed_history(4_000, 2_000),
+            false,
+        ),
+        ("keystrokes 10k /1", keystrokes(10_000), true),
+        ("reverse typed 4k /3", reverse_typed_history(4_000, 3), true),
+        (
+            "reverse typed 4k in 2 changes",
+            reverse_typed_history(4_000, 2_000),
+            false,
+        ),
     ] {
-        measure_snapshot(&mut t, name, &mut doc);
+        measure_snapshot(&mut t, name, &mut doc, useful);
     }
-    t.finish();
+    t.finish_with_ratio(3.5);
+}
+
+/// 100k typed characters must fit a 64 MiB allowance with margin.
+#[test]
+fn typed_history_of_100k_chars_fits_64_mib() {
+    let mut t = Table::default();
+    let bound = measure_snapshot(
+        &mut t,
+        "typed 8.4k splices /3",
+        &mut typed_history(8_400, 3),
+        true,
+    );
+    t.finish_with_ratio(3.5);
+    assert!(bound <= 56 << 20, "{bound} > 56 MiB");
+}
+
+/// 200k characters: measured to confirm whether a sound bound can fit
+/// 64 MiB (it cannot when the unbounded load itself peaks near it).
+#[test]
+#[ignore = "slow in debug builds; run with --ignored for the 200k-char figure"]
+fn typed_history_of_200k_chars() {
+    let mut t = Table::default();
+    let bound = measure_snapshot(
+        &mut t,
+        "typed 16.7k splices /3",
+        &mut typed_history(16_700, 3),
+        true,
+    );
+    t.finish_with_ratio(3.5);
+    println!("200k chars: load bound {bound}");
+}
+
+/// The production snapshot path: a blank document admits a 48k-op typed
+/// history through `apply_incoming_checked` within a 32 MiB allowance.
+#[test]
+fn typed_snapshot_is_admitted_into_a_blank_document_within_32_mib() {
+    use automerge::resource_limits::{NativeDependencyPolicy, NativeIncomingOutcome};
+    let bytes = typed_history(4_000, 3).save();
+    let mut blank = AutoCommit::new();
+    let credit = NativeAllowance::new(32 << 20).unwrap();
+    let outcome = blank
+        .apply_incoming_checked(
+            &bytes,
+            &NativeLimits::default(),
+            &credit,
+            NativeDependencyPolicy::RequireComplete,
+        )
+        .unwrap();
+    assert_eq!(outcome, NativeIncomingOutcome::Applied { changed: true });
 }

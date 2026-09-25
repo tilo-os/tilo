@@ -51,21 +51,4 @@ impl NativeShape {
     pub fn native_parsed_probe(&self) -> Result<usize, NativeResourceError> {
         dims::incoming_changes_bound(&IncomingDims::from_shape(self))
     }
-
-    #[doc(hidden)]
-    pub fn native_sizes_probe() -> [usize; 8] {
-        use crate::op_set2::change::collector::ProgressiveEncoder;
-        use crate::op_set2::op_set::MarkIndexBuilder;
-        use crate::op_set2::OpBuilder;
-        [
-            std::mem::size_of::<Option<MarkIndexBuilder>>(),
-            std::mem::size_of::<Option<OpBuilder<'static>>>(),
-            std::mem::size_of::<ProgressiveEncoder<'static>>(),
-            std::mem::size_of::<crate::Change>(),
-            std::mem::size_of::<crate::op_set2::ChangeOp>(),
-            std::mem::size_of::<crate::op_set2::change::BuildChangeMetadata<'static>>(),
-            0,
-            0,
-        ]
-    }
 }
