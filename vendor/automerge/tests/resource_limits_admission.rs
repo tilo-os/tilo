@@ -186,9 +186,9 @@ fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
     (value, allocations)
 }
 
-/// Measures `operation` and asserts every allocation it made was already
-/// reserved on `allowance` when it happened.
-fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+/// Measures `operation` while tracking, at each allocation, how far live
+/// bytes exceed what is reserved on `allowance`. Does not assert.
+fn measure_checked<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -210,6 +210,13 @@ fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) 
             eprintln!("first unreserved allocation:\n{trace}");
         }
     }
+    result
+}
+
+/// Measures `operation` and asserts every allocation it made was already
+/// reserved on `allowance` when it happened.
+fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+    let result = measure_checked(allowance, operation);
     assert_eq!(
         result.1.unreserved_peak, 0,
         "{}: every allocation must already be reserved (bytes, live, reserved): {:?}",
@@ -1681,39 +1688,60 @@ mod budget {
         v
     }
 
-    /// apply_incoming_checked: for every allowance size the result is either
-    /// success or WorkBytes with the document unchanged, every allocation is
-    /// pre-reserved, and success is monotone in the allowance.
+    /// apply_incoming_checked (0.8 semantics): everything up to and including
+    /// validation is precharged (normalize, preflight, parse output and
+    /// transients, validation scratch, super-linear graph terms); the linear
+    /// batch apply is deliberately not. So at every allowance the result is
+    /// either WorkBytes with zero unreserved allocation and the document
+    /// unchanged, or success; success is monotone in the allowance; and the
+    /// allowance's retained bytes return to baseline either way.
     #[test]
     fn incoming_allowance_sweep() {
         let mut src = medium_doc();
         let input = src.save();
         let mut first_ok = None;
+        let mut unexpected = Vec::new();
         for size in sizes() {
             let Ok(credit) = NativeAllowance::new(size) else { continue };
+            let baseline = credit.retained_bytes();
             let mut doc = seeded_doc();
             let before = snapshot(&mut doc);
-            let label: &'static str = Box::leak(format!("apply_incoming_checked at allowance {size}").into_boxed_str());
-            let result = precharged_as(label, &credit, || {
+            let (result, allocations) = measure_checked(&credit, || {
                 catch_unwind(AssertUnwindSafe(|| {
                     doc.apply_incoming_checked(&input, &NativeLimits::default(), &credit, NativeDependencyPolicy::RequireComplete)
                 }))
-            })
-            .unwrap_or_else(|_| panic!("panicked at allowance {size}"));
+            });
+            let result = result.unwrap_or_else(|_| panic!("panicked at allowance {size}"));
             match result {
                 Ok(NativeIncomingOutcome::Applied { changed: true }) => {
                     first_ok.get_or_insert(size);
-                    assert_eq!(doc.get_heads(), src.get_heads());
+                    let mut expected = src.get_heads();
+                    expected.extend(before.1.iter().copied());
+                    expected.sort();
+                    assert_eq!(doc.get_heads(), expected);
                 }
                 Err(NativeMutationError::Resource(NativeResourceError::WorkBytes)) => {
-                    assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
-                    assert!(snapshot(&mut doc) == before, "refusal at {size} mutated the document");
+                    if first_ok.is_some() {
+                        unexpected.push(format!("allowance {size}: refused after succeeding at {first_ok:?}"));
+                    }
+                    if allocations.unreserved_peak != 0 {
+                        unexpected.push(format!(
+                            "allowance {size}: refusal allocated unreserved (bytes, live, reserved) {:?}; rerun with AM012_TRACE=1",
+                            allocations.first_unreserved
+                        ));
+                    }
+                    if snapshot(&mut doc) != before {
+                        unexpected.push(format!("allowance {size}: refusal mutated the document"));
+                    }
                 }
-                other => panic!("allowance {size}: unexpected {other:?}"),
+                other => unexpected.push(format!("allowance {size}: {other:?}")),
             }
-            assert_eq!(credit.available_bytes() + credit.retained_bytes(), size, "leaked reservation at {size}");
+            if credit.retained_bytes() != baseline {
+                unexpected.push(format!("allowance {size}: retained {} after the call, baseline {baseline}", credit.retained_bytes()));
+            }
         }
         println!("incoming: first success at allowance {first_ok:?} for {} input bytes", input.len());
+        assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
         assert!(first_ok.is_some(), "never succeeded");
     }
 
