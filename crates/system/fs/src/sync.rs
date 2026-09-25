@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bytes::Bytes;
-use futures_lite::StreamExt;
+use futures_util::StreamExt;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};

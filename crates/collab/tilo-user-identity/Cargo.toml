@@ -86,8 +86,9 @@ zeroize.workspace = true
 
 # Base32 for the enrollment-token wire form. Crockford variant
 # (no ambiguity between 0/O or 1/l/I) so a user can read the token
-# out loud without garble. Small dep, pinned to 0.5.
-base32.workspace = true
+# out loud without garble; the alphabet is declared at compile time.
+data-encoding.workspace = true
+data-encoding-macro.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 private-fs = { path = "../../system/private-fs" }

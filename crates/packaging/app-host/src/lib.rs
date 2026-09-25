@@ -83,7 +83,7 @@ pub use tilo_app_package::PackageId;
 ///   registry.toml       # the Pinning + lastUsedUnix index
 /// ```
 pub fn default_store_root() -> PathBuf {
-    let base = dirs::data_dir().unwrap_or_else(|| {
+    let base = xdg_paths::data_dir().unwrap_or_else(|| {
         // dirs gives `~/.local/share` on Linux; if that fails we
         // fall back to a per-user temp dir.
         std::env::temp_dir()

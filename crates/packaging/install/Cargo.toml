@@ -23,7 +23,6 @@ atomic-file = { path = "../../../crates/system/atomic-file" }
 tilo-app-package = { path = "../tilo-app-package" }
 runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
-dirs.workspace = true
 hex.workspace = true
 serde.workspace = true
 toml.workspace = true

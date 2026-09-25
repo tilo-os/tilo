@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use futures::stream::FuturesUnordered;
-use futures_lite::StreamExt;
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
