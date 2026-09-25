@@ -5,12 +5,15 @@
 //! revalidates every field before dropping any local content blobs.
 
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use wire_frame::{FrameError, Framing};
 
 pub const DEFAULT_STORAGE_SOCKET: &str = "/run/tilo/fs-storage.sock";
-const MAX_FRAME: usize = 16 * 1024 * 1024;
+
+/// Every storage-socket message, in both directions, is one frame: a
+/// little-endian `u32` length, then the postcard-encoded request or response.
+pub const STORAGE_FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024);
 
 // Five independent on/off facts about a synced file. The struct mirrors the
 // storage daemon's wire protocol; callers use each fact separately.
@@ -144,50 +147,54 @@ impl StorageClient {
     }
 
     fn request(&mut self, request: &StorageRequest) -> std::io::Result<StorageResponse> {
-        write_frame(&mut self.stream, request)?;
-        read_frame(&mut self.stream)
+        STORAGE_FRAMING.write_value(&mut self.stream, request)?;
+        Ok(STORAGE_FRAMING
+            .read_value(&mut self.stream)?
+            .ok_or(FrameError::Closed)?)
     }
-}
-
-/// # Errors
-///
-/// Returns an [`std::io::Error`] if `value` fails to serialize, the encoded
-/// frame exceeds [`MAX_FRAME`], or the write to `writer` fails.
-pub fn write_frame<W: Write, T: Serialize>(writer: &mut W, value: &T) -> std::io::Result<()> {
-    let bytes = postcard::to_allocvec(value).map_err(std::io::Error::other)?;
-    if bytes.len() > MAX_FRAME {
-        return Err(std::io::Error::other("storage frame too large"));
-    }
-    // Bounded by the MAX_FRAME check above (16 MiB), well under u32::MAX.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "bytes.len() is checked <= MAX_FRAME (16 MiB) just above"
-    )]
-    let len = bytes.len() as u32;
-    writer.write_all(&len.to_le_bytes())?;
-    writer.write_all(&bytes)
-}
-
-/// # Errors
-///
-/// Returns an [`std::io::Error`] if the read from `reader` fails, the
-/// encoded frame length exceeds [`MAX_FRAME`], or the bytes fail to
-/// deserialize as `T`.
-pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(reader: &mut R) -> std::io::Result<T> {
-    let mut len = [0u8; 4];
-    reader.read_exact(&mut len)?;
-    let len = u32::from_le_bytes(len) as usize;
-    if len > MAX_FRAME {
-        return Err(std::io::Error::other("storage frame too large"));
-    }
-    let mut bytes = vec![0; len];
-    reader.read_exact(&mut bytes)?;
-    postcard::from_bytes(&bytes).map_err(std::io::Error::other)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+
+    /// The storage socket's bytes: a little-endian `u32` length, then postcard.
+    /// The filesystem daemon on the other end is built separately, so any
+    /// change here must fail.
+    #[test]
+    fn storage_wire_bytes_are_pinned() {
+        const REQUEST: [u8; 11] = [7, 0, 0, 0, 1, 1, 1, b'n', 7, 1, b'v'];
+        const RESPONSE: [u8; 12] = [8, 0, 0, 0, 1, 1, 2, 0xac, 0x02, 1, 1, b'x'];
+        let (client_end, mut daemon) = UnixStream::pair().unwrap();
+        daemon
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let daemon = std::thread::spawn(move || {
+            let mut request = [0_u8; REQUEST.len()];
+            daemon.read_exact(&mut request).unwrap();
+            daemon.write_all(&RESPONSE).unwrap();
+            request
+        });
+        let mut client = StorageClient { stream: client_end };
+        let report = client
+            .evict(vec![EvictionSelection {
+                identity: "n".into(),
+                inode: 7,
+                version: "v".into(),
+            }])
+            .unwrap();
+        assert_eq!(daemon.join().unwrap(), REQUEST);
+        assert_eq!(
+            report,
+            EvictionReport {
+                queued_files: 1,
+                evicted_files: 2,
+                freed_bytes: 300,
+                skipped: vec!["x".into()],
+            }
+        );
+    }
 
     #[test]
     fn selection_carries_all_revalidation_identity() {
@@ -233,8 +240,11 @@ mod tests {
             apps: Vec::new(),
         });
         let mut wire = Vec::new();
-        write_frame(&mut wire, &expected).unwrap();
-        let decoded: StorageResponse = read_frame(&mut std::io::Cursor::new(wire)).unwrap();
+        STORAGE_FRAMING.write_value(&mut wire, &expected).unwrap();
+        let decoded: StorageResponse = STORAGE_FRAMING
+            .read_value(&mut std::io::Cursor::new(wire))
+            .unwrap()
+            .unwrap();
         match decoded {
             StorageResponse::Snapshot(snapshot) => {
                 assert!(!snapshot.online);

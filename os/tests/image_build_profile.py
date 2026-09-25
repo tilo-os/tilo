@@ -582,6 +582,112 @@ exit 0
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("choose only one installer binary source", result.stderr)
 
+    def test_compact_installer_root_is_opt_in_and_capacity_bounded(self):
+        self.script = self.write("os/dev/build-custom-installer.sh",
+                                 (REPO / "os/dev/build-custom-installer.sh").read_text())
+        for path in ("os/usr/share/tilo/fixture", "os/dev/uki-cmdline.py",
+                     "os/etc/greetd/config.toml", "os/etc/greetd/config.installer.toml"):
+            self.write(path, "fixture only\n")
+        disk_args = self.root / "disk-arguments"
+        self.write("os/dev/disk-image.sh", """\
+#!/bin/sh
+printf '%s\\0' "$@" > "$TILO_TEST_DISK_ARGS"
+exit 97
+""", executable=True)
+        self.write("bin/podman", """\
+#!/bin/sh
+case "$1 $2" in
+  'image exists') exit 0 ;;
+  'image inspect') printf '%s\\n' "$TILO_TEST_IMAGE_BYTES" ;;
+  'build '*) exit 0 ;;
+  *) exit 72 ;;
+esac
+""", executable=True)
+        output = self.os_dir / "output/installer"
+        sentinel = output / "qcow2/existing.qcow2"
+        gib = 1024**3
+        mib = 1024**2
+        for compact, image_bytes, expected_fs, expected_root in (
+            (False, 10 * gib, "btrfs", "40G"),
+            (False, 17 * gib + 800 * mib, "btrfs", "54G"),
+            (True, 10 * gib, "ext4", "40G"),
+            (True, 17 * gib + 800 * mib, "ext4", "40G"),
+        ):
+            with self.subTest(compact=compact, image_bytes=image_bytes):
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.write_text("existing image")
+                disk_args.unlink(missing_ok=True)
+                args = ["--reuse-image-installer"] + (["--compact-ext4"] if compact else [])
+                result = self.run_builder(*args, TILO_TEST_IMAGE_BYTES=str(image_bytes),
+                                          TILO_TEST_DISK_ARGS=str(disk_args))
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertTrue(disk_args.exists(), result.stderr)
+                arguments = disk_args.read_bytes().decode().split("\0")[:-1]
+                self.assertEqual(arguments[arguments.index("--root-min") + 1], expected_root)
+                self.assertEqual(arguments[arguments.index("--rootfs") + 1], expected_fs)
+                if compact:
+                    self.assertEqual(arguments[arguments.index("--root-max") + 1], "40G")
+                else:
+                    self.assertNotIn("--root-max", arguments)
+                self.assertFalse(sentinel.exists())
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("preserve this image")
+        disk_args.unlink()
+        result = self.run_builder("--reuse-image-installer", "--compact-ext4",
+                                  TILO_TEST_IMAGE_BYTES=str(19 * gib),
+                                  TILO_TEST_DISK_ARGS=str(disk_args))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("2x OCI image bytes plus 4 GiB slack", result.stderr)
+        self.assertEqual(sentinel.read_text(), "preserve this image")
+        self.assertFalse(disk_args.exists())
+        result = self.run_builder("--reuse-image-installer", "--compact-ext4", "--image-only")
+        self.assertIn("requires disk creation", result.stderr)
+
+    def test_disk_image_rootfs_limit_reaches_repart_definition(self):
+        self.script = self.write("os/dev/disk-image.sh", (REPO / "os/dev/disk-image.sh").read_text())
+        root_definition = self.root / "root-definition"
+        self.write("bin/podman", """\
+#!/bin/sh
+case "$1 $2" in
+  'image exists') exit 0 ;;
+  'run --rm') exit 1 ;;
+  *) exit 72 ;;
+esac
+""", executable=True)
+        self.write("bin/sudo", """\
+#!/bin/sh
+[ "$1" = -n ] && shift
+case "$1 $2" in
+  'podman image') exit 0 ;;
+  'systemd-repart '*)
+    for argument in "$@"; do
+      case "$argument" in
+        --definitions=*) cp "${argument#--definitions=}/02-root.conf" "$TILO_TEST_ROOT_DEF" ;;
+      esac
+    done
+    exit 97 ;;
+  *) exit 0 ;;
+esac
+""", executable=True)
+        # The repart stub exits before an image is made; truncate is also
+        # stubbed so this test never reserves even a sparse multi-GiB file.
+        self.write("bin/truncate", "#!/bin/sh\nexit 0\n", executable=True)
+        result = self.run_builder("fixture", str(self.root / "disk"), "--no-composefs",
+                                  "--no-default-kargs", "--root-min", "2G",
+                                  "--root-max", "3G", "--rootfs", "ext4",
+                                  TILO_TEST_ROOT_DEF=str(root_definition))
+        self.assertNotEqual(result.returncode, 0)
+        definition = root_definition.read_text()
+        self.assertIn("Format=ext4\n", definition)
+        self.assertIn("SizeMinBytes=2G\n", definition)
+        self.assertIn("SizeMaxBytes=3G\n", definition)
+        root_definition.unlink()
+        result = self.run_builder("fixture", str(self.root / "disk"), "--no-composefs",
+                                  "--root-min", "3G", "--root-max", "2G",
+                                  TILO_TEST_ROOT_DEF=str(root_definition))
+        self.assertIn("smaller than --root-min", result.stderr)
+        self.assertFalse(root_definition.exists())
+
     def test_installer_containerfile_binds_from_to_the_base_argument(self):
         instructions = [line.strip() for line in (REPO / "os/Containerfile.installer").read_text().splitlines()
                         if line.strip() and not line.lstrip().startswith("#")]

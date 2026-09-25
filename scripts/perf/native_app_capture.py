@@ -218,7 +218,7 @@ def main(app_kind='scratchpad'):
                    XDG_CONFIG_HOME=str(out/'config'),XDG_CACHE_HOME=str(out/'cache'),
                    QOS_WORKSPACE_ID=str(uuid.uuid4()))
         with (out/'host-processes.txt').open('w') as host_log:
-            subprocess.run(['/bin/ps','-Ao','pid,pcpu,comm'],stdout=host_log,check=True)
+            subprocess.run(['ps','-Ao','pid,pcpu,comm'],stdout=host_log,check=True)
         with (out/'app.log').open('w') as log:
             launch_args=([str(binary)] if app_kind == 'settings' else
                          [str(binary),*([open_flag] if open_flag else []),str(out/fixture_name)])

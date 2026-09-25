@@ -4,13 +4,14 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 from contextlib import contextmanager
+
+from frozen_source_fixture import NATIVE_RECIPE
 
 ROOT = Path(__file__).resolve().parents[2]
 def load(name, file):
@@ -99,8 +100,8 @@ class Cache(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'tool bytes'):m.validate_toolchain(metadata,lambda args:b'fixture\n')
             with self.assertRaisesRegex(ValueError,'installed RPM'):m.validate_toolchain(metadata,lambda args:b'different\n')
 
-    def test_real_frozen_recipe_seam_preserves_cargo_graph_and_tail(self):
-        original=subprocess.check_output(['git','-C',str(ROOT),'show',m.SOURCE+':os/Containerfile']).decode()
+    def test_frozen_recipe_seam_preserves_cargo_graph_and_tail(self):
+        original=NATIVE_RECIPE
         normal,_=resume.derive_recipe(original,{'browser'},['tilo'])
         derived,_=resume.derive_recipe(original,{'browser'},['tilo'],thin_cache_approval_sha256='a'*64)
         self.assertLess(derived.index('cargo clean --profile thin-app'),derived.index('python3 /tilo-thin-cache/restore-thin-cache.py'))

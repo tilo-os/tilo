@@ -12,6 +12,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 hex.workspace = true
 sha2.workspace = true
+wire-frame = { path = "../../system/wire-frame" }
 
 [lints]
 workspace = true

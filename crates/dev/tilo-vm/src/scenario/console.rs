@@ -8,10 +8,14 @@
 //! replies to anything else — a request written before the guest was
 //! listening, answered after this client gave up on it — are skipped.
 
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
 use serde_json::{Map, Value, json};
 
@@ -106,6 +110,7 @@ fn refusal_or_protocol(reply: &Value) -> ConsoleError {
 /// The console socket of a running scenario VM.
 pub struct SocketConsole {
     path: PathBuf,
+    #[cfg(unix)]
     next: u64,
     /// How long one request may wait for its answer.
     pub timeout: Duration,
@@ -115,6 +120,7 @@ impl SocketConsole {
     pub fn new(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
+            #[cfg(unix)]
             next: 0,
             timeout: Duration::from_secs(15),
         }
@@ -126,6 +132,14 @@ impl SocketConsole {
 }
 
 impl Console for SocketConsole {
+    #[cfg(windows)]
+    fn request(&mut self, _request: Value) -> Result<Value, ConsoleError> {
+        Err(ConsoleError::Unreachable(
+            "scenario console sockets require a Unix host".into(),
+        ))
+    }
+
+    #[cfg(unix)]
     fn request(&mut self, mut request: Value) -> Result<Value, ConsoleError> {
         self.next = self.next.wrapping_add(1);
         let seq = format!("tilo-vm-{}-{}", std::process::id(), self.next);
@@ -167,8 +181,10 @@ impl Console for SocketConsole {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
+    #[cfg(unix)]
     #[test]
     fn stale_replies_are_skipped_and_the_matching_one_returned() {
         let dir = tempfile::tempdir().unwrap();

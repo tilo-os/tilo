@@ -4170,7 +4170,6 @@ mod tests {
         replies: Vec<runtime_identity::wire::Response>,
     ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
         use runtime_identity::wire::Response;
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let mut responses = vec![Response::Metadata {
             display_name: "Host fixture".into(),
             avatar_color: [1, 2, 3],
@@ -4186,24 +4185,19 @@ mod tests {
         let captured = output.clone();
         let (client, mut server) = tokio::io::duplex(64 * 1024);
         tokio::task::spawn_local(async move {
+            let framing = runtime_identity::wire::FRAMING;
             for response in responses {
-                let mut len = [0; 4];
-                if server.read_exact(&mut len).await.is_err() {
+                let Ok(Some(body)) = framing.read_async(&mut server).await else {
                     return;
-                }
-                let body_len = u32::from_le_bytes(len) as usize;
-                let mut body = vec![0; body_len];
-                if server.read_exact(&mut body).await.is_err() {
-                    return;
-                }
-                captured.lock().unwrap().extend_from_slice(&len);
-                captured.lock().unwrap().extend_from_slice(&body);
-                let frame = postcard::to_allocvec(&response).unwrap();
-                if server
-                    .write_all(&u32::try_from(frame.len()).unwrap().to_le_bytes())
+                };
+                captured
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&framing.encode(&body).unwrap());
+                if framing
+                    .write_value_async(&mut server, &response)
                     .await
                     .is_err()
-                    || server.write_all(&frame).await.is_err()
                 {
                     return;
                 }

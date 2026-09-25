@@ -1,10 +1,13 @@
 """The live Files route takes a directory positional, not screenshot --path."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+
+from fixture_host_tools import fixture_path
 
 
 class FileExplorerCollectorTests(unittest.TestCase):
@@ -20,7 +23,7 @@ class FileExplorerCollectorTests(unittest.TestCase):
             scenario = root / 'scenario.json'
             scenario.write_text(json.dumps(dict(name='Files route',interval_us=16667,warmup_steps=0,steps=[dict(kind='wheel',dx=0,dy=-3)])))
             out = root / 'runs'
-            result = subprocess.run([sys.executable,str(Path(__file__).with_name('collect-file-explorer-native.py')),'--binary',str(app),'--fixture-tool',str(seed),'--scenario',str(scenario),'--mode','scroll','--output-root',str(out)],capture_output=True,text=True)
+            result = subprocess.run([sys.executable,str(Path(__file__).with_name('collect-file-explorer-native.py')),'--binary',str(app),'--fixture-tool',str(seed),'--scenario',str(scenario),'--mode','scroll','--output-root',str(out)],capture_output=True,text=True,env=dict(os.environ,PATH=fixture_path(root)))
             self.assertEqual(result.returncode,1,result.stderr)
             run = next(out.iterdir())
             self.assertIn('production directory opened',(run/'app.log').read_text())
@@ -29,3 +32,7 @@ class FileExplorerCollectorTests(unittest.TestCase):
             self.assertFalse(report['performance_certified'])
             metadata=json.loads((run/'metadata.json').read_text())
             self.assertEqual(metadata['hashes_before'],metadata['hashes_after'])
+
+
+if __name__ == '__main__':
+    unittest.main()
