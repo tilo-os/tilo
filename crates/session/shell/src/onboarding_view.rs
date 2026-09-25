@@ -8,6 +8,12 @@
 //! file is only the composition, built from shared `ui` widgets (`Card`,
 //! `Banner`, `Text`, `Button`, `Checkbox`) so the ceremony inherits the
 //! system theme, focus order and accessibility like the rest of the desktop.
+//!
+//! On a Tilo system that has not opted in yet, setup also offers the media
+//! codecs pack after the backup step ([`CodecSetup`]). It is an explicit
+//! opt-in (a button, nothing pre-selected), runs through the same polkit-
+//! allowed unit as Settings, and never blocks setup: the download continues in
+//! the background and the result arrives as a notification.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -15,6 +21,8 @@ use std::io::Read as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,6 +45,7 @@ use crate::onboarding::{
     ACKNOWLEDGEMENT, DONE_BODY, DONE_TITLE, INTRO_BODY, INTRO_POINTS, INTRO_TITLE, MintedIdentity,
     NO_RECOVERY_POINTS, NO_RECOVERY_TITLE, Onboarding, Screen,
 };
+use os_actions::codec_pack::{CodecAction, CodecPackStatus, PackState};
 
 const PANEL_MAX_WIDTH: f32 = 760.0;
 // Longer translated/large-text pages scroll inside this limit. Short pages
@@ -253,6 +262,11 @@ pub enum OnboardingVisualState {
     TourStart,
     CreateError,
     RestoreError,
+    Codecs,
+    CodecsInstalling,
+    CodecsWaitingForNetwork,
+    CodecsInstalled,
+    CodecsFailed,
 }
 
 pub const HOST_DESKTOP_INTRO_TITLE: &str = "Set up your Tilo identity";
@@ -278,6 +292,63 @@ pub const KEY_TOUR_BACK: &str = "onboarding.tour.back";
 pub const KEY_TOUR_NEXT: &str = "onboarding.tour.next";
 pub const KEY_TOUR_SKIP: &str = "onboarding.tour.skip";
 pub const KEY_FINISH: &str = "onboarding.finish";
+pub const KEY_CODECS_INSTALL: &str = "onboarding.codecs.install";
+pub const KEY_CODECS_SKIP: &str = "onboarding.codecs.skip";
+pub const KEY_CODECS_CONTINUE: &str = "onboarding.codecs.continue";
+
+pub const CODECS_TITLE: &str = "Install media codecs?";
+pub const CODECS_BODY: &str = "H.264 and HEVC, the formats most videos, cameras and calls use, are \
+patented and not part of Tilo. You can add them now with one click.";
+/// What the pack enables, in the owner's terms.
+pub const CODECS_ENABLES: &[&str] = &[
+    "Hardware-accelerated video on AMD and Intel graphics.",
+    "H.264 and HEVC playback in videos you open.",
+    "H.264 and HEVC encoding for screen sharing, recording and calls.",
+];
+/// Where it comes from, and what Tilo does not do.
+pub const CODECS_SOURCE: &str = "This computer downloads them directly from RPM Fusion and from \
+Cisco (OpenH264), under those projects' own licences, and checks every package's signature. Tilo \
+does not host or distribute them. You can remove them at any time in Settings, Updates.";
+pub const CODECS_BACKGROUND: &str = "Setup can continue while the download runs. You will get a \
+notification when the codecs are ready.";
+
+/// The media codecs step's connection to the system: the helper's status and
+/// the polkit-allowed unit runner ([`os_actions::codec_pack`]). Tests and the
+/// review renderer supply fakes.
+pub struct CodecSetup {
+    status: Arc<dyn Fn() -> CodecPackStatus + Send + Sync>,
+    runner: Arc<dyn Fn(CodecAction) -> Result<(), String> + Send + Sync>,
+    /// Follow the real status file (production only).
+    watch_system: bool,
+}
+
+impl CodecSetup {
+    /// The pack on this machine, when it can be installed here.
+    #[must_use]
+    pub fn system() -> Option<Self> {
+        if cfg!(test) || !os_actions::codec_pack::available() {
+            return None;
+        }
+        Some(Self {
+            status: Arc::new(CodecPackStatus::read),
+            runner: Arc::new(os_actions::codec_pack::run),
+            watch_system: true,
+        })
+    }
+
+    /// Injected status and runner.
+    #[must_use]
+    pub fn with(
+        status: Arc<dyn Fn() -> CodecPackStatus + Send + Sync>,
+        runner: Arc<dyn Fn(CodecAction) -> Result<(), String> + Send + Sync>,
+    ) -> Self {
+        Self {
+            status,
+            runner,
+            watch_system: false,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TourPage {
@@ -488,6 +559,23 @@ pub struct OnboardingView {
     nearby_child: Option<Child>,
     nearby_status: Option<String>,
     nearby_status_path: Option<PathBuf>,
+    codec_setup: Option<CodecSetup>,
+    /// Whether this run offers the media codecs step: the pack is available
+    /// and nobody has opted in yet (the installer may already have asked).
+    /// Fixed at construction so the step count never changes mid-setup.
+    codec_step_offered: bool,
+    /// The media codecs page is showing (between backup and the hand-off).
+    codec_page: bool,
+    codec_status: CodecPackStatus,
+    /// The install started from this page, until its unit returns.
+    codec_running: Option<Receiver<Result<(), String>>>,
+    /// A refusal from systemd or polkit (the helper's own errors arrive in
+    /// its status).
+    codec_error: Option<String>,
+    /// Raised by the status watcher and the install worker; the next frame
+    /// re-reads the status.
+    codec_changed: Arc<AtomicBool>,
+    codec_watching: bool,
 }
 
 impl OnboardingView {
@@ -611,6 +699,12 @@ impl OnboardingView {
         view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.identity_dir = Some(identity_dir);
         view.recovery_only = recovery_only;
+        if context == OnboardingContext::FullSystem
+            && !recovery_only
+            && let Some(setup) = CodecSetup::system()
+        {
+            view = view.with_codec_setup(setup);
+        }
         if recovery_only && view.flow.screen() == Screen::Intro {
             view.flow.begin_connect();
         }
@@ -697,6 +791,246 @@ impl OnboardingView {
             nearby_child: None,
             nearby_status: None,
             nearby_status_path: None,
+            codec_setup: None,
+            codec_step_offered: false,
+            codec_page: false,
+            codec_status: CodecPackStatus::default(),
+            codec_running: None,
+            codec_error: None,
+            codec_changed: Arc::new(AtomicBool::new(false)),
+            codec_watching: false,
+        }
+    }
+
+    /// Offer the media codecs step through `setup`, unless the owner already
+    /// opted in (then setup does not ask again).
+    #[must_use]
+    pub fn with_codec_setup(mut self, setup: CodecSetup) -> Self {
+        self.codec_status = (setup.status)();
+        self.codec_step_offered = !self.codec_status.opted_in();
+        self.codec_setup = Some(setup);
+        self
+    }
+
+    /// Whether the media codecs page is showing.
+    pub fn codec_page_visible(&self) -> bool {
+        self.codec_page
+    }
+
+    /// The helper status the codecs page last read.
+    pub fn codec_status(&self) -> &CodecPackStatus {
+        &self.codec_status
+    }
+
+    /// The media codecs page's text, in reading order (headless tests).
+    pub fn codec_page_lines(&self) -> Vec<String> {
+        let mut lines = vec![CODECS_TITLE.to_string(), CODECS_BODY.to_string()];
+        lines.extend(CODECS_ENABLES.iter().map(|line| (*line).to_string()));
+        lines.push(CODECS_SOURCE.to_string());
+        if let Some((title, message)) = self.codec_outcome() {
+            lines.push(title.to_string());
+            lines.extend(message);
+        }
+        if let Some(fraction) = self.codec_progress() {
+            lines.push(format!("Progress: {:.0}%", fraction * 100.0));
+        }
+        lines.extend(
+            self.codec_page_buttons()
+                .into_iter()
+                .map(|(_, label, _, _)| label.to_string()),
+        );
+        lines
+    }
+
+    /// Setup's total step count: the codecs step adds one.
+    fn total_steps(&self) -> u8 {
+        if self.codec_step_offered { 5 } else { 4 }
+    }
+
+    fn codec_install_requested(&self) -> bool {
+        self.codec_running.is_some()
+            || self.codec_error.is_some()
+            || self.codec_status.state != PackState::NotInstalled
+    }
+
+    fn codec_progress(&self) -> Option<f32> {
+        match self.codec_status.state {
+            PackState::Installing => Some(
+                self.codec_status
+                    .progress
+                    .as_ref()
+                    .map_or(0.0, os_actions::codec_pack::Progress::fraction),
+            ),
+            PackState::NotInstalled if self.codec_running.is_some() => Some(0.0),
+            _ => None,
+        }
+    }
+
+    /// Banner title and message for what happened to the request, if any.
+    fn codec_outcome(&self) -> Option<(&'static str, Option<String>)> {
+        if let Some(error) = &self.codec_error {
+            return Some(("Media codecs could not be installed", Some(error.clone())));
+        }
+        match self.codec_status.state {
+            PackState::NotInstalled if self.codec_running.is_some() => {
+                Some(("Starting\u{2026}", Some(CODECS_BACKGROUND.to_string())))
+            }
+            PackState::NotInstalled | PackState::Removing => None,
+            PackState::Installing => Some((
+                "Installing media codecs",
+                Some(format!(
+                    "{} {CODECS_BACKGROUND}",
+                    self.codec_status.summary()
+                )),
+            )),
+            PackState::WaitingForNetwork => Some((
+                "Media codecs will install once you are online",
+                Some(
+                    "This computer is not connected to the internet. Your choice is saved: the \
+                     codecs install automatically as soon as it is online, and you will get a \
+                     notification."
+                        .to_string(),
+                ),
+            )),
+            PackState::Installed => Some((
+                "Media codecs installed",
+                self.codec_status.when_it_applies().map(str::to_string),
+            )),
+            PackState::Failed => Some((
+                "Media codecs could not be installed",
+                Some(if self.codec_status.last_error.is_empty() {
+                    "Try again, or install them later from Settings, Updates.".to_string()
+                } else {
+                    format!(
+                        "{} Try again, or install them later from Settings, Updates.",
+                        self.codec_status.last_error
+                    )
+                }),
+            )),
+        }
+    }
+
+    /// (id, label, key, primary) of the page's footer actions.
+    fn codec_page_buttons(&self) -> Vec<(&'static str, &'static str, &'static str, bool)> {
+        let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
+        if failed && self.codec_running.is_none() {
+            return vec![
+                (
+                    "onboarding.codecs.skip.button",
+                    "Skip",
+                    KEY_CODECS_SKIP,
+                    false,
+                ),
+                (
+                    "onboarding.codecs.install.button",
+                    "Try again",
+                    KEY_CODECS_INSTALL,
+                    true,
+                ),
+            ];
+        }
+        if self.codec_install_requested() {
+            return vec![(
+                "onboarding.codecs.continue.button",
+                "Continue",
+                KEY_CODECS_CONTINUE,
+                true,
+            )];
+        }
+        vec![
+            (
+                "onboarding.codecs.skip.button",
+                "Not now",
+                KEY_CODECS_SKIP,
+                false,
+            ),
+            (
+                "onboarding.codecs.install.button",
+                "Install media codecs",
+                KEY_CODECS_INSTALL,
+                true,
+            ),
+        ]
+    }
+
+    fn start_codec_install(&mut self) {
+        let Some(setup) = self.codec_setup.as_ref() else {
+            return;
+        };
+        if self.codec_running.is_some() {
+            return;
+        }
+        if setup.watch_system && !self.codec_watching {
+            let changed = Arc::downgrade(&self.codec_changed);
+            self.codec_watching = os_actions::codec_pack::watch(move || {
+                changed.upgrade().is_some_and(|changed| {
+                    changed.store(true, Ordering::Release);
+                    true
+                })
+            })
+            .is_ok();
+        }
+        let runner = Arc::clone(&setup.runner);
+        let changed = Arc::clone(&self.codec_changed);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("onboarding-codecs".into())
+            .spawn(move || {
+                // The install outlives setup if the person moves on; its
+                // result then reaches them as a notification instead.
+                let _ = tx.send(runner(CodecAction::Install));
+                changed.store(true, Ordering::Release);
+            });
+        match spawned {
+            Ok(_) => {
+                self.codec_error = None;
+                self.codec_running = Some(rx);
+            }
+            Err(error) => {
+                self.codec_error = Some(format!("the installer could not start: {error}"));
+            }
+        }
+        self.invalidation.structure();
+    }
+
+    /// Pick up the worker's result and status-file changes.
+    fn refresh_codec_state(&mut self) {
+        let Some(setup) = self.codec_setup.as_ref() else {
+            return;
+        };
+        let mut changed = self.codec_changed.swap(false, Ordering::AcqRel);
+        if let Some(events) = self.codec_running.as_ref() {
+            match events.try_recv() {
+                Ok(result) => {
+                    self.codec_error = result.err();
+                    self.codec_running = None;
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.codec_running = None;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let status = (setup.status)();
+            if status != self.codec_status {
+                self.codec_status = status;
+            }
+            self.invalidation.structure();
+        }
+    }
+
+    /// Block until the install started from the page returns (tests).
+    #[cfg(test)]
+    fn wait_for_codec_install(&mut self) {
+        if let Some(events) = self.codec_running.as_ref()
+            && let Ok(result) = events.recv()
+        {
+            self.codec_error = result.err();
+            self.codec_running = None;
+            self.codec_changed.store(true, Ordering::Release);
         }
     }
 
@@ -879,6 +1213,8 @@ impl OnboardingView {
         self.portable_backup_only = false;
         self.tour_page = None;
         self.tour_only = false;
+        self.codec_page = false;
+        self.codec_error = None;
         let minted = MintedIdentity {
             fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
             path: PathBuf::from("/var/lib/tilo/identities/primary.json"),
@@ -921,6 +1257,34 @@ impl OnboardingView {
             OnboardingVisualState::TourStart => {
                 self.set_tour_visual_state_for_snapshot(minted, TourPage::Start);
             }
+            OnboardingVisualState::Codecs
+            | OnboardingVisualState::CodecsInstalling
+            | OnboardingVisualState::CodecsWaitingForNetwork
+            | OnboardingVisualState::CodecsInstalled
+            | OnboardingVisualState::CodecsFailed => {
+                self.flow.begin();
+                self.flow.set_acknowledged(true);
+                let _ = self.flow.complete(minted);
+                self.backup_was_verified = true;
+                self.identity_ready_page = true;
+                self.codec_step_offered = true;
+                self.codec_page = true;
+                self.codec_status = CodecPackStatus::parse(match state {
+                    OnboardingVisualState::CodecsInstalling => {
+                        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading codecs"}}"#
+                    }
+                    OnboardingVisualState::CodecsWaitingForNetwork => {
+                        r#"{"state":"waiting-for-network","desired":true}"#
+                    }
+                    OnboardingVisualState::CodecsInstalled => {
+                        r#"{"state":"installed","mesa":"enabled","desired":true}"#
+                    }
+                    OnboardingVisualState::CodecsFailed => {
+                        r#"{"state":"failed","desired":true,"last_error":"rpmfusion-free: could not download repository metadata (connection reset)."}"#
+                    }
+                    _ => r#"{"state":"not-installed"}"#,
+                });
+            }
         }
         self.composed = None;
         self.invalidation.both();
@@ -944,27 +1308,25 @@ impl OnboardingView {
         if let Some(page) = self.tour_page {
             return self.build_tour_composition(theme, panel_height, page);
         }
+        let total = self.total_steps();
         let (step, stage) = match self.flow.screen() {
             Screen::Intro => (1, "Choose"),
             Screen::Connect => (2, "Restore"),
             Screen::NoRecovery => (2, "Protect"),
-            Screen::Done if self.identity_ready_page => (4, "Ready"),
+            Screen::Done if self.identity_ready_page && self.codec_page => (4, "Media"),
+            Screen::Done if self.identity_ready_page => (total, "Ready"),
             Screen::Done => (3, "Backup"),
         };
         let body: Box<dyn Widget> = match self.flow.screen() {
             Screen::Intro => self.intro(theme),
             Screen::Connect => self.connect(theme),
             Screen::NoRecovery => self.no_recovery(theme),
+            Screen::Done if self.identity_ready_page && self.codec_page => self.codecs(theme),
             Screen::Done if self.identity_ready_page => self.done(theme),
             Screen::Done => self.backup(theme),
         };
         let spacing = &theme.tokens.spacing;
-        let progress_value = match step {
-            1 => 0.25,
-            2 => 0.5,
-            3 => 0.75,
-            _ => 1.0,
-        };
+        let progress_value = f32::from(step) / f32::from(total);
         let progress = Column::new()
             .with_no_padding()
             // The header clears the panel's top edge by `s3`, and the
@@ -987,7 +1349,7 @@ impl OnboardingView {
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
-                        Text::new(&format!("Step {step} of 4  ·  {stage}"))
+                        Text::new(&format!("Step {step} of {total}  ·  {stage}"))
                             .with_id("onboarding.progress.stage")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(theme.text_dim),
@@ -999,7 +1361,7 @@ impl OnboardingView {
                     .with_intrinsic_height()
                     .with_vertical_padding(spacing.s2)
                     .push(Box::new(ProgressBar::new(progress_value).with_label(
-                        format!("Identity setup, step {step} of 4: {stage}"),
+                        format!("Identity setup, step {step} of {total}: {stage}"),
                     ))),
             ));
         let mut content = Column::new().with_intrinsic_height().with_gap(spacing.s4);
@@ -1273,6 +1635,7 @@ impl OnboardingView {
                     .with_enabled(self.flow.can_create()),
                 ),
             ]),
+            Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
             Screen::Done if self.identity_ready_page => Self::finish_action(),
             Screen::Done if self.portable_backup_only => footer_actions(vec![
                 Box::new(
@@ -1833,6 +2196,76 @@ impl OnboardingView {
         Box::new(page)
     }
 
+    /// The media codecs offer: what it enables, where it comes from, and the
+    /// live result once the owner chose to install.
+    fn codecs(&self, theme: &Theme) -> Box<dyn Widget> {
+        let spacing = &theme.tokens.spacing;
+        let mut enables = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s3);
+        for point in CODECS_ENABLES {
+            enables = enables.push(bullet(point, theme));
+        }
+        // Once the owner chose, the live result leads the page, above the
+        // explanation, so it is visible without scrolling at every size.
+        let mut page = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(spacing.s4)
+            .push(heading(CODECS_TITLE, theme));
+        if let Some((title, message)) = self.codec_outcome() {
+            let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
+            let banner = match self.codec_status.state {
+                _ if failed => Banner::error(title),
+                PackState::Installed => Banner::success(title).with_icon(ui::icons::Icon::Check),
+                PackState::WaitingForNetwork => Banner::warning(title),
+                _ => Banner::info(title),
+            };
+            let banner = match message {
+                Some(message) => banner.with_message(message),
+                None => banner,
+            };
+            page = page.push(spaced_banner(banner, theme));
+        }
+        if let Some(fraction) = self.codec_progress() {
+            page = page.push(Box::new(
+                ProgressBar::new(fraction).with_label("Installing media codecs"),
+            ));
+        }
+        page = page
+            .push(paragraph_with_id(
+                CODECS_BODY,
+                theme,
+                "onboarding.codecs.body",
+            ))
+            .push(Box::new(Card::titled("What it enables", Box::new(enables))))
+            .push(Box::new(Card::titled(
+                "Where it comes from",
+                paragraph_with_id(CODECS_SOURCE, theme, "onboarding.codecs.source"),
+            )));
+        Box::new(page)
+    }
+
+    fn codec_actions(&self) -> Box<dyn Widget> {
+        footer_actions(
+            self.codec_page_buttons()
+                .into_iter()
+                .map(|(id, label, key, primary)| {
+                    let button = Button::new(id, label, Some(key)).fit_content(40.0);
+                    let button = if primary {
+                        button
+                            .with_icon(ui::icons::Icon::ArrowRight)
+                            .with_style(ui::widget::ButtonStyle::Primary)
+                    } else {
+                        button
+                    };
+                    Box::new(button) as Box<dyn Widget>
+                })
+                .collect(),
+        )
+    }
+
     /// Sticky final action, deliberately outside the Done screen's scrollable
     /// backup content so it remains visible at narrow and large-text sizes.
     fn finish_action() -> Box<dyn Widget> {
@@ -2209,6 +2642,8 @@ impl Widget for OnboardingView {
         let before = self.flow.screen();
         let tour_before = self.tour_page;
         let ready_before = self.identity_ready_page;
+        let codec_page_before = self.codec_page;
+        self.refresh_codec_state();
 
         // Pull widget-local edits (notably passphrases) into their process-local
         // buffers before interpreting action keys from the same input frame.
@@ -2517,9 +2952,27 @@ impl Widget for OnboardingView {
                 })
             {
                 self.identity_ready_page = true;
+                // The journal already records the hand-off: a restart during
+                // the optional codecs offer resumes at the hand-off, where
+                // Settings still offers the codecs.
+                self.codec_page = self.codec_step_offered;
                 clear_secret(&self.backup_passphrase);
                 clear_secret(&self.backup_confirmation);
                 self.invalidation.both();
+            }
+        }
+
+        if read_bool(state, root, KEY_CODECS_INSTALL) {
+            let _ = state.put(root, KEY_CODECS_INSTALL, ScalarValue::Boolean(false));
+            if self.codec_page {
+                self.start_codec_install();
+            }
+        }
+
+        for key in [KEY_CODECS_SKIP, KEY_CODECS_CONTINUE] {
+            if read_bool(state, root, key) {
+                let _ = state.put(root, key, ScalarValue::Boolean(false));
+                self.codec_page = false;
             }
         }
 
@@ -2634,6 +3087,7 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_TOUR_START, ScalarValue::Boolean(false));
             if self.flow.is_done()
                 && self.identity_ready_page
+                && !self.codec_page
                 && self.persist_progress(PersistedStage::TourNavigate)
             {
                 self.tour_page = Some(TourPage::Navigate);
@@ -2710,8 +3164,10 @@ impl Widget for OnboardingView {
         if read_bool(state, root, KEY_FINISH) {
             let _ = state.put(root, KEY_FINISH, ScalarValue::Boolean(false));
             let at_tour_end = self.tour_page == Some(TourPage::Start);
-            let skipping_tour =
-                self.tour_page.is_none() && self.flow.is_done() && self.identity_ready_page;
+            let skipping_tour = self.tour_page.is_none()
+                && self.flow.is_done()
+                && self.identity_ready_page
+                && !self.codec_page;
             // A reopened, tour-only flow exposes “Skip tour” on every page.
             // Its action is KEY_FINISH, so it must dismiss from every page,
             // not only from the final hand-off page.
@@ -2730,8 +3186,11 @@ impl Widget for OnboardingView {
         if self.flow.screen() != before
             || self.tour_page != tour_before
             || self.identity_ready_page != ready_before
+            || self.codec_page != codec_page_before
         {
-            self.transition_direction = if self.identity_ready_page != ready_before {
+            self.transition_direction = if self.identity_ready_page != ready_before
+                || self.codec_page != codec_page_before
+            {
                 1.0
             } else if view_order(self.flow.screen(), self.tour_page)
                 < view_order(before, tour_before)
@@ -3004,7 +3463,10 @@ impl Widget for OnboardingView {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        (!self.reduce_motion && self.transition_started.elapsed() < self.transition_duration)
+        // The codecs worker or status watcher reported a change: one frame
+        // lets `sync` pick it up. Nothing is redrawn while nothing changes.
+        self.codec_changed.load(Ordering::Acquire)
+            || (!self.reduce_motion && self.transition_started.elapsed() < self.transition_duration)
             || self
                 .picker
                 .as_ref()
@@ -4285,6 +4747,288 @@ mod tests {
     }
 
     /// Every screen must lay out — a ceremony that panics on the screen after the one under test is worse than no ceremony.
+    /// A fake helper: `status` is the status file, and the runner rewrites it
+    /// the way the unit would before returning `outcome`.
+    struct FakeCodecs {
+        status: Arc<Mutex<String>>,
+        runs: Arc<Mutex<Vec<CodecAction>>>,
+    }
+
+    impl FakeCodecs {
+        fn new(initial: &str) -> Self {
+            Self {
+                status: Arc::new(Mutex::new(initial.to_string())),
+                runs: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn setup(&self, after: &'static str, outcome: Result<(), String>) -> CodecSetup {
+            let reader = Arc::clone(&self.status);
+            let writer = Arc::clone(&self.status);
+            let runs = Arc::clone(&self.runs);
+            CodecSetup::with(
+                Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
+                Arc::new(move |action| {
+                    runs.lock().unwrap().push(action);
+                    *writer.lock().unwrap() = after.to_string();
+                    outcome.clone()
+                }),
+            )
+        }
+
+        fn runs(&self) -> Vec<CodecAction> {
+            self.runs.lock().unwrap().clone()
+        }
+    }
+
+    fn walk_to_codecs(view: &mut OnboardingView, doc: &mut AutoCommit) {
+        for key in [
+            KEY_BEGIN,
+            KEY_UNDERSTOOD,
+            KEY_CREATE,
+            KEY_BACKUP_SKIP_ACKNOWLEDGED,
+            KEY_BACKUP_CONTINUE,
+        ] {
+            press(doc, key);
+            view.sync(doc, &automerge::ROOT);
+        }
+    }
+
+    fn layout(view: &mut OnboardingView) {
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = view.build_layout(&mut taffy, &theme, &mut node_map);
+    }
+
+    fn stage_label(view: &OnboardingView) -> Option<String> {
+        view.composed
+            .as_deref()
+            .and_then(|composed| accessibility_for_id(composed, "onboarding.progress.stage"))
+            .and_then(|node| node.name)
+    }
+
+    #[test]
+    fn the_codecs_step_explains_the_choice_and_nothing_is_preselected() {
+        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+        let (view, _) = view();
+        let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
+        let mut doc = AutoCommit::new();
+        walk_to_codecs(&mut view, &mut doc);
+        assert!(view.codec_page_visible());
+        layout(&mut view);
+        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 5  ·  Media"));
+        let lines = view.codec_page_lines();
+        for needle in [
+            "AMD and Intel",
+            "screen sharing, recording and calls",
+            "RPM Fusion",
+            "Cisco (OpenH264)",
+            "Tilo does not host or distribute them",
+        ] {
+            assert!(
+                lines.iter().any(|line| line.contains(needle)),
+                "{needle}: {lines:?}"
+            );
+        }
+        assert_eq!(
+            &lines[lines.len() - 2..],
+            ["Not now", "Install media codecs"],
+            "an explicit button, not a pre-ticked box"
+        );
+        assert!(fake.runs().is_empty(), "reaching the step installs nothing");
+        // The step blocks neither the tour nor finishing only by accident:
+        // both wait until the person chose.
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(!view.finished());
+        assert!(view.codec_page_visible());
+    }
+
+    #[test]
+    fn installing_from_setup_records_the_choice_and_shows_the_result() {
+        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+        let (view, _) = view();
+        let mut view = view.with_codec_setup(fake.setup(
+            r#"{"state":"installed","mesa":"enabled","desired":true}"#,
+            Ok(()),
+        ));
+        let mut doc = AutoCommit::new();
+        walk_to_codecs(&mut view, &mut doc);
+        press(&mut doc, KEY_CODECS_INSTALL);
+        view.sync(&mut doc, &automerge::ROOT);
+        view.wait_for_codec_install();
+        view.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(fake.runs(), vec![CodecAction::Install]);
+        assert_eq!(view.codec_status().state, PackState::Installed);
+        layout(&mut view);
+        let lines = view.codec_page_lines();
+        assert!(lines.contains(&"Media codecs installed".to_string()));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("sign out and back in")),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("Continue"));
+        press(&mut doc, KEY_CODECS_CONTINUE);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(!view.codec_page_visible());
+        layout(&mut view);
+        assert_eq!(stage_label(&view).as_deref(), Some("Step 5 of 5  ·  Ready"));
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished());
+    }
+
+    #[test]
+    fn not_now_installs_nothing_and_continues() {
+        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+        let (view, _) = view();
+        let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
+        let mut doc = AutoCommit::new();
+        walk_to_codecs(&mut view, &mut doc);
+        press(&mut doc, KEY_CODECS_SKIP);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(!view.codec_page_visible());
+        assert!(fake.runs().is_empty());
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished());
+    }
+
+    #[test]
+    fn setup_continues_while_the_download_runs() {
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = Mutex::new(gate);
+        let (started_tx, started) = std::sync::mpsc::channel::<()>();
+        let started_tx = Mutex::new(started_tx);
+        let status = Arc::new(Mutex::new(r#"{"state":"not-installed"}"#.to_string()));
+        let reader = Arc::clone(&status);
+        let writer = Arc::clone(&status);
+        let (view, _) = view();
+        let mut view = view.with_codec_setup(CodecSetup::with(
+            Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
+            Arc::new(move |_| {
+                *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading codecs"}}"#.to_string();
+                let _ = started_tx.lock().unwrap().send(());
+                let _ = gate.lock().unwrap().recv();
+                Ok(())
+            }),
+        ));
+        let mut doc = AutoCommit::new();
+        walk_to_codecs(&mut view, &mut doc);
+        press(&mut doc, KEY_CODECS_INSTALL);
+        view.sync(&mut doc, &automerge::ROOT);
+        // The helper reports progress through its status file.
+        started.recv().unwrap();
+        view.codec_changed.store(true, Ordering::Release);
+        assert!(
+            view.needs_animation_frame(),
+            "a status change asks for a frame"
+        );
+        view.sync(&mut doc, &automerge::ROOT);
+        let lines = view.codec_page_lines();
+        assert_eq!(view.codec_status().state, PackState::Installing);
+        assert!(lines.contains(&"Installing media codecs".to_string()));
+        assert!(lines.contains(&"Progress: 29%".to_string()), "{lines:?}");
+        assert!(
+            lines.iter().any(|line| line.contains("Setup can continue")),
+            "{lines:?}"
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("Continue"));
+        press(&mut doc, KEY_CODECS_CONTINUE);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            !view.codec_page_visible(),
+            "the download does not hold setup"
+        );
+        press(&mut doc, KEY_FINISH);
+        view.sync(&mut doc, &automerge::ROOT);
+        assert!(view.finished());
+        release.send(()).unwrap();
+    }
+
+    #[test]
+    fn an_offline_choice_is_kept_and_installs_later() {
+        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+        let (view, _) = view();
+        let mut view = view.with_codec_setup(
+            fake.setup(r#"{"state":"waiting-for-network","desired":true}"#, Ok(())),
+        );
+        let mut doc = AutoCommit::new();
+        walk_to_codecs(&mut view, &mut doc);
+        press(&mut doc, KEY_CODECS_INSTALL);
+        view.sync(&mut doc, &automerge::ROOT);
+        view.wait_for_codec_install();
+        view.sync(&mut doc, &automerge::ROOT);
+        let lines = view.codec_page_lines();
+        assert!(lines.contains(&"Media codecs will install once you are online".to_string()));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("Your choice is saved"))
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("Continue"));
+        layout(&mut view);
+    }
+
+    #[test]
+    fn a_refused_install_is_shown_inline_with_retry_and_skip() {
+        let fake = FakeCodecs::new(r#"{"state":"not-installed"}"#);
+        let (view, _) = view();
+        let mut view = view.with_codec_setup(fake.setup(
+            r#"{"state":"not-installed"}"#,
+            Err("Access denied: not an administrator".into()),
+        ));
+        let mut doc = AutoCommit::new();
+        walk_to_codecs(&mut view, &mut doc);
+        press(&mut doc, KEY_CODECS_INSTALL);
+        view.sync(&mut doc, &automerge::ROOT);
+        view.wait_for_codec_install();
+        view.sync(&mut doc, &automerge::ROOT);
+        let lines = view.codec_page_lines();
+        assert!(lines.contains(&"Media codecs could not be installed".to_string()));
+        assert!(lines.contains(&"Access denied: not an administrator".to_string()));
+        assert_eq!(&lines[lines.len() - 2..], ["Skip", "Try again"]);
+        layout(&mut view);
+        press(&mut doc, KEY_CODECS_INSTALL);
+        view.sync(&mut doc, &automerge::ROOT);
+        view.wait_for_codec_install();
+        assert_eq!(
+            fake.runs(),
+            vec![CodecAction::Install, CodecAction::Install]
+        );
+    }
+
+    #[test]
+    fn a_choice_made_in_the_installer_is_not_asked_again() {
+        let fake = FakeCodecs::new(r#"{"state":"waiting-for-network","desired":true}"#);
+        let (view, _) = view();
+        let mut view = view.with_codec_setup(fake.setup(r#"{"state":"installed"}"#, Ok(())));
+        let mut doc = AutoCommit::new();
+        walk_to_codecs(&mut view, &mut doc);
+        assert!(!view.codec_page_visible());
+        layout(&mut view);
+        assert_eq!(stage_label(&view).as_deref(), Some("Step 4 of 4  ·  Ready"));
+    }
+
+    #[test]
+    fn every_codecs_visual_state_builds_a_layout() {
+        let (mut view, _) = view();
+        for state in [
+            OnboardingVisualState::Codecs,
+            OnboardingVisualState::CodecsInstalling,
+            OnboardingVisualState::CodecsWaitingForNetwork,
+            OnboardingVisualState::CodecsInstalled,
+            OnboardingVisualState::CodecsFailed,
+        ] {
+            view.set_visual_state_for_snapshot(state);
+            assert!(view.codec_page_visible());
+            layout(&mut view);
+        }
+    }
+
     #[test]
     fn every_screen_builds_a_layout() {
         let (mut v, _) = view();
