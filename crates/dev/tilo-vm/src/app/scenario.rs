@@ -993,16 +993,9 @@ fn scrub_scenario_logs_with(
     } else {
         Ok(Vec::new())
     };
-    match (artifacts, runtime) {
-        (Ok(mut artifacts), Ok(runtime)) => {
-            artifacts.extend(runtime);
-            Ok(artifacts)
-        }
-        (artifacts, runtime) => Err(artifacts
-            .err()
-            .or_else(|| runtime.err())
-            .expect("one scrub failed")),
-    }
+    let mut artifacts = artifacts?;
+    artifacts.extend(runtime?);
+    Ok(artifacts)
 }
 
 fn discard_unsanitized_runtime(plan: &Plan, runner: &mut dyn Runner) -> Result<(), CliError> {
@@ -1180,7 +1173,7 @@ mod tests {
                 })
             }
             fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
-                unreachable!()
+                Ok(false)
             }
         }
         let dir = tempfile::tempdir().unwrap();
