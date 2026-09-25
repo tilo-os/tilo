@@ -462,14 +462,13 @@ fn declared_borders_in_chrome_do_not_grow() {
 const FRAMEWORK_LAUNCHERS: [&str; 2] = ["framework::run::<", "framework::launch_spec::<"];
 const FRAMEWORK_APP: &str = "crates/sdk/tilo-app/src/framework/app.rs";
 
-/// The body of the top-level `pub fn NAME<` in `source`, up to its closing
-/// brace at column zero.
+/// The signature and body of the top-level `pub fn NAME<` in `source`, up to
+/// its closing brace at column zero.
 fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
-    let start = source
-        .find(&format!("\npub fn {name}<"))
+    let (_, rest) = source
+        .split_once(&format!("\npub fn {name}<"))
         .unwrap_or_else(|| panic!("{FRAMEWORK_APP} no longer defines `pub fn {name}<`"));
-    let rest = &source[start + 1..];
-    &rest[..rest.find("\n}\n").map_or(rest.len(), |end| end + 2)]
+    rest.split_once("\n}\n").map_or(rest, |(body, _)| body)
 }
 
 /// Accepting the framework's entry points is sound only while they stay on
