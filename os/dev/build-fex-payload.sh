@@ -17,6 +17,19 @@ test -s /usr/lib/tilo/fex-buildroot-packages.txt
 export PATH=/usr/lib64/llvm21/bin:/usr/local/bin:$PATH
 export TILO_FEX_X86_SYSROOT=/x86-sdk
 export CCACHE_DISABLE=1
+# Probe the same Clang/GCC-sysroot/lld path used by both guest CMake projects
+# before compiling the native FEX tree. The foreign binaries are link-checked,
+# not executed on ARM.
+printf '#include <string>\nint main() { return std::string("x").size() != 1; }\n' \
+    > /tmp/tilo-fex-cross-smoke.cpp
+for target in x86_64-linux-gnu i686-linux-gnu; do
+    /usr/bin/clang++ --target="$target" --gcc-toolchain=/x86-sdk/usr \
+        --sysroot=/x86-sdk -fuse-ld=lld /tmp/tilo-fex-cross-smoke.cpp \
+        -o "/tmp/tilo-fex-cross-smoke-$target"
+    test -s "/tmp/tilo-fex-cross-smoke-$target"
+    rm "/tmp/tilo-fex-cross-smoke-$target"
+done
+rm /tmp/tilo-fex-cross-smoke.cpp
 # Read-only named build contexts can retain their source UID. This exception is
 # confined to this disposable process; no host Git configuration is changed.
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
