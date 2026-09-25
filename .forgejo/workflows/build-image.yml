@@ -210,7 +210,10 @@ jobs:
     needs: [plan, signing-preflight]
     if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
     strategy:
-      fail-fast: true
+      # Each native lane validates and caches its own architecture. One lane
+      # failing must not cancel the other's hours of build; promotion still
+      # requires every lane to succeed.
+      fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
@@ -603,8 +606,33 @@ jobs:
           echo "TILO_WITH_BROWSER=$with_browser" >> "$GITHUB_ENV"
           echo "::notice::OS validation profile: with_browser=$with_browser"
 
+      # Set up buildx with the docker-container driver — the default `docker`
+      # driver doesn't support cache export (the registry-backed cache we
+      # need to survive across ephemeral runners).
+      - name: Set up buildx (docker-container driver for cache export)
+        id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+          # The OS graph contains several large RPM and Rust stages. Letting
+          # BuildKit run all of them at once exhausts the ephemeral runner's
+          # backing store and can tear SQLite's rpmdb while a layer is being
+          # committed. In particular, composefs needs temporary room comparable
+          # to the completed root while sealing the UKI; a second active solver
+          # operation has exhausted that headroom on otherwise healthy runners.
+          # Serialize the solver so the installed-image and AT-SPI gates are not
+          # skipped because an unrelated stage consumed composefs's workspace.
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 1
+
+      # Read the manifest through the builder that consumes the snapshot, so
+      # its large RPM layer is pulled once, into BuildKit, instead of into
+      # Docker first and BuildKit again.
       - name: Verify frozen package snapshot matches every consumer
-        run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
+        env:
+          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
 
       - name: Require the promoted native WPE buildroot
         env:
@@ -794,25 +822,29 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # Set up buildx with the docker-container driver — the default `docker`
-      # driver doesn't support cache export (the registry-backed cache we
-      # need to survive across ephemeral runners).
-      - name: Set up buildx (docker-container driver for cache export)
-        id: buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
-          # The OS graph contains several large RPM and Rust stages. Letting
-          # BuildKit run all of them at once exhausts the ephemeral runner's
-          # backing store and can tear SQLite's rpmdb while a layer is being
-          # committed. In particular, composefs needs temporary room comparable
-          # to the completed root while sealing the UKI; a second active solver
-          # operation has exhausted that headroom on otherwise healthy runners.
-          # Serialize the solver so the installed-image and AT-SPI gates are not
-          # skipped because an unrelated stage consumed composefs's workspace.
-          buildkitd-config-inline: |
-            [worker.oci]
-              max-parallelism = 1
+      # The broker gives every CI pool (on-prem and cloud) the same S3
+      # compiler cache and a bucket-scoped credential. A cluster-local
+      # endpoint neither resolves from cloud pools nor accepts that
+      # credential, so the image build uses exactly what the runner provides.
+      # A missing cache fails here instead of compiling uncached for hours.
+      - name: Bind the runner compiler cache
+        id: compiler-cache
+        run: |
+          set -euo pipefail
+          for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            value="${!name:-}"
+            if [[ -z $value || $value == *$'\n'* ]]; then
+              echo "::error::runner compiler cache setting $name is missing"
+              exit 1
+            fi
+          done
+          {
+            printf 'bucket=%s\n' "$SCCACHE_BUCKET"
+            printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
+            printf 'region=%s\n' "$SCCACHE_REGION"
+            printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::compiler cache: $SCCACHE_ENDPOINT bucket $SCCACHE_BUCKET prefix tilo/image/v1"
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -834,6 +866,58 @@ jobs:
             # ever pushed on a run that publishes, so a number is consumed exactly
             # when an image carrying it becomes reachable.
             type=raw,value=gen${{ env.TILO_GENERATION }}
+
+      # Build and export the compile stages (WPE engine and the Rust builder)
+      # before anything else. A registry cache is only written when its build
+      # succeeds, so a later rootfs, UKI or installation failure must not
+      # discard hours of compilation. The arguments match the image build
+      # exactly; the next step reuses these results from local BuildKit state.
+      - name: Build and cache the compile stages
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+          file: os/Containerfile
+          target: native-builder-payload
+          push: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
+            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
+            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
+            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
+            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
+            TILO_REQUIRE_COMPILER_CACHE=1
+          # The runner injects this bucket-scoped credential from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            aws_access_key_id=AWS_ACCESS_KEY_ID
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+          # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
+          # reproducible image digests.
+          provenance: false
+          cache-from: |
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
@@ -868,6 +952,9 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
@@ -875,12 +962,13 @@ jobs:
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=sccache
-            SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
-            SCCACHE_REGION=auto
+            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
+            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
+            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
             SCCACHE_S3_KEY_PREFIX=tilo/image/v1
-            SCCACHE_S3_USE_SSL=false
-          # The runner injects these two environment variables from a
+            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
+            TILO_REQUIRE_COMPILER_CACHE=1
+          # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
           secret-envs: |
@@ -889,16 +977,15 @@ jobs:
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
-          # Registry-backed layer cache — each run gets a fresh
-          # forgejo-runner container, so buildkit's local storage is
-          # always empty. Without this, every failed rebuild redoes
-          # all 65 stage-3 sub-steps + the rust compile from scratch
-          # (~8 min). With it, only the layers past the fix rerun
-          # (~1-2 min). Export only final-stage dependencies: mode=max
-          # duplicates the multi-gigabyte Rust build graph and can exhaust
-          # the runner before BuildKit can finish or clean up.
-          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=min
+          # Registry-backed layer cache: each run starts with empty BuildKit
+          # storage. mode=max keeps intermediate stages (WPE engine, builder
+          # toolchain, Windows and media inputs), not only final-image layers.
+          # The compile stages were already built and exported above, so this
+          # reuses them locally and exports the remaining stages.
+          cache-from: |
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
+            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
 
       # Dev VMs must not wait on release gating. Every main build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
@@ -954,6 +1041,9 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
@@ -961,11 +1051,12 @@ jobs:
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=sccache
-            SCCACHE_ENDPOINT=http://forgejo-sccache-minio.forgejo.svc.cluster.local:9000
-            SCCACHE_REGION=auto
+            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
+            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
+            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
             SCCACHE_S3_KEY_PREFIX=tilo/image/v1
-            SCCACHE_S3_USE_SSL=false
+            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
+            TILO_REQUIRE_COMPILER_CACHE=1
           secret-envs: |
             aws_access_key_id=AWS_ACCESS_KEY_ID
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY
