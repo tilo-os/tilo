@@ -6,7 +6,7 @@ on:
 jobs:
   probe:
     runs-on: runner-disk-100g-arm64
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Probe guest FUSE, loop, and Podman mounts
         shell: bash
@@ -30,9 +30,10 @@ jobs:
           echo "runner-temp-filesystem=$(findmnt -n -o FSTYPE -T "$RUNNER_TEMP")"
           context="$RUNNER_TEMP/tilo-storage-benchmark"
           mkdir -p "$context"
-          head -c 268435456 /dev/urandom > "$context/payload"
+          head -c 1073741824 /dev/urandom > "$context/payload"
+          python3 -c 'from pathlib import Path; import sys; root=Path(sys.argv[1]); root.mkdir(); data=b"x"*4096; [(root / f"{i:05d}").write_bytes(data) for i in range(20000)]' "$context/metadata"
           printf hello > "$context/hello"
-          printf 'FROM scratch\nCOPY payload /payload\n' > "$context/Parentfile"
+          printf 'FROM scratch\nCOPY payload /payload\nCOPY metadata /metadata\n' > "$context/Parentfile"
           benchmark() {
             local kind=$1 start elapsed
             printf 'FROM localhost/tilo-probe-parent:%s\nCOPY hello /hello\n' "$kind" > "$context/Childfile"
@@ -40,8 +41,9 @@ jobs:
             start=$(date +%s%3N)
             podman build -q --file "$context/Childfile" --tag "localhost/tilo-probe-child:$kind" "$context"
             elapsed=$(( $(date +%s%3N) - start ))
-            echo "::notice::$kind parent=256MiB child COPY=5B child-build-ms=$elapsed"
+            echo "::notice::$kind parent=1GiB+20000files child COPY=5B child-build-ms=$elapsed"
           }
+          echo "default-mount-program=$(cat /var/lib/containers/storage/overlay/.has-mount-program 2>/dev/null || true)"
           benchmark default
           backing="$RUNNER_TEMP/tilo-native-overlay-probe.img"
           mount_dir="$RUNNER_TEMP/tilo-native-overlay-probe"
@@ -53,7 +55,7 @@ jobs:
             rmdir "$mount_dir" 2>/dev/null || true
           }
           trap cleanup EXIT
-          truncate -s 4G "$backing"
+          truncate -s 6G "$backing"
           sudo -n mkfs.ext4 -F -q "$backing"
           mkdir -p "$mount_dir"
           loop=$(sudo -n losetup --find --show "$backing")
@@ -63,6 +65,7 @@ jobs:
             "$mount_dir" "$mount_dir" > "$mount_dir/storage.conf"
           export CONTAINERS_STORAGE_CONF="$mount_dir/storage.conf"
           echo "native-podman=$(podman info --format json | jq -c '{driver:.store.graphDriverName,graphRoot:.store.graphRoot,graphOptions:.store.graphOptions,graphStatus:.store.graphStatus}')"
+          echo "native-mount-program=$(cat "$mount_dir/graph/overlay/.has-mount-program" 2>/dev/null || true)"
           test "$(podman info --format json | jq -r .store.graphDriverName)" = overlay
           benchmark native
           echo '::notice::ARM disk runner supports Podman FUSE and loop nodes via guest devtmpfs'
