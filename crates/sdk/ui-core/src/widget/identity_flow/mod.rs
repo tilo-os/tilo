@@ -1364,6 +1364,58 @@ impl InviteEnvelope {
     }
 }
 
+/// Size of a record written before invite secrets were sealed with
+/// `tilo-seal`: expiry (8) || XChaCha20-Poly1305 nonce (24) || ciphertext
+/// and tag (48), under the capability digest and expiry as associated data.
+#[cfg(unix)]
+const LEGACY_INVITE_RECORD_LEN: usize = 80;
+/// Size of a current record: expiry (8) || `tilo-seal` envelope of the
+/// 32-byte secret (40-byte header, 48 bytes of ciphertext and tag).
+#[cfg(unix)]
+const INVITE_RECORD_LEN: usize = 96;
+
+#[cfg(unix)]
+fn is_invite_record_len(len: u64) -> bool {
+    len == LEGACY_INVITE_RECORD_LEN as u64 || len == INVITE_RECORD_LEN as u64
+}
+
+/// What a record's secret is bound to: the capability digest (so a record
+/// cannot be renamed onto another capability) and its clear expiry.
+#[cfg(unix)]
+fn invite_record_context(capability: &[u8; 32], expires_unix: u64) -> Vec<u8> {
+    let mut context = Vec::with_capacity(72);
+    context.extend_from_slice(&Sha512::digest(capability));
+    context.extend_from_slice(&expires_unix.to_be_bytes());
+    context
+}
+
+/// Open either record layout. `record` is the whole file, expiry included.
+#[cfg(unix)]
+fn open_invite_record(
+    key: &tilo_seal::SymmetricKey,
+    capability: &[u8; 32],
+    expires_unix: u64,
+    record: &[u8],
+) -> tilo_seal::Result<zeroize::Zeroizing<Vec<u8>>> {
+    let context = invite_record_context(capability, expires_unix);
+    let body = record
+        .get(8..)
+        .ok_or(tilo_seal::Error::Malformed("invite record"))?;
+    if record.len() == LEGACY_INVITE_RECORD_LEN {
+        let (nonce, ciphertext) = body
+            .split_at_checked(tilo_seal::legacy::XCHACHA_NONCE_LEN)
+            .ok_or(tilo_seal::Error::Malformed("invite record"))?;
+        let nonce = <&[u8; tilo_seal::legacy::XCHACHA_NONCE_LEN]>::try_from(nonce)
+            .map_err(|_| tilo_seal::Error::Malformed("invite record"))?;
+        return tilo_seal::legacy::open_xchacha20poly1305(key, nonce, &context, ciphertext);
+    }
+    tilo_seal::envelope::open(
+        key,
+        tilo_seal::Context::new(tilo_seal::Label::InviteRedemption, &context),
+        body,
+    )
+}
+
 pub struct InviteRedemptionAuthority {
     #[cfg(unix)]
     root: PathBuf,
@@ -1460,7 +1512,7 @@ impl InviteRedemptionAuthority {
         Ok(advisory_lock::FileLock::exclusive(file)?)
     }
 
-    fn master_key(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, IdentityFlowError> {
+    fn master_key(&self) -> Result<tilo_seal::SymmetricKey, IdentityFlowError> {
         use std::io::Read;
         let path = self.root.join("authority-key");
         let read_existing = || -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, IdentityFlowError> {
@@ -1483,12 +1535,13 @@ impl InviteRedemptionAuthority {
         let bytes = if let Some(bytes) = read_existing()? {
             bytes
         } else {
-            let mut key = zeroize::Zeroizing::new([0; 32]);
-            UnwrapErr(SysRng).fill_bytes(&mut *key);
+            let key = tilo_seal::SymmetricKey::generate().map_err(|_| {
+                IdentityFlowError::Io(std::io::Error::other("no randomness for the authority key"))
+            })?;
             // Publication never replaces a concurrently created key; the
             // loser adopts the winner's.
-            if private_fs::create_atomic(&path, &*key)? {
-                zeroize::Zeroizing::new(key.to_vec())
+            if private_fs::create_atomic(&path, key.expose_secret())? {
+                zeroize::Zeroizing::new(key.expose_secret().to_vec())
             } else {
                 read_existing()?.ok_or_else(|| {
                     IdentityFlowError::Io(std::io::Error::other(
@@ -1497,10 +1550,8 @@ impl InviteRedemptionAuthority {
                 })?
             }
         };
-        let key: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-            IdentityFlowError::DecodeFailed("invite authority key is corrupt".into())
-        })?;
-        Ok(zeroize::Zeroizing::new(key))
+        tilo_seal::SymmetricKey::from_slice(&bytes)
+            .map_err(|_| IdentityFlowError::DecodeFailed("invite authority key is corrupt".into()))
     }
 
     /// Encrypt and durably publish one bounded bearer-capability record.
@@ -1515,7 +1566,6 @@ impl InviteRedemptionAuthority {
         secret: [u8; 32],
         expires_unix: u64,
     ) -> Result<(), IdentityFlowError> {
-        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         use std::io::{Read, Write};
         // Serialize cleanup, quota accounting, and create-new publication
         // across processes. `File`'s OS lock is released automatically after
@@ -1536,7 +1586,7 @@ impl InviteRedemptionAuthority {
                 && let Ok(mut file) = private_fs::read(&path)
                 && let Ok(metadata) = file.metadata()
                 && metadata.file_type().is_file()
-                && metadata.len() == 80
+                && is_invite_record_len(metadata.len())
             {
                 let mut header = [0; 8];
                 if file.read_exact(&mut header).is_ok() && u64::from_be_bytes(header) <= now {
@@ -1562,31 +1612,23 @@ impl InviteRedemptionAuthority {
         }
         let secret = zeroize::Zeroizing::new(secret);
         let key = self.master_key()?;
-        let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
-        let mut nonce = [0; 24];
-        UnwrapErr(SysRng).fill_bytes(&mut nonce);
-        let digest = Sha512::digest(capability);
-        let mut aad = Vec::with_capacity(72);
-        aad.extend_from_slice(&digest);
-        aad.extend_from_slice(&expires_unix.to_be_bytes());
-        let ciphertext = cipher
-            .encrypt(
-                (&nonce).into(),
-                Payload {
-                    msg: &*secret,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| {
-                IdentityFlowError::SigningFailed("invite authority encryption failed".into())
-            })?;
-        let record_capacity = 32usize.checked_add(ciphertext.len()).ok_or_else(|| {
-            IdentityFlowError::EncodeFailed("invite authority record is too large".into())
+        let record = invite_record_context(&capability, expires_unix);
+        let envelope = tilo_seal::envelope::seal(
+            &key,
+            tilo_seal::Context::new(tilo_seal::Label::InviteRedemption, &record),
+            &*secret,
+        )
+        .map_err(|_| {
+            IdentityFlowError::SigningFailed("invite authority encryption failed".into())
         })?;
-        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(record_capacity));
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(INVITE_RECORD_LEN));
         bytes.extend_from_slice(&expires_unix.to_be_bytes());
-        bytes.extend_from_slice(&nonce);
-        bytes.extend_from_slice(&ciphertext);
+        bytes.extend_from_slice(&envelope);
+        if bytes.len() != INVITE_RECORD_LEN {
+            return Err(IdentityFlowError::EncodeFailed(
+                "invite authority record has an unexpected size".into(),
+            ));
+        }
         let mut file = private_fs::create_new(&(self.path(&capability)))?;
         file.write_all(&bytes)?;
         file.sync_all()?;
@@ -1605,7 +1647,6 @@ impl InviteRedemptionAuthority {
         capability: &[u8],
         now_unix: u64,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, IdentityFlowError> {
-        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
         use std::io::Read;
         let capability: [u8; 32] = capability.try_into().map_err(|_| {
             IdentityFlowError::DecodeFailed("redemption capability must be 32 bytes".into())
@@ -1627,16 +1668,17 @@ impl InviteRedemptionAuthority {
         private_fs::sync_directory(&self.root)?;
         let file = private_fs::read(&claimed)?;
         let metadata = file.metadata()?;
-        if !metadata.file_type().is_file() || metadata.len() != 80 {
+        if !metadata.file_type().is_file() || !is_invite_record_len(metadata.len()) {
             let _ = std::fs::remove_file(&claimed);
             return Err(IdentityFlowError::DecodeFailed(
                 "redemption record is unsafe or corrupt".into(),
             ));
         }
-        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(80));
-        file.take(81).read_to_end(&mut bytes)?;
+        let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(INVITE_RECORD_LEN));
+        file.take(INVITE_RECORD_LEN as u64 + 1)
+            .read_to_end(&mut bytes)?;
         let _ = std::fs::remove_file(&claimed);
-        if bytes.len() != 80 {
+        if !is_invite_record_len(bytes.len() as u64) {
             return Err(IdentityFlowError::DecodeFailed(
                 "redemption record is corrupt".into(),
             ));
@@ -1656,30 +1698,9 @@ impl InviteRedemptionAuthority {
             return Err(IdentityFlowError::InviteExpired);
         }
         let key = self.master_key()?;
-        let cipher = chacha20poly1305::XChaCha20Poly1305::new((&*key).into());
-        let digest = Sha512::digest(capability);
-        let mut aad = Vec::with_capacity(72);
-        aad.extend_from_slice(&digest);
-        aad.extend_from_slice(&expiry.to_be_bytes());
-        let plaintext = cipher
-            .decrypt(
-                bytes
-                    .get(8..32)
-                    .and_then(|nonce| <&chacha20poly1305::XNonce>::try_from(nonce).ok())
-                    .ok_or_else(|| {
-                        IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
-                    })?,
-                Payload {
-                    msg: bytes.get(32..).ok_or_else(|| {
-                        IdentityFlowError::DecodeFailed("redemption record is corrupt".into())
-                    })?,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| {
-                IdentityFlowError::DecodeFailed("redemption record authentication failed".into())
-            })?;
-        Ok(zeroize::Zeroizing::new(plaintext))
+        open_invite_record(&key, &capability, expiry, &bytes).map_err(|_| {
+            IdentityFlowError::DecodeFailed("redemption record authentication failed".into())
+        })
     }
 }
 
@@ -3060,6 +3081,70 @@ mod tests {
             Err(IdentityFlowError::InviteExpired)
         ));
         assert!(authority.redeem(&[3; 32], 9).is_err());
+    }
+
+    /// A record and key written by the XChaCha20-Poly1305 record format
+    /// before invite secrets moved to `tilo-seal` (capability `[0x31; 32]`,
+    /// secret `[0x32; 32]`, expiry 2100-01-01).
+    #[cfg(unix)]
+    const LEGACY_AUTHORITY_KEY: &str =
+        "2823453e56138d5c5b99be184ddee401a997e01ea7023a3c9a9b363f55ce8369";
+    #[cfg(unix)]
+    const LEGACY_RECORD_NAME: &str = "8f803fd8e5cb4cec466a0ec3e38c3c65cc893fe16adae69ae01556ade3fba864a50fab86e9a2fb9e7a7c5e101234e78f12bffe3a25b3799aa874c12929b5bdb9";
+    #[cfg(unix)]
+    const LEGACY_RECORD: &str = "00000000f48657002fe7034e7352888994806b93fa07efcdeca068dc86c77eab872bb5805468118dfd6dc7a106cc5df0865c41ab2059b09a58d1f6b9b212f67d8dfbf74577940419d0d9273d1321c5ca";
+
+    #[cfg(unix)]
+    #[test]
+    fn invite_record_from_an_earlier_build_redeems_and_new_records_use_tilo_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let authority = InviteRedemptionAuthority::at(dir.path()).unwrap();
+        private_fs::create_atomic(
+            &dir.path().join("authority-key"),
+            &hex::decode(LEGACY_AUTHORITY_KEY).unwrap(),
+        )
+        .unwrap();
+        private_fs::create_atomic(
+            &dir.path().join(LEGACY_RECORD_NAME),
+            &hex::decode(LEGACY_RECORD).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            authority.path(&[0x31; 32]),
+            dir.path().join(LEGACY_RECORD_NAME)
+        );
+        assert_eq!(
+            authority.redeem(&[0x31; 32], 1).unwrap().as_slice(),
+            [0x32; 32]
+        );
+
+        authority.issue([0x41; 32], [0x42; 32], u64::MAX).unwrap();
+        let written = std::fs::read(authority.path(&[0x41; 32])).unwrap();
+        assert_eq!(written.len(), INVITE_RECORD_LEN);
+        assert!(tilo_seal::envelope::is_envelope(&written[8..]));
+        assert_eq!(
+            authority.redeem(&[0x41; 32], 1).unwrap().as_slice(),
+            [0x42; 32]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invite_record_is_bound_to_its_capability_and_expiry() {
+        let key = tilo_seal::SymmetricKey::generate().unwrap();
+        let context = invite_record_context(&[1; 32], 99);
+        let mut record = 99_u64.to_be_bytes().to_vec();
+        record.extend(
+            tilo_seal::envelope::seal(
+                &key,
+                tilo_seal::Context::new(tilo_seal::Label::InviteRedemption, &context),
+                &[5; 32],
+            )
+            .unwrap(),
+        );
+        assert!(open_invite_record(&key, &[1; 32], 99, &record).is_ok());
+        assert!(open_invite_record(&key, &[2; 32], 99, &record).is_err());
+        assert!(open_invite_record(&key, &[1; 32], 100, &record).is_err());
     }
 
     #[test]
