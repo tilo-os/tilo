@@ -46,6 +46,20 @@ const NARROW_SHOTS_VIEWPORT: (u32, u32) = (720, 820);
 extern crate runtime_dylib;
 
 pub fn main() {
+    // The live editor runs on the app framework: its project is a hosted
+    // record with history, per-author undo and permissions. The scenario
+    // captures still stage view state (selections, dialogs, a seeded demo
+    // project) directly on a standalone editor, so they keep that path.
+    let capture = std::env::args().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless"
+        )
+    });
+    if !capture {
+        ui::framework::run::<video_editor::VideoEditor>();
+        return;
+    }
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.video-editor", video_editor::app_root)
             .shot_handler(shot_handler)

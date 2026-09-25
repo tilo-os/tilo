@@ -1,12 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
-use automerge::{ROOT, ReadDoc};
-use ui::headless::Driver;
+use scratchpad::{Note, Scratchpad};
+use ui::prelude::*;
 
-fn note_text(doc: &automerge::AutoCommit) -> String {
-    let (value, id) = doc.get(ROOT, "body").unwrap().unwrap();
-    assert_eq!(value, automerge::Value::Object(automerge::ObjType::Text));
-    doc.text(id).unwrap()
+fn open(directory: &std::path::Path) -> HeadlessApp<Scratchpad> {
+    HeadlessApp::open_data_dir(directory).unwrap()
 }
 
 #[test]
@@ -32,8 +30,8 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
         Some([0, 0, 2, 128, 0, 0, 1, 224].as_slice())
     );
     assert!(
-        !directory.path().join("data/current").exists(),
-        "a screenshot must not save an unsaved note"
+        !directory.path().join("data").exists(),
+        "a screenshot renders a private capture profile, never the user's note"
     );
 }
 
@@ -41,14 +39,14 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
 fn large_text_theme_reflows_the_real_editor_layout() {
     let normal_dir = tempfile::tempdir().unwrap();
     let large_dir = tempfile::tempdir().unwrap();
-    let (normal_state, normal_root) = scratchpad::open(normal_dir.path()).unwrap();
-    let (large_state, large_root) = scratchpad::open(large_dir.path()).unwrap();
-    let normal = Driver::new(normal_state, normal_root, (640, 480));
-    let mut large = Driver::new(large_state, large_root, (640, 480));
-    large.set_theme(ui::Theme::dark().with_text_scale(2.0));
+    let mut normal = open(normal_dir.path());
+    let mut large = open(large_dir.path());
+    large
+        .harness()
+        .set_theme(ui::Theme::dark().with_text_scale(2.0));
 
-    let normal_editor = normal.targets()["note-editor"];
-    let large_editor = large.targets()["note-editor"];
+    let normal_editor = normal.harness().targets()["note-editor"];
+    let large_editor = large.harness().targets()["note-editor"];
     assert!(
         large_editor.y0 > normal_editor.y0,
         "large text must reflow retained content, not only change theme metadata: {normal_editor:?} -> {large_editor:?}"
@@ -56,136 +54,130 @@ fn large_text_theme_reflows_the_real_editor_layout() {
 }
 
 #[test]
-fn editor_uses_the_available_width_and_keeps_save_visible() {
+fn editor_uses_the_available_width_and_keeps_status_visible() {
     for viewport in [(480, 600), (1000, 700)] {
         let directory = tempfile::tempdir().unwrap();
-        let (state, root) = scratchpad::open(directory.path()).unwrap();
-        let driver = Driver::new(state, root, viewport);
-        let targets = driver.targets();
+        let mut app = open(directory.path());
+        app.harness().resize(viewport).unwrap();
+        let targets = app.harness().targets();
         let editor = targets.get("note-editor").unwrap();
-        let save = targets.get("save-note").unwrap();
+        let status = targets.get("save-status").unwrap();
         assert!(editor.width() > f64::from(viewport.0) - 100.0, "{editor:?}");
-        assert!(save.y1 < f64::from(viewport.1));
+        assert!(status.y1 < f64::from(viewport.1));
     }
 }
 
 #[test]
-fn typed_note_survives_save_close_and_reopen() {
+fn typed_note_survives_close_and_reopen_without_a_save_step() {
     let directory = tempfile::tempdir().unwrap();
     {
-        let (state, root) = scratchpad::open(directory.path()).unwrap();
-        let mut driver = Driver::new(state, root, (800, 600));
-        scratchpad::actions::register(driver.action_registry_mut());
-        driver.click_named("note-editor").unwrap();
-        driver.type_text("Hello macOS — café 日本語");
-        driver.click_named("save-note").unwrap();
-        assert_eq!(
-            note_text(&driver.state_mut().doc),
-            "Hello macOS — café 日本語"
-        );
+        let mut app = open(directory.path());
+        app.harness().click_named("note-editor").unwrap();
+        app.harness().type_text("Hello macOS — café 日本語");
+        assert_eq!(app.state().body, "Hello macOS — café 日本語");
     }
-    let (state, _root) = scratchpad::open(directory.path()).unwrap();
-    assert_eq!(note_text(&state.doc), "Hello macOS — café 日本語");
+    let app = open(directory.path());
+    assert_eq!(app.state().body, "Hello macOS — café 日本語");
+}
+
+#[test]
+fn typing_is_undoable_and_recorded_in_history() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = open(directory.path());
+    app.invoke(Note::EDIT.with("first thought".into())).unwrap();
+    app.invoke(Note::EDIT.with("second thought".into()))
+        .unwrap();
+    let last = app.versions().pop().unwrap();
+    assert_eq!(last.summary().as_deref(), Some("Edit note · Note"));
+    assert!(app.undo());
+    assert_eq!(app.state().body, "first thought");
+    assert!(app.redo());
+    assert_eq!(app.state().body, "second thought");
+}
+
+#[test]
+fn a_viewer_cannot_edit_the_note() {
+    let mut app = HeadlessApp::<Scratchpad>::with_role(ui::Role::Viewer).unwrap();
+    assert!(app.invoke(Note::EDIT.with("not mine".into())).is_err());
+    assert_eq!(app.state().body, "");
 }
 
 #[test]
 fn edits_replay_to_identical_document_heads() {
-    use tilo_actions::{ActionAddress, ActionRegistry, apply_local, replay};
-    let directory = tempfile::tempdir().unwrap();
-    let (mut state, root) = scratchpad::open(directory.path()).unwrap();
-    let mut peer = state.doc.clone();
-    let action = scratchpad::actions::EditNote {
-        text: "Same note, on another replica.".into(),
-    };
-    let encoded = tilo_actions::door::encode(
-        &root.resources(&state.doc),
-        &ActionAddress::new("scratchpad", "edit"),
-        Some(&action.text),
-    )
-    .unwrap();
-    let envelope = apply_local(&mut state.doc, &action, encoded).unwrap();
-    let mut registry = ActionRegistry::new();
-    scratchpad::actions::register(&mut registry);
-    replay(&mut peer, &envelope, &registry).unwrap();
-    assert_eq!(state.doc.get_heads(), peer.get_heads());
-    assert_eq!(note_text(&peer), "Same note, on another replica.");
+    let mut origin = Replica::<Note>::new();
+    let mut peer = origin.fork();
+    origin
+        .apply(Note::EDIT.with("Same note, on another replica.".into()))
+        .unwrap();
+    for envelope in origin.log().to_vec() {
+        peer.replay(&envelope).unwrap();
+    }
+    assert_eq!(origin.heads(), peer.heads());
+    assert_eq!(peer.state().unwrap().body, "Same note, on another replica.");
 }
 
 #[test]
 fn a_second_instance_cannot_overwrite_the_open_note() {
     let directory = tempfile::tempdir().unwrap();
-    let first = scratchpad::open(directory.path()).unwrap();
-    assert!(scratchpad::open(directory.path()).is_err());
+    let first = open(directory.path());
+    assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_err());
     drop(first);
-    assert!(scratchpad::open(directory.path()).is_ok());
+    assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_ok());
 }
 
-#[test]
-fn corrupt_or_missing_saved_content_is_not_replaced_with_an_empty_note() {
-    let directory = tempfile::tempdir().unwrap();
-    for reference in ["not-a-hash", &"0".repeat(64)] {
-        std::fs::write(directory.path().join("current"), reference).unwrap();
-        assert!(scratchpad::open(directory.path()).is_err());
-        assert_eq!(
-            std::fs::read_to_string(directory.path().join("current")).unwrap(),
-            reference
-        );
+fn stored_documents(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        for entry in std::fs::read_dir(&path).unwrap() {
+            let entry = entry.unwrap().path();
+            if entry.is_dir() {
+                pending.push(entry);
+            } else if entry
+                .file_name()
+                .is_some_and(|name| name == "state.automerge")
+            {
+                found.push(entry);
+            }
+        }
     }
+    found
 }
 
 #[test]
-fn failed_save_reports_error_and_keeps_the_previous_reference() {
+fn corrupt_saved_content_is_not_replaced_with_an_empty_note() {
     let directory = tempfile::tempdir().unwrap();
-    let (state, root) = scratchpad::open(directory.path()).unwrap();
-    let mut driver = Driver::new(state, root, (800, 600));
-    scratchpad::actions::register(driver.action_registry_mut());
-    driver.click_named("note-editor").unwrap();
-    driver.type_text("Keep this version");
-    driver.click_named("save-note").unwrap();
-    let previous = std::fs::read(directory.path().join("current")).unwrap();
-    driver.click_named("note-editor").unwrap();
-    driver.type_text(" and this unsaved edit");
-    // Make the publication target a directory. The content blob may be
-    // ingested, but atomic rename cannot replace a directory with a file.
-    // Keep the previous reference aside and restore it after the assertion.
-    let current = directory.path().join("current");
-    let backup = directory.path().join("current.previous");
-    std::fs::rename(&current, &backup).unwrap();
-    std::fs::create_dir(&current).unwrap();
-    let result = driver.click_named("save-note");
-    result.unwrap();
-    assert!(driver.inspection_json().unwrap().contains("Save failed:"));
-    std::fs::remove_dir(&current).unwrap();
-    std::fs::rename(&backup, &current).unwrap();
-    assert_eq!(std::fs::read(&current).unwrap(), previous);
-    drop(driver);
-    let (state, _root) = scratchpad::open(directory.path()).unwrap();
-    assert_eq!(note_text(&state.doc), "Keep this version");
+    {
+        let mut app = open(directory.path());
+        app.invoke(Note::EDIT.with("precious".into())).unwrap();
+    }
+    let documents = stored_documents(directory.path());
+    assert_eq!(documents.len(), 1, "{documents:?}");
+    let document = documents.first().unwrap();
+    std::fs::write(document, b"not an automerge document").unwrap();
+    assert!(HeadlessApp::<Scratchpad>::open_data_dir(directory.path()).is_err());
+    assert_eq!(
+        std::fs::read(document).unwrap(),
+        b"not an automerge document"
+    );
 }
 
 #[test]
 fn independent_edits_merge_without_replacing_the_text_object() {
-    use tilo_actions::Action;
-    let mut original = automerge::AutoCommit::new();
-    scratchpad::actions::EditNote {
-        text: "hello world".into(),
-    }
-    .apply(&mut original)
-    .unwrap();
-    let object = original.get(ROOT, "body").unwrap().unwrap().1;
+    use ui::automerge::{ROOT, ReadDoc};
+    let body = |replica: &Replica<Note>| replica.doc().get(ROOT, "body").unwrap().unwrap().1;
+    let mut original = Replica::<Note>::new();
+    original
+        .apply(Note::EDIT.with("hello world".into()))
+        .unwrap();
+    let object = body(&original);
     let mut left = original.fork();
     let mut right = original.fork();
-    scratchpad::actions::EditNote {
-        text: "hello brave world".into(),
-    }
-    .apply(&mut left)
-    .unwrap();
-    scratchpad::actions::EditNote {
-        text: "hello world!".into(),
-    }
-    .apply(&mut right)
-    .unwrap();
-    left.merge(&mut right).unwrap();
-    assert_eq!(left.get(ROOT, "body").unwrap().unwrap().1, object);
-    assert_eq!(note_text(&left), "hello brave world!");
+    left.apply(Note::EDIT.with("hello brave world".into()))
+        .unwrap();
+    right.apply(Note::EDIT.with("hello world!".into())).unwrap();
+    left.sync_with(&mut right).unwrap();
+    assert_eq!(body(&left), object);
+    assert_eq!(left.state().unwrap().body, "hello brave world!");
+    assert_eq!(right.state().unwrap().body, "hello brave world!");
 }
