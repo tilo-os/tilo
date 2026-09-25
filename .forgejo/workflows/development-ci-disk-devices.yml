@@ -29,3 +29,20 @@ jobs:
           sudo -n mount -t devtmpfs devtmpfs "$RUNNER_TEMP/devtmpfs-probe"
           ls -l "$RUNNER_TEMP/devtmpfs-probe/fuse" "$RUNNER_TEMP/devtmpfs-probe/loop-control" "$RUNNER_TEMP/devtmpfs-probe/loop0"
           sudo -n umount "$RUNNER_TEMP/devtmpfs-probe"
+          sudo -n mount -t devtmpfs devtmpfs /dev
+          sudo -n mkdir -p /dev/pts /dev/shm
+          mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+          mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          sudo -n chmod 0666 /dev/fuse
+          python3 -c 'open("/dev/fuse", "rb").close()'
+          test -c /dev/loop-control
+          test -b /dev/loop0
+          truncate -s 64M "$RUNNER_TEMP/loop-probe.raw"
+          loop=$(sudo -n losetup --find --show "$RUNNER_TEMP/loop-probe.raw")
+          trap 'sudo -n losetup -d "$loop"' EXIT
+          test -b "$loop"
+          sudo -n mkfs.ext4 -q "$loop"
+          mkdir -p "$RUNNER_TEMP/loop-probe-mount"
+          sudo -n mount "$loop" "$RUNNER_TEMP/loop-probe-mount"
+          mountpoint -q "$RUNNER_TEMP/loop-probe-mount"
+          sudo -n umount "$RUNNER_TEMP/loop-probe-mount"
