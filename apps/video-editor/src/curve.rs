@@ -92,7 +92,7 @@ impl Channel {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "red" => Channel::Red,
             "green" => Channel::Green,
@@ -135,15 +135,14 @@ impl Spline {
 
     /// Whether this is still the untouched straight line.
     pub fn is_identity(&self) -> bool {
-        self.points.len() == 2
-            && self.points[0] == CurvePoint::new(0.0, 0.0)
-            && self.points[1] == CurvePoint::new(1.0, 1.0)
+        self.points == [CurvePoint::new(0.0, 0.0), CurvePoint::new(1.0, 1.0)]
     }
 
     /// Repair a spline that arrived from a document or a peer: sorted, in
     /// range, with both endpoints, and no two points on top of each other.
     /// Applied on every read, because a malformed curve reaching the bake
     /// would fill the table with NaNs.
+    #[must_use]
     pub fn normalised(&self) -> Self {
         let mut pts: Vec<CurvePoint> = self
             .points
@@ -176,17 +175,19 @@ impl Spline {
     /// neighbour for a new point to mean anything.
     pub fn set_point(&mut self, x: f64, y: f64) -> Option<usize> {
         let (x, y) = (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0));
-        if let Some(i) = self
+        let n = self.points.len();
+        if let Some((i, p)) = self
             .points
-            .iter()
-            .position(|p| (p.x - x).abs() < MIN_X_GAP / 2.0)
+            .iter_mut()
+            .enumerate()
+            .find(|(_, p)| (p.x - x).abs() < MIN_X_GAP / 2.0)
         {
             // An endpoint keeps its x — moving it inward would leave the end
             // of the curve undefined.
-            let keep_x = i == 0 || i + 1 == self.points.len();
-            self.points[i].y = y;
+            let keep_x = i == 0 || i + 1 == n;
+            p.y = y;
             if !keep_x {
-                self.points[i].x = x;
+                p.x = x;
             }
             return Some(i);
         }
@@ -206,24 +207,27 @@ impl Spline {
     /// keeping interior points between their neighbours.
     pub fn move_point(&mut self, idx: usize, x: f64, y: f64) -> bool {
         let n = self.points.len();
-        if idx >= n {
-            return false;
-        }
         let y = y.clamp(0.0, 1.0);
         if idx == 0 || idx + 1 == n {
-            self.points[idx].y = y;
+            // `idx < n` whenever the point exists; past the end is a refusal.
+            let Some(p) = self.points.get_mut(idx) else {
+                return false;
+            };
+            p.y = y;
             return true;
         }
-        let lo = self.points[idx - 1].x + MIN_X_GAP;
-        let hi = self.points[idx + 1].x - MIN_X_GAP;
+        // An interior point has a neighbour on each side.
+        let Some(&[prev, cur, next]) = self.points.get(idx - 1..idx + 2) else {
+            return false;
+        };
+        let lo = prev.x + MIN_X_GAP;
+        let hi = next.x - MIN_X_GAP;
         // Two neighbours already MIN_X_GAP apart leave no room; the point
         // then only moves vertically rather than jumping to a bogus x.
-        let x = if lo <= hi {
-            x.clamp(lo, hi)
-        } else {
-            self.points[idx].x
-        };
-        self.points[idx] = CurvePoint::new(x, y);
+        let x = if lo <= hi { x.clamp(lo, hi) } else { cur.x };
+        if let Some(p) = self.points.get_mut(idx) {
+            *p = CurvePoint::new(x, y);
+        }
         true
     }
 
@@ -250,26 +254,34 @@ impl Spline {
 
     /// Evaluate the curve at `x` with monotone cubic Hermite interpolation,
     /// held to 0..1 at both ends.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "the textbook Hermite names: segment ends a/b, width h, parameter t"
+    )]
     pub fn eval(&self, x: f64) -> f64 {
         let p = &self.points;
-        match p.len() {
-            0 => return x.clamp(0.0, 1.0),
-            1 => return p[0].y,
-            _ => {}
+        let (Some(first), Some(last)) = (p.first(), p.last()) else {
+            return x.clamp(0.0, 1.0);
+        };
+        if p.len() == 1 {
+            return first.y;
         }
         let x = x.clamp(0.0, 1.0);
-        if x <= p[0].x {
-            return p[0].y;
+        if x <= first.x {
+            return first.y;
         }
-        if x >= p[p.len() - 1].x {
-            return p[p.len() - 1].y;
+        if x >= last.x {
+            return last.y;
         }
         let i = p
             .iter()
             .rposition(|q| q.x <= x)
             .unwrap_or(0)
             .min(p.len() - 2);
-        let (a, b) = (p[i], p[i + 1]);
+        // `i <= len - 2`, so the segment's two ends are both present.
+        let Some(&[a, b]) = p.get(i..i + 2) else {
+            return last.y;
+        };
         let h = b.x - a.x;
         if h <= 1e-12 {
             return b.y;
@@ -296,12 +308,16 @@ impl Spline {
     fn tangents(&self, i: usize) -> (f64, f64) {
         let p = &self.points;
         let n = p.len();
+        // Every caller asks for a segment `k <= n - 2`, which has both ends.
         let slope = |k: usize| -> f64 {
-            let h = p[k + 1].x - p[k].x;
-            if h <= 1e-12 {
+            let Some(&[left, right]) = p.get(k..k + 2) else {
+                return 0.0;
+            };
+            let width = right.x - left.x;
+            if width <= 1e-12 {
                 0.0
             } else {
-                (p[k + 1].y - p[k].y) / h
+                (right.y - left.y) / width
             }
         };
         let tangent = |k: usize| -> f64 {
@@ -317,16 +333,17 @@ impl Spline {
                 // produces an overshooting bulge.
                 return 0.0;
             }
-            let m = (d0 + d1) / 2.0;
+            let mean = d0.midpoint(d1);
             let limit = 3.0 * d0.abs().min(d1.abs());
-            m.clamp(-limit, limit)
+            mean.clamp(-limit, limit)
         };
-        let d = slope(i);
-        if d.abs() <= 1e-12 {
+        let secant = slope(i);
+        if secant.abs() <= 1e-12 {
             // A flat segment must stay flat, whatever the neighbours want.
             return (0.0, 0.0);
         }
-        let cap = 3.0 * d.abs();
+        let cap = 3.0 * secant.abs();
+
         (tangent(i).clamp(-cap, cap), tangent(i + 1).clamp(-cap, cap))
     }
 }
@@ -408,6 +425,7 @@ impl Curve {
 
     /// Repair every spline (see [`Spline::normalised`]) and hold `mix` in
     /// range.
+    #[must_use]
     pub fn normalised(&self) -> Self {
         Self {
             master: self.master.normalised(),
@@ -426,14 +444,14 @@ impl Curve {
     /// lookup at the sampled tones, and is what the representative preview
     /// colour and the editor's own readout use.
     pub fn apply(&self, r: f64, g: f64, b: f64) -> (f64, f64, f64) {
-        let m = self.mix.clamp(0.0, 1.0);
-        if m <= 0.0 {
+        let mix = self.mix.clamp(0.0, 1.0);
+        if mix <= 0.0 {
             return (r, g, b);
         }
         let one = |v: f64, ch: Channel| -> f64 {
             let v = v.clamp(0.0, 1.0);
             let shaped = self.master.eval(self.spline(ch).eval(v));
-            v + (shaped - v) * m
+            v + (shaped - v) * mix
         };
         (
             one(r, Channel::Red),
@@ -449,13 +467,11 @@ impl Curve {
     /// `LUT_SIZE × layers` texture.
     pub fn bake(&self) -> Vec<u8> {
         let mut out = vec![255u8; LUT_SIZE * 4];
-        for (i, slot) in out.chunks_exact_mut(4).enumerate() {
+        let (texels, _) = out.as_chunks_mut::<4>();
+        for (i, slot) in texels.iter_mut().enumerate() {
             let t = i as f64 / (LUT_SIZE - 1) as f64;
             let (r, g, b) = self.apply(t, t, t);
-            slot[0] = quantise(r);
-            slot[1] = quantise(g);
-            slot[2] = quantise(b);
-            slot[3] = 255;
+            *slot = [quantise(r), quantise(g), quantise(b), 255];
         }
         out
     }
@@ -551,7 +567,7 @@ mod tests {
         c.master.set_point(0.5, 1.0);
         c.mix = 0.5;
         let lut = c.bake();
-        let mid = lut[128 * 4] as f64 / 255.0;
+        let mid = f64::from(lut[128 * 4]) / 255.0;
         let want = c.apply(128.0 / 255.0, 0.0, 0.0).0;
         assert!(
             (mid - want).abs() < 1.0 / 255.0,
@@ -572,7 +588,7 @@ mod tests {
         c.master.set_point(0.25, 0.05);
         c.master.set_point(0.75, 0.95);
         for i in 0..=1000 {
-            let t = i as f64 / 1000.0;
+            let t = f64::from(i) / 1000.0;
             let v = c.master.eval(t);
             assert!(
                 (0.0..=1.0).contains(&v),
@@ -581,7 +597,7 @@ mod tests {
         }
         // Between two points the curve stays between their values.
         for i in 0..=200 {
-            let t = 0.25 + 0.5 * i as f64 / 200.0;
+            let t = 0.25 + 0.5 * f64::from(i) / 200.0;
             let v = c.master.eval(t);
             assert!(
                 (0.05 - 1e-9..=0.95 + 1e-9).contains(&v),
@@ -597,7 +613,7 @@ mod tests {
         s.set_point(0.3, 0.6);
         s.set_point(0.6, 0.6);
         for i in 0..=100 {
-            let t = 0.3 + 0.3 * i as f64 / 100.0;
+            let t = 0.3 + 0.3 * f64::from(i) / 100.0;
             assert!((s.eval(t) - 0.6).abs() < 1e-9, "eval({t}) = {}", s.eval(t));
         }
     }
@@ -608,7 +624,7 @@ mod tests {
             points: vec![CurvePoint::new(0.0, 0.2), CurvePoint::new(1.0, 0.8)],
         };
         for i in 0..=100 {
-            let t = i as f64 / 100.0;
+            let t = f64::from(i) / 100.0;
             let want = 0.2 + 0.6 * t;
             assert!(
                 (s.eval(t) - want).abs() < 1e-9,
@@ -692,7 +708,7 @@ mod tests {
             assert!((0.0..=1.0).contains(&p.y), "{p:?}");
         }
         for i in 0..=100 {
-            assert!(s.eval(i as f64 / 100.0).is_finite());
+            assert!(s.eval(f64::from(i) / 100.0).is_finite());
         }
     }
 
@@ -716,7 +732,7 @@ mod tests {
     #[test]
     fn channel_names_round_trip() {
         for c in Channel::ALL {
-            assert_eq!(Channel::from_str(c.as_str()), c, "{c:?}");
+            assert_eq!(Channel::from_name(c.as_str()), c, "{c:?}");
         }
     }
 

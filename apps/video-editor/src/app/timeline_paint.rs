@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 impl VideoEditorApp {
@@ -19,7 +23,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        let strip = self.master_strip_rect(r);
+        let strip = VideoEditorApp::master_strip_rect(r);
         if strip.width() < 60.0 || strip.height() < 20.0 {
             return;
         }
@@ -46,7 +50,7 @@ impl VideoEditorApp {
             m.readout.x0,
             readout_y,
         );
-        let flag = self.clip_flag_rect(r);
+        let flag = VideoEditorApp::clip_flag_rect(r);
         if self.mix.clipped() {
             let hot = flag.contains(self.last_mouse);
             let bg = if hot {
@@ -141,8 +145,11 @@ impl VideoEditorApp {
         let tick_step = nice_tick(self.zoom / self.text_scale);
         let start_t = self.scroll.max(0.0);
         let end_t = self.x_to_time(r.lanes.x1, &r.lanes);
-        let mut t = (start_t / tick_step).floor() * tick_step;
-        while t <= end_t {
+        let first_tick = (start_t / tick_step).floor();
+        let ticks = (0u32..)
+            .map(|k| (first_tick + f64::from(k)) * tick_step)
+            .take_while(|&t| t <= end_t);
+        for t in ticks {
             let x = self.time_to_x(t, &r.lanes);
             if x >= r.ruler.x0 - 1.0 && x <= r.ruler.x1 {
                 stroke_line(
@@ -184,7 +191,6 @@ impl VideoEditorApp {
                     1.0,
                 );
             }
-            t += tick_step;
         }
 
         // --- where the mix went over ---
@@ -305,7 +311,7 @@ impl VideoEditorApp {
             // The head: a raised card a step clear of its lane stripe, with
             // its name, pills, kind line and meter on the measured bands of
             // `chrome_layout::track_head` — the same bands the hit-test reads.
-            let header = self.track_head_rect(r, lane);
+            let header = VideoEditorApp::track_head_rect(r, lane);
             let head = self.track_head_layout(header);
             ui::surface::card(
                 scene,
@@ -315,7 +321,7 @@ impl VideoEditorApp {
                 c.surfaces.raised,
             );
             let track = self.project.track(*tid);
-            let name = track.map(|t| t.name.as_str()).unwrap_or("?");
+            let name = track.map_or("?", |t| t.name.as_str());
             // Elided to its band, which ends a step short of the pills: a
             // lane a collaborator named "Voiceover" must not run under them.
             let name = elide_at(name, head.name.width() as f32, 13.0, tr);
@@ -343,10 +349,12 @@ impl VideoEditorApp {
             let mut line = knd.to_string();
             if let Some(t) = track.filter(|t| t.mix_is_set()) {
                 if t.gain_db.abs() > 1e-9 {
-                    line.push_str(&format!(" · {}", t.gain_words()));
+                    line.push_str(" · ");
+                    line.push_str(&t.gain_words());
                 }
                 if t.pan.abs() > 1e-9 {
-                    line.push_str(&format!(" · {}", t.pan_words()));
+                    line.push_str(" · ");
+                    line.push_str(&t.pan_words());
                 }
             }
             let line = elide_at(&line, head.kind.width() as f32, 9.0, tr);
@@ -369,14 +377,14 @@ impl VideoEditorApp {
                     theme,
                     head.meter,
                     level.map(|l| l.level).unwrap_or_default(),
-                    level.map(|l| l.hold).unwrap_or(0.0),
+                    level.map_or(0.0, |l| l.hold),
                     level.is_some_and(|l| l.clipped),
                 );
             }
             // mute + lock pills (clickable toggles)
-            let muted = track.map(|t| t.muted).unwrap_or(false);
-            let locked = track.map(|t| t.locked).unwrap_or(false);
-            let solo = track.map(|t| t.solo).unwrap_or(false);
+            let muted = track.is_some_and(|t| t.muted);
+            let locked = track.is_some_and(|t| t.locked);
+            let solo = track.is_some_and(|t| t.solo);
             let pill_radius = f64::from(theme.tokens.radii.sm);
             for (pill, on, label, on_bg) in [
                 (head.mute, muted, "M", c.semantic.danger),
@@ -509,14 +517,17 @@ impl VideoEditorApp {
         // they grey back under a diagonal hatch, so "my drag did nothing"
         // always has a visible reason rather than reading as a dead app.
         for (tid, _kind, lane) in &lanes {
-            if !self.project.track(*tid).map(|t| t.locked).unwrap_or(false) {
+            if !self.project.track(*tid).is_some_and(|t| t.locked) {
                 continue;
             }
             let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
             fill_rect(scene, tf, full, with_alpha(c.surfaces.base, 0.5));
             let h = full.height();
-            let mut x = full.x0 - h;
-            while x < full.x1 {
+            let first = full.x0 - h;
+            let stripes = (0u32..)
+                .map(|k| first + f64::from(k) * 12.0)
+                .take_while(|&x| x < full.x1);
+            for x in stripes {
                 stroke_line(
                     scene,
                     tf,
@@ -527,7 +538,6 @@ impl VideoEditorApp {
                     full.y0,
                     1.0,
                 );
-                x += 12.0;
             }
         }
         // Which clips other participants are holding, outlined in their
@@ -716,6 +726,14 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "each clip's linked, selected, media, and accessibility treatments must share the exact same lane geometry"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the paint context plus the clip, its lane and the per-clip state the timeline computed"
+    )]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "the paint pass's shorthands: colours c, the clip rect r, and the x/y of each mark"
+    )]
     pub(super) fn draw_clip(
         &self,
         scene: &mut Scene,
@@ -800,17 +818,13 @@ impl VideoEditorApp {
                         msg,
                         10.0,
                         with_alpha(Color::WHITE, 0.7),
-                        inner.center().x - mw as f64 / 2.0,
+                        inner.center().x - f64::from(mw) / 2.0,
                         inner.center().y - 6.0,
                     );
                 }
             } else {
                 let color = lighten(base, 0.3);
-                let media_dur = self
-                    .project
-                    .media(clip.media)
-                    .map(|m| m.duration)
-                    .unwrap_or(0.0);
+                let media_dur = self.project.media(clip.media).map_or(0.0, |m| m.duration);
                 // Only real peaks are drawn as a waveform. Every other state —
                 // still computing, never asked, or unreadable — draws the flat
                 // line, because none of them know what the audio looks like.
@@ -853,10 +867,10 @@ impl VideoEditorApp {
             if cr.width() > 118.0 && inner.height() > 14.0 {
                 let (mw, mh) = tr.measure(msg, 10.0, None);
                 let pill = Rect::new(
-                    inner.center().x - mw as f64 / 2.0 - 6.0,
-                    inner.center().y - mh as f64 / 2.0 - 2.0,
-                    inner.center().x + mw as f64 / 2.0 + 6.0,
-                    inner.center().y + mh as f64 / 2.0 + 2.0,
+                    inner.center().x - f64::from(mw) / 2.0 - 6.0,
+                    inner.center().y - f64::from(mh) / 2.0 - 2.0,
+                    inner.center().x + f64::from(mw) / 2.0 + 6.0,
+                    inner.center().y + f64::from(mh) / 2.0 + 2.0,
                 );
                 fill_round(scene, tf, pill, 4.0, with_alpha(Color::BLACK, 0.55));
                 text(
@@ -892,9 +906,10 @@ impl VideoEditorApp {
         let badge_w = if clip.speed.is_normal() {
             0.0
         } else {
-            tr.measure_weighted(&clip.speed.label(), 9.5, None, TextWeight::Bold)
-                .0 as f64
-                + 18.0
+            f64::from(
+                tr.measure_weighted(&clip.speed.label(), 9.5, None, TextWeight::Bold)
+                    .0,
+            ) + 18.0
         };
         // A linked clip wears a chain at the head of its header, so "these two
         // move together" is legible standing still — before anything is
@@ -956,7 +971,7 @@ impl VideoEditorApp {
             let label = clip.speed.label();
             let (lw, _) = tr.measure_weighted(&label, 9.5, None, TextWeight::Bold);
             let pill = Rect::new(
-                vx1 - 8.0 - lw as f64 - 10.0,
+                vx1 - 8.0 - f64::from(lw) - 10.0,
                 cr.y0 + 2.0 * chrome_scale,
                 vx1 - 4.0,
                 cr.y0 + 16.0 * chrome_scale,

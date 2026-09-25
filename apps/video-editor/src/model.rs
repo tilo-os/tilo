@@ -148,7 +148,7 @@ impl EffectKind {
             EffectKind::Vignette => "Vignette",
         }
     }
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_name(s: &str) -> Option<Self> {
         Some(match s.trim().to_lowercase().as_str() {
             "grayscale" | "greyscale" | "grey" | "gray" | "b&w" => EffectKind::Grayscale,
             "sepia" => EffectKind::Sepia,
@@ -527,7 +527,7 @@ impl MaskShape {
             MaskShape::Ellipse => "Ellipse",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "rect" | "rectangle" | "box" => MaskShape::Rect,
             "ellipse" | "oval" | "circle" => MaskShape::Ellipse,
@@ -719,7 +719,7 @@ impl TextAlign {
             TextAlign::Right => "Right",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "left" => TextAlign::Left,
             "right" => TextAlign::Right,
@@ -817,7 +817,7 @@ impl MediaKind {
             MediaKind::Text => "text",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "audio" => MediaKind::Audio,
             "image" => MediaKind::Image,
@@ -861,7 +861,7 @@ impl TrackKind {
             TrackKind::Audio => "audio",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "audio" => TrackKind::Audio,
             _ => TrackKind::Video,
@@ -905,7 +905,7 @@ impl Transition {
             Transition::Wipe => "Wipe",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "dissolve" => Transition::CrossDissolve,
             "fade" => Transition::FadeIn,
@@ -988,11 +988,15 @@ fn default_hydration() -> Hydration {
 mod hydration_serde {
     use super::Hydration;
     use serde::{Deserialize, Deserializer, Serializer};
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's `serialize_with` hands the field over by reference"
+    )]
     pub fn serialize<S: Serializer>(h: &Hydration, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(h.as_str())
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hydration, D::Error> {
-        Ok(Hydration::from_str(&String::deserialize(d)?))
+        Ok(Hydration::from_name(&String::deserialize(d)?))
     }
 }
 
@@ -1282,11 +1286,19 @@ pub(crate) fn yes_default() -> bool {
 }
 
 /// `skip_serializing_if` for a `bool` that defaults to true.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` hands the field over by reference"
+)]
 fn is_true(b: &bool) -> bool {
     *b
 }
 
 /// `skip_serializing_if` for a `bool` that defaults to false.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` hands the field over by reference"
+)]
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -2144,7 +2156,7 @@ impl Project {
             .iter()
             .filter(|t| t.kind == TrackKind::Video)
             .collect();
-        video.sort_by(|a, b| b.index.cmp(&a.index));
+        video.sort_by_key(|t| std::cmp::Reverse(t.index));
         let mut audio: Vec<&Track> = self
             .tracks
             .iter()
@@ -2334,14 +2346,13 @@ impl Project {
     pub fn media_kind_of(&self, id: ClipId) -> TrackKind {
         self.clip(id)
             .and_then(|c| self.media(c.media))
-            .map(|m| {
+            .map_or(TrackKind::Video, |m| {
                 if m.kind.is_visual() {
                     TrackKind::Video
                 } else {
                     TrackKind::Audio
                 }
             })
-            .unwrap_or(TrackKind::Video)
     }
 
     // --- linked audio and video ------------------------------------------
@@ -2708,23 +2719,19 @@ impl Project {
 
     /// [`Self::track_audible`] for the track a clip sits on.
     pub fn clip_audible(&self, id: ClipId) -> bool {
-        self.clip(id)
-            .map(|c| self.track_audible(c.track))
-            .unwrap_or(false)
+        self.clip(id).is_some_and(|c| self.track_audible(c.track))
     }
 
     /// Whether `track` refuses edits. A missing track counts as locked: there
     /// is nothing there to edit.
     pub fn track_locked(&self, track: TrackId) -> bool {
-        self.track(track).map(|t| t.locked).unwrap_or(true)
+        self.track(track).is_none_or(|t| t.locked)
     }
 
     /// Whether the clip that owns `id` may currently be edited — false when
     /// its own track is locked.
     pub fn clip_editable(&self, id: ClipId) -> bool {
-        self.clip(id)
-            .map(|c| !self.track_locked(c.track))
-            .unwrap_or(false)
+        self.clip(id).is_some_and(|c| !self.track_locked(c.track))
     }
 
     /// Whether clip `id` may be placed on `track`: the track must exist, be
@@ -2743,10 +2750,11 @@ impl Project {
     /// The first unlocked track of `kind`, preferring `near` when it already
     /// qualifies — the "sensible track" a paste or a duplicate lands on.
     pub fn placement_track(&self, kind: TrackKind, near: Option<TrackId>) -> Option<TrackId> {
-        if let Some(t) = near.and_then(|id| self.track(id)) {
-            if t.kind == kind && !t.locked {
-                return Some(t.id);
-            }
+        if let Some(t) = near.and_then(|id| self.track(id))
+            && t.kind == kind
+            && !t.locked
+        {
+            return Some(t.id);
         }
         self.display_tracks()
             .into_iter()
@@ -2784,7 +2792,7 @@ impl Project {
                 c.anim = c.anim.sliced(on_timeline, c.duration() + on_timeline);
             }
             c.markers.retain(|m| m.t >= on_timeline);
-            for m in c.markers.iter_mut() {
+            for m in &mut c.markers {
                 m.t -= on_timeline;
             }
         }
@@ -2989,9 +2997,9 @@ mod key_and_mask_tests {
     fn softness_gives_the_edge_partial_coverage_rather_than_a_step() {
         // A green diluted halfway toward grey: near the key but not on it.
         let edge = [
-            (GREEN[0] + 0.5) / 2.0,
-            (GREEN[1] + 0.5) / 2.0,
-            (GREEN[2] + 0.5) / 2.0,
+            GREEN[0].midpoint(0.5),
+            GREEN[1].midpoint(0.5),
+            GREEN[2].midpoint(0.5),
         ];
         // Place the band around wherever that colour actually falls, read
         // off the keyer itself rather than recomputed here — a test that

@@ -156,6 +156,11 @@ pub struct ProjectChannel {
 
 impl ProjectChannel {
     /// Non-blocking drain, mirroring [`std::sync::mpsc::Receiver::try_recv`].
+    ///
+    /// # Errors
+    ///
+    /// [`std::sync::mpsc::TryRecvError::Empty`] while the dialog is still
+    /// open, and `Disconnected` once it can no longer answer.
     pub fn try_recv(&self) -> Result<ProjectOutcome, std::sync::mpsc::TryRecvError> {
         self.rx.try_recv().map(|outcome| match outcome {
             ui::portal::PortalOutcome::Opened(p) if self.save => ProjectOutcome::Save(p),
