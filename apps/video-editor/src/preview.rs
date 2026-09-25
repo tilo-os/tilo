@@ -625,7 +625,7 @@ pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
         .collect();
     // Bottom → top: V1 (index 1) is drawn first, V2 over it. `locked` is
     // an editing lock, not a visibility one, so it never hides a layer.
-    video.sort_by(|a, b| a.index.cmp(&b.index));
+    video.sort_by_key(|a| a.index);
 
     let mut out = Vec::new();
     for track in video {

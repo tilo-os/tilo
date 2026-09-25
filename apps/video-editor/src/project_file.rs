@@ -356,10 +356,10 @@ pub mod recents {
     /// How a recent entry is labelled in the menu: the file's stem, which is
     /// what the user named the project.
     pub fn label(entry: &Path) -> String {
-        entry
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| entry.to_string_lossy().into_owned())
+        entry.file_stem().map_or_else(
+            || entry.to_string_lossy().into_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        )
     }
 }
 

@@ -161,7 +161,7 @@ impl VideoCompositor {
     }
 
     fn ensure_uniform(&mut self, device: &wgpu::Device, stride: u32, count: usize) {
-        let needed = stride as u64 * count.max(1) as u64;
+        let needed = u64::from(stride) * count.max(1) as u64;
         let big_enough = self
             .uniform
             .as_ref()
@@ -171,7 +171,7 @@ impl VideoCompositor {
         }
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("video-composite-params"),
-            size: needed.max(stride as u64),
+            size: needed.max(u64::from(stride)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -282,7 +282,7 @@ impl VideoCompositor {
         params.frame = [w as f32, h as f32, 1.0, 0.0];
         params.wipe[2] = viewport.x as f32;
         params.wipe[3] = viewport.y as f32;
-        let offset = *stride as u64 * layers.len() as u64;
+        let offset = u64::from(*stride) * layers.len() as u64;
         queue.write_buffer(buffer, offset, &params.to_bytes());
 
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -607,11 +607,11 @@ impl VideoCompositor {
                 params.grade = [1.0, 1.0, 1.0, 0.0];
             }
 
-            let offset = stride as u64 * i as u64;
+            let offset = u64::from(stride) * i as u64;
             queue.write_buffer(buffer, offset, &params.to_bytes());
             offsets.push(offset as u32);
 
-            let src_view: &wgpu::TextureView = tex.map(|t| t.view.as_ref()).unwrap_or(&gpu.dummy);
+            let src_view: &wgpu::TextureView = tex.map_or(&gpu.dummy, |t| t.view.as_ref());
             bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("video-composite-layer"),
                 layout: &gpu.bgl,

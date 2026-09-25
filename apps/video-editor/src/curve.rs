@@ -551,7 +551,7 @@ mod tests {
         c.master.set_point(0.5, 1.0);
         c.mix = 0.5;
         let lut = c.bake();
-        let mid = lut[128 * 4] as f64 / 255.0;
+        let mid = f64::from(lut[128 * 4]) / 255.0;
         let want = c.apply(128.0 / 255.0, 0.0, 0.0).0;
         assert!(
             (mid - want).abs() < 1.0 / 255.0,
@@ -572,7 +572,7 @@ mod tests {
         c.master.set_point(0.25, 0.05);
         c.master.set_point(0.75, 0.95);
         for i in 0..=1000 {
-            let t = i as f64 / 1000.0;
+            let t = f64::from(i) / 1000.0;
             let v = c.master.eval(t);
             assert!(
                 (0.0..=1.0).contains(&v),
@@ -581,7 +581,7 @@ mod tests {
         }
         // Between two points the curve stays between their values.
         for i in 0..=200 {
-            let t = 0.25 + 0.5 * i as f64 / 200.0;
+            let t = 0.25 + 0.5 * f64::from(i) / 200.0;
             let v = c.master.eval(t);
             assert!(
                 (0.05 - 1e-9..=0.95 + 1e-9).contains(&v),
@@ -597,7 +597,7 @@ mod tests {
         s.set_point(0.3, 0.6);
         s.set_point(0.6, 0.6);
         for i in 0..=100 {
-            let t = 0.3 + 0.3 * i as f64 / 100.0;
+            let t = 0.3 + 0.3 * f64::from(i) / 100.0;
             assert!((s.eval(t) - 0.6).abs() < 1e-9, "eval({t}) = {}", s.eval(t));
         }
     }
@@ -608,7 +608,7 @@ mod tests {
             points: vec![CurvePoint::new(0.0, 0.2), CurvePoint::new(1.0, 0.8)],
         };
         for i in 0..=100 {
-            let t = i as f64 / 100.0;
+            let t = f64::from(i) / 100.0;
             let want = 0.2 + 0.6 * t;
             assert!(
                 (s.eval(t) - want).abs() < 1e-9,
@@ -692,7 +692,7 @@ mod tests {
             assert!((0.0..=1.0).contains(&p.y), "{p:?}");
         }
         for i in 0..=100 {
-            assert!(s.eval(i as f64 / 100.0).is_finite());
+            assert!(s.eval(f64::from(i) / 100.0).is_finite());
         }
     }
 

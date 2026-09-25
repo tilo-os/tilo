@@ -1618,7 +1618,7 @@ impl VideoEditorApp {
         {
             self.frame_source
                 .as_ref()
-                .is_some_and(|s| s.served_real_picture())
+                .is_some_and(crate::gpu::media_source::MediaFrameSource::served_real_picture)
         }
         #[cfg(not(feature = "decode"))]
         {
@@ -1631,14 +1631,13 @@ impl VideoEditorApp {
     /// picture. A source with no probed size falls back to the frame's own
     /// aspect — the same assumption the compositor's aspect fit makes.
     fn selected_aspects(&self) -> (f64, f64) {
-        let frame = self.project.width.max(1) as f64 / self.project.height.max(1) as f64;
+        let frame = f64::from(self.project.width.max(1)) / f64::from(self.project.height.max(1));
         let src = self
             .selected()
             .and_then(|id| self.project.clip(id))
             .and_then(|c| self.project.media(c.media))
             .filter(|m| m.width > 0 && m.height > 0)
-            .map(|m| m.width as f64 / m.height as f64)
-            .unwrap_or(frame);
+            .map_or(frame, |m| f64::from(m.width) / f64::from(m.height));
         (src, frame)
     }
 
@@ -3039,14 +3038,13 @@ impl VideoEditorApp {
             let kind = self
                 .project
                 .media(clip.media)
-                .map(|m| {
+                .map_or(TrackKind::Video, |m| {
                     if m.kind.is_visual() {
                         TrackKind::Video
                     } else {
                         TrackKind::Audio
                     }
-                })
-                .unwrap_or(TrackKind::Video);
+                });
             // The clip's own track first (that is where the user copied it
             // from), then the current selection's track, then any unlocked
             // track of the right kind — creating one only as a last resort.
@@ -3084,7 +3082,10 @@ impl VideoEditorApp {
         // Offset the whole block by its own span so the copies butt up
         // against the originals instead of overlapping them.
         let lo = clips.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
-        let hi = clips.iter().map(|c| c.end()).fold(0.0_f64, f64::max);
+        let hi = clips
+            .iter()
+            .map(crate::model::Clip::end)
+            .fold(0.0_f64, f64::max);
         let offset = (hi - lo).max(crate::model::MIN_CLIP);
         let mut copies = Vec::new();
         let mut from: Vec<(Option<Uuid>, ClipId)> = Vec::new();
@@ -3327,8 +3328,7 @@ impl VideoEditorApp {
         let delta = self
             .project
             .clip(id)
-            .map(|c| self.playhead - c.start)
-            .unwrap_or(0.0);
+            .map_or(0.0, |c| self.playhead - c.start);
         if delta.abs() < 1e-6 {
             return;
         }
@@ -3351,8 +3351,7 @@ impl VideoEditorApp {
         let delta = self
             .project
             .clip(id)
-            .map(|c| self.playhead - c.end())
-            .unwrap_or(0.0);
+            .map_or(0.0, |c| self.playhead - c.end());
         if delta.abs() < 1e-6 {
             return;
         }
@@ -3372,11 +3371,9 @@ impl VideoEditorApp {
         let ids = self.edit_targets();
         for id in &ids {
             self.remember_clip_before(*id);
-            let new_start = self
-                .project
-                .clip(*id)
-                .map(|c| snap_to_frame((c.start + dt).max(0.0), self.project.fps))
-                .unwrap_or(0.0);
+            let new_start = self.project.clip(*id).map_or(0.0, |c| {
+                snap_to_frame((c.start + dt).max(0.0), self.project.fps)
+            });
             self.project.move_clip(*id, new_start);
         }
         self.dispatch_existing_clips(doc, &ids);
@@ -3503,10 +3500,7 @@ impl VideoEditorApp {
     /// Apply `edit` to the selected clip's title styling and dispatch it as
     /// one media write. A no-op on a clip whose source is not a title.
     fn edit_title(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut TextSource)) {
-        let has_text = self
-            .selected_media_item()
-            .map(|m| m.text.is_some())
-            .unwrap_or(false);
+        let has_text = self.selected_media_item().is_some_and(|m| m.text.is_some());
         if !has_text {
             return;
         }
@@ -3642,11 +3636,7 @@ impl VideoEditorApp {
                 if !self.project.clip_editable(id) {
                     return;
                 }
-                let rev = self
-                    .project
-                    .clip(id)
-                    .map(|c| c.speed.reverse)
-                    .unwrap_or(false);
+                let rev = self.project.clip(id).is_some_and(|c| c.speed.reverse);
                 let ids = self.linked_editable(id);
                 for linked in &ids {
                     self.remember_clip_before(*linked);
@@ -3742,8 +3732,7 @@ impl VideoEditorApp {
         let on_key = self
             .selected()
             .and_then(|id| self.project.clip(id))
-            .map(|c| c.has_key_at(param, at))
-            .unwrap_or(false);
+            .is_some_and(|c| c.has_key_at(param, at));
         if on_key {
             // 0 remove · 1 sep · 2..4 shapes · 5 sep · 6 prev · 7 next · 8 sep · 9 clear
             match idx {
@@ -3756,7 +3745,7 @@ impl VideoEditorApp {
                     };
                     self.edit_selected(doc, move |c| {
                         c.set_interp_at(param, at, shape);
-                    })
+                    });
                 }
                 6 => self.jump_to_key(false),
                 7 => self.jump_to_key(true),
@@ -4228,8 +4217,7 @@ impl VideoEditorApp {
                 let gone = self
                     .project
                     .clip_mut(cid)
-                    .map(|c| c.remove_marker(m.id))
-                    .unwrap_or(false);
+                    .is_some_and(|c| c.remove_marker(m.id));
                 if gone {
                     self.actions.dispatch(
                         doc,
@@ -4287,13 +4275,13 @@ impl VideoEditorApp {
     /// that will take it, so a title lands *over* the picture rather than
     /// under it.
     fn place_title_clip(&mut self, doc: &mut AutoCommit, mid: MediaId) -> Option<ClipId> {
-        let track = self
+        let existing = self
             .project
             .display_tracks()
             .into_iter()
             .find(|t| t.kind == TrackKind::Video && !t.locked)
-            .map(|t| t.id)
-            .unwrap_or_else(|| self.add_track(doc, TrackKind::Video));
+            .map(|t| t.id);
+        let track = existing.unwrap_or_else(|| self.add_track(doc, TrackKind::Video));
         let at = snap_to_frame(self.playhead, self.project.fps);
         let cid = self.project.add_clip(track, mid, at)?;
         self.dispatch_clip(doc, cid);
@@ -4345,8 +4333,7 @@ impl VideoEditorApp {
     fn transition_len_max(&self) -> f64 {
         self.selected()
             .and_then(|id| self.project.clip(id))
-            .map(|c| c.duration())
-            .unwrap_or(0.0)
+            .map_or(0.0, crate::model::Clip::duration)
             .max(0.01)
     }
 
@@ -4544,12 +4531,13 @@ impl VideoEditorApp {
     /// threshold. Called on every pointer move.
     fn update_bin_drag(&mut self) {
         let mouse = self.last_mouse;
-        if let Some(bd) = self.bin_drag.as_mut() {
-            if !bd.active && bd.origin.distance(mouse) > BIN_DRAG_THRESHOLD {
-                bd.active = true;
-                // A press that becomes a drag is never a rename.
-                self.pending_rename = None;
-            }
+        if let Some(bd) = self.bin_drag.as_mut()
+            && !bd.active
+            && bd.origin.distance(mouse) > BIN_DRAG_THRESHOLD
+        {
+            bd.active = true;
+            // A press that becomes a drag is never a rename.
+            self.pending_rename = None;
         }
     }
 
@@ -4663,9 +4651,9 @@ impl VideoEditorApp {
     /// actions, so mute and lock are reachable without hunting for the pills.
     fn open_track_menu(&mut self, tid: TrackId, at: Point) {
         let t = self.project.track(tid);
-        let muted = t.map(|t| t.muted).unwrap_or(false);
-        let locked = t.map(|t| t.locked).unwrap_or(false);
-        let solo = t.map(|t| t.solo).unwrap_or(false);
+        let muted = t.is_some_and(|t| t.muted);
+        let locked = t.is_some_and(|t| t.locked);
+        let solo = t.is_some_and(|t| t.solo);
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action(
             if muted { "Unmute track" } else { "Mute track" },
@@ -4696,10 +4684,10 @@ impl VideoEditorApp {
     fn open_clip_menu(&mut self, cid: ClipId, at: Point) {
         // Right-clicking outside the current selection re-targets it, so the
         // menu always acts on what the user just pointed at.
-        if !self.selection.contains(cid) {
-            self.selection.select_only(cid);
-        } else {
+        if self.selection.contains(cid) {
             self.selection.set_primary(cid);
+        } else {
+            self.selection.select_only(cid);
         }
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action("Cut", || {}));
@@ -5054,30 +5042,27 @@ impl VideoEditorApp {
                 let marker_id = marker
                     .parse::<Uuid>()
                     .map_err(|_| format!("invalid marker id: {marker}"))?;
-                let (at, owner, media) = match clip {
-                    Some(clip) => {
-                        let clip_id = clip
-                            .parse::<Uuid>()
-                            .map_err(|_| format!("invalid clip id: {clip}"))?;
-                        let clip = self.project.clip(clip_id).ok_or_else(|| {
-                            format!("marker's clip is no longer available: {clip_id}")
-                        })?;
-                        let marker = clip
-                            .markers
-                            .iter()
-                            .find(|marker| marker.id == marker_id)
-                            .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
-                        (clip.start + marker.t, Some(clip_id), Some(clip.media))
-                    }
-                    None => {
-                        let marker = self
-                            .project
-                            .markers
-                            .iter()
-                            .find(|marker| marker.id == marker_id)
-                            .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
-                        (marker.t, None, None)
-                    }
+                let (at, owner, media) = if let Some(clip) = clip {
+                    let clip_id = clip
+                        .parse::<Uuid>()
+                        .map_err(|_| format!("invalid clip id: {clip}"))?;
+                    let clip = self.project.clip(clip_id).ok_or_else(|| {
+                        format!("marker's clip is no longer available: {clip_id}")
+                    })?;
+                    let marker = clip
+                        .markers
+                        .iter()
+                        .find(|marker| marker.id == marker_id)
+                        .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
+                    (clip.start + marker.t, Some(clip_id), Some(clip.media))
+                } else {
+                    let marker = self
+                        .project
+                        .markers
+                        .iter()
+                        .find(|marker| marker.id == marker_id)
+                        .ok_or_else(|| format!("marker is no longer available: {marker_id}"))?;
+                    (marker.t, None, None)
                 };
                 if let Some(owner) = owner {
                     self.selection.select_only(owner);
@@ -5105,10 +5090,10 @@ impl VideoEditorApp {
             VideoEditorOperation::SaveProjectAs { path: None } => self.request_save_as(),
             VideoEditorOperation::Export { path: None } => self.request_export(),
             VideoEditorOperation::ImportMedia { path: Some(path) } => {
-                self.pending_imports.push(PathBuf::from(path))
+                self.pending_imports.push(PathBuf::from(path));
             }
             VideoEditorOperation::Export { path: Some(path) } => {
-                self.begin_export_to(PathBuf::from(path))
+                self.begin_export_to(PathBuf::from(path));
             }
             VideoEditorOperation::OpenProject { path: Some(_) }
             | VideoEditorOperation::SaveProject { path: Some(_) }
@@ -6028,11 +6013,11 @@ impl Widget for VideoEditorApp {
             use crate::actions::VideoEditorOperation;
             match &operation {
                 VideoEditorOperation::OpenProject { path: Some(path) } => {
-                    self.begin_open(state, PathBuf::from(path))
+                    self.begin_open(state, PathBuf::from(path));
                 }
                 VideoEditorOperation::SaveProject { path: Some(path) }
                 | VideoEditorOperation::SaveProjectAs { path: Some(path) } => {
-                    self.write_project_to(state, PathBuf::from(path))
+                    self.write_project_to(state, PathBuf::from(path));
                 }
                 _ => {}
             }
@@ -6759,7 +6744,7 @@ impl Widget for VideoEditorApp {
                     return;
                 }
                 let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (*x as f64, *y as f64),
+                    MouseScrollDelta::LineDelta(x, y) => (f64::from(*x), f64::from(*y)),
                     MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
                 };
                 // A dialog's scrim owns the wheel as it owns the click: the
@@ -6834,8 +6819,7 @@ impl Widget for VideoEditorApp {
             // Laid out from the current state — see `chrome_theme`. A
             // disabled Export offers no pointer: a hand over a button that
             // will refuse is a lie about what the click does.
-            let Some(l) = self.with_dialog_layout(|app, tr, theme| app.export_layout(tr, theme))
-            else {
+            let Some(l) = self.with_dialog_layout(VideoEditorApp::export_layout) else {
                 return Some(CursorIcon::Default);
             };
             let over_btn = if l.confirm.contains(point) {
@@ -6871,19 +6855,18 @@ impl Widget for VideoEditorApp {
             Some(Drag::Marquee { .. }) => return Some(CursorIcon::Crosshair),
             _ => {}
         }
-        if self.bin_drag.map(|b| b.active).unwrap_or(false) {
+        if self.bin_drag.is_some_and(|b| b.active) {
             return Some(CursorIcon::Grabbing);
         }
         // Scrollbars first — they float over their panes.
         for pane in Self::SCROLL_PANES {
-            if let Some((track, m)) = self.scroll_pane(pane, &r) {
-                if self
+            if let Some((track, m)) = self.scroll_pane(pane, &r)
+                && self
                     .scroll_bar(pane)
                     .thumb_rect(track, m)
                     .is_some_and(|t| t.contains(point))
-                {
-                    return Some(CursorIcon::Pointer);
-                }
+            {
+                return Some(CursorIcon::Pointer);
             }
         }
         // Topbar buttons, and the export chip that hangs below them.
@@ -6997,12 +6980,10 @@ impl Widget for VideoEditorApp {
             let clickable = l.sections.iter().any(|(_, rc)| rc.contains(point))
                 || l.keys.iter().any(|(_, rc)| rc.contains(point))
                 || l.marker_rows.iter().any(|(_, rc)| rc.contains(point))
-                || l.add_marker.map(|rc| rc.contains(point)).unwrap_or(false)
+                || l.add_marker.is_some_and(|rc| rc.contains(point))
                 || l.project_frames.iter().any(|(_, rc)| rc.contains(point))
                 || l.project_rates.iter().any(|(_, rc)| rc.contains(point))
-                || l.project_match
-                    .map(|rc| rc.contains(point))
-                    .unwrap_or(false);
+                || l.project_match.is_some_and(|rc| rc.contains(point));
             if clickable {
                 return Some(CursorIcon::Pointer);
             }
@@ -7072,7 +7053,7 @@ impl Widget for VideoEditorApp {
         ])
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "VideoEditorApp"
     }
     fn test_id(&self) -> Option<&str> {
@@ -7740,10 +7721,10 @@ impl VideoEditorApp {
             }
             Drag::Scrubber => self.apply_scrubber(p, r),
             Drag::Scrollbar(pane) => {
-                if let Some((track, m)) = self.scroll_pane(pane, r) {
-                    if let Some(px) = self.scroll_bar(pane).drag_to(track, m, p) {
-                        self.set_scroll_offset(pane, px, r);
-                    }
+                if let Some((track, m)) = self.scroll_pane(pane, r)
+                    && let Some(px) = self.scroll_bar(pane).drag_to(track, m, p)
+                {
+                    self.set_scroll_offset(pane, px, r);
                 }
             }
             Drag::Marquee { origin, .. } => {
@@ -7762,7 +7743,7 @@ impl VideoEditorApp {
                 // playhead when within a few pixels, then to the frame grid.
                 let snapped = self.snap_time(raw, id);
                 let new_start = snap_to_frame(snapped, self.project.fps);
-                let old_start = self.project.clip(id).map(|c| c.start).unwrap_or(new_start);
+                let old_start = self.project.clip(id).map_or(new_start, |c| c.start);
                 let dt = new_start - old_start;
                 // Resolve the lane under the cursor: a vertical drag moves the
                 // clip between tracks. Only a lane that will actually accept it
@@ -7788,7 +7769,7 @@ impl VideoEditorApp {
                             continue;
                         }
                         self.remember_clip_before(other);
-                        let s = self.project.clip(other).map(|c| c.start).unwrap_or(0.0);
+                        let s = self.project.clip(other).map_or(0.0, |c| c.start);
                         self.project.move_clip(other, (s + dt).max(0.0));
                     }
                 }
@@ -7844,8 +7825,7 @@ impl VideoEditorApp {
                     let max = self
                         .selected()
                         .and_then(|id| self.project.clip(id))
-                        .map(|c| c.duration())
-                        .unwrap_or(0.0);
+                        .map_or(0.0, crate::model::Clip::duration);
                     self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
                 }
             }
@@ -7862,8 +7842,7 @@ impl VideoEditorApp {
                     let max = self
                         .selected()
                         .and_then(|id| self.project.clip(id))
-                        .map(|c| c.duration())
-                        .unwrap_or(0.0);
+                        .map_or(0.0, crate::model::Clip::duration);
                     self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 }
             }
@@ -8309,9 +8288,9 @@ impl VideoEditorApp {
         let (hw, _) = tr.measure_weighted(hint, 15.0, None, TextWeight::Semibold);
         let ctr = w.center();
         let plate = Rect::new(
-            ctr.x - hw as f64 / 2.0 - 18.0,
+            ctr.x - f64::from(hw) / 2.0 - 18.0,
             ctr.y - 20.0,
-            ctr.x + hw as f64 / 2.0 + 18.0,
+            ctr.x + f64::from(hw) / 2.0 + 18.0,
             ctr.y + 20.0,
         );
         fill_round(scene, tf, plate, 10.0, c.surfaces.raised);
@@ -9090,7 +9069,7 @@ impl VideoEditorApp {
         let footer_band = if overflow > 0.0 { line_xs + s2 } else { 0.0 };
         let max_scroll = (content_h - (body.height() - footer_band)).max(0.0);
         let scroll = self.help_scroll.clamp(0.0, max_scroll);
-        let footer_hint = (overflow > 0.0).then(|| body.y1 - footer_band + s2);
+        let footer_hint = (overflow > 0.0).then_some(body.y1 - footer_band + s2);
         let hint_top = body.y0 - scroll;
         let groups_top = hint_top + line_sm + s3;
         let col_w = if two_col {
