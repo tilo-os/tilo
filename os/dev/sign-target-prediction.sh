@@ -111,8 +111,9 @@ verify_signed_efi() {
 }
 
 # A measured but unsigned target is not bootable under the Secure Boot state
-# whose PCR7 we bind. The broker's EFI operation is expected to use an
-# industry/OEM-trusted, non-exportable key and no timestamp (reproducibility).
+# whose PCR7 we bind. The broker's EFI operation uses the non-exportable key of
+# the pinned Tilo release certificate, which owners enroll in firmware db (see
+# docs/security/boot-chain.md), and no timestamp (reproducibility).
 while IFS=$'\t' read -r destination source; do
   case "$destination" in EFI/Linux/*.efi) : ;; *) die "unsafe live UKI path from image" ;; esac
   "$signer" sign-efi "$work/live/$source" "$work/live/$source.signed"

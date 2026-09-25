@@ -149,7 +149,7 @@ variables:
 
 Each value is an absolute executable path appropriate to that host. The
 workflow invokes it as `BROKER PLATFORM OUTPUT`, where `PLATFORM` is `linux`,
-`windows`, `macos`, `release`, `homebrew`, `winget`, or `site`. The broker receives
+`windows`, `macos`, `release`, `homebrew`, `winget`, `site`, or `internal-bundle`. The broker receives
 `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, requests the
 configured audience, validates its server-side claims, and exchanges the JWT
 for a narrowly scoped lease. It must create `OUTPUT` with mode 0600 (or a
@@ -176,8 +176,10 @@ SIGNER export-efi-cert OUTPUT_CERTIFICATE
 It receives the Forgejo OIDC request environment, validates the protected
 workflow/ref and native architecture server-side, and asks the KMS/HSM to make
 an RSA PKCS#1 v1.5 SHA-256 signature without exporting the private key. The EFI
-operation obtains the industry/OEM-trusted Authenticode signature required for
-stock-firmware Secure Boot and must omit nondeterministic timestamps. The
+operation obtains the Authenticode signature of the Tilo release EFI
+certificate (`keys/efi-signing.crt`, which owners enroll in firmware `db`; see
+[security/boot-chain.md](security/boot-chain.md)) and must omit
+nondeterministic timestamps. The
 export operation returns its public X.509 signing certificate; CI verifies its
 DER SHA-256 fingerprint against the independently protected
 `TILO_EFI_SIGNING_CERT_SHA256` repository variable and verifies every returned
@@ -385,13 +387,16 @@ administrators):
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
 | `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.sandbox.example/qos/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
-| `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
+| `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the Tilo release EFI certificate (`keys/efi-signing.crt`) |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
 | `IMAGER_WINDOWS_PUBLISHER` | complete expected Authenticode certificate subject, independently verified |
 | `IMAGER_MAC_TEAM_ID` | 10-character Apple Developer team identifier, independently verified |
 | `IMAGER_MAC_CERT_SHA256` | uppercase 64-hex SHA-256 fingerprint of the expected Developer ID leaf certificate |
 | `WINGET_GITHUB_USER` | dedicated GitHub submission bot login |
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
+| `IMAGER_INTERNAL_BUNDLE` | optional: unset (default) skips the internal installer bundle; `export` tests and exports it on every run; `publish` also publishes it for tags and requires it in the catalog. See [Internal installer bundle](#internal-installer-bundle) |
+| `IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER` | with `publish`: absolute broker path on both native Linux runner images, platform `internal-bundle` |
+| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` generic package; omit for `qos` |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.sandbox.example`. Give its service account read-only access to the published
@@ -413,6 +418,63 @@ release and monitor workflows do not read them:
 `IMAGER_MAC_CERT_PASSWORD`, `IMAGER_MAC_SIGNING_IDENTITY`, `IMAGER_APPLE_ID`,
 `IMAGER_APPLE_TEAM_ID`, `IMAGER_APPLE_APP_PASSWORD`, `HOMEBREW_TAP_TOKEN`,
 `WINGET_GITHUB_TOKEN`, `SITE_RELEASE_TOKEN`, or `IMAGER_WINDOWS_SIGNER`.
+
+### Internal installer bundle
+
+Full Tilo without a USB stick (design spec
+`docs/superpowers/specs/2026-09-22-usb-free-install-design.md` §3) downloads a
+schema-2 internal installer bundle: a manifest plus two raw component images
+the Imager writes to staging partitions on the internal disk. Each native
+`medium` lane derives it from the live disk that has just passed the
+installation cycles:
+
+1. **Test** (`export` or `publish`): installs `btrfs-progs`/`dosfstools`/
+   `qemu-img`, runs `os/tests/internal_bundle_test.py`,
+   `os/tests/internal_bundle_catalog.sh` and, as root,
+   `os/tests/internal_bundle_export.sh` against loop devices.
+2. **Export** (`export` or `publish`): `os/dev/export-internal-bundle.sh`
+   runs `os/dev/internal-bundle.py export` through `sudo -n` on
+   `os/output/installer/qcow2/disk.qcow2`. It specialises the one live UKI
+   to `root=UUID=<staging root>` (length-stable, unsigned: Secure Boot must be
+   off for this flow), installs it as `/EFI/BOOT/BOOT{X64,AA64}.EFI`, shrinks
+   the Btrfs root to its minimum plus 1 GiB, and writes
+   `tilo-internal-installer-ARCH{.json,-esp.img,-root.img}` plus the catalog
+   entry `internal-catalog-ARCH.json`. Tag builds record the tag as
+   `release_id`; rehearsals record `rehearsal-<sha>`.
+3. **Publish** (`publish`, tags only): `publish-internal-bundle.sh` uploads
+   components first and the manifest last to the Forgejo generic package
+   `https://code.sandbox.example/api/packages/OWNER/generic/tilo-internal-installer/TAG/`,
+   then downloads each file anonymously and compares digests. Existing files
+   are never replaced; a rerun only verifies them.
+4. **Catalog** (`publish`, tags only): the lane uploads only the manifest and
+   its entry (artifact `tilo-internal-catalog-ARCH`). `build-release-catalog.sh`
+   checks every entry against the exact manifest bytes beside it, parses the
+   manifest with the exporter's own validator, requires the package URL
+   above, and with `TILO_REQUIRE_INTERNAL_BUNDLE=1` requires both
+   architectures. The entries appear as `CatalogRelease::Internal`
+   (`purpose: tilo-internal-installer`, `layout: internal-bundle-v2`). The
+   GitHub and Forgejo release publishers skip these catalog inputs.
+
+Why a Forgejo package on `code.sandbox.example` rather than a release attachment:
+the Imager accepts internal manifests from that origin only
+(`trusted_catalog_url` in `apps/imager/src/release.rs`); each architecture
+publishes independently without racing one draft release; the root image
+routinely exceeds GitHub's 2 GiB asset limit; and the multi-GiB images never
+travel through workflow artifacts. Configure Forgejo accordingly:
+
+- the package owner is public, so anonymous downloads work;
+- package blobs are served by Forgejo itself: the Imager refuses cross-origin
+  redirects, so object-storage `SERVE_DIRECT` must stay off for packages;
+- `[packages] LIMIT_SIZE_GENERIC` (and any reverse-proxy body limit) admits
+  the root image, typically several GiB;
+- the `internal-bundle` broker returns a 5–15 minute token with
+  `write:package` for that owner only, after the usual protected-tag OIDC
+  validation.
+
+Publishing a bundle does not enable Full Tilo: builds offer it only when
+compiled with `TILO_IMAGER_INTERNAL_INSTALL=1` after the VM round trip
+passes. What export proves offline, and what remains for that round trip, is
+listed in the header of `os/dev/internal-bundle.py`.
 
 ## WPE buildroot snapshot credentials
 

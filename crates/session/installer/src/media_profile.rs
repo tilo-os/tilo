@@ -219,6 +219,33 @@ fn load_from_with_zoneinfo(
         .map(Some)
 }
 
+/// Validate the secret-free profile object carried by a staged (USB-free)
+/// installation handoff. It is the same object Tilo Imager writes to media;
+/// `schema` may be omitted there because the handoff has its own schema.
+///
+/// # Errors
+///
+/// Returns an error for an unsupported schema or fields outside the media
+/// profile. Individual invalid values become repairs, exactly as for media.
+pub fn validate_object(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<MediaProfile, String> {
+    validate_object_with_zoneinfo(object, Path::new("/usr/share/zoneinfo"))
+}
+
+pub(crate) fn validate_object_with_zoneinfo(
+    object: &serde_json::Map<String, serde_json::Value>,
+    zoneinfo_root: &Path,
+) -> Result<MediaProfile, String> {
+    let mut object = object.clone();
+    object
+        .entry("schema")
+        .or_insert_with(|| serde_json::Value::from(1));
+    serde_json::from_value::<RawMediaProfile>(serde_json::Value::Object(object))
+        .map_err(|error| format!("installation profile is malformed: {error}"))?
+        .validate(zoneinfo_root)
+}
+
 /// Load and validate the profile extracted at [`PROFILE_PATH`].
 ///
 /// # Errors
