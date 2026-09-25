@@ -64,13 +64,26 @@ karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
    && python3 -B "$repo_root/os/tests/test_installer_target_cmdline.py" \
    && python3 -B "$repo_root/os/tests/test_installer_target_boot_digest.py" \
+   && grep -Fq 'append root=tilo-auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && grep -Fq 'append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
+   && grep -Fq 'target UKI lacks the signed TILO_BOOT mount contract' "$backend" \
    && ! grep -Fq 'tilo-uki-cmdline set "tilo.root=' "$backend"; then
   ok "encrypted installs atomically promote a target-independent UKI without per-machine measured bytes"
 else
   bad "target-independent UKI handoff is incomplete (legacy deletions: $karg_deletes)"
+fi
+
+if grep -Fq 'mkfs.ext4 -q -L TILO_BOOT "$boot_part"' "$encryptor" \
+   && grep -Fq -- '--boot-mount-spec "$ENC_BOOT_MOUNT_SPEC"' "$backend" \
+   && grep -Fq 'tilo-boot-mount-contract' "$backend" \
+   && bash "$repo_root/os/tests/encrypted_boot_mount_contract.sh"; then
+  ok "encrypted installs bind the signed TILO_BOOT mount contract to one prepared partition"
+else
+  bad "encrypted /boot mount contract can be missing, substituted, or ambiguous"
 fi
 
 if grep -Fq 'tilo-uki-cmdline remove systemd.show_status' "$containerfile" \
@@ -179,12 +192,15 @@ if grep -Fq -- '--expect-disk-size-bytes)' "$backend" \
    && grep -Fq -- '--expect-disk-serial)' "$backend" \
    && grep -Fq -- '--expect-root-partuuid)' "$backend" \
    && grep -Fq -- '--expect-root-size-bytes)' "$backend" \
+   && grep -Fq -- '--expect-boot-partuuid)' "$backend" \
+   && grep -Fq -- '--expect-boot-size-bytes)' "$backend" \
    && grep -Fq -- '--expect-efi-partuuid)' "$backend" \
    && grep -Fq -- '--expect-efi-size-bytes)' "$backend" \
    && grep -Fq 'missing stable disk identity (expected WWN or serial)' "$backend" \
    && grep -Fq 'validate_partition_identity "$ROOT_PARTITION"' "$backend" \
+   && grep -Fq 'validate_partition_identity "$BOOT_PARTITION"' "$backend" \
    && grep -Fq 'validate_partition_identity "$EFI_PARTITION"' "$backend" \
-   && [ "$(grep -c '^[[:space:]]*validate_disk_identity$' "$backend" || true)" -eq 2 ]; then
+   && [ "$(grep -c '^[[:space:]]*validate_disk_identity$' "$backend" || true)" -ge 3 ]; then
   ok "reviewed disk and alongside partition identities are revalidated before destructive work"
 else
   bad "installer target identity is not bound across discovery and destructive execution"
@@ -470,7 +486,8 @@ if grep -Fq -- '--alongside' "$backend" \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$ROOT_PARTITION")"' "$backend" \
    && [ "$(grep -c '^[[:space:]]*validate_alongside$' "$backend" || true)" -eq 4 ] \
    && grep -Fq 'signature_types="$(wipefs --noheadings --no-act --output TYPE "$part")"' "$encryptor" \
-   && grep -Fq 'root and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'root, boot, and EFI partitions are not on the same disk' "$encryptor" \
+   && grep -Fq 'boot partition already contains a signature' "$encryptor" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$backend" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_FREE_BYTES=1073741824' "$backend" \
    && grep -Fq 'MIN_ALONGSIDE_ESP_BYTES=2147483648' "$encryptor" \
@@ -496,7 +513,7 @@ else
   bad "prepared-storage preflight is missing or can fall through into destructive installation"
 fi
 
-if grep -Fq 'prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
+if grep -Fq 'prepare-partition "$ROOT_PARTITION" --boot "$BOOT_PARTITION" --efi "$EFI_PARTITION"' "$backend" \
    && grep -Fq 'ROOT_FS_UUID=' "$backend" \
    && grep -Fq 'ENC_CLEANUP_TARGET="$ROOT_PARTITION"' "$backend"; then
   ok "encrypted and unencrypted alongside paths preserve the partition table"

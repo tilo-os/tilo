@@ -78,6 +78,7 @@ RUN test -x /usr/bin/tilo-installer \
     # each only on the installed-target copy, then verify the result exactly.
     && /usr/libexec/tilo-uki-cmdline append root=tilo-auto /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi \
+    && /usr/libexec/tilo-uki-cmdline append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi \
     && target_cmdline="$(/usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi)" \
     && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
     && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \

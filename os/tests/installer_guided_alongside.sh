@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Destructive loopback proof for guided alongside partition creation. The test
 # snapshots both the existing GPT entry and bytes inside it, then requires the
-# helper to append exactly two partitions without changing either snapshot.
+# helper to append exactly three partitions without changing either snapshot.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -30,6 +30,7 @@ if ! loop="$(run_root losetup --find --show --partscan "$tmp/disk.img" 2>"$loop_
 fi
 existing_uuid=00000000-0000-4000-8000-000000000001
 efi_uuid=10000000-0000-4000-8000-000000000002
+boot_uuid=30000000-0000-4000-8000-000000000004
 root_uuid=20000000-0000-4000-8000-000000000003
 printf 'label: gpt\nstart=2048, size=8192, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=%s, name="existing OS sentinel"\n' "$existing_uuid" \
   | run_root sfdisk --wipe always "$loop" >/dev/null
@@ -46,8 +47,10 @@ disk_size=$((40 * 1024 * 1024 * 1024))
 free_start=$((5 * 1024 * 1024))
 free_size=$((disk_size - 6 * 1024 * 1024))
 efi_size=$((2 * 1024 * 1024 * 1024))
-root_start=$((free_start + efi_size))
-root_size=$((free_size - efi_size))
+boot_start=$((free_start + efi_size))
+boot_size=$((1024 * 1024 * 1024))
+root_start=$((boot_start + boot_size))
+root_size=$((free_size - efi_size - boot_size))
 ptuuid="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(json.load(sys.stdin)["partitiontable"]["id"])')"
 devnum="$(lsblk -dno MAJ:MIN "$loop" | xargs)"
 
@@ -78,8 +81,9 @@ helper_args=(
   --expect-logical-sector-size 512
   --free-start-bytes "$free_start" --free-size-bytes "$free_size"
   --efi-start-bytes "$free_start" --efi-size-bytes "$efi_size"
+  --boot-start-bytes "$boot_start" --boot-size-bytes "$boot_size"
   --root-start-bytes "$root_start" --root-size-bytes "$root_size"
-  --new-efi-partuuid "$efi_uuid" --new-root-partuuid "$root_uuid"
+  --new-efi-partuuid "$efi_uuid" --new-boot-partuuid "$boot_uuid" --new-root-partuuid "$root_uuid"
   --expect-partition "$existing_uuid:1048576:4194304"
 )
 invoke_helper() {
@@ -95,17 +99,19 @@ after_hash="$(run_root dd if="$existing" bs=1 skip=4096 count=31 status=none | s
 after_entry="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; u=sys.argv[1]; p=next(p for p in t["partitions"] if p["uuid"].lower()==u); print("{}:{}:{}".format(p["uuid"].lower(),p["start"]*t["sectorsize"],p["size"]*t["sectorsize"]))' "$existing_uuid")"
 [ "$after_hash" = "$before_hash" ] || { echo 'FAIL  existing partition bytes changed' >&2; exit 1; }
 [ "$after_entry" = "$before_entry" ] || { echo 'FAIL  existing GPT entry changed' >&2; exit 1; }
-[ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 3 ] \
-  || { echo 'FAIL  helper did not append exactly two partitions' >&2; exit 1; }
+[ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 4 ] \
+  || { echo 'FAIL  helper did not append exactly three partitions' >&2; exit 1; }
 after_map="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; t=json.load(sys.stdin)["partitiontable"]; s=t["sectorsize"]; print("\n".join(sorted("{}:{}:{}".format(p["uuid"].lower(),p["start"]*s,p["size"]*s) for p in t["partitions"])))')"
 expected_map="$(printf '%s\n' \
   "$existing_uuid:1048576:4194304" \
   "$efi_uuid:$free_start:$efi_size" \
+  "$boot_uuid:$boot_start:$boot_size" \
   "$root_uuid:$root_start:$root_size" | sort)"
 [ "$after_map" = "$expected_map" ] \
   || { printf 'FAIL  final PARTUUID/geometry map differs from the reviewed plan\nexpected:\n%s\nactual:\n%s\n' "$expected_map" "$after_map" >&2; exit 1; }
 types="$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print("\n".join("{}={}".format(p["uuid"].lower(),p["type"].lower()) for p in json.load(sys.stdin)["partitiontable"]["partitions"]))')"
 grep -Fqx "$efi_uuid=c12a7328-f81f-11d2-ba4b-00a0c93ec93b" <<<"$types"
+grep -Fqx "$boot_uuid=0fc63daf-8483-4772-8e79-3d69d8477de4" <<<"$types"
 grep -Fqx "$root_uuid=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab" <<<"$types"
 
 # A second invocation must refuse even the exact UUID/geometry pair. Those
@@ -119,7 +125,7 @@ if invoke_helper; then
 fi
 [ "$(run_root blkid -p -s UUID -o value "$efi_partition")" = "$efi_fs_uuid" ] \
   || { echo 'FAIL  refused retry changed the existing Tilo ESP' >&2; exit 1; }
-[ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 3 ] \
+[ "$(run_root sfdisk --json "$loop" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["partitiontable"]["partitions"]))')" -eq 4 ] \
   || { echo 'FAIL  refused retry changed the partition map' >&2; exit 1; }
 
 # Model power loss after the GPT commit but before mkfs. Even an unformatted

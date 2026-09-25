@@ -1,5 +1,5 @@
 #!/bin/bash
-# Append Tilo's dedicated ESP and root inside one already-unallocated GPT extent.
+# Append Tilo's dedicated ESP, boot and root inside one already-unallocated GPT extent.
 # Existing entries are a reviewed input: their UUID/start/size map must match
 # exactly under the disk lock, and no command here deletes, moves, or resizes.
 set -euo pipefail
@@ -14,8 +14,8 @@ shift
 
 DISK="" EXPECT_PTUUID="" EXPECT_SECTOR="" EXPECT_DISK_SIZE="" EXPECT_DEVNUM=""
 EXPECT_WWN="" EXPECT_SERIAL=""
-FREE_START="" FREE_SIZE="" EFI_START="" EFI_SIZE="" ROOT_START="" ROOT_SIZE=""
-EFI_UUID="" ROOT_UUID=""
+FREE_START="" FREE_SIZE="" EFI_START="" EFI_SIZE="" BOOT_START="" BOOT_SIZE="" ROOT_START="" ROOT_SIZE=""
+EFI_UUID="" BOOT_UUID="" ROOT_UUID=""
 IN_USE_DISK=0
 EXPECTED_PARTITIONS=()
 while [ $# -gt 0 ]; do
@@ -31,13 +31,16 @@ while [ $# -gt 0 ]; do
     --free-size-bytes) FREE_SIZE="${2:-}"; shift 2 ;;
     --efi-start-bytes) EFI_START="${2:-}"; shift 2 ;;
     --efi-size-bytes) EFI_SIZE="${2:-}"; shift 2 ;;
+    --boot-start-bytes) BOOT_START="${2:-}"; shift 2 ;;
+    --boot-size-bytes) BOOT_SIZE="${2:-}"; shift 2 ;;
     --root-start-bytes) ROOT_START="${2:-}"; shift 2 ;;
     --root-size-bytes) ROOT_SIZE="${2:-}"; shift 2 ;;
     --new-efi-partuuid) EFI_UUID="${2:-}"; shift 2 ;;
+    --new-boot-partuuid) BOOT_UUID="${2:-}"; shift 2 ;;
     --new-root-partuuid) ROOT_UUID="${2:-}"; shift 2 ;;
     --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
     # A staged (USB-free) install runs from two partitions of this disk, so the
-    # kernel refuses a whole-table reread. partx below registers the new pair;
+    # kernel refuses a whole-table reread. partx below registers the new entries;
     # every identity check afterwards is unchanged.
     --in-use-disk) IN_USE_DISK=1; shift ;;
     *) die "unknown argument: $1" ;;
@@ -59,16 +62,33 @@ DISK="$(readlink -f "$DISK")"
 [[ "$ROOT_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
   || die "invalid new root PARTUUID"
 [ "${EFI_UUID,,}" != "${ROOT_UUID,,}" ] || die "new partition UUIDs must be distinct"
+if [ -n "$BOOT_START$BOOT_SIZE$BOOT_UUID" ]; then
+  [[ "$BOOT_UUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+    || die "invalid new boot PARTUUID"
+  [ "${BOOT_UUID,,}" != "${EFI_UUID,,}" ] && [ "${BOOT_UUID,,}" != "${ROOT_UUID,,}" ] \
+    || die "new partition UUIDs must be distinct"
+  for value in BOOT_START BOOT_SIZE; do
+    [[ "${!value}" =~ ^[0-9]+$ ]] && [ "${!value}" -gt 0 ] || die "missing or invalid $value"
+  done
+fi
 for value in EXPECT_SECTOR FREE_START FREE_SIZE EFI_START EFI_SIZE ROOT_START ROOT_SIZE; do
   number="${!value}"
   [[ "$number" =~ ^[0-9]+$ ]] && [ "$number" -gt 0 ] || die "missing or invalid $value"
 done
 [ "$EXPECT_SECTOR" -eq 512 ] || [ "$EXPECT_SECTOR" -eq 4096 ] \
   || die "unsupported logical sector size $EXPECT_SECTOR"
+if [ -n "$BOOT_UUID" ]; then
+  [ "$BOOT_SIZE" -ge 1073741824 ] || die "guided boot must be at least 1 GiB"
+  [ "$BOOT_START" -eq $((EFI_START + EFI_SIZE)) ] || die "boot does not immediately follow EFI"
+  [ "$ROOT_START" -eq $((BOOT_START + BOOT_SIZE)) ] || die "root does not immediately follow boot"
+  [ $((BOOT_START % EXPECT_SECTOR)) -eq 0 ] && [ $((BOOT_SIZE % EXPECT_SECTOR)) -eq 0 ] \
+    || die "boot partition is not sector-aligned"
+else
+  [ "$ROOT_START" -eq $((EFI_START + EFI_SIZE)) ] || die "root does not immediately follow EFI"
+fi
 [ "$EFI_SIZE" -eq 2147483648 ] || die "guided EFI partition must be exactly 2 GiB"
 [ "$ROOT_SIZE" -ge 34359738368 ] || die "guided root must be at least 32 GiB"
 [ "$EFI_START" -eq "$FREE_START" ] || die "EFI does not start at the reviewed free extent"
-[ "$ROOT_START" -eq $((EFI_START + EFI_SIZE)) ] || die "root does not immediately follow EFI"
 [ $((ROOT_START + ROOT_SIZE)) -eq $((FREE_START + FREE_SIZE)) ] \
   || die "new partitions do not exactly fill the reviewed free extent"
 for value in FREE_START FREE_SIZE EFI_START EFI_SIZE ROOT_START ROOT_SIZE; do
@@ -107,6 +127,7 @@ EXPECTED_MAP="$(canonical_expected)"
 FINAL_EXPECTED_MAP="$({
   [ -z "$EXPECTED_MAP" ] || printf '%s\n' "$EXPECTED_MAP"
   printf '%s:%s:%s\n' "${EFI_UUID,,}" "$EFI_START" "$EFI_SIZE"
+  [ -z "$BOOT_UUID" ] || printf '%s:%s:%s\n' "${BOOT_UUID,,}" "$BOOT_START" "$BOOT_SIZE"
   printf '%s:%s:%s\n' "${ROOT_UUID,,}" "$ROOT_START" "$ROOT_SIZE"
 } | sort -t: -k2,2n)"
 
@@ -149,10 +170,17 @@ efi_sector=$((EFI_START / EXPECT_SECTOR))
 efi_sectors=$((EFI_SIZE / EXPECT_SECTOR))
 root_sector=$((ROOT_START / EXPECT_SECTOR))
 root_sectors=$((ROOT_SIZE / EXPECT_SECTOR))
-printf 'start=%s, size=%s, type=%s, uuid=%s, name="Tilo EFI"\nstart=%s, size=%s, type=%s, uuid=%s, name="Tilo root"\n' \
-  "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
-  "$root_sector" "$root_sectors" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab "${ROOT_UUID,,}" \
-  | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
+partition_lines="$(printf 'start=%s, size=%s, type=%s, uuid=%s, name="Tilo EFI"\n' \
+  "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}")"
+if [ -n "$BOOT_UUID" ]; then
+  boot_sector=$((BOOT_START / EXPECT_SECTOR))
+  boot_sectors=$((BOOT_SIZE / EXPECT_SECTOR))
+  partition_lines+=$'\n'"$(printf 'start=%s, size=%s, type=%s, uuid=%s, name="Tilo boot"\n' \
+    "$boot_sector" "$boot_sectors" 0fc63daf-8483-4772-8e79-3d69d8477de4 "${BOOT_UUID,,}")"
+fi
+partition_lines+=$'\n'"$(printf 'start=%s, size=%s, type=%s, uuid=%s, name="Tilo root"\n' \
+  "$root_sector" "$root_sectors" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab "${ROOT_UUID,,}")"
+printf '%s\n' "$partition_lines" | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
 [ "$(canonical_actual | sort -t: -k2,2n)" = "$FINAL_EXPECTED_MAP" ] \
   || die "final PARTUUID/geometry map differs from the reviewed plan"
 if [ "$IN_USE_DISK" -eq 0 ]; then
@@ -160,7 +188,7 @@ if [ "$IN_USE_DISK" -eq 0 ]; then
 fi
 
 # The staged root and ESP stay mounted on this disk, so the kernel cannot
-# reread its whole partition table. Register only the two newly reviewed GPT
+# reread its whole partition table. Register only the newly reviewed GPT
 # entries in that case. An EEXIST result is harmless only if the live node
 # matches the reviewed disk, partition number, geometry, and PARTUUID below.
 disk_sysfs="$(readlink -f "/sys/dev/block/$EXPECT_DEVNUM")" \
@@ -182,7 +210,8 @@ kernel_partition_matches() {
   [ -n "$live_uuid" ] || live_uuid="$(lsblk -dno PARTUUID "$node" 2>/dev/null | xargs)"
   [ "${live_uuid,,}" = "${uuid,,}" ]
 }
-for new_uuid in "$EFI_UUID" "$ROOT_UUID"; do
+for new_uuid in "$EFI_UUID" "$BOOT_UUID" "$ROOT_UUID"; do
+  [ -n "$new_uuid" ] || continue
   new_record="$(sfdisk --json "$DISK" | python3 -c '
 import json, re, sys
 wanted = sys.argv[1].lower()
@@ -198,6 +227,7 @@ print("{} {}".format(match.group(1), matches[0]["node"]))
   read -r new_number new_node <<<"$new_record"
   case "${new_uuid,,}" in
     "${EFI_UUID,,}") new_start="$efi_sector"; new_sectors="$efi_sectors" ;;
+    "${BOOT_UUID,,}") new_start="$boot_sector"; new_sectors="$boot_sectors" ;;
     "${ROOT_UUID,,}") new_start="$root_sector"; new_sectors="$root_sectors" ;;
     *) die "unrecognized reviewed partition UUID" ;;
   esac
@@ -226,15 +256,23 @@ raise SystemExit(1)
 ' "${1,,}"
 }
 EFI_PARTITION="$(partition_by_uuid "$EFI_UUID")" || die "new EFI partition did not appear"
+BOOT_PARTITION=""
+[ -z "$BOOT_UUID" ] || BOOT_PARTITION="$(partition_by_uuid "$BOOT_UUID")" || die "new boot partition did not appear"
 ROOT_PARTITION="$(partition_by_uuid "$ROOT_UUID")" || die "new root partition did not appear"
 for _ in {1..50}; do
-  [ -b "$EFI_PARTITION" ] && [ -b "$ROOT_PARTITION" ] && break
+  [ -b "$EFI_PARTITION" ] && [ -b "$ROOT_PARTITION" ] \
+    && { [ -z "$BOOT_PARTITION" ] || [ -b "$BOOT_PARTITION" ]; } && break
   sleep 0.1
 done
 [ -b "$EFI_PARTITION" ] && [ -b "$ROOT_PARTITION" ] \
+  && { [ -z "$BOOT_PARTITION" ] || [ -b "$BOOT_PARTITION" ]; } \
   || die "kernel did not expose the new partition devices"
 [ "$(blockdev --getsize64 "$EFI_PARTITION")" = "$EFI_SIZE" ] || die "new EFI size differs from plan"
 [ "$(blockdev --getsize64 "$ROOT_PARTITION")" = "$ROOT_SIZE" ] || die "new root size differs from plan"
+if [ -n "$BOOT_UUID" ]; then
+  [ -b "$BOOT_PARTITION" ] && [ "$(blockdev --getsize64 "$BOOT_PARTITION")" = "$BOOT_SIZE" ] \
+    || die "new boot partition size differs from plan"
+fi
 [ "$(canonical_actual | sort -t: -k2,2n)" = "$FINAL_EXPECTED_MAP" ] \
   || die "final PARTUUID/geometry map differs from the reviewed plan"
 
@@ -253,6 +291,13 @@ raise SystemExit(1)
   || die "reviewed EFI partition type changed"
 [ "$(partition_type_by_uuid "$ROOT_UUID")" = 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ] \
   || die "reviewed root partition type changed"
+if [ -n "$BOOT_UUID" ]; then
+  [ "$(partition_type_by_uuid "$BOOT_UUID")" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
+    || die "reviewed boot partition type changed"
+  findmnt -rn -S "$BOOT_PARTITION" >/dev/null 2>&1 && die "reviewed boot partition is mounted"
+  boot_signature="$(blkid -p -s TYPE -o value "$BOOT_PARTITION" 2>/dev/null || true)"
+  [ -z "$boot_signature" ] || die "reviewed boot partition unexpectedly contains a $boot_signature signature"
+fi
 findmnt -rn -S "$EFI_PARTITION" >/dev/null 2>&1 && die "reviewed EFI partition is mounted"
 findmnt -rn -S "$ROOT_PARTITION" >/dev/null 2>&1 && die "reviewed root partition is mounted"
 
@@ -269,4 +314,6 @@ case "$efi_signature" in
 esac
 
 sync "$DISK" "$EFI_PARTITION"
-printf 'EFI_PARTITION=%s\nROOT_PARTITION=%s\n' "$EFI_PARTITION" "$ROOT_PARTITION"
+printf 'EFI_PARTITION=%s\n' "$EFI_PARTITION"
+[ -z "$BOOT_PARTITION" ] || printf 'BOOT_PARTITION=%s\n' "$BOOT_PARTITION"
+printf 'ROOT_PARTITION=%s\n' "$ROOT_PARTITION"

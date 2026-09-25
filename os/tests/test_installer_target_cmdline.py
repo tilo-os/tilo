@@ -25,6 +25,7 @@ INSTALLED_HELPER = "/usr/libexec/tilo-uki-cmdline"
 TARGET = "/boot/tilo-target/tilo-target.efi"
 ROOT_TOKEN = "root=tilo-auto"
 OPTIONS_TOKEN = "rd.luks.options=tpm2-device=auto,fido2-device=auto"
+BOOT_TOKEN = "systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec"
 LIVE_KEYS = {"tilo.root", "tilo.luks", "tilo.unlock", "tilo.install"}
 
 
@@ -53,7 +54,7 @@ def projection_commands(source):
         raise ValueError("cannot observe target projection boundary")
     helper = re.escape(INSTALLED_HELPER)
     target = re.escape(TARGET)
-    token = r"[A-Za-z0-9_=.,-]+"
+    token = r"[A-Za-z0-9_=.,:/-]+"
     patterns = [
         rf"{helper} (?:remove|append) {token}(?: {target})?",
         rf"{helper} show(?: {target})? \| grep -qw {token}",
@@ -188,10 +189,11 @@ class TargetCmdlineTests(unittest.TestCase):
         target_tokens = self.tokens(self.target)
         self.assertEqual(target_tokens.count(ROOT_TOKEN), 1)
         self.assertEqual(target_tokens.count(OPTIONS_TOKEN), 1)
+        self.assertEqual(target_tokens.count(BOOT_TOKEN), 1)
         self.assertEqual(
             target_tokens,
             [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_KEYS]
-            + [ROOT_TOKEN, OPTIONS_TOKEN],
+            + [ROOT_TOKEN, OPTIONS_TOKEN, BOOT_TOKEN],
         )
         self.assertTrue(LIVE_KEYS.isdisjoint({t.split("=", 1)[0] for t in target_tokens}))
         for token in ("composefs=" + "a" * 128, "tilo.generation=42", "tilo.mode=normal", "preempt=full"):
