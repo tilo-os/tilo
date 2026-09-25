@@ -1098,25 +1098,9 @@ fn render_runs(text: &str, marks: &[qdoc::document::MarkSpan], ids: &RunIds) -> 
             (None, Some(rid)) => (format!(r#"<w:hyperlink r:id="{rid}">"#), "</w:hyperlink>"),
             (None, None) => (String::new(), ""),
         };
-        let rpr = run_props(&run.marks);
-        // An unmodeled inline element kept verbatim: re-emitted in place of its placeholder.
-        let atom = run
-            .marks
-            .iter()
-            .find(|m| m.name == MARK_DOCX_XML)
-            .and_then(|m| m.value.as_str());
         out.push_str(&xref_open);
         out.push_str(&wrap_open);
-        let pieces = match atom {
-            Some(_) => inline_pieces(run.text),
-            None => vec![InlinePiece::Text(run.text)],
-        };
-        for piece in pieces {
-            match piece {
-                InlinePiece::Atom => out.push_str(atom.unwrap_or_default()),
-                InlinePiece::Text(text) => push_run(&mut out, text, &rpr, is_del),
-            }
-        }
+        push_run_group(&mut out, run, is_del);
         out.push_str(wrap_close);
         out.push_str(xref_close);
     }
@@ -1134,6 +1118,30 @@ fn block_ppr(b: &BlockView, modeled: &[(&[u8], String)], ids: &RunIds) -> String
         _ => None,
     };
     super::paragraph::ppr_xml(&all, kept, |sectpr| ids.section.section_break(sectpr))
+}
+
+/// The runs of one run group: its text with the modeled and the kept run properties, or — for
+/// an unmodeled inline element kept verbatim — the element in place of its placeholder.
+fn push_run_group(out: &mut String, run: &qdoc::export::InlineRun<'_>, is_del: bool) {
+    let mark = |name: &str| {
+        run.marks
+            .iter()
+            .find(|m| m.name == name)
+            .and_then(|m| m.value.as_str())
+    };
+    let rpr =
+        super::paragraph::run_props_xml(&run_props(&run.marks), mark(super::paragraph::MARK_RPR));
+    let atom = mark(MARK_DOCX_XML);
+    let pieces = match atom {
+        Some(_) => inline_pieces(run.text),
+        None => vec![InlinePiece::Text(run.text)],
+    };
+    for piece in pieces {
+        match piece {
+            InlinePiece::Atom => out.push_str(atom.unwrap_or_default()),
+            InlinePiece::Text(text) => push_run(out, text, &rpr, is_del),
+        }
+    }
 }
 
 /// One `w:r` of `text` with run properties `rpr`; deleted text uses `w:delText`.
@@ -1567,28 +1575,38 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
     // Cells by grid position; the rows below a vertically merged cell hold a continuation
     // cell as wide as it.
     let mut at: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
-    let mut continued: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    let mut continued: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
     let (mut nrows, mut ncols) = (0usize, 0usize);
     for cell in cells {
         let (r, c) = cell_rc(cell);
         let (cols, rows) = (cell_span(cell, "colspan"), cell_span(cell, "rowspan"));
         at.entry((r, c)).or_insert(cell);
         for dr in 1..rows {
-            continued.insert((r.saturating_add(dr), c), cols);
+            continued.insert((r.saturating_add(dr), c), cell);
         }
         nrows = nrows.max(r.saturating_add(rows));
         ncols = ncols.max(c.saturating_add(cols));
     }
-    body.push_str(r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>"#);
-    for _ in 0..ncols {
-        body.push_str("<w:gridCol/>");
+    body.push_str("<w:tbl>");
+    push_table_props(body, cells.first(), ncols);
+    // A row's properties ride on its first cell.
+    let mut row_props: BTreeMap<usize, &str> = BTreeMap::new();
+    for cell in cells {
+        if let Some(AttrVal::Str(xml)) = cell.attrs.get(super::paragraph::ATTR_TRPR) {
+            row_props.entry(cell_rc(cell).0).or_insert(xml.as_str());
+        }
     }
-    body.push_str("</w:tblGrid>");
     for r in 0..nrows {
         body.push_str("<w:tr>");
+        if let Some(pr) = row_props.get(&r) {
+            body.push_str(pr);
+        }
         let mut c = 0;
         while c < ncols {
-            let (span, merge, inner) = if let Some(cl) = at.get(&(r, c)) {
+            let own = at.get(&(r, c)).copied();
+            // A vertical merge's continuation cells look like its first one.
+            let cell = own.or_else(|| continued.get(&(r, c)).copied());
+            let (span, merge, inner) = if let Some(cl) = own {
                 let merge = if cell_span(cl, "rowspan") > 1 {
                     r#"<w:vMerge w:val="restart"/>"#
                 } else {
@@ -1599,8 +1617,8 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
                     merge,
                     render_runs(&cl.text, &cl.marks, ids),
                 )
-            } else if let Some(cols) = continued.get(&(r, c)) {
-                (*cols, "<w:vMerge/>", String::new())
+            } else if let Some(first) = cell {
+                (cell_span(first, "colspan"), "<w:vMerge/>", String::new())
             } else {
                 (1, "", String::new())
             };
@@ -1609,16 +1627,51 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
             } else {
                 String::new()
             };
-            let _ = write!(
-                body,
-                r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/>{grid_span}{merge}</w:tcPr><w:p>{inner}</w:p></w:tc>"#
+            let kept = |key: &str| match cell.and_then(|cl| cl.attrs.get(key)) {
+                Some(AttrVal::Str(xml)) => Some(xml.as_str()),
+                _ => None,
+            };
+            let tcpr = super::paragraph::cell_props_xml(
+                &[
+                    (b"w:tcW", super::paragraph::DEFAULT_TCW.to_string()),
+                    (b"w:gridSpan", grid_span),
+                    (b"w:vMerge", merge.to_string()),
+                ],
+                kept(super::paragraph::ATTR_TCPR),
             );
+            let ppr = super::paragraph::ppr_xml(
+                &[],
+                kept(super::paragraph::ATTR_PPR),
+                ToString::to_string,
+            );
+            let _ = write!(body, "<w:tc>{tcpr}<w:p>{ppr}{inner}</w:p></w:tc>");
             c = c.saturating_add(span);
         }
         body.push_str("</w:tr>");
     }
     body.push_str("</w:tbl>");
     i
+}
+
+/// A table's `w:tblPr` and `w:tblGrid`: the ones kept from import on its `first` cell (the
+/// grid only while it still has a column per grid column), else automatic ones.
+fn push_table_props(body: &mut String, first: Option<&BlockView>, ncols: usize) {
+    let kept = |key: &str| match first.and_then(|c| c.attrs.get(key)) {
+        Some(AttrVal::Str(xml)) => Some(xml.as_str()),
+        _ => None,
+    };
+    body.push_str(kept(super::paragraph::ATTR_TBLPR).unwrap_or(super::paragraph::DEFAULT_TBLPR));
+    if let Some(grid) = kept(super::paragraph::ATTR_TBLGRID)
+        .filter(|grid| super::paragraph::grid_columns(grid) == ncols)
+    {
+        body.push_str(grid);
+        return;
+    }
+    body.push_str("<w:tblGrid>");
+    for _ in 0..ncols {
+        body.push_str("<w:gridCol/>");
+    }
+    body.push_str("</w:tblGrid>");
 }
 
 /// A cell's `colspan`/`rowspan` (1 when absent).
