@@ -182,8 +182,12 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
 - **Native custom kernels.** Kernel CI rebuilds the hardened kernel separately
   on native x86-64 and ARM64 runners, checks the runner architecture, signs
   each digest through the non-exportable release key, and advances both pins
-  in `os/kernel-snapshot.env` atomically only after both native jobs verify and
-  source-input race checks pass. Promotion creates a deterministic,
+  in `os/kernel-snapshot.env` atomically only after both native jobs verify.
+  A kernel pin is consistent on its own, so it lands whenever it comes from a
+  later commit than main's pin (read from the pinned kernels' signed
+  provenance), even if kernel inputs moved meanwhile; it closes older kernel
+  pin pull requests, and the push runs those moves triggered follow it.
+  Promotion creates a deterministic,
   snapshot-bound automation branch and pull request rather than bypassing
   protected `main`; normal required checks and merge policy remain
   authoritative. Each kernel builds FROM its signature-verified native
