@@ -127,6 +127,77 @@ pub struct WindowsPlatform {
 }
 
 impl WindowsPlatform {
+    /// Read only the installed ESP named by its GPT PARTUUID. This bypasses
+    /// the staging writer's volume locks: a final ESP may have a Windows
+    /// volume object, but firmware registration must never write to it.
+    pub fn read_installed_esp(
+        &self,
+        disk: &Disk,
+        esp_guid: &str,
+        offset: u64,
+        data: &mut [u8],
+    ) -> IoResult<()> {
+        self.require_elevated()?;
+        let (current, _) = self.current_for(disk)?;
+        let part = ops::find(&current, esp_guid)?;
+        if !super::super::same_guid(&part.type_guid, super::super::ESP_TYPE) {
+            return Err("final loader read requires an EFI System Partition".into());
+        }
+        let (start, len) = ops::partition_bytes(&current, part)?;
+        let absolute = ops::io_offset(start, len, current.sector_bytes, offset, data.len() as u64)?;
+        let handle =
+            sys::open_physical_drive(disk_number(&current)?, DriveAccess::Read).map_err(io_err)?;
+        let mut aligned = AlignedBuf::new(data.len()).map_err(io_err)?;
+        sys::read_exact_at(&handle, absolute, aligned.as_mut_slice()).map_err(io_err)?;
+        data.copy_from_slice(aligned.as_mut_slice());
+        Ok(())
+    }
+
+    /// Hash a loader with one GPT cross-check and one read-only physical
+    /// drive handle for the entire FAT traversal. The next pass reopens and
+    /// revalidates before changing firmware.
+    pub fn installed_esp_loader_sha256(
+        &self,
+        disk: &Disk,
+        esp_guid: &str,
+        path: &str,
+    ) -> IoResult<String> {
+        self.require_elevated()?;
+        let (current, _) = self.current_for(disk)?;
+        let part = ops::find(&current, esp_guid)?;
+        if !super::super::same_guid(&part.type_guid, super::super::ESP_TYPE) {
+            return Err("final loader read requires an EFI System Partition".into());
+        }
+        let (start, len) = ops::partition_bytes(&current, part)?;
+        let sector = current.sector_bytes;
+        if sector == 0 || !sector.is_power_of_two() || sector > 4096 {
+            return Err("invalid disk sector size".into());
+        }
+        let handle =
+            sys::open_physical_drive(disk_number(&current)?, DriveAccess::Read).map_err(io_err)?;
+        let mut read = |offset: u64, data: &mut [u8]| -> IoResult<()> {
+            let end = offset
+                .checked_add(data.len() as u64)
+                .ok_or("ESP offset overflow")?;
+            if end > len {
+                return Err("read exceeds installed ESP".into());
+            }
+            let aligned_start = offset / sector * sector;
+            let aligned_end = end
+                .div_ceil(sector)
+                .checked_mul(sector)
+                .ok_or("ESP alignment overflow")?;
+            let aligned_len = usize_of(aligned_end - aligned_start)?;
+            let mut buffer = AlignedBuf::new(aligned_len).map_err(io_err)?;
+            sys::read_exact_at(&handle, start + aligned_start, buffer.as_mut_slice())
+                .map_err(io_err)?;
+            let within = usize_of(offset - aligned_start)?;
+            data.copy_from_slice(&buffer.as_mut_slice()[within..within + data.len()]);
+            Ok(())
+        };
+        super::super::final_bootnext::hash_esp_file(&mut read, len, path)
+    }
+
     pub fn read_only() -> IoResult<Self> {
         Ok(Self {
             elevated: false,
