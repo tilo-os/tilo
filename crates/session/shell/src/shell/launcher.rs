@@ -2966,8 +2966,8 @@ mod tests {
     fn unchanged_app_cache_refresh_preserves_search_generation() {
         let tmp = tempfile::tempdir().unwrap();
         let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
-        // SAFETY: guarded by the shared process_env serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         let initial = installed_apps().unwrap();
         let initial_generation = gui_apps_generation();
@@ -2993,7 +2993,7 @@ mod tests {
         expire();
         let removed = installed_apps().unwrap();
         let removed_generation = gui_apps_generation();
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         invalidate_app_cache();
 
         assert_eq!(unchanged, initial);
