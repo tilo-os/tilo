@@ -9,8 +9,10 @@
 //!   instantly and offline after a restart.
 //! - **Reads** hydrate on demand: the missing ranges of the requested
 //!   window (widened for sequential readers) are fetched with ranged,
-//!   revision-pinned reads and written into the [`BlobCache`]. A read never
-//!   pulls a whole large file unless the reader asks for all of it.
+//!   revision-pinned reads and written into a [`FileArea`]: the file-backed,
+//!   range-resident, budgeted cache the storage daemon's content store keeps
+//!   its content in, keyed here by remote revision. A read never pulls a
+//!   whole large file unless the reader asks for all of it.
 //! - **Writes** go to a staged copy outside the cache. When the last writer
 //!   closes, an upload is queued in the persisted outbox and sent in the
 //!   background with the revision the edit started from as its precondition.
@@ -37,7 +39,54 @@ use cloud_source::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::cache::{BlobCache, Resident, RevKey, hash_file};
+use crate::store::area::{AreaKey, Residency, hash_file};
+use crate::store::{FileArea, Retention};
+
+/// The cache key of one remote revision of one item.
+type RevKey = AreaKey;
+
+fn rev_key(id: &ItemId, revision: Option<&Revision>) -> RevKey {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(id.as_str().as_bytes());
+    hasher.update(&[0]);
+    hasher.update(revision.map_or("", |r| r.as_str()).as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// The account's content cache under `dir`, holding at most `budget`
+/// resident bytes.
+fn open_content(dir: &Path, budget: u64) -> io::Result<FileArea> {
+    // Leftovers of the cache layout before the content store held it; a
+    // cache, so they are dropped rather than converted.
+    for stale in ["partial", "blobs"] {
+        let _ = fs::remove_dir_all(dir.join(stale));
+    }
+    let _ = fs::remove_file(dir.join("index.json"));
+    FileArea::open(dir, budget)
+}
+
+/// Reads up to `len` bytes at `offset` of the file at `path`.
+fn read_file_at(path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+    let file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let len = usize::try_from(size.saturating_sub(offset))
+        .unwrap_or(usize::MAX)
+        .min(len);
+    let mut out = vec![0_u8; len];
+    let mut done = 0_usize;
+    while done < len {
+        let read = file.read_at(
+            out.get_mut(done..).unwrap_or_default(),
+            offset.saturating_add(done as u64),
+        )?;
+        if read == 0 {
+            break;
+        }
+        done = done.saturating_add(read);
+    }
+    out.truncate(done);
+    Ok(out)
+}
 
 pub type Errno = i32;
 
@@ -265,7 +314,9 @@ pub struct CloudVolume {
     source: Arc<dyn CloudSource>,
     dir: PathBuf,
     staging: PathBuf,
-    cache: BlobCache,
+    /// Cached remote content; released at shutdown, so the account's
+    /// directory can be opened again.
+    content: Mutex<Option<Arc<FileArea>>>,
     poll_interval: Duration,
     inner: Mutex<Inner>,
     /// Serialises fetches of one revision so concurrent readers of the same
@@ -292,7 +343,10 @@ impl CloudVolume {
     ) -> io::Result<Arc<Self>> {
         let staging = config.dir.join("staging");
         fs::create_dir_all(&staging)?;
-        let cache = BlobCache::open(&config.dir.join("content"), config.cache_budget)?;
+        let content = Mutex::new(Some(Arc::new(open_content(
+            &config.dir.join("content"),
+            config.cache_budget,
+        )?)));
         let root = source.root();
         let mut tree = Tree::new(root.clone());
         let saved: TreeFile = read_json(&config.dir.join("tree.json")).unwrap_or_default();
@@ -332,7 +386,7 @@ impl CloudVolume {
             source,
             dir: config.dir,
             staging,
-            cache,
+            content,
             poll_interval: config.poll_interval,
             inner: Mutex::new(inner),
             flights: Mutex::new(HashMap::new()),
@@ -407,7 +461,15 @@ impl CloudVolume {
             serde_json::to_vec(&file).map_err(io::Error::other)?
         };
         atomic_file::write(&self.dir.join("tree.json"), &bytes)?;
-        self.cache.save()
+        self.content().map_or(Ok(()), |content| content.flush())
+    }
+
+    /// The content cache, until the volume shuts down.
+    fn content(&self) -> Option<Arc<FileArea>> {
+        self.content
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn save_local(&self) -> io::Result<()> {
@@ -556,7 +618,7 @@ impl CloudVolume {
             .flights
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::clone(flights.entry(key.clone()).or_default())
+        Arc::clone(flights.entry(*key).or_default())
     }
 
     /// Make `range` (plus `ahead` bytes after it) of the current revision of
@@ -569,10 +631,14 @@ impl CloudVolume {
                 let item = inner.tree.get(id).ok_or(libc::ENOENT)?;
                 (item.revision.clone(), item.size.unwrap_or(0))
             };
-            let key = RevKey::new(id, revision.as_ref());
+            let key = rev_key(id, revision.as_ref());
             let want = range.start..range.end.saturating_add(ahead).min(size);
-            if let Resident::Complete(path) = self.cache.resident(&key, size, range.clone())
-                && (want.end <= range.end || self.cache.is_complete(&key, size))
+            let files = self.content().ok_or(libc::EIO)?;
+            if let Residency::Complete(path) = files.residency(&key, size, &range)
+                && (want.end <= range.end
+                    || files
+                        .entry(&key)
+                        .is_some_and(|e| e.size == size && e.complete()))
             {
                 return Ok(path);
             }
@@ -580,9 +646,9 @@ impl CloudVolume {
             let _guard = flight
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let missing = match self.cache.resident(&key, size, want.clone()) {
-                Resident::Complete(path) => return Ok(path),
-                Resident::Missing(missing) => missing,
+            let missing = match files.residency(&key, size, &want) {
+                Residency::Complete(path) => return Ok(path),
+                Residency::Missing(missing) => missing,
             };
             match self.fetch(id, &key, size, revision.as_ref(), &missing) {
                 Ok(()) => {}
@@ -604,13 +670,13 @@ impl CloudVolume {
                     }
                     // What was asked for may still be resident even if the
                     // read-ahead failed.
-                    if let Resident::Complete(path) = self.cache.resident(&key, size, range) {
+                    if let Residency::Complete(path) = files.residency(&key, size, &range) {
                         return Ok(path);
                     }
                     return Err(errno_of(&error));
                 }
             }
-            if let Resident::Complete(path) = self.cache.resident(&key, size, range) {
+            if let Residency::Complete(path) = files.residency(&key, size, &range) {
                 return Ok(path);
             }
             return Err(libc::EIO);
@@ -638,7 +704,10 @@ impl CloudVolume {
                 .min(size);
             let mut download = self.source.read(id, Some(start..end), revision)?;
             let got = download.range.clone();
-            self.cache.fill(
+            let content = self
+                .content()
+                .ok_or_else(|| Error::Io(io::Error::other("the volume is shut down")))?;
+            content.fill_from(
                 key,
                 size,
                 got.start,
@@ -692,14 +761,14 @@ impl CloudVolume {
             return Ok(payload.get(start..end).unwrap_or_default().to_vec());
         }
         if let Some(path) = staged {
-            return BlobCache::read_at(&path, offset, len).map_err(|e| io_errno(&e));
+            return read_file_at(&path, offset, len).map_err(|e| io_errno(&e));
         }
         if offset >= size {
             return Ok(Vec::new());
         }
         let end = offset.saturating_add(len as u64).min(size);
         let path = self.hydrate(id, offset..end, ahead)?;
-        BlobCache::read_at(&path, offset, len).map_err(|e| io_errno(&e))
+        read_file_at(&path, offset, len).map_err(|e| io_errno(&e))
     }
 
     /// Read without a handle (tools and tests).
@@ -1245,8 +1314,10 @@ impl CloudVolume {
             unchanged
         };
         if adopt {
-            let key = RevKey::new(&uploaded.id, uploaded.revision.as_ref());
-            let _ = self.cache.adopt(&key, staged);
+            let key = rev_key(&uploaded.id, uploaded.revision.as_ref());
+            if let Some(content) = self.content() {
+                let _ = content.adopt_file(&key, staged, Retention::Cached);
+            }
         }
         self.report(Health::Healthy);
     }
@@ -1260,9 +1331,7 @@ impl CloudVolume {
         parent: &ItemId,
         staged: &Path,
     ) -> Result<(), Error> {
-        let digest = hash_file(staged)?;
-        let mut bytes = [0_u8; 32];
-        hex::decode_to_slice(&digest, &mut bytes).map_err(io::Error::other)?;
+        let bytes = hash_file(staged)?;
         let copy_name = String::from_utf8_lossy(
             crate::conflict::conflict_name(item.name.as_bytes(), &iroh_blobs::Hash::from(bytes))
                 .as_bytes(),
@@ -1307,8 +1376,10 @@ impl CloudVolume {
             }
             inner.tree.upsert(copy.clone());
         }
-        let key = RevKey::new(&copy.id, copy.revision.as_ref());
-        let _ = self.cache.adopt(&key, staged);
+        let key = rev_key(&copy.id, copy.revision.as_ref());
+        if let Some(content) = self.content() {
+            let _ = content.adopt_file(&key, staged, Retention::Cached);
+        }
         if is_local(id) {
             // The name belongs to someone else's new file now; list it.
             if let Ok(children) = self.source.list(parent) {
@@ -1453,9 +1524,9 @@ impl CloudVolume {
         }
         if let Some(old) = inner.tree.get(&item.id)
             && old.revision != item.revision
+            && let Some(content) = self.content()
         {
-            self.cache
-                .forget(&RevKey::new(&old.id, old.revision.as_ref()));
+            let _ = content.remove(&rev_key(&old.id, old.revision.as_ref()));
         }
         inner.tree.upsert(item);
     }
@@ -1466,8 +1537,9 @@ impl CloudVolume {
             return;
         }
         for item in inner.tree.remove_recursive(id) {
-            self.cache
-                .forget(&RevKey::new(&item.id, item.revision.as_ref()));
+            if let Some(content) = self.content() {
+                let _ = content.remove(&rev_key(&item.id, item.revision.as_ref()));
+            }
         }
     }
 
@@ -1686,6 +1758,11 @@ impl CloudVolume {
         self.kick();
         let _ = self.save_local();
         let _ = self.save_tree();
+        // Dropping the last handle flushes and closes the cache.
+        self.content
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 }
 
