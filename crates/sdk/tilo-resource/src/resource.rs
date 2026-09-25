@@ -74,6 +74,14 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// The stored layout of this resource's content, for services that act
+    /// on it generically: History restores a past version through it, field
+    /// by field and item by item. `#[resource]` returns the record's
+    /// [`Model::SHAPE`](crate::Model::SHAPE); the default opts out.
+    fn shape() -> Option<crate::Shape> {
+        None
+    }
+
     /// Register this resource's replay decoder. Override to register an
     /// existing vocabulary under additional type ids.
     fn register(registry: &mut ActionRegistry) {
