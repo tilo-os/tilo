@@ -2570,33 +2570,39 @@ impl State {
         if !captured_here {
             return;
         }
-        let association = wl_compositor::with_states(surface, |states| {
+        let pending = wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
-            let buffer = match &attrs.pending().buffer {
-                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => buffer,
-                Some(wl_compositor::BufferAssignment::Removed) => {
-                    return ForeignCommitCapture::Removed;
+            match &attrs.pending().buffer {
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
+                    smithay::wayland::dmabuf::get_dmabuf(buffer)
+                        .ok()
+                        .cloned()
+                        .ok_or(ForeignCommitCapture::DirectBuffer)
                 }
-                None => return ForeignCommitCapture::NoBuffer,
-            };
-            let Some(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(buffer).ok().cloned() else {
-                return ForeignCommitCapture::DirectBuffer;
-            };
-            drop(attrs);
-            let Some(client) = surface.client() else {
-                return ForeignCommitCapture::NoBuffer;
-            };
-            if let Some((token, barrier)) = crate::compositor::foreign::store()
-                .prepare_dmabuf_capture(surface_id, client, dmabuf)
-            {
-                wl_compositor::add_blocker(surface, barrier);
-                ForeignCommitCapture::Dmabuf(token)
-            } else {
-                ForeignCommitCapture::NoBuffer
+                Some(wl_compositor::BufferAssignment::Removed) => {
+                    Err(ForeignCommitCapture::Removed)
+                }
+                None => Err(ForeignCommitCapture::NoBuffer),
             }
         });
+        // `with_states` holds Smithay's non-reentrant surface state mutex for
+        // the whole callback, and `add_blocker` takes that same mutex, so the
+        // barrier is installed only after the callback has returned.
+        let association = match pending {
+            Err(association) => association,
+            Ok(dmabuf) => match surface.client().and_then(|client| {
+                crate::compositor::foreign::store()
+                    .prepare_dmabuf_capture(surface_id, client, dmabuf)
+            }) {
+                Some((token, barrier)) => {
+                    wl_compositor::add_blocker(surface, barrier);
+                    ForeignCommitCapture::Dmabuf(token)
+                }
+                None => ForeignCommitCapture::NoBuffer,
+            },
+        };
         wl_compositor::with_states(surface, |states| {
             states
                 .data_map
