@@ -81,6 +81,11 @@ name = "native_tier1"
 path = "tests/native_tier1.rs"
 required-features = ["filesystem"]
 
+[[test]]
+name = "native_sync_bench"
+path = "tests/native_sync_bench.rs"
+required-features = ["filesystem"]
+
 [dependencies]
 bounded-command = { path = "../bounded-command" }
 atomic-file = { path = "../atomic-file" }

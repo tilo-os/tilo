@@ -402,6 +402,32 @@ impl QuickFS {
         self.ns().changeset_marks()
     }
 
+    /// Runs `apply` (a changeset's worth of the path-level operations
+    /// above) with one content-store sync for all of it instead of one per
+    /// file, then runs the durability hook: the namespace that places the
+    /// changeset's records is persisted before the changeset counts as
+    /// done, so a crash cannot leave durable records without placements
+    /// (which a restart would read as deletions).
+    pub fn changeset<T>(&self, apply: impl FnOnce() -> T) -> T {
+        let store = std::sync::Arc::clone(&self.hydrator.store);
+        store.defer_sync();
+        let value = apply();
+        let rt = self.hydrator.runtime_handle.clone();
+        if let Err(error) = rt.block_on(store.end_deferred_sync()) {
+            eprintln!("content stays pending: {error:#}");
+        }
+        if let Some(hook) = self.durability_hook.get() {
+            hook();
+        }
+        value
+    }
+
+    /// Sets what runs after each changeset (persisting the namespace that
+    /// places its records). Set once.
+    pub fn set_durability_hook(&self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        let _ = self.durability_hook.set(hook);
+    }
+
     /// The current time as the record plane stamps it.
     pub fn record_clock_ms() -> u64 {
         now_ms()

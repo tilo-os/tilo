@@ -1043,7 +1043,12 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "files on the peer",
-        || (m2.join("big").exists() && m2.join("f49").exists()).then_some(()),
+        || {
+            // A new file's record is published empty before its content, and
+            // a peer that pulls promptly can show that first version briefly.
+            let big_len = std::fs::metadata(m2.join("big")).ok()?.len();
+            (big_len == big.len() as u64 && m2.join("f49").exists()).then_some(())
+        },
     );
     assert!(residency_xattr(&m2.join("big")).is_some());
 
@@ -1300,10 +1305,17 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
         "CREATE TABLE t(v INTEGER); INSERT INTO t VALUES (1), (2), (3);",
     )
     .unwrap();
+    // sqlite3 creates a database it cannot find, and an empty file made on
+    // the peer would be a concurrent creation of the path: ask only once
+    // the host's file is there.
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "the database on the peer",
-        || (sqlite(&db2, "SELECT count(*) FROM t").ok()? == "3").then_some(()),
+        || {
+            (std::fs::metadata(&db2).ok()?.len() > 0
+                && sqlite(&db2, "SELECT count(*) FROM t").ok()? == "3")
+                .then_some(())
+        },
     );
     // An update writes pages in place: the database becomes lease-class.
     sqlite(&db1, "UPDATE t SET v = v + 10;").unwrap();
