@@ -18,6 +18,9 @@ use qdoc::model::{DocMut, DocRef};
 use qdoc::schema::SCHEMA_ID;
 use tilo_content::{ContentInputs, ContentSource};
 
+/// Preservation-layer key of the imported `word/document.xml` root start tag.
+pub(crate) const DOCUMENT_ROOT_KEY: &str = "docx/document-root";
+
 pub struct DocxCodec;
 
 impl FormatProvider for DocxCodec {
@@ -113,6 +116,11 @@ impl FormatProvider for DocxCodec {
                 if name != "word/document.xml" {
                     crate::preserve::set_preserved(doc, &format!("docx/part/{name}"), part, inputs);
                 }
+            }
+            // The regenerated document.xml keeps the original root's namespace declarations,
+            // which the body content carried through verbatim relies on.
+            if let Some(root) = crate::preserve::root_start_tag(&document) {
+                crate::preserve::set_preserved(doc, DOCUMENT_ROOT_KEY, root.as_bytes(), inputs);
             }
             Ok(())
         })

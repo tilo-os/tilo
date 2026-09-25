@@ -1,11 +1,122 @@
-//! Splitting unmodeled package parts into atoms for qdoc's preservation layer.
+//! Keeping what the office codecs do not model: unmodeled package parts split into atoms for
+//! qdoc's preservation layer, and unmodeled body content kept in place in the model.
 //!
 //! A part the codec does not model is carried through export verbatim. It is stored as ordered
 //! atoms so two replicas changing different parts of it merge instead of one clobbering the
 //! other; for XML that means one atom per element at the first level where the tree branches.
 
+//!
+//! Unmodeled content *inside* the regenerated body part is kept in place instead:
+//! - a body-level element becomes a `fidelity` block whose `xml` attr holds the element verbatim
+//!   and whose [`ATTR_FORMAT`] attr names the format it came from;
+//! - an element inside a paragraph (a field, content control, formula, drawing that is not a
+//!   plain image, …) becomes one [`FIELD_PLACEHOLDER`] character in the paragraph text,
+//!   covered by a mark ([`MARK_DOCX_XML`] / [`MARK_ODT_XML`]) whose value is the element verbatim.
+//!
+//! Both are re-emitted verbatim at the same position by the codec that captured them, and
+//! skipped by the other one (the XML of one format means nothing in the other). Their content is
+//! not editable through the model; deleting the block or the placeholder deletes the element.
+
 use qdoc::model::DocMut;
+use qdoc::schema::FIELD_PLACEHOLDER;
+use qdoc::snapshot::BlockView;
+use std::fmt::Write as _;
 use tilo_content::ContentInputs;
+
+/// Mark over a placeholder character holding a verbatim `WordprocessingML` paragraph-content
+/// fragment (a `w:r`, `w:sdt`, `w:fldSimple`, `m:oMath`, …).
+pub const MARK_DOCX_XML: &str = "docx-xml";
+/// Mark over a placeholder character holding a verbatim ODF paragraph-content element.
+pub const MARK_ODT_XML: &str = "odt-xml";
+/// Attr of a `fidelity` block naming the format its `xml` came from (`docx` / `odt`).
+pub const ATTR_FORMAT: &str = "format";
+
+/// The verbatim XML of a `fidelity` block if `format` may re-emit it: blocks captured by the
+/// other office codec are skipped; blocks without a format tag predate it and are kept.
+pub fn fidelity_xml<'a>(b: &'a BlockView, format: &str) -> Option<&'a str> {
+    use qdoc::AttrVal;
+    let Some(AttrVal::Str(xml)) = b.attrs.get("xml") else {
+        return None;
+    };
+    match b.attrs.get(ATTR_FORMAT) {
+        Some(AttrVal::Str(f)) if f != format => None,
+        _ => Some(xml.as_str()),
+    }
+}
+
+/// One piece of a run covered by an inline-XML mark: the element itself (for each placeholder
+/// character) or text typed next to it that inherited the mark.
+pub enum InlinePiece<'a> {
+    Atom,
+    Text(&'a str),
+}
+
+/// Split a run's text at placeholder characters.
+pub fn inline_pieces(text: &str) -> Vec<InlinePiece<'_>> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(FIELD_PLACEHOLDER) {
+        if at > 0 {
+            out.push(InlinePiece::Text(rest.get(..at).unwrap_or_default()));
+        }
+        out.push(InlinePiece::Atom);
+        rest = rest
+            .get(at.saturating_add(FIELD_PLACEHOLDER.len_utf8())..)
+            .unwrap_or_default();
+    }
+    if !rest.is_empty() {
+        out.push(InlinePiece::Text(rest));
+    }
+    out
+}
+
+/// The start tag of an XML document's root element (`<w:document …>`), for re-emitting a
+/// regenerated part under the original namespace declarations.
+pub fn root_start_tag(xml: &[u8]) -> Option<String> {
+    use quick_xml::Reader;
+    use quick_xml::events::Event;
+    let s = std::str::from_utf8(xml).ok()?;
+    let mut reader = Reader::from_str(s);
+    loop {
+        let before = usize::try_from(reader.buffer_position()).ok()?;
+        match reader.read_event().ok()? {
+            Event::Start(_) => {
+                let after = usize::try_from(reader.buffer_position()).ok()?;
+                return s.get(before..after).map(str::to_string);
+            }
+            Event::Eof | Event::Empty(_) => return None,
+            _ => {}
+        }
+    }
+}
+
+/// `original` (a root start tag, `<p:root a="…">`) with every `xmlns:prefix` of `required`
+/// it does not declare yet appended, so both the carried-through fragments (which use the
+/// original's prefixes) and the regenerated markup resolve. `None` when `original` is not a
+/// start tag of the element `name`.
+pub fn merge_root_namespaces(
+    original: &str,
+    name: &str,
+    required: &[(&str, &str)],
+) -> Option<String> {
+    let body = original
+        .trim()
+        .strip_prefix('<')?
+        .strip_suffix('>')?
+        .strip_prefix(name)?;
+    if !body.is_empty() && !body.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let mut out = format!("<{name}{body}");
+    for (prefix, uri) in required {
+        let decl = format!("xmlns:{prefix}=");
+        if !body.contains(&decl) {
+            let _ = write!(out, r#" xmlns:{prefix}="{uri}""#);
+        }
+    }
+    out.push('>');
+    Some(out)
+}
 
 /// Preserve `bytes` under `key`. A text part (XML, the ODF `mimetype`) is kept in the document, split
 /// into mergeable atoms by [`split_atoms`]; a binary part (an image, a font, an embedded object) is a
