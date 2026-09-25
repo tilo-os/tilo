@@ -167,11 +167,23 @@ fn pending_intent_prevents_disconnect_completion() {
     );
 }
 // Catches whole-inventory collection and dropped keys during paged checkpoint merge.
+// More than 1024 connections forces implicit checkpoints under the overlay bound
+// and a multi-page listing. Every append re-validates the whole chain/review
+// history, so the cost grows quadratically with the inventory: CI runs a size
+// that crosses the bounds, and the full 4097-connection inventory runs on request.
 #[test]
 fn large_inventory_uses_bounded_pages() {
+    large_inventory(1100);
+}
+#[test]
+#[ignore = "4097 connections take many minutes: each append re-validates the whole history"]
+fn large_inventory_of_4097_connections_uses_bounded_pages() {
+    large_inventory(4097);
+}
+fn large_inventory(total: u32) {
     let (_temp, path) = fixture();
     let mut store = ConnectionStore::open_at(&path).unwrap();
-    for id in 0..4097 {
+    for id in 0..total {
         create(&mut store, id);
         assert!(store.overlay.len() <= 1024);
         assert!(store.overlay_bytes <= 8 * 1024 * 1024);
@@ -196,7 +208,7 @@ fn large_inventory_uses_bounded_pages() {
             break;
         }
     }
-    assert_eq!(count, 4097);
+    assert_eq!(count, total);
 }
 
 // Catches metadata-only recovery, truncation, wrong offsets, and loss on reopen.

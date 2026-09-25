@@ -1169,6 +1169,7 @@ fn whole_review_stale_control_link_and_equality_stop_refuse_without_rows() {
 }
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux ext4/Btrfs filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn whole_review_native_fresh_acceptance_reads_actual_trees() {
     use crate::connection::{endpoint, transaction::initial_preview_for_test};
     let root = std::env::var_os("QOS_ENDPOINT_FIXTURE")

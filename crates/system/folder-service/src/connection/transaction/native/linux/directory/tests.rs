@@ -217,6 +217,7 @@ fn stop_at(fixture: &Fixture, point: &'static str) -> (Hooks, Rc<Cell<bool>>) {
     (Hooks, hit)
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_executor_both_directions_empty_nonempty_and_safe_prefixes() {
     for reverse in [false, true] {
         for nonempty in [false, true] {
@@ -257,6 +258,7 @@ fn directory_native_executor_both_directions_empty_nonempty_and_safe_prefixes() 
     }
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_every_durable_cut_restarts_or_retains_uncertain_original() {
     for reverse in [false, true] {
         for point in [
@@ -327,6 +329,7 @@ fn directory_native_every_durable_cut_restarts_or_retains_uncertain_original() {
     }
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_generation_substitutions_and_competitor_are_refused() {
     for fault in [
         "source",
@@ -388,6 +391,7 @@ fn directory_native_generation_substitutions_and_competitor_are_refused() {
     }
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_created_stage_metadata_children_and_descriptor_identity_refuse() {
     for fault in ["mode", "children", "intent", "staged-intent"] {
         let mut fixture = Fixture::new(false, true, false);
@@ -459,6 +463,7 @@ fn directory_native_created_stage_metadata_children_and_descriptor_identity_refu
     }
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_recovery_only_never_creates_outcome_or_advances_baseline() {
     for point in [
         "intent-record",
@@ -566,6 +571,7 @@ fn continuation<'a>(
     (live, proof)
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_actual_pass_and_request_exhaustion_are_sticky() {
     for requests in [false, true] {
         let mut fixture = prepared_fixture();
@@ -619,6 +625,7 @@ fn directory_native_actual_pass_and_request_exhaustion_are_sticky() {
     }
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_final_prewrite_and_post_fsync_races_retain_no_ack() {
     for post_sync in [false, true] {
         let mut fixture = prepared_fixture();
@@ -698,6 +705,7 @@ fn directory_native_final_prewrite_and_post_fsync_races_retain_no_ack() {
     }
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_post_publication_child_is_future_data() {
     let mut fixture = Fixture::new(false, false, false);
     let path = fixture.roots[1].join("dir/child");
@@ -732,6 +740,7 @@ fn directory_native_post_publication_child_is_future_data() {
     );
 }
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_full_owner_schedule_retains_caps_through_final_append() {
     let mut fixture = prepared_fixture();
     let session = fixture.store.transaction_session(fixture.id).unwrap();
@@ -789,6 +798,7 @@ fn directory_native_full_owner_schedule_retains_caps_through_final_append() {
 }
 
 #[test]
+#[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
 fn directory_native_untouched_recovery_uses_fresh_stamp_and_original_generation() {
     for fault in ["before-capture", "replacement", "during-window"] {
         let mut fixture = Fixture::new(false, false, false);

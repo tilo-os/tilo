@@ -23,8 +23,7 @@ mod windows;
 #[cfg(windows)]
 pub(super) use super::super::windows_native::WindowsDirectory as Directory;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-#[cfg(target_os = "macos")]
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
@@ -183,21 +182,38 @@ fn attest(path: &Path) -> Result<Identity, StoreError> {
     #[cfg(test)]
     #[cfg(target_os = "macos")]
     {
-        // Host source tests only: real volume UUID/inode, never runtime admission.
-        let pin = PinnedDirectory::open_absolute(path)?;
-        let bytes = serde_json::to_vec(&durability::identity(&pin.file)?)
-            .map_err(|_| StoreError::Corrupt)?;
-        Ok(Identity {
-            volume: Sha256::digest(b"host-test-only").into(),
-            root: Sha256::digest(bytes).into(),
-        })
+        host_test_identity(path)
     }
-    #[cfg(not(all(test, target_os = "macos")))]
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        // Source tests attest through the native probe wherever the host
+        // filesystem admits it. A test temp directory on a filesystem the probe
+        // refuses as non-native (CI's container overlay, tmpfs) falls back to
+        // the host-test identity; every other refusal stays a refusal.
+        match super::super::endpoint::probe_endpoint(path) {
+            Ok(probe) => Ok(probe.identity.into()),
+            Err(super::super::endpoint::EndpointError::Unsupported) => host_test_identity(path),
+            Err(_) => Err(StoreError::UnsupportedDurability),
+        }
+    }
+    #[cfg(not(all(test, any(target_os = "macos", target_os = "linux"))))]
     {
         super::super::endpoint::probe_endpoint(path)
             .map(|probe| probe.identity.into())
             .map_err(|_| StoreError::UnsupportedDurability)
     }
+}
+/// Host source tests only: the real volume UUID (or boot-bound device) and
+/// inode of the store directory, never runtime admission.
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+fn host_test_identity(path: &Path) -> Result<Identity, StoreError> {
+    let pin = PinnedDirectory::open_absolute(path)?;
+    let bytes =
+        serde_json::to_vec(&durability::identity(&pin.file)?).map_err(|_| StoreError::Corrupt)?;
+    Ok(Identity {
+        volume: Sha256::digest(b"host-test-only").into(),
+        root: Sha256::digest(bytes).into(),
+    })
 }
 fn admitted() -> Result<(), StoreError> {
     durability::supported().map_err(|_| StoreError::UnsupportedDurability)?;

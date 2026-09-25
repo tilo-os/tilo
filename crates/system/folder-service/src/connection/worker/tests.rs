@@ -304,6 +304,7 @@ fn reopen_service(fixture: &NativeFixture) -> ConnectedService {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_facade_propagates_both_ways_preserves_conflict_and_reopens() {
     let fixture = NativeFixture::new();
     std::fs::write(fixture.source.join("document"), b"original").unwrap();
@@ -399,6 +400,7 @@ fn native_facade_propagates_both_ways_preserves_conflict_and_reopens() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_facade_rejects_stale_preview_including_empty_comparison() {
     let fixture = NativeFixture::new();
     let service = fixture.service();
@@ -447,6 +449,7 @@ fn native_facade_rejects_stale_preview_including_empty_comparison() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_facade_dropped_observer_pause_and_offline_do_not_lose_bytes() {
     let fixture = NativeFixture::new();
     std::fs::write(fixture.source.join("document"), b"must survive").unwrap();
@@ -550,6 +553,7 @@ fn pending_intent_reopens_as_recovery_and_disconnect_never_reactivates_it() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_incomplete_observation_never_becomes_deletion_or_up_to_date() {
     let fixture = NativeFixture::new();
     std::fs::write(fixture.destination.join("keep"), b"keep local").unwrap();
@@ -601,6 +605,7 @@ pub(super) fn before_native_step(id: ConnectionId) {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_pause_and_disconnect_wait_for_begun_step_after_ui_handles_drop() {
     let fixture = NativeFixture::new();
     std::fs::write(fixture.source.join("document"), b"baseline").unwrap();
@@ -807,6 +812,7 @@ fn queued_read_commands_cannot_starve_dispatch() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_pre_step_refusal_keeps_pending_recovery_and_endpoint_cause() {
     use crate::connection::{model::Decision, store::OperationIntent};
     let fixture = NativeFixture::new();
@@ -982,6 +988,7 @@ fn native_diagnostic_assertion_failure_is_isolated_and_poison_is_tolerated() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_empty_baseline_review_restart_and_later_real_operations() {
     let fixture = NativeFixture::new();
     let service = fixture.service();

@@ -259,6 +259,7 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
     fn native_initial_empty_commit_has_no_receipt_and_restart_requires_fresh_observation() {
         let mut f = Fixture::new();
         let cancel = AtomicBool::new(false);
@@ -330,6 +331,7 @@ mod tests {
         assert_eq!(store.executor_position(f.record.id).unwrap(), (None, None));
     }
     #[test]
+    #[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
     fn native_initial_empty_revalidates_root_events_cancel_fence_and_receiver_at_append() {
         for fault in 0..7 {
             let mut f = Fixture::new();
@@ -408,6 +410,7 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
     fn native_initial_empty_changed_preview_offline_cancel_and_disconnect_cannot_commit() {
         for fault in 0..5 {
             let mut f = Fixture::new();
@@ -454,6 +457,7 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
     fn native_initial_empty_failed_fsync_ack_reopens_genuine_baseline_without_receipt() {
         let mut f = Fixture::new();
         let cancel = AtomicBool::new(false);
@@ -506,6 +510,7 @@ mod tests {
         ));
     }
     #[test]
+    #[ignore = "authorized disposable Linux filesystem (QOS_ENDPOINT_FIXTURE) required"]
     fn native_initial_empty_final_observation_refuses_postcommit_arrival() {
         let mut f = Fixture::new();
         let cancel = AtomicBool::new(false);

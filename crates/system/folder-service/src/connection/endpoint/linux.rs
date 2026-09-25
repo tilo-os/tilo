@@ -1077,6 +1077,62 @@ mod clone_tests {
 mod clone_native_tests {
     use super::*;
 
+    /// Linux `capget`/`capset` ABI (`_LINUX_CAPABILITY_VERSION_3`).
+    #[repr(C)]
+    struct CapHeader {
+        version: u32,
+        pid: libc::c_int,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const CAP_VERSION_3: u32 = 0x2008_0522;
+    const DAC_BYPASS: u32 = (1 << 1) | (1 << 2); // CAP_DAC_OVERRIDE, CAP_DAC_READ_SEARCH
+
+    fn thread_caps() -> [CapData; 2] {
+        let mut header = CapHeader {
+            version: CAP_VERSION_3,
+            pid: 0,
+        };
+        let mut data = [CapData::default(); 2];
+        // SAFETY: valid v3 header and the two-element data array v3 requires.
+        let result = unsafe { libc::syscall(libc::SYS_capget, &raw mut header, data.as_mut_ptr()) };
+        assert_eq!(result, 0, "capget: {}", std::io::Error::last_os_error());
+        data
+    }
+    fn set_thread_caps(mut data: [CapData; 2]) {
+        let mut header = CapHeader {
+            version: CAP_VERSION_3,
+            pid: 0,
+        };
+        // SAFETY: valid v3 header and data; pid 0 changes only this thread.
+        let result = unsafe { libc::syscall(libc::SYS_capset, &raw mut header, data.as_mut_ptr()) };
+        assert_eq!(result, 0, "capset: {}", std::io::Error::last_os_error());
+    }
+    /// Removes the DAC bypass capabilities from this thread's effective set
+    /// until dropped, so a root test process (CI) observes the same mode-bit
+    /// permission denial an unprivileged user does. The capabilities stay
+    /// permitted, and dropping the guard restores the original effective set.
+    struct DacBypassDropped([CapData; 2]);
+    impl DacBypassDropped {
+        fn new() -> Self {
+            let original = thread_caps();
+            let mut reduced = original;
+            reduced[0].effective &= !DAC_BYPASS;
+            set_thread_caps(reduced);
+            Self(original)
+        }
+    }
+    impl Drop for DacBypassDropped {
+        fn drop(&mut self) {
+            set_thread_caps(self.0);
+        }
+    }
+
     #[test]
     fn native_permission_denial_does_not_mask_mismatched_mount() {
         use std::os::unix::fs::DirBuilderExt;
@@ -1087,6 +1143,9 @@ mod clone_native_tests {
             .mode(0o100)
             .create(&path)
             .unwrap();
+        // Root (as in CI) bypasses the mode bits through capabilities; this
+        // thread gives them up so the fixture still denies O_RDONLY.
+        let dac_dropped = DacBypassDropped::new();
         let pin = super::super::Pin::open(&path)
             .expect("the native fixture must permit an O_PATH directory pin");
         let readable = readable_directory(&pin.file).map(|_| ());
@@ -1101,18 +1160,20 @@ mod clone_native_tests {
         };
         let result =
             inspect_clone_candidate(&candidate, |_| Ok([2; 16])).map(|candidate| candidate.uuid);
+        drop(dac_dropped);
         // The fixture is empty; unlink it through its writable parent before
         // assertions, including the intentional RED assertion, can unwind.
         std::fs::remove_dir(path).unwrap();
         assert_eq!(
             readable,
             Err(EndpointError::PermissionDenied),
-            "run as an unprivileged user: the native fixture must deny O_RDONLY"
+            "the native fixture must deny O_RDONLY without DAC bypass capabilities"
         );
         assert_eq!(result, Err(EndpointError::IdentityChanged));
     }
 
     #[test]
+    #[ignore = "controller mounts a Btrfs subvolume alias named by QOS_ENDPOINT_BTRFS_ALIAS_FIXTURE"]
     fn native_btrfs_subvolume_alias_uses_pinned_mountinfo_device() {
         let path =
             PathBuf::from(std::env::var_os("QOS_ENDPOINT_BTRFS_ALIAS_FIXTURE").expect(

@@ -150,6 +150,7 @@ fn preserved_bytes(fixture: &NativeFixture, entry: &crate::connected::RecoveryIn
 // resolve using the explicitly selected real preserved source version.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_commands_preserve_collision_then_explicitly_resolve() {
     let fixture = NativeFixture::new();
     let (service, info, observer) = baseline(&fixture);
@@ -292,6 +293,7 @@ fn native_recovery_commands_preserve_collision_then_explicitly_resolve() {
 // review. Pause/restart and a foreign worker must invalidate the same token.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_commands_refuse_changed_bytes_revision_pause_and_foreign_worker() {
     let fixture = NativeFixture::new();
     let (service, info, observer) = baseline(&fixture);
@@ -388,6 +390,7 @@ fn native_recovery_commands_refuse_changed_bytes_revision_pause_and_foreign_work
 // bytes. The public command must restore the actual preserved native content.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_commands_restore_deleted_bytes_and_keep_disconnected_inventory() {
     let fixture = NativeFixture::new();
     let (service, info, observer) = baseline(&fixture);
@@ -481,6 +484,7 @@ fn native_recovery_commands_restore_deleted_bytes_and_keep_disconnected_inventor
 // inaccessible; choosing it must still preserve the live edited target.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_commands_offer_recorded_tombstone_and_preserve_displaced_edit() {
     let fixture = NativeFixture::new();
     let (service, info, observer) = baseline(&fixture);
@@ -537,6 +541,7 @@ fn native_recovery_commands_offer_recorded_tombstone_and_preserve_displaced_edit
 // review cannot authorize writes to a replacement endpoint at the same path.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_commands_page_stably_and_refuse_replaced_endpoint() {
     let fixture = NativeFixture::new();
     let (service, info, observer) = baseline(&fixture);
@@ -598,6 +603,7 @@ fn native_recovery_commands_page_stably_and_refuse_replaced_endpoint() {
 // handles disappear before the UI can observe completion.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_commands_complete_accepted_replacement_after_ui_drop() {
     let fixture = NativeFixture::new();
     let (service, info, observer) = baseline(&fixture);
@@ -650,6 +656,7 @@ fn native_recovery_commands_complete_accepted_replacement_after_ui_drop() {
 // private bytes fail the native reader's paid integrity proof.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_commands_refuse_changed_private_candidate_and_pending_recovery() {
     let fixture = NativeFixture::new();
     let (service, info, observer) = baseline(&fixture);
@@ -1067,6 +1074,7 @@ fn native_attention_cut(
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_attention_cut_reopens_log_and_checkpoint_before_live_equality() {
     for checkpoint in [false, true] {
         let fixture = NativeFixture::new();
@@ -1152,6 +1160,7 @@ fn native_recovery_attention_cut_reopens_log_and_checkpoint_before_live_equality
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_attention_cut_missing_or_corrupt_prior_bytes_refuses_live_equality() {
     for (checkpoint, missing) in [(false, false), (true, true)] {
         let fixture = NativeFixture::new();
@@ -1246,6 +1255,7 @@ fn native_recovery_attention_cut_missing_or_corrupt_prior_bytes_refuses_live_equ
 // by the real worker/native engines before the store-side replay assertions.
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "authorized Linux filesystem (QOS_ENDPOINT_FIXTURE) and QOS_LEASE_HELPER executable required"]
 fn native_recovery_attention_events_validate_refs_and_replay_legacy_supersession() {
     let fixture = NativeFixture::new();
     let (mut cut, info, _) = native_attention_cut(&fixture, false);
