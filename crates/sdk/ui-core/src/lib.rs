@@ -52,6 +52,13 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 #![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "the browser build omits the native App runner, broker transport and offscreen renderer, which are the only callers of much shared plumbing"
+    )
+)]
+#![cfg_attr(
     test,
     allow(
         clippy::disallowed_methods,
@@ -244,6 +251,7 @@ pub use automerge;
 pub use taffy;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool,
 /// the file-I/O pool and `block_on` for synchronous entry points.
+#[cfg(not(target_arch = "wasm32"))]
 pub use tilo_rt as rt;
 pub use vello;
 pub use vello::{kurbo, peniko};

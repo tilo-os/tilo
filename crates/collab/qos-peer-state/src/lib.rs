@@ -41,7 +41,6 @@ pub mod topology;
 pub mod desktop_command;
 pub mod owner_commit;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod retained_proof;
 
 pub mod desktop_delivery;

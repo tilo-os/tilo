@@ -486,6 +486,7 @@ pub(crate) fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
 /// then reach outside the directory the user actually browsed. So we also
 /// require that the decoded path has exactly as many components as the URI had
 /// segments, and that none of them is `..` or `.`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     use std::path::Component;
 
@@ -529,6 +530,12 @@ pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     }
 
     Some(path)
+}
+
+/// The browser has no local file system for a URI to name.
+#[cfg(target_arch = "wasm32")]
+pub fn to_local_path(_uri: &url::Url) -> Option<PathBuf> {
+    None
 }
 
 /// Map the portal's returned URIs for a **single-file** interaction: the first

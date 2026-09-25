@@ -16,7 +16,6 @@ ed25519-dalek.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
 collab-types = { path = "../../collab/collab-types" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }
 calculator = { path = "../../../apps/calculator" }
@@ -32,7 +31,13 @@ serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 wgpu.workspace = true
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+# In the browser the toolkit is the portable build: the page is the host, so
+# neither the native desktop runner nor the collab broker transport is linked.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 iroh.workspace = true
 iroh-base.workspace = true
 wasm-bindgen = "=0.2.108"

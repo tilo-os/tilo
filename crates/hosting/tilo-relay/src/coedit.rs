@@ -92,12 +92,15 @@ impl CoeditPayload {
     }
 }
 
+// Only the native relay peer retains coedit history.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RetentionKind {
     Checkpoint,
     Delta,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Deserialize)]
 enum RetentionMetadata<'a> {
     Checkpoint {
@@ -112,6 +115,7 @@ enum RetentionMetadata<'a> {
     },
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Decode only the host-visible retention route and kind. The opaque body is
 /// consumed without allocating or exposing it to diagnostics.
 pub(crate) fn retention_metadata(bytes: &[u8]) -> Option<([u8; 32], RetentionKind)> {

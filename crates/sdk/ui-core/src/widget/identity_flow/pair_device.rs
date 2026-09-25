@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
-use threshold_identity::{DkgSession, EnrolmentRound1, EnrolmentRound2, ThresholdIdentity};
+use threshold_identity::{DkgSession, EnrolmentRound1, ThresholdIdentity};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -499,7 +499,7 @@ impl PairDeviceScreen {
             }
             // The pairer also needs the host's round-1 contribution, sent as the
             // host's own round-2 message; bounded-poll the broker mailbox for it.
-            let mut host_reply: Option<EnrolmentRound2> = None;
+            let mut host_reply: Option<threshold_identity::EnrolmentRound2> = None;
             let deadline = crate::time::now()
                 .checked_add(crate::time::Duration::from_secs(15))
                 .ok_or_else(|| {
@@ -543,11 +543,14 @@ impl PairDeviceScreen {
         payload: &PairingPayload,
     ) -> Result<ThresholdIdentity, IdentityFlowError> {
         #[cfg(target_arch = "wasm32")]
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Device pairing unavailable without a browser pairing executor",
-        )
-        .into());
+        {
+            let _ = payload;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Device pairing unavailable without a browser pairing executor",
+            )
+            .into())
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let broker = payload.remote_broker()?;

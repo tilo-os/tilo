@@ -81,8 +81,11 @@ impl ClipboardBackend for BrowserClipboard {
         })
     }
 }
+/// Make the page's clipboard events the clipboard of this process's host
+/// services, keeping whatever else the host installed.
 pub fn install() {
-    ui::clipboard::install_clipboard_backend(Arc::new(BrowserClipboard));
+    let services = ui::host::installed_default().unwrap_or_else(ui::host::HostServices::null);
+    ui::host::install_default(services.with_clipboard(Arc::new(BrowserClipboard)));
 }
 pub fn copied() -> bool {
     TRANSFER.with_borrow(|t| t.as_ref().is_some_and(|t| t.copied))

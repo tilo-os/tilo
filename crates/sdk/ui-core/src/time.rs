@@ -37,6 +37,22 @@ pub fn wall() -> SystemTime {
     SystemTime::now()
 }
 
+/// A file-system timestamp, as `std::fs::Metadata::modified` reports it, in
+/// the toolkit's [`SystemTime`]. On native targets the two are the same type;
+/// in the browser the toolkit clock is the page's.
+#[must_use]
+pub fn from_file_time(time: std::time::SystemTime) -> SystemTime {
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    {
+        use web_time::web::SystemTimeExt as _;
+        SystemTime::from_std(time)
+    }
+    #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+    {
+        time
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

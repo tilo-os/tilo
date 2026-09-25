@@ -77,10 +77,16 @@ mod preview;
 mod root;
 mod surface;
 mod switch;
+// The test hosts discover native presentation, which the browser has not got.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod testing;
 mod view;
 
-pub use app::{ResourceApp, definition, launch_spec, run};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::launch_spec;
+#[cfg(feature = "native")]
+pub use app::run;
+pub use app::{ResourceApp, definition};
 pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;

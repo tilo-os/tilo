@@ -1674,22 +1674,26 @@ impl FrameHarness {
 
     /// Rasterise the most recently laid-out frame over a transparent
     /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
     /// [`FrameHarness::render_rgba`] over the theme background, as the
     /// native window composites it.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_window_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(self.theme.bg_app)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
         self.drain_component_wakes();
         let (w, h) = self.viewport;
         crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
         self.drain_component_wakes();
         if let Some(parent) = out.parent() {
@@ -6857,6 +6861,7 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
 }
 
 /// Drive the same prepared persistence path with an explicit capture theme.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_with_theme(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str, theme: Theme) -> i32 {
     use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
     tilo_startup_metrics::mark("headless-setup-start");
@@ -6987,6 +6992,7 @@ pub(crate) fn run_initialized(spec: &Spec, inputs: crate::launch::LegacyLaunchIn
     run_initialized_with_history(spec, inputs, Theme::dark(), None)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn run_initialized_with_history(
     spec: &Spec,
     inputs: crate::launch::LegacyLaunchInputs,

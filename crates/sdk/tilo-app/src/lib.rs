@@ -28,10 +28,13 @@ pub use tilo_resource;
 
 /// The usual imports for application code.
 pub mod prelude {
+    #[cfg(feature = "native")]
+    pub use crate::framework::run;
+    #[cfg(not(target_arch = "wasm32"))]
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Dispatcher, Each, Live, ResourceApp, ResourceSelection,
-        ResourceSurface, SurfaceCx, ViewCx, run,
+        ResourceSurface, SurfaceCx, ViewCx,
     };
     pub use tilo_resource::{
         self, ActionCx, Atom, Collection, Id, Invoke, Json, Model, Refusal, Replica, Resource,

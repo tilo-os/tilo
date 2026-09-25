@@ -165,6 +165,7 @@ impl PresenceKey {
     /// [`Self::surface_pointer`] for this process's own surface. The
     /// coordinates a winit `CursorMoved` carries are surface-local, so this
     /// is the only representation an app can provide.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn local_surface_pointer() -> Self {
         Self::surface_pointer(crate::local_surface_id())
     }

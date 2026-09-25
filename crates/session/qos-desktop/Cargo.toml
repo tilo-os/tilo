@@ -21,7 +21,6 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
 desktop-policy = { path = "../../system/desktop-policy" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [dev-dependencies]
 vello_encoding.workspace = true
@@ -31,3 +30,10 @@ notes = { path = "../../../apps/notes" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+
+# The browser runtime builds the desktop in wasm32 on the portable toolkit.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }

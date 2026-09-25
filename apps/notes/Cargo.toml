@@ -24,7 +24,6 @@ advisory-lock = { path = "../../crates/system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 app-state = { path = "../../crates/system/app-state" }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
@@ -54,3 +53,11 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
+
+# The browser runtime embeds this app in wasm32, where the toolkit is the
+# portable build: no native desktop runner, no broker transport, no portal.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", default-features = false }

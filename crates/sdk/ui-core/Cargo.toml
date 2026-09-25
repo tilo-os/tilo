@@ -12,7 +12,8 @@ autoexamples = false
 # build.rs probes optional system libraries through pkg-config.
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
 # dependency enables the qOS presentation-feedback feature in the patched HAL.
-ignored = ["pkg-config", "wgpu-hal"]
+# getrandom02 only selects the browser entropy backend for transitive crypto.
+ignored = ["pkg-config", "wgpu-hal", "getrandom02"]
 
 [features]
 default = ["native", "broker-transport"]
@@ -68,7 +69,6 @@ notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/D
 
 [dependencies]
 xdg-paths = { path = "../../system/xdg-paths" }
-private-fs = { path = "../../system/private-fs" }
 advisory-lock = { path = "../../system/advisory-lock" }
 # Canonical committed-document merge shared with the Cloud peer runtime.
 qos-peer-state = { path = "../../collab/qos-peer-state" }
@@ -112,7 +112,6 @@ two-face = { version = "0.4.5", default-features = false, features = ["syntect-f
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
-rustls.workspace = true
 # Invite-redemption secrets are sealed at rest through the shared construction.
 tilo-seal = { path = "../../system/tilo-seal" }
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
@@ -126,8 +125,9 @@ rustc-hash.workspace = true
 # `create_texture_from_hal`.
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
-tokio = { workspace = true, features = ["full"] }
-tilo-rt.workspace = true
+# The portable toolkit uses only the runtime pieces that exist on every
+# target; native builds add the rest below.
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
@@ -156,11 +156,6 @@ base64.workspace = true
 uuid.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 chrono = { workspace = true, features = ["clock", "std"] }
-# VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
-# `source` feature compiles the pure-C reference implementation so we don't
-# rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
-# screencast pipeline.
-openh264.workspace = true
 # Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
@@ -375,3 +370,27 @@ path = "examples/manual_composition_shots.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }
+
+# Host services that need an OS: private files, TLS, the in-process H.264
+# decoder and the full tokio runtime. The browser (wasm32) build supplies these
+# through its host instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+private-fs = { path = "../../system/private-fs" }
+rustls.workspace = true
+# VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
+# `source` feature compiles the pure-C reference implementation so we don't
+# rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
+# screencast pipeline.
+openh264.workspace = true
+tokio = { workspace = true, features = ["full"] }
+# The app runtime thread `LatestRequest::spawn` / `LatestTask::spawn` run on.
+tilo-rt.workspace = true
+
+# Browser entropy, clocks and time zones for the wasm32 build.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
+# The RustCrypto stack under channel-crypto and tilo-seal still draws entropy
+# through getrandom 0.2, which needs its JS backend named in the browser.
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+uuid = { workspace = true, features = ["js"] }

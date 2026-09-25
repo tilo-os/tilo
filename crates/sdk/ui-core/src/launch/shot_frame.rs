@@ -9,6 +9,7 @@
 //! cycle as `ui::App`. [`render_widget_png`] runs that cycle unchanged.
 
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
 use taffy::prelude::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -17,6 +18,7 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 use crate::bound_dispatch::BoundNodeMap;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::offscreen::OffscreenRenderer;
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
@@ -274,6 +276,7 @@ impl ShotFrame {
     ///
     /// Panics when the offscreen renderer cannot publish the file, as
     /// [`OffscreenRenderer::render_png`] does.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_png(&self, scene: &Scene, out: &Path) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -290,6 +293,7 @@ impl ShotFrame {
 /// # Errors
 ///
 /// As [`ShotFrame::layout`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn render_widget_png(
     widget: &mut dyn Widget,
     viewport: (u32, u32),

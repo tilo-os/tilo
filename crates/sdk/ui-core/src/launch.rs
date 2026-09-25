@@ -8,12 +8,18 @@
 use std::fmt;
 use std::path::PathBuf;
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::App;
 use crate::headless::{self, FrameHarness};
 use crate::widget::Widget;
-use crate::{App, State, Theme};
+use crate::{State, Theme};
 
 mod shot_frame;
-pub use shot_frame::{ShotFrame, ShotLayout, render_widget_png};
+pub use shot_frame::{ShotFrame, ShotLayout};
+// Writing a PNG needs the offscreen renderer's blocking GPU readback, which
+// the browser has not got; laying out and drawing a frame is portable.
+#[cfg(not(target_arch = "wasm32"))]
+pub use shot_frame::render_widget_png;
 
 pub const DEFAULT_VIEWPORT: (u32, u32) = headless::DEFAULT_VIEWPORT;
 
@@ -118,6 +124,8 @@ impl LegacyLaunchInputs {
 type ShotFactory = fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>;
 type ShotHandler = fn(&LaunchArgs) -> Result<(), LaunchError>;
 type ViewportFactory = fn(&LaunchArgs) -> (u32, u32);
+// The windowed `App` runner is native-only; browser hosts mount components.
+#[cfg(not(target_arch = "wasm32"))]
 type ConfigureApp = fn(&mut App);
 type OpenState = fn(&'static str) -> (State, crate::persist::DocWriter);
 type OpenStateWithArgs = fn(&'static str, &LaunchArgs) -> (State, crate::persist::DocWriter);
@@ -279,6 +287,7 @@ pub struct LaunchSpec {
     shot_root: Option<ShotFactory>,
     shot_handler: Option<ShotHandler>,
     shot_viewport: ViewportFactory,
+    #[cfg(not(target_arch = "wasm32"))]
     configure_app: Option<ConfigureApp>,
     live_handler: Option<LiveHandler>,
     command_handler: Option<CommandHandler>,
@@ -499,6 +508,7 @@ impl LaunchSpec {
             shot_root: None,
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
+            #[cfg(not(target_arch = "wasm32"))]
             configure_app: None,
             live_handler: None,
             command_handler: None,
@@ -533,6 +543,7 @@ impl LaunchSpec {
             shot_root: None,
             shot_handler: None,
             shot_viewport: |_| DEFAULT_VIEWPORT,
+            #[cfg(not(target_arch = "wasm32"))]
             configure_app: None,
             live_handler: None,
             command_handler: None,
@@ -597,6 +608,7 @@ impl LaunchSpec {
     }
 
     #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn configure_app(mut self, configure: ConfigureApp) -> Self {
         self.legacy_setup_override = true;
         self.configure_app = Some(configure);
