@@ -209,6 +209,10 @@ impl Sidebar {
     /// drawer covers the full window) button, top-right of the sidebar
     /// header. Split out of [`Self::draw_chrome`] to keep that under the
     /// line cap.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the header button combines paint context, sidebar/window bounds, overlay mode, pointer, flow geometry and hit output"
+    )]
     fn draw_chrome_collapse_or_dismiss(
         scene: &mut Scene,
         transform: Affine,
@@ -241,6 +245,10 @@ impl Sidebar {
     /// when the switcher doesn't already live in the top bar. Returns the
     /// vertical space it consumed (`0.0` if not drawn). Split out of
     /// [`Self::draw_chrome`] to keep that under the line cap.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the switcher combines paint context, sidebar bounds, active view, pointer, flow geometry and hit output"
+    )]
     fn draw_chrome_view_switcher(
         scene: &mut Scene,
         transform: Affine,
@@ -305,6 +313,10 @@ impl Sidebar {
     /// The Export/Import footer buttons, side by side at the bottom of the
     /// sidebar header. Split out of [`Self::draw_chrome`] to keep that under
     /// the line cap.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the footer buttons combine paint context, sidebar bounds, flow geometry, pointer and hit output"
+    )]
     fn draw_chrome_footer_buttons(
         scene: &mut Scene,
         transform: Affine,

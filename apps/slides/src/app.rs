@@ -3923,6 +3923,10 @@ impl SlidesApp {
         }
     }
 
+    #[expect(
+        clippy::string_slice,
+        reason = "the element edit core keeps its offsets on char boundaries of this same text"
+    )]
     fn sync_legacy_from_element_core(&mut self) {
         if !self.editing_text {
             return;
@@ -3952,7 +3956,11 @@ impl SlidesApp {
         self.sync_legacy_from_element_core();
     }
 
-    fn apply_element_edit(&mut self, doc: &mut AutoCommit, edit: ui::text_edit::Edit) {
+    #[expect(
+        clippy::string_slice,
+        reason = "the element edit core keeps its offsets on char boundaries of this same text"
+    )]
+    fn apply_element_edit(&mut self, doc: &mut AutoCommit, edit: &ui::text_edit::Edit) {
         if edit.is_noop() || !self.editing_text {
             return;
         }
@@ -3990,7 +3998,7 @@ impl SlidesApp {
         if self.editing_text {
             self.sync_element_core_from_legacy();
             let edit = self.element_edit_core.insert(s);
-            self.apply_element_edit(doc, edit);
+            self.apply_element_edit(doc, &edit);
             return;
         }
         // Typing over a selection replaces it (delete first, then insert at the
@@ -4018,7 +4026,7 @@ impl SlidesApp {
             self.sync_element_core_from_legacy();
             let text = self.cur_edit_text();
             let edit = self.element_edit_core.delete_backward(&text, false);
-            self.apply_element_edit(doc, edit);
+            self.apply_element_edit(doc, &edit);
             return;
         }
         // A live selection is deleted whole; otherwise delete the char before.
@@ -4052,7 +4060,7 @@ impl SlidesApp {
             self.sync_element_core_from_legacy();
             let text = self.cur_edit_text();
             let edit = self.element_edit_core.delete_forward(&text, false);
-            self.apply_element_edit(doc, edit);
+            self.apply_element_edit(doc, &edit);
             return;
         }
         if self.delete_selection(doc) {
@@ -4347,7 +4355,7 @@ impl SlidesApp {
             }
             let text = self.cur_edit_text();
             let edit = self.element_edit_core.delete_backward(&text, false);
-            self.apply_element_edit(doc, edit);
+            self.apply_element_edit(doc, &edit);
             return true;
         }
         let sel = self.selection();

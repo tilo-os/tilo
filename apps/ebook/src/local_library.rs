@@ -248,7 +248,7 @@ mod tests {
                 "book:not-an-id": "/books/nope.epub",
                 "book:0123456789abcdef0123456789abcdef": "relative.epub"
             },
-            WATCHED: [PathBuf::from("../private"), safe.clone(), safe.clone()]
+            WATCHED: [PathBuf::from("../private"), &safe, &safe]
         });
         let registry = LocalLibrary::from_section(section.as_object().unwrap());
         assert!(registry.books.is_empty());
@@ -261,7 +261,7 @@ mod tests {
         let safe = directory.path().join("safe");
         let section = serde_json::json!({
             SHORTCUTS: { "next-page": "J", "bookmark": "\n", "other": "j" },
-            WATCHED: [safe.clone()]
+            WATCHED: [&safe]
         });
         let mut registry = LocalLibrary::from_section(section.as_object().unwrap());
         assert_eq!(registry.watched_folders, vec![safe]);

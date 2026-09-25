@@ -1348,7 +1348,7 @@ impl TypstApp {
         // `›` lands under the switch at phone widths.
         let gap = f64::from(theme.tokens.spacing.s3);
         let left_x = tb.x0 + 12.0;
-        let switch_w = self.view_switch_width(tr);
+        let switch_w = Self::view_switch_width(tr);
         let arrows = if self.documents.len() > 1 {
             Self::pill_width(tr, "‹") + 6.0 + 6.0 + Self::pill_width(tr, "›")
         } else {
@@ -1465,7 +1465,7 @@ impl TypstApp {
     }
 
     /// Total width the Edit / Preview switch paints at.
-    fn view_switch_width(&self, tr: &mut TextRenderer) -> f64 {
+    fn view_switch_width(tr: &mut TextRenderer) -> f64 {
         let (ew, pw) = Self::view_switch_segments(tr);
         ew + pw
     }
