@@ -67,6 +67,7 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
             },
         },
         params: action.params.clone(),
+        view: action.view.clone(),
     }
 }
 
@@ -87,6 +88,7 @@ fn app_open_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor
         // read-only as its text argument; without one the app opens empty.
         input: InputSpec::None,
         params: Vec::new(),
+        view: None,
     }
 }
 

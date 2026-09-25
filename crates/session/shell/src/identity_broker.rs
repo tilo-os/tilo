@@ -136,10 +136,13 @@ fn metadata(room: &RoomId) -> Response {
         Ok(None) => return Response::Denied("no identity selected for this workspace".into()),
         Err(error) => return Response::Error(error.to_string()),
     };
-    let record = match runtime_identity::load_from_path(profile.record_path.clone()) {
+    let record = match runtime_identity::load_metadata_from_path(&profile.record_path) {
         Ok(record) => record,
         Err(error) => return Response::Error(error.to_string()),
     };
+    if record.group_public_key != profile.user_public_key {
+        return Response::Denied("identity record no longer matches the selected principal".into());
+    }
     let (device, cert) = match require_trusted_current_device(&profile) {
         Ok(material) => material,
         Err(error) => return Response::Denied(error.to_string()),
@@ -149,14 +152,14 @@ fn metadata(room: &RoomId) -> Response {
         Err(error) => return Response::Error(error.to_string()),
     };
     Response::Metadata {
-        display_name: record.display_name().to_string(),
-        avatar_color: record.avatar_color(),
-        group_public_key: record.group_public_key(),
+        display_name: record.display_name,
+        avatar_color: record.avatar_color,
+        group_public_key: record.group_public_key,
         signing_public_key: device.verifying_key().to_bytes(),
         device_certificate: Some(device_certificate),
-        threshold: record.threshold(),
-        total_shares: record.total_shares(),
-        share_index: record.share_index(),
+        threshold: record.threshold,
+        total_shares: record.total_shares,
+        share_index: record.share_index,
     }
 }
 
