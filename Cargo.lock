@@ -9734,17 +9734,14 @@ name = "passwords"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "argon2",
  "atomic-file",
  "automerge",
- "chacha20poly1305 0.11.0",
- "getrandom 0.4.1",
- "rand_core 0.10.0",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
  "tilo-app",
+ "tilo-seal",
  "vello",
  "winit",
  "zeroize",
@@ -11815,10 +11812,8 @@ name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
- "argon2",
  "atomic-file",
  "bounded-command",
- "chacha20poly1305 0.11.0",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.1",
  "hex",
@@ -11832,6 +11827,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "threshold-identity",
+ "tilo-seal",
  "tilo-test-env",
  "tokio",
  "wire-frame",
