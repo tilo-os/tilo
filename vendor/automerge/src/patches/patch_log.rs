@@ -261,6 +261,11 @@ impl PatchLog {
         self.active = setting
     }
 
+    /// Number of retained patch events (qOS bounded admission).
+    pub(crate) fn event_count(&self) -> usize {
+        self.events.len()
+    }
+
     pub(crate) fn is_active(&self) -> bool {
         self.active
     }

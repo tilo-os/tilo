@@ -180,6 +180,41 @@ impl AutoCommit {
         })
     }
 
+    /// qOS bounded admission: no transaction, isolation, patch log, diff or
+    /// save cursor state that a native mutation would have to account for.
+    pub(crate) fn native_mutation_is_closed(&self) -> bool {
+        self.transaction.is_none()
+            && self.isolation.is_none()
+            && !self.patch_log.is_active()
+            && self.patch_log.event_count() == 0
+            && self.diff_cursor.is_empty()
+            && self.diff_cache.is_none()
+            && self.save_cursor.is_empty()
+    }
+
+    /// qOS bounded admission: native bounded reads cover the full current view only.
+    pub(crate) fn native_read_is_isolated(&self) -> bool {
+        self.isolation.is_some()
+    }
+
+    /// qOS bounded admission: whether a transaction is open.
+    pub(crate) fn native_has_transaction(&self) -> bool {
+        self.transaction.is_some()
+    }
+
+    /// qOS bounded admission: wrap a freshly loaded document.
+    pub(crate) fn native_from_doc(doc: Automerge) -> Self {
+        Self {
+            doc,
+            transaction: None,
+            patch_log: PatchLog::inactive(),
+            diff_cursor: Vec::new(),
+            diff_cache: None,
+            save_cursor: Vec::new(),
+            isolation: None,
+        }
+    }
+
     /// Erases the diff cursor created by [`Self::update_diff_cursor()`] and no
     /// longer indexes changes to the document.
     pub fn reset_diff_cursor(&mut self) {

@@ -1,7 +1,26 @@
 //! Explicit bounds for inspecting native storage before reconstruction.
+//!
+//! automerge 0.12 port: see `vendor/automerge/README.qos.md` and
+//! `docs/superpowers/specs/2026-09-25-automerge-012-bounded-admission.md`
+//! (Cloud repo). Storage scanning and the ledger are carried verbatim from
+//! the 0.8 patch; retained custody uses conservative dimension bounds
+//! (`dims`) instead of per-struct layout visitors, because 0.12/hexane 1.0
+//! slabs are uniquely owned and clones deep-copy.
 mod inspect;
 mod normalize;
 mod structure;
+pub(crate) mod dims;
+mod custody;
+pub(crate) mod apply;
+mod reconstruct;
+mod save;
+mod history;
+mod read;
+pub use apply::{NativeApplyResult, NativeDependencyPolicy, NativeIncomingOutcome, NativeMutationError};
+pub use custody::{NativeAllocationSet, NativeCloneCandidate, NativeFootprint, NativeOwned, NativeRetention, NativeWorkTurn};
+pub use history::{NativeChanges, NativeHashes};
+pub use read::{NativeId, NativeListEntry, NativeObject, NativeReadError, NativeReadSession, NativeReadSteps, NativeScalar, NativeSelection, NativeValue};
+pub use save::NativeSaved;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -160,6 +179,34 @@ impl Drop for NativeReservation {
                 host.shrink_to((previous & RETAINED_MASK) - self.bytes);
             }
         }
+    }
+}
+impl NativeReservation {
+    /// Moves `bytes` of this reservation into a new one on the same ledger.
+    pub(crate) fn split_off(&mut self, bytes: usize) -> Result<NativeReservation, NativeResourceError> {
+        if bytes > self.bytes {
+            return Err(NativeResourceError::WorkBytes);
+        }
+        self.bytes -= bytes;
+        Ok(NativeReservation {
+            ledger: Arc::clone(&self.ledger),
+            bytes,
+            host: self.host.clone(),
+        })
+    }
+    /// Absorbs another reservation drawn from the same ledger.
+    pub(crate) fn absorb(&mut self, other: NativeReservation) -> Result<(), NativeResourceError> {
+        if !Arc::ptr_eq(&self.ledger, &other.ledger) {
+            return Err(NativeResourceError::Unaccounted);
+        }
+        let mut other = other;
+        self.bytes = self.bytes.checked_add(other.bytes).ok_or(NativeResourceError::WorkBytes)?;
+        other.bytes = 0;
+        Ok(())
+    }
+    /// Whether this reservation was drawn from `allowance`'s ledger.
+    pub(crate) fn is_from(&self, allowance: &NativeAllowance) -> bool {
+        Arc::ptr_eq(&self.ledger, &allowance.ledger)
     }
 }
 impl NativeAllowance {
