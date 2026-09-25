@@ -327,6 +327,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# The signed target UKI always mounts TILO_BOOT. Every supported install mode
+# must create that ext4 partition before promotion; reject any future caller
+# that tries to revive a direct, unencrypted bootc path without its mount.
+[ "$ENCRYPT" -eq 1 ] || die "the signed target UKI requires encrypted TILO_BOOT layout"
+
 [ -n "$DISK" ] || die "missing --disk <device>"
 [ -n "$USERNAME" ] || die "missing --user <name>"
 case "$EXPECT_DISK_SIZE_BYTES" in
