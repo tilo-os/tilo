@@ -7,32 +7,40 @@ on:
 
 jobs:
   cli:
-    runs-on: imager-windows-aarch64
+    runs-on: runner-arm64
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Require native Windows ARM64
-        shell: powershell
+      - name: Require ARM64 build host and install cross toolchain
         run: |
-          $Processors = @(Get-CimInstance Win32_Processor)
-          if ($Processors.Count -eq 0 -or @($Processors | Where-Object { $_.Architecture -ne 12 }).Count -ne 0) {
-            throw "This build requires a native Windows ARM64 runner"
-          }
-      - name: Build and test tilo-vm
-        shell: powershell
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          if ! command -v clang-cl >/dev/null || ! command -v lld-link >/dev/null; then
+            if command -v dnf >/dev/null; then
+              sudo dnf install -y clang lld
+            elif command -v apt-get >/dev/null; then
+              sudo apt-get update
+              sudo apt-get install -y clang lld
+            else
+              echo 'No supported LLVM package manager on ARM64 runner' >&2
+              exit 1
+            fi
+          fi
+          command -v clang-cl
+          command -v lld-link
+          rustup target add aarch64-pc-windows-msvc
+          cargo install --locked cargo-xwin --version 0.23.1
+      - name: Cross-build tilo-vm for Windows ARM64
         run: |
-          cargo test -p tilo-vm --lib --locked --target aarch64-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) { throw "tilo-vm tests failed" }
-          cargo build -p tilo-vm --locked --target aarch64-pc-windows-msvc
-          if ($LASTEXITCODE -ne 0) { throw "tilo-vm build failed" }
+          set -euo pipefail
+          cargo xwin build -p tilo-vm --locked --release --target aarch64-pc-windows-msvc
       - name: Package exact-source CLI
-        shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item -LiteralPath target\aarch64-pc-windows-msvc\debug\tilo-vm.exe -Destination out\tilo-vm.exe
-          $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath out\tilo-vm.exe).Hash.ToLowerInvariant()
-          Set-Content -LiteralPath out\tilo-vm.exe.sha256 -Encoding ascii -Value "$Hash  tilo-vm.exe"
-          Set-Content -LiteralPath out\source-commit.txt -Encoding ascii -Value $env:GITHUB_SHA
+          set -euo pipefail
+          mkdir -p out
+          cp target/aarch64-pc-windows-msvc/release/tilo-vm.exe out/tilo-vm.exe
+          (cd out && sha256sum tilo-vm.exe > tilo-vm.exe.sha256)
+          printf '%s\n' "$GITHUB_SHA" > out/source-commit.txt
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-vm-windows-arm64-${{ github.sha }}
