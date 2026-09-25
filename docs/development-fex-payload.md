@@ -25,10 +25,14 @@ that its traditional Wine pair, source pins, DXVK payload and loader layout
 pass the current `windows_provider.py` consumer checks. Its producer records
 `runtime_acceptance_verified=false`.
 
-`build-image.yml` reads repository variables `TILO_FEX_PAYLOAD_REF` and
-`TILO_WINDOWS_GUEST_REF` as a pair. It fails with only one variable and builds
-an ARM image without Windows apps if both are absent. Set the pair only after
-the candidate payload and guest have passed the consumer checks and the
-intended image has been explicitly classified as development. A production
-provider additionally needs frozen input transactions and mixed-width Wine,
-Proton, DXVK, graphics, capsule and target-hardware acceptance.
+`build-image.yml` normally reads repository variables `TILO_FEX_PAYLOAD_REF`
+and `TILO_WINDOWS_GUEST_REF` as a pair. It fails with only one variable and
+builds an ARM image without Windows apps if both are absent. An explicit
+Lenovo `main` dispatch can instead supply both immutable references as
+`fex_payload_candidate` and `windows_guest_candidate`. This confines the
+experimental inputs to one build without changing the nightly or tag channels.
+The resulting image carries `org.tilo.windows-provider.input-class=development-only`
+as well as its provider digest record; the ordinary variable path is labeled
+`repository-pinned`. A production provider additionally needs frozen input
+transactions and mixed-width Wine, Proton, DXVK, graphics, capsule and
+target-hardware acceptance.
