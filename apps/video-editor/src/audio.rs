@@ -2314,6 +2314,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "silence is written as literal zeros, not computed"
+    )]
     fn a_short_read_leaves_the_rest_of_the_block_silent() {
         struct Short;
         impl PcmSource for Short {
@@ -2334,6 +2338,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "silence is written as literal zeros, not computed"
+    )]
     fn nothing_under_the_playhead_mixes_to_silence() {
         let (p, _, _, _) = project_with_audio();
         let (m1, m2) = (p.media[0].id, p.media[1].id);
