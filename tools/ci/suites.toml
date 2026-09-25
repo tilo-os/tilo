@@ -150,6 +150,7 @@ suites = [
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_finalization_checkpoint_fetch.py",
   "os/tests/test_finalization_worker.py",
+  "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
   "os/tests/test_raw_layer_epoch.py",
 ]

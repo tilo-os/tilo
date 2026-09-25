@@ -5,12 +5,10 @@ name: Snapshot / RPM repository
 # Runs when the base image or package set changes; a manual dispatch forces a
 # refresh.
 #
-# Kernel provenance binds RPMS_REF, so an RPM pin is only usable together with
-# kernels built against it. After publishing the snapshot this workflow calls
-# build-kernel.yml with the new RPMS_REF; that run builds, signs and verifies
-# both native kernels and opens one pull request that updates
-# os/rpms-snapshot.env and os/kernel-snapshot.env together. Main therefore
-# never holds an RPM pin without its matching kernels.
+# The kernel builds on its own signed buildroot (snapshot-kernel-buildroot.yml)
+# and does not depend on this snapshot, so the RPM pin lands in its own pull
+# request. The kernel packages the OS image installs are served from the
+# kernel's repository; their runtime dependencies resolve from this snapshot.
 on:
   workflow_dispatch:
   push:
@@ -40,7 +38,6 @@ on:
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
-      - os/kernel/Containerfile
       - .forgejo/workflows/snapshot-rpms.yml
       - os/rpms-snapshot.env
 
@@ -258,8 +255,8 @@ jobs:
           path: native-children
       # Inputs that moved on main while the native builds ran do not stop
       # promotion: a snapshot newer than the pin is still strictly better, and
-      # the kernel promotion requests the next refresh. Only a snapshot that is
-      # not newer than main's pin is refused.
+      # the pin promotion below requests the next refresh. Only a snapshot that
+      # is not newer than main's pin is refused.
       - name: Refuse a snapshot that is not newer than main's pin
         run: |
           set -euo pipefail
@@ -383,24 +380,96 @@ jobs:
           echo "::notice::Frozen RPM repo published: RPMS_REF=$ref"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           {
-            echo "## Frozen RPM repo published"
+            echo '## Frozen RPM repo published'
             echo ""
-            echo 'The kernels are rebuilt against it next; their pull request pins both:'
+            echo 'The promotion pull request pins this in `os/rpms-snapshot.env`:'
             echo ""
             echo '```'
             echo "RPMS_REF=$ref"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # No pull request is opened here. build-kernel.yml builds, signs and verifies
-  # the native kernels against the new index and proposes both pins in one pull
-  # request, after checking that neither the RPM nor the kernel inputs moved on
-  # main meanwhile.
-  kernels:
-    if: github.ref == 'refs/heads/main'
-    needs: promote-snapshot
-    uses: ./.forgejo/workflows/build-kernel.yml
-    with:
-      rpms_ref: ${{ needs.promote-snapshot.outputs.rpms-ref }}
-      publish: true
-    secrets: inherit
+      # Protected main accepts no direct pushes. Commit the pin on the current
+      # main tip, push a branch named after the pin file's digest, and open a
+      # pull request so the required checks and merge policy apply. The kernel
+      # does not build against this snapshot, so the pin lands on its own.
+      - name: Propose the frozen snapshot pin through protected main
+        env:
+          # The checkout's REGISTRY_TOKEN pushes the branch, but Forgejo answers
+          # its pull-request API calls with 404. RELEASE_TOKEN has repository
+          # scope; a PR it opens also triggers its own required checks.
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RPMS_INDEX_REF: ${{ steps.attest.outputs.ref }}
+        run: |
+          set -euo pipefail
+          ref="$RPMS_INDEX_REF"
+          [[ "$ref" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]
+          # The pin is consistent on its own, so it lands whenever it is newer
+          # than main's; if inputs moved meanwhile, the next refresh is
+          # requested below and supersedes it.
+          git fetch --no-tags origin main
+          if ! python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-newer-than-pin; then
+            echo '::error::main already pins an RPM snapshot at least as new as this one'
+            exit 1
+          fi
+          moved=false
+          python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent || moved=true
+          git checkout --detach FETCH_HEAD
+          printf '%s\n' \
+            '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
+            '# Updated by the snapshot-rpms workflow when the package set changes.' \
+            "RPMS_REF=$ref" \
+            "RPMS_SOURCE_REVISION=$GITHUB_SHA" > os/rpms-snapshot.env
+          if git diff --quiet -- os/rpms-snapshot.env; then
+            echo 'Snapshot pin is already current'
+            exit 0
+          fi
+          git config user.name 'Tilo CI'
+          git config user.email 'ci@tilo.invalid'
+          git add os/rpms-snapshot.env
+          git commit -m 'build(os): refresh native RPM snapshot index'
+          snapshot_digest="$(sha256sum os/rpms-snapshot.env | awk '{print $1}')"
+          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
+          branch="automation/rpm-snapshot-${snapshot_digest:0:16}"
+          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          if ! git push --force-with-lease="refs/heads/$branch:$remote_tip" \
+              origin "HEAD:refs/heads/$branch" 2> push.log; then
+            cat push.log >&2
+            if grep -Fq 'stale info' push.log; then
+              echo "::error::$branch moved on the remote during promotion (lease lost); rerun to adopt it"
+            else
+              echo "::error::Forgejo refused the snapshot pin push to $branch (see the git output above)"
+            fi
+            exit 1
+          fi
+          cat push.log >&2
+          # This pin supersedes every open RPM pin pull request whose snapshot
+          # comes from an earlier commit (or records none): merging one of
+          # those later would only regress main.
+          superseded=()
+          git fetch --no-tags --prune origin '+refs/heads/automation/*:refs/remotes/origin/automation/*'
+          while IFS= read -r candidate; do
+            [ "$candidate" != "$branch" ] || continue
+            source="$(git show "origin/$candidate:os/rpms-snapshot.env" 2>/dev/null \
+              | sed -n 's/^RPMS_SOURCE_REVISION=//p')" || continue
+            if [ -z "$source" ] || { [ "$source" != "$GITHUB_SHA" ] \
+                && git merge-base --is-ancestor "$source" "$GITHUB_SHA" 2>/dev/null; }; then
+              superseded+=(--supersede "$candidate")
+            fi
+          done < <(git for-each-ref --format='%(refname:strip=3)' \
+            'refs/remotes/origin/automation/rpm-snapshot-*' \
+            'refs/remotes/origin/automation/rpm-kernel-snapshot-*')
+          python3 os/dev/open-snapshot-pr.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
+            --branch "$branch" --snapshot-digest "$snapshot_digest" "${superseded[@]}" \
+            rpms --rpms-ref "$ref" --source-revision "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          # This pin is newer than main's but older than main's inputs. Request
+          # the refresh that catches up; it supersedes this PR.
+          if [ "$moved" = true ]; then
+            echo '::notice::inputs moved on main during the build; requesting the next snapshot refresh'
+            curl --fail --silent --show-error -X POST \
+              -H "Authorization: token $FORGEJO_TOKEN" -H 'Content-Type: application/json' \
+              --data '{"ref":"main"}' \
+              "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/workflows/snapshot-rpms.yml/dispatches" \
+              || echo '::warning::could not dispatch snapshot-rpms.yml; dispatch it by hand to catch up'
+          fi
