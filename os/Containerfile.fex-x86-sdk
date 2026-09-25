@@ -10,6 +10,8 @@ RUN test "$(uname -m)" = x86_64 \
       glibc-devel.x86_64 glibc-devel.i686 \
       libstdc++-devel.x86_64 libstdc++-devel.i686 \
       libX11-devel.x86_64 libX11-devel.i686 \
+      libXau-devel.x86_64 libXau-devel.i686 \
+      libXext-devel.x86_64 libXext-devel.i686 \
       libXrandr-devel.x86_64 libXrandr-devel.i686 \
       libXrender-devel.x86_64 libXrender-devel.i686 \
       libxcb-devel.x86_64 libxcb-devel.i686 \
@@ -18,9 +20,16 @@ RUN test "$(uname -m)" = x86_64 \
       vulkan-loader-devel.x86_64 vulkan-loader-devel.i686 \
       alsa-lib-devel.x86_64 alsa-lib-devel.i686 \
       wayland-devel.x86_64 wayland-devel.i686 \
+      libffi-devel.x86_64 libffi-devel.i686 \
       libdrm-devel.x86_64 libdrm-devel.i686 \
       zlib-ng-compat-devel.x86_64 zlib-ng-compat-devel.i686 \
  && dnf clean all \
+ && PKG_CONFIG_LIBDIR=/usr/lib64/pkgconfig:/usr/share/pkgconfig \
+      pkg-config --static --print-errors --exists \
+        xcb x11 xrandr xrender wayland-client gl egl alsa libdrm \
+ && PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig:/usr/share/pkgconfig \
+      pkg-config --static --print-errors --exists \
+        xcb x11 xrandr xrender wayland-client gl egl \
  && printf '#include <string>\nint main() { return std::string("x").size() != 1; }\n' > /tmp/tilo-fex-sdk-smoke.cpp \
  && g++ -m64 /tmp/tilo-fex-sdk-smoke.cpp -o /tmp/tilo-fex-sdk-smoke-64 \
  && g++ -m32 /tmp/tilo-fex-sdk-smoke.cpp -o /tmp/tilo-fex-sdk-smoke-32 \
