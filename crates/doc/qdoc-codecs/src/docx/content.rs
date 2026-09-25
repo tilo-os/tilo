@@ -214,11 +214,22 @@ struct BodyState {
     ppr_child: Option<(usize, Vec<u8>)>,
     // The current `w:pPr`'s `w:pStyle`, kept only when the model does not use the style.
     ppr_style: Option<String>,
+    // (block, start, end, kept run properties) of runs with unmodeled run properties.
+    rpr_marks: Vec<(String, usize, usize, String)>,
+
+    // The current table's `w:tblPr`/`w:tblGrid` and row's `w:trPr`, until a cell takes them;
+    // the start, name and depth of the table/row/cell properties element being read.
+    table_pr: Option<String>,
+    table_grid: Option<String>,
+    row_pr: Option<String>,
+    table_part: Option<(usize, Vec<u8>, usize)>,
 }
 
 /// What the body parser tracks about the table cell being read.
 #[derive(Default)]
 struct CellState {
+    /// The cell's block, while it has one (a cell continuing a vertical merge has none).
+    id: Option<String>,
     /// The block before the cell's own, to fall back to when the cell turns out to be covered.
     prev: Option<String>,
     /// Grid columns the cell spans (`w:gridSpan`).
@@ -519,6 +530,31 @@ impl BodyState {
         }
     }
 
+    /// At a run's end: its unmodeled run properties ride on its text as a mark, joined with
+    /// the previous run's when they are the same and adjacent.
+    fn keep_run_props(&mut self) {
+        let Some(b) = self.cur.as_ref() else {
+            return;
+        };
+        if self.rpr_xml.is_empty() || self.run_start >= self.cur_len {
+            return;
+        }
+        let kept = super::paragraph::kept_run_props(&self.rpr_xml);
+        if kept.is_empty() {
+            return;
+        }
+        if let Some(last) = self.rpr_marks.last_mut()
+            && last.0 == *b
+            && last.2 == self.run_start
+            && last.3 == kept
+        {
+            last.2 = self.cur_len;
+            return;
+        }
+        self.rpr_marks
+            .push((b.clone(), self.run_start, self.cur_len, kept));
+    }
+
     /// A `w:vMerge` in the current cell's properties: `restart` opens a vertical merge at this
     /// grid column; otherwise the cell continues the merge above it, so it adds a row to that
     /// merge's first cell and has no block of its own.
@@ -534,6 +570,7 @@ impl BodyState {
             doc.set_attr(first, "rowspan", *rows);
             doc.remove_block(&id);
             self.cur = None;
+            self.cell.id = None;
             self.prev = self.cell.prev.clone();
         }
     }
@@ -568,6 +605,68 @@ impl BodyState {
         self.cur_para_marks.clear();
     }
 
+    /// Inside a table, collect the table's, rows' and cells' properties verbatim (see
+    /// `paragraph::ATTR_TBLPR`). Only observes: the regular handlers still see every event.
+    fn observe_table(
+        &mut self,
+        ev: &Event,
+        s: &str,
+        pos_before: usize,
+        pos_after: usize,
+        doc: &mut DocMut,
+    ) {
+        if self.table_id.is_none() || self.in_para {
+            return;
+        }
+        let is_part = |e: &BytesStart| {
+            matches!(
+                e.name().as_ref(),
+                b"w:tblPr" | b"w:tblGrid" | b"w:trPr" | b"w:tcPr"
+            )
+        };
+        match ev {
+            Event::Start(e) => match self.table_part.as_mut() {
+                Some(part) => part.2 = part.2.saturating_add(1),
+                None if is_part(e) => {
+                    self.table_part = Some((pos_before, e.name().as_ref().to_vec(), 0));
+                }
+                None => {}
+            },
+            Event::Empty(e) if self.table_part.is_none() && is_part(e) => {
+                let raw = s.get(pos_before..pos_after).unwrap_or_default();
+                self.keep_table_part(e.name().as_ref(), raw, doc);
+            }
+            Event::End(_) => match self.table_part.take() {
+                Some((start, name, 0)) => {
+                    let raw = s.get(start..pos_after).unwrap_or_default();
+                    self.keep_table_part(&name, raw, doc);
+                }
+                Some((start, name, depth)) => {
+                    self.table_part = Some((start, name, depth.saturating_sub(1)));
+                }
+                None => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn keep_table_part(&mut self, name: &[u8], raw: &str, doc: &mut DocMut) {
+        match name {
+            b"w:tblPr" | b"w:tblGrid" if !super::paragraph::is_informative_table_part(raw) => {}
+            b"w:tblPr" => self.table_pr = Some(raw.to_string()),
+            b"w:tblGrid" => self.table_grid = Some(raw.to_string()),
+            b"w:trPr" => self.row_pr = Some(raw.to_string()),
+            _ => {
+                let kept = super::paragraph::kept_cell_props(raw);
+                if !kept.is_empty()
+                    && let Some(id) = self.cell.id.as_deref()
+                {
+                    doc.set_attr(id, super::paragraph::ATTR_TCPR, kept.as_str());
+                }
+            }
+        }
+    }
+
     /// Inside a `w:pPr`, collect the direct children the model does not represent, verbatim.
     /// Only observes: the regular handlers still see every event.
     fn observe_ppr(&mut self, ev: &Event, s: &str, pos_before: usize, pos_after: usize) {
@@ -585,7 +684,9 @@ impl BodyState {
                 let raw = s.get(pos_before..pos_after).unwrap_or_default();
                 if e.name().as_ref() == b"w:pStyle" {
                     self.ppr_style = Some(raw.to_string());
-                } else if let Some(kept) = super::paragraph::kept_child(e, raw) {
+                } else if let Some(kept) =
+                    super::paragraph::kept_child(e, raw, self.table_id.is_some())
+                {
                     self.ppr_kept.push_str(&kept);
                 }
             }
@@ -924,17 +1025,24 @@ impl BodyState {
                 self.table_id = Some(format!("t{}", self.table_seq));
                 self.trow = 0;
                 self.merges.clear();
+                self.table_pr = None;
+                self.table_grid = None;
             }
-            b"w:tr" if self.table_id.is_some() => self.tcol = 0,
+            b"w:tr" if self.table_id.is_some() => {
+                self.tcol = 0;
+                self.row_pr = None;
+            }
             b"w:tc" if self.table_id.is_some() => {
                 self.cell_paras = 0;
                 self.cell = CellState {
+                    id: None,
                     prev: self.prev.clone(),
                     span: 1,
                     merged: false,
                 };
                 if let Some(tid) = self.table_id.clone() {
                     let id = self.start_block(doc, "cell");
+                    self.cell.id = Some(id.clone());
                     doc.set_attr(&id, "table", tid.as_str());
                     if let (Ok(row), Ok(col)) = (i64::try_from(self.trow), i64::try_from(self.tcol))
                     {
@@ -1080,7 +1188,17 @@ impl BodyState {
                 self.in_ppr = false;
                 self.finalize_ppr(doc, reg);
             }
-            b"w:pPr" => self.in_ppr = false,
+            b"w:pPr" => {
+                self.in_ppr = false;
+                // A cell's (first) paragraph properties ride on the cell.
+                let kept = self.ppr_style.take().unwrap_or_default() + &self.ppr_kept;
+                if self.cell_paras == 1
+                    && !kept.is_empty()
+                    && let Some(id) = self.cur.as_deref()
+                {
+                    doc.set_attr(id, super::paragraph::ATTR_PPR, kept.as_str());
+                }
+            }
             b"w:numPr" => self.in_numpr = false,
             b"w:rPr" => {
                 if self.in_char_props {
@@ -1102,6 +1220,7 @@ impl BodyState {
             }
             b"w:r" => {
                 self.in_run = false;
+                self.keep_run_props();
                 let marks = std::mem::take(&mut self.run_marks);
                 if let Some(b) = self.cur.as_ref() {
                     for (name, value) in marks {
@@ -1132,6 +1251,18 @@ impl BodyState {
             b"w:p" => self.in_para = false,
             b"w:tc" if self.table_id.is_some() => {
                 self.cur = None;
+                // The table's and the row's properties ride on their first cell with a block.
+                if let Some(id) = self.cell.id.take() {
+                    for (key, value) in [
+                        (super::paragraph::ATTR_TBLPR, self.table_pr.take()),
+                        (super::paragraph::ATTR_TBLGRID, self.table_grid.take()),
+                        (super::paragraph::ATTR_TRPR, self.row_pr.take()),
+                    ] {
+                        if let Some(value) = value {
+                            doc.set_attr(&id, key, value.as_str());
+                        }
+                    }
+                }
                 // A cell that is not part of a vertical merge ends any merge in its column.
                 if !self.cell.merged {
                     self.merges.remove(&self.tcol);
@@ -1196,6 +1327,9 @@ impl BodyState {
         }
         for (b, idx, xml) in self.atoms {
             doc.add_mark(&b, idx, idx.saturating_add(1), MARK_DOCX_XML, xml.as_str());
+        }
+        for (b, start, end, kept) in self.rpr_marks {
+            doc.add_mark(&b, start, end, super::paragraph::MARK_RPR, kept.as_str());
         }
         // A comment missing its `w:commentRangeEnd` anchors at start, extending to block end.
         for (_docx_id, (cid, b, start)) in std::mem::take(&mut self.open_comments) {
@@ -1270,6 +1404,7 @@ pub(crate) fn parse_body(
         }
 
         st.observe_ppr(&ev, s, pos_before, pos_after);
+        st.observe_table(&ev, s, pos_before, pos_after, doc);
         match ev {
             Event::Start(e) => st.handle_start(&e, doc, pos_before, maps),
             Event::Empty(e) => {
