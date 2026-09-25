@@ -1,8 +1,14 @@
 name: Snapshot / kernel
 
-# Rebuilds Fedora's kernel with the Tilo config fragment. Pushes and pull
-# requests validate the build; version tags and manual dispatches publish the
-# resulting RPM image.
+# Rebuilds Fedora's kernel with the Tilo config fragment. Pull requests
+# validate the build; pushes to main, version tags and manual dispatches publish
+# the resulting RPM image and propose the kernel pin.
+#
+# snapshot-rpms.yml also calls this workflow with a freshly published RPMS_REF.
+# Such a run builds against that snapshot and proposes the RPM and kernel pins
+# in one pull request, because kernel provenance binds RPMS_REF. A push that
+# such a snapshot run will cover, or that only lands both pins, does not
+# rebuild here.
 
 on:
   push:
@@ -46,6 +52,12 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      rpms_ref:
+        description: Signed frozen RPM index to build against and pin with the kernels
+        required: true
+        type: string
 
 concurrency:
   group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
@@ -79,6 +91,47 @@ jobs:
       - name: Require an exact relevant PR diff before native work
         id: compare
         run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/build-kernel.yml
+
+  # Decide whether a push to main needs its own kernel publication.
+  rebuild:
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.rpms_ref }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      needed: ${{ steps.decide.outputs.needed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Skip pushes whose kernels another run provides
+        id: decide
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          needed=true
+          reason='kernel inputs changed'
+          if changed="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null)"; then
+            if [ "$(printf '%s\n' "$changed" | LC_ALL=C sort -u)" = "$(printf 'os/kernel-snapshot.env\nos/rpms-snapshot.env')" ]; then
+              needed=false
+              reason='this push only lands RPM and kernel pins built together'
+            elif ! grep -Fxq os/rpms-snapshot.env <<<"$changed" \
+                && GITHUB_OUTPUT='' python3 os/dev/rpm-snapshot-inputs.py --base "$BEFORE" --head "$GITHUB_SHA" \
+                  | grep -Fq '"changed": true'; then
+              needed=false
+              reason='snapshot-rpms.yml refreshes the RPM snapshot and rebuilds the kernels against it'
+            fi
+          else
+            reason='cannot compare this push with its predecessor'
+          fi
+          echo "::notice::kernel rebuild needed=$needed: $reason"
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
 
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') }}
@@ -114,12 +167,13 @@ jobs:
           }
 
   build-and-push-kernel:
-    needs: [signing-preflight, applicability]
+    needs: [rebuild, signing-preflight, applicability]
     if: >-
       ${{
         always() &&
         (github.event_name != 'pull_request' ||
          (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        (needs.rebuild.result == 'skipped' || needs.rebuild.outputs.needed == 'true') &&
         (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')
       }}
     strategy:
@@ -173,8 +227,17 @@ jobs:
       - name: Load BASE_REF (mirrored Fedora bootc base)
         run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
 
+      # A snapshot-rpms.yml call supplies the index it just published; every
+      # other run builds against the pinned one. Either is verified below.
       - name: Load RPMS_REF (frozen package snapshot)
-        run: grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
+        env:
+          CALLER_RPMS_REF: ${{ inputs.rpms_ref }}
+        run: |
+          if [ -n "$CALLER_RPMS_REF" ]; then
+            echo "RPMS_REF=$CALLER_RPMS_REF" >> "$GITHUB_ENV"
+          else
+            grep '^RPMS_REF=' os/rpms-snapshot.env >> "$GITHUB_ENV"
+          fi
 
       - name: Verify the signed RPM snapshot input
         run: |
@@ -621,6 +684,9 @@ jobs:
           path: refs
       - name: Propose both kernel pins atomically through protected main
         env:
+          # Set when snapshot-rpms.yml called this run. The kernels were built
+          # against that new index, so its pin lands in the same pull request.
+          CALLER_RPMS_REF: ${{ inputs.rpms_ref }}
           # The automatic job token pushes the branch. Neither it nor
           # REGISTRY_TOKEN may use the pull-request API (Forgejo answers 404),
           # so open the PR with RELEASE_TOKEN, which has repository scope; a PR
@@ -640,11 +706,30 @@ jobs:
             printf 'native kernel builds unexpectedly produced one shared manifest\n' >&2
             exit 1
           }
+          pins=(os/kernel-snapshot.env)
+          if [ -n "$CALLER_RPMS_REF" ]; then
+            [[ "$CALLER_RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]
+            pins=(os/rpms-snapshot.env os/kernel-snapshot.env)
+          fi
+          # Pin on the current main tip, and only while every input the pins
+          # were built from is still unchanged there.
           git fetch --no-tags origin main
           mapfile -t inputs < <(printf '%s' "$KERNEL_SNAPSHOT_INPUTS")
-          if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"; then
-            printf 'kernel inputs changed while native builds ran; refusing stale promotion\n' >&2
+          if ! git diff --quiet "$GITHUB_SHA..FETCH_HEAD" -- "${inputs[@]}"; then
+            printf 'kernel inputs changed during promotion; refusing stale PR\n' >&2
             exit 1
+          fi
+          if [ -n "$CALLER_RPMS_REF" ] && ! python3 os/dev/rpm-snapshot-inputs.py \
+              --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent; then
+            printf 'RPM snapshot inputs changed during promotion; refusing stale PR\n' >&2
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+          if [ -n "$CALLER_RPMS_REF" ]; then
+            printf '%s\n' \
+              '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
+              '# Updated by the snapshot-rpms workflow when the package set changes.' \
+              "RPMS_REF=$CALLER_RPMS_REF" > os/rpms-snapshot.env
           fi
           printf '%s\n' \
             '# Per-architecture Tilo kernel RPM repositories, signed and pinned by digest.' \
@@ -654,23 +739,33 @@ jobs:
             > os/kernel-snapshot.env
           git config user.name 'Tilo CI'
           git config user.email 'ci@tilo.invalid'
-          git add os/kernel-snapshot.env
+          git add "${pins[@]}"
           if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'build(os): refresh native kernel snapshots'
-          git fetch --no-tags origin main
-          git rebase origin/main
-          if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"; then
-            printf 'kernel inputs changed during promotion; refusing stale PR\n' >&2
+          snapshot_digest="$(cat "${pins[@]}" | sha256sum | awk '{print $1}')"
+          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
+          if [ -n "$CALLER_RPMS_REF" ]; then
+            git commit -m 'build(os): refresh the RPM snapshot and its native kernels'
+            branch="automation/rpm-kernel-snapshot-${snapshot_digest:0:16}"
+            snapshot=(kernel --rpms-ref "$CALLER_RPMS_REF")
+          else
+            git commit -m 'build(os): refresh native kernel snapshots'
+            branch="automation/kernel-snapshot-${snapshot_digest:0:16}"
+            snapshot=(kernel)
+          fi
+          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
+          if ! git push --force-with-lease="refs/heads/$branch:$remote_tip" \
+              origin "HEAD:refs/heads/$branch" 2> push.log; then
+            cat push.log >&2
+            if grep -Fq 'stale info' push.log; then
+              echo "::error::$branch moved on the remote during promotion (lease lost); rerun to adopt it"
+            else
+              echo "::error::Forgejo refused the snapshot pin push to $branch (see the git output above)"
+            fi
             exit 1
           fi
-          snapshot_digest="$(sha256sum os/kernel-snapshot.env | awk '{print $1}')"
-          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
-          branch="automation/kernel-snapshot-${snapshot_digest:0:16}"
-          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
-          git push --force-with-lease="refs/heads/$branch:$remote_tip" \
-            origin "HEAD:refs/heads/$branch"
+          cat push.log >&2
           python3 os/dev/open-snapshot-pr.py \
             --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
             --branch "$branch" --snapshot-digest "$snapshot_digest" \
-            kernel --x86-ref "$KERNEL_RPMS_X86_64_REF" \
-            --arm-ref "$KERNEL_RPMS_AARCH64_REF"
+            "${snapshot[@]}" --x86-ref "$KERNEL_RPMS_X86_64_REF" \
+            --arm-ref "$KERNEL_RPMS_AARCH64_REF" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -155,10 +155,11 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   unless all of those claims match the current build inputs.
   **When you add/remove/rename a package in `os/Containerfile`,** merging it
   to `main` re-runs `snapshot-rpms` (or dispatch it by hand). Once the new
-  index is signed and verified, the workflow pushes an
-  `automation/rpm-snapshot-<digest16>` branch that updates
-  `os/rpms-snapshot.env` and opens its pull request; merge that PR once its
-  required checks pass. Until then the build fails
+  index is signed and verified, the workflow calls `build-kernel.yml` with it,
+  and that run pushes one `automation/rpm-kernel-snapshot-<digest16>` branch
+  updating both `os/rpms-snapshot.env` and `os/kernel-snapshot.env`, then opens
+  its pull request; merge that PR once its required checks pass. Until then
+  the build fails
   `No match for argument: <pkg>`. The package list is auto-derived from
   `os/Containerfile`, so there is no separate list to maintain.
   Before publishing, the snapshot replays the image's erase of base packages it
@@ -171,14 +172,16 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   source-input race checks pass. Promotion creates a deterministic,
   snapshot-bound automation branch and pull request rather than bypassing
   protected `main`; normal required checks and merge policy remain
-  authoritative. Kernel provenance binds `RPMS_REF`, so every merged RPM pin
-  triggers a kernel rebuild, and OS builds verify only after that kernel pin
-  merges too.
-- **Pin promotion credentials.** Both snapshot workflows push their automation
-  branch with the checkout credential (`REGISTRY_TOKEN` for RPMs, the job
-  token for kernels), but open the pull request through
+  authoritative. Kernel provenance binds `RPMS_REF`, so a new RPM index never
+  lands alone: `snapshot-rpms` rebuilds the kernels against it through
+  `build-kernel.yml` and both pins merge in one pull request, keeping OS builds
+  verifiable at every `main` commit. Kernel CI skips its own rebuild for a push
+  that only lands those pins, and for a push that `snapshot-rpms` will answer
+  with a new index and kernels built against it.
+- **Pin promotion credentials.** Pin promotion pushes its automation branch
+  with the job token but opens the pull request through
   `os/dev/open-snapshot-pr.py` with protected secret `RELEASE_TOKEN`. Forgejo
-  answers the pull-request API with 404 for both push credentials, while
+  answers the pull-request API with 404 for the push credential, while
   `RELEASE_TOKEN` has repository scope. If the script reports that the token
   cannot read pull requests, check that `RELEASE_TOKEN` exists and still grants
   repository access; the branch is already pushed, so a PR can be opened from
@@ -202,7 +205,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   published — the mirror adds durability, not a second artifact to trust.
   **To refresh the base:** edit `BASE_SOURCE` if the Fedora release is
   changing, dispatch `mirror-base`, commit the `BASE_REF` it prints, then
-  merge the `snapshot-rpms` pin PR that follows — the frozen package set is
+  merge the RPM and kernel pin PR that follows — the frozen package set is
   resolved against the base and has to follow it. The mirror job refuses to
   report a reference that is not a multi-arch index or whose `ostree.linux`
   does not match the Fedora release `BASE_SOURCE` claims, so a silent major

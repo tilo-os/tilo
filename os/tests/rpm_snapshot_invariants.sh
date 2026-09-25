@@ -124,27 +124,52 @@ has "$workflow" 'driver = "vfs"' \
   'snapshot promotion isolates Podman storage from the runner overlay'
 has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
   'snapshot promotion preserves web-identity token cleanup when extending its exit trap'
-has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' \
-  'snapshot pin updates reject build-input changes while allowing unrelated commits'
-has "$workflow" 'git checkout --detach FETCH_HEAD' \
-  'snapshot promotion applies its pin on the current branch tip'
-# Protected main refuses direct pushes; the pin lands through a digest-named
-# automation branch. REGISTRY_TOKEN pushes it but gets 404 from the
+# Kernel provenance binds RPMS_REF, so an RPM pin is only usable together with
+# kernels built against it. The snapshot workflow therefore opens no pull
+# request itself: it hands the published index to build-kernel.yml, which
+# proposes both pins in one pull request.
+kernel_workflow="$repo/.forgejo/workflows/build-kernel.yml"
+kernels_job="$(sed -n '/^  kernels:/,/^  [a-z-]*:$/p' "$workflow")"
+if grep -Fq 'needs: promote-snapshot' <<<"$kernels_job" \
+   && grep -Fq 'uses: ./.forgejo/workflows/build-kernel.yml' <<<"$kernels_job" \
+   && grep -Fq 'rpms_ref: ${{ needs.promote-snapshot.outputs.rpms-ref }}' <<<"$kernels_job" \
+   && grep -Fq 'secrets: inherit' <<<"$kernels_job" \
+   && ! grep -Fq 'runs-on:' <<<"$kernels_job" \
+   && grep -Fq 'rpms-ref: ${{ steps.attest.outputs.ref }}' "$workflow" \
+   && grep -Fq '  workflow_call:' "$kernel_workflow" \
+   && grep -Fq 'CALLER_RPMS_REF: ${{ inputs.rpms_ref }}' "$kernel_workflow" \
+   && ! grep -Eq 'open-snapshot-pr\.py|os/rpms-snapshot\.env' <<<"$(sed -n '/^jobs:/,$p' "$workflow")"; then
+  ok 'the RPM snapshot is pinned only together with kernels rebuilt against it'
+else
+  bad 'an RPM snapshot pin can land without its matching kernel pin'
+fi
+promotion_step="$(sed -n '/- name: Propose both kernel pins atomically through protected main/,$p' "$kernel_workflow")"
+has "$kernel_workflow" 'python3 os/dev/rpm-snapshot-inputs.py \' \
+  'combined pin promotion rejects RPM snapshot input changes during the kernel builds'
+if grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' <<<"$promotion_step" \
+   && grep -Fq 'git checkout --detach FETCH_HEAD' <<<"$promotion_step" \
+   && ! grep -Fq 'git rebase' <<<"$promotion_step"; then
+  ok 'pin promotion applies its pins on the current main tip'
+else
+  bad 'pin promotion can publish pins built from stale inputs'
+fi
+# Protected main refuses direct pushes; the pins land through a digest-named
+# automation branch. The job token pushes it but gets 404 from the
 # pull-request API, so RELEASE_TOKEN opens the PR (whose checks then run).
-promotion_step="$(sed -n '/- name: Propose the frozen snapshot pin through protected main/,/^      - name: /p' "$workflow")"
-if grep -Fq 'branch="automation/rpm-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
+if grep -Fq 'branch="automation/rpm-kernel-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
+   && grep -Fq 'pins=(os/rpms-snapshot.env os/kernel-snapshot.env)' <<<"$promotion_step" \
+   && grep -Fq 'snapshot=(kernel --rpms-ref "$CALLER_RPMS_REF")' <<<"$promotion_step" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' <<<"$promotion_step" \
    && grep -Fq 'python3 os/dev/open-snapshot-pr.py' <<<"$promotion_step" \
-   && grep -Fq 'rpms --rpms-ref "$ref"' <<<"$promotion_step" \
    && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' <<<"$promotion_step" \
    && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' <<<"$promotion_step" \
-   && ! grep -Eq 'git push [^|]*HEAD:(main|\$\{?GITHUB_REF_NAME)' "$workflow"; then
-  ok 'snapshot pin lands through a RELEASE_TOKEN PR, never a direct push to main'
+   && ! grep -Eq 'git push [^|]*HEAD:(main|\$\{?GITHUB_REF_NAME)' "$workflow" "$kernel_workflow"; then
+  ok 'snapshot pins land through a RELEASE_TOKEN PR, never a direct push to main'
 else
   bad 'snapshot pin promotion pushes to main or opens its PR without RELEASE_TOKEN'
 fi
 if grep -Fq 'Forgejo refused the snapshot pin push to $branch' <<<"$promotion_step" \
-   && ! grep -Fq 'branch races' "$workflow"; then
+   && ! grep -Fq 'branch races' "$kernel_workflow"; then
   ok 'a refused snapshot pin push is reported as refused'
 else
   bad 'a refused snapshot pin push can be misreported'
