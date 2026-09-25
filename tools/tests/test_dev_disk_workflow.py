@@ -148,19 +148,21 @@ class OsReleaseRequestsDevDisksTests(unittest.TestCase):
         self.request = job(OS_RELEASE.read_text(encoding="utf-8"), "dispatch-dev-disk")
 
     def test_published_release_requests_disks_for_its_exact_digest(self) -> None:
-        self.assertIn("needs: [plan, build-and-push, promote-multiarch]", self.request)
+        self.assertIn("needs: [plan, promote-multiarch, promote-integration]", self.request)
         self.assertIn("needs.promote-multiarch.result == 'success'", self.request)
         self.assertIn("name: tilo-os-release-index", self.request)
         self.assertIn("actions/workflows/dev-disk.yml/dispatches", self.request)
         self.assertIn("source_revision:$source,base_image:$base,tag:$tag", self.request)
+        self.assertIn('architectures:"x86_64 aarch64",formats:"qcow2"', self.request)
 
     def test_unpromoted_main_builds_request_disks_from_their_dev_trust_image(self) -> None:
-        self.assertIn("github.ref == 'refs/heads/main' && needs.build-and-push.result != 'skipped'", self.request)
+        self.assertIn("needs.promote-integration.result == 'success'", self.request)
         self.assertIn("needs.plan.outputs.skip != 'true'", self.request)
-        self.assertIn('ref="code.sandbox.example/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64"', self.request)
-        self.assertIn('image="code.sandbox.example/qos/tilo-ci@$digest"', self.request)
+        self.assertIn("name: tilo-os-integration-index", self.request)
+        self.assertIn("integration-index/tilo-os-integration-index.json", self.request)
+        self.assertIn("select(.sourceRevision == $source) | .image", self.request)
+        self.assertIn('^code\\.podesta\\.ai/qos/tilo-ci@sha256:[0-9a-f]{64}$', self.request)
         self.assertIn('tag="main-${GITHUB_SHA:0:7}-ci"', self.request)
-        self.assertIn('[[ $revision == "$GITHUB_SHA" ]]', self.request)
         source = OS_RELEASE.read_text(encoding="utf-8")
         push = step(source, "Publish the dev-trust integration image")
         self.assertIn("github.ref == 'refs/heads/main'", push)
