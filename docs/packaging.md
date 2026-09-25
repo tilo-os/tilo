@@ -63,8 +63,8 @@ nix build .#tilo-session
 
 All FHS packages share `dist/stage-payload.sh`; `dist/verify-payload.sh` asserts
 the installed paths and the session/portal wiring. Release builds exclude the
-test-control socket and ffmpeg-backed HDR decoding so the login-session binary
-does not acquire a distribution-specific libavcodec ABI.
+test-control socket. Video encode and decode go through the distribution's
+GStreamer (a stable 1.x ABI), which picks hardware codecs at runtime.
 
 The package version has one source of truth: `dist/VERSION`. Before tagging,
 update it, then create a matching `desktop-vX.Y.Z` tag. Debian and Ubuntu receive
