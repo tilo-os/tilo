@@ -1262,10 +1262,9 @@ mod durable_app_id_tests {
     use super::*;
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn authenticated_launch_id_preserves_the_durable_route_separately() {
-        let previous = std::env::var_os("TILO_DURABLE_APP_ID");
-        unsafe { std::env::set_var("TILO_DURABLE_APP_ID", "dev.qos.untrusted-env") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_DURABLE_APP_ID", "dev.qos.untrusted-env");
         let mut argv = vec![
             "--setenv".into(),
             "TILO_PACKAGE_ID".into(),
@@ -1274,12 +1273,7 @@ mod durable_app_id_tests {
         ];
 
         splice_durable_app_id(&mut argv, "dev.qos.notes").unwrap();
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var("TILO_DURABLE_APP_ID", value),
-                None => std::env::remove_var("TILO_DURABLE_APP_ID"),
-            }
-        }
+        drop(env);
 
         let values: Vec<&str> = argv
             .windows(3)
