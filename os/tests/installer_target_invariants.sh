@@ -195,18 +195,6 @@ else
   bad "live-medium disk guard still relies on path-string equality"
 fi
 
-if grep -Fq -- '--internal-source)' "$backend" \
-   && grep -Fq 'internal source is not on the reviewed target disk' "$backend" \
-   && grep -Fq 'protected source partition is absent from the reviewed partition map' "$backend" \
-   && grep -Fq 'reviewed install extent overlaps a protected internal-source partition' "$backend" \
-   && grep -Fq 'a critical live mount is outside the protected internal source' "$backend" \
-   && grep -Fq 'an unreviewed target-disk partition is mounted' "$backend" \
-   && grep -Fq '[ "$TARGET_MAJ_MIN" != "$LIVE_MAJ_MIN" ] || [ "$INTERNAL_SOURCE" -eq 1 ]' "$backend"; then
-  ok "same-disk installation requires exact protected-source identities and disjoint reviewed extents"
-else
-  bad "internal-source mode can weaken the ordinary live-disk refusal or overwrite staging"
-fi
-
 if grep -Fq -- '--confirm-erase)' "$backend" \
    && grep -Fq '[ "$CONFIRM_ERASE" = "$DISK" ]' "$backend" \
    && grep -Fq 'whole-disk install requires --confirm-erase matching --disk' "$backend" \

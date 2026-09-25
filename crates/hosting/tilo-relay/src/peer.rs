@@ -15,8 +15,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::AuthenticatedPeer;
+use crate::frame::FrameReader;
 use crate::store::StoreError;
-use crate::transport::{Envelope, FrameReader};
+use crate::transport::Envelope;
 use crate::workspace::{SharedWorkspace, Subscriber};
 
 /// Maximum live fan-out backlog per connected peer. Durable deltas move to
@@ -28,7 +29,7 @@ const PEER_OUTBOUND_CAPACITY: usize = 32;
 pub enum PeerError {
     /// Reader error.
     #[error("frame: {0}")]
-    Frame(#[from] crate::transport::FrameError),
+    Frame(#[from] crate::frame::FrameError),
     /// Writer error.
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -61,17 +62,10 @@ pub struct WorkspaceAutobind {
     pub state_root: std::path::PathBuf,
 }
 
-/// Sequence-number source for enqueued deltas — a monotonic clock
-/// so filenames sort in delivery order across restarts.
-pub fn now_ns() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        // `u64` nanoseconds since the epoch doesn't overflow until the
-        // year 2554; clamp rather than panic on the (unreachable in
-        // practice) far side of that.
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-}
+/// Sequence-number source for enqueued deltas — wall-clock nanoseconds,
+/// so filenames sort in delivery order across restarts. The same clock the
+/// handshake checks certificates against.
+pub use crate::auth::now_ns;
 
 /// Relay-wide state a peer session needs for its whole lifetime — the
 /// workspace registry, autobind policy, live revocation list, own
@@ -193,7 +187,7 @@ where
                 outbound = rx.recv() => {
                     match outbound {
                         Some(env) => {
-                            let bytes = crate::transport::encode(&env)?;
+                            let bytes = crate::frame::encode(&env)?;
                             write.write_all(&bytes).await?;
                         }
                         None => break,
@@ -307,14 +301,14 @@ where
     )
     .await?;
     for envelope in replay {
-        let bytes = crate::transport::encode(&envelope)?;
+        let bytes = crate::frame::encode(&envelope)?;
         write.write_all(&bytes).await?;
     }
     for path in replay_cleanup {
         std::fs::remove_file(path)?;
     }
     if let Some(direct_reply) = direct_reply {
-        let bytes = crate::transport::encode(&direct_reply)?;
+        let bytes = crate::frame::encode(&direct_reply)?;
         write.write_all(&bytes).await?;
     }
     Ok(())
@@ -461,7 +455,7 @@ fn load_retained_replay(
             );
             continue;
         };
-        match crate::transport::decode(payload) {
+        match crate::frame::decode(payload) {
             Ok(envelope) => {
                 replay.push(envelope);
                 retained_count = retained_count.saturating_add(1);
@@ -506,7 +500,7 @@ fn load_pending_replay(
             );
             continue;
         };
-        match crate::transport::decode(payload) {
+        match crate::frame::decode(payload) {
             Ok(envelope) => {
                 replay.push(envelope);
                 replay_cleanup.push(entry.path);

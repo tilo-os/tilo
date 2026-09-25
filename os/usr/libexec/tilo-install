@@ -26,12 +26,11 @@
 #                                     append a dedicated ESP and root inside one
 #                                     exact unallocated GPT extent; never resize,
 #                                     move, or delete an existing partition
-#     --internal-source --internal-source-root-partuuid UUID
-#       --internal-source-root-size-bytes N --internal-source-efi-partuuid UUID
-#       --internal-source-efi-size-bytes N
-#                                     permit guided installation from exact
-#                                     protected staging partitions on the target
-#                                     disk; ordinary live media remain refused
+#     --internal-handoff FILE         USB-free install: the disk holding the
+#                                     running (staged) installer may be the
+#                                     target, but only for --guided-alongside
+#                                     into the staged target extent. Every fact
+#                                     is re-derived by tilo-staging-handoff.
 #     --confirm-erase <dev>           required for whole-disk installs and must
 #                                     exactly match --disk
 #     --confirm-root <partition>      required for alongside installs and must
@@ -90,6 +89,7 @@ LOCAL_IMG="localhost/bootc"
 # The block-level half of an encrypted install (partitioning, LUKS2, factor
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
+STAGING_HANDOFF="${TILO_STAGING_HANDOFF:-/usr/libexec/tilo-staging-handoff}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
 EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artifacts}"
 BOOT_MENU="${TILO_INSTALL_BOOT_MENU:-/usr/libexec/tilo-install-boot-menu}"
@@ -263,12 +263,8 @@ EXPECT_LOGICAL_SECTOR_SIZE=""
 NEW_EFI_PARTUUID=""
 NEW_ROOT_PARTUUID=""
 CONFIRM_FREE_SPACE=""
+INTERNAL_HANDOFF=""
 EXPECTED_PARTITIONS=()
-INTERNAL_SOURCE=0
-EXPECT_SOURCE_ROOT_PARTUUID=""
-EXPECT_SOURCE_ROOT_SIZE_BYTES=""
-EXPECT_SOURCE_EFI_PARTUUID=""
-EXPECT_SOURCE_EFI_SIZE_BYTES=""
 PIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -310,14 +306,10 @@ while [ $# -gt 0 ]; do
     --new-efi-partuuid) NEW_EFI_PARTUUID="${2:-}"; shift 2 ;;
     --new-root-partuuid) NEW_ROOT_PARTUUID="${2:-}"; shift 2 ;;
     --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
-    --internal-source) INTERNAL_SOURCE=1; shift ;;
-    --internal-source-root-partuuid) EXPECT_SOURCE_ROOT_PARTUUID="${2:-}"; shift 2 ;;
-    --internal-source-root-size-bytes) EXPECT_SOURCE_ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
-    --internal-source-efi-partuuid) EXPECT_SOURCE_EFI_PARTUUID="${2:-}"; shift 2 ;;
-    --internal-source-efi-size-bytes) EXPECT_SOURCE_EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
     --confirm-free-space) CONFIRM_FREE_SPACE="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
+    --internal-handoff) INTERNAL_HANDOFF="${2:-}"; shift 2 ;;
+    -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -335,21 +327,6 @@ esac
   || die "missing stable disk identity (expected WWN or serial)"
 if printf '%s%s' "$EXPECT_DISK_WWN" "$EXPECT_DISK_SERIAL" | LC_ALL=C grep -q '[[:cntrl:]]'; then
   die "expected disk identity contains control characters"
-fi
-
-if [ "$INTERNAL_SOURCE" -eq 1 ]; then
-  [ "$GUIDED_ALONGSIDE" -eq 1 ] \
-    || die "--internal-source requires --guided-alongside"
-  [[ "$EXPECT_SOURCE_ROOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-    || die "missing or invalid --internal-source-root-partuuid"
-  [[ "$EXPECT_SOURCE_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
-    || die "missing or invalid --internal-source-efi-partuuid"
-  for value in EXPECT_SOURCE_ROOT_SIZE_BYTES EXPECT_SOURCE_EFI_SIZE_BYTES; do
-    case "${!value}" in ''|*[!0-9]*|0) die "missing or invalid internal-source value $value" ;; esac
-  done
-else
-  [ -z "$EXPECT_SOURCE_ROOT_PARTUUID$EXPECT_SOURCE_ROOT_SIZE_BYTES$EXPECT_SOURCE_EFI_PARTUUID$EXPECT_SOURCE_EFI_SIZE_BYTES" ] \
-    || die "internal-source identity arguments require --internal-source"
 fi
 
 if [ "$ALONGSIDE" -eq 1 ]; then
@@ -394,6 +371,18 @@ else
     || die "expected partition identity arguments require --alongside"
   [ "$GUIDED_ALONGSIDE" -eq 0 ] && [ -z "$FREE_START_BYTES$FREE_SIZE_BYTES$EFI_START_BYTES$EFI_SIZE_BYTES$ROOT_START_BYTES$ROOT_SIZE_BYTES$EXPECT_DISK_PTUUID$EXPECT_LOGICAL_SECTOR_SIZE$NEW_EFI_PARTUUID$NEW_ROOT_PARTUUID$CONFIRM_FREE_SPACE" ] \
     && [ "${#EXPECTED_PARTITIONS[@]}" -eq 0 ] || die "guided partition arguments require --guided-alongside"
+fi
+
+# A staged (USB-free) installer lives on the disk it installs to. The only
+# shape that can be safe there is appending Tilo inside the one extent Imager
+# left free: erasing the disk or formatting a prepared partition could destroy
+# the running installer or the retained OS, so both stay refused.
+if [ -n "$INTERNAL_HANDOFF" ]; then
+  [ "$GUIDED_ALONGSIDE" -eq 1 ] \
+    || die "--internal-handoff accepts only --guided-alongside; whole-disk erase and prepared partitions are refused on the disk that holds the running installer"
+  case "$INTERNAL_HANDOFF" in /*) : ;; *) die "--internal-handoff must be an absolute path" ;; esac
+  [ -f "$INTERNAL_HANDOFF" ] && [ ! -L "$INTERNAL_HANDOFF" ] \
+    || die "--internal-handoff is not a regular file"
 fi
 
 # Use the portable Linux login-name subset accepted consistently by useradd
@@ -451,6 +440,9 @@ fi
 case "$LOCALE_VAL" in
   *[!A-Za-z0-9_.@-]*) die "invalid --locale '$LOCALE_VAL'" ;;
 esac
+[ -f "$LOCALE_CATALOG" ] || die "installer locale catalog is missing"
+grep -Fxq -- "$LOCALE_VAL" "$LOCALE_CATALOG" \
+  || die "unsupported --locale '$LOCALE_VAL'"
 
 # Validate timezone shape if provided (defends the symlink target below).
 if [ -n "$TIMEZONE_VAL" ]; then
@@ -545,7 +537,6 @@ validate_disk_identity
 # dm-crypt and aliases to their whole-disk ancestor. Fail closed if the live
 # medium cannot be identified; guessing here can erase the running installer.
 LIVE_MAJ_MIN=""
-LIVE_PARTITIONS=()
 while read -r SOURCE MOUNTPOINT; do
   SOURCE="${SOURCE%%\[*}"
   [ -b "$SOURCE" ] || continue
@@ -563,73 +554,33 @@ while read -r SOURCE MOUNTPOINT; do
     die "critical live mounts resolve to more than one physical disk"
   fi
   LIVE_MAJ_MIN="$OBSERVED_LIVE_MAJ_MIN"
-  LIVE_PARTITION="$(lsblk -srpno NAME,TYPE "$SOURCE" 2>/dev/null | awk '$2 == "part" { print $1; exit }')"
-  [ -z "$LIVE_PARTITION" ] || LIVE_PARTITIONS+=("$(readlink -f "$LIVE_PARTITION")")
 done < <(findmnt -rn -o SOURCE,TARGET 2>/dev/null)
 [ -n "$LIVE_MAJ_MIN" ] \
   || die "could not resolve the live medium's physical disk; refusing a destructive install"
-[ "$TARGET_MAJ_MIN" != "$LIVE_MAJ_MIN" ] || [ "$INTERNAL_SOURCE" -eq 1 ] \
-  || die "$DISK is the live medium's own disk — refusing to install onto it"
-
-partition_by_uuid() {
-  local expected="${1,,}" path type identity
-  while read -r path type identity; do
-    [ "$type" = part ] || continue
-    if [ "${identity,,}" = "$expected" ]; then
-      printf '%s\n' "$(readlink -f "$path")"
-      return 0
-    fi
-  done < <(lsblk -rpn -o NAME,TYPE,PARTUUID "$DISK" 2>/dev/null)
-  return 1
-}
-
-expected_partition_is_bound() {
-  local partition="$1" expected_uuid="$2" expected_size="$3"
-  local start_sectors start_bytes expected observed
-  start_sectors="$(lsblk -dno START "$partition" 2>/dev/null | tr -d '[:space:]')"
-  case "$start_sectors" in ''|*[!0-9]*) die "could not read protected source partition start" ;; esac
-  start_bytes=$((start_sectors * 512))
-  expected="${expected_uuid,,}:$start_bytes:$expected_size"
-  for observed in "${EXPECTED_PARTITIONS[@]}"; do
-    [ "${observed,,}" != "$expected" ] || return 0
-  done
-  die "protected source partition is absent from the reviewed partition map"
-}
-
-ranges_disjoint() {
-  local a_start="$1" a_size="$2" b_start="$3" b_size="$4"
-  [ $((a_start + a_size)) -le "$b_start" ] || [ $((b_start + b_size)) -le "$a_start" ]
-}
-
-if [ "$INTERNAL_SOURCE" -eq 1 ]; then
-  [ "$TARGET_MAJ_MIN" = "$LIVE_MAJ_MIN" ] \
-    || die "internal source is not on the reviewed target disk"
-  SOURCE_ROOT_PARTITION="$(partition_by_uuid "$EXPECT_SOURCE_ROOT_PARTUUID" || true)"
-  SOURCE_EFI_PARTITION="$(partition_by_uuid "$EXPECT_SOURCE_EFI_PARTUUID" || true)"
-  [ -n "$SOURCE_ROOT_PARTITION" ] && [ -n "$SOURCE_EFI_PARTITION" ] \
-    || die "protected internal-source partitions are missing"
-  [ "$SOURCE_ROOT_PARTITION" != "$SOURCE_EFI_PARTITION" ] \
-    || die "internal source root and EFI identities are not distinct"
-  validate_partition_identity "$SOURCE_ROOT_PARTITION" "$EXPECT_SOURCE_ROOT_PARTUUID" \
-    "$EXPECT_SOURCE_ROOT_SIZE_BYTES" "internal source root"
-  validate_partition_identity "$SOURCE_EFI_PARTITION" "$EXPECT_SOURCE_EFI_PARTUUID" \
-    "$EXPECT_SOURCE_EFI_SIZE_BYTES" "internal source EFI"
-  expected_partition_is_bound "$SOURCE_ROOT_PARTITION" "$EXPECT_SOURCE_ROOT_PARTUUID" \
-    "$EXPECT_SOURCE_ROOT_SIZE_BYTES"
-  expected_partition_is_bound "$SOURCE_EFI_PARTITION" "$EXPECT_SOURCE_EFI_PARTUUID" \
-    "$EXPECT_SOURCE_EFI_SIZE_BYTES"
-  for source_partition in "$SOURCE_ROOT_PARTITION" "$SOURCE_EFI_PARTITION"; do
-    source_start_sectors="$(lsblk -dno START "$source_partition" | tr -d '[:space:]')"
-    source_start_bytes=$((source_start_sectors * 512))
-    source_size="$(blockdev --getsize64 "$source_partition")"
-    ranges_disjoint "$source_start_bytes" "$source_size" "$FREE_START_BYTES" "$FREE_SIZE_BYTES" \
-      || die "reviewed install extent overlaps a protected internal-source partition"
-  done
-  [ "${#LIVE_PARTITIONS[@]}" -gt 0 ] || die "no protected live partition was observed"
-  for live_partition in "${LIVE_PARTITIONS[@]}"; do
-    [ "$live_partition" = "$SOURCE_ROOT_PARTITION" ] || [ "$live_partition" = "$SOURCE_EFI_PARTITION" ] \
-      || die "a critical live mount is outside the protected internal source"
-  done
+# The UI's handoff copy is only a hint. tilo-staging-handoff re-reads the one
+# on the ESP the firmware actually booted (LoaderDevicePartUUID) and requires
+# that the live root and ESP are exactly the staged partitions, that the disk
+# GUID and size match, and that the reviewed extent is exactly the staged
+# target extent, still unallocated, ending where staging begins.
+INTERNAL_MODE=0
+if [ "$TARGET_MAJ_MIN" = "$LIVE_MAJ_MIN" ]; then
+  [ -n "$INTERNAL_HANDOFF" ] \
+    || die "$DISK is the live medium's own disk — refusing to install onto it"
+  INTERNAL_FACTS="$("$STAGING_HANDOFF" check-install --handoff "$INTERNAL_HANDOFF" \
+    --disk "$DISK" --mode guided \
+    --free-start-bytes "$FREE_START_BYTES" --free-size-bytes "$FREE_SIZE_BYTES" \
+    --efi-start-bytes "$EFI_START_BYTES" --efi-size-bytes "$EFI_SIZE_BYTES" \
+    --root-start-bytes "$ROOT_START_BYTES" --root-size-bytes "$ROOT_SIZE_BYTES" \
+    --sector-size "$EXPECT_LOGICAL_SECTOR_SIZE")" \
+    || die "$DISK holds the running installer and the staged plan could not be verified — refusing to install onto it"
+  INTERNAL_OWNED_BOOT_ENTRY="$(printf '%s\n' "$INTERNAL_FACTS" | sed -n 's/^INTERNAL_OWNED_BOOT_ENTRY=//p')"
+  INTERNAL_HOST_OS="$(printf '%s\n' "$INTERNAL_FACTS" | sed -n 's/^INTERNAL_HOST_OS=//p')"
+  [[ "$INTERNAL_OWNED_BOOT_ENTRY" =~ ^[0-9A-F]{4}$ ]] && [ -n "$INTERNAL_HOST_OS" ] \
+    || die "staged plan verification did not report its facts"
+  INTERNAL_MODE=1
+  log "  staged install: $DISK also holds the running installer; the existing $INTERNAL_HOST_OS system stays untouched"
+elif [ -n "$INTERNAL_HANDOFF" ]; then
+  die "--internal-handoff requires the disk that holds the staged installer"
 fi
 
 validate_alongside() {
@@ -741,6 +692,9 @@ if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
   )
   [ -z "$EXPECT_DISK_WWN" ] || GUIDED_ARGS+=(--expect-disk-wwn "$EXPECT_DISK_WWN")
   [ -z "$EXPECT_DISK_SERIAL" ] || GUIDED_ARGS+=(--expect-disk-serial "$EXPECT_DISK_SERIAL")
+  # The staged installer's own partitions stay mounted, so the kernel cannot
+  # reread the whole table; the helper registers the new partitions instead.
+  [ "$INTERNAL_MODE" -eq 0 ] || GUIDED_ARGS+=(--in-use-disk)
   for expected_partition in "${EXPECTED_PARTITIONS[@]}"; do
     GUIDED_ARGS+=(--expect-partition "$expected_partition")
   done
@@ -781,22 +735,14 @@ if [ "$ALONGSIDE" -eq 1 ]; then
   trap restore_firmware_boot_state EXIT
 fi
 
-# Refuse mounted targets. Internal-source mode permits only the two exact
-# protected staging partitions that the installer is currently running from.
-if [ "$INTERNAL_SOURCE" -eq 0 ]; then
-  if lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
-    die "$DISK (or one of its partitions) is currently mounted — unmount it first"
-  fi
-else
-  while read -r mounted_source; do
-    [ -b "$mounted_source" ] || continue
-    mounted_disk="$(lsblk -srpno NAME,TYPE "$mounted_source" 2>/dev/null | awk '$2 == "disk" { print $1; exit }')"
-    [ "$(readlink -f "$mounted_disk")" = "$DISK" ] || continue
-    mounted_partition="$(lsblk -srpno NAME,TYPE "$mounted_source" 2>/dev/null | awk '$2 == "part" { print $1; exit }')"
-    mounted_partition="$(readlink -f "$mounted_partition")"
-    [ "$mounted_partition" = "$SOURCE_ROOT_PARTITION" ] || [ "$mounted_partition" = "$SOURCE_EFI_PARTITION" ] \
-      || die "an unreviewed target-disk partition is mounted"
-  done < <(findmnt -rn -o SOURCE 2>/dev/null | sed 's/\[.*$//')
+# Refuse if the target disk (or any of its partitions) is currently mounted.
+# A staged install necessarily runs from two partitions of this disk; nothing
+# else on it may be in use.
+if [ "$INTERNAL_MODE" -eq 1 ]; then
+  "$STAGING_HANDOFF" check-mounts --handoff "$INTERNAL_HANDOFF" --disk "$DISK" \
+    || die "$DISK has a mounted partition besides the staged installer — unmount it first"
+elif lsblk -nro MOUNTPOINT "$DISK" 2>/dev/null | grep -q .; then
+  die "$DISK (or one of its partitions) is currently mounted — unmount it first"
 fi
 
 # --- read the password (now that we are root) --------------------------------
@@ -1040,6 +986,16 @@ else
   )
 fi
 [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
+if [ "$INTERNAL_MODE" -eq 1 ]; then
+  # Chosen while the new ESP is still mounted; used only when bootc did not
+  # leave a firmware entry for it and one has to be created for BootNext.
+  case "$(uname -m)" in aarch64|arm64) EFI_SUFFIX=aa64; EFI_FALLBACK=BOOTAA64.EFI ;; *) EFI_SUFFIX=x64; EFI_FALLBACK=BOOTX64.EFI ;; esac
+  if [ -f "$BOOT_ESP_ROOT/EFI/systemd/systemd-boot$EFI_SUFFIX.efi" ]; then
+    TARGET_LOADER="\\EFI\\systemd\\systemd-boot$EFI_SUFFIX.efi"
+  else
+    TARGET_LOADER="\\EFI\\BOOT\\$EFI_FALLBACK"
+  fi
+fi
 log "  base system installed."
 
 # Make sure the kernel sees the freshly written partition table.
@@ -1327,6 +1283,22 @@ printf 'KEYMAP=%s\n' "$VCONSOLE_KEYMAP" > "$DEPLOY_ETC/vconsole.conf"
 chmod 0644 "$DEPLOY_ETC/vconsole.conf"
 log "  wrote KEYMAP=$VCONSOLE_KEYMAP to $DEPLOY_ETC/vconsole.conf"
 
+# A staged install leaves its two installer partitions behind the new root.
+# The installed system reclaims them after its first session, but only by the
+# exact identities recorded here (tilo-staging-reclaim revalidates each one).
+if [ "$INTERNAL_MODE" -eq 1 ]; then
+  mapfile -t TARGET_VARS < <(find "$MNT/state/os" "$MNT/ostree/deploy" -mindepth 2 -maxdepth 2 \
+    -type d -name var 2>/dev/null)
+  [ "${#TARGET_VARS[@]}" -eq 1 ] || die "could not locate the installed system's /var for the reclaim record"
+  "$STAGING_HANDOFF" write-reclaim-record --handoff "$INTERNAL_HANDOFF" \
+    --target-var "${TARGET_VARS[0]}" \
+    --target-root-partuuid "$NEW_ROOT_PARTUUID" --target-esp-partuuid "$NEW_EFI_PARTUUID" \
+    --target-root-start-bytes "$ROOT_START_BYTES" --target-root-size-bytes "$ROOT_SIZE_BYTES" \
+    --sector-size "$EXPECT_LOGICAL_SECTOR_SIZE" \
+    || die "could not record the staged installer space for reclaim"
+  chcon --reference=/var/lib "${TARGET_VARS[0]}/lib/tilo" "${TARGET_VARS[0]}/lib/tilo/staging-reclaim.json" 2>/dev/null || true
+fi
+
 sync
 if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),
@@ -1339,6 +1311,23 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
 else
   umount "$MOUNTED" 2>/dev/null || true
   MOUNTED=""
+fi
+
+# Only after every step above succeeded: hand the next restart to the new
+# Tilo exactly once. The restored BootOrder keeps the existing system as the
+# default; the owned staging entry is removed only while its bytes still name
+# the staging ESP. A failure here leaves a complete installation, so report it
+# instead of failing the install.
+if [ "$INTERNAL_MODE" -eq 1 ]; then
+  step "Pointing the next restart at the installed Tilo"
+  TARGET_ESP_PARTNUM="$(lsblk -dno PARTN "$EFI_PARTITION" 2>/dev/null | tr -d '[:space:]')"
+  if ! "$STAGING_HANDOFF" firmware-finalize --handoff "$INTERNAL_HANDOFF" \
+      --target-esp-partuuid "$NEW_EFI_PARTUUID" --target-disk "$DISK" \
+      --target-esp-partition-number "${TARGET_ESP_PARTNUM:-0}" --loader "$TARGET_LOADER" 2>&1; then
+    log "warning: the firmware was not fully updated; if the existing system starts instead of Tilo, choose Tilo in the firmware boot menu"
+  fi
+  step "Install complete — restart to finish setting up Tilo."
+  exit 0
 fi
 
 step "Install complete — you can reboot into Tilo now."
