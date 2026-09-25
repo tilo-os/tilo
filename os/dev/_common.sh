@@ -136,6 +136,21 @@ die() { printf '\033[1;31m[tilo] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # Rootless podman storage created while native overlay was unavailable keeps
 # committing every layer through fuse-overlayfs, which makes each image build
 # step take minutes. Say so once, with the fix, instead of leaving it a mystery.
+# Reproducible `podman build` timestamps, one argument per line. Podman 5 clamps
+# with --source-date-epoch --rewrite-timestamp and rejects --timestamp beside
+# them. Podman 4 (Ubuntu 24.04, the CI runners) has only --timestamp, which pins
+# the image and layer times to the epoch. Either way a build and its
+# independent rebuild on the same host agree. Extra podman global options
+# (e.g. --remote=false) follow the epoch.
+podman_epoch_args() {
+  local epoch=$1; shift
+  if podman "$@" build --help 2>/dev/null | grep -q -- '--source-date-epoch'; then
+    printf '%s\n' --source-date-epoch "$epoch" --rewrite-timestamp
+  else
+    printf '%s\n' --timestamp "$epoch"
+  fi
+}
+
 warn_slow_podman_storage() {
   local root="${CONTAINERS_STORAGE_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage}"
   [ "$(cat "$root/overlay/.has-mount-program" 2>/dev/null)" = true ] || return 0
