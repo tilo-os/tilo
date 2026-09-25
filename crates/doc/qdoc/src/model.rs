@@ -150,6 +150,16 @@ struct OrderIndex {
     by_container: HashMap<ObjId, ContainerOrder>,
 }
 
+/// The last block placed by an insert that did not build the order index:
+/// where it went and the next block's key, which bounds the next insert after
+/// it too.
+struct InsertRun {
+    container: ObjId,
+    last: String,
+    key: Vec<u8>,
+    hi: Option<Vec<u8>>,
+}
+
 /// Collision-free block id generator.
 ///
 /// Inside an action it mints from the action's deterministic context
@@ -163,6 +173,12 @@ pub struct IdGen {
     next: Option<u64>,
     /// The action minting, when writing inside one.
     action: Option<tilo_resource::ActionCx>,
+    /// The key an insert just placed, and its upper bound, until the block
+    /// is recorded (see [`DocMut::order_after_in`]).
+    placing: Option<(ObjId, Vec<u8>, Option<Vec<u8>>)>,
+    /// The last block inserted without the order index, so the next insert
+    /// after it (a paste, a table's cells) needs no scan.
+    run: Option<InsertRun>,
     /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen` since it threads through every `DocMut`.
     order: OrderIndex,
     /// Blocks and marks buffered by an open [`DocMut::bulk`] scope.
@@ -189,6 +205,8 @@ impl Clone for IdGen {
             // inherit the counter rather than reseeding from visible objects.
             next: self.next,
             action: None,
+            placing: None,
+            run: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -214,6 +232,8 @@ impl IdGen {
             actor_hex,
             next: Some(0),
             action: None,
+            placing: None,
+            run: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -227,6 +247,8 @@ impl IdGen {
             actor_hex,
             next: Some(next),
             action: None,
+            placing: None,
+            run: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -243,6 +265,8 @@ impl IdGen {
             actor_hex: String::new(),
             next: None,
             action: Some(cx),
+            placing: None,
+            run: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -1407,6 +1431,39 @@ pub fn blocks_in_order(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     ordered_keys(doc, &c.blocks)
 }
 
+/// One ordered body block's place in the document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpineEntry {
+    pub order: Vec<u8>,
+    pub id: String,
+    pub kind: String,
+}
+
+/// Every ordered body block in document order, with its order key and kind:
+/// the document's spine, read without materialising any block's text.
+pub fn body_spine(doc: &AutoCommit, c: &Containers) -> Vec<SpineEntry> {
+    ordered_blocks(doc, &c.blocks)
+        .into_iter()
+        .map(|b| SpineEntry {
+            order: b.order,
+            id: b.id,
+            kind: b.fields.kind.unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// One body block's spine entry; `None` when the block is gone or has no
+/// order key (and so is not part of the document).
+pub fn body_spine_entry(doc: &AutoCommit, c: &Containers, id: &str) -> Option<SpineEntry> {
+    let obj = block_obj(doc, &c.blocks, id)?;
+    let fields = block_fields(doc, &obj);
+    Some(SpineEntry {
+        order: fields.order?,
+        id: id.to_owned(),
+        kind: fields.kind.unwrap_or_default(),
+    })
+}
+
 /// Materialize exactly the requested body blocks, in the supplied order.
 ///
 /// This is deliberately unlike [`materialize`] and [`materialize_region`]: it
@@ -2074,6 +2131,19 @@ impl DocMut<'_> {
     /// A fractional key ordered strictly after block `after` (or at the front when `after` is `None`) within
     /// `container`. Uses the in-memory order index so the lookup is O(log n), not an O(n log n) rescan.
     fn order_after_in(&mut self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
+        // An action's insert after a known block needs only that block's
+        // successor. Finding it reads each block's order key once; building
+        // the index sorts them all, and an action's generator lives for one
+        // action. Staged (bulk) inserts and long-lived generators use the
+        // index.
+        if self.ids.action.is_some()
+            && !self.bulk_active()
+            && !self.ids.order.by_container.contains_key(container)
+            && let Some((key, hi)) = self.order_after_scanning(container, after)
+        {
+            self.ids.placing = Some((container.clone(), key.clone(), hi));
+            return key;
+        }
         self.ensure_order_cache(container);
         let co = self
             .ids
@@ -2105,6 +2175,56 @@ impl DocMut<'_> {
         tilo_resource::order::bytes::between(lo.as_deref(), hi.as_deref())
     }
 
+    /// The key for a block inserted after `after` in `container`, and the
+    /// key of the block that follows it, without building the order index:
+    /// from the run of inserts this generator is making, or one pass over
+    /// the container's order keys. `None` when `after` has no order key (the
+    /// caller then appends via the index).
+    fn order_after_scanning(
+        &self,
+        container: &ObjId,
+        after: Option<&str>,
+    ) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
+        use tilo_resource::order::bytes::{between, cmp};
+        let after = after?;
+        if let Some(run) = &self.ids.run
+            && &run.container == container
+            && run.last == after
+        {
+            let hi = run.hi.clone();
+            return Some((between(Some(&run.key), hi.as_deref()), hi));
+        }
+        let order_of = |doc: &AutoCommit, obj: &ObjId| match doc.get(obj, BLOCK_ORDER) {
+            Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                ScalarValue::Bytes(key) => Some(key.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let after_key = order_of(self.doc, &block_obj(self.doc, container, after)?)?;
+        let mut next: Option<(Vec<u8>, String)> = None;
+        for item in self.doc.map_range(container, ..) {
+            if !matches!(item.value, ValueRef::Object(ObjType::Map)) {
+                continue;
+            }
+            let Some(key) = order_of(self.doc, &item.id()) else {
+                continue;
+            };
+            let id = item.key.as_ref();
+            let past_after = cmp(&key, &after_key).then_with(|| id.cmp(after)).is_gt();
+            let before_next = next.as_ref().is_none_or(|(next_key, next_id)| {
+                cmp(&key, next_key)
+                    .then_with(|| id.cmp(next_id.as_str()))
+                    .is_lt()
+            });
+            if past_after && before_next {
+                next = Some((key, id.to_owned()));
+            }
+        }
+        let hi = next.map(|(key, _)| key);
+        Some((between(Some(&after_key), hi.as_deref()), hi))
+    }
+
     fn order_after(&mut self, after: Option<&str>) -> Vec<u8> {
         let container = self.c.blocks.clone();
         self.order_after_in(&container, after)
@@ -2128,6 +2248,17 @@ impl DocMut<'_> {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
             co.insert(id.into(), key.into());
         }
+        self.ids.run = match self.ids.placing.take() {
+            Some((placed, placed_key, hi)) if &placed == container && placed_key == key => {
+                Some(InsertRun {
+                    container: placed,
+                    last: id.to_owned(),
+                    key: placed_key,
+                    hi,
+                })
+            }
+            _ => None,
+        };
     }
 
     /// Drop a block from the order index (on delete). A no-op if the container's index hasn't been built
@@ -2157,6 +2288,58 @@ impl DocMut<'_> {
             return self.stage_block(container, after, kind);
         }
         let key = self.order_after_in(&container, after);
+        let id = self.ids.mint();
+        let obj = self
+            .doc
+            .put_object(&container, id.as_str(), ObjType::Map)
+            .unwrap();
+        self.doc
+            .put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone()))
+            .unwrap();
+        self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
+        self.doc
+            .put_object(&obj, BLOCK_ATTRS, ObjType::Map)
+            .unwrap();
+        self.record_order(&container, &id, &key);
+        id
+    }
+
+    /// Insert a block after `after` and before `next` — the block known to
+    /// follow it — reading only those two blocks' order keys. Falls back to
+    /// [`Self::insert_block_in`] when `next` is unknown, gone, or not after
+    /// `after`.
+    ///
+    /// # Panics
+    /// As [`Self::insert_block_in`]: when the region's container cannot be
+    /// written, which the containers this view resolved rule out.
+    pub fn insert_block_before_in(
+        &mut self,
+        region: Region,
+        after: &str,
+        next: Option<&str>,
+        kind: &str,
+    ) -> String {
+        let container = self.region_container(region);
+        let key_of = |doc: &AutoCommit, id: &str| {
+            let obj = block_obj(doc, &container, id)?;
+            match doc.get(&obj, BLOCK_ORDER) {
+                Ok(Some((Value::Scalar(value), _))) => match value.as_ref() {
+                    ScalarValue::Bytes(key) => Some(key.clone()),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let bounds = match (self.bulk_active(), next) {
+            (false, Some(next)) => key_of(self.doc, after).zip(key_of(self.doc, next)),
+            _ => None,
+        };
+        let Some((low, high)) =
+            bounds.filter(|(low, high)| tilo_resource::order::bytes::cmp(low, high).is_lt())
+        else {
+            return self.insert_block_in(region, Some(after), kind);
+        };
+        let key = tilo_resource::order::bytes::between(Some(&low), Some(&high));
         let id = self.ids.mint();
         let obj = self
             .doc

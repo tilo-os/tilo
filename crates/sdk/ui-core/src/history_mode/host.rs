@@ -633,14 +633,21 @@ impl HistoryHost {
             .and_then(|(start, end)| self.timeline.entries().get(start..=end))
             .map(|entries| entries.iter().map(|entry| entry.id).collect())
             .unwrap_or_default();
-        let Ok(document) = self.source().document(doc) else {
-            self.invalidate_owner();
-            return;
-        };
         // Projecting history replays the document's change log, and the live
         // frontier moves with every keystroke. Only an open history view needs
-        // it; opening one refreshes against the frontier it then finds.
-        if self.open
+        // it — or the copy of the document it projects from, which costs as
+        // much as the document; opening one refreshes against the frontier it
+        // then finds.
+        let document = if self.open {
+            let Ok(document) = self.source().document(doc) else {
+                self.invalidate_owner();
+                return;
+            };
+            Some(document)
+        } else {
+            None
+        };
+        if let Some(document) = document
             && let Some(controller) = &mut self.controller
         {
             let _ = controller.refresh(&document);

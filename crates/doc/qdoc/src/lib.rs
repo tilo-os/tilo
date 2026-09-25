@@ -27,6 +27,7 @@ pub mod export_html;
 pub mod export_rtf;
 pub mod format;
 pub mod model;
+pub mod rich_text;
 pub mod schema;
 pub mod sheet;
 pub mod snapshot;
