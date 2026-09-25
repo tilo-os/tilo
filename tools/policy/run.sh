@@ -45,6 +45,7 @@ run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract
 run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
+run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py
 run 'Desktop model dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
 

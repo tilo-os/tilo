@@ -61,7 +61,7 @@ fn selected(
             }
             if values
                 .first()
-                .is_some_and(|value| value.value_type() != expected_type)
+                .is_some_and(|value| !expected_type.accepts(value.value_type()))
             {
                 return Err(RestoreError::SchemaInvalid(format!(
                     "wrong type for {path}"

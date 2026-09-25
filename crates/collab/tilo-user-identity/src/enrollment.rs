@@ -210,6 +210,32 @@ pub fn verify_enrollment_token(
     Ok(())
 }
 
+/// Crockford base32: upper-case output without padding; decoding is
+/// case-insensitive, reads `O` as `0` and `I`/`L` as `1`, and ignores unused
+/// bits in the last symbol.
+const CROCKFORD: data_encoding::Encoding = data_encoding_macro::new_encoding! {
+    symbols: "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+    translate_from: "abcdefghjkmnpqrstvwxyzOoIiLl",
+    translate_to: "ABCDEFGHJKMNPQRSTVWXYZ001111",
+    check_trailing_bits: false,
+};
+
+/// Decode Crockford base32, tolerating a length no encoder produces (1, 3 or
+/// 6 symbols past a full block): such a final symbol holds no whole byte, so
+/// it is checked to be a symbol and then dropped, as earlier builds did.
+fn decode_crockford(text: &str) -> Option<Vec<u8>> {
+    let symbols = text.as_bytes();
+    match CROCKFORD.decode(symbols) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind == data_encoding::DecodeKind::Length => {
+            let (last, head) = symbols.split_last()?;
+            CROCKFORD.decode(&[*last, *last]).ok()?;
+            CROCKFORD.decode(head).ok()
+        }
+        Err(_) => None,
+    }
+}
+
 /// Encode a token to a printable base32-Crockford string.
 ///
 /// Crockford variant is chosen for out-of-band readability: it drops
@@ -223,7 +249,7 @@ pub fn verify_enrollment_token(
 /// canonically encoded (effectively unreachable).
 pub fn encode_enrollment_token(token: &EnrollmentToken) -> Result<String, EnrollmentError> {
     let bytes = canonical_bytes(token)?;
-    Ok(base32::encode(base32::Alphabet::Crockford, &bytes))
+    Ok(CROCKFORD.encode(&bytes))
 }
 
 /// Decode a base32-Crockford-encoded token back into an
@@ -236,8 +262,7 @@ pub fn encode_enrollment_token(token: &EnrollmentToken) -> Result<String, Enroll
 /// valid Crockford base32, or [`EnrollmentError::Payload`] if the
 /// decoded bytes do not deserialize as an `EnrollmentToken`.
 pub fn decode_enrollment_token(text: &str) -> Result<EnrollmentToken, EnrollmentError> {
-    let bytes = base32::decode(base32::Alphabet::Crockford, text)
-        .ok_or(EnrollmentError::MalformedBase32)?;
+    let bytes = decode_crockford(text).ok_or(EnrollmentError::MalformedBase32)?;
     let token: EnrollmentToken = from_canonical_bytes(&bytes)?;
     Ok(token)
 }
@@ -415,11 +440,44 @@ mod tests {
             EnrollmentError::MalformedBase32
         );
         // Valid base32 but not a token → payload decode fails.
-        let bytes = base32::encode(base32::Alphabet::Crockford, &[0u8, 1, 2, 3]);
+        let bytes = CROCKFORD.encode(&[0u8, 1, 2, 3]);
         assert!(matches!(
             decode_enrollment_token(&bytes).unwrap_err(),
             EnrollmentError::Payload(_)
         ));
+    }
+
+    /// Crockford vectors: the encoding is fixed on the wire, and decoding
+    /// keeps accepting the read-aloud spellings and stray symbols it always
+    /// accepted.
+    #[test]
+    fn crockford_wire_form_is_stable() {
+        assert_eq!(CROCKFORD.encode(b""), "");
+        assert_eq!(CROCKFORD.encode(b"f"), "CR");
+        assert_eq!(CROCKFORD.encode(b"foobar"), "CSQPYRK1E8");
+        assert_eq!(CROCKFORD.encode(&[0xff; 5]), "ZZZZZZZZ");
+        assert_eq!(CROCKFORD.encode(&[0, 1, 2, 3]), "000G40R");
+        for spelling in [
+            "CSQPYRK1E8",
+            "csqpyrk1e8",
+            "CSQPYRKIE8",
+            "CSQPYRKlE8",
+            "CSQPYRK1E8Z",
+        ] {
+            assert_eq!(
+                decode_crockford(spelling).as_deref(),
+                Some(&b"foobar"[..]),
+                "{spelling}"
+            );
+        }
+        assert_eq!(
+            decode_crockford("OOOG4OR").as_deref(),
+            Some(&[0u8, 1, 2, 3][..])
+        );
+        assert_eq!(decode_crockford("CS").as_deref(), Some(&b"f"[..]));
+        for invalid in ["CSQPYRKUE8", "CSQPYRK1E8!", "CSQPYRK1E=", "!!!!!!!!"] {
+            assert_eq!(decode_crockford(invalid), None, "{invalid}");
+        }
     }
 
     #[test]

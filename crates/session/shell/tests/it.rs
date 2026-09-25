@@ -49,6 +49,8 @@ mod cross_strip_drag;
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "dmabuf_commit_barrier.rs"]
+mod dmabuf_commit_barrier;
 #[path = "dmabuf_direct_capture_path.rs"]
 mod dmabuf_direct_capture_path;
 #[path = "dmabuf_encode_path_integration.rs"]

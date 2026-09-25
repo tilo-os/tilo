@@ -44,6 +44,15 @@ grep -q '/usr/lib/tilo-apps/bin' /etc/profile.d/tilo-apps.sh
 test -s /etc/tilo/runtime-bundle-trusted-publishers.txt
 tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
     --require-publisher "$(head -n 1 /etc/tilo/runtime-bundle-trusted-publishers.txt)"
+# The trust pin and signed runtime must remain one package-owned generation.
+# Merely verifying them independently missed an upgrade where `%config(noreplace)`
+# retained the previous key and every app failed only at launcher policy time.
+test "$(rpm -qf /etc/tilo/runtime-bundle-trusted-publishers.txt)" = \
+    "$(rpm -q tilo-session-apps)"
+bundle_publisher=$(sed -n 's/^publisher_hex = "\([0-9a-fA-F]\{64\}\)"$/\1/p' \
+    /usr/lib/tilo-runtime/2026.07/bundle.toml)
+test "${#bundle_publisher}" -eq 64
+grep -Fxiq "$bundle_publisher" /etc/tilo/runtime-bundle-trusted-publishers.txt
 for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
     test -f "/usr/lib/systemd/user/$unit.service"
     test -f "/usr/lib/systemd/user/$unit.socket"

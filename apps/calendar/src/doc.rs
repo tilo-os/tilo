@@ -1551,6 +1551,7 @@ fn parse_opt_id(s: &str) -> Option<Id> {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn model_round_trips_through_crdt() {
@@ -1650,7 +1651,7 @@ mod tests {
 
         deleted.commit();
         stale.commit();
-        deleted.merge(&mut stale).unwrap();
+        deleted.merge_incoming(&mut stale).unwrap();
         let merged = CalDoc::read_model(&deleted);
         assert!(CalDoc::event_tombstoned(&deleted, event.id));
         assert!(CalDoc::task_tombstoned(&deleted, task.id));

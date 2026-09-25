@@ -36,6 +36,7 @@ qdoc = { path = "../../crates/doc/qdoc" }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 vello.workspace = true
 taffy.workspace = true
 winit.workspace = true

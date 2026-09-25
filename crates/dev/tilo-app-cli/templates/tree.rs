@@ -1,45 +1,38 @@
-use ui::prelude::{Button, Text, TreeNode, TreeView, Widget, tilo_actions};
+use ui::prelude::*;
 
-fn node_resource() -> tilo_actions::Resource {
-    let mut resource = ui::widget::resource_actions::typed_resource(
-        "generated.tree",
-        "Workspace",
-        "open",
-        "Open node",
-        vec![tilo_actions::ActionParam::required_owned(
-            "id",
-            tilo_actions::ParamType::Integer,
-            "Stable tree node id",
-        )],
-    );
-    if let Some(action) = resource.actions.first_mut() {
-        action.contract.result = tilo_actions::ResultSpec::Resource {
-            resource_kind: "generated.tree.node".into(),
-        };
-    }
-    resource
+/// The stable node ids of the hierarchy this template browses.
+const NODES: [u64; 6] = [1, 2, 3, 4, 5, 6];
+
+/// The app's own state: which nodes the user pinned. Stored, synced and
+/// undoable; the hierarchy itself is the data being browsed.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Browser {
+    /// Pinned node ids, in the order they were pinned.
+    pub pinned: Vec<u64>,
 }
 
-fn open_node(id: u64) -> tilo_actions::ActionOutput {
-    tilo_actions::ActionOutput {
-        value: None,
-        resources: vec![format!("generated.tree.node:{id}")],
+#[resource(kind = "generated.tree", label = "Workspace")]
+impl Browser {
+    /// Pin a node, or unpin it when it is already pinned.
+    #[action]
+    pub fn toggle_pin(
+        &mut self,
+        #[param("Stable tree node id")] id: u64,
+    ) -> Result<(), &'static str> {
+        if !NODES.contains(&id) {
+            return Err("no such node");
+        }
+        if self.pinned.contains(&id) {
+            self.pinned.retain(|pinned| *pinned != id);
+        } else {
+            self.pinned.push(id);
+        }
+        Ok(())
     }
 }
 
-/// A stable-id hierarchy with expansion, keyboard navigation, selection,
-/// accessibility, virtualization, reordering hooks, and structural motion.
-///
-/// # Panics
-///
-/// Panics if a generated node binding no longer matches the exported action.
-#[expect(
-    clippy::expect_used,
-    reason = "the binding uses the sole action constructed immediately above"
-)]
-pub fn app_root() -> Box<dyn Widget> {
-    crate::install_catalog();
-    let root = TreeNode::branch(
+fn hierarchy() -> TreeNode<()> {
+    TreeNode::branch(
         1,
         "Workspace",
         (),
@@ -60,39 +53,47 @@ pub fn app_root() -> Box<dyn Widget> {
                 vec![TreeNode::leaf(6, "First prototype", ())],
             ),
         ],
-    );
-    let root = Box::new(
-        TreeView::new(root)
+    )
+}
+
+/// A stable-id hierarchy with expansion, keyboard navigation, selection,
+/// accessibility, virtualization, reordering hooks, and structural motion.
+pub struct App;
+
+impl ResourceApp for App {
+    type Resource = Browser;
+    const ID: &'static str = crate::APP_ID;
+    const TITLE: &'static str = crate::APP_TITLE;
+
+    fn view(cx: &mut ViewCx<Browser>) -> Element {
+        crate::install_catalog();
+        // The tree builds a row whenever one scrolls into view; each row binds
+        // its button through the resource's actions.
+        let actions = cx.actions();
+        let tree = TreeView::new(hierarchy())
             .with_id("workspace-tree")
             .with_expanded([1, 2])
             .multi_select(true)
-            .with_row_delegate(|model, id, _depth| {
+            .with_row_delegate(move |model, id, _depth| {
                 let label = model.find(id).map_or("", |node| node.label.as_str());
-                let resource = node_resource();
-                let binding = tilo_actions::ActionBinding::static_json_for(
-                    &resource,
-                    "open",
-                    serde_json::Map::from_iter([("id".into(), serde_json::json!(id))]),
-                )
-                .expect("generated node id matches the exported action");
                 Box::new(ui::row![
                     Text::new(label),
-                    Button::new(&format!("more-{id}"), "tree-row-action", None)
-                        .on_action(binding)
-                        .fit_content(32.0),
+                    actions.bind_invocation(
+                        Button::new(&format!("more-{id}"), "tree-row-action", None)
+                            .fit_content(32.0),
+                        Browser::TOGGLE_PIN.with(id),
+                    ),
                 ])
             })
             .reorderable()
             .with_viewport(280.0, 36.0)
-            .with_accessible_name("tree-accessible-name"),
-    );
-    ui::widget::resource_actions::immediate(root, node_resource(), |payload| {
-        let args: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let id = args
-            .get("id")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or("missing id")?;
-        Ok(open_node(id))
-    })
+            .with_accessible_name("tree-accessible-name");
+        let pinned = cx
+            .text(|browser| {
+                let count = browser.pinned.len().to_string();
+                ui::i18n::I18nManager::format("tree-pinned", &[("count", count.as_str().into())])
+            })
+            .with_id("pinned-count");
+        Box::new(ui::column![tree, pinned])
+    }
 }

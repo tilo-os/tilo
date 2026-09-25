@@ -43,6 +43,7 @@ agent-provider-config = { path = "../../crates/agent/provider-config" }
 tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 anyhow.workspace = true

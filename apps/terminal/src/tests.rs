@@ -3,6 +3,7 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use tilo_automerge::ApplyIncoming;
 use ui::State;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
@@ -64,8 +65,8 @@ fn fake_device_id() -> winit::event::DeviceId {
 
 /// Construct a terminal widget with a writer that funnels bytes
 /// into a channel so tests can assert what was sent to the PTY.
-fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>) {
-    struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+fn build_test_widget() -> (TerminalWidget, std::sync::mpsc::Receiver<Vec<u8>>) {
+    struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
     impl Write for ChanWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let _ = self.0.send(buf.to_vec());
@@ -75,9 +76,9 @@ fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>)
             Ok(())
         }
     }
-    let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
-    let (_pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
+    let (_pty_out_tx, pty_out_rx) = std::sync::mpsc::channel();
     let widget = TerminalWidget::new(
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMasterShared))),
@@ -92,10 +93,10 @@ fn build_test_widget() -> (TerminalWidget, crossbeam_channel::Receiver<Vec<u8>>)
 /// snaps the scrollback viewport back to the live bottom on fresh output).
 fn build_test_widget_io() -> (
     TerminalWidget,
-    crossbeam_channel::Receiver<Vec<u8>>,
-    crossbeam_channel::Sender<Vec<u8>>,
+    std::sync::mpsc::Receiver<Vec<u8>>,
+    std::sync::mpsc::Sender<Vec<u8>>,
 ) {
-    struct ChanWriter(crossbeam_channel::Sender<Vec<u8>>);
+    struct ChanWriter(std::sync::mpsc::Sender<Vec<u8>>);
     impl Write for ChanWriter {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             let _ = self.0.send(buf.to_vec());
@@ -105,9 +106,9 @@ fn build_test_widget_io() -> (
             Ok(())
         }
     }
-    let (write_tx, write_rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+    let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let writer: Box<dyn Write + Send> = Box::new(ChanWriter(write_tx));
-    let (pty_out_tx, pty_out_rx) = crossbeam_channel::unbounded();
+    let (pty_out_tx, pty_out_rx) = std::sync::mpsc::channel();
     let widget = TerminalWidget::new(
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMasterShared))),
@@ -145,24 +146,54 @@ fn pty_reader_retries_interrupts_and_linux_handoff_eio() {
     use crate::inner::{PtyReadDisposition, classify_pty_read};
 
     assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from(std::io::ErrorKind::Interrupted))),
+        classify_pty_read(
+            &Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+            || false
+        ),
         PtyReadDisposition::Retry
     );
     assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO))),
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || true),
         PtyReadDisposition::Retry,
         "a PTY master can report EIO before the guest opens its slave"
     );
-    assert_eq!(classify_pty_read(&Ok(19)), PtyReadDisposition::Data(19));
-    assert_eq!(classify_pty_read(&Ok(0)), PtyReadDisposition::Closed);
     assert_eq!(
-        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF))),
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || false),
+        PtyReadDisposition::Closed,
+        "once the session's lifetime socket closes, EIO means the guest exited"
+    );
+    assert_eq!(
+        classify_pty_read(&Ok(19), || true),
+        PtyReadDisposition::Data(19)
+    );
+    assert_eq!(
+        classify_pty_read(&Ok(0), || true),
+        PtyReadDisposition::Closed
+    );
+    assert_eq!(
+        classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {
+            true
+        }),
         PtyReadDisposition::Closed
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn lifetime_socket_probe_sees_the_supervisor_close_its_end() {
+    use crate::inner::lifetime_socket_open;
+
+    let (terminal_end, supervisor_end) =
+        std::os::unix::net::UnixStream::pair().expect("socket pair");
+    assert!(lifetime_socket_open(&terminal_end));
+    supervisor_end
+        .shutdown(std::net::Shutdown::Both)
+        .expect("supervisor closes the session");
+    assert!(!lifetime_socket_open(&terminal_end));
+}
+
 /// Drain and concatenate everything the PTY-write channel has buffered.
-fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
+fn drain_writes(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     while let Ok(b) = rx.try_recv() {
         out.extend_from_slice(&b);
@@ -421,7 +452,7 @@ fn test_terminal_grid_init() {
 
     let state = State::new();
     let mut doc = state.doc;
-    let (_output_tx, output_rx) = crossbeam_channel::unbounded();
+    let (_output_tx, output_rx) = std::sync::mpsc::channel();
     let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
 
     let mut widget = TerminalWidget::new(
@@ -791,7 +822,7 @@ fn terminal_widget_remembers_palette_after_inspection_hooks() {
         }
     }
 
-    let (_output_tx, output_rx) = crossbeam_channel::unbounded();
+    let (_output_tx, output_rx) = std::sync::mpsc::channel();
     let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
 
     let widget = TerminalWidget::new(
@@ -2391,10 +2422,10 @@ fn concurrent_terminal_initialisation_converges_on_one_resource_identity() {
     left_doc.commit();
     right_doc.commit();
     left_doc
-        .merge(&mut right_doc)
+        .merge_incoming(&mut right_doc)
         .expect("merge concurrent terminal initialisation");
     right_doc
-        .merge(&mut left_doc)
+        .merge_incoming(&mut left_doc)
         .expect("return the merged terminal state to the second peer");
 
     assert_eq!(
@@ -3609,7 +3640,7 @@ fn two_peers_converge_on_terminal_grid_via_crdt() {
         !delta.is_empty(),
         "A produced an incremental change to share"
     );
-    doc_b.load_incremental(&delta).unwrap();
+    doc_b.load_incoming(&delta).unwrap();
     b.sync(&mut doc_b, &automerge::ROOT);
     assert!(
         b.grid_text().contains("peer-a-line-two"),

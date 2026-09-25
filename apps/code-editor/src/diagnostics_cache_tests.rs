@@ -1,6 +1,7 @@
 use super::*;
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
+use tilo_automerge::ApplyIncoming;
 
 fn fixture() -> (CodeApp, AutoCommit, String) {
     let mut app = CodeApp::with_sample();
@@ -121,7 +122,7 @@ fn heads_language_buffer_and_lsp_scope_invalidate_but_lsp_payload_does_not() {
     let mut remote = doc.fork();
     replace(&mut remote, &key, "TODO remote\n");
     remote.commit();
-    doc.merge(&mut remote).unwrap();
+    doc.merge_incoming(&mut remote).unwrap();
     app.refresh_diagnostics(&doc);
     assert_eq!(app.diagnostics_buffer_reads, 6);
     let expected = lint::lint(

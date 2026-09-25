@@ -133,8 +133,10 @@ members = [
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-abi",
+    "crates/doc/pdf",
     "crates/doc/qdoc",
     "crates/doc/qdoc-pdf",
+    "crates/doc/tilo-automerge",
 
     # Hosting
     "crates/hosting/tilo-relay",
@@ -311,6 +313,8 @@ wgpu = "29"
 taffy = "0.10.1"
 winit = "0.30.13"
 automerge = "0.12.0"
+# Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
+tilo-automerge = { path = "crates/doc/tilo-automerge" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
 cosmic-text = { version = "0.19.0", default-features = false }
@@ -350,11 +354,12 @@ capnp-rpc = "0.26"
 capnpc = "0.26"
 base64 = "0.22.1"
 bs58 = "0.5.1"
-base32 = "0.5"
+data-encoding = "2.10"
+data-encoding-macro = "0.1.19"
 hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
-zip = { version = "8.6", default-features = false, features = ["deflate"] }
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------
@@ -445,7 +450,6 @@ clap_complete = "4.6.9"
 strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
 chrono = { version = "0.4", default-features = false }
-dirs = "6.0.0"
 qcms = "0.3.0"
 walkdir = "2.5.0"
 # The one in-memory cache: fs, thumbnail and the app mount share it.

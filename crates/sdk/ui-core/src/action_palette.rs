@@ -147,6 +147,26 @@ pub struct PendingOperation {
     confirmation_evidence: serde_json::Value,
 }
 
+/// The confirmation `spec` needs for exactly this collected input. A generic
+/// edit's need depends on its value, so it is decided per activation, never
+/// read off the declaration alone.
+fn effective_confirmation(
+    spec: &tilo_actions::ActionSpec,
+    input: &PendingInput,
+) -> ConfirmationPolicy {
+    match input {
+        PendingInput::Immediate => spec.confirmation_for_argument(None),
+        PendingInput::Text(value) => spec.confirmation_for_argument(Some(value)),
+        PendingInput::Json(value) => {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value).map_or_else(
+                |_| spec.contract.confirmation.clone(),
+                |arguments| spec.confirmation_for_json(&arguments),
+            )
+        }
+        PendingInput::Invalid => spec.contract.confirmation.clone(),
+    }
+}
+
 impl PendingOperation {
     /// Reconstruct the door argument collected by the palette. Keeping the
     /// typed JSON prefix makes palette, semantic, button, and agent calls use
@@ -395,7 +415,9 @@ impl ActionPalette {
         target: &crate::bound_dispatch::BoundActionTarget,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> bool {
-        if !self.index.contains_key(&target.key()) {
+        if !self.index.contains_key(&target.key())
+            && !self.is_programmatic(&target.address.address, Some(target))
+        {
             return false;
         }
         self.activate_with_arguments(
@@ -847,10 +869,24 @@ impl ActionPalette {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> bool {
-        if !self.index.contains_key(&address.encode()) {
+        if !self.index.contains_key(&address.encode()) && !self.is_programmatic(address, None) {
             return false;
         }
         self.activate_with_arguments(address.clone(), None, arguments)
+    }
+
+    /// Whether `address` names a programmatic action in the current authority.
+    /// It is never a row, but a control or surface that submitted one still
+    /// gets the palette's confirmation step when its value needs it.
+    fn is_programmatic(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        bound: Option<&crate::bound_dispatch::BoundActionTarget>,
+    ) -> bool {
+        self.authority_for(address, bound).is_some_and(|resources| {
+            tilo_actions::door::resolve(&resources, address)
+                .is_some_and(tilo_actions::ActionSpec::is_programmatic)
+        })
     }
 
     fn activate_with_arguments(
@@ -883,7 +919,7 @@ impl ActionPalette {
         if let Some(ambient) = self.ambient_context.as_ref() {
             context = context.enriched_by(ambient);
         }
-        let confirmation = flattened.action.contract.confirmation.clone();
+        let confirmation = flattened.action.confirmation_for_json(arguments);
         self.queue_or_confirm(
             PendingOperation {
                 bound,
@@ -935,7 +971,7 @@ impl ActionPalette {
         let spec = tilo_actions::door::resolve(&authority, &pending.address)?;
         if !spec.contract.availability.is_available()
             || spec.kind != pending.kind
-            || spec.contract.confirmation != pending.confirmation
+            || effective_confirmation(spec, &pending.input) != pending.confirmation
         {
             return None;
         }
@@ -1171,7 +1207,8 @@ impl ActionPalette {
         // are resolved later, against the authority snapshot current at the
         // moment of activation.
         for fa in flatten(&self.resources) {
-            if !fa.action.contract.availability.is_available() {
+            // Programmatic actions are for agents and scripts, never a row.
+            if !fa.action.contract.availability.is_available() || fa.action.is_programmatic() {
                 continue;
             }
             let title = format!("{} \u{2014} {}", fa.resource_label, fa.action.label);
@@ -1219,7 +1256,9 @@ impl ActionPalette {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {
-                    if !fa.action.contract.availability.is_available() {
+                    if !fa.action.contract.availability.is_available()
+                        || fa.action.is_programmatic()
+                    {
                         continue;
                     }
                     let title = format!(
@@ -1594,7 +1633,20 @@ impl ActionPalette {
         self.rebuild("");
     }
 
-    fn queue_or_confirm(&mut self, pending: PendingOperation, confirmation: ConfirmationPolicy) {
+    fn queue_or_confirm(
+        &mut self,
+        mut pending: PendingOperation,
+        confirmation: ConfirmationPolicy,
+    ) {
+        // Decide against the collected input, not only the declaration.
+        let confirmation = self
+            .authority_for(&pending.address, pending.bound.as_ref())
+            .and_then(|resources| {
+                tilo_actions::door::resolve(&resources, &pending.address)
+                    .map(|spec| effective_confirmation(spec, &pending.input))
+            })
+            .unwrap_or(confirmation);
+        pending.confirmation = confirmation.clone();
         let expected = match confirmation {
             ConfirmationPolicy::None => {
                 self.pending_dispatch = Some(pending);
@@ -2294,6 +2346,76 @@ mod tests {
                 .and_then(|(value, _)| value.as_str().map(str::to_owned)),
             Some("yes".into())
         );
+    }
+
+    /// A programmatic generic edit is never a row, yet a control that submits
+    /// a destructive value of it still gets the palette's confirmation step,
+    /// and an ordinary value queues directly.
+    #[test]
+    fn programmatic_actions_are_not_rows_but_confirm_by_value() {
+        let edit = ActionSpec::typed(
+            "edit",
+            "Edit thing",
+            "value",
+            ExecutionLocus::ClientLocal,
+            vec![tilo_actions::ActionParam::required(
+                "value",
+                tilo_actions::ParamType::Text,
+                "Value",
+            )],
+            |args| {
+                EncodedAction::encode(
+                    NOTE_TYPE,
+                    &Note {
+                        key: "value".into(),
+                        value: args.text("value").unwrap_or("").into(),
+                    },
+                )
+                .unwrap()
+            },
+        )
+        .programmatic()
+        .with_risk(|args| {
+            if args.text("value") == Some("wipe") {
+                tilo_actions::RiskLevel::Destructive
+            } else {
+                tilo_actions::RiskLevel::Low
+            }
+        });
+        let resource = thing_resource().with_action(edit);
+        let address = tilo_actions::ActionAddress::new("test.thing:1", "edit");
+        let value = |value: &str| {
+            serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(value))])
+        };
+        let mut palette = ActionPalette::new();
+        palette.load_open_resources(&[resource]);
+        palette.open();
+        let labels = palette.result_labels();
+        assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
+        assert!(
+            !labels.iter().any(|l| l.contains("Edit thing")),
+            "a programmatic action is never offered as a row: {labels:?}"
+        );
+
+        assert!(palette.activate_address_with_arguments(&address, &value("tidy")));
+        assert!(
+            palette.take_operation().is_some(),
+            "an ordinary value needs no confirmation"
+        );
+
+        palette.open();
+        assert!(palette.activate_address_with_arguments(&address, &value("wipe")));
+        assert!(
+            palette.take_operation().is_none(),
+            "a destructive value waits for confirmation"
+        );
+        let mut doc = AutoCommit::new();
+        palette.field.set_query("CONFIRM");
+        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        let pending = palette
+            .take_operation()
+            .expect("the confirmed destructive value queues");
+        assert_eq!(pending.address, address);
     }
 
     fn enter_key() -> KeyEvent {

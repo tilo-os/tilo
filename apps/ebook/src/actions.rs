@@ -422,7 +422,10 @@ impl EbookAction {
             .all(|value| seen.insert(value.as_ref().to_string()))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per action variant, each a short run of field checks"
+    )]
     fn validate(&self) -> Result<(), ActionError> {
         match self {
             Self::RestoreLibraryBook {
@@ -1718,6 +1721,7 @@ mod tests {
     use super::*;
     use crate::app::BooksApp;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1962,8 +1966,8 @@ mod tests {
             let encoded = encode(&action);
             registry().decode(&encoded).unwrap().apply(peer).unwrap();
         }
-        left.merge(&mut right).unwrap();
-        right.merge(&mut left).unwrap();
+        left.merge_incoming(&mut right).unwrap();
+        right.merge_incoming(&mut left).unwrap();
         for peer in [&left, &right] {
             let settings = BooksDoc::read_settings(peer);
             assert_eq!(settings.theme, ReadTheme::Dark);
@@ -1988,8 +1992,8 @@ mod tests {
             let encoded = encode(&action);
             registry().decode(&encoded).unwrap().apply(peer).unwrap();
         }
-        deleting.merge(&mut editing).unwrap();
-        editing.merge(&mut deleting).unwrap();
+        deleting.merge_incoming(&mut editing).unwrap();
+        editing.merge_incoming(&mut deleting).unwrap();
         for peer in [&deleting, &editing] {
             assert!(
                 BooksDoc::read_fonts(peer)
@@ -2230,8 +2234,8 @@ mod tests {
         competing.group = concurrent;
         BooksDoc::upsert_annotation(&mut right, &competing);
         add.apply(&mut right).expect("peer replays authored add");
-        left.merge(&mut right).expect("replicas merge");
-        right.merge(&mut left).expect("replicas converge");
+        left.merge_incoming(&mut right).expect("replicas merge");
+        right.merge_incoming(&mut left).expect("replicas converge");
 
         for doc in [&left, &right] {
             let ids = BooksDoc::annotations_for(doc, &book_id)
@@ -2258,8 +2262,11 @@ mod tests {
         remove
             .apply(&mut right)
             .expect("peer replays authored remove");
-        left.merge(&mut right).expect("replicas merge removal");
-        right.merge(&mut left).expect("replicas converge removal");
+        left.merge_incoming(&mut right)
+            .expect("replicas merge removal");
+        right
+            .merge_incoming(&mut left)
+            .expect("replicas converge removal");
         for doc in [&left, &right] {
             let ids = BooksDoc::annotations_for(doc, &book_id)
                 .into_iter()
@@ -2539,8 +2546,8 @@ mod tests {
         )
         .apply(&mut moving)
         .unwrap();
-        editing.merge(&mut moving).unwrap();
-        moving.merge(&mut editing).unwrap();
+        editing.merge_incoming(&mut moving).unwrap();
+        moving.merge_incoming(&mut editing).unwrap();
 
         for peer in [&editing, &moving] {
             let merged = BooksDoc::list_annotations(peer)
@@ -2574,8 +2581,8 @@ mod tests {
         change_color_action(group, HiColor::Purple)
             .apply(&mut recolouring)
             .unwrap();
-        editing.merge(&mut recolouring).unwrap();
-        recolouring.merge(&mut editing).unwrap();
+        editing.merge_incoming(&mut recolouring).unwrap();
+        recolouring.merge_incoming(&mut editing).unwrap();
 
         for peer in [&editing, &recolouring] {
             let rows = BooksDoc::list_annotations(peer);

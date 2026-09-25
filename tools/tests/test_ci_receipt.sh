@@ -48,4 +48,40 @@ if (cd "$work/source" && "$tool" verify "$sha" origin 2>/dev/null); then
   exit 1
 fi
 
+# Force another writer to advance the remote notes ref immediately before our
+# first push. The recorder must fetch that note and retry its own push.
+printf 'second\n' > "$work/source/value"
+git -C "$work/source" add value
+git -C "$work/source" commit -qm second
+git -C "$work/source" push -q origin main
+git --git-dir="$work/origin.git" symbolic-ref HEAD refs/heads/main
+new_sha=$(git -C "$work/source" rev-parse HEAD)
+git clone -q "$work/origin.git" "$work/writer-a"
+git clone -q "$work/origin.git" "$work/writer-b"
+mkdir "$work/wrapper"
+cat > "$work/wrapper/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == push && ${2:-} == origin && ${3:-} == refs/notes/tilo-check-ci && ! -e $CI_RECEIPT_TEST_TRIGGER ]]; then
+  touch "$CI_RECEIPT_TEST_TRIGGER"
+  (cd "$CI_RECEIPT_TEST_OTHER" && PATH="$CI_RECEIPT_TEST_ORIGINAL_PATH" \
+    "$CI_RECEIPT_TEST_TOOL" record "$CI_RECEIPT_TEST_OLD_SHA" 46 success success success origin >/dev/null)
+fi
+exec "$CI_RECEIPT_TEST_REAL_GIT" "$@"
+EOF
+chmod +x "$work/wrapper/git"
+CI_RECEIPT_TEST_TRIGGER="$work/trigger" \
+CI_RECEIPT_TEST_OTHER="$work/writer-b" \
+CI_RECEIPT_TEST_TOOL="$tool" \
+CI_RECEIPT_TEST_OLD_SHA="$sha" \
+CI_RECEIPT_TEST_ORIGINAL_PATH="$PATH" \
+CI_RECEIPT_TEST_REAL_GIT="$(command -v git)" \
+PATH="$work/wrapper:$PATH" \
+  bash -c 'cd "$1" && "$2" record "$3" 47 success success success origin >/dev/null' \
+  _ "$work/writer-a" "$tool" "$new_sha"
+[[ -e $work/trigger ]]
+git -C "$work/writer-a" fetch -q origin +refs/notes/tilo-check-ci:refs/notes/tilo-check-ci
+[[ $(git -C "$work/writer-a" notes --ref=tilo-check-ci show "$sha") == *'run=46'* ]]
+[[ $(git -C "$work/writer-a" notes --ref=tilo-check-ci show "$new_sha") == *'run=47'* ]]
+
 echo 'CI receipt record/verify contract OK'

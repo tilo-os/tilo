@@ -35,6 +35,7 @@ atomic-file = { path = "../../crates/system/atomic-file" }
 # are needed, not the iroh transport.
 iroh-base = { workspace = true, features = ["key"] }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

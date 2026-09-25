@@ -21,6 +21,7 @@ use collab_types::{
 };
 use fuser::{FileAttr, FileType, INodeNo};
 use iroh_blobs::Hash;
+use tilo_automerge::ApplyIncoming;
 use uuid::Uuid;
 
 pub const ROOT_INO: u64 = 1;
@@ -584,7 +585,7 @@ impl Namespace {
     ///
     /// Returns an error if `data` is not a valid incremental automerge change set for this document.
     pub fn apply_incremental(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
-        self.doc.load_incremental(data)?;
+        self.doc.load_incoming(data)?;
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(())
@@ -625,7 +626,7 @@ impl Namespace {
     ///
     /// Returns an error if `other`'s document cannot be merged into this one.
     pub fn merge_doc(&mut self, other: &mut Namespace) -> Result<(), automerge::AutomergeError> {
-        self.doc.merge(&mut other.doc)?;
+        self.doc.merge_incoming(&mut other.doc)?;
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(())
@@ -640,7 +641,7 @@ impl Namespace {
         &mut self,
         data: &[u8],
     ) -> Result<Vec<u8>, automerge::AutomergeError> {
-        self.doc.load_incremental(data)?;
+        self.doc.load_incoming(data)?;
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
@@ -656,7 +657,7 @@ impl Namespace {
         data: &[u8],
     ) -> Result<Vec<u8>, automerge::AutomergeError> {
         let mut other = AutoCommit::load(data)?;
-        self.doc.merge(&mut other)?;
+        self.doc.merge_incoming(&mut other)?;
         self.ensure_record_ids();
         let _ = self.doc.save_incremental();
         self.resolve();
@@ -680,7 +681,7 @@ impl Namespace {
         data: &[u8],
     ) -> anyhow::Result<()> {
         let msg = automerge::sync::Message::decode(data)?;
-        self.doc.sync().receive_sync_message(state, msg)?;
+        self.doc.receive_incoming_sync(state, msg)?;
         self.ensure_record_ids();
         self.rebuild_record_index();
         Ok(())

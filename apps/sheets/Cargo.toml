@@ -26,6 +26,7 @@ settings-store = { path = "../../crates/system/settings-store" }
 tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true

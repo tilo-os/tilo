@@ -47,6 +47,7 @@ package_tilo-session() {
   install -Dm755 bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders -t "$pkgdir/usr/bin"
   install -Dm755 libexec/tilo-unlock-helper libexec/tilo-session \
     libexec/tilo-session-runner libexec/tilo-flight-recorder \
+    libexec/tilo-session-report \
     -t "$pkgdir/usr/lib/tilo"
   sed -i 's#/usr/libexec/tilo-session-runner#/usr/lib/tilo/tilo-session-runner#' \
     "$pkgdir/usr/lib/tilo/tilo-session"

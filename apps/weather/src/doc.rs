@@ -425,6 +425,7 @@ impl WeatherDoc {
 mod tests {
     use super::*;
     use crate::units::Units;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn round_trip_locations_and_selected_without_persisting_local_units() {
@@ -522,7 +523,7 @@ mod tests {
         WeatherDoc::upsert_location(&mut stale_adder, &location);
         stale_adder.commit();
         let changes = stale_adder.get_changes(&base.get_heads());
-        remover.apply_changes(changes).unwrap();
+        remover.apply_incoming(changes).unwrap();
 
         assert!(WeatherDoc::read_model(&remover).locations.is_empty());
     }

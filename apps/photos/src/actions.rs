@@ -3887,6 +3887,7 @@ pub fn content_of(id: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     fn portable_photo(path: &str, width: u32, height: u32) -> LibraryPhoto {
         let hash = qdoc::blobstore::hash_bytes(path.as_bytes());
@@ -5817,7 +5818,7 @@ mod tests {
             .apply(doc)
             .expect("offline add applies");
         }
-        left.merge(&mut right).expect("replicas merge");
+        left.merge_incoming(&mut right).expect("replicas merge");
         assert_eq!(
             PhotosDoc::photo(&left, &photo.id).expect("photo").tags,
             ["left", "right"],

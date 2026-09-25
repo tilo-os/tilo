@@ -50,6 +50,7 @@ qdoc = { path = "../../crates/doc/qdoc" }
 # display name so every running instance is a distinct participant.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

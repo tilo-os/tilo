@@ -1,6 +1,7 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use tilo_automerge::ApplyIncoming;
 
 mod fs_authority;
 mod local_app_records;
@@ -1098,7 +1099,7 @@ impl WorkspaceTree {
             .iter()
             .map(|b| automerge::Change::try_from(b.as_slice()))
             .collect();
-        self.doc.apply_changes(parsed?)?;
+        self.doc.apply_incoming(parsed?)?;
         self.rebuild_cache_from_doc();
         Ok(())
     }
@@ -2177,7 +2178,7 @@ impl WorkspaceTree {
         // See `sync_room_doc`: a patch log carried into `apply_changes`
         // is what turns a peer's first delta into a panic.
         candidate.reset_diff_cursor();
-        candidate.apply_changes(parsed)?;
+        candidate.apply_incoming(parsed)?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);

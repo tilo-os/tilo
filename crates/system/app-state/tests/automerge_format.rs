@@ -19,6 +19,7 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{
     ActorId, AutoCommit, AutomergeError, ChangeHash, ObjType, ROOT, ReadDoc, ScalarValue, Value,
 };
+use tilo_automerge::ApplyIncoming;
 
 const DOCUMENT: &[u8] = include_bytes!("data/automerge-0.8/document.automerge");
 const CHANGES: &[u8] = include_bytes!("data/automerge-0.8/changes.automerge");
@@ -79,7 +80,7 @@ fn build() -> Result<AutoCommit, AutomergeError> {
     b.increment(ROOT, "count", -1)?;
     b.commit_with(CommitOptions::default().with_time(1_700_000_200));
 
-    a.merge(&mut b)?;
+    a.merge_incoming(&mut b)?;
     a.put(ROOT, "merged", "yes")?;
     a.commit_with(
         CommitOptions::default()
@@ -213,21 +214,14 @@ fn sync_messages_from_automerge_0_8_peers_are_understood() {
     let mut new_peer = AutoCommit::new();
     let mut new_state = sync::State::new();
     new_peer
-        .sync()
-        .receive_sync_message(&mut new_state, message)
+        .receive_incoming_sync(&mut new_state, message)
         .unwrap();
     for _ in 0..8 {
         if let Some(m) = new_peer.sync().generate_sync_message(&mut new_state) {
-            old_peer
-                .sync()
-                .receive_sync_message(&mut old_state, m)
-                .unwrap();
+            old_peer.receive_incoming_sync(&mut old_state, m).unwrap();
         }
         if let Some(m) = old_peer.sync().generate_sync_message(&mut old_state) {
-            new_peer
-                .sync()
-                .receive_sync_message(&mut new_state, m)
-                .unwrap();
+            new_peer.receive_incoming_sync(&mut new_state, m).unwrap();
         }
     }
     assert_eq!(hex_heads(&mut new_peer), [HEAD]);

@@ -106,6 +106,9 @@ fn draw_vector(scene: &mut Scene, shape: CursorShape, transform: Affine, inverse
     };
     // Scale stroke back into design space so its final physical width stays
     // close to two pixels at all supported accessibility sizes.
+    // The system pointer deliberately keeps canonical white fill and black
+    // outline across themes so it remains identifiable over arbitrary client
+    // content, which is not controlled by the shell theme.
     let stroke = Stroke::new(2.0 * inverse_scale);
     let (fill, outline) = palette();
     scene.fill(Fill::NonZero, transform, fill, None, &path);

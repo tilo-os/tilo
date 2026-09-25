@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
-use futures_lite::StreamExt;
+use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;

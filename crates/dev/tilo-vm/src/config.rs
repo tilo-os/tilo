@@ -65,6 +65,13 @@ pub struct VmEntry {
     /// Published dev image the VM disk is created from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// `raw` when `image` is a raw disk; absent for qcow2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_format: Option<String>,
+    /// A raw ESP disk attached read-only ahead of the VM's disk, so the VM
+    /// boots its loader and UKI instead of the disk's own (libvirt, whpx).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_esp: Option<String>,
     /// The VM's own disk (a copy-on-write child of `image` where supported).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<String>,
@@ -76,6 +83,9 @@ pub struct VmEntry {
     pub memory_mb: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpus: Option<u32>,
+    /// Windows WHPX: omit the display and USB devices for SSH-only VMs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub headless: bool,
     /// Host port forwarded to the guest's SSH port (libvirt, qemu).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
@@ -97,7 +107,8 @@ pub struct VmEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_vars: Option<String>,
     /// A host-built kernel the VM boots directly instead of its disk's boot
-    /// loader (`tilo-vm swap kernel --direct`; libvirt). Cleared by
+    /// loader (`tilo-vm swap kernel --direct` on libvirt, or a manually
+    /// prepared development bundle on WHPX). Cleared by
     /// `tilo-vm rollback --slot vm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_kernel: Option<DirectKernel>,
@@ -109,6 +120,10 @@ pub struct DirectKernel {
     pub kernel: String,
     pub initrd: String,
     pub cmdline: String,
+    /// WHPX direct boot has no systemd-stub EFI variable. Bind Tilo root
+    /// discovery to this VM disk's ESP by its GPT partition UUID instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader_partuuid: Option<String>,
     /// `uname -r` the kernel reports.
     #[serde(default)]
     pub kver: String,
@@ -123,7 +138,7 @@ pub fn registry_path() -> PathBuf {
     if let Some(path) = std::env::var_os("TILO_VM_CONFIG") {
         return PathBuf::from(path);
     }
-    dirs::config_dir()
+    xdg_paths::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tilo-vm")
         .join("vms.toml")

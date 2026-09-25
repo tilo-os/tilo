@@ -67,6 +67,7 @@ pub fn register(registry: &mut ActionRegistry) {
 mod tests {
     use super::*;
     use automerge::{ReadDoc, Value};
+    use tilo_automerge::ApplyIncoming;
 
     fn note(doc: &Doc) -> String {
         doc.get(&ROOT, "store.report_note.so.tilo.notes")
@@ -131,9 +132,9 @@ mod tests {
             .unwrap();
         }
         let mut left_then_right = left.clone();
-        left_then_right.merge(&mut right.clone()).unwrap();
+        left_then_right.merge_incoming(&mut right.clone()).unwrap();
         let mut right_then_left = right;
-        right_then_left.merge(&mut left).unwrap();
+        right_then_left.merge_incoming(&mut left).unwrap();
         let resolved = note(&left_then_right);
         assert_eq!(resolved, note(&right_then_left));
         assert!(matches!(

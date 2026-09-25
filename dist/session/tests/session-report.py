@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REPORTER = Path(__file__).resolve().parents[1] / "tilo-session-report.py"
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "previous.log").write_text(
+            "paint-stats: 4/7 painted | events=1 revision=0 anim=3 session=0 keepalive=0 | 144.027 Hz target | present=9 backpressure=12\n"
+            "application stopped before presenting a window \x1b[3mpackage_id\x1b[0m\x1b[2m=\x1b[0mdev.tilo.terminal \x1b[3mdisplay_name\x1b[0m\x1b[2m=\x1b[0mTerminal \x1b[3mexit_code\x1b[0m\x1b[2m=\x1b[0mSome(1)\n"
+            "Connected to Xwayland on :1\n"
+            "tilo compositor: DRM scanout: modeset complete connector=42 width=2880 height=1800 refresh_mhz=144000\n"
+            "frames=287 direct_frames=287 direct_dropped=3 flip_completions=286 unprofiled_frames=2 window_us=2000199 bridge_us=1700000 scanout_us=24000 readback_bytes=0 output_bytes=0 direct_scanout_status=enabled direct_scanout_reason=\"not-initialized\" DRM render phase summary\n"
+            "direct_scanout_status=enabled renderer_pci=0000:66:00.0 drm_bus_id=\"pci:0000:66:00.0\" DRM direct scanout enabled\n"
+            "package_id=chatgpt request_to_dispatch_us=1200 dispatching user-requested host application launch\n"
+            "package_id=chatgpt pid=123 request_to_spawn_us=8200 application launcher spawned\n"
+            "package_id=chatgpt surface_id=77 request_to_map_us=42000 spawn_to_map_us=33800 application toplevel mapped\n"
+            "package_id=chatgpt surface_id=77 frame_seq=1 request_to_first_present_us=50000 spawn_to_first_present_us=41800 map_to_first_present_us=8000 application first frame presented\n"
+            "paint-stats: 0/12025 painted | events=0 revision=0 anim=0 session=0 keepalive=0 | 144.027 Hz target | present=9 backpressure=12\n"
+            "thread 'main' panicked at wayland-backend/src/rs/server_impl/common_poll.rs:284:38:\n"
+            "tilo-flight-record-v1 status=134 logout_request=no\n"
+        )
+        (root / "previous-frame-trace.csv").write_text(
+            "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,backpressured,deadline_late_us\n"
+            "0,0,0,1,2,3,4,5,0,6,7,1,1,8,9000,0,500\n"
+            "1,20000,20000,2,3,4,5,6,0,7,8,1,1,20000,24000,1,3500\n"
+        )
+        output = root / "reports" / "incident.json"
+        subprocess.run(
+            [sys.executable, str(REPORTER), "--root", str(root), "--previous", "--output", str(output)],
+            check=True,
+        )
+        report = json.loads(output.read_text())
+        assert report["schema"] == "tilo-session-report-v1"
+        assert report["flight"]["app_failures"] == {"dev.tilo.terminal": 1}
+        assert report["flight"]["paint_last"]["backpressure"] == "12"
+        assert report["flight"]["xwayland_ready"] is True
+        assert report["flight"]["fatal_panic"] is True
+        assert report["flight"]["idle_wake_storm_max_ticks"] == 12025
+        assert report["flight"]["direct_scanout_enabled"] is True
+        assert report["flight"]["direct_scanout_status_last"] == {
+            "status": "enabled",
+            "reason": None,
+        }
+        assert report["flight"]["direct_scanout_fallback_tail"] == []
+        assert report["flight"]["render_phase_last"] == {
+            "frames": 287,
+            "direct_frames": 287,
+            "direct_dropped": 3,
+            "flip_completions": 286,
+            "unprofiled_frames": 2,
+            "window_us": 2000199,
+            "bridge_us": 1700000,
+            "scanout_us": 24000,
+            "readback_bytes": 0,
+            "output_bytes": 0,
+        }
+        assert report["flight"]["kms_modes"] == [{
+            "connector": 42,
+            "width": 2880,
+            "height": 1800,
+            "refresh_mhz": 144000,
+        }]
+        assert report["flight"]["launch_latency_us"]["chatgpt"] == {
+            "map_to_first_present_us": {"count": 1, "p50": 8000, "p95": 8000, "max": 8000},
+            "request_to_dispatch_us": {"count": 1, "p50": 1200, "p95": 1200, "max": 1200},
+            "request_to_first_present_us": {"count": 1, "p50": 50000, "p95": 50000, "max": 50000},
+            "request_to_map_us": {"count": 1, "p50": 42000, "p95": 42000, "max": 42000},
+            "request_to_spawn_us": {"count": 1, "p50": 8200, "p95": 8200, "max": 8200},
+            "spawn_to_first_present_us": {"count": 1, "p50": 41800, "p95": 41800, "max": 41800},
+            "spawn_to_map_us": {"count": 1, "p50": 33800, "p95": 33800, "max": 33800},
+        }
+        assert report["frames"]["painted"] == 2
+        assert report["frames"]["painted_fps"] == 100.0
+        assert report["frames"]["input_latency_us"]["p99"] == 20000
+        assert report["frames"]["input_retirement_latency_us"]["p99"] == 24000
+        assert report["frames"]["backpressured_ticks"] == 1
+        assert report["frames"]["deadline_late_us"]["p99"] == 3500
+        assert report["frames"]["paint_period_us"]["p99"] == 20000
+        assert output.stat().st_mode & 0o777 == 0o600
+    print("session report: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

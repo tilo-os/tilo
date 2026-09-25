@@ -497,6 +497,39 @@ pub(crate) fn renderer_matches_drm_card(renderer_pci_bus_id: &str, drm_bus_id: &
     )
 }
 
+pub(crate) fn renderer_drm_node_matches_card(
+    renderer: Option<ui::dmabuf_import::VulkanDrmDeviceIdentity>,
+    card_device: u64,
+) -> bool {
+    let Some(renderer) = renderer else {
+        return false;
+    };
+    [renderer.primary, renderer.render]
+        .into_iter()
+        .flatten()
+        .any(|(major, minor)| smithay::reexports::rustix::fs::makedev(major, minor) == card_device)
+}
+
+#[cfg(test)]
+mod renderer_drm_identity_tests {
+    use super::*;
+
+    #[test]
+    fn matches_either_vulkan_drm_node_and_rejects_other_nodes() {
+        let primary = smithay::reexports::rustix::fs::makedev(226, 0);
+        let identity = ui::dmabuf_import::VulkanDrmDeviceIdentity {
+            primary: Some((226, 0)),
+            render: Some((226, 128)),
+        };
+        assert!(renderer_drm_node_matches_card(Some(identity), primary));
+        assert!(!renderer_drm_node_matches_card(
+            Some(identity),
+            smithay::reexports::rustix::fs::makedev(226, 1)
+        ));
+        assert!(!renderer_drm_node_matches_card(None, primary));
+    }
+}
+
 /// `dev_t` is the final fallback only: it identifies one active attachment,
 /// but is not promised to survive a reboot or eGPU re-enumeration.
 fn config_identity(
@@ -1255,6 +1288,15 @@ pub struct DrmScanout {
 }
 
 impl DrmScanout {
+    /// `dev_t` of the exact KMS card fd backing this scanout. Vulkan's
+    /// `VK_EXT_physical_device_drm` identity is compared against this value
+    /// before a renderer-owned buffer may be handed to KMS.
+    pub fn drm_device_id(&self) -> u64 {
+        smithay::reexports::rustix::fs::fstat(&self.card)
+            .map(|stat| stat.st_rdev)
+            .unwrap_or_default()
+    }
+
     pub(crate) fn invalidate_xrgb_history(&mut self) {
         if !self.xrgb_damage_requested {
             return;
@@ -1388,10 +1430,15 @@ impl DrmScanout {
         card.set_crtc(crtc, Some(fb0), (0, 0), &[connector], Some(mode))
             .map_err(|e| format!("set_crtc (modeset): {e}"))?;
 
-        tracing::info!(
-            width,
-            height,
-            "DRM scanout: modeset complete — display is live"
+        // Keep one stable, machine-readable line in the persistent flight
+        // record. Structured tracing's pretty formatter is human-friendly but
+        // not a durable interchange format, and a physical performance gate
+        // must distinguish a real 144 Hz KMS mode from TILO_REFRESH_HZ merely
+        // pacing a 60 Hz panel at 144 callbacks per second.
+        eprintln!(
+            "tilo compositor: DRM scanout: modeset complete connector={} width={width} height={height} refresh_mhz={}",
+            u32::from(connector),
+            mode_refresh_mhz(&mode),
         );
 
         // Best-effort: failure leaves `hw_cursor_active = false` and the software cursor takes over.

@@ -494,6 +494,7 @@ impl FirewallDoc {
 mod tests {
     use super::*;
     use crate::sample::sample_config;
+    use tilo_automerge::ApplyIncoming;
     #[test]
     fn native_round_trip() {
         let mut d = AutoCommit::new();
@@ -559,7 +560,7 @@ mod tests {
         r.source = "10.0.0.0/8".into();
         FirewallDoc::edit_rule(&mut a, z, &r);
         FirewallDoc::set_rule_enabled(&mut b, z, r.id, false);
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         let merged = FirewallDoc::load(&a).unwrap();
         let r = merged
             .zone(z)
@@ -583,7 +584,7 @@ mod tests {
         FirewallDoc::set_rule_enabled(&mut b, z, ids[1], false);
         FirewallDoc::set_service(&mut a, z, "ssh", true);
         FirewallDoc::set_service(&mut b, z, "https", true);
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         let merged = FirewallDoc::load(&a).unwrap();
         let z = merged.zone(z).unwrap();
         let states: Vec<_> = z
@@ -614,7 +615,7 @@ mod tests {
         r.source = "192.168.1.0/24".into();
         FirewallDoc::delete_rule(&mut a, z, r.id);
         FirewallDoc::edit_rule(&mut b, z, &r);
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         assert!(
             !FirewallDoc::load(&a)
                 .unwrap()

@@ -223,6 +223,7 @@ fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn set_and_read_round_trip() {
@@ -242,7 +243,7 @@ mod tests {
         let sql = EditorDoc::sql_text(&mut b);
         b.splice_text(&sql, 6, 0, " 1").unwrap();
         let mut b2 = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b2).unwrap();
+        a.merge_incoming(&mut b2).unwrap();
         assert_eq!(EditorDoc::read_sql(&a), "SELECT 1");
     }
 

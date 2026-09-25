@@ -1,6 +1,7 @@
 use crate::component_support::*;
 use automerge::AutoCommit;
 use notes::{actions, doc::NotesDoc};
+use tilo_automerge::ApplyIncoming;
 
 type Rows = Vec<(String, String, String, String, u64)>;
 
@@ -221,8 +222,8 @@ fn moving_a_block_preserves_concurrent_text_marks_and_text_object_identity() {
     )
     .unwrap();
     let mut local_for_peer = local.clone();
-    local.merge(&mut peer).unwrap();
-    peer.merge(&mut local_for_peer).unwrap();
+    local.merge_incoming(&mut peer).unwrap();
+    peer.merge_incoming(&mut local_for_peer).unwrap();
 
     let reopened = AutoCommit::load(&local.save()).unwrap();
     for document in [&local, &peer, &reopened] {
@@ -279,8 +280,8 @@ fn concurrent_insertions_into_one_gap_remain_distinct_and_allow_insertion_betwee
         .unwrap();
     }
     let mut local_changes = local.clone();
-    local.merge(&mut peer).unwrap();
-    peer.merge(&mut local_changes).unwrap();
+    local.merge_incoming(&mut peer).unwrap();
+    peer.merge_incoming(&mut local_changes).unwrap();
     let merged = NotesDoc::page_block_snapshots(&local, f.child);
     assert_eq!(merged, NotesDoc::page_block_snapshots(&peer, f.child));
     assert_eq!(merged.len(), 4);
@@ -397,8 +398,8 @@ fn concurrent_schema_upgrades_preserve_both_moves_and_converge() {
         .unwrap();
     }
     let mut local_changes = local.clone();
-    local.merge(&mut peer).unwrap();
-    peer.merge(&mut local_changes).unwrap();
+    local.merge_incoming(&mut peer).unwrap();
+    peer.merge_incoming(&mut local_changes).unwrap();
     notes::notebook::validate(&local).unwrap();
     notes::notebook::validate(&peer).unwrap();
     let expected = NotesDoc::page_block_snapshots(&local, f.child);

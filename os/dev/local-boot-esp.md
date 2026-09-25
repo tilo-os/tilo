@@ -37,56 +37,27 @@ hashes plus the exact base partition table and selected root PARTUUID. ESP disk
 and partition UUIDs derive from the UKI hash, which avoids accumulating new UEFI
 device identities for repeated copies of the same candidate.
 
-## Boot locally on Windows ARM64
+## Boot it
 
-```powershell
-.\tools\launch-arm64-boot-esp.ps1 `
-  -BaseDisk '\\wsl.localhost\FedoraLinux-42\home\benn1x\tilo-vm\media\disk.raw' `
-  -EspDisk '\\wsl.localhost\FedoraLinux-42\home\benn1x\tilo-vm\media\tilo-boot-override.raw' `
-  -CheckOnly
+`tilo-vm` boots the override ESP ahead of the base disk, in a throwaway VM
+(libvirt on Linux, WHPX on Windows ARM64):
 
-.\tools\launch-arm64-boot-esp.ps1 `
-  -BaseDisk '\\wsl.localhost\FedoraLinux-42\home\benn1x\tilo-vm\media\disk.raw' `
-  -EspDisk '\\wsl.localhost\FedoraLinux-42\home\benn1x\tilo-vm\media\tilo-boot-override.raw'
+```sh
+tilo-vm vm create esp1 --image /path/to/tilo-base.raw --boot-esp /path/to/tilo-boot-override.raw
+tilo-vm vm start esp1
+tilo-vm vm serial esp1
+tilo-vm vm rm esp1 --force
 ```
 
-QEMU attaches the ESP read-only at boot index 1 and the OS disk at boot index 2.
-Writes to the OS disk go to QEMU's disposable snapshot. Replacing a candidate
-therefore copies only the UKI-sized payload and a small ESP, while the installed
-root disk and its PARTUUID remain unchanged.
+The ESP is attached read-only and boots first; the base disk stays unchanged,
+because the VM writes to a copy-on-write child of it, and the VM gets a fresh
+UEFI variable store. Replacing a candidate therefore copies only the UKI-sized
+payload and a small ESP, while the root disk and its PARTUUID remain the same.
+On Windows, keep the ESP on a local drive; a base disk on a WSL path is
+imported once into the cache (`tilo-vm guide platforms`).
 
-For repeatable Windows-WHPX attempts, copy the small override ESP to an NTFS
-path once and verify its hash. Keep the large source disk in a verified native
-raw copy too; do not put either active QEMU backing file behind an NBD or WSL
-network path.
-
-## Exercise the live installer with an isolated target
-
-The same launcher can attach a newly-created sparse raw disk as the installer
-target. It keeps the source disk in QEMU's transient snapshot and gives only
-the target disk the stable serial the installer accepts:
-
-```powershell
-.\tools\launch-arm64-boot-esp.ps1 `
-  -BaseDisk C:\tilo-build\tilo-install-native-test.raw `
-  -EspDisk C:\tilo-build\tilo-debug-esp.raw `
-  -InstallTargetDisk C:\tilo-build\tilo-installer-target.raw `
-  -CreateInstallTarget -InstallTargetGiB 64 `
-  -StateDirectory "$env:LOCALAPPDATA\Tilo\qemu-arm64-installer" `
-  -QmpPort 4451
-```
-
-The launcher creates an absent target only when `-CreateInstallTarget` is
-explicitly present and refuses to silently reuse it. To deliberately discard a
-previous disposable target, add `-ResetInstallTarget -CreateInstallTarget`.
-`-CheckOnly` performs no target creation or reset.
-
-A blank target is useful for the erase-install lane. Guided-alongside validation
-must instead attach a separately prepared synthetic GPT target with retained
-foreign partitions and one reviewed free extent. The launcher deliberately does
-not manufacture or resize a Windows-like layout: that fixture is part of the
-guided-alongside acceptance input, so a local VM test cannot be mistaken for a
-review of this laptop's Windows disk.
+To exercise the live installer against a blank target, use
+`tilo-vm scenario install --medium <installer disk>` (`tilo-vm guide scenarios`).
 
 ## Limits
 

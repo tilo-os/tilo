@@ -19,6 +19,7 @@
 )]
 
 use std::time::{Duration, Instant};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 use tilo_actions::Resource;
@@ -315,7 +316,7 @@ fn drive_peer_to_table(
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
                     continue;
                 };
-                replica.load_incremental(&data).unwrap();
+                replica.load_incoming(&data).unwrap();
                 let b = blocks(&replica);
                 let has_cells = b.iter().any(|x| x.kind == "cell");
                 let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
@@ -463,7 +464,7 @@ fn the_agent_inserts_a_table_on_the_peers_replica() {
             continue;
         };
         if let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) {
-            replica.load_incremental(&data).unwrap();
+            replica.load_incoming(&data).unwrap();
         }
     }
     let runs = ui::read_runs(&replica);
@@ -539,7 +540,7 @@ fn assert_seeds_collide() {
     let mut a = seed_foreign();
     let mut b = seed_colliding_document();
     assert!(
-        a.merge(&mut b).is_err(),
+        a.merge_incoming(&mut b).is_err(),
         "the two seeds must collide on their shared actor id, or this \
          test proves nothing about a document the agent cannot merge"
     );
@@ -645,7 +646,7 @@ fn drive_word_processor_to_table(
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
                     continue;
                 };
-                if replica.load_incremental(&data).is_err() {
+                if replica.load_incoming(&data).is_err() {
                     continue;
                 }
                 let b = blocks(&replica);
@@ -897,7 +898,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
                     continue;
                 };
-                replica.load_incremental(&data).unwrap();
+                replica.load_incoming(&data).unwrap();
                 let b = blocks(&replica);
                 let title_aligned = b.first().is_some_and(|x| {
                     matches!(x.attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center")
@@ -1027,7 +1028,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
                     continue;
                 };
                 replica
-                    .load_incremental(&data)
+                    .load_incoming(&data)
                     .expect("apply the agent's change");
                 let b = blocks(&replica);
                 if b.iter().any(|x| x.text.starts_with("Scribe: I can't")) {

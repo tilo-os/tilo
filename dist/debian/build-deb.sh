@@ -27,6 +27,7 @@ mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/
 install -pm 0755 "$stage/bin/tilo-shell" "$stage/bin/tilo-launcher" "$stage/bin/tilo-import-folders" "$main/usr/bin/"
 install -pm 0755 "$stage/libexec/tilo-unlock-helper" "$stage/libexec/tilo-session" \
     "$stage/libexec/tilo-session-runner" "$stage/libexec/tilo-flight-recorder" \
+    "$stage/libexec/tilo-session-report" \
     "$main/usr/libexec/"
 install -pm 0644 "$stage/pam/tilo-unlock" "$main/etc/pam.d/"
 install -pm 0644 "$stage/wayland-sessions/tilo.desktop" "$main/usr/share/wayland-sessions/"

@@ -551,7 +551,13 @@ pub struct ActionSpec {
     /// the app's closure with `input` rather than duplicating it, which is what
     /// makes the palette path and the external path provably one function.
     build: ArgsBuilder,
+    /// Classifies one invocation's bound arguments when the action's risk
+    /// depends on them. See [`ActionSpec::with_risk`].
+    risk_of: Option<RiskClassifier>,
 }
+
+/// Classifies the risk of one invocation from its bound arguments.
+pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
 
 struct TypedActionSeed {
     id: String,
@@ -596,6 +602,7 @@ impl ActionSpec {
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
+            risk_of: None,
         })
     }
 
@@ -625,6 +632,7 @@ impl ActionSpec {
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
+            risk_of: None,
         }
     }
 
@@ -662,6 +670,7 @@ impl ActionSpec {
                 prompt.clone(),
             )],
             build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+            risk_of: None,
             input: ActionInput::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
@@ -705,6 +714,7 @@ impl ActionSpec {
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
+            risk_of: None,
         })
     }
 
@@ -743,6 +753,7 @@ impl ActionSpec {
                 prompt.clone(),
             )],
             build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
+            risk_of: None,
             input: ActionInput::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
@@ -847,6 +858,7 @@ impl ActionSpec {
             input,
             params: seed.params,
             build,
+            risk_of: None,
         }
     }
 
@@ -895,6 +907,108 @@ impl ActionSpec {
         self.contract.risk = RiskLevel::Destructive;
         self.contract.confirmation = ConfirmationPolicy::Confirm;
         self
+    }
+
+    /// Offer this action only to programmatic callers — agents, scripts, and
+    /// the controls or surfaces that submit it — never in a listing a person
+    /// picks from (the action palette, menus). It stays published, resolvable
+    /// and invocable by address, under the same permission, confirmation and
+    /// history rules as every other action. Recorded as
+    /// [`PROGRAMMATIC_TAG`](crate::PROGRAMMATIC_TAG) so the property crosses
+    /// every boundary the inert contract does.
+    #[must_use]
+    pub fn programmatic(mut self) -> Self {
+        push_tag(&mut self.contract, crate::contract::PROGRAMMATIC_TAG);
+        self
+    }
+
+    /// Whether this action is offered only to programmatic callers. See
+    /// [`programmatic`](Self::programmatic).
+    pub fn is_programmatic(&self) -> bool {
+        self.contract.is_programmatic()
+    }
+
+    /// Classify each invocation's risk from its bound arguments, for an action
+    /// whose consequence depends on them (a generic edit whose value may
+    /// delete). Whenever the classified risk
+    /// [requires confirmation](RiskLevel::requires_confirmation), the host
+    /// asks for exactly the confirmation a declared
+    /// [`destructive`](Self::destructive) action gets; otherwise the action
+    /// runs directly. The contract advertises
+    /// [`ARGUMENT_RISK_TAG`](crate::ARGUMENT_RISK_TAG) so callers that cannot
+    /// classify know to expect it.
+    #[must_use]
+    pub fn with_risk(
+        mut self,
+        classify: impl Fn(&ActionArgs) -> RiskLevel + Send + Sync + 'static,
+    ) -> Self {
+        push_tag(&mut self.contract, crate::contract::ARGUMENT_RISK_TAG);
+        self.risk_of = Some(Arc::new(classify));
+        self
+    }
+
+    /// The risk of one invocation: the classifier's verdict for these
+    /// arguments, or the declared [`ActionContract::risk`].
+    pub fn risk_for(&self, args: &ActionArgs) -> RiskLevel {
+        self.risk_of
+            .as_ref()
+            .map_or(self.contract.risk, |classify| classify(args))
+    }
+
+    /// The confirmation one invocation with these bound arguments needs: the
+    /// declared policy when there is one, else
+    /// [`Confirm`](ConfirmationPolicy::Confirm) when
+    /// [`risk_for`](Self::risk_for) requires confirmation. Every gate that
+    /// admits an invocation asks this, never the declared policy alone.
+    pub fn confirmation_for_args(&self, args: &ActionArgs) -> ConfirmationPolicy {
+        if self.contract.confirmation != ConfirmationPolicy::None || self.risk_of.is_none() {
+            return self.contract.confirmation.clone();
+        }
+        if self.risk_for(args).requires_confirmation() {
+            ConfirmationPolicy::Confirm
+        } else {
+            ConfirmationPolicy::None
+        }
+    }
+
+    /// [`confirmation_for_args`](Self::confirmation_for_args) for arguments
+    /// that arrived as JSON. Arguments that do not bind cannot build an
+    /// action at all, so they get the declared policy.
+    pub fn confirmation_for_json(
+        &self,
+        supplied: &serde_json::Map<String, serde_json::Value>,
+    ) -> ConfirmationPolicy {
+        if self.risk_of.is_none() {
+            return self.contract.confirmation.clone();
+        }
+        ActionArgs::bind_json(&self.params, supplied).map_or_else(
+            |_| self.contract.confirmation.clone(),
+            |args| self.confirmation_for_args(&args),
+        )
+    }
+
+    /// [`confirmation_for_args`](Self::confirmation_for_args) for the palette
+    /// and legacy text door: typed JSON behind
+    /// [`ARGUMENTS_JSON_PREFIX`](crate::ARGUMENTS_JSON_PREFIX), one line of
+    /// text for the primary parameter, or nothing.
+    pub fn confirmation_for_argument(&self, argument: Option<&str>) -> ConfirmationPolicy {
+        if self.risk_of.is_none() {
+            return self.contract.confirmation.clone();
+        }
+        if let Some(json) =
+            argument.and_then(|text| text.strip_prefix(crate::ARGUMENTS_JSON_PREFIX))
+        {
+            return serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+                .map_or_else(
+                    |_| self.contract.confirmation.clone(),
+                    |arguments| self.confirmation_for_json(&arguments),
+                );
+        }
+        let supplied = argument.map_or_else(Vec::new, |text| primary_argument(&self.params, text));
+        ActionArgs::bind(&self.params, supplied).map_or_else(
+            |_| self.contract.confirmation.clone(),
+            |args| self.confirmation_for_args(&args),
+        )
     }
 
     #[must_use]
@@ -1006,6 +1120,55 @@ fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedActi
     }
 }
 
+fn push_tag(contract: &mut ActionContract, tag: &str) {
+    if !contract.tags.iter().any(|existing| existing == tag) {
+        contract.tags.push(tag.to_owned());
+    }
+}
+
+/// Bind one line of text to the primary parameter (the first required one,
+/// else the first), as the palette collects it.
+fn primary_argument(params: &[ActionParam], text: &str) -> Vec<(String, ArgValue)> {
+    params
+        .iter()
+        .find(|p| p.required)
+        .or_else(|| params.first())
+        .map_or_else(Vec::new, |primary| {
+            parse_argument(&primary.name, primary.ty, text)
+        })
+}
+
+/// Parse the one line the palette can collect into a parameter's declared
+/// type. Unparseable text binds nothing rather than coercing to a wrong value;
+/// the builder decides what absence means, exactly as it does for an
+/// unsupplied optional.
+fn parse_argument(name: &str, ty: ParamType, text: &str) -> Vec<(String, ArgValue)> {
+    let parsed = match ty {
+        ParamType::Text => Some(ArgValue::Text(text.to_string())),
+        ParamType::Integer => text.trim().parse::<i64>().ok().map(ArgValue::Integer),
+        ParamType::Number => text.trim().parse::<f64>().ok().map(ArgValue::Number),
+        ParamType::Boolean => match text.trim() {
+            "true" | "yes" | "on" => Some(ArgValue::Boolean(true)),
+            "false" | "no" | "off" => Some(ArgValue::Boolean(false)),
+            _ => None,
+        },
+        ParamType::Object => {
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+                .ok()
+                .map(ArgValue::Object)
+        }
+        ParamType::Array => serde_json::from_str::<Vec<serde_json::Value>>(text)
+            .ok()
+            .map(ArgValue::Array),
+        ParamType::Resource => Some(ArgValue::Resource(text.to_string())),
+        ParamType::DateTime => Some(ArgValue::DateTime(text.to_string())),
+        ParamType::Secret => Some(ArgValue::Secret(text.to_string())),
+    };
+    parsed
+        .map(|v| vec![(name.to_owned(), v)])
+        .unwrap_or_default()
+}
+
 /// Derive the palette-facing [`ActionInput`] for a [`typed`](ActionSpec::typed)
 /// spec from its declared parameters. See that constructor's docs.
 fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String) -> ActionInput {
@@ -1025,33 +1188,7 @@ fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String
         placeholder,
         collects: Collects::Words,
         build: Arc::new(move |text: &str| {
-            // Parse the one line the palette can collect into the primary
-            // parameter's declared type. Unparseable text binds nothing rather
-            // than coercing to a wrong value; the builder decides what absence
-            // means, exactly as it does for an unsupplied optional.
-            let parsed = match ty {
-                ParamType::Text => Some(ArgValue::Text(text.to_string())),
-                ParamType::Integer => text.trim().parse::<i64>().ok().map(ArgValue::Integer),
-                ParamType::Number => text.trim().parse::<f64>().ok().map(ArgValue::Number),
-                ParamType::Boolean => match text.trim() {
-                    "true" | "yes" | "on" => Some(ArgValue::Boolean(true)),
-                    "false" | "no" | "off" => Some(ArgValue::Boolean(false)),
-                    _ => None,
-                },
-                ParamType::Object => {
-                    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
-                        .ok()
-                        .map(ArgValue::Object)
-                }
-                ParamType::Array => serde_json::from_str::<Vec<serde_json::Value>>(text)
-                    .ok()
-                    .map(ArgValue::Array),
-                ParamType::Resource => Some(ArgValue::Resource(text.to_string())),
-                ParamType::DateTime => Some(ArgValue::DateTime(text.to_string())),
-                ParamType::Secret => Some(ArgValue::Secret(text.to_string())),
-            };
-            let supplied: Vec<(String, ArgValue)> =
-                parsed.map(|v| vec![(name.clone(), v)]).unwrap_or_default();
+            let supplied = parse_argument(&name, ty, text);
             match ActionArgs::bind(&params, supplied) {
                 Ok(bound) => build(&bound),
                 Err(error) => EncodedAction {

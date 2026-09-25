@@ -145,9 +145,7 @@ impl PickerScope {
 /// conventional `~/Documents`. Nothing is created — a machine without one falls back to `$HOME`.
 fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
     let home = home?;
-    let configured = std::env::var_os("XDG_DOCUMENTS_DIR")
-        .map(PathBuf::from)
-        .or_else(|| documents_from_user_dirs(home));
+    let configured = xdg_paths::UserDir::Documents.resolve_for_home(home);
     if let Some(dir) = configured.filter(|d| is_useful_documents_dir(d, home)) {
         return Some(dir);
     }
@@ -156,32 +154,10 @@ fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Is a configured documents directory worth opening on? It has to exist
-/// and be somewhere other than `$HOME`: `xdg-user-dirs` writes
-/// `XDG_DOCUMENTS_DIR="$HOME/"` as its "unset" state, so a documents
-/// directory that *is* home is treated as absent, and `~/Documents` gets a look before falling back to `$HOME`.
+/// and be somewhere other than `$HOME`, so `~/Documents` gets a look before
+/// falling back to `$HOME`.
 fn is_useful_documents_dir(dir: &Path, home: &Path) -> bool {
     dir.is_dir() && dir != home
-}
-
-/// Parse `XDG_DOCUMENTS_DIR="$HOME/…"` out of `user-dirs.dirs`.
-///
-/// The file is shell-fragment syntax, but only one line matters and its
-/// shape is fixed by the spec, so this reads that line directly rather
-/// than pulling in a shell parser. Anything unexpected yields `None` and the caller falls back.
-fn documents_from_user_dirs(home: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(home.join(".config/user-dirs.dirs")).ok()?;
-    for line in text.lines() {
-        let line = line.trim();
-        let Some(rest) = line.strip_prefix("XDG_DOCUMENTS_DIR=") else {
-            continue;
-        };
-        let value = rest.trim().trim_matches('"');
-        return Some(match value.strip_prefix("$HOME/") {
-            Some(tail) => home.join(tail),
-            None => PathBuf::from(value),
-        });
-    }
-    None
 }
 
 #[cfg(test)]
@@ -259,39 +235,6 @@ mod tests {
             Path::new("/definitely/not/here"),
             home
         ));
-    }
-
-    #[test]
-    fn user_dirs_expands_the_home_variable() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let home = dir.path();
-        std::fs::create_dir_all(home.join(".config")).expect("mkdir");
-        std::fs::write(
-            home.join(".config/user-dirs.dirs"),
-            "XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\nXDG_DOCUMENTS_DIR=\"$HOME/Papers\"\n",
-        )
-        .expect("write");
-        assert_eq!(
-            documents_from_user_dirs(home),
-            Some(home.join("Papers")),
-            "$HOME/ must expand to the real home"
-        );
-    }
-
-    #[test]
-    fn user_dirs_keeps_an_absolute_path_as_written() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let home = dir.path();
-        std::fs::create_dir_all(home.join(".config")).expect("mkdir");
-        std::fs::write(
-            home.join(".config/user-dirs.dirs"),
-            "XDG_DOCUMENTS_DIR=\"/srv/papers\"\n",
-        )
-        .expect("write");
-        assert_eq!(
-            documents_from_user_dirs(home),
-            Some(PathBuf::from("/srv/papers"))
-        );
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::cli::{
     Builder, Command, CreateArgs, InputCommand, ScenarioCommand, SeatCommand, SlotCommand,
     UpgradeArgs, VmCommand,
 };
-use crate::config::{self, Registry, Source, VmEntry, WORKTREE_FILE};
+use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
 use crate::disk;
 use crate::doctor::{self, Check};
@@ -32,6 +32,7 @@ use crate::host::{self, HostFacts};
 use crate::hypervisor::{
     self, CommandLine, Hypervisor, Runner, SshEndpoint, SystemRunner, Vm, run_all,
 };
+use crate::image;
 use crate::imageup;
 use crate::receipt::Receipt;
 use crate::remote::{self, LockOutcome, Remote};
@@ -94,6 +95,11 @@ struct Published {
 struct Plan {
     choice: host::Choice,
     image: Option<PathBuf>,
+    /// The format of `image`.
+    image_format: Option<image::Format>,
+    /// Where `image`, on a network path, is imported to first (WHPX).
+    import: Option<PathBuf>,
+    boot_esp: Option<PathBuf>,
     published: Option<Published>,
     disk_path: Option<PathBuf>,
 }
@@ -102,7 +108,17 @@ impl Plan {
     fn describe(&self) -> String {
         let mut lines = vec![format!("  hypervisor: {}", self.choice.describe())];
         match (&self.image, &self.published) {
-            (Some(image), _) => lines.push(format!("  image: {}", image.display())),
+            (Some(image), _) => {
+                let format = self.image_format.map_or("", image::Format::name);
+                lines.push(format!("  image: {} ({format})", image.display()));
+                if let Some(import) = &self.import {
+                    lines.push(format!(
+                        "  import: on a network path, so copied once to {} and compared byte for byte{}",
+                        import.display(),
+                        if import.is_file() { " (already imported)" } else { "" }
+                    ));
+                }
+            }
             (None, Some(p)) => lines.push(format!(
                 "  image: published dev disk {} ({} {}, {}{})",
                 p.tag,
@@ -119,6 +135,12 @@ impl Plan {
         }
         if let Some(disk) = &self.disk_path {
             lines.push(format!("  VM disk: {}", disk.display()));
+        }
+        if let Some(esp) = &self.boot_esp {
+            lines.push(format!(
+                "  boot ESP: {} (read-only, boots before the VM disk)",
+                esp.display()
+            ));
         }
         lines.join("\n")
     }
@@ -315,6 +337,9 @@ fn vm_free_floor(configured: u64, hypervisor: &str) -> u64 {
 }
 
 fn on_path(tool: &str) -> bool {
+    if tool == "rsync" {
+        return !crate::host::which_all(tool).is_empty();
+    }
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
     };
@@ -935,6 +960,7 @@ impl App {
                 Ok(started)
             }
             VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
+            VmCommand::Rm { name, force } => self.vm_rm(&name, force),
             VmCommand::Upgrade(args) => self.vm_upgrade(&args),
             VmCommand::RollbackImage { name, no_reboot } => {
                 self.vm_rollback_image(name.as_deref(), no_reboot)
@@ -1051,6 +1077,85 @@ impl App {
         };
         drop(lock);
         Ok(Outcome::new(text, json!({ "vm": vm.name, "down": down })).next(&["tilo-vm vm start"]))
+    }
+
+    /// Delete a VM: power it off (with `force`), unregister it from the
+    /// hypervisor, remove the files `vm create` made for it, and drop it
+    /// from the registry. The image it was created from stays.
+    fn vm_rm(&mut self, name: &str, force: bool) -> Result<Outcome, CliError> {
+        let vm = self.resolve_vm(Some(name))?;
+        let adapter = Self::adapter(&vm)?;
+        // vm create gives every VM it makes its own key in keys/. A VM
+        // registered by hand (a shared VM, say) is only forgotten: its
+        // hypervisor, disk and key are not ours to delete.
+        let own_key = sshkey::key_path(&self.registry_path, &vm.name);
+        let owned = vm.entry.key.as_deref().map(Path::new) == Some(own_key.as_path());
+        if owned && adapter.running(&vm.vm(), &mut self.runner) == Some(true) {
+            if !force {
+                return Err(CliError::VmRunning { vm: vm.name });
+            }
+            if let Some(off) = adapter.power_off(&vm.vm()) {
+                run_all(&mut self.runner, &[off])?;
+            }
+            let started = Instant::now();
+            while adapter.running(&vm.vm(), &mut self.runner) == Some(true) {
+                if started.elapsed() > Duration::from_secs(60) {
+                    return Err(CliError::VmRunning { vm: vm.name });
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        } else if owned
+            && force
+            && let Some(off) = adapter.power_off(&vm.vm())
+        {
+            // The adapter cannot tell whether it runs; a hard power-off of a
+            // VM that is already off is harmless.
+            let _ = self.runner.output(&off);
+        }
+        let mut removed = Vec::new();
+        if owned {
+            run_all(&mut self.runner, &adapter.destroy(&vm.vm()))?;
+            let mut files = vm
+                .entry
+                .disk
+                .as_deref()
+                .map(hypervisor::vm_files)
+                .unwrap_or_default();
+            let key = own_key.display().to_string();
+            files.push(remote::known_hosts_path(&key));
+            files.push(sshkey::public_path(&own_key).display().to_string());
+            files.push(key);
+            for file in files {
+                if remove_if_present(Path::new(&file))? {
+                    removed.push(file);
+                }
+            }
+        }
+        let mut registry = self.registry()?;
+        registry.vms.remove(&vm.name);
+        if registry.default.as_deref() == Some(vm.name.as_str()) {
+            registry.default = None;
+        }
+        registry.save(&self.registry_path)?;
+        let mut text = if owned {
+            format!("VM {} deleted and unregistered", vm.name)
+        } else {
+            format!(
+                "VM {} unregistered; tilo-vm did not create it, so the hypervisor and its files are untouched",
+                vm.name
+            )
+        };
+        for file in &removed {
+            let _ = write!(text, "\n  removed {file}");
+        }
+        if let Some(image) = &vm.entry.image {
+            let _ = write!(text, "\n  kept its image {image}");
+        }
+        Ok(Outcome::new(
+            text,
+            json!({ "vm": vm.name, "deleted": owned, "removed": removed, "image": vm.entry.image }),
+        )
+        .next(&["tilo-vm vm list"]))
     }
 
     fn vm_list(&self) -> Result<Outcome, CliError> {
@@ -1207,6 +1312,7 @@ impl App {
                 alternative: "run tilo-vm vm create from a Tilo worktree: the qemu adapter drives os/dev/vm.sh".into(),
             });
         }
+        Self::validate_create_options(choice.adapter, args)?;
         if !sshkey::key_path(&self.registry_path, &args.name).exists() && !on_path("ssh-keygen") {
             return Err(CliError::ToolMissing {
                 tool: "ssh-keygen".into(),
@@ -1214,18 +1320,16 @@ impl App {
             });
         }
         let format = disk::format_for(choice.adapter);
-        let image = match &args.image {
-            Some(path) => {
-                let path = absolute(Path::new(path));
-                if !path.is_file() {
-                    return Err(CliError::ImageNotFound {
-                        path: path.display().to_string(),
-                    });
-                }
-                Some(path)
-            }
-            None => None,
-        };
+        let LocalDisks {
+            image,
+            image_format,
+            import,
+            boot_esp,
+        } = check_local_disks(
+            choice.adapter,
+            args.image.as_deref(),
+            args.boot_esp.as_deref(),
+        )?;
         let published = if image.is_none() && args.template.is_none() {
             Some(self.resolve_published(args.tag.as_deref(), arch, format)?)
         } else {
@@ -1253,7 +1357,7 @@ impl App {
         let disk_path = match (&args.disk, image.is_some() || published.is_some()) {
             (Some(path), _) => Some(absolute(Path::new(path))),
             (None, true) => Some(
-                dirs::data_local_dir()
+                xdg_paths::data_local_dir()
                     .unwrap_or_else(std::env::temp_dir)
                     .join("tilo-vm")
                     .join("vms")
@@ -1281,9 +1385,28 @@ impl App {
         Ok(Plan {
             choice,
             image,
+            image_format,
+            import,
+            boot_esp,
             published,
             disk_path,
         })
+    }
+
+    fn validate_create_options(adapter: &str, args: &CreateArgs) -> Result<(), CliError> {
+        if args.headless && adapter != "whpx" {
+            return Err(CliError::Unsupported {
+                what: format!("--headless with the {adapter} adapter"),
+                alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
+            });
+        }
+        if args.direct_boot_bundle.is_some() && adapter != "whpx" {
+            return Err(CliError::Unsupported {
+                what: format!("--direct-boot-bundle with the {adapter} adapter"),
+                alternative: "use --hypervisor whpx on Windows ARM64".into(),
+            });
+        }
+        Ok(())
     }
 
     #[expect(
@@ -1317,12 +1440,34 @@ impl App {
         }
         let facts = HostFacts::probe(&mut self.runner);
         let plan = self.preflight_create(&facts, &args, &arch)?;
+        let direct_kernel = args
+            .direct_boot_bundle
+            .as_deref()
+            .map(|path| read_direct_boot_bundle(Path::new(path)))
+            .transpose()?;
         let summary = plan.describe();
         if !self.json {
             eprintln!("tilo-vm: preflight passed\n{summary}");
         }
         self.receipt.set("preflight", &summary);
         let mut image = plan.image.as_ref().map(|p| p.display().to_string());
+        let mut image_format = plan.image_format;
+        if let (Some(source), Some(dest)) = (&image, &plan.import) {
+            if !dest.is_file() {
+                let qemu_img = plan.choice.tool("qemu-img").unwrap_or("qemu-img");
+                let format = image_format.unwrap_or(image::Format::Raw);
+                let runner = &mut self.runner;
+                self.receipt.phase("import", || {
+                    import_image(runner, qemu_img, source, format, dest)
+                })?;
+            }
+            self.receipt.set(
+                "import",
+                json!({ "source": source, "copy": dest.display().to_string() }),
+            );
+            image = Some(dest.display().to_string());
+            image_format = Some(image::Format::Qcow2);
+        }
         let tag = plan.published.as_ref().map(|p| p.tag.clone());
         if let Some(published) = &plan.published {
             let runner = &mut self.runner;
@@ -1368,13 +1513,19 @@ impl App {
             arch: (arch != host).then_some(arch),
             emulated: args.emulated,
             memory_mb: args.memory_mb,
+            headless: args.headless,
             cpus: args.cpus,
             ssh_port: args.ssh_port,
             template: args.template,
+            image_format: image_format
+                .filter(|f| *f == image::Format::Raw)
+                .map(|f| f.name().to_owned()),
+            boot_esp: plan.boot_esp.as_ref().map(|p| p.display().to_string()),
             qemu_img: plan.choice.tool("qemu-img").map(str::to_owned),
             qemu_system: plan.choice.tool("qemu-system-aarch64").map(str::to_owned),
             firmware_code: plan.choice.tool("firmware-code").map(str::to_owned),
             firmware_vars: plan.choice.tool("firmware-vars").map(str::to_owned),
+            direct_kernel,
             ..VmEntry::default()
         };
         let adapter = hypervisor::adapter(&entry.hypervisor)?;
@@ -3667,6 +3818,198 @@ fn unsupported(adapter: &dyn Hypervisor, what: &str) -> CliError {
     }
 }
 
+struct LocalDisks {
+    image: Option<PathBuf>,
+    image_format: Option<image::Format>,
+    import: Option<PathBuf>,
+    boot_esp: Option<PathBuf>,
+}
+
+/// `vm create`'s local files: `--image` and its format, where WHPX imports
+/// one on a network path, and a `--boot-esp` the adapter can attach.
+fn check_local_disks(
+    adapter: &str,
+    image: Option<&str>,
+    boot_esp: Option<&str>,
+) -> Result<LocalDisks, CliError> {
+    let image = match image {
+        Some(path) => {
+            let path = absolute(Path::new(path));
+            if !path.is_file() {
+                return Err(CliError::ImageNotFound {
+                    path: path.display().to_string(),
+                });
+            }
+            Some(path)
+        }
+        None => None,
+    };
+    // Hyper-V copies its VHDX; the other adapters make a qcow2 child.
+    let image_format =
+        match &image {
+            Some(path) if adapter != "hyperv" => Some(image::format_of(path).map_err(
+                |detail| CliError::ImageFormat {
+                    flag: "--image".into(),
+                    path: path.display().to_string(),
+                    detail,
+                },
+            )?),
+            _ => None,
+        };
+    let import = match &image {
+        Some(path) if adapter == "whpx" => {
+            let text = path.display().to_string();
+            if image::is_network_path(&text) {
+                let meta = std::fs::metadata(path).map_err(CliError::io(format!("read {text}")))?;
+                let modified = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                let cache = xdg_paths::cache_dir().unwrap_or_else(std::env::temp_dir);
+                Some(image::import_path(&cache, &text, meta.len(), modified))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let esp = match boot_esp {
+        Some(path) => {
+            if !hypervisor::adapter(adapter)?.capabilities().boot_esp {
+                return Err(CliError::Unsupported {
+                    what: format!("--boot-esp with the {adapter} adapter"),
+                    alternative: "use libvirt (Linux) or whpx (Windows ARM64) for a VM that boots a separate ESP".into(),
+                });
+            }
+            let path = absolute(Path::new(path));
+            let text = path.display().to_string();
+            let refuse = |detail: String| CliError::ImageFormat {
+                flag: "--boot-esp".into(),
+                path: text.clone(),
+                detail,
+            };
+            if image::is_network_path(&text) {
+                return Err(refuse(
+                    "is on a network path; QEMU does not read a disk there reliably".into(),
+                ));
+            }
+            match image::format_of(&path).map_err(refuse)? {
+                image::Format::Raw => Some(path),
+                image::Format::Qcow2 => {
+                    return Err(CliError::ImageFormat {
+                        flag: "--boot-esp".into(),
+                        path: path.display().to_string(),
+                        detail: "is qcow2; the ESP is attached as a raw disk".into(),
+                    });
+                }
+            }
+        }
+        None => None,
+    };
+    Ok(LocalDisks {
+        image,
+        image_format,
+        import,
+        boot_esp: esp,
+    })
+}
+
+/// Copy a network image to `dest` through a verified partial file.
+fn import_image(
+    runner: &mut dyn Runner,
+    qemu_img: &str,
+    source: &str,
+    format: image::Format,
+    dest: &Path,
+) -> Result<(), CliError> {
+    let part = image::import_part(dest);
+    ensure_parent(dest)?;
+    remove_if_present(&part)?;
+    let result = run_all(
+        runner,
+        &image::import_commands(qemu_img, source, format, &part),
+    );
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    result?;
+    std::fs::rename(&part, dest).map_err(CliError::io(format!(
+        "move {} to {}",
+        part.display(),
+        dest.display()
+    )))
+}
+
+fn remove_if_present(path: &Path) -> Result<bool, CliError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(CliError::io(format!("remove {}", path.display()))(e)),
+    }
+}
+
+/// Resolve a CI dev-disk companion bundle before downloading or creating a VM.
+/// The kernel, initrd and command line must describe the same disk image.
+fn read_direct_boot_bundle(path: &Path) -> Result<DirectKernel, CliError> {
+    let path = absolute(path);
+    let text =
+        std::fs::read_to_string(&path).map_err(CliError::io(format!("read {}", path.display())))?;
+    let mut direct: DirectKernel = serde_json::from_str(&text).map_err(|e| CliError::Config {
+        path: path.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    let invalid = |detail: &str| CliError::Config {
+        path: path.display().to_string(),
+        detail: detail.to_owned(),
+    };
+    if !direct
+        .cmdline
+        .split_whitespace()
+        .any(|arg| arg == "root=tilo-auto")
+    {
+        return Err(invalid(
+            "direct boot needs the complete Tilo UKI command line with root=tilo-auto",
+        ));
+    }
+    if direct.cmdline.contains('\0')
+        || direct
+            .cmdline
+            .contains("systemd.setenv=TILO_ROOT_LOADER_PARTUUID=")
+    {
+        return Err(invalid(
+            "the bundle command line must not include a loader UUID override",
+        ));
+    }
+    let partuuid = direct
+        .loader_partuuid
+        .as_deref()
+        .ok_or_else(|| invalid("the bundle needs loader_partuuid for its source disk's ESP"))?;
+    direct.loader_partuuid = Some(
+        uuid::Uuid::parse_str(partuuid)
+            .map_err(|_| invalid("loader_partuuid is not a GPT partition UUID"))?
+            .to_string(),
+    );
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    for file in [&mut direct.kernel, &mut direct.initrd] {
+        let resolved = Path::new(file);
+        let resolved = if resolved.is_absolute() {
+            resolved.to_owned()
+        } else {
+            parent.join(resolved)
+        };
+        if !resolved.is_file() {
+            return Err(invalid(&format!(
+                "missing direct boot file {}",
+                resolved.display()
+            )));
+        }
+        *file = resolved.display().to_string();
+    }
+    direct.cmdline = direct.cmdline.trim().to_owned();
+    Ok(direct)
+}
+
 fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_owned()
@@ -4106,16 +4449,51 @@ mod tests {
             name: name.into(),
             hypervisor: None,
             image: None,
+            boot_esp: None,
+            direct_boot_bundle: None,
             tag: None,
             disk: None,
             arch: None,
             emulated: false,
             memory_mb: None,
+            headless: false,
             cpus: None,
             ssh: None,
             ssh_port: None,
             template: None,
         }
+    }
+
+    #[test]
+    fn direct_boot_bundle_resolves_files_and_requires_root_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Image"), b"kernel").unwrap();
+        std::fs::write(dir.path().join("initrd"), b"initrd").unwrap();
+        let bundle = dir.path().join("boot.json");
+        std::fs::write(
+            &bundle,
+            r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto composefs=abc","loader_partuuid":"FCDFC623-0563-4F91-9DB8-F2B87B98B3CE"}"#,
+        )
+        .unwrap();
+        let direct = read_direct_boot_bundle(&bundle).unwrap();
+        assert_eq!(
+            direct.kernel,
+            dir.path().join("Image").display().to_string()
+        );
+        assert_eq!(
+            direct.initrd,
+            dir.path().join("initrd").display().to_string()
+        );
+        assert_eq!(
+            direct.loader_partuuid.as_deref(),
+            Some("fcdfc623-0563-4f91-9db8-f2b87b98b3ce")
+        );
+        std::fs::write(
+            &bundle,
+            r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto","loader_partuuid":"invalid"}"#,
+        )
+        .unwrap();
+        assert!(read_direct_boot_bundle(&bundle).is_err());
     }
 
     #[test]
@@ -4164,6 +4542,10 @@ mod tests {
 
         let image = dir.path().join("tilo-vm.qcow2");
         std::fs::write(&image, "").unwrap();
+        args.image = Some(image.display().to_string());
+        let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+        assert!(matches!(error, CliError::ImageFormat { .. }), "{error}");
+        std::fs::write(&image, b"QFI\xfb\0\0\0\x03").unwrap();
         let disk = dir.path().join("dev.qcow2");
         std::fs::write(&disk, "").unwrap();
         args.image = Some(image.display().to_string());
@@ -4193,6 +4575,120 @@ mod tests {
             "{}",
             error.hint()
         );
+    }
+
+    fn raw_disk(path: &Path) {
+        let mut bytes = vec![0_u8; 1024];
+        bytes[512..520].copy_from_slice(b"EFI PART");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn preflight_takes_a_raw_disk_and_a_boot_esp() {
+        use crate::host::HostKind;
+        use crate::host::tests::{LIBVIRT, linux};
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        std::fs::write(dir.path().join("vms.toml"), "min_free_gb = 0\n").unwrap();
+        let facts = linux(HostKind::Dnf, LIBVIRT);
+        let image = dir.path().join("disk.raw");
+        raw_disk(&image);
+        let esp = dir.path().join("override.raw");
+        let mut args = create_args("esp1");
+        args.image = Some(image.display().to_string());
+        args.disk = Some(dir.path().join("vms/esp1.qcow2").display().to_string());
+        args.boot_esp = Some(esp.display().to_string());
+
+        let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+        assert!(
+            matches!(&error, CliError::ImageFormat { flag, .. } if flag == "--boot-esp"),
+            "{error}"
+        );
+        assert!(
+            error.hint().contains("make-boot-esp.sh"),
+            "{}",
+            error.hint()
+        );
+        std::fs::write(&esp, b"QFI\xfb\0\0\0\x03").unwrap();
+        let error = app.preflight_create(&facts, &args, "x86_64").err().unwrap();
+        assert!(error.to_string().contains("is qcow2"), "{error}");
+
+        raw_disk(&esp);
+        let plan = app.preflight_create(&facts, &args, "x86_64").unwrap();
+        assert_eq!(plan.image_format, Some(image::Format::Raw));
+        assert!(plan.import.is_none(), "a local path is used in place");
+        assert_eq!(plan.boot_esp.as_deref(), Some(esp.as_path()));
+        let text = plan.describe();
+        assert!(text.contains("(raw)"), "{text}");
+        assert!(text.contains("boot ESP"), "{text}");
+    }
+
+    #[test]
+    fn vm_rm_deletes_what_create_made_and_keeps_the_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        let vms = dir.path().join("vms");
+        std::fs::create_dir_all(&vms).unwrap();
+        let disk = vms.join("try1.qcow2");
+        let sidecars = hypervisor::vm_files(&disk.display().to_string());
+        for file in &sidecars {
+            std::fs::write(file, "x").unwrap();
+        }
+        let key = sshkey::key_path(&app.registry_path, "try1");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        for file in [
+            key.clone(),
+            sshkey::public_path(&key),
+            PathBuf::from(remote::known_hosts_path(&key.display().to_string())),
+        ] {
+            std::fs::write(file, "k").unwrap();
+        }
+        let image = dir.path().join("base.raw");
+        raw_disk(&image);
+        let registry = format!(
+            "default = \"try1\"\n[vms.try1]\nhypervisor = \"qemu\"\nimage = {image:?}\nimage_format = \"raw\"\ndisk = {disk:?}\nkey = {key:?}\n\n[vms.shared]\nhypervisor = \"libvirt\"\nssh = \"root@shared:22\"\nkey = \"/home/u/.ssh/id_ed25519\"\n",
+            image = image.display().to_string(),
+            disk = disk.display().to_string(),
+            key = key.display().to_string(),
+        );
+        std::fs::write(&app.registry_path, registry).unwrap();
+
+        let outcome = app
+            .run(Some(Command::Vm(VmCommand::Rm {
+                name: "try1".into(),
+                force: false,
+            })))
+            .unwrap();
+        assert!(outcome.text.contains("deleted"), "{}", outcome.text);
+        assert!(outcome.text.contains("kept its image"), "{}", outcome.text);
+        for file in &sidecars {
+            assert!(!Path::new(file).exists(), "{file} survived");
+        }
+        assert!(!key.exists() && !sshkey::public_path(&key).exists());
+        assert!(image.exists(), "the image is not the VM's to delete");
+        let registry = app.registry().unwrap();
+        assert!(!registry.vms.contains_key("try1"));
+        assert_eq!(registry.default, None);
+
+        // A hand-registered VM is only forgotten: no hypervisor command runs
+        // (libvirt's would need virsh) and its key is the user's.
+        let outcome = app
+            .run(Some(Command::Vm(VmCommand::Rm {
+                name: "shared".into(),
+                force: false,
+            })))
+            .unwrap();
+        assert!(outcome.text.contains("untouched"), "{}", outcome.text);
+        assert!(app.registry().unwrap().vms.is_empty());
+
+        let error = app
+            .run(Some(Command::Vm(VmCommand::Rm {
+                name: "gone".into(),
+                force: false,
+            })))
+            .err()
+            .unwrap();
+        assert!(matches!(error, CliError::UnknownVm { .. }), "{error}");
     }
 
     #[test]

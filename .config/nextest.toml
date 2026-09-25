@@ -4,6 +4,9 @@ slow-timeout = { period = "60s", terminate-after = 4 }
 failure-output = "immediate-final"
 fail-fast = false
 
+# Also the profile for the whole suite outside CI, under tools/test-env.sh;
+# DEVELOPMENT.md ("The whole suite, as CI runs it") has the command, which keeps
+# the visual goldens (GOLDEN_FILTER in the workflows) for an idle renderer.
 [profile.ci]
 slow-timeout = { period = "120s", terminate-after = 4 }
 failure-output = "immediate-final"

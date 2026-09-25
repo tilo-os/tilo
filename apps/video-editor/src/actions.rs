@@ -1732,6 +1732,22 @@ impl Action for VideoEditorAction {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// Removing work — clips, a track with its clips, a source with the clips
+    /// that place it — or replacing the whole project is destructive, so it
+    /// is confirmed exactly as a declared destructive action is. Every other
+    /// edit (a trim, a move, a grade, a marker) applies directly.
+    fn risk(&self) -> tilo_actions::RiskLevel {
+        match self {
+            Self::DeleteClips { .. }
+            | Self::DeleteClip { .. }
+            | Self::RippleDeleteClip { .. }
+            | Self::DeleteTrack { .. }
+            | Self::RemoveMedia { .. }
+            | Self::LoadProject(_) => tilo_actions::RiskLevel::Destructive,
+            _ => tilo_actions::RiskLevel::Low,
+        }
+    }
 }
 
 /// Register the editor's action decoder for palette execution + remote replay.

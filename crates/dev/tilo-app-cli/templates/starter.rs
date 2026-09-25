@@ -1,82 +1,164 @@
-use ui::prelude::{
-    ActionForm, Button, Checkbox, Dropdown, LocalState, NumberInput, Slider, Text, TextInput,
-    TextRole, Widget, labeled_check, labeled_field, resource_actions,
-};
+use ui::prelude::*;
 
-/// A complete local form → action/resource → retained output loop.
-///
-/// # Panics
-///
-/// Panics if the generated form's static field declarations and bindings
-/// drift apart.
-#[expect(
-    clippy::expect_used,
-    reason = "field names are declared on the action form immediately above"
-)]
-pub fn app_root() -> Box<dyn Widget> {
-    crate::install_catalog();
-    let name = LocalState::new(String::from("world"));
-    let updates = LocalState::new(true);
-    let refresh_minutes = LocalState::new(15.0);
-    let volume = LocalState::new(0.65);
-    let region = LocalState::new(String::from("Europe/Berlin"));
+/// The regions a profile can be set to.
+pub const REGIONS: [&str; 3] = ["Europe/Berlin", "America/New_York", "Asia/Tokyo"];
 
-    let form = ActionForm::new(
-        "generated.form",
-        "Profile form",
-        "update-profile",
-        "Update profile",
-    )
-    .field("name", "Display name", &name)
-    .field("updates", "Receive updates", &updates)
-    .field("refresh", "Refresh minutes", &refresh_minutes)
-    .field("volume", "Volume from 0 to 1", &volume)
-    .field("region", "Region", &region);
+/// The app's state: one profile. It is stored, synced to collaborators and
+/// versioned by the framework; every change to it is an action below.
+#[derive(Model, Debug, Clone, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    pub updates: bool,
+    pub refresh_minutes: f64,
+    pub volume: f64,
+    /// A code, not prose: written whole, last writer wins.
+    pub region: Atom,
+}
 
-    let greeting = Text::from_state(&name, |name| {
-        ui::i18n::I18nManager::format("starter-greeting", &[("name", name.into())])
-    })
-    .with_id("greeting");
-    let input = TextInput::from_state(&name)
-        .with_id("name-input")
-        .with_placeholder("starter-name-placeholder")
-        .on_action(form.binding("name").expect("name field exists"));
-    let updates_widget = Checkbox::from_state(&updates)
-        .with_id("updates-checkbox")
-        .on_action(form.binding("updates").expect("updates field exists"));
-    let refresh = NumberInput::from_state(&refresh_minutes)
-        .with_range(1.0, 120.0)
-        .with_step(5.0)
-        .with_suffix("min")
-        .with_id("refresh-input")
-        .on_action(form.binding("refresh").expect("refresh field exists"));
-    let volume_widget = Slider::from_state(&volume)
-        .with_id("volume-slider")
-        .on_action(form.binding("volume").expect("volume field exists"));
-    let region_widget = Dropdown::from_state(
-        vec![
-            String::from("Europe/Berlin"),
-            String::from("America/New_York"),
-            String::from("Asia/Tokyo"),
-        ],
-        &region,
-    )
-    .with_id("region-select")
-    .on_action(form.binding("region").expect("region field exists"));
-    let reset = Button::new("reset-form", "Reset form", None).on_action(
-        form.reset_binding()
-            .expect("initial field values are valid"),
-    );
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            name: String::from("world"),
+            updates: true,
+            refresh_minutes: 15.0,
+            volume: 0.65,
+            region: Atom(String::from("Europe/Berlin")),
+        }
+    }
+}
 
-    let root = Box::new(ui::column![
-        Text::new("starter-title").with_role(TextRole::Title),
-        labeled_field("starter-name-label", input),
-        labeled_check("starter-updates-label", updates_widget),
-        labeled_field("starter-refresh-label", refresh),
-        labeled_field("starter-volume-label", volume_widget),
-        labeled_field("starter-region-label", region_widget),
-        greeting,
-        reset,
-    ]);
-    resource_actions::form(root, form)
+/// Every method marked `#[action]` is a typed, replayable, undoable edit that
+/// the controls below, the action palette, agents and scripts all invoke.
+#[resource(kind = "generated.profile", label = "Profile")]
+impl Profile {
+    /// Change the display name.
+    #[action]
+    pub fn set_name(&mut self, #[param("Display name")] name: String) {
+        self.name = name;
+    }
+
+    /// Receive updates or not.
+    #[action]
+    pub fn set_updates(&mut self, #[param("Receive updates")] updates: bool) {
+        self.updates = updates;
+    }
+
+    /// Change the refresh interval.
+    #[action]
+    pub fn set_refresh(
+        &mut self,
+        #[param("Refresh minutes, 1 to 120")] minutes: f64,
+    ) -> Result<(), &'static str> {
+        if !(1.0..=120.0).contains(&minutes) {
+            return Err("the refresh interval is 1 to 120 minutes");
+        }
+        self.refresh_minutes = minutes;
+        Ok(())
+    }
+
+    /// Change the volume.
+    #[action]
+    pub fn set_volume(
+        &mut self,
+        #[param("Volume from 0 to 1")] volume: f64,
+    ) -> Result<(), &'static str> {
+        if !(0.0..=1.0).contains(&volume) {
+            return Err("the volume is between 0 and 1");
+        }
+        self.volume = volume;
+        Ok(())
+    }
+
+    /// Change the region.
+    #[action]
+    pub fn set_region(&mut self, #[param("Region")] region: String) -> Result<(), &'static str> {
+        if !REGIONS.contains(&region.as_str()) {
+            return Err("unknown region");
+        }
+        self.region = Atom(region);
+        Ok(())
+    }
+
+    /// Reset the profile.
+    #[action]
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// The app: the profile resource and a view of it.
+pub struct App;
+
+impl ResourceApp for App {
+    type Resource = Profile;
+    const ID: &'static str = crate::APP_ID;
+    const TITLE: &'static str = crate::APP_TITLE;
+
+    fn view(cx: &mut ViewCx<Profile>) -> Element {
+        crate::install_catalog();
+        let name = cx
+            .input(|profile| profile.name.clone(), Profile::SET_NAME)
+            .with_id("name-input")
+            .with_placeholder("starter-name-placeholder");
+        let updates = cx
+            .checkbox(
+                "starter-updates-label",
+                |profile| profile.updates,
+                Profile::SET_UPDATES,
+            )
+            .with_id("updates-checkbox");
+        // Any toolkit control binds the same way: its value follows the
+        // resource and each committed value invokes the action.
+        let refresh = cx
+            .control(
+                |value| {
+                    NumberInput::from_state(value)
+                        .with_range(1.0, 120.0)
+                        .with_step(5.0)
+                        .with_suffix("min")
+                },
+                |profile| profile.refresh_minutes,
+                Profile::SET_REFRESH,
+            )
+            .with_id("refresh-input");
+        let volume = cx
+            .control(
+                Slider::from_state,
+                |profile| profile.volume,
+                Profile::SET_VOLUME,
+            )
+            .with_id("volume-slider");
+        let region = cx
+            .control(
+                |value| {
+                    Dropdown::from_state(
+                        REGIONS.iter().map(|region| (*region).to_owned()).collect(),
+                        value,
+                    )
+                },
+                |profile| profile.region.0.clone(),
+                Profile::SET_REGION,
+            )
+            .with_id("region-select");
+        let greeting = cx
+            .text(|profile| {
+                ui::i18n::I18nManager::format(
+                    "starter-greeting",
+                    &[("name", profile.name.as_str().into())],
+                )
+            })
+            .with_id("greeting");
+        let reset = cx.button("starter-reset", Profile::RESET.invoke());
+
+        Box::new(ui::column![
+            Text::new("starter-title").with_role(TextRole::Title),
+            labeled_field("starter-name-label", name),
+            updates,
+            labeled_field("starter-refresh-label", refresh),
+            labeled_field("starter-volume-label", volume),
+            labeled_field("starter-region-label", region),
+            greeting,
+            reset,
+        ])
+    }
 }
