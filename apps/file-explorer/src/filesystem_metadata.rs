@@ -76,9 +76,22 @@ mod tests {
             history,
             Err(error) if error.kind() == std::io::ErrorKind::Unsupported
         ));
-        assert!(crate::received_shares::admit_link("unavailable-service".into()).is_err());
+        let runtime = ui::rt::app();
         assert!(
-            crate::sharing::create_one_use_view_link(&path, collab_types::FileRecordId::new())
+            runtime
+                .block_on(crate::received_shares::admit_link(
+                    "unavailable-service".into()
+                ))
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            runtime
+                .block_on(crate::sharing::create_one_use_view_link(
+                    &path,
+                    collab_types::FileRecordId::new()
+                ))
+                .unwrap()
                 .is_err()
         );
         assert_eq!(std::fs::read(&path).unwrap(), b"local document");
