@@ -121,6 +121,12 @@ PY
 source_revision="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["source_revision"])' <<<"$verified")"
 generation="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["generation"])' <<<"$verified")"
 [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || die "SLSA source revision is invalid"
+if [ -n "${TILO_EXPECTED_OS_SOURCE_REVISION:-}" ]; then
+  [[ "$TILO_EXPECTED_OS_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] \
+    || die "expected OS source revision is invalid"
+  [ "$source_revision" = "$TILO_EXPECTED_OS_SOURCE_REVISION" ] \
+    || die "signed $profile target source differs from pinned installer source"
+fi
 [[ "$generation" =~ ^[1-9][0-9]*$ ]] || die "SLSA generation is invalid"
 [ "$profile" != lenovo-83ed ] || [ "$generation" = 1 ] || die "Lenovo board must be generation 1"
 echo "verified CI $profile target $image from source $source_revision generation $generation"
