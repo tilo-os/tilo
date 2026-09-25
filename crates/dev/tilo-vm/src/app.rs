@@ -1312,18 +1312,7 @@ impl App {
                 alternative: "run tilo-vm vm create from a Tilo worktree: the qemu adapter drives os/dev/vm.sh".into(),
             });
         }
-        if args.headless && choice.adapter != "whpx" {
-            return Err(CliError::Unsupported {
-                what: format!("--headless with the {} adapter", choice.adapter),
-                alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
-            });
-        }
-        if args.direct_boot_bundle.is_some() && choice.adapter != "whpx" {
-            return Err(CliError::Unsupported {
-                what: format!("--direct-boot-bundle with the {} adapter", choice.adapter),
-                alternative: "use --hypervisor whpx on Windows ARM64".into(),
-            });
-        }
+        Self::validate_create_options(choice.adapter, args)?;
         if !sshkey::key_path(&self.registry_path, &args.name).exists() && !on_path("ssh-keygen") {
             return Err(CliError::ToolMissing {
                 tool: "ssh-keygen".into(),
@@ -1402,6 +1391,22 @@ impl App {
             published,
             disk_path,
         })
+    }
+
+    fn validate_create_options(adapter: &str, args: &CreateArgs) -> Result<(), CliError> {
+        if args.headless && adapter != "whpx" {
+            return Err(CliError::Unsupported {
+                what: format!("--headless with the {adapter} adapter"),
+                alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
+            });
+        }
+        if args.direct_boot_bundle.is_some() && adapter != "whpx" {
+            return Err(CliError::Unsupported {
+                what: format!("--direct-boot-bundle with the {adapter} adapter"),
+                alternative: "use --hypervisor whpx on Windows ARM64".into(),
+            });
+        }
+        Ok(())
     }
 
     #[expect(
