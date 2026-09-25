@@ -149,11 +149,12 @@ jobs:
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
             else
-              # A protected manual or nightly main publication uses the same native,
-              # large-disk fleet as the proven integration build. Its VM gate
-              # already falls back to TCG inside Kata when KVM is unavailable.
-              # Tags retain the dedicated release fleet above.
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}'
+              # A protected manual or nightly main publication uses the same native
+              # runner-large fleet as the integration build below; its runner
+              # image carries the release signer. Its VM gate already falls
+              # back to TCG inside Kata when KVM is unavailable. Tags retain
+              # the dedicated release fleet above.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"}]}'
             fi
           else
             # Main integration images feed both native dev VM architectures.
