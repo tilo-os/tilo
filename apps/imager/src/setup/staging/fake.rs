@@ -407,7 +407,7 @@ mod tests {
         };
         let basis = basis_of(platform);
         let plan = plan::with_loader_path(
-            plan::compute(&basis, facts.requirements(34 * GIB)).unwrap(),
+            plan::compute(&basis, facts.requirements(35 * GIB)).unwrap(),
             &facts.efi_path,
         );
         let mut profile = serde_json::Map::new();

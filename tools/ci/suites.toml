@@ -28,6 +28,8 @@
 name = "os"
 inputs = ["os/"]
 suites = [
+  "os/dev/test-install-copy-scratch-cleanup.sh",
+  "os/dev/test-install-copy-scratch.py",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",

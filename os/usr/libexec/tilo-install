@@ -95,6 +95,7 @@ EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artif
 BOOT_MENU="${TILO_INSTALL_BOOT_MENU:-/usr/libexec/tilo-install-boot-menu}"
 BOOT_MOUNT_CONTRACT="${TILO_BOOT_MOUNT_CONTRACT:-/usr/libexec/tilo-boot-mount-contract}"
 LOCALE_CATALOG=/usr/share/tilo/installer-locales.txt
+BOOT_MOUNT_CONTRACT="${TILO_BOOT_MOUNT_CONTRACT:-/usr/libexec/tilo-boot-mount-contract}"
 
 # Alongside installs share a firmware-visible FAT ESP with Tilo's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -202,6 +203,7 @@ if [ -z "${TILO_INSTALL_TRANSIENT:-}" ] && command -v systemd-run >/dev/null 2>&
     --collect --quiet --wait \
     --unit="tilo-install-$$" \
     --property=Type=exec \
+    --property=PrivateMounts=yes \
     --property="StandardInput=file:$INPUT" \
     --property="StandardOutput=append:$OUTPUT" \
     --property="StandardError=append:$OUTPUT" \
@@ -241,6 +243,7 @@ ALONGSIDE=0
 GUIDED_ALONGSIDE=0
 PREFLIGHT_ALONGSIDE=0
 ROOT_PARTITION=""
+BOOT_PARTITION=""
 EFI_PARTITION=""
 CONFIRM_ERASE=""
 CONFIRM_ROOT=""
@@ -250,17 +253,22 @@ EXPECT_DISK_WWN=""
 EXPECT_DISK_SERIAL=""
 EXPECT_ROOT_PARTUUID=""
 EXPECT_ROOT_SIZE_BYTES=""
+EXPECT_BOOT_PARTUUID=""
+EXPECT_BOOT_SIZE_BYTES=""
 EXPECT_EFI_PARTUUID=""
 EXPECT_EFI_SIZE_BYTES=""
 FREE_START_BYTES=""
 FREE_SIZE_BYTES=""
 EFI_START_BYTES=""
 EFI_SIZE_BYTES=""
+BOOT_START_BYTES=""
+BOOT_SIZE_BYTES=""
 ROOT_START_BYTES=""
 ROOT_SIZE_BYTES=""
 EXPECT_DISK_PTUUID=""
 EXPECT_LOGICAL_SECTOR_SIZE=""
 NEW_EFI_PARTUUID=""
+NEW_BOOT_PARTUUID=""
 NEW_ROOT_PARTUUID=""
 CONFIRM_FREE_SPACE=""
 INTERNAL_HANDOFF=""
@@ -284,6 +292,7 @@ while [ $# -gt 0 ]; do
     --preflight-alongside) ALONGSIDE=1; PREFLIGHT_ALONGSIDE=1; shift ;;
     --guided-alongside) ALONGSIDE=1; GUIDED_ALONGSIDE=1; shift ;;
     --root-partition) ROOT_PARTITION="${2:-}"; shift 2 ;;
+    --boot-partition) BOOT_PARTITION="${2:-}"; shift 2 ;;
     --efi-partition) EFI_PARTITION="${2:-}"; shift 2 ;;
     --confirm-erase) CONFIRM_ERASE="${2:-}"; shift 2 ;;
     --confirm-root) CONFIRM_ROOT="${2:-}"; shift 2 ;;
@@ -293,17 +302,22 @@ while [ $# -gt 0 ]; do
     --expect-disk-serial) EXPECT_DISK_SERIAL="${2:-}"; shift 2 ;;
     --expect-root-partuuid) EXPECT_ROOT_PARTUUID="${2:-}"; shift 2 ;;
     --expect-root-size-bytes) EXPECT_ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --expect-boot-partuuid) EXPECT_BOOT_PARTUUID="${2:-}"; shift 2 ;;
+    --expect-boot-size-bytes) EXPECT_BOOT_SIZE_BYTES="${2:-}"; shift 2 ;;
     --expect-efi-partuuid) EXPECT_EFI_PARTUUID="${2:-}"; shift 2 ;;
     --expect-efi-size-bytes) EXPECT_EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
     --free-start-bytes) FREE_START_BYTES="${2:-}"; shift 2 ;;
     --free-size-bytes) FREE_SIZE_BYTES="${2:-}"; shift 2 ;;
     --efi-start-bytes) EFI_START_BYTES="${2:-}"; shift 2 ;;
     --efi-size-bytes) EFI_SIZE_BYTES="${2:-}"; shift 2 ;;
+    --boot-start-bytes) BOOT_START_BYTES="${2:-}"; shift 2 ;;
+    --boot-size-bytes) BOOT_SIZE_BYTES="${2:-}"; shift 2 ;;
     --root-start-bytes) ROOT_START_BYTES="${2:-}"; shift 2 ;;
     --root-size-bytes) ROOT_SIZE_BYTES="${2:-}"; shift 2 ;;
     --expect-disk-ptuuid) EXPECT_DISK_PTUUID="${2:-}"; shift 2 ;;
     --expect-logical-sector-size) EXPECT_LOGICAL_SECTOR_SIZE="${2:-}"; shift 2 ;;
     --new-efi-partuuid) NEW_EFI_PARTUUID="${2:-}"; shift 2 ;;
+    --new-boot-partuuid) NEW_BOOT_PARTUUID="${2:-}"; shift 2 ;;
     --new-root-partuuid) NEW_ROOT_PARTUUID="${2:-}"; shift 2 ;;
     --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
     --confirm-free-space) CONFIRM_FREE_SPACE="${2:-}"; shift 2 ;;
@@ -313,6 +327,11 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# The signed target UKI always mounts TILO_BOOT. Every supported install mode
+# must create that ext4 partition before promotion; reject any future caller
+# that tries to revive a direct, unencrypted bootc path without its mount.
+[ "$ENCRYPT" -eq 1 ] || die "the signed target UKI requires encrypted TILO_BOOT layout"
 
 [ -n "$DISK" ] || die "missing --disk <device>"
 [ -n "$USERNAME" ] || die "missing --user <name>"
@@ -332,7 +351,7 @@ fi
 if [ "$ALONGSIDE" -eq 1 ]; then
   [ -z "$CONFIRM_ERASE" ] || die "--confirm-erase cannot be used with --alongside"
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
-    [ -z "$ROOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
+    [ -z "$ROOT_PARTITION$BOOT_PARTITION$EFI_PARTITION$CONFIRM_ROOT" ] \
       || die "guided alongside creates its own partitions; prepared partition arguments are not allowed"
     [ "$CONFIRM_FREE_SPACE" = "$DISK" ] \
       || die "guided alongside requires --confirm-free-space matching --disk"
@@ -345,6 +364,16 @@ if [ "$ALONGSIDE" -eq 1 ]; then
       || die "missing or invalid --new-root-partuuid"
     [[ "$NEW_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
       || die "missing or invalid --new-efi-partuuid"
+    if [ "$ENCRYPT" -eq 1 ]; then
+      for value in BOOT_START_BYTES BOOT_SIZE_BYTES; do
+        case "${!value}" in ''|*[!0-9]*|0) die "missing or invalid guided boot value $value" ;; esac
+      done
+      [[ "$NEW_BOOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+        || die "encrypted guided alongside requires --new-boot-partuuid"
+    else
+      [ -z "$BOOT_START_BYTES$BOOT_SIZE_BYTES$NEW_BOOT_PARTUUID" ] \
+        || die "boot partition arguments require encryption"
+    fi
   else
     [ -n "$ROOT_PARTITION" ] && [ -n "$EFI_PARTITION" ] \
       || die "--alongside requires --root-partition and --efi-partition"
@@ -360,14 +389,23 @@ if [ "$ALONGSIDE" -eq 1 ]; then
       || die "missing or invalid --expect-root-partuuid"
     [[ "$EXPECT_EFI_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
       || die "missing or invalid --expect-efi-partuuid"
+    if [ "$ENCRYPT" -eq 1 ]; then
+      [ -n "$BOOT_PARTITION" ] || die "encrypted alongside requires --boot-partition"
+      case "$EXPECT_BOOT_SIZE_BYTES" in ''|*[!0-9]*|0) die "missing or invalid --expect-boot-size-bytes" ;; esac
+      [[ "$EXPECT_BOOT_PARTUUID" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] \
+        || die "missing or invalid --expect-boot-partuuid"
+    else
+      [ -z "$BOOT_PARTITION$EXPECT_BOOT_PARTUUID$EXPECT_BOOT_SIZE_BYTES" ] \
+        || die "boot partition arguments require encryption"
+    fi
   fi
 else
-  [ -z "$ROOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
+  [ -z "$ROOT_PARTITION" ] && [ -z "$BOOT_PARTITION" ] && [ -z "$EFI_PARTITION" ] \
     || die "partition arguments require --alongside"
   [ -z "$CONFIRM_ROOT" ] || die "--confirm-root requires --alongside"
   [ "$CONFIRM_ERASE" = "$DISK" ] \
     || die "whole-disk install requires --confirm-erase matching --disk"
-  [ -z "$EXPECT_ROOT_PARTUUID$EXPECT_ROOT_SIZE_BYTES$EXPECT_EFI_PARTUUID$EXPECT_EFI_SIZE_BYTES" ] \
+  [ -z "$EXPECT_ROOT_PARTUUID$EXPECT_ROOT_SIZE_BYTES$EXPECT_BOOT_PARTUUID$EXPECT_BOOT_SIZE_BYTES$EXPECT_EFI_PARTUUID$EXPECT_EFI_SIZE_BYTES" ] \
     || die "expected partition identity arguments require --alongside"
   [ "$GUIDED_ALONGSIDE" -eq 0 ] && [ -z "$FREE_START_BYTES$FREE_SIZE_BYTES$EFI_START_BYTES$EFI_SIZE_BYTES$ROOT_START_BYTES$ROOT_SIZE_BYTES$EXPECT_DISK_PTUUID$EXPECT_LOGICAL_SECTOR_SIZE$NEW_EFI_PARTUUID$NEW_ROOT_PARTUUID$CONFIRM_FREE_SPACE" ] \
     && [ "${#EXPECTED_PARTITIONS[@]}" -eq 0 ] || die "guided partition arguments require --guided-alongside"
@@ -574,6 +612,7 @@ if [ "$TARGET_MAJ_MIN" = "$LIVE_MAJ_MIN" ]; then
     --disk "$DISK" --mode guided \
     --free-start-bytes "$FREE_START_BYTES" --free-size-bytes "$FREE_SIZE_BYTES" \
     --efi-start-bytes "$EFI_START_BYTES" --efi-size-bytes "$EFI_SIZE_BYTES" \
+    --boot-start-bytes "$BOOT_START_BYTES" --boot-size-bytes "$BOOT_SIZE_BYTES" \
     --root-start-bytes "$ROOT_START_BYTES" --root-size-bytes "$ROOT_SIZE_BYTES" \
     --sector-size "$EXPECT_LOGICAL_SECTOR_SIZE")" \
     || die "$DISK holds the running installer and the staged plan could not be verified — refusing to install onto it"
@@ -588,7 +627,7 @@ elif [ -n "$INTERNAL_HANDOFF" ]; then
 fi
 
 validate_alongside() {
-  local root_parent efi_parent root_type efi_type efi_fs mountpoints signature_types tool
+  local root_parent boot_parent efi_parent root_type boot_type efi_type efi_fs mountpoints signature_types tool
   local efi_mountpoints efi_probe efi_available other_tilo_roots
   for tool in blockdev blkid df fsck.fat lsblk wipefs "mkfs.$FILESYSTEM" mount umount sfdisk partx; do
     command -v "$tool" >/dev/null 2>&1 || die "missing required tool for alongside install: $tool"
@@ -599,6 +638,29 @@ validate_alongside() {
     || die "$EFI_PARTITION is not a partition"
   validate_partition_identity "$ROOT_PARTITION" "$EXPECT_ROOT_PARTUUID" "$EXPECT_ROOT_SIZE_BYTES" "Tilo root partition"
   validate_partition_identity "$EFI_PARTITION" "$EXPECT_EFI_PARTUUID" "$EXPECT_EFI_SIZE_BYTES" "EFI partition"
+  if [ "$ENCRYPT" -eq 1 ]; then
+    [ -b "$BOOT_PARTITION" ] && [ "$(lsblk -dno TYPE "$BOOT_PARTITION" 2>/dev/null)" = part ] \
+      || die "$BOOT_PARTITION is not a partition"
+    validate_partition_identity "$BOOT_PARTITION" "$EXPECT_BOOT_PARTUUID" "$EXPECT_BOOT_SIZE_BYTES" "Tilo boot partition"
+    [ "$BOOT_PARTITION" != "$ROOT_PARTITION" ] && [ "$BOOT_PARTITION" != "$EFI_PARTITION" ] \
+      || die "alongside boot partition must be distinct from root and EFI"
+    boot_parent="$(lsblk -no PKNAME "$BOOT_PARTITION" 2>/dev/null | head -1)"
+    [ -n "$boot_parent" ] && [ "$(readlink -f "/dev/$boot_parent")" = "$DISK" ] \
+      || die "alongside boot partition must belong to $DISK"
+    boot_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$BOOT_PARTITION" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    [ "$boot_type" = 0fc63daf-8483-4772-8e79-3d69d8477de4 ] \
+      || die "$BOOT_PARTITION is not explicitly typed as a Linux boot partition"
+    [ "$(blockdev --getsize64 "$BOOT_PARTITION")" -ge 1073741824 ] \
+      || die "$BOOT_PARTITION is smaller than the 1 GiB boot minimum"
+    mountpoints="$(lsblk -nro MOUNTPOINT "$BOOT_PARTITION")" \
+      || die "could not inspect $BOOT_PARTITION mount state"
+    [ -z "$(printf '%s' "$mountpoints" | tr -d '[:space:]')" ] \
+      || die "$BOOT_PARTITION is mounted"
+    signature_types="$(wipefs --noheadings --no-act --output TYPE "$BOOT_PARTITION")" \
+      || die "could not inspect signatures on $BOOT_PARTITION"
+    [ -z "$(printf '%s' "$signature_types" | tr -d '[:space:]')" ] \
+      || die "$BOOT_PARTITION contains a filesystem or volume signature"
+  fi
   root_parent="$(lsblk -no PKNAME "$ROOT_PARTITION" 2>/dev/null | head -1)"
   efi_parent="$(lsblk -no PKNAME "$EFI_PARTITION" 2>/dev/null | head -1)"
   [ -n "$root_parent" ] && [ -n "$efi_parent" ] \
@@ -689,6 +751,9 @@ if [ "$PREFLIGHT_ALONGSIDE" -eq 1 ]; then
   exit 0
 fi
 
+# Bind the reviewed disk immediately before guided GPT mutation.
+validate_disk_identity
+
 if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
   step "Creating Tilo partitions in the reviewed unallocated space (existing partitions are preserved)"
   GUIDED_ARGS=(
@@ -702,6 +767,10 @@ if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
     --root-start-bytes "$ROOT_START_BYTES" --root-size-bytes "$ROOT_SIZE_BYTES"
     --new-efi-partuuid "$NEW_EFI_PARTUUID" --new-root-partuuid "$NEW_ROOT_PARTUUID"
   )
+  if [ "$ENCRYPT" -eq 1 ]; then
+    GUIDED_ARGS+=(--boot-start-bytes "$BOOT_START_BYTES" --boot-size-bytes "$BOOT_SIZE_BYTES"
+                  --new-boot-partuuid "$NEW_BOOT_PARTUUID")
+  fi
   [ -z "$EXPECT_DISK_WWN" ] || GUIDED_ARGS+=(--expect-disk-wwn "$EXPECT_DISK_WWN")
   [ -z "$EXPECT_DISK_SERIAL" ] || GUIDED_ARGS+=(--expect-disk-serial "$EXPECT_DISK_SERIAL")
   # The staged installer's own partitions stay mounted, so the kernel cannot
@@ -713,24 +782,33 @@ if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
   GUIDED_RESULT="$("$GUIDED_PARTITION" "${GUIDED_ARGS[@]}")"
   EFI_PARTITION="$(printf '%s\n' "$GUIDED_RESULT" | sed -n 's/^EFI_PARTITION=//p' | tail -n 1)"
   ROOT_PARTITION="$(printf '%s\n' "$GUIDED_RESULT" | sed -n 's/^ROOT_PARTITION=//p' | tail -n 1)"
+  BOOT_PARTITION="$(printf '%s\n' "$GUIDED_RESULT" | sed -n 's/^BOOT_PARTITION=//p' | tail -n 1)"
   [ -n "$EFI_PARTITION" ] && [ -n "$ROOT_PARTITION" ] \
     || die "guided partition helper did not report the partitions it created"
   EXPECT_EFI_PARTUUID="$NEW_EFI_PARTUUID"
   EXPECT_EFI_SIZE_BYTES="$EFI_SIZE_BYTES"
   EXPECT_ROOT_PARTUUID="$NEW_ROOT_PARTUUID"
   EXPECT_ROOT_SIZE_BYTES="$ROOT_SIZE_BYTES"
+  if [ "$ENCRYPT" -eq 1 ]; then
+    [ -n "$BOOT_PARTITION" ] || die "guided partition helper did not report the boot partition"
+    EXPECT_BOOT_PARTUUID="$NEW_BOOT_PARTUUID"
+    EXPECT_BOOT_SIZE_BYTES="$BOOT_SIZE_BYTES"
+    log "  created boot: $BOOT_PARTITION"
+  fi
   log "  created EFI : $EFI_PARTITION"
   log "  created root: $ROOT_PARTITION"
 fi
 
 if [ "$ALONGSIDE" -eq 1 ]; then
   ROOT_PARTITION="$(readlink -f "$ROOT_PARTITION")"
+  [ -z "$BOOT_PARTITION" ] || BOOT_PARTITION="$(readlink -f "$BOOT_PARTITION")"
   EFI_PARTITION="$(readlink -f "$EFI_PARTITION")"
   validate_alongside
-  log "  alongside   : preserve partition table; format only $ROOT_PARTITION"
   if [ "$GUIDED_ALONGSIDE" -eq 1 ]; then
-    log "  Tilo ESP     : $EFI_PARTITION (new; existing operating-system ESPs stay untouched)"
+    log "  alongside   : preserve existing partitions; format new EFI $EFI_PARTITION, boot $BOOT_PARTITION, and encrypted root $ROOT_PARTITION"
+    log "  Tilo ESP    : $EFI_PARTITION (new; existing operating-system ESPs stay untouched)"
   else
+    log "  alongside   : format prepared boot $BOOT_PARTITION and encrypted root $ROOT_PARTITION; preserve all other partitions"
     log "  shared ESP  : $EFI_PARTITION (preserved, not formatted)"
   fi
   FIRMWARE_STATE="$(mktemp)"
@@ -828,7 +906,7 @@ promote_target_uki() {
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
     || die "target UKI lacks Tilo root discovery"
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" \
-    | grep -qw 'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec' \
+    | grep -Fqw 'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec' \
     || die "target UKI lacks the signed TILO_BOOT mount contract"
   ! /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw tilo.install \
     || die "target UKI still contains the live installer marker"
@@ -853,37 +931,87 @@ promote_target_uki() {
     -exec install -m 0644 {} "$esp/EFI/tilo/pcr-predictions/" \;
 }
 
-# --- 1. copy booted image into local container storage -----------------------
-step "Copying the running Tilo image into local container storage"
-VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache.py
-# VM development can bind-mount the backend and helper from its writable
-# overlay. The sealed /usr tree cannot gain a helper without an image rebuild.
-if [ ! -f "$VM_COPY_CACHE" ] \
-    && [ -f /var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py ]; then
-  VM_COPY_CACHE=/var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py
-fi
-VM_COPY_CACHE_MARKER=/run/tilo-installer/vm-bootc-copy-cache.enabled
-VM_CACHED_COPY=0
-if [ -e "$VM_COPY_CACHE_MARKER" ] \
-    && python3 "$VM_COPY_CACHE" check; then
-  log "  -> reusing the exact booted image from VM-local container storage"
-  VM_CACHED_COPY=1
-else
-  bootc image copy-to-storage
-fi
-LOCAL_IMG="$(podman image inspect --format '{{.Id}}' "$LOCAL_IMG")"
-[[ "$LOCAL_IMG" =~ ^sha256:[0-9a-f]{64}$ ]] || die "offline image did not resolve to an immutable ID"
-log "  -> $LOCAL_IMG"
-if [ "$VM_CACHED_COPY" -eq 0 ] && [ -e "$VM_COPY_CACHE_MARKER" ]; then
-  # Receipt creation only accelerates later VM retries; a failed write must
-  # never change the completed export or the physical install path.
-  python3 "$VM_COPY_CACHE" record \
-    || log "  -> VM copy cache receipt unavailable; next run will copy again"
-fi
+# Reuse an exact VM-local cached copy when present. For an encrypted install,
+# the newly formatted target also backs bootc's large temporary export.
+MIN_BOOTC_SCRATCH_FREE_BYTES=25769803776
+COPY_SCRATCH=""
+COPY_SCRATCH_MOUNTED=0
+release_copy_scratch() {
+  if [ "$COPY_SCRATCH_MOUNTED" -eq 1 ]; then
+    umount /var/tmp || return 1
+    COPY_SCRATCH_MOUNTED=0
+  fi
+  if [ -n "$COPY_SCRATCH" ]; then
+    [ "$COPY_SCRATCH" = "$ENC_MNT/.tilo-bootc-copy-tmp" ] || return 1
+    [ ! -L "$COPY_SCRATCH" ] || return 1
+    rm -rf --one-file-system -- "$COPY_SCRATCH" || return 1
+    COPY_SCRATCH=""
+  fi
+}
+use_encrypted_copy_scratch() {
+  local scratch_available
+  [ "$ENCRYPT" -eq 1 ] || return 0
+  [ -d /var/tmp ] && [ ! -L /var/tmp ] || die "/var/tmp is not a real directory"
+  ! mountpoint -q /var/tmp || die "/var/tmp is already a separate mount"
+  [ -n "$ENC_MNT" ] && mountpoint -q "$ENC_MNT" \
+    || die "encrypted target root is not mounted for bootc scratch"
+  scratch_available="$(df -B1 --output=avail "$ENC_MNT" | tail -n 1 | tr -d '[:space:]')"
+  case "$scratch_available" in ''|*[!0-9]*) die "cannot measure encrypted bootc scratch space" ;; esac
+  [ "$scratch_available" -ge "$MIN_BOOTC_SCRATCH_FREE_BYTES" ] \
+    || die "encrypted target has less than 24 GiB free for bootc export"
+  COPY_SCRATCH="$ENC_MNT/.tilo-bootc-copy-tmp"
+  [ ! -e "$COPY_SCRATCH" ] && [ ! -L "$COPY_SCRATCH" ] \
+    || die "encrypted target already contains bootc scratch"
+  install -d -m 1777 -- "$COPY_SCRATCH"
+  chcon --reference=/var/tmp -- "$COPY_SCRATCH" \
+    || die "could not give encrypted bootc scratch the /var/tmp SELinux label"
+  [ "$(stat -c '%u:%a' -- "$COPY_SCRATCH")" = 0:1777 ] \
+    || die "bootc scratch permissions are unsafe"
+  [ "$(stat -c '%C' -- "$COPY_SCRATCH")" = "$(stat -c '%C' -- /var/tmp)" ] \
+    || die "bootc scratch SELinux label is unsafe"
+  if ! mount --bind -- "$COPY_SCRATCH" /var/tmp; then
+    if mountpoint -q /var/tmp; then COPY_SCRATCH_MOUNTED=1; fi
+    die "could not bind encrypted bootc scratch to /var/tmp"
+  fi
+  COPY_SCRATCH_MOUNTED=1
+  [ "$(stat -c '%d:%i' -- /var/tmp)" = "$(stat -c '%d:%i' -- "$COPY_SCRATCH")" ] \
+    || die "/var/tmp is not the reviewed encrypted scratch directory"
+}
+copy_booted_image() {
+  step "Copying the running Tilo image into local container storage"
+  VM_COPY_CACHE=/usr/libexec/tilo-vm-bootc-copy-cache.py
+  # VM development can bind-mount the backend and helper from its writable
+  # overlay. The sealed /usr tree cannot gain a helper without an image rebuild.
+  if [ ! -f "$VM_COPY_CACHE" ] \
+      && [ -f /var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py ]; then
+    VM_COPY_CACHE=/var/lib/tilo-installer/vm-cache-code/tilo-vm-bootc-copy-cache.py
+  fi
+  VM_COPY_CACHE_MARKER=/run/tilo-installer/vm-bootc-copy-cache.enabled
+  VM_CACHED_COPY=0
+  if [ -e "$VM_COPY_CACHE_MARKER" ] \
+      && python3 "$VM_COPY_CACHE" check; then
+    log "  -> reusing the exact booted image from VM-local container storage"
+    VM_CACHED_COPY=1
+  else
+    use_encrypted_copy_scratch
+    TMPDIR=/var/tmp bootc image copy-to-storage
+    release_copy_scratch || die "could not remove bootc scratch mount"
+  fi
+  LOCAL_IMG="$(podman image inspect --format '{{.Id}}' "$LOCAL_IMG")"
+  [[ "$LOCAL_IMG" =~ ^(sha256:)?[0-9a-f]{64}$ ]] || die "offline image did not resolve to an immutable ID"
+  log "  -> $LOCAL_IMG"
+  if [ "$VM_CACHED_COPY" -eq 0 ] && [ -e "$VM_COPY_CACHE_MARKER" ]; then
+    # Receipt creation only accelerates later VM retries; a failed write must
+    # never change the completed export or the physical install path.
+    python3 "$VM_COPY_CACHE" record \
+      || log "  -> VM copy cache receipt unavailable; next run will copy again"
+  fi
 
-# Image staging can take minutes. Revalidate at the last common point before
-# either install mode formats or repartitions anything, closing the hotplug
-# race between Review and destructive work.
+  validate_disk_identity
+}
+
+# Recheck the selected disk before preparing the encrypted target. The source
+# copy now follows preparation so its scratch cannot fill the live staging root.
 validate_disk_identity
 
 # --- 2. install the base system ----------------------------------------------
@@ -907,7 +1035,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   if [ "$ALONGSIDE" -eq 1 ]; then
     validate_alongside
     mark_alongside_tilo_root
-    PREP="$("$DISK_ENCRYPT" prepare-partition "$ROOT_PARTITION" --efi "$EFI_PARTITION" --filesystem "$FILESYSTEM" 2>&3)"
+    PREP="$("$DISK_ENCRYPT" prepare-partition "$ROOT_PARTITION" --boot "$BOOT_PARTITION" --efi "$EFI_PARTITION" --filesystem "$FILESYSTEM" 2>&3)"
   else
     PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
   fi
@@ -919,13 +1047,6 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_BOOT_PART="$(printf '%s\n' "$PREP" | sed -n 's/^BOOT_PART=//p')"
   ROOT_FS_UUID="$ENC_ROOT_UUID"
   ENC_KARGS="$(printf '%s\n' "$PREP" | sed -n 's/^KARGS=//p')"
-  [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_BOOT_PART" ] && [ -n "$ENC_KARGS" ] \
-    || die "encryption: tilo-disk-encrypt prepare did not report the volume it made"
-  ENC_BOOT_MOUNT_SPEC="$("$BOOT_MOUNT_CONTRACT" --disk "$DISK" --boot-part "$ENC_BOOT_PART" --target-root "$ENC_MNT")" \
-    || die "encryption: invalid prepared /boot contract"
-  [ "$ENC_BOOT_MOUNT_SPEC" = LABEL=TILO_BOOT ] \
-    || die "encryption: prepared /boot contract is not the signed TILO_BOOT label"
-
   # From here the volume is open and the tree is mounted. If anything below fails
   # the installer exits without reaching `finish`, so close them on the way out —
   # otherwise a retry finds a mounted disk it refuses to touch. Key slots are
@@ -936,10 +1057,45 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_CLEANUP_TARGET="$DISK"
   [ "$ALONGSIDE" -eq 0 ] || ENC_CLEANUP_TARGET="$ROOT_PARTITION"
   cleanup_encrypted_install() {
-    "$DISK_ENCRYPT" teardown "$ENC_CLEANUP_TARGET" --mnt "$ENC_MNT" >/dev/null 2>&1 || true
+    if ! release_copy_scratch; then
+      log "error: could not remove bootc scratch mount; leaving LUKS open for safe recovery"
+      [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
+      return 1
+    fi
+    "$DISK_ENCRYPT" teardown "$ENC_CLEANUP_TARGET" --mnt "${ENC_MNT:-/run/tilo-install/target}" >/dev/null 2>&1 || true
     [ "$ALONGSIDE" -eq 0 ] || restore_firmware_boot_state
   }
   trap cleanup_encrypted_install EXIT
+  # A failed export leaves its scratch mounted; never close LUKS beneath it.
+  [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_KEYFILE" ] \
+    && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_BOOT_PART" ] && [ -n "$ENC_KARGS" ] \
+    || die "encryption: tilo-disk-encrypt prepare did not report the volume it made"
+  ENC_BOOT_MOUNT_SPEC="$("$BOOT_MOUNT_CONTRACT" --disk "$DISK" --boot-part "$ENC_BOOT_PART" --target-root "$ENC_MNT")" \
+    || die "encryption: invalid prepared /boot contract"
+  expected_boot_uuid="$(blkid -s UUID -o value "$ENC_BOOT_PART" 2>/dev/null || true)"
+  [ -n "$expected_boot_uuid" ] && [ "$ENC_BOOT_MOUNT_SPEC" = "UUID=${expected_boot_uuid,,}" ] \
+    || die "encryption: prepared /boot UUID does not match the validated TILO_BOOT partition"
+  copy_booted_image
+  [ "$COPY_SCRATCH_MOUNTED" -eq 0 ] && [ -z "$COPY_SCRATCH" ] \
+    || die "bootc scratch still occupies /var/tmp"
+  [ -n "$ENC_MNT" ] && mountpoint -q "$ENC_MNT" \
+    || die "prepared encrypted root is no longer mounted"
+  prepared_root_source="$(findmnt -nro SOURCE --mountpoint "$ENC_MNT")"
+  [ -n "$prepared_root_source" ] \
+    && [ "$(blkid -s UUID -o value "$prepared_root_source")" = "$ENC_ROOT_UUID" ] \
+    || die "prepared encrypted root UUID changed"
+  [ "$(readlink -f "$(findmnt -nro SOURCE --mountpoint "$ENC_MNT/boot")")" = "$(readlink -f "$ENC_BOOT_PART")" ] \
+    || die "prepared Tilo boot mount changed"
+  if [ "$ALONGSIDE" -eq 1 ]; then
+    validate_partition_identity "$ROOT_PARTITION" "$EXPECT_ROOT_PARTUUID" "$EXPECT_ROOT_SIZE_BYTES" "Tilo root partition"
+    validate_partition_identity "$BOOT_PARTITION" "$EXPECT_BOOT_PARTUUID" "$EXPECT_BOOT_SIZE_BYTES" "Tilo boot partition"
+    validate_partition_identity "$EFI_PARTITION" "$EXPECT_EFI_PARTUUID" "$EXPECT_EFI_SIZE_BYTES" "EFI partition"
+    [ "$(readlink -f "$ENC_LUKS")" = "$ROOT_PARTITION" ] \
+      && [ "$(readlink -f "$ENC_BOOT_PART")" = "$BOOT_PARTITION" ] \
+      || die "prepared encrypted partitions differ from the reviewed target"
+    [ "$(readlink -f "$(findmnt -nro SOURCE --mountpoint "$ENC_MNT/boot/efi")")" = "$EFI_PARTITION" ] \
+      || die "prepared EFI mount differs from the reviewed target"
+  fi
 
   # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
   # and the account/hostname/keyboard seeding below writes into the deployment's
@@ -954,6 +1110,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
     --security-opt label=type:unconfined_t \
     "$LOCAL_IMG" \
     bootc install to-filesystem \
+      --composefs-backend \
       --boot-mount-spec "$ENC_BOOT_MOUNT_SPEC" \
       --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize \
@@ -962,6 +1119,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   promote_target_uki "$ENC_MNT/boot/efi"
   BOOT_ESP_ROOT="$ENC_MNT/boot/efi"
 elif [ "$ALONGSIDE" -eq 1 ]; then
+  copy_booted_image
   validate_alongside
   mark_alongside_tilo_root
   step "Formatting only $ROOT_PARTITION for Tilo; preserving every other partition"
@@ -993,6 +1151,7 @@ elif [ "$ALONGSIDE" -eq 1 ]; then
   promote_target_uki "$ALONGSIDE_MNT/boot/efi"
   BOOT_ESP_ROOT="$ALONGSIDE_MNT/boot/efi"
 else
+  copy_booted_image
   step "Installing Tilo onto $DISK (this ERASES the disk; unencrypted)"
   podman run --rm --privileged --pid=host --ipc=host \
     -v /var/lib/containers:/var/lib/containers \

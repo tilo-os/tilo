@@ -46,7 +46,7 @@ pub struct PartitionExtent {
     pub size_bytes: u64,
 }
 
-/// A non-destructive plan that appends Tilo's two partitions inside one exact
+/// A non-destructive plan that appends Tilo's three partitions inside one exact
 /// unallocated GPT extent. It never represents space reclaimed by resizing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuidedAlongsidePlan {
@@ -54,6 +54,8 @@ pub struct GuidedAlongsidePlan {
     pub free_size_bytes: u64,
     pub efi_start_bytes: u64,
     pub efi_size_bytes: u64,
+    pub boot_start_bytes: u64,
+    pub boot_size_bytes: u64,
     pub root_start_bytes: u64,
     pub root_size_bytes: u64,
 }
@@ -84,6 +86,15 @@ impl DiskPartition {
             && self.mountpoint.is_empty()
             && (self.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID)
                 || self.part_type.eq_ignore_ascii_case(TILO_ROOT_GUID))
+    }
+
+    pub fn is_alongside_boot_candidate(&self) -> bool {
+        self.size_bytes >= 1024 * 1024 * 1024
+            && self.size_bytes < MIN_ALONGSIDE_BYTES
+            && !self.part_uuid.is_empty()
+            && self.filesystem.is_empty()
+            && self.mountpoint.is_empty()
+            && self.part_type.eq_ignore_ascii_case(LINUX_FILESYSTEM_GUID)
     }
 
     pub fn is_efi(&self) -> bool {
@@ -146,6 +157,14 @@ impl Disk {
             self.partitions
                 .iter()
                 .filter(|p| p.is_alongside_candidate()),
+        )
+    }
+
+    pub fn alongside_boot(&self) -> Option<&DiskPartition> {
+        exactly_one(
+            self.partitions
+                .iter()
+                .filter(|p| p.is_alongside_boot_candidate()),
         )
     }
 
@@ -215,6 +234,7 @@ impl Disk {
             && self.identity_ready()
             && !self.read_only
             && self.alongside_root().is_some()
+            && self.alongside_boot().is_some()
             && self.efi_partition().is_some()
     }
 
@@ -251,7 +271,7 @@ impl Disk {
     }
 
     /// Return every unallocated GPT extent that can hold a dedicated 2 GiB
-    /// ESP plus a >=32 GiB root, in on-disk order. Callers must require an
+    /// ESP plus a 1 GiB boot and >=32 GiB root, in on-disk order. Callers must require an
     /// explicit choice when this returns more than one plan.
     pub fn guided_alongside_plans(&self) -> Vec<GuidedAlongsidePlan> {
         if let Some(plan) = &self.internal_plan {
@@ -289,11 +309,16 @@ impl Disk {
                 let Some(size) = end.checked_sub(start) else {
                     return Vec::new();
                 };
-                if size >= MIN_ALONGSIDE_ESP_BYTES + MIN_ALONGSIDE_BYTES {
-                    let Some(root_start) = start.checked_add(MIN_ALONGSIDE_ESP_BYTES) else {
+                if size >= MIN_ALONGSIDE_ESP_BYTES + 1024 * 1024 * 1024 + MIN_ALONGSIDE_BYTES {
+                    let Some(boot_start) = start.checked_add(MIN_ALONGSIDE_ESP_BYTES) else {
                         return Vec::new();
                     };
-                    let Some(root_size) = size.checked_sub(MIN_ALONGSIDE_ESP_BYTES) else {
+                    let Some(root_start) = boot_start.checked_add(1024 * 1024 * 1024) else {
+                        return Vec::new();
+                    };
+                    let Some(root_size) =
+                        size.checked_sub(MIN_ALONGSIDE_ESP_BYTES + 1024 * 1024 * 1024)
+                    else {
                         return Vec::new();
                     };
                     candidates.push(GuidedAlongsidePlan {
@@ -301,6 +326,8 @@ impl Disk {
                         free_size_bytes: size,
                         efi_start_bytes: start,
                         efi_size_bytes: MIN_ALONGSIDE_ESP_BYTES,
+                        boot_start_bytes: boot_start,
+                        boot_size_bytes: 1024 * 1024 * 1024,
                         root_start_bytes: root_start,
                         root_size_bytes: root_size,
                     });
@@ -445,11 +472,14 @@ impl Disk {
         let free_end = free_start_bytes
             .checked_add(free_size_bytes)
             .ok_or_else(malformed)?;
-        let root_start_bytes = free_start_bytes
+        let boot_start_bytes = free_start_bytes
             .checked_add(MIN_ALONGSIDE_ESP_BYTES)
             .ok_or_else(malformed)?;
+        let root_start_bytes = boot_start_bytes
+            .checked_add(1024 * 1024 * 1024)
+            .ok_or_else(malformed)?;
         let root_size_bytes = free_size_bytes
-            .checked_sub(MIN_ALONGSIDE_ESP_BYTES)
+            .checked_sub(MIN_ALONGSIDE_ESP_BYTES + 1024 * 1024 * 1024)
             .ok_or_else(malformed)?;
         if !free_start_bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
             || !free_size_bytes.is_multiple_of(PARTITION_ALIGNMENT_BYTES)
@@ -469,6 +499,8 @@ impl Disk {
             free_size_bytes,
             efi_start_bytes: free_start_bytes,
             efi_size_bytes: MIN_ALONGSIDE_ESP_BYTES,
+            boot_start_bytes,
+            boot_size_bytes: 1024 * 1024 * 1024,
             root_start_bytes,
             root_size_bytes,
         })
@@ -903,7 +935,7 @@ mod tests {
     #[test]
     fn json_discovery_finds_safe_alongside_root_and_efi() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/nvme0n1","size":1000000000000,"model":"NVMe","type":"disk","rm":false,"ro":false,"wwn":"eui.0011223344556677","serial":"TILO-NVME","maj:min":"259:0","children":[{{"name":"/dev/nvme0n1p1","size":536870912,"type":"part","fstype":"vfat","label":"Windows EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/nvme0n1p2","size":500000000000,"type":"part","fstype":"ntfs","label":"Windows","mountpoint":null,"parttype":"basic","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/nvme0n1p3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/nvme0n1p4","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}},{{"name":"/dev/nvme0n1p5","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000005"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert_eq!(disks.len(), 1);
@@ -990,11 +1022,12 @@ mod tests {
     #[test]
     fn linux_disk_keeps_existing_filesystems_out_of_the_tilo_candidates() {
         let fixture = format!(
-            r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"TILO-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}}]}}]}}"#
+            r#"{{"blockdevices":[{{"name":"/dev/sda","size":500000000000,"model":"Linux disk","type":"disk","rm":false,"ro":false,"serial":"TILO-SATA","maj:min":"8:0","children":[{{"name":"/dev/sda1","size":2147483648,"type":"part","fstype":"vfat","label":"Tilo EFI","mountpoint":null,"parttype":"{EFI_SYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000001"}},{{"name":"/dev/sda2","size":200000000000,"type":"part","fstype":"ext4","label":"Existing Linux","mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000002"}},{{"name":"/dev/sda3","size":68719476736,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000003"}},{{"name":"/dev/sda4","size":1073741824,"type":"part","fstype":null,"label":null,"mountpoint":null,"parttype":"{LINUX_FILESYSTEM_GUID}","partuuid":"00000000-0000-0000-0000-000000000004"}}]}}]}}"#
         );
         let disks = parse_lsblk(&fixture);
         assert!(disks[0].can_install_alongside());
         assert_eq!(disks[0].alongside_root().unwrap().name, "/dev/sda3");
+        assert_eq!(disks[0].alongside_boot().unwrap().name, "/dev/sda4");
         assert_eq!(disks[0].efi_partition().unwrap().name, "/dev/sda1");
         assert_eq!(disks[0].partitions[1].filesystem, "ext4");
     }
@@ -1104,8 +1137,10 @@ mod tests {
         assert_eq!(plan.free_start_bytes, 100 * gib);
         assert_eq!(plan.efi_start_bytes, 100 * gib);
         assert_eq!(plan.efi_size_bytes, 2 * gib);
-        assert_eq!(plan.root_start_bytes, 102 * gib);
-        assert_eq!(plan.root_size_bytes, 98 * gib - PARTITION_ALIGNMENT_BYTES);
+        assert_eq!(plan.boot_start_bytes, 102 * gib);
+        assert_eq!(plan.boot_size_bytes, gib);
+        assert_eq!(plan.root_start_bytes, 103 * gib);
+        assert_eq!(plan.root_size_bytes, 97 * gib - PARTITION_ALIGNMENT_BYTES);
         assert_eq!(disk.occupied_extents().unwrap().len(), 1);
     }
 

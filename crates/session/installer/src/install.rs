@@ -171,23 +171,29 @@ pub struct InstallOptions {
     pub alongside_root: String,
     pub alongside_root_partuuid: String,
     pub alongside_root_size_bytes: u64,
+    pub alongside_boot: String,
+    pub alongside_boot_partuuid: String,
+    pub alongside_boot_size_bytes: u64,
     /// Existing EFI System Partition reused by an alongside install. It is
     /// mounted but never formatted.
     pub alongside_efi: String,
     pub alongside_efi_partuuid: String,
     pub alongside_efi_size_bytes: u64,
-    /// Non-zero only for the guided path that appends two partitions inside a
+    /// Non-zero only for the guided path that appends three partitions inside a
     /// reviewed unallocated GPT extent. Existing partitions are carried as a
     /// complete identity/geometry snapshot for privileged revalidation.
     pub guided_free_start_bytes: u64,
     pub guided_free_size_bytes: u64,
     pub guided_efi_start_bytes: u64,
     pub guided_efi_size_bytes: u64,
+    pub guided_boot_start_bytes: u64,
+    pub guided_boot_size_bytes: u64,
     pub guided_root_start_bytes: u64,
     pub guided_root_size_bytes: u64,
     pub disk_partition_table_uuid: String,
     pub disk_logical_sector_size: u64,
     pub guided_efi_partuuid: String,
+    pub guided_boot_partuuid: String,
     pub guided_root_partuuid: String,
     pub expected_partitions: Vec<PartitionExtent>,
     /// Root filesystem: `btrfs` (default), `ext4`, or `xfs`.
@@ -234,6 +240,9 @@ impl Default for InstallOptions {
             alongside_root: String::new(),
             alongside_root_partuuid: String::new(),
             alongside_root_size_bytes: 0,
+            alongside_boot: String::new(),
+            alongside_boot_partuuid: String::new(),
+            alongside_boot_size_bytes: 0,
             alongside_efi: String::new(),
             alongside_efi_partuuid: String::new(),
             alongside_efi_size_bytes: 0,
@@ -241,11 +250,14 @@ impl Default for InstallOptions {
             guided_free_size_bytes: 0,
             guided_efi_start_bytes: 0,
             guided_efi_size_bytes: 0,
+            guided_boot_start_bytes: 0,
+            guided_boot_size_bytes: 0,
             guided_root_start_bytes: 0,
             guided_root_size_bytes: 0,
             disk_partition_table_uuid: String::new(),
             disk_logical_sector_size: 0,
             guided_efi_partuuid: String::new(),
+            guided_boot_partuuid: String::new(),
             guided_root_partuuid: String::new(),
             expected_partitions: Vec::new(),
             filesystem: "btrfs".to_string(),
@@ -275,6 +287,47 @@ impl PowerAction {
             PowerAction::Reboot => "--reboot",
             PowerAction::PowerOff => "--poweroff",
         }
+    }
+}
+
+fn add_guided_alongside_args(cmd: &mut Command, disk: &str, opts: &InstallOptions) {
+    cmd.arg("--guided-alongside")
+        .arg("--free-start-bytes")
+        .arg(opts.guided_free_start_bytes.to_string())
+        .arg("--free-size-bytes")
+        .arg(opts.guided_free_size_bytes.to_string())
+        .arg("--efi-start-bytes")
+        .arg(opts.guided_efi_start_bytes.to_string())
+        .arg("--efi-size-bytes")
+        .arg(opts.guided_efi_size_bytes.to_string())
+        .arg("--boot-start-bytes")
+        .arg(opts.guided_boot_start_bytes.to_string())
+        .arg("--boot-size-bytes")
+        .arg(opts.guided_boot_size_bytes.to_string())
+        .arg("--root-start-bytes")
+        .arg(opts.guided_root_start_bytes.to_string())
+        .arg("--root-size-bytes")
+        .arg(opts.guided_root_size_bytes.to_string())
+        .arg("--expect-disk-ptuuid")
+        .arg(&opts.disk_partition_table_uuid)
+        .arg("--expect-logical-sector-size")
+        .arg(opts.disk_logical_sector_size.to_string())
+        .arg("--new-efi-partuuid")
+        .arg(&opts.guided_efi_partuuid)
+        .arg("--new-boot-partuuid")
+        .arg(&opts.guided_boot_partuuid)
+        .arg("--new-root-partuuid")
+        .arg(&opts.guided_root_partuuid)
+        .arg("--confirm-free-space")
+        .arg(disk);
+    if !opts.internal_handoff.is_empty() {
+        cmd.arg("--internal-handoff").arg(&opts.internal_handoff);
+    }
+    for partition in &opts.expected_partitions {
+        cmd.arg("--expect-partition").arg(format!(
+            "{}:{}:{}",
+            partition.part_uuid, partition.start_bytes, partition.size_bytes
+        ));
     }
 }
 
@@ -310,38 +363,7 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         cmd.arg("--locale").arg(opts.locale.trim());
     }
     if opts.guided_free_size_bytes > 0 {
-        cmd.arg("--guided-alongside")
-            .arg("--free-start-bytes")
-            .arg(opts.guided_free_start_bytes.to_string())
-            .arg("--free-size-bytes")
-            .arg(opts.guided_free_size_bytes.to_string())
-            .arg("--efi-start-bytes")
-            .arg(opts.guided_efi_start_bytes.to_string())
-            .arg("--efi-size-bytes")
-            .arg(opts.guided_efi_size_bytes.to_string())
-            .arg("--root-start-bytes")
-            .arg(opts.guided_root_start_bytes.to_string())
-            .arg("--root-size-bytes")
-            .arg(opts.guided_root_size_bytes.to_string())
-            .arg("--expect-disk-ptuuid")
-            .arg(&opts.disk_partition_table_uuid)
-            .arg("--expect-logical-sector-size")
-            .arg(opts.disk_logical_sector_size.to_string())
-            .arg("--new-efi-partuuid")
-            .arg(&opts.guided_efi_partuuid)
-            .arg("--new-root-partuuid")
-            .arg(&opts.guided_root_partuuid)
-            .arg("--confirm-free-space")
-            .arg(disk);
-        if !opts.internal_handoff.is_empty() {
-            cmd.arg("--internal-handoff").arg(&opts.internal_handoff);
-        }
-        for partition in &opts.expected_partitions {
-            cmd.arg("--expect-partition").arg(format!(
-                "{}:{}:{}",
-                partition.part_uuid, partition.start_bytes, partition.size_bytes
-            ));
-        }
+        add_guided_alongside_args(&mut cmd, disk, opts);
     } else if opts.alongside_root.is_empty() {
         // The graphical UI has already required the person to type this exact
         // device name. Repeat that decision at the privileged boundary so an
@@ -352,12 +374,18 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
         cmd.arg("--alongside")
             .arg("--root-partition")
             .arg(&opts.alongside_root)
+            .arg("--boot-partition")
+            .arg(&opts.alongside_boot)
             .arg("--efi-partition")
             .arg(&opts.alongside_efi)
             .arg("--expect-root-partuuid")
             .arg(&opts.alongside_root_partuuid)
             .arg("--expect-root-size-bytes")
             .arg(opts.alongside_root_size_bytes.to_string())
+            .arg("--expect-boot-partuuid")
+            .arg(&opts.alongside_boot_partuuid)
+            .arg("--expect-boot-size-bytes")
+            .arg(opts.alongside_boot_size_bytes.to_string())
             .arg("--expect-efi-partuuid")
             .arg(&opts.alongside_efi_partuuid)
             .arg("--expect-efi-size-bytes")
@@ -413,6 +441,8 @@ pub fn alongside_preflight_command(disk: &str, opts: &InstallOptions) -> Command
         .arg("--yes")
         .arg("--root-partition")
         .arg(&opts.alongside_root)
+        .arg("--boot-partition")
+        .arg(&opts.alongside_boot)
         .arg("--efi-partition")
         .arg(&opts.alongside_efi)
         .arg("--confirm-root")
@@ -425,6 +455,10 @@ pub fn alongside_preflight_command(disk: &str, opts: &InstallOptions) -> Command
         .arg(&opts.alongside_root_partuuid)
         .arg("--expect-root-size-bytes")
         .arg(opts.alongside_root_size_bytes.to_string())
+        .arg("--expect-boot-partuuid")
+        .arg(&opts.alongside_boot_partuuid)
+        .arg("--expect-boot-size-bytes")
+        .arg(opts.alongside_boot_size_bytes.to_string())
         .arg("--expect-efi-partuuid")
         .arg(&opts.alongside_efi_partuuid)
         .arg("--expect-efi-size-bytes")
@@ -613,6 +647,9 @@ mod tests {
             alongside_root: "/dev/nvme0n1p3".into(),
             alongside_root_partuuid: "00000000-0000-0000-0000-000000000003".into(),
             alongside_root_size_bytes: 64_000_000_000,
+            alongside_boot: "/dev/nvme0n1p5".into(),
+            alongside_boot_partuuid: "00000000-0000-0000-0000-000000000005".into(),
+            alongside_boot_size_bytes: 1_073_741_824,
             alongside_efi: "/dev/nvme0n1p4".into(),
             alongside_efi_partuuid: "00000000-0000-0000-0000-000000000004".into(),
             alongside_efi_size_bytes: 2_147_483_648,
@@ -631,6 +668,8 @@ mod tests {
             "TILO-NVME",
             "/dev/nvme0n1p3",
             "00000000-0000-0000-0000-000000000003",
+            "/dev/nvme0n1p5",
+            "00000000-0000-0000-0000-000000000005",
             "/dev/nvme0n1p4",
             "00000000-0000-0000-0000-000000000004",
         ] {
@@ -725,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn install_command_names_both_alongside_partitions() {
+    fn install_command_names_all_alongside_partitions() {
         let opts = InstallOptions {
             disk_size_bytes: 1_000_000_000_000,
             disk_major_minor: "259:0".into(),
@@ -734,6 +773,9 @@ mod tests {
             alongside_root: "/dev/nvme0n1p4".into(),
             alongside_root_partuuid: "00000000-0000-0000-0000-000000000004".into(),
             alongside_root_size_bytes: 68_719_476_736,
+            alongside_boot: "/dev/nvme0n1p5".into(),
+            alongside_boot_partuuid: "00000000-0000-0000-0000-000000000005".into(),
+            alongside_boot_size_bytes: 1_073_741_824,
             alongside_efi: "/dev/nvme0n1p1".into(),
             alongside_efi_partuuid: "00000000-0000-0000-0000-000000000001".into(),
             alongside_efi_size_bytes: 2_147_483_648,
@@ -748,6 +790,10 @@ mod tests {
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["--efi-partition", "/dev/nvme0n1p1"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--boot-partition", "/dev/nvme0n1p5"])
         );
         assert!(args.contains(&"--alongside"));
         for expected in [
@@ -788,11 +834,14 @@ mod tests {
             guided_free_size_bytes: 100 * 1024 * 1024 * 1024 - 1024 * 1024,
             guided_efi_start_bytes: 100 * 1024 * 1024 * 1024,
             guided_efi_size_bytes: 2 * 1024 * 1024 * 1024,
-            guided_root_start_bytes: 102 * 1024 * 1024 * 1024,
-            guided_root_size_bytes: 98 * 1024 * 1024 * 1024 - 1024 * 1024,
+            guided_boot_start_bytes: 102 * 1024 * 1024 * 1024,
+            guided_boot_size_bytes: 1024 * 1024 * 1024,
+            guided_root_start_bytes: 103 * 1024 * 1024 * 1024,
+            guided_root_size_bytes: 97 * 1024 * 1024 * 1024 - 1024 * 1024,
             disk_partition_table_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
             disk_logical_sector_size: 512,
             guided_efi_partuuid: "10000000-0000-4000-8000-000000000001".into(),
+            guided_boot_partuuid: "30000000-0000-4000-8000-000000000003".into(),
             guided_root_partuuid: "20000000-0000-4000-8000-000000000002".into(),
             expected_partitions: vec![PartitionExtent {
                 part_uuid: "00000000-0000-0000-0000-000000000001".into(),

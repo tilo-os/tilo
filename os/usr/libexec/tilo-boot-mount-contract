@@ -1,8 +1,7 @@
 #!/bin/bash
 # Validate the separate /boot created for an encrypted install and print the
-# stable bootc mount specification.  The target UKI carries the same label, so
-# this must stay deterministic and must not accept a different disk's boot
-# partition merely because it has a plausible filesystem.
+# filesystem UUID required by bootc's composefs backend. The signed target
+# UKI mounts by label, so that label must also be unique on attached disks.
 set -euo pipefail
 
 BOOT_LABEL=TILO_BOOT
@@ -58,4 +57,7 @@ mapfile -t labelled_parts < <(lsblk -nrpo NAME,LABEL | awk -v label="$BOOT_LABEL
 [ "${#labelled_parts[@]}" -eq 1 ] && [ "$(readlink -f -- "${labelled_parts[0]}")" = "$boot_part" ] \
   || die "$BOOT_LABEL is missing or ambiguous on attached block devices"
 
-printf 'LABEL=%s\n' "$BOOT_LABEL"
+boot_uuid="$(blkid -s UUID -o value "$boot_part" 2>/dev/null || true)"
+[[ "$boot_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+  || die "$boot_part has no valid ext4 filesystem UUID"
+printf 'UUID=%s\n' "${boot_uuid,,}"
