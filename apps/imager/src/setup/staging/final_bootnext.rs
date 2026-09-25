@@ -200,7 +200,9 @@ pub fn arm<P: FinalBootPlatform>(platform: &mut P, receipt: &FinalReadback) -> I
     if receipt.loader_path == FALLBACK {
         match platform.loader_sha256(&disk, &expected_guid, PRIMARY) {
             Ok(_) => return Err("refusing fallback while primary ARM64 loader exists".into()),
-            Err(error) if error.contains("has no placeholder") => {}
+            Err(error)
+                if error.contains("has no placeholder")
+                    || error.contains("has no directory \"systemd\"") => {}
             Err(error) => {
                 return Err(format!(
                     "cannot establish that primary loader is absent: {error}"
