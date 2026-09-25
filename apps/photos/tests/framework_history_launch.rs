@@ -38,7 +38,7 @@ mod content_store {
             mime: String,
         ) -> BlobFuture<Result<BlobRef, BlobError>> {
             Box::pin(async move {
-                let hash = qdoc::blobstore::hash_bytes(&bytes);
+                let hash = tilo_content::hash_bytes(&bytes);
                 let len = bytes.len() as u64;
                 self.0.lock().unwrap().insert((scope, hash.clone()), bytes);
                 Ok(BlobRef { hash, len, mime })
@@ -223,7 +223,7 @@ fn binary(
 fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import() {
     if let Ok(stage) = std::env::var("QOS_PHOTOS_LAUNCH_STAGE") {
         assert!(
-            ui::blobs::install_from_environment(),
+            tilo_content::ContentStore::device().is_some(),
             "the child was handed the content-store capability"
         );
         let dir = std::path::PathBuf::from(std::env::var_os("QOS_PHOTOS_TEST_HOME").unwrap());
@@ -231,7 +231,9 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.photos").unwrap();
         let rgba = photos::shots_pattern(6, 4);
         let bytes = photos::pixels::encode_png(&rgba).unwrap();
-        let hash = qdoc::blobstore::put(&bytes).unwrap();
+        // The same device content store the launched binary reads.
+        let content = tilo_content::ContentStore::for_app();
+        let hash = content.put(&bytes).unwrap();
         let image = OpenImage::from_path("same.png", 6, 4).with_content(hash);
         match stage.as_str() {
             "seed" => {
@@ -287,7 +289,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
                     photos::pixels::Rgba::new(6, 4, [0, 255, 0, 255].repeat(24)).unwrap();
                 let bytes = photos::pixels::encode_png(&different).unwrap();
                 std::fs::write(dir.join("explicit.png"), &bytes).unwrap();
-                let image = image.with_content(qdoc::blobstore::put(&bytes).unwrap());
+                let image = image.with_content(content.put(&bytes).unwrap());
                 PhotosDoc::set_image(&mut state.doc, Some(&image));
                 let heads = state.doc.get_heads();
                 std::fs::write(dir.join("live"), heads[0].to_string()).unwrap();
@@ -323,7 +325,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
                 .unwrap();
                 assert_eq!(plan.target_projection(), current_plan.target_projection());
                 assert_eq!(PhotosDoc::image(&state.doc), PhotosDoc::image(&target));
-                let mut app = photos::PhotosApp::new();
+                let mut app = photos::PhotosApp::with_content(content);
                 app.sync(&mut state.doc, &ROOT);
                 assert_eq!(state.doc.get_heads(), heads);
                 if kind == "blank" {
@@ -352,7 +354,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
             "verify_import" => {
                 let image = PhotosDoc::image(&state.doc).unwrap();
                 assert_eq!(image.name, "explicit.png");
-                let mut app = photos::PhotosApp::new();
+                let mut app = photos::PhotosApp::with_content(content);
                 app.sync(&mut state.doc, &ROOT);
                 assert_eq!(
                     app.edited_pixels().unwrap().pixel(0, 0),

@@ -44,7 +44,7 @@ taffy.workspace = true
 anyhow.workspace = true
 # OSC 52 clipboard writes carry base64-encoded payloads.
 base64.workspace = true
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-content = { path = "../../crates/system/content" }
 
 [dev-dependencies]
 tempfile.workspace = true

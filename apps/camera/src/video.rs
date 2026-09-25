@@ -39,7 +39,7 @@ const MAX_FRAMES: usize = FPS as usize * 30;
 /// retain hundreds of MiB for noisy 4K input, so cap the actual compressed
 /// working set as well. The AVI assembly is done only after recording stops.
 /// Leave a full MiB for the AVI header/index so every admitted clip remains
-/// below qdoc's 64 MiB portable-blob limit after worker-side muxing.
+/// below the 64 MiB portable media limit after worker-side muxing.
 const MAX_BUFFERED_BYTES: usize = 63 * 1024 * 1024;
 
 /// Accumulates JPEG-encoded frames and muxes them into an AVI on [`finish`].

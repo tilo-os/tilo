@@ -2343,28 +2343,40 @@ impl Namespace {
         }
     }
 
-    pub fn export_document(&self, ino: u64, registry: &qdoc_codecs::Registry) -> Option<Vec<u8>> {
+    /// Project a document into its file format, embedding the binary content (images, binary
+    /// package parts) it references from `content`.
+    pub fn export_document(
+        &self,
+        ino: u64,
+        registry: &qdoc_codecs::Registry,
+        content: &dyn tilo_content::ContentSource,
+    ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
         let provider = registry.provider_for_ext(&codec)?;
         let root = self.document_root(&id)?;
         let containers = qdoc::model::open(&self.doc, &root).ok()?;
         provider
-            .export(qdoc::DocRef {
-                doc: &self.doc,
-                c: &containers,
-            })
+            .export(
+                qdoc::DocRef {
+                    doc: &self.doc,
+                    c: &containers,
+                },
+                content,
+            )
             .ok()
     }
 
     /// Replace a document's content by importing `bytes` (whole-file write).
     /// Resets the embedded CRDT; use the in-place edits below to preserve merge history.
+    /// The binary content the file embeds is kept in `content`; the document only references it.
     pub fn import_document(
         &mut self,
         ino: u64,
         registry: &qdoc_codecs::Registry,
         bytes: &[u8],
         mtime: u64,
+        content: &tilo_content::ContentStore,
     ) -> bool {
         let Some(id) = self.ino_to_id.get(&ino).cloned() else {
             return false;
@@ -2380,7 +2392,15 @@ impl Namespace {
         };
         // Parse into a throwaway document first — a malformed input must never destroy existing content.
         let mut probe = qdoc::Document::new();
-        if provider.import(bytes, &mut probe.as_mut()).is_err() {
+        let mut inputs = tilo_content::ContentInputs::new();
+        if provider
+            .import(bytes, &mut probe.as_mut(), &mut inputs)
+            .is_err()
+        {
+            return false;
+        }
+        // Keep the file's binary content before any document refers to it.
+        if content.put_inputs(&inputs).is_err() {
             return false;
         }
         let _ = self.doc.delete(&node, "doc");
@@ -2398,7 +2418,7 @@ impl Namespace {
                 c: &containers,
                 ids: &mut ids,
             };
-            let _ = provider.import(bytes, &mut dmut);
+            let _ = provider.import(bytes, &mut dmut, &mut tilo_content::ContentInputs::new());
         }
         self.set_field(&id, "mtime", mtime);
         true
@@ -3844,8 +3864,10 @@ mod tests {
         assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
 
         let md = b"# Title\n\nHello world\n";
-        assert!(ns.import_document(ino, &reg, md, 2));
-        let out = ns.export_document(ino, &reg).expect("export");
+        assert!(ns.import_document(ino, &reg, md, 2, &tilo_content::ContentStore::memory()));
+        let out = ns
+            .export_document(ino, &reg, &tilo_content::NoContent)
+            .expect("export");
         let s = String::from_utf8_lossy(&out);
         assert!(
             s.contains("Title") && s.contains("Hello world"),
@@ -3858,15 +3880,31 @@ mod tests {
         let reg = qdoc_codecs::builtin_registry();
         let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
-        assert!(ns.import_document(ino, &reg, b"# Keep\n\nimportant\n", 2));
-        let before = ns.export_document(ino, &reg).unwrap();
+        assert!(ns.import_document(
+            ino,
+            &reg,
+            b"# Keep\n\nimportant\n",
+            2,
+            &tilo_content::ContentStore::memory()
+        ));
+        let before = ns
+            .export_document(ino, &reg, &tilo_content::NoContent)
+            .unwrap();
 
         // invalid UTF-8 is rejected by the markdown codec
         assert!(
-            !ns.import_document(ino, &reg, &[0xff, 0xfe, 0x00], 3),
+            !ns.import_document(
+                ino,
+                &reg,
+                &[0xff, 0xfe, 0x00],
+                3,
+                &tilo_content::ContentStore::memory()
+            ),
             "malformed import must be rejected"
         );
-        let after = ns.export_document(ino, &reg).unwrap();
+        let after = ns
+            .export_document(ino, &reg, &tilo_content::NoContent)
+            .unwrap();
         assert_eq!(
             before, after,
             "existing document must survive a rejected import"

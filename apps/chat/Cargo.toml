@@ -46,7 +46,7 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-content = { path = "../../crates/system/content" }
 # The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.
@@ -63,7 +63,7 @@ taffy.workspace = true
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 # Read image headers for workspace attachments and encode demo thumbnails for
 # the shared `ui::ImageStore`.
-# Attachment bytes hydrate through qdoc's content-addressed blob store; no
+# Attachment bytes live in the app's content store; no
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 

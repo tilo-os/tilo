@@ -50,7 +50,7 @@ fn recv(
 /// builds differ because RFC 5322 headers include a Message-ID and Date.
 fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
     let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
-    let mime = build_mime(&from, draft).expect("build MIME");
+    let mime = build_mime(&tilo_content::ContentStore::memory(), &from, draft).expect("build MIME");
     let text = String::from_utf8_lossy(&mime);
     assert!(
         text.contains("Subject: Loop check"),
@@ -125,7 +125,9 @@ fn account_from_the_shared_store_drives_the_engine_end_to_end() {
     //    channel — exactly the requests the app posts. The offline stub backend
     //    is used explicitly so the loop is deterministic and network-free
     //    regardless of which backend the default `spawn()` would select.
-    let (tx, rx) = mail::engine::spawn_with(Box::new(mail::engine::StubEngine));
+    let (tx, rx) = mail::engine::spawn_with(Box::new(mail::engine::StubEngine::new(
+        tilo_content::ContentStore::memory(),
+    )));
 
     let connect = EngineRequest::connect(loaded.clone());
     let connect_id = connect.request_id();

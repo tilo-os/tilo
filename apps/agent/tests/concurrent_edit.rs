@@ -29,6 +29,7 @@ use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 use tilo_agent::{Config, Session};
+use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 
 mod typed_peer;
@@ -143,6 +144,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
             selection: None,
             region: word_processor::actions::RegionKind::Body,
             search_hits: Vec::new(),
+            content: ContentStore::memory(),
         },
         doc,
     )
@@ -410,6 +412,7 @@ fn a_person_typing_and_the_agent_working_both_land() {
         await_document: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
+        content: ContentStore::memory(),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");

@@ -17,6 +17,7 @@ use qdoc::schema::{
 };
 use qdoc::snapshot::{AttrVal, BlockView, NoteView};
 use std::collections::BTreeMap;
+use tilo_content::{ContentInputs, ContentSource};
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -32,7 +33,13 @@ impl FormatProvider for MarkdownCodec {
         Confidence::Medium
     }
 
-    fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
+    fn import(
+        &self,
+        bytes: &[u8],
+        doc: &mut DocMut,
+        _inputs: &mut ContentInputs,
+    ) -> Result<(), CodecError> {
+        // Markdown embeds no binary content; images are links.
         doc.bulk(|doc| {
             let src = std::str::from_utf8(bytes).map_err(|e| CodecError::Parse(e.to_string()))?;
             let body = apply_front_matter(src, doc);
@@ -41,7 +48,7 @@ impl FormatProvider for MarkdownCodec {
         })
     }
 
-    fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {
+    fn export(&self, doc: DocRef, _content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
         let snapshot = doc.materialize();
         Ok(export_views(
             &snapshot.properties,
@@ -1071,9 +1078,15 @@ mod tests {
         for source in cases {
             let mut document = Document::new();
             MarkdownCodec
-                .import(source.as_bytes(), &mut document.as_mut())
+                .import(
+                    source.as_bytes(),
+                    &mut document.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
-            let expected = MarkdownCodec.export(document.as_ref()).unwrap();
+            let expected = MarkdownCodec
+                .export(document.as_ref(), &tilo_content::NoContent)
+                .unwrap();
             let snapshot = document.materialize();
             // Export stays usable after the CRDT is gone: these are the complete,
             // already materialized inputs, not a handle that can re-read it.
@@ -1101,7 +1114,11 @@ mod tests {
         let src = "# Title\n\nHello **world** and *em*.\n\n- a\n- b\n";
         let mut d = Document::new();
         MarkdownCodec
-            .import(src.as_bytes(), &mut d.as_mut())
+            .import(
+                src.as_bytes(),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let snap = d.materialize();
         assert_eq!(snap.blocks[0].kind, "heading");
@@ -1116,10 +1133,20 @@ mod tests {
             2
         );
 
-        let out1 = MarkdownCodec.export(d.as_ref()).unwrap();
+        let out1 = MarkdownCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let mut d2 = Document::new();
-        MarkdownCodec.import(&out1, &mut d2.as_mut()).unwrap();
-        let out2 = MarkdownCodec.export(d2.as_ref()).unwrap();
+        MarkdownCodec
+            .import(
+                &out1,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let out2 = MarkdownCodec
+            .export(d2.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         assert_eq!(
             String::from_utf8(out1).unwrap(),
             String::from_utf8(out2).unwrap(),
@@ -1130,8 +1157,19 @@ mod tests {
     #[test]
     fn heading_levels_preserved() {
         let mut d = Document::new();
-        MarkdownCodec.import(b"## Sub", &mut d.as_mut()).unwrap();
-        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        MarkdownCodec
+            .import(
+                b"## Sub",
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let out = String::from_utf8(
+            MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(out.starts_with("## Sub"), "got {out:?}");
     }
 
@@ -1139,16 +1177,29 @@ mod tests {
     fn ordered_list_marker() {
         let mut d = Document::new();
         MarkdownCodec
-            .import(b"1. one\n2. two\n", &mut d.as_mut())
+            .import(
+                b"1. one\n2. two\n",
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
-        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        let out = String::from_utf8(
+            MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(out.contains("1. one"), "got {out:?}");
     }
 
     fn import(src: &str) -> DocSnapshot {
         let mut d = Document::new();
         MarkdownCodec
-            .import(src.as_bytes(), &mut d.as_mut())
+            .import(
+                src.as_bytes(),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         d.materialize()
     }
@@ -1156,9 +1207,18 @@ mod tests {
     fn export(snap_src: &str) -> String {
         let mut d = Document::new();
         MarkdownCodec
-            .import(snap_src.as_bytes(), &mut d.as_mut())
+            .import(
+                snap_src.as_bytes(),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
-        String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap()
+        String::from_utf8(
+            MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1321,7 +1381,12 @@ mod tests {
             dm.add_mark(&id, 0, 6, "fontSize", 20_i64);
             dm.add_mark(&id, 0, 6, "fontFamily", "serif");
         }
-        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        let out = String::from_utf8(
+            MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(
             out.contains("<span style="),
             "emits an inline span: {out:?}"
@@ -1332,7 +1397,11 @@ mod tests {
 
         let mut d2 = Document::new();
         MarkdownCodec
-            .import(out.as_bytes(), &mut d2.as_mut())
+            .import(
+                out.as_bytes(),
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "styled word");
@@ -1376,7 +1445,12 @@ mod tests {
             dm.add_mark(&id, 5, 6, "super", true); // "c"
             dm.add_mark(&id, 6, 7, "sub", true); // "d"
         }
-        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        let out = String::from_utf8(
+            MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(
             out.contains(r#"<span style="background: #ffff00">"#),
             "highlight span: {out:?}"
@@ -1392,7 +1466,11 @@ mod tests {
 
         let mut d2 = Document::new();
         MarkdownCodec
-            .import(out.as_bytes(), &mut d2.as_mut())
+            .import(
+                out.as_bytes(),
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "x ab cd");
@@ -1493,7 +1571,12 @@ mod tests {
             dm.set_doc_prop(PROP_AUTHOR, "A");
         }
         let _ = d.insert_block(None, "paragraph");
-        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        let out = String::from_utf8(
+            MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(
             out.starts_with("---\ntitle: T\nauthor: A\n---\n\n"),
             "got {out:?}"
@@ -1627,7 +1710,12 @@ mod tests {
             nid
         };
 
-        let out = String::from_utf8(MarkdownCodec.export(d.as_ref()).unwrap()).unwrap();
+        let out = String::from_utf8(
+            MarkdownCodec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .unwrap(),
+        )
+        .unwrap();
         assert!(
             out.starts_with("---\ntitle: Spec\nauthor: ada\n---\n\n"),
             "front-matter: {out:?}"
@@ -1643,7 +1731,11 @@ mod tests {
 
         let mut d2 = Document::new();
         MarkdownCodec
-            .import(out.as_bytes(), &mut d2.as_mut())
+            .import(
+                out.as_bytes(),
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let snap = d2.materialize();
         assert_eq!(
@@ -1709,11 +1801,11 @@ mod tests {
         #[test]
         fn export_is_idempotent(src in doc_strategy()) {
             let mut d = Document::new();
-            MarkdownCodec.import(src.as_bytes(), &mut d.as_mut()).unwrap();
-            let out1 = MarkdownCodec.export(d.as_ref()).unwrap();
+            MarkdownCodec.import(src.as_bytes(), &mut d.as_mut(), &mut tilo_content::ContentInputs::new()).unwrap();
+            let out1 = MarkdownCodec.export(d.as_ref(), &tilo_content::NoContent).unwrap();
             let mut d2 = Document::new();
-            MarkdownCodec.import(&out1, &mut d2.as_mut()).unwrap();
-            let out2 = MarkdownCodec.export(d2.as_ref()).unwrap();
+            MarkdownCodec.import(&out1, &mut d2.as_mut(), &mut tilo_content::ContentInputs::new()).unwrap();
+            let out2 = MarkdownCodec.export(d2.as_ref(), &tilo_content::NoContent).unwrap();
             prop_assert_eq!(String::from_utf8(out1).unwrap(), String::from_utf8(out2).unwrap());
         }
     }

@@ -524,7 +524,7 @@ fn write_launch_content(
     let bytes = reader.read(&caller.blob_room(), &caller.app_id, content_hash)?;
     if bytes.is_empty()
         || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
-        || !qdoc::blobstore::verify(content_hash, &bytes)
+        || !tilo_content::verify(content_hash, &bytes)
     {
         return Err("launch content failed integrity validation".into());
     }
@@ -535,7 +535,7 @@ fn write_launch_content(
     #[cfg(unix)]
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("protect launch staging: {error}"))?;
-    let extension = match qdoc::blobstore::sniff(&bytes).mime.as_str() {
+    let extension = match tilo_content::sniff(&bytes).mime.as_str() {
         "image/png" => "png",
         "image/jpeg" => "jpg",
         "image/webp" => "webp",
@@ -569,7 +569,7 @@ fn write_launch_content(
             let existing = std::fs::read(&path)
                 .map_err(|error| format!("read existing launch content: {error}"))?;
             if existing.len() > MAX_LAUNCH_CONTENT_BYTES
-                || !qdoc::blobstore::verify(content_hash, &existing)
+                || !tilo_content::verify(content_hash, &existing)
             {
                 return Err("existing launch content failed integrity validation".into());
             }
@@ -9562,7 +9562,7 @@ pub(crate) mod tests {
 
     impl ScopedContent {
         fn with(room: &str, bytes: &[u8]) -> (Self, String) {
-            let hash = qdoc::blobstore::hash_bytes(bytes);
+            let hash = tilo_content::hash_bytes(bytes);
             let mut content = Self::default();
             content
                 .entries

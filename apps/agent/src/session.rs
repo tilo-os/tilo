@@ -222,6 +222,9 @@ pub struct Config {
     /// absent from what it discovers, never merely refused — see
     /// [`crate::surface::offers`].
     pub permissions: PermissionContext,
+    /// The agent's content store, created once when it starts: content an
+    /// operation produced is read from here by the operation consuming it.
+    pub content: tilo_content::ContentStore,
 }
 
 pub struct Session {
@@ -1104,6 +1107,7 @@ impl Session {
             region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: self.cfg.directory.clone(),
+            content: self.cfg.content.clone(),
         }
     }
 
@@ -2499,6 +2503,7 @@ mod tests {
             atomic::{AtomicBool, Ordering},
         };
         use tilo_actions::{ActionOutput, ResourceProvider, ResultSpec};
+        use tilo_content::ContentStore;
 
         const PHOTOS: &str = "so.tilo.photos";
         const WRITER: &str = "so.tilo.word-processor";
@@ -2522,9 +2527,11 @@ mod tests {
             rotation: u8,
         }
 
-        fn produced() -> ActionOutput {
+        /// A Photos export's output, its bytes put in the `content` store
+        /// both peers of the fixture share.
+        fn produced(content: &ContentStore) -> ActionOutput {
             let bytes = photos::pixels::encode_png(&photos::shots_pattern(5, 3)).unwrap();
-            let hash = qdoc::blobstore::put(&bytes).unwrap();
+            let hash = content.put(&bytes).unwrap();
             ActionOutput {
                 value: None,
                 resources: vec![
@@ -2543,6 +2550,7 @@ mod tests {
         fn writer_resources(
             doc: &automerge::AutoCommit,
             caret: &str,
+            content: &ContentStore,
         ) -> Vec<tilo_actions::Resource> {
             wp::provide_resources(
                 &wp::WpResourceCtx {
@@ -2553,6 +2561,7 @@ mod tests {
                     selection: None,
                     region: RegionKind::Body,
                     search_hits: Vec::new(),
+                    content: content.clone(),
                 },
                 doc,
             )
@@ -2588,6 +2597,7 @@ mod tests {
             reason = "one fixture owns both app peers and the real Session plan lifecycle"
         )]
         fn run_sequence(
+            content: &ContentStore,
             output: &ActionOutput,
             result: &ResultSpec,
             between: Between,
@@ -2605,7 +2615,7 @@ mod tests {
             let mut photo = automerge::AutoCommit::new();
             photos::doc::PhotosDoc::seed(&mut photo);
             let source = photos::pixels::encode_png(&photos::shots_pattern(3, 2)).unwrap();
-            let source_hash = qdoc::blobstore::put(&source).unwrap();
+            let source_hash = content.put(&source).unwrap();
             let open = photos::OpenImage::from_path("held.png", 3, 2).with_content(source_hash);
             photos::doc::PhotosDoc::set_image(&mut photo, Some(&open));
             let image_id = photos::actions::resource_id(&open);
@@ -2641,7 +2651,7 @@ mod tests {
             peer::publish_actions(
                 &mut writer_peer,
                 WRITER,
-                &writer_resources(&document, &instruction_id),
+                &writer_resources(&document, &instruction_id, content),
             );
             let permissions = PermissionContext::from_capabilities(
                 ui::permissions::Actor::agent("Scribe"),
@@ -2671,6 +2681,7 @@ mod tests {
                 settle: Duration::ZERO,
                 directory: None,
                 permissions,
+                content: content.clone(),
             })
             .unwrap();
             session.editor = Some(Editor::from_snapshot(&document.save(), "Scribe").unwrap());
@@ -2743,6 +2754,7 @@ mod tests {
                 let calls = Arc::clone(&calls);
                 let shutdown = Arc::clone(&shutdown);
                 let output = output.clone();
+                let content = content.clone();
                 let mut replica = document.clone();
                 let caret = instruction_id.clone();
                 threads.push(std::thread::spawn(move || {
@@ -2790,7 +2802,7 @@ mod tests {
                                     }
                                 }
                             } else {
-                                let resources = writer_resources(&replica, &caret);
+                                let resources = writer_resources(&replica, &caret, &content);
                                 peer::service_document_invocation(
                                     &mut client,
                                     &mut replica,
@@ -2864,11 +2876,18 @@ mod tests {
 
         #[test]
         fn run_plan_replaces_invented_content_with_the_exact_broker_result() {
-            let output = produced();
+            let content = ContentStore::memory();
+            let output = produced(&content);
             let hash = tilo_actions::content_hash(&output.resources[0])
                 .unwrap()
                 .to_owned();
-            let observed = run_sequence(&output, &content_result(), Between::Nothing, false);
+            let observed = run_sequence(
+                &content,
+                &output,
+                &content_result(),
+                Between::Nothing,
+                false,
+            );
             assert_eq!(observed.calls.len(), 2);
             assert_eq!(observed.calls[0], (PRODUCE.into(), serde_json::Map::new()));
             assert_eq!(
@@ -2888,6 +2907,7 @@ mod tests {
         #[test]
         fn run_plan_refuses_missing_broker_content_despite_a_held_photograph() {
             let observed = run_sequence(
+                &ContentStore::memory(),
                 &ActionOutput::default(),
                 &ResultSpec::None,
                 Between::Nothing,
@@ -2899,6 +2919,7 @@ mod tests {
         #[test]
         fn run_plan_refuses_wrong_kind_despite_a_held_photograph() {
             let observed = run_sequence(
+                &ContentStore::memory(),
                 &ActionOutput {
                     value: None,
                     resources: vec!["files.entry:fixture".into()],
@@ -2914,25 +2935,45 @@ mod tests {
 
         #[test]
         fn run_plan_refuses_ambiguous_broker_content() {
-            let mut output = produced();
+            let content = ContentStore::memory();
+            let mut output = produced(&content);
             output.resources.push(
                 tilo_actions::content_resource(&"a".repeat(64))
                     .expect("the duplicate has a valid content hash"),
             );
-            let observed = run_sequence(&output, &content_result(), Between::Nothing, false);
+            let observed = run_sequence(
+                &content,
+                &output,
+                &content_result(),
+                Between::Nothing,
+                false,
+            );
             assert_no_consumer(&observed, &[PRODUCE]);
         }
 
         #[test]
         fn run_plan_invalidates_content_after_a_nonproducing_broker_step() {
-            let observed = run_sequence(&produced(), &content_result(), Between::BrokerView, false);
+            let content = ContentStore::memory();
+            let observed = run_sequence(
+                &content,
+                &produced(&content),
+                &content_result(),
+                Between::BrokerView,
+                false,
+            );
             assert_no_consumer(&observed, &[PRODUCE, "view"]);
         }
 
         #[test]
         fn run_plan_invalidates_content_after_a_local_photos_edit() {
-            let observed =
-                run_sequence(&produced(), &content_result(), Between::LocalRotate, false);
+            let content = ContentStore::memory();
+            let observed = run_sequence(
+                &content,
+                &produced(&content),
+                &content_result(),
+                Between::LocalRotate,
+                false,
+            );
             assert_eq!(
                 observed.rotation, 1,
                 "the intervening local Document operation must really run"
@@ -2942,13 +2983,27 @@ mod tests {
 
         #[test]
         fn run_plan_invalidates_content_after_a_skipped_duplicate() {
-            let observed = run_sequence(&produced(), &content_result(), Between::Duplicate, false);
+            let content = ContentStore::memory();
+            let observed = run_sequence(
+                &content,
+                &produced(&content),
+                &content_result(),
+                Between::Duplicate,
+                false,
+            );
             assert_no_consumer(&observed, &[PRODUCE]);
         }
 
         #[test]
         fn run_plan_stops_after_a_failed_producer() {
-            let observed = run_sequence(&produced(), &content_result(), Between::Nothing, true);
+            let content = ContentStore::memory();
+            let observed = run_sequence(
+                &content,
+                &produced(&content),
+                &content_result(),
+                Between::Nothing,
+                true,
+            );
             assert_no_consumer(&observed, &[PRODUCE]);
             assert!(observed.instruction.contains("Producer refused"));
         }
@@ -2956,8 +3011,10 @@ mod tests {
         #[test]
         fn run_plan_reports_unavailable_bytes_without_inserting_an_image() {
             let missing = "e".repeat(64);
-            assert!(qdoc::blobstore::get(&missing).is_none());
+            let content = ContentStore::memory();
+            assert!(!content.has(&missing));
             let observed = run_sequence(
+                &content,
                 &ActionOutput {
                     value: None,
                     resources: vec![

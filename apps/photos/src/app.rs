@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_content::ContentStore;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::ImageData;
@@ -622,7 +623,11 @@ fn mark_analysis_shared(analysis: &mut crate::model::ImageAnalysis) {
     }
 }
 
-fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) {
+fn analysis_worker(
+    rx: &Receiver<AnalysisJob>,
+    tx: &SyncSender<AnalysisResult>,
+    content: &ContentStore,
+) {
     while let Ok(job) = rx.recv() {
         if tx
             .send(AnalysisResult {
@@ -632,15 +637,15 @@ fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) 
                 result: match job.kind {
                     AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image {
                         component: ImageAnalysisComponent::Ocr,
-                        result: crate::analysis::recognize_text(&job.image, &language),
+                        result: crate::analysis::recognize_text(&job.image, &language, content),
                     },
                     AnalysisJobKind::Vision { capability } => AnalysisOutcome::Image {
                         component: ImageAnalysisComponent::Vision,
-                        result: crate::analysis::analyze_image(&job.image, &capability),
+                        result: crate::analysis::analyze_image(&job.image, &capability, content),
                     },
-                    AnalysisJobKind::People { capability, images } => {
-                        AnalysisOutcome::People(crate::analysis::detect_people(images, &capability))
-                    }
+                    AnalysisJobKind::People { capability, images } => AnalysisOutcome::People(
+                        crate::analysis::detect_people(images, &capability, content),
+                    ),
                 },
             })
             .is_err()
@@ -654,9 +659,10 @@ fn thumbnail_worker(
     rx: &Receiver<ThumbnailJob>,
     tx: &SyncSender<ThumbnailResult>,
     wake: &ui::wake::WakeHandle,
+    content: &ContentStore,
 ) {
     while let Ok(job) = rx.recv() {
-        let preview = crate::doc::bytes_of(&job.image)
+        let preview = crate::doc::bytes_of(&job.image, content)
             .and_then(|bytes| pixels::decode(&bytes))
             .map(|image| pixels::thumbnail(&image, THUMBNAIL_MAX_W, THUMBNAIL_MAX_H));
         if tx
@@ -1160,6 +1166,9 @@ fn viewer_copy(value: &str, max_chars: usize) -> String {
 pub struct PhotosApp {
     /// Canonical dispatcher shared by toolbar edits and exported document actions.
     actions: ui::ActionHost,
+    /// Where imported originals are kept and photographs are read from. The
+    /// document names content by hash; this handle resolves it.
+    content: ContentStore,
     /// Test-only evidence that each visible batch route creates the exact
     /// envelope the corresponding published action descriptor creates.
     #[cfg(test)]
@@ -1579,7 +1588,8 @@ impl PhotosApp {
                     })
                 })
                 .filter_map(|photo| {
-                    if photo.image.content.is_some() && crate::doc::bytes_of(&photo.image).is_some()
+                    if photo.image.content.is_some()
+                        && crate::doc::bytes_of(&photo.image, &self.content).is_some()
                     {
                         Some(photo.id)
                     } else {
@@ -2002,11 +2012,19 @@ impl PhotosApp {
         }
     }
 
+    /// An app whose content store lives in memory with it: tests and offscreen
+    /// shots. The runtime uses [`Self::new_persistent`].
+    pub fn new() -> Self {
+        Self::with_content(ContentStore::memory())
+    }
+
+    /// An app keeping imported originals in, and reading photographs from,
+    /// `content`. The handle is shared with the app's background workers.
     #[allow(
         clippy::too_many_lines,
         reason = "construction lists every app-owned state field explicitly so local, shared, and transient state remain auditable"
     )]
-    pub fn new() -> Self {
+    pub fn with_content(content: ContentStore) -> Self {
         let (thumbnail_job_tx, thumbnail_job_rx) =
             std::sync::mpsc::sync_channel(THUMBNAIL_QUEUE_LIMIT);
         let (thumbnail_result_tx, thumbnail_result_rx) =
@@ -2016,14 +2034,25 @@ impl PhotosApp {
         let (analysis_result_tx, analysis_rx) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         let analysis_tx = std::thread::Builder::new()
             .name("photos-local-analysis".to_owned())
-            .spawn(move || analysis_worker(&analysis_job_rx, &analysis_result_tx))
+            .spawn({
+                let content = content.clone();
+                move || analysis_worker(&analysis_job_rx, &analysis_result_tx, &content)
+            })
             .ok()
             .map(|_| analysis_job_tx);
         let thumbnail_wake = ui::wake::WakeHandle::new();
         let thumbnail_tx = std::thread::Builder::new()
             .name("photos-thumbnail".to_owned())
-            .spawn(move || {
-                thumbnail_worker(&thumbnail_job_rx, &thumbnail_result_tx, &thumbnail_wake);
+            .spawn({
+                let content = content.clone();
+                move || {
+                    thumbnail_worker(
+                        &thumbnail_job_rx,
+                        &thumbnail_result_tx,
+                        &thumbnail_wake,
+                        &content,
+                    );
+                }
             })
             .ok()
             .map(|_| thumbnail_job_tx);
@@ -2046,6 +2075,7 @@ impl PhotosApp {
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
             actions: ui::ActionHost::new(),
+            content,
             #[cfg(test)]
             last_library_action: None,
             original: None,
@@ -2314,10 +2344,13 @@ impl PhotosApp {
                 // can already answer for — and one the room can be handed.
                 // Otherwise the document would name a picture only the path
                 // could find, and the path is true on one machine.
-                let Some(content) = qdoc::blobstore::put(bytes.as_deref().unwrap_or_default())
-                else {
-                    self.notice = Some(tr("photos-open-failed"));
-                    return;
+                let content = match self.content.put(bytes.as_deref().unwrap_or_default()) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        tracing::warn!(%error, "photos: could not store an opened original");
+                        self.notice = Some(tr("photos-open-failed"));
+                        return;
+                    }
                 };
                 let open = OpenImage::from_path(path, img.w, img.h).with_content(content);
                 self.original = Some((path.to_string(), img));
@@ -2430,12 +2463,12 @@ impl PhotosApp {
         &self.people_controller
     }
 
-    /// Runtime constructor for the device-local People review queue. Tests
-    /// use [`Self::new`] so they never read or mutate the signed-in user's
-    /// private recognition state.
+    /// Runtime constructor: photographs in the app's `content` store and the
+    /// device-local People review queue. Tests use [`Self::new`] so they never
+    /// read or mutate the signed-in user's private recognition state.
     #[must_use]
-    pub fn new_persistent() -> Self {
-        let mut app = Self::new();
+    pub fn new_persistent(content: ContentStore) -> Self {
+        let mut app = Self::with_content(content);
         app.people_controller = crate::people::PeopleController::persistent();
         app
     }
@@ -5098,7 +5131,7 @@ impl PhotosApp {
                 self.canvas_state = CanvasState::Error;
                 return;
             }
-            let bytes = crate::doc::bytes_of(&open);
+            let bytes = crate::doc::bytes_of(&open, &self.content);
             if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
                 self.original = Some((open.path, img));
                 self.original_identity = Some(identity.clone());
@@ -6944,11 +6977,13 @@ impl PhotosApp {
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
+        let content = self.content.clone();
         let spawn = std::thread::Builder::new()
             .name("photos-directory-import".into())
             .spawn(move || {
                 let result = crate::import::index_directory(
                     &path,
+                    &content,
                     crate::import::ImportOptions {
                         retain_exif_location,
                         ..crate::import::ImportOptions::default()
@@ -14494,8 +14529,13 @@ impl Widget for PhotosApp {
             edits,
         } = &operation
         {
-            let output =
-                crate::actions::export_edited_content(resource_id, source_content, *edits, doc)?;
+            let output = crate::actions::export_edited_content(
+                resource_id,
+                source_content,
+                *edits,
+                doc,
+                &self.content,
+            )?;
             return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
         }
         if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
@@ -14655,7 +14695,7 @@ impl Widget for PhotosApp {
         // portable Camera identity and bytes before committing the one
         // idempotent Photos library/selection update.  A missing local blob
         // remains a refusal instead of becoming a path-only phantom entry.
-        let photo = crate::camera_import_photo(&media_id, &name)?;
+        let photo = crate::camera_import_photo(&media_id, &name, &self.content)?;
         let id = photo.id.clone();
         let action = crate::actions::PhotosAction::ImportPhoto { photo };
         self.actions
@@ -14813,7 +14853,7 @@ impl Widget for PhotosApp {
                         .is_some()
                 }) {
                     (analyzed + 1, available, awaiting)
-                } else if crate::doc::bytes_of(&photo.image).is_some() {
+                } else if crate::doc::bytes_of(&photo.image, &self.content).is_some() {
                     (analyzed, available + 1, awaiting)
                 } else {
                     (analyzed, available, awaiting + 1)
@@ -16540,7 +16580,7 @@ impl PhotosApp {
         let locally_available: Vec<_> = PhotosDoc::library(doc)
             .photos
             .into_iter()
-            .filter(|photo| crate::doc::bytes_of(&photo.image).is_some())
+            .filter(|photo| crate::doc::bytes_of(&photo.image, &self.content).is_some())
             .map(|photo| (photo.id, photo.image))
             .collect();
         let anchor_ids = self.people_controller.reconciliation_anchor_photo_ids(2);
@@ -17311,14 +17351,14 @@ mod history_reconcile_tests {
     #[test]
     fn content_restore_drops_active_viewer_drag_before_next_pointer_move() {
         let mut doc = AutoCommit::new();
+        let store = ContentStore::memory();
         let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-        let open = OpenImage::from_path("same.png", 6, 4)
-            .with_content(qdoc::blobstore::put(&bytes).unwrap());
+        let open = OpenImage::from_path("same.png", 6, 4).with_content(store.put(&bytes).unwrap());
         PhotosDoc::set_image(&mut doc, Some(&open));
         PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
         let selected = doc.get_heads();
         PhotosDoc::set_edits(&mut doc, &Edits::default());
-        let mut app = PhotosApp::new();
+        let mut app = PhotosApp::with_content(store);
         app.sync(&mut doc, &ROOT);
         let mut taffy = TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -17399,11 +17439,12 @@ mod history_reconcile_tests {
     #[test]
     fn failed_import_reports_failure_even_when_previous_photo_is_still_decoded() {
         let mut doc = AutoCommit::new();
+        let store = ContentStore::memory();
         let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
-        let open = OpenImage::from_path("existing.png", 6, 4)
-            .with_content(qdoc::blobstore::put(&bytes).unwrap());
+        let open =
+            OpenImage::from_path("existing.png", 6, 4).with_content(store.put(&bytes).unwrap());
         PhotosDoc::set_image(&mut doc, Some(&open));
-        let mut app = PhotosApp::new();
+        let mut app = PhotosApp::with_content(store);
         app.sync(&mut doc, &ROOT);
         assert!(app.open_image_path().is_some());
         let invocation = tilo_actions::InvocationId::new();

@@ -26,7 +26,7 @@ pub const PRESERVED_SEG_BYTES: &str = "bytes";
 pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 // Content-addressed binary references. `blobs` is a `Map<blake3_hex, descriptor>`
 // where a descriptor is a sub-map of *metadata only* — the bytes themselves live
-// outside the CRDT, in the content-addressed store `blobstore` owns.
+// outside the CRDT: they are binary inputs the caller keeps in its content store (`tilo_content`).
 //
 // Inline media makes every Automerge replica and durable host log carry the
 // full payload, amplifies sync memory, and puts later edits behind a large
@@ -34,7 +34,7 @@ pub const KEY_META: &str = "meta"; // Map (actor->user, etc.)
 // rather than a bigger transport message.
 pub const KEY_BLOBS: &str = "blobs"; // Map<blake3_hex, descriptor>
 /// A blob descriptor's media type (`Str`, e.g. `image/png`). Sniffed from the
-/// content on `put_blob`, so it is present for anything we recognise.
+/// content when it is attached, so it is present for anything we recognise.
 pub const BLOB_MIME: &str = "mime";
 /// A blob descriptor's content length in bytes (`Int`).
 pub const BLOB_LEN: &str = "len";

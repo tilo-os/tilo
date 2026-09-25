@@ -2,6 +2,7 @@
 //! file bytes and canonical-document changes; in production they run sandboxed.
 
 use qdoc::model::{DocMut, DocRef};
+use tilo_content::{ContentInputs, ContentSource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Confidence {
@@ -31,17 +32,33 @@ pub enum CodecError {
 /// A format provider: a pure transform between file bytes and a canonical document, run behind a
 /// sandbox IPC boundary in production. Operating over the borrowed [`DocMut`]/[`DocRef`] views
 /// means the same codec works whether the document lives in an owned `Document` (FS) or a host's doc (editor).
+///
+/// Binary content (embedded images, binary package parts) never goes into the document: import
+/// hands it back as [`ContentInputs`] for the caller to keep in its content store, and export reads
+/// it back through a [`ContentSource`].
 pub trait FormatProvider: Send + Sync {
     fn schema_id(&self) -> &str;
     fn detect(&self, head: &[u8]) -> Confidence;
+    /// Project `bytes` into `doc`. Binary content the file embeds is added to `inputs`; the document
+    /// only references it, so the caller must persist `inputs` before keeping the document.
+    ///
     /// # Errors
     /// Returns [`CodecError`] if `bytes` are malformed, exceed the codec's
     /// resource bounds, or use a construct the codec refuses to import.
-    fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError>;
+    fn import(
+        &self,
+        bytes: &[u8],
+        doc: &mut DocMut,
+        inputs: &mut ContentInputs,
+    ) -> Result<(), CodecError>;
+    /// Project `doc` into this format, reading the binary content it references from `content`.
+    /// Content missing there is left out (an image renders as its placeholder) rather than failing
+    /// the export.
+    ///
     /// # Errors
     /// Returns [`CodecError`] if the document cannot be serialised into this
     /// format, or if writing its container fails.
-    fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError>;
+    fn export(&self, doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError>;
 }
 
 struct Entry {
@@ -100,13 +117,18 @@ mod tests {
                 Confidence::Low
             }
         }
-        fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
+        fn import(
+            &self,
+            bytes: &[u8],
+            doc: &mut DocMut,
+            _: &mut ContentInputs,
+        ) -> Result<(), CodecError> {
             let s = std::str::from_utf8(bytes).map_err(|e| CodecError::Parse(e.to_string()))?;
             let p = doc.insert_block(None, "paragraph");
             doc.splice_text(&p, 0, 0, s.trim());
             Ok(())
         }
-        fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {
+        fn export(&self, doc: DocRef, _: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
             let snap = doc.materialize();
             Ok(snap
                 .blocks
@@ -126,10 +148,15 @@ mod tests {
         fn detect(&self, _: &[u8]) -> Confidence {
             Confidence::High
         }
-        fn import(&self, _: &[u8], _: &mut DocMut) -> Result<(), CodecError> {
+        fn import(
+            &self,
+            _: &[u8],
+            _: &mut DocMut,
+            _: &mut ContentInputs,
+        ) -> Result<(), CodecError> {
             Ok(())
         }
-        fn export(&self, _: DocRef) -> Result<Vec<u8>, CodecError> {
+        fn export(&self, _: DocRef, _: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
             Ok(b"builtin".to_vec())
         }
     }
@@ -138,8 +165,13 @@ mod tests {
     fn import_export_roundtrip_via_provider() {
         let p = DummyMd;
         let mut d = Document::new();
-        p.import(b"# Hello", &mut d.as_mut()).unwrap();
-        let out = p.export(d.as_ref()).unwrap();
+        p.import(
+            b"# Hello",
+            &mut d.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
+        .unwrap();
+        let out = p.export(d.as_ref(), &tilo_content::NoContent).unwrap();
         assert_eq!(out, b"# Hello");
     }
 
@@ -151,7 +183,10 @@ mod tests {
         let prov = r.provider_for_ext("md").unwrap();
         // Builtin wins → its export returns b"builtin".
         let d = Document::new();
-        assert_eq!(prov.export(d.as_ref()).unwrap(), b"builtin");
+        assert_eq!(
+            prov.export(d.as_ref(), &tilo_content::NoContent).unwrap(),
+            b"builtin"
+        );
     }
 
     #[test]

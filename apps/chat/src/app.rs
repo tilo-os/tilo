@@ -20,6 +20,7 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{LengthPercentageAuto, NodeId, Position, Size, Style, TaffyTree};
+use tilo_content::ContentStore;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -226,7 +227,7 @@ pub(crate) struct RowSwipe {
 
 /// The bounded worker's result. File I/O and header sniffing happen before
 /// this crosses back to the UI thread; the only UI-thread write is the
-/// canonical qdoc descriptor + `SendMessage` action in `sync`.
+/// canonical hash-only descriptor + `SendMessage` action in `sync`.
 pub(crate) enum AttachmentImportResult {
     Ready {
         token: u64,
@@ -668,8 +669,11 @@ pub struct ChatApp {
     // Persistence (None for ephemeral / `--shots` instances).
 
     // Background image loader/cache for attachment thumbnails (decodes off
-    // the UI thread; real bytes come from qdoc's blob store).
+    // the UI thread; real bytes come from `content`).
     pub(crate) images: ui::ImageStore,
+    /// Where attachment bytes live. Messages carry only content hashes; the
+    /// import worker and the image fetcher each hold a clone.
+    pub(crate) content: ContentStore,
 
     // Layout + render caches.
     pub(crate) rect: Rect,
@@ -801,7 +805,7 @@ impl ChatApp {
     /// instances genuinely different participants rather than two "`u_me"s`
     /// colliding.
     pub fn new() -> Self {
-        let mut app = Self::bare();
+        let mut app = Self::bare(ContentStore::for_app());
         app.is_live = true;
         app.me = LocalIdentity::resolve();
         // Select the live transport, but defer its endpoint bind until the
@@ -819,15 +823,16 @@ impl ChatApp {
 
     /// A non-persistent instance for `--shots` / tests: never reads or
     /// writes disk, so a screenshot run can't clobber a real workspace.
+    /// Attachment bytes are kept in memory for the same reason.
     pub fn new_ephemeral() -> Self {
-        Self::bare()
+        Self::bare(ContentStore::memory())
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "the complete app state is deliberately initialized together so bounded channels and their lifecycles cannot drift"
     )]
-    fn bare() -> Self {
+    fn bare(content: ContentStore) -> Self {
         // The host call tile is a real VideoPlayer with no frame until a live
         // capture feeds one; there is no synthesised stand-in. Its honest
         // "camera off" state is painted over the empty surface.
@@ -905,7 +910,8 @@ impl ChatApp {
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
             actions: ui::ActionHost::new(),
-            images: ui::ImageStore::new(&crate::images::fetcher()),
+            images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
+            content,
             rect: Rect::ZERO,
             root_node: None,
             video_node: None,
@@ -1200,7 +1206,7 @@ impl ChatApp {
             "attach" => {
                 // Show the workspace file picker with real, decodable
                 // thumbnails (the demo scheme drives the same decode path as
-                // a qdoc image). Ephemeral shot only.
+                // a stored image). Ephemeral shot only.
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
