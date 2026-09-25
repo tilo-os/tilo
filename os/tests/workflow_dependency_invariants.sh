@@ -287,7 +287,20 @@ elif [ "$fail" = 0 ]; then
   printf 'ok    image SBOM uses a cached, checksum-pinned native Syft binary\n'
 fi
 
+asset_action="$repo/.forgejo/actions/cache-github-assets/action.yml"
+if ! grep -Fqx '          ${{ inputs.key }}-' "$asset_action" \
+  || ! grep -Fq 'run: ./os/dev/cache-github-assets.sh $ASSETS' "$asset_action" \
+  || [ "$(grep -Fc "key: \${{ inputs.key }}-\${{ hashFiles('os/external-assets/github-assets.tsv') }}" "$asset_action")" -ne 2 ]; then
+  printf 'shared asset cache action does not restore prior generations of its exact manifest key\n' >&2
+  fail=1
+fi
 for workflow in "${github_cache_workflows[@]}"; do
+  # Either the shared action keyed on the whole-manifest cache, or an inline
+  # restore that also falls back to its earlier generations.
+  if grep -Fq 'uses: ./.forgejo/actions/cache-github-assets' "$workflow" \
+    && grep -Fqx '          key: github-assets-all-v1' "$workflow"; then
+    continue
+  fi
   if ! grep -Fq 'github-assets-all-v1-' "$workflow" \
     || ! grep -Fqx '            github-assets-all-v1-' "$workflow"; then
     printf 'workflow does not reuse prior verified GitHub cache generations: %s\n' \
@@ -318,11 +331,11 @@ for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
     fail=1
   fi
 done
-if ! grep -Fq 'key: desktop-external-inputs-${{ matrix.arch }}-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
-    "$package_workflow" \
+if ! grep -Fq 'uses: ./.forgejo/actions/cache-github-assets' "$package_workflow" \
+  || ! grep -Fq 'key: desktop-external-inputs-${{ matrix.arch }}' "$package_workflow" \
   || ! grep -Fq 'github-assets-all-v1-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
     "$package_workflow" \
-  || ! grep -Fq 'os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}.tar.gz"' \
+  || ! grep -Fq "assets: sccache-v0.17.0-\${{ matrix.arch == 'arm64' && 'aarch64' || 'x86_64' }}-unknown-linux-musl.tar.gz" \
     "$package_workflow" \
   || ! grep -Fq 'cached_archive="$repo_root/os/external-assets/cache/${name}.tar.gz"' \
     "$repo/dist/ci/install-sccache.sh"; then
