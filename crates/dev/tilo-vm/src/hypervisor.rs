@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::config::VmEntry;
 use crate::error::CliError;
+use crate::image;
 use crate::sshkey;
 
 /// One external command.
@@ -209,6 +210,8 @@ pub struct Capabilities {
     pub control: Option<&'static str>,
     /// Boots `VmEntry::direct_kernel` from the host (`swap kernel --direct`).
     pub direct_kernel: bool,
+    /// Attaches `VmEntry::boot_esp` read-only ahead of the VM's disk.
+    pub boot_esp: bool,
 }
 
 /// A VM as the adapter sees it.
@@ -249,6 +252,8 @@ pub trait Hypervisor {
     fn create(&self, vm: &Vm<'_>, root_key: &str) -> Result<Vec<CommandLine>, CliError>;
     fn start(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     fn stop(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
+    /// Commands that unregister a VM that is off from the hypervisor. The
+    /// files it owns ([`vm_files`]) are removed by the caller.
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine>;
     /// Where SSH listens; may query the hypervisor.
     ///
@@ -328,17 +333,32 @@ fn configured_endpoint(vm: &Vm<'_>, default_host: &str, port: u16) -> SshEndpoin
         })
 }
 
-/// A qcow2 child of the published image, so the image stays pristine. Runs
-/// the `qemu-img` resolved when the VM was created.
+/// A qcow2 child of the image (a qcow2 dev disk or a raw disk), so the image
+/// stays pristine. Runs the `qemu-img` resolved when the VM was created.
 fn overlay_disk(vm: &Vm<'_>) -> Result<Option<CommandLine>, CliError> {
     let disk = vm.disk()?;
     let qemu_img = vm.entry.qemu_img.as_deref().unwrap_or("qemu-img");
+    let format = image::Format::from_entry(vm.entry.image_format.as_deref()).name();
     Ok(vm.entry.image.as_deref().map(|image| {
         CommandLine::new(
             qemu_img,
-            &["create", "-f", "qcow2", "-F", "qcow2", "-b", image, disk],
+            &["create", "-f", "qcow2", "-F", format, "-b", image, disk],
         )
     }))
+}
+
+/// Every file a VM created by `vm create` owns: its disk and what the
+/// adapters keep beside it (libvirt's domain XML; WHPX's UEFI variables,
+/// pid file and serial logs). Some exist only for some adapters.
+#[must_use]
+pub fn vm_files(disk: &str) -> Vec<String> {
+    let mut files = vec![disk.to_owned(), domain_xml_path(disk)];
+    files.extend(
+        ["vars.fd", "pid", "ttyS0.log", "uart.log"]
+            .iter()
+            .map(|suffix| whpx_file(disk, suffix)),
+    );
+    files
 }
 
 // ---- libvirt (Linux) ----------------------------------------------------------
@@ -447,8 +467,8 @@ pub fn domain_xml_with_uuid(
     <disk type='file' device='disk'>
       <driver name='qemu' type='qcow2' discard='unmap'/>
       <source file='{disk}'/>
-      <target dev='vda' bus='virtio'/>
-    </disk>
+      <target dev='vda' bus='virtio'/>{disk_boot}
+    </disk>{boot_esp}
     <interface type='user'>
       <backend type='passt'/>
       <model type='virtio'/>
@@ -472,6 +492,15 @@ pub fn domain_xml_with_uuid(
         credential = e(&sshkey::smbios_credential(root_key)),
         disk = e(vm.disk()?),
         port = vm.ssh_port(),
+        disk_boot = if vm.entry.boot_esp.is_some() {
+            "\n      <boot order='2'/>"
+        } else {
+            ""
+        },
+        boot_esp = vm.entry.boot_esp.as_deref().map_or_else(String::new, |esp| format!(
+            "\n    <disk type='file' device='disk'>\n      <driver name='qemu' type='raw'/>\n      <source file='{}'/>\n      <target dev='vdb' bus='virtio'/>\n      <readonly/>\n      <boot order='1'/>\n    </disk>",
+            e(esp)
+        )),
         direct = vm
             .entry
             .direct_kernel
@@ -532,10 +561,7 @@ impl Hypervisor for Libvirt {
     }
 
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
-        vec![
-            Self::virsh(vm, &["destroy", vm.name]),
-            Self::virsh(vm, &["undefine", vm.name, "--nvram"]),
-        ]
+        vec![Self::virsh(vm, &["undefine", vm.name, "--nvram"])]
     }
 
     fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
@@ -550,6 +576,7 @@ impl Hypervisor for Libvirt {
             credentials: Some("SMBIOS type 11 OEM string"),
             control: Some("virsh"),
             direct_kernel: true,
+            boot_esp: true,
         }
     }
 
@@ -616,12 +643,13 @@ impl Hypervisor for Qemu {
         vec![Self::script(vm, &["shutdown"])]
     }
 
-    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
-        let mut commands = vec![Self::script(vm, &["stop"])];
-        if let Some(disk) = &vm.entry.disk {
-            commands.push(CommandLine::new("rm", &["-f", disk]));
-        }
-        commands
+    fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        // os/dev/vm.sh keeps no registration beside the disk.
+        Vec::new()
+    }
+
+    fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::script(vm, &["stop"]))
     }
 
     fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
@@ -636,6 +664,7 @@ impl Hypervisor for Qemu {
             credentials: None,
             control: Some("QEMU monitor (HMP)"),
             direct_kernel: false,
+            boot_esp: false,
         }
     }
 
@@ -705,10 +734,11 @@ impl Hypervisor for Utm {
     }
 
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
-        vec![
-            CommandLine::new("utmctl", &["stop", vm.name, "--kill"]),
-            CommandLine::new("utmctl", &["delete", vm.name]),
-        ]
+        vec![CommandLine::new("utmctl", &["delete", vm.name])]
+    }
+
+    fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(CommandLine::new("utmctl", &["stop", vm.name, "--kill"]))
     }
 
     fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
@@ -744,6 +774,7 @@ impl Hypervisor for Utm {
             credentials: None,
             control: Some("utmctl"),
             direct_kernel: false,
+            boot_esp: false,
         }
     }
 
@@ -807,7 +838,7 @@ impl Whpx {
         let vars = whpx_file(disk, "vars.fd");
         let tty = whpx_file(disk, "ttyS0.log");
         let uart = whpx_file(disk, "uart.log");
-        vec![
+        let mut args: Vec<String> = vec![
             "-name".into(),
             vm.name.into(),
             "-machine".into(),
@@ -829,6 +860,16 @@ impl Whpx {
             format!("if=none,id=osdisk,format=qcow2,file={disk},cache=writeback,aio=threads"),
             "-device".into(),
             "virtio-blk-pci,drive=osdisk,bootindex=1".into(),
+        ];
+        if let Some(esp) = &vm.entry.boot_esp {
+            args.extend([
+                "-drive".into(),
+                format!("if=none,id=bootesp,format=raw,readonly=on,file={esp}"),
+                "-device".into(),
+                "virtio-blk-pci,drive=bootesp,bootindex=0".into(),
+            ]);
+        }
+        args.extend([
             "-device".into(),
             "virtio-gpu-pci,edid=on,xres=1280,yres=1024".into(),
             "-device".into(),
@@ -853,7 +894,8 @@ impl Whpx {
             format!("tcp:127.0.0.1:{},server=on,wait=off", Self::qmp_port(vm)),
             "-monitor".into(),
             "none".into(),
-        ]
+        ]);
+        args
     }
 
     fn qmp(vm: &Vm<'_>, action: &str) -> CommandLine {
@@ -940,19 +982,13 @@ impl Hypervisor for Whpx {
         vec![Self::qmp(vm, "system_powerdown")]
     }
 
-    fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
-        let mut commands = vec![Self::qmp(vm, "quit")];
-        if let Some(disk) = &vm.entry.disk {
-            let paths = [disk.clone(), whpx_file(disk, "vars.fd"), Self::pid(vm)]
-                .iter()
-                .map(|p| ps_quote(p))
-                .collect::<Vec<_>>()
-                .join(",");
-            commands.push(powershell(&format!(
-                "Remove-Item -LiteralPath {paths} -ErrorAction SilentlyContinue"
-            )));
-        }
-        commands
+    fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        // QEMU keeps no registration: the VM is its files.
+        Vec::new()
+    }
+
+    fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(Self::qmp(vm, "quit"))
     }
 
     fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
@@ -974,6 +1010,7 @@ impl Hypervisor for Whpx {
         Capabilities {
             serial: true,
             credentials: Some("QEMU SMBIOS type 11"),
+            boot_esp: true,
             ..Capabilities::default()
         }
     }
@@ -1045,9 +1082,14 @@ impl Hypervisor for HyperV {
 
     fn destroy(&self, vm: &Vm<'_>) -> Vec<CommandLine> {
         let name = ps_quote(vm.name);
-        vec![powershell(&format!(
-            "Stop-VM -Name {name} -TurnOff -Force; Remove-VM -Name {name} -Force"
-        ))]
+        vec![powershell(&format!("Remove-VM -Name {name} -Force"))]
+    }
+
+    fn power_off(&self, vm: &Vm<'_>) -> Option<CommandLine> {
+        Some(powershell(&format!(
+            "Stop-VM -Name {} -TurnOff -Force",
+            ps_quote(vm.name)
+        )))
     }
 
     fn ssh_endpoint(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
@@ -1079,6 +1121,7 @@ impl Hypervisor for HyperV {
             credentials: None,
             control: Some("PowerShell (Hyper-V module)"),
             direct_kernel: false,
+            boot_esp: false,
         }
     }
 
@@ -1340,7 +1383,7 @@ mod tests {
             "virsh --connect qemu:///session start dev"
         );
         assert_eq!(
-            Libvirt.destroy(&vm)[1].display(),
+            Libvirt.destroy(&vm)[0].display(),
             "virsh --connect qemu:///session undefine dev --nvram"
         );
         assert_eq!(
@@ -1383,7 +1426,11 @@ mod tests {
                 .display(),
             "TILO_SSH_PORT=2223 TILO_RUN=/tmp/out bash os/dev/vm.sh shot boot"
         );
-        assert_eq!(Qemu.destroy(&vm)[1].display(), "rm -f /vms/dev.qcow2");
+        assert!(Qemu.destroy(&vm).is_empty());
+        assert_eq!(
+            Qemu.power_off(&vm).unwrap().display(),
+            "TILO_SSH_PORT=2223 bash os/dev/vm.sh stop"
+        );
     }
 
     #[test]
@@ -1557,6 +1604,141 @@ mod tests {
             );
         }
         assert!(adapter("vbox").is_err());
+    }
+
+    #[test]
+    fn a_raw_image_is_the_backing_file_of_a_qcow2_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = dir.path().join("dev.qcow2").display().to_string();
+        let entry = VmEntry {
+            image: Some("/img/disk.raw".into()),
+            image_format: Some("raw".into()),
+            disk: Some(disk.clone()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        assert_eq!(
+            Libvirt.create(&vm, KEY).unwrap()[0].display(),
+            format!("qemu-img create -f qcow2 -F raw -b /img/disk.raw {disk}")
+        );
+        // The child is qcow2 whatever its backing file is.
+        assert!(domain_xml(&vm, KEY).unwrap().contains("type='qcow2'"));
+    }
+
+    #[test]
+    fn a_boot_esp_is_attached_read_only_and_boots_first() {
+        let with_esp = VmEntry {
+            disk: Some(r"C:\vms\dev.qcow2".into()),
+            boot_esp: Some(r"C:\esp\override.raw".into()),
+            firmware_code: Some("code.fd".into()),
+            ..entry()
+        };
+        let vm = Vm {
+            name: "dev",
+            entry: &with_esp,
+        };
+        let args = Whpx::qemu_args(&vm);
+        let esp = args
+            .iter()
+            .position(|a| a.contains("id=bootesp"))
+            .expect("ESP drive");
+        assert!(args[esp].contains("readonly=on"), "{}", args[esp]);
+        assert!(args[esp].contains("format=raw"), "{}", args[esp]);
+        assert!(args[esp].ends_with(r"override.raw"), "{}", args[esp]);
+        assert!(
+            args.iter()
+                .any(|a| a == "virtio-blk-pci,drive=bootesp,bootindex=0")
+        );
+        assert!(
+            args.iter()
+                .any(|a| a == "virtio-blk-pci,drive=osdisk,bootindex=1")
+        );
+        let without = VmEntry {
+            boot_esp: None,
+            ..with_esp.clone()
+        };
+        assert!(
+            !Whpx::qemu_args(&Vm {
+                name: "dev",
+                entry: &without
+            })
+            .iter()
+            .any(|a| a.contains("bootesp"))
+        );
+
+        let xml = domain_xml(&vm, KEY).unwrap();
+        let esp_disk = xml.split("<disk").nth(2).expect("second disk");
+        assert!(esp_disk.contains("<readonly/>"), "{xml}");
+        assert!(esp_disk.contains("<boot order='1'/>"), "{xml}");
+        assert!(esp_disk.contains("type='raw'"), "{xml}");
+        let os_disk = xml.split("<disk").nth(1).unwrap();
+        assert!(os_disk.contains("<boot order='2'/>"), "{xml}");
+        assert!(!vm_xml(&entry()).contains("<boot order="));
+
+        for name in ["libvirt", "whpx", "qemu", "utm", "hyperv"] {
+            let supported = adapter(name).unwrap().capabilities().boot_esp;
+            assert_eq!(supported, matches!(name, "libvirt" | "whpx"), "{name}");
+        }
+    }
+
+    #[test]
+    fn removing_a_vm_unregisters_it_and_names_its_files() {
+        let entry = entry();
+        let vm = Vm {
+            name: "dev",
+            entry: &entry,
+        };
+        assert_eq!(
+            Libvirt
+                .destroy(&vm)
+                .iter()
+                .map(CommandLine::display)
+                .collect::<Vec<_>>(),
+            ["virsh --connect qemu:///session undefine dev --nvram"]
+        );
+        assert!(Whpx.destroy(&vm).is_empty());
+        assert!(
+            Whpx.power_off(&vm)
+                .unwrap()
+                .args
+                .last()
+                .unwrap()
+                .contains("quit")
+        );
+        assert!(
+            HyperV.destroy(&vm)[0]
+                .args
+                .last()
+                .unwrap()
+                .contains("Remove-VM")
+        );
+        assert!(
+            HyperV
+                .power_off(&vm)
+                .unwrap()
+                .args
+                .last()
+                .unwrap()
+                .contains("-TurnOff")
+        );
+        assert_eq!(Utm.destroy(&vm)[0].display(), "utmctl delete dev");
+        for name in ["libvirt", "qemu", "utm", "hyperv", "whpx"] {
+            assert!(adapter(name).unwrap().power_off(&vm).is_some(), "{name}");
+        }
+        let files = vm_files("/vms/dev.qcow2");
+        for file in [
+            "/vms/dev.qcow2",
+            "/vms/dev.qcow2.xml",
+            "/vms/dev.qcow2.vars.fd",
+            "/vms/dev.qcow2.pid",
+            "/vms/dev.qcow2.ttyS0.log",
+            "/vms/dev.qcow2.uart.log",
+        ] {
+            assert!(files.iter().any(|f| f == file), "{file} in {files:?}");
+        }
     }
 
     #[test]
