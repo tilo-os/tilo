@@ -95,6 +95,7 @@ capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
+wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true

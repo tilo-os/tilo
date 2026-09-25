@@ -99,3 +99,7 @@ raise SystemExit(7)
             with self.subTest(route_marker=marker), self.assertRaises(ValueError):
                 capture.window_metadata(lines(sample),True)
         self.assertEqual(capture.window_metadata(lines(enabled),True),enabled)
+
+
+if __name__ == '__main__':
+    unittest.main()

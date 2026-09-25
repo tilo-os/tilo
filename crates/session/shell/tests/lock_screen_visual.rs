@@ -8,6 +8,9 @@
 //! TILO_LOCK_SHOT_DIR=/tmp/tilo-lock-shots \
 //!   cargo test -p shell --test it lock_screen_visual::render_lock_screen_matrix -- --ignored --nocapture
 //! ```
+//!
+//! Set `TILO_LOCK_SHOT_QUICK=1` for the portrait accessibility matrix,
+//! secondary-output composition, and animation phases only.
 
 #![allow(
     clippy::unwrap_used,
@@ -20,7 +23,9 @@
 )]
 
 use crate::support::offscreen::OffscreenRenderer;
-use shell::compositor::lock_screen::{LockOutput, LockView, draw_lock_scene};
+use shell::compositor::lock_screen::{
+    LockOutput, LockView, draw_lock_scene, draw_lock_scene_at_time,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::peniko::Color;
@@ -78,10 +83,14 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
 #[ignore = "review tool: needs an offscreen wgpu adapter and writes PNGs"]
 fn render_lock_screen_matrix() {
     let root = shot_dir();
+    let quick = std::env::var("TILO_LOCK_SHOT_QUICK").is_ok_and(|value| value == "1");
     std::fs::create_dir_all(&root).expect("create lock screenshot directory");
     for (theme_label, theme) in [
         ("normal", Theme::dark()),
+        ("light", Theme::light()),
+        ("reduced-motion", Theme::dark().with_reduce_motion(true)),
         ("large-text", Theme::dark().with_text_scale(1.3)),
+        ("maximum-text", Theme::dark().with_text_scale(4.0)),
         ("high-contrast", Theme::high_contrast()),
     ] {
         for (width, height, scale, label) in [
@@ -93,7 +102,12 @@ fn render_lock_screen_matrix() {
             (1600, 900, 2.0, "-hidpi"),
             // Compact but supported laptop/tablet viewport.
             (960, 540, 1.0, "-compact"),
+            (800, 600, 1.0, "-small"),
+            (640, 960, 1.0, "-portrait"),
         ] {
+            if quick && label != "-portrait" {
+                continue;
+            }
             let output = [LockOutput {
                 origin: (0.0, 0.0),
                 size: (f64::from(width), f64::from(height)),
@@ -133,5 +147,25 @@ fn render_lock_screen_matrix() {
     let scene = draw_lock_scene(&outputs, &Theme::dark(), &mut text, &states()[3].1);
     renderer.render_png(&scene, Color::BLACK, root.join("multi-output.png"));
 
+    let mut renderer = OffscreenRenderer::new(1600, 900);
+    for time in [0.0, 8.0, 16.0] {
+        let scene = draw_lock_scene_at_time(
+            &[LockOutput {
+                origin: (0.0, 0.0),
+                size: (1600.0, 900.0),
+                scale: 1.0,
+            }],
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+            &states()[0].1,
+            None,
+            time,
+        );
+        renderer.render_png(
+            &scene,
+            Color::BLACK,
+            root.join(format!("motion-{time:02}.png")),
+        );
+    }
     println!("lock-screen review PNGs: {}", root.display());
 }

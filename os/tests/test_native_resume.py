@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Exercise exact frozen recipe surgery; no engine, compiler or downloads."""
+"""Exercise frozen recipe surgery; no engine, compiler or downloads."""
 import importlib.util
 import hashlib
 import json
 from pathlib import Path
 import subprocess
 import unittest
+
+from frozen_source_fixture import NATIVE_DRIVER, NATIVE_RECIPE
 
 ROOT = Path(__file__).parents[2]
 spec = importlib.util.spec_from_file_location('native_resume', ROOT / 'os/dev/native_resume.py')
@@ -19,9 +21,7 @@ REQUIRED = ('shell fs terminal file-explorer settings tilo-model-manager tilo-mo
 
 
 class ResumeRecipe(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.original = subprocess.check_output(['git', '-C', str(ROOT), 'show', resume.SOURCE + ':os/Containerfile']).decode()
+    original = NATIVE_RECIPE
 
     def test_only_missing_bins_selected_remaining_phases_unchanged(self):
         retained = set(REQUIRED) | {'browser'}
@@ -54,7 +54,7 @@ class ResumeRecipe(unittest.TestCase):
             resume.derive_recipe(self.original.replace('cargo clean --profile thin-app', 'true'), {'shell'}, REQUIRED)
 
     def test_driver_hash_reproduced_from_exported_public_parameters(self):
-        original = subprocess.check_output(['git', '-C', str(ROOT), 'show', resume.SOURCE + ':os/dev/build-image.sh']).decode()
+        original = NATIVE_DRIVER
         record = {'source_path': '/work/frozen source',
                   'derived_recipe_path': '/work/tilo-native-resume-random/Containerfile.resumed',
                   'seed_image_id': 'sha256:' + 'a' * 64}
@@ -69,7 +69,7 @@ class ResumeRecipe(unittest.TestCase):
         self.assertNotEqual(hashlib.sha256(resume.derive_driver(original, **loaded).encode()).hexdigest(), expected)
 
     def test_native_driver_does_not_need_a_kernel_and_full_image_still_does(self):
-        original = subprocess.check_output(['git', '-C', str(ROOT), 'show', resume.SOURCE + ':os/dev/build-image.sh']).decode()
+        original = NATIVE_DRIVER
         derived = resume.derive_driver(original, '/work/repo', '/work/Containerfile.resumed', 'sha256:' + 'a' * 64)
         start = derived.index('if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then\n  KERNEL_RPMS_REF=scratch')
         block = derived[start:derived.index('# Pre-flight: every host-side COPY source exists.', start)]
