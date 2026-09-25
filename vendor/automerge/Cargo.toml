@@ -113,6 +113,9 @@ version = "0.15.0"
 version = "^0.3"
 optional = true
 
+[dependencies.miniz_oxide]
+version = "=0.8.9"
+
 [dependencies.leb128]
 version = "^0.2.5"
 

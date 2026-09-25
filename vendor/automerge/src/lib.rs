@@ -235,8 +235,7 @@
 macro_rules! log {
      ( $( $t:tt )* ) => {
           {
-            use $crate::__log;
-            __log!( $( $t )* );
+            $crate::__log!( $( $t )* );
           }
      }
  }
@@ -282,6 +281,7 @@ pub mod legacy;
 pub mod marks;
 pub mod op_set2;
 pub mod patches;
+pub mod resource_limits;
 mod read;
 mod sequence_tree;
 mod storage;
