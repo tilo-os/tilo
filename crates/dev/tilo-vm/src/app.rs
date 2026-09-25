@@ -22,7 +22,7 @@ use crate::cli::{
     Builder, Command, CreateArgs, InputCommand, ScenarioCommand, SeatCommand, SlotCommand,
     UpgradeArgs, VmCommand,
 };
-use crate::config::{self, Registry, Source, VmEntry, WORKTREE_FILE};
+use crate::config::{self, DirectKernel, Registry, Source, VmEntry, WORKTREE_FILE};
 use crate::context::Worktree;
 use crate::disk;
 use crate::doctor::{self, Check};
@@ -1312,6 +1312,7 @@ impl App {
                 alternative: "run tilo-vm vm create from a Tilo worktree: the qemu adapter drives os/dev/vm.sh".into(),
             });
         }
+        Self::validate_create_options(choice.adapter, args)?;
         if !sshkey::key_path(&self.registry_path, &args.name).exists() && !on_path("ssh-keygen") {
             return Err(CliError::ToolMissing {
                 tool: "ssh-keygen".into(),
@@ -1392,6 +1393,22 @@ impl App {
         })
     }
 
+    fn validate_create_options(adapter: &str, args: &CreateArgs) -> Result<(), CliError> {
+        if args.headless && adapter != "whpx" {
+            return Err(CliError::Unsupported {
+                what: format!("--headless with the {adapter} adapter"),
+                alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
+            });
+        }
+        if args.direct_boot_bundle.is_some() && adapter != "whpx" {
+            return Err(CliError::Unsupported {
+                what: format!("--direct-boot-bundle with the {adapter} adapter"),
+                alternative: "use --hypervisor whpx on Windows ARM64".into(),
+            });
+        }
+        Ok(())
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one linear sequence: preflight, download, adapter, registry"
@@ -1423,6 +1440,11 @@ impl App {
         }
         let facts = HostFacts::probe(&mut self.runner);
         let plan = self.preflight_create(&facts, &args, &arch)?;
+        let direct_kernel = args
+            .direct_boot_bundle
+            .as_deref()
+            .map(|path| read_direct_boot_bundle(Path::new(path)))
+            .transpose()?;
         let summary = plan.describe();
         if !self.json {
             eprintln!("tilo-vm: preflight passed\n{summary}");
@@ -1491,6 +1513,7 @@ impl App {
             arch: (arch != host).then_some(arch),
             emulated: args.emulated,
             memory_mb: args.memory_mb,
+            headless: args.headless,
             cpus: args.cpus,
             ssh_port: args.ssh_port,
             template: args.template,
@@ -1502,6 +1525,7 @@ impl App {
             qemu_system: plan.choice.tool("qemu-system-aarch64").map(str::to_owned),
             firmware_code: plan.choice.tool("firmware-code").map(str::to_owned),
             firmware_vars: plan.choice.tool("firmware-vars").map(str::to_owned),
+            direct_kernel,
             ..VmEntry::default()
         };
         let adapter = hypervisor::adapter(&entry.hypervisor)?;
@@ -3925,6 +3949,67 @@ fn remove_if_present(path: &Path) -> Result<bool, CliError> {
     }
 }
 
+/// Resolve a CI dev-disk companion bundle before downloading or creating a VM.
+/// The kernel, initrd and command line must describe the same disk image.
+fn read_direct_boot_bundle(path: &Path) -> Result<DirectKernel, CliError> {
+    let path = absolute(path);
+    let text =
+        std::fs::read_to_string(&path).map_err(CliError::io(format!("read {}", path.display())))?;
+    let mut direct: DirectKernel = serde_json::from_str(&text).map_err(|e| CliError::Config {
+        path: path.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    let invalid = |detail: &str| CliError::Config {
+        path: path.display().to_string(),
+        detail: detail.to_owned(),
+    };
+    if !direct
+        .cmdline
+        .split_whitespace()
+        .any(|arg| arg == "root=tilo-auto")
+    {
+        return Err(invalid(
+            "direct boot needs the complete Tilo UKI command line with root=tilo-auto",
+        ));
+    }
+    if direct.cmdline.contains('\0')
+        || direct
+            .cmdline
+            .contains("systemd.setenv=TILO_ROOT_LOADER_PARTUUID=")
+    {
+        return Err(invalid(
+            "the bundle command line must not include a loader UUID override",
+        ));
+    }
+    let partuuid = direct
+        .loader_partuuid
+        .as_deref()
+        .ok_or_else(|| invalid("the bundle needs loader_partuuid for its source disk's ESP"))?;
+    direct.loader_partuuid = Some(
+        uuid::Uuid::parse_str(partuuid)
+            .map_err(|_| invalid("loader_partuuid is not a GPT partition UUID"))?
+            .to_string(),
+    );
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    for file in [&mut direct.kernel, &mut direct.initrd] {
+        let resolved = Path::new(file);
+        let resolved = if resolved.is_absolute() {
+            resolved.to_owned()
+        } else {
+            parent.join(resolved)
+        };
+        if !resolved.is_file() {
+            return Err(invalid(&format!(
+                "missing direct boot file {}",
+                resolved.display()
+            )));
+        }
+        *file = resolved.display().to_string();
+    }
+    direct.cmdline = direct.cmdline.trim().to_owned();
+    Ok(direct)
+}
+
 fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_owned()
@@ -4365,16 +4450,50 @@ mod tests {
             hypervisor: None,
             image: None,
             boot_esp: None,
+            direct_boot_bundle: None,
             tag: None,
             disk: None,
             arch: None,
             emulated: false,
             memory_mb: None,
+            headless: false,
             cpus: None,
             ssh: None,
             ssh_port: None,
             template: None,
         }
+    }
+
+    #[test]
+    fn direct_boot_bundle_resolves_files_and_requires_root_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Image"), b"kernel").unwrap();
+        std::fs::write(dir.path().join("initrd"), b"initrd").unwrap();
+        let bundle = dir.path().join("boot.json");
+        std::fs::write(
+            &bundle,
+            r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto composefs=abc","loader_partuuid":"FCDFC623-0563-4F91-9DB8-F2B87B98B3CE"}"#,
+        )
+        .unwrap();
+        let direct = read_direct_boot_bundle(&bundle).unwrap();
+        assert_eq!(
+            direct.kernel,
+            dir.path().join("Image").display().to_string()
+        );
+        assert_eq!(
+            direct.initrd,
+            dir.path().join("initrd").display().to_string()
+        );
+        assert_eq!(
+            direct.loader_partuuid.as_deref(),
+            Some("fcdfc623-0563-4f91-9db8-f2b87b98b3ce")
+        );
+        std::fs::write(
+            &bundle,
+            r#"{"kernel":"Image","initrd":"initrd","cmdline":"root=tilo-auto","loader_partuuid":"invalid"}"#,
+        )
+        .unwrap();
+        assert!(read_direct_boot_bundle(&bundle).is_err());
     }
 
     #[test]

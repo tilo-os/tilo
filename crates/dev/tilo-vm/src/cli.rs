@@ -517,6 +517,9 @@ pub struct CreateArgs {
     /// the VM's disk: the VM boots its loader and UKI (libvirt, whpx).
     #[arg(long)]
     pub boot_esp: Option<String>,
+    /// WHPX: boot the kernel/initrd from a dev-disk companion JSON bundle.
+    #[arg(long, conflicts_with = "boot_esp")]
+    pub direct_boot_bundle: Option<String>,
     /// Published dev disk tag to download (default: the newest main or release build).
     #[arg(long)]
     pub tag: Option<String>,
@@ -532,6 +535,9 @@ pub struct CreateArgs {
     /// Guest memory in MiB (default: the adapter's).
     #[arg(long)]
     pub memory_mb: Option<u32>,
+    /// WHPX only: omit the virtual display and USB devices for SSH-only development.
+    #[arg(long)]
+    pub headless: bool,
     /// Guest CPUs (default: the adapter's).
     #[arg(long)]
     pub cpus: Option<u32>,
