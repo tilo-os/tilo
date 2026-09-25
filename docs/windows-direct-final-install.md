@@ -40,7 +40,13 @@ scenario still need to call them as one resumable workflow.
   source, and the Lenovo board profile and firmware inputs for a physical
   install. It binds the host-checked VM guest proof to that signed digest,
   reads the installed UKI and ARM64 loader independently from the source FAT32
-  ESP, then hashes each final source extent.
+  ESP, then hashes each final source extent. For a Lenovo physical source it
+  also requires two separately signed CI installer medium identities: the
+  Lenovo install-only WHPX proof and a generic full first-boot WHPX proof.
+  The media must share CI checkout and signed live base; each has its own
+  signed CI run identity, and each checked
+  host proof must bind its own medium's SHA-256. The generic ARM64 child has
+  its own signature and SLSA attestation in addition to its signed index.
 - `copy-windows-direct-final-install.py execute` rechecks the CI signature,
   source hashes, both source and physical GPT copies, Windows disk identity,
   suspended BitLocker, the live C: identity, and static Windows partition
@@ -50,10 +56,14 @@ scenario still need to call them as one resumable workflow.
 
 The maintained Windows ARM64 `tilo-vm scenario install` path uses WHPX and
 attaches the reviewed sparse source raw as its target. It drives the guided
-installer, checks the first VM boot, and writes a checked guest proof beside
-the scenario result. Keep the resulting `vm-install-proof-checked.json` for
-the source receipt. Small component changes can continue through `tilo-vm`
-slots without repeating disk installation.
+installer and writes a checked guest proof beside the scenario result. The
+Lenovo target uses `--skip-target-boot` because QEMU virt cannot establish its
+board-specific first boot. This source proof is marked `first_boot_verified:
+false`; a separate generic CI-signed target must complete the full installer
+and first-boot cycle before physical copying. Keep the resulting
+`vm-install-proof-checked.json` for the source receipt. Small component
+changes can continue through `tilo-vm` slots without repeating disk
+installation.
 
 The backend command contract is:
 
@@ -62,26 +72,39 @@ python os/dev/allocate-windows-direct-final-install.py prepare --root-gib 45 --o
 python os/dev/allocate-windows-direct-final-install.py execute --request request.json --confirm-request-sha256 <sha256> --confirm-disk-id <disk-id> --confirm-recovery-protector-id <id> --confirm-recovery-key-backed-up --output realized-plan.json
 python os/dev/prepare-windows-direct-source.py template --plan realized-plan.json --output source.raw
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
-tilo-vm scenario install --medium C:\path\to\ci-installer.qcow2 --layout guided-alongside --target-disk source.raw --encrypt passphrase --graphics software
+tilo-vm scenario install --medium C:\path\to\ci-installer.qcow2 --layout guided-alongside --target-disk source.raw --encrypt passphrase --graphics software --skip-target-boot
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py finalize --plan realized-plan.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image code.podesta.ai/qos/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output source-receipt.json
 python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image code.podesta.ai/qos/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output final-readback.json
 ```
 
+The Lenovo `receipt` and `execute` commands additionally require the same
+eight arguments: `--board-medium-identity`, `--board-ci-guest-proof`,
+`--generic-ci-image` (pinned generic multiarch index),
+`--generic-index-manifest`, `--generic-child-manifest`,
+`--generic-vm-proof-checked`, `--generic-medium-identity`, and
+`--generic-ci-guest-proof`. The identity paths are the CI signed
+`*.whpx-source.json` files, with adjacent `.sig` and `.bundle` files. The
+native guest proofs are the raw CI cycle `guest-install-proof.json` files;
+the generic checked VM proof must report a completed first boot. Both
+commands verify the signatures again and bind all results into the source
+receipt before a physical copy can open the disk for writing.
+
 For a guest image built with the VM install-proof helper, the WHPX scenario
 attaches a dedicated named virtio serial port, visible in the guest at
 `/dev/virtio-ports/org.tilo.vm-install-proof`. After `tilo-install` has closed
 the LUKS target successfully, it emits one
-`TILO_VM_INSTALL_PROOF_V1=<compact JSON>` line to that port. No backend logs
+`TILO_VM_INSTALL_PROOF_V2=<compact JSON>` line to that port for signed offline
+targets. No backend logs
 or secrets are sent to this channel. The JSON schema is
-`tilo.vm-install-image-proof.v1`; it contains `architecture` (`arm64`),
-`booted_image_digest`,
-`installed_image_digest`, `composefs_digest`, `target_uki_sha256`, `disk_guid`,
+`tilo.vm-install-image-proof.v2`; it contains `architecture` (`arm64`),
+separate booted and installed image and composefs digests, selected signed
+target and installed update origin, `target_uki_sha256`, `disk_guid`,
 and `partuuids` with `efi`, `boot`, and `root` fields. The guest derives those
 from `bootc status`, the installed deployment `.origin`, the promoted target
-UKI, and `blkid`; it refuses any mismatch. The scenario must compare both
-image digests to the separately verified CI OCI digest and the GPT identities
+UKI, and `blkid`; it refuses any mismatch. The scenario compares the installed
+digest to the separately verified CI target digest and the GPT identities
 to the VM source **before** `finalize` rewrites PARTUUIDs. It must also check
 the UKI in the source ESP against this proof and the CI-signed boot binding.
 The port is the VM-only opt-in signal; the backend also checks
@@ -89,9 +112,10 @@ The port is the VM-only opt-in signal; the backend also checks
 completion. No supplied `--ci-image` argument alone establishes this
 connection.
 
-The two guest image digest fields are the platform-specific OCI manifest
-digest (`sha256:` plus 64 lowercase hex), as reported by `bootc status` and
-the installed `.origin`. The CI pin may instead name a multiarch index. In
+The guest image digest fields are platform-specific OCI manifest digests
+(`sha256:` plus 64 lowercase hex), as reported by `bootc status` and the
+installed `.origin`. The booted live medium and installed signed target can
+have different digests. The CI pin may instead name a multiarch index. In
 that case, the host must verify the signed index at its exact digest, parse
 its OCI descriptors, select exactly one `linux/arm64` child manifest, and
 compare the guest digest to that child. If the CI pin names a single image
