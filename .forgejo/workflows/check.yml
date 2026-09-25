@@ -215,11 +215,12 @@ jobs:
       - name: Ensure invariant test tooling
         run: |
           dnf install -y --setopt=install_weak_deps=False \
-            gcc kmod clang lld rpm-build python3-pillow systemd
-          for tool in cargo cc modinfo clang ld.lld rpmbuild rpmkeys jq systemd-escape; do
+            gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts
+          for tool in cargo cc modinfo clang ld.lld rpmbuild rpmkeys jq systemd-escape fc-match; do
             command -v "$tool" >/dev/null || { echo "missing invariant tool: $tool" >&2; exit 1; }
           done
           python3 -c 'import PIL'
+          fc-match -f '%{family}' 'Noto Sans' | grep -Fq 'Noto Sans'
           test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name 'RPM-GPG-KEY-fedora-*-primary' -print -quit)"
 
       - name: Security boundary invariants
