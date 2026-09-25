@@ -4917,7 +4917,8 @@ mod tests {
     #[test]
     fn alongside_explains_a_determinable_prepared_efi_failure() {
         let mut disk = sample_disks().remove(0);
-        disk.partitions.pop(); // remove the valid 2 GiB Tilo ESP
+        disk.partitions
+            .retain(|partition| partition.name != "/dev/sda4"); // remove the valid 2 GiB Tilo ESP, retain prepared boot
         let mut app = InstallerApp::with_disks(vec![disk]);
         app.install_method = InstallMethod::Alongside;
         app.selected_disk = Some(0);
