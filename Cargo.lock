@@ -3929,7 +3929,7 @@ dependencies = [
  "iroh",
  "libc",
  "mime_guess",
- "qdoc",
+ "qdoc-codecs",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -4319,6 +4319,7 @@ dependencies = [
  "moka",
  "postcard",
  "qdoc",
+ "qdoc-codecs",
  "rand 0.10.1",
  "redb",
  "runtime-fs",
@@ -7919,6 +7920,7 @@ dependencies = [
  "mail-parser",
  "pim-lines",
  "qdoc",
+ "qdoc-codecs",
  "rcgen",
  "reqwest 0.13.2",
  "runtime-dylib",
@@ -10853,18 +10855,30 @@ name = "qdoc"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "base64",
  "blake3",
- "bounded-zip",
  "proptest",
- "pulldown-cmark",
- "quick-xml 0.41.0",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tilo-automerge",
  "tracing",
+]
+
+[[package]]
+name = "qdoc-codecs"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "base64",
+ "bounded-zip",
+ "proptest",
+ "pulldown-cmark",
+ "qdoc",
+ "quick-xml 0.41.0",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tilo-automerge",
  "zip",
 ]
 
@@ -12842,6 +12856,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "qdoc",
+ "qdoc-codecs",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -12913,6 +12928,7 @@ dependencies = [
  "private-fs",
  "qcms",
  "qdoc",
+ "qdoc-codecs",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "rcgen",
@@ -13114,6 +13130,7 @@ dependencies = [
  "bounded-zip",
  "image",
  "qdoc",
+ "qdoc-codecs",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "serde",
@@ -17954,6 +17971,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "qdoc",
+ "qdoc-codecs",
  "qdoc-pdf",
  "regex",
  "runtime-dylib",

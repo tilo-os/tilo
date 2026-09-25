@@ -12026,7 +12026,7 @@ impl WordProcessorWidget {
                         .zip(body_order)
                         .all(|(block, id)| block.id == *id)
                 {
-                    Some(qdoc::codecs::markdown::export_views(
+                    Some(qdoc_codecs::markdown::export_views(
                         &qdoc::model::doc_props(state, c),
                         blocks,
                         notes,

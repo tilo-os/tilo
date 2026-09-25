@@ -26,7 +26,7 @@ use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, TextEncoding, hydrate};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_automerge::ApplyIncoming;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bulk-instrumentation"))]
 thread_local! {
     /// Makes [`DocMut::bulk`] a plain call, so tests can build the op-by-op reference document.
     static OP_BY_OP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -35,14 +35,14 @@ thread_local! {
 }
 
 /// How many bulk flushes on this thread wrote their blocks as changes (not as local ops).
-#[cfg(test)]
-pub(crate) fn change_writes() -> usize {
+#[cfg(any(test, feature = "bulk-instrumentation"))]
+pub fn change_writes() -> usize {
     CHANGE_WRITES.with(std::cell::Cell::get)
 }
 
 /// Run `f` with every bulk scope on this thread disabled (the op-by-op reference path).
-#[cfg(test)]
-pub(crate) fn op_by_op<R>(f: impl FnOnce() -> R) -> R {
+#[cfg(any(test, feature = "bulk-instrumentation"))]
+pub fn op_by_op<R>(f: impl FnOnce() -> R) -> R {
     OP_BY_OP.with(|c| c.set(true));
     let out = f();
     OP_BY_OP.with(|c| c.set(false));
@@ -136,7 +136,7 @@ impl DocMut<'_> {
     /// Otherwise a host-owned document keeps the host's transaction boundary: blocks go in as
     /// batch objects and marks as ordinary local operations.
     pub fn bulk<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "bulk-instrumentation"))]
         if OP_BY_OP.with(std::cell::Cell::get) {
             return f(self);
         }
@@ -357,7 +357,7 @@ impl DocMut<'_> {
             None => Vec::new(),
         };
         if !blocks.is_empty() && write_as_changes(self.doc, &blocks, &marks) {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "bulk-instrumentation"))]
             CHANGE_WRITES.with(|c| c.set(c.get().saturating_add(1)));
             write_as_ops(self.doc, tail.into_iter().collect(), tail_marks);
             return;

@@ -3464,7 +3464,7 @@ async fn seed_from_dir(
     store: &Arc<ContentStore>,
     root: &Path,
 ) -> Result<()> {
-    let registry = qdoc::builtin_registry();
+    let registry = qdoc_codecs::builtin_registry();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
