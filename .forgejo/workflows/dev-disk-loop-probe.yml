@@ -24,7 +24,19 @@ jobs:
           }
           trap cleanup EXIT
           truncate -s 128M "$scratch/probe.raw"
-          printf ',32M\n,\n' | sudo -n sfdisk "$scratch/probe.raw"
+          python3 - "$scratch/probe.raw" <<'PY'
+          import struct
+          import sys
+
+          mbr = bytearray(512)
+          for index, first_lba in enumerate((2048, 67584)):
+              struct.pack_into('<B3sB3sII', mbr, 446 + index * 16,
+                               0, b'\0' * 3, 0x83, b'\0' * 3,
+                               first_lba, 65536)
+          mbr[510:] = b'\x55\xaa'
+          with open(sys.argv[1], 'r+b') as disk:
+              disk.write(mbr)
+          PY
           loop=$(sudo -n losetup -fP --show "$scratch/probe.raw")
           coproc HOLDER { sudo -n python3 -u os/dev/hold-loop-partition-nodes.py "$loop"; }
           holder_pid=$!

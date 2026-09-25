@@ -372,7 +372,7 @@ cleanup() {
   fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
   if [ -n "${LOOP_NODE_HOLDER_PID:-}" ]; then
-    printf 'release\n' >&"${LOOP_NODE_HOLDER[1]}" 2>/dev/null || true
+    printf 'release\n' >&"$LOOP_NODE_HOLDER_IN" 2>/dev/null || true
     wait "$LOOP_NODE_HOLDER_PID" 2>/dev/null || true
   fi
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
@@ -524,7 +524,9 @@ sudo -n udevadm settle 2>/dev/null || true
 # and bootc install, then release them before detaching the loop device.
 coproc LOOP_NODE_HOLDER { sudo -n python3 -u "$SCRIPT_DIR/hold-loop-partition-nodes.py" "$LOOP"; }
 LOOP_NODE_HOLDER_PID=$!
-IFS= read -r loop_nodes_ready <&"${LOOP_NODE_HOLDER[0]}" || die "loop partition node holder failed"
+LOOP_NODE_HOLDER_IN=${LOOP_NODE_HOLDER[1]}
+LOOP_NODE_HOLDER_OUT=${LOOP_NODE_HOLDER[0]}
+IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || die "loop partition node holder failed"
 [ "$loop_nodes_ready" = READY ] || die "loop partition node holder did not become ready"
 mkdir -p "$MNT"
 sudo -n mount "${LOOP}p2" "$MNT"
