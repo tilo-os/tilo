@@ -11,7 +11,7 @@ use super::custody::{self, NativeAllocationSet, NativeOwned, NativeWorkTurn};
 use super::dims::{self, DocDims, IncomingDims};
 use super::{NativeAllowance, NativeLimits, NativeResourceError, NormalizedStorage};
 use crate::transaction::Transactable;
-use crate::{AutoCommit, Change};
+use crate::AutoCommit;
 use budget::Charge;
 
 /// Whether valid changes with absent dependencies may remain queued.
@@ -100,6 +100,8 @@ impl NativeOwned<AutoCommit> {
         let parse_bytes = parse_reservation(&input, &mut charge)?;
         charge.grow(parse_bytes)?;
         let changes = parse::changes(input.bytes(), input.shape().changes)?;
+        // Exact parsed figures, never below the inspected shape.
+        let incoming = IncomingDims::from_parsed(&changes, input.shape())?;
         drop(input);
 
         let doc = &self.value.doc;
@@ -119,7 +121,6 @@ impl NativeOwned<AutoCommit> {
                 missing_dependencies: false,
             });
         }
-        let incoming = IncomingDims::from_changes(&changes)?;
         let peak = dims::apply_peak_bound(&DocDims::of(&self.value), &incoming)?;
         let peak = turn.reserve(peak)?;
         let mut owned = self;
@@ -173,6 +174,8 @@ impl AutoCommit {
         let parse_bytes = parse_reservation(&input, &mut charge)?;
         charge.grow(parse_bytes)?;
         let changes = parse::changes(input.bytes(), input.shape().changes)?;
+        // Exact parsed figures, never below the inspected shape.
+        let incoming = IncomingDims::from_parsed(&changes, input.shape())?;
         drop(input);
         let validated = crate::op_set2::change::batch::native_validation::validate_incoming(
             &self.doc,
@@ -186,7 +189,7 @@ impl AutoCommit {
         if validated.integrated == 0 && !validated.orphaned {
             return Ok(NativeIncomingOutcome::Applied { changed: false });
         }
-        let _growth = allowance.reserve(superlinear_growth(self, &changes)?)?;
+        let _growth = allowance.reserve(superlinear_growth(self, &incoming)?)?;
         // Validation covered the exact queue and input, so batch apply cannot
         // take its duplicate-sequence refusal after partially mutating.
         self.apply_changes_batch(changes)
@@ -219,7 +222,7 @@ fn parse_reservation(
 
 /// Super-linear change-graph growth of applying `changes` (fragment nodes
 /// whose dependency lists grow with every earlier fragment, and clock-cache
-/// entries of actor width), computed exactly from the parsed changes.
-fn superlinear_growth(doc: &AutoCommit, changes: &[Change]) -> Result<usize, NativeResourceError> {
-    dims::superlinear_apply_bound(&DocDims::of(doc), &IncomingDims::from_changes(changes)?)
+/// entries of actor width), from the exact figures of the parsed changes.
+fn superlinear_growth(doc: &AutoCommit, incoming: &IncomingDims) -> Result<usize, NativeResourceError> {
+    dims::superlinear_apply_bound(&DocDims::of(doc), incoming)
 }
