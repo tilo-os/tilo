@@ -1727,6 +1727,7 @@ jobs:
           DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci
           ARCH: ${{ matrix.arch }}
           SOURCE_REVISION: ${{ github.sha }}
+          DISK_TOOLING_REVISION: ${{ github.sha }}
           SOURCE_DISK: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/qcow2/disk.qcow2
           SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
           DISK_FORMATS: qcow2
