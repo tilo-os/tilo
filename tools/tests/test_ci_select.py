@@ -69,6 +69,41 @@ class SelectorTests(unittest.TestCase):
         self.assertIn("suites_required=true", lines)
         self.assertIn("suites=os/tests/a.sh", lines)
 
+    def test_a_pin_only_pull_request_takes_the_pins_path(self):
+        (self.root / "os").mkdir(exist_ok=True)
+        for pin in ("os/rpms-snapshot.env", "os/kernel-snapshot.env"):
+            (self.root / pin).write_text("PIN=x\n")
+        manifest = ci_select.path_suites.parse(
+            '[[group]]\nname = "os"\ninputs = ["os/"]\nsuites = ["os/tests/a.sh"]\n')
+        def plan(changes, **options):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                       suite_manifest=manifest, **options)
+        pins = plan(["os/rpms-snapshot.env", "os/kernel-snapshot.env"], allow_security_skip=True)
+        self.assertTrue(pins["pins_required"])
+        self.assertEqual(pins["pins"], ["os/kernel-snapshot.env", "os/rpms-snapshot.env"])
+        self.assertFalse(pins["rust_required"])
+        self.assertFalse(pins["security_required"])
+        self.assertFalse(pins["suites_required"])
+        self.assertEqual(pins["matrix"], {"include": []})
+        # Pushes, full runs and mixed changes keep every check.
+        for changes, options in (
+            (["os/rpms-snapshot.env"], {}),
+            (["os/rpms-snapshot.env"], {"allow_security_skip": True, "force_full": True}),
+            (["os/rpms-snapshot.env", "leaf/src/lib.rs"], {"allow_security_skip": True}),
+            (["os/deleted-pin.env"], {"allow_security_skip": True}),
+        ):
+            with self.subTest(changes=changes, options=options):
+                other = plan(changes, **options)
+                self.assertFalse(other["pins_required"])
+                self.assertEqual(other["pins"], [])
+                self.assertTrue(other["security_required"])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(pins, output)
+            lines = output.read_text().splitlines()
+        self.assertIn("pins_required=true", lines)
+        self.assertIn("pins=os/kernel-snapshot.env os/rpms-snapshot.env", lines)
+
     def test_cross_package_readers_are_checked_and_tested_when_their_inputs_change(self):
         # "base" reads leaf's sources and a shipped OS file from outside itself,
         # the way tilo-ui's design audit reads every app.

@@ -42,6 +42,11 @@ from ci import suites as path_suites
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc", "qdoc-codecs"}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
+# Snapshot pins CI publishes and signs. A pull request that changes only these
+# changes no code: check.yml's `pins` job proves each changed pin is the signed
+# snapshot published for this source (os/dev/verify-snapshot-pins.sh) instead
+# of the Rust and security suites, which main runs after the merge.
+PIN_FILES = ("os/rpms-snapshot.env", "os/kernel-snapshot.env")
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-app, and docs/packaging.md is a packaging contract input.
@@ -454,12 +459,19 @@ def make_plan(
     # Security may be omitted only for pull-request inputs whose observers do
     # not live in the security suite itself. Workflow and OS control inputs are
     # added to Rust's broader quality-only set below, after this decision.
+    pins = sorted(path for path in changes if path in PIN_FILES)
+    pin_only = (
+        allow_security_skip
+        and not force_full
+        and bool(changes)
+        and all(path in PIN_FILES and (root / path).is_file() for path in changes)
+    )
     security_not_applicable = (
         allow_security_skip
         and not force_full
         and bool(changes)
         and all(path in security_prose or path in quality_helper_paths for path in changes)
-    )
+    ) or pin_only
     quality_paths = set(quality_helper_paths)
     quality_paths.update(
         path for source, observers in QUALITY_ONLY_CONTROL_INPUTS.items()
@@ -480,7 +492,11 @@ def make_plan(
         or (recipe_present and path == "os/Containerfile.builder")
         for path in changes
     )
-    if quality_only and not force_full:
+    if pin_only:
+        selected = set()
+        reason = "snapshot pins only; the pins job verifies their signatures and provenance"
+        full = False
+    elif quality_only and not force_full:
         selected = set()
         reason = ("builder recipe covered by mandatory policy checks; candidate image qualification is separate"
                   if recipe_present else
@@ -527,12 +543,14 @@ def make_plan(
     # Hermetic suites outside Cargo follow their declared inputs; explicit full
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
-              if suite_manifest is not None else [])
+              if suite_manifest is not None and not pin_only else [])
     return {
         "full": full,
         "rust_required": bool(selected),
         "security_required": not security_not_applicable,
         "suites_required": bool(suites),
+        "pins_required": pin_only,
+        "pins": pins if pin_only else [],
         "suites": suites,
         "reason": reason,
         "changed_files": changes,
@@ -562,6 +580,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
         handle.write(f"suites_required={'true' if plan['suites_required'] else 'false'}\n")
         handle.write(f"suites={' '.join(plan['suites'])}\n")
+        handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
+        handle.write(f"pins={' '.join(plan['pins'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
