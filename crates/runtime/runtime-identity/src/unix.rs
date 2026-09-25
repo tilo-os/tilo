@@ -46,7 +46,7 @@
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -298,7 +298,9 @@ fn ensure_private_dir(dir: &std::path::Path) -> io::Result<()> {
 /// Advisory process lock covering all identity lifecycle transitions. It
 /// closes the activate/remove and concurrent-import TOCTOU windows while the
 /// atomic writer gives each individual metadata update crash safety.
-struct IdentityLock(fs::File);
+struct IdentityLock {
+    _lock: advisory_lock::FileLock,
+}
 
 impl IdentityLock {
     fn acquire(dir: &std::path::Path) -> io::Result<Self> {
@@ -330,17 +332,9 @@ impl IdentityLock {
                 "identity lifecycle lock must be private",
             ));
         }
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if result != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self(file))
-    }
-}
-
-impl Drop for IdentityLock {
-    fn drop(&mut self) {
-        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+        Ok(Self {
+            _lock: advisory_lock::FileLock::exclusive(file)?,
+        })
     }
 }
 

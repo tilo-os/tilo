@@ -454,6 +454,20 @@ mod component_adapter {
             Some(self)
         }
 
+        // A component's diagnostic probe observes its own record, the
+        // document its widgets actually render, not the runner's outer one.
+        fn native_input_snapshot(&self, _: &AutoCommit, _: &ObjId) -> Option<serde_json::Value> {
+            let binding = self.component.callback_binding();
+            let _entry = binding.enter().ok()?;
+            let root = self.component.root.as_deref()?;
+            binding
+                .records
+                .read(&binding.checkout.id, |doc| {
+                    root.native_input_snapshot(doc, &automerge::ROOT)
+                })
+                .flatten()
+        }
+
         fn unsaved_documents(
             &self,
             _: &AutoCommit,

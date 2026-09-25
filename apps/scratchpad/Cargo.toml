@@ -9,6 +9,8 @@ license.workspace = true
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+# One instance per note directory.
+advisory-lock = { path = "../../crates/system/advisory-lock" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Persistent blob storage is portable; the app does not mount filesystems.

@@ -24,6 +24,7 @@ EFI_GLOBAL = '8be4df61-93ca-11d2-aa0d-00e098032b8c'
 LOADER_VENDOR = '4a67b082-0a4c-41cf-b6c7-440b29bb8c4f'
 ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 LINUX_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+STAGING_ROOT_TYPE = 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d'
 MSFT_TYPE = 'ebd0a0a2-b9e5-4433-87c0-68b6b72699c7'
 GIB = 1024 ** 3
 
@@ -72,7 +73,7 @@ def lsblk_document():
             partition(DISK + 'p1', '00000000-0000-4000-8000-00000000000a', ESP_TYPE, WIN_ESP),
             partition(DISK + 'p2', '00000000-0000-4000-8000-00000000000b', MSFT_TYPE, WINDOWS),
             partition(DISK + 'p3', ESP_UUID, ESP_TYPE, STAGING_ESP),
-            partition(DISK + 'p4', ROOT_UUID, LINUX_TYPE, STAGING_ROOT, ['/sysroot', '/var', '/etc']),
+            partition(DISK + 'p4', ROOT_UUID, STAGING_ROOT_TYPE, STAGING_ROOT, ['/sysroot', '/var', '/etc']),
         ]}]}
 
 
@@ -320,6 +321,10 @@ class InternalModeGuardTests(unittest.TestCase):
         document['blockdevices'][0]['children'][3]['start'] += 2048
         self.fixture.set_lsblk(document)
         self.assertRefused(self.fixture.check(), 'staging root extent differs')
+        document = lsblk_document()
+        document['blockdevices'][0]['children'][3]['parttype'] = LINUX_TYPE
+        self.fixture.set_lsblk(document)
+        self.assertRefused(self.fixture.check(), 'staging root has an unexpected partition type')
 
     def test_strict_parser_rejects_unknown_duplicate_and_malformed_fields(self):
         cases = []

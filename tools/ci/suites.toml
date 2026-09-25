@@ -31,15 +31,22 @@ suites = [
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
   "os/tests/containerfile_copy_invariants.sh",
+  "os/tests/disk_image_firstboot_seed.sh",
+  "os/tests/disk_image_mirror_policy.sh",
+  "os/tests/disk_image_mtools_esp.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
+  "os/tests/firstboot_autologin_cleanup.sh",
+  "os/tests/firstboot_password_hash.sh",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
+  "os/tests/local_boot_esp.sh",
   "os/tests/portal_config_validity.sh",
   "os/tests/test-installer-cycle-runtime.py",
   "os/tests/test_adopt_development_wpe.py",
   "os/tests/test_assembly_registry_cache.py",
+  "os/tests/test_bootc_registry_wrapper.py",
   "os/tests/test_broker_signing_runner.py",
   "os/tests/test_cache_reconstruction_approval.py",
   "os/tests/test_cache_source_compatibility.py",
@@ -70,6 +77,8 @@ suites = [
   "os/tests/test_initramfs_module_policy.py",
   "os/tests/test_initramfs_trust.py",
   "os/tests/test_installed_development_disk.py",
+  "os/tests/test_installer_bootc_helper.py",
+  "os/tests/test_installer_bootc_helper_workflow.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_overlay.py",
   "os/tests/test_kernel_checkpoint_restore.py",
@@ -106,6 +115,7 @@ suites = [
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_vm_bootc_copy_cache.py",
+  "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_wpe_candidate_receipt.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_release_gate_invariants.sh",
@@ -616,6 +626,10 @@ workflow = "staging-loop.yml"
 [[unrequired]]
 suite = "os/tests/system_extension_boot_pack_stage.sh"
 reason = "needs a systemd system manager; skips without one"
+
+[[unrequired]]
+suite = "os/tests/test_direct_sparse_transfer.py"
+reason = "asserts preserved sparse holes, which the container overlay root of the suites job does not report"
 
 [[unrequired]]
 suite = "os/tests/test_import_development_rootfs.py"

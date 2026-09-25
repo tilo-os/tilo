@@ -115,8 +115,11 @@ for required in \
   CONFIG_SECURITY_SELINUX_DEVELOP=n \
   CONFIG_SECURITY_TOMOYO=n \
   CONFIG_SECURITY_IPE=n \
-  CONFIG_BPF_LSM=n \
-  'CONFIG_LSM="lockdown,yama,integrity,selinux,landlock"' \
+  CONFIG_BPF=y \
+  CONFIG_BPF_SYSCALL=y \
+  CONFIG_DEBUG_INFO_BTF=y \
+  CONFIG_BPF_LSM=y \
+  'CONFIG_LSM="lockdown,yama,integrity,selinux,landlock,bpf"' \
   CONFIG_SECURITY_DMESG_RESTRICT=y \
   CONFIG_BPF_UNPRIV_DEFAULT_OFF=y \
   CONFIG_PROC_KCORE=n \
@@ -326,7 +329,8 @@ for required in \
   CONFIG_PREEMPT_DYNAMIC=y \
   CONFIG_HZ_1000=y \
   CONFIG_HZ=1000 \
-  CONFIG_DEBUG_INFO_NONE=y \
+  CONFIG_DEBUG_INFO_NONE=n \
+  CONFIG_DEBUG_INFO_DWARF5=y \
   CONFIG_UBSAN=n \
   CONFIG_FUNCTION_TRACER=n \
   CONFIG_STACK_TRACER=n \
@@ -617,6 +621,13 @@ grep -Fq 'failures=$((failures + 1))' "$audit" \
   || bad 'boot audit warnings do not contribute to a failing health result'
 grep -Fq 'exit 1' "$audit" \
   || bad 'boot audit cannot return failure when a required invariant is inactive'
+for required in \
+  "CONFIG_BPF_LSM=y" \
+  "CONFIG_DEBUG_INFO_BTF=y" \
+  "*:bpf:*)"; do
+  grep -Fq "$required" "$audit" \
+    || bad "runtime audit does not verify the systemd BPF-LSM prerequisite: $required"
+done
 if grep -Fq 'attrs" != 06000000' "$audit" \
    && grep -Fq '1:0) ok "Secure Boot enabled with firmware outside Setup Mode"' "$audit" \
    && grep -Fq 'SecureBoot=$sb SetupMode=$setup' "$audit"; then

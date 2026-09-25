@@ -43,10 +43,39 @@ struct Plan {
     run: PathBuf,
     install_timeout: Duration,
     keep: bool,
+    #[cfg(windows)]
+    ports: WindowsPorts,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct WindowsPorts {
+    console: u16,
+    qmp: u16,
+}
+
+#[cfg(windows)]
+impl WindowsPorts {
+    fn reserve() -> Result<Self, CliError> {
+        let console = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(CliError::io("reserving installer console port"))?;
+        let qmp = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(CliError::io("reserving installer QMP port"))?;
+        Ok(Self {
+            console: console
+                .local_addr()
+                .map_err(CliError::io("console port"))?
+                .port(),
+            qmp: qmp.local_addr().map_err(CliError::io("QMP port"))?.port(),
+        })
+    }
 }
 
 impl Plan {
     fn console(&self) -> PathBuf {
+        #[cfg(windows)]
+        return PathBuf::from(format!("tcp://127.0.0.1:{}", self.ports.console));
+        #[cfg(not(windows))]
         self.run.join("console.sock")
     }
 
@@ -66,7 +95,7 @@ impl Plan {
     /// cycle, so disk, TPM and firmware state persist from the installer
     /// boot to the target boot and nowhere else.
     fn env(&self) -> Vec<(String, String)> {
-        vec![
+        let env = vec![
             ("TILO_VM_CYCLE".into(), self.cycle.clone()),
             (
                 "TILO_INSTALLER_OUTPUT".into(),
@@ -77,10 +106,21 @@ impl Plan {
                 self.medium.display().to_string(),
             ),
             ("TILO_RUN".into(), self.run.display().to_string()),
-        ]
+        ];
+        #[cfg(windows)]
+        let env = {
+            let mut env = env;
+            env.push(("TILO_CONSOLE_PORT".into(), self.ports.console.to_string()));
+            env.push(("TILO_QMP_PORT".into(), self.ports.qmp.to_string()));
+            env
+        };
+        env
     }
 
     fn vm(&self, args: &[&str]) -> CommandLine {
+        #[cfg(windows)]
+        let mut line = CommandLine::new("pwsh", &["-NoProfile", "-File", "os/dev/vm-windows.ps1"]);
+        #[cfg(not(windows))]
         let mut line = CommandLine::new("bash", &["os/dev/vm.sh"]);
         for arg in args {
             line = line.arg(*arg);
@@ -187,11 +227,25 @@ impl App {
         &mut self,
         args: &InstallScenarioArgs,
     ) -> Result<Outcome, CliError> {
-        if cfg!(windows) && !args.dry_run {
+        if cfg!(windows) && args.layout != Layout::Erase {
             return Err(CliError::Unsupported {
-                what: "installer scenario on a Windows host".into(),
+                what: "alongside installer fixture on a Windows host".into(),
+                alternative: "use --layout erase for the Windows WHPX install cycle; alongside fixtures require Linux sfdisk and mkfs tools".into(),
+            });
+        }
+        if cfg!(windows) && args.encrypt == Unlock::TpmPin {
+            return Err(CliError::Unsupported {
+                what: "TPM PIN installer scenario on a Windows host".into(),
                 alternative:
-                    "run this Linux vm.sh scenario in WSL; Windows WHPX dev VMs use `tilo-vm vm`"
+                    "use --encrypt passphrase until the WHPX adapter has a persistent software TPM"
+                        .into(),
+            });
+        }
+        if cfg!(windows) && args.graphics == crate::scenario::Graphics::Gl {
+            return Err(CliError::Unsupported {
+                what: "GL installer scenario on a Windows host".into(),
+                alternative:
+                    "use --graphics software; Windows QEMU has no configured virgl headless backend"
                         .into(),
             });
         }
@@ -217,8 +271,9 @@ impl App {
             });
         }
         let cycle = format!(
-            "scenario-install-{}",
-            chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+            "scenario-install-{}-{}",
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+            std::process::id()
         );
         let out = args
             .out
@@ -227,9 +282,12 @@ impl App {
         let storage = out.join("storage");
         // Exactly the runtime directory vm.sh derives for a named cycle;
         // init-cycle refuses to clear any other.
+        #[cfg(not(windows))]
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .filter(|path| !path.is_empty())
             .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        #[cfg(windows)]
+        let runtime = out.clone();
         let plan = Plan {
             root,
             medium,
@@ -243,6 +301,8 @@ impl App {
             out,
             install_timeout: Duration::from_secs(args.install_timeout),
             keep: args.keep,
+            #[cfg(windows)]
+            ports: WindowsPorts::reserve()?,
         };
         if args.dry_run {
             let plan_json = plan.describe();
@@ -623,6 +683,11 @@ mod tests {
             run: PathBuf::from("/run/user/1000/tilo-vm-scenario-install-x"),
             install_timeout: Duration::from_secs(3600),
             keep: false,
+            #[cfg(windows)]
+            ports: WindowsPorts {
+                console: 30001,
+                qmp: 30002,
+            },
         }
     }
 
@@ -659,5 +724,40 @@ mod tests {
             !described.to_string().contains("scenario-passphrase"),
             "the plan never carries the secret"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_plan_uses_whpx_transport_and_tcp_console() {
+        let plan = plan(Layout::Erase);
+        let boot = plan.vm(&["boot-installer", "--2d", "--no-tpm"]);
+        assert_eq!(boot.program, "pwsh");
+        assert_eq!(
+            boot.args,
+            [
+                "-NoProfile",
+                "-File",
+                "os/dev/vm-windows.ps1",
+                "boot-installer",
+                "--2d",
+                "--no-tpm"
+            ]
+        );
+        assert_eq!(plan.console(), PathBuf::from("tcp://127.0.0.1:30001"));
+        assert!(
+            boot.env
+                .iter()
+                .any(|(key, value)| key == "TILO_CONSOLE_PORT" && value == "30001")
+        );
+        assert!(
+            boot.env
+                .iter()
+                .any(|(key, value)| key == "TILO_QMP_PORT" && value == "30002")
+        );
+        let described = plan.describe();
+        let commands = described["commands"].to_string();
+        assert!(commands.contains("boot-installer"));
+        assert!(commands.contains("boot-target"));
+        assert!(commands.contains("tcp://127.0.0.1:30001"));
     }
 }

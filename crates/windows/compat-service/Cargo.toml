@@ -11,6 +11,7 @@ name = "compat_service"
 path = "src/lib.rs"
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 collab-types = { path = "../../collab/collab-types" }
 compat-catalogue = { path = "../compat-catalogue" }
 launcher = { path = "../../packaging/launcher" }

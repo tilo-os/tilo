@@ -434,9 +434,10 @@ installation cycles:
    `os/tests/internal_bundle_export.sh` against loop devices.
 2. **Export** (`export` or `publish`): `os/dev/export-internal-bundle.sh`
    runs `os/dev/internal-bundle.py export` through `sudo -n` on
-   `os/output/installer/qcow2/disk.qcow2`. It specialises the one live UKI
-   to `root=UUID=<staging root>` (length-stable, unsigned: Secure Boot must be
-   off for this flow), installs it as `/EFI/BOOT/BOOT{X64,AA64}.EFI`, shrinks
+   `os/output/installer/qcow2/disk.qcow2`. It copies the one live UKI, unchanged
+   and still signed, to `/EFI/BOOT/BOOT{X64,AA64}.EFI` (the UKI finds the
+   staging root through `root=tilo-auto` and the Tilo staging root partition
+   type), reserves the handoff files, shrinks
    the Btrfs root to its minimum plus 1 GiB, and writes
    `tilo-internal-installer-ARCH{.json,-esp.img,-root.img}` plus the catalog
    entry `internal-catalog-ARCH.json`. Tag builds record the tag as

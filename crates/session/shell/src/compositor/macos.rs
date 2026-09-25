@@ -6,11 +6,7 @@ use crate::shell::{
     persist,
     state::{WorkspaceTree, WorkspaceTreeHandle},
 };
-use std::{
-    fs::{File, OpenOptions},
-    path::PathBuf,
-    process::ExitCode,
-};
+use std::{path::PathBuf, process::ExitCode};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -27,7 +23,7 @@ pub struct Session {
     pub records: ui::record::RecordStore,
     pub host: ShellOverlayHost,
     pub chrome: crate::shell::chrome_state::Chrome,
-    _lock: File,
+    _lock: advisory_lock::FileLock,
 }
 
 /// Prepare the shell; invalid stored state is never replaced by a new tree.
@@ -37,14 +33,11 @@ pub fn prepare(options: &Options) -> Result<Session, Error> {
     let inputs = HostedTileInputs::for_host_directory(&options.files_dir)?;
     std::fs::create_dir_all(&options.state_dir)?;
     let state_dir = options.state_dir.canonicalize()?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(state_dir.join("session.lock"))?;
-    lock.try_lock()
-        .map_err(|e| format!("this shell profile is already open: {e}"))?;
+    let lock = advisory_lock::FileLock::try_open(
+        &state_dir.join("session.lock"),
+        advisory_lock::LockMode::Exclusive,
+    )
+    .map_err(|e| format!("this shell profile is already open: {e}"))?;
     let path = state_dir.join("state.json");
     let salt = crate::shell::session_policy::load_or_create_workspace_salt(
         &path,

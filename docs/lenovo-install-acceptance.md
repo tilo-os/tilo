@@ -42,7 +42,10 @@ boot and desktop acceptance. A 64 GiB raw image needs a device with at least
 128 GB device.
 
 Disconnect backup and unrelated removable drives. Inventory disks without
-changing them:
+changing them. Run these commands from native Windows PowerShell with a native
+Windows Python build (ARM64 is supported), not from WSL. Inventory and planning
+do not need elevation; only the final `write` command needs an Administrator
+PowerShell:
 
 ```powershell
 python .\os\dev\write-verified-installer-media.py inventory `
@@ -116,3 +119,17 @@ requirement to preserve Windows during installation.
 
 Choose and perform the encryption change explicitly; preparation must not
 silently suspend protection or start decryption.
+
+## Windows alongside preflight
+
+Before the physical Lenovo alongside procedure, run the read-only,
+machine-checkable [Windows dual-boot preflight](lenovo-dualboot-preflight.md).
+It blocks that procedure until BitLocker is either fully decrypted or fully
+encrypted with its protectors explicitly suspended for the bounded boot-change
+window, the final required unallocated extent exists, a safe external
+installation medium is identified, and the Windows ESP matches its recorded
+baseline. It does not replace the installer's own target-identity checks or
+authorize a partition change.
+
+The [Lenovo dual-boot evidence matrix](lenovo-dualboot-audit.md) lists what the
+preflight, generic VM acceptance, and the eventual physical clean boot prove.

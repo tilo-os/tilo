@@ -259,8 +259,9 @@ case "$command" in
             CONFIG_ZRAM=y \
             CONFIG_ZRAM_BACKEND_LZ4=y \
             CONFIG_ZRAM_DEF_COMP_LZ4=y \
-            CONFIG_DEBUG_INFO_NONE=y \
-            '# CONFIG_DEBUG_INFO is not set' \
+            '# CONFIG_DEBUG_INFO_NONE is not set' \
+            CONFIG_DEBUG_INFO_DWARF5=y \
+            CONFIG_DEBUG_INFO_BTF=y \
             CONFIG_KALLSYMS=y \
             '# CONFIG_KALLSYMS_ALL is not set' \
             CONFIG_STRICT_KERNEL_RWX=y \
