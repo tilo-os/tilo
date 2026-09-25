@@ -17,6 +17,9 @@ by the payload job rather than a tag. A signed payload proves which CI job
 built those bytes. It does not prove that Wine, Proton, graphics, or the device
 GPU work. The validation limits and known FEX regressions are tracked in
 [`os/docs/fex-build-validation.md`](../os/docs/fex-build-validation.md).
+When retrying a failed payload build that did not change SDK requirements,
+`sdk_candidate` can reuse the earlier CI-published SDK digest. The workflow
+checks the immutable reference in the registry before using it.
 
 The separate retained x86 guest currently available at
 `code.sandbox.example/qos/tilo-development-windows-guest@sha256:592518b08a4c88395b7054c293eab9aeb52750869aba3a59dbe87d98556ae765`
