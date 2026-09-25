@@ -1061,10 +1061,17 @@ impl InstallerApp {
             }
             Operation::SetFilesystem { filesystem } => {
                 self.require_step(Step::Options)?;
-                self.selected_fs = FILESYSTEMS
+                let index = FILESYSTEMS
                     .iter()
                     .position(|candidate| *candidate == filesystem)
                     .ok_or_else(|| format!("Unknown filesystem {filesystem:?}"))?;
+                if !self.supported_filesystems[index] {
+                    return Err(format!(
+                        "{} cannot boot from this image's initramfs",
+                        FILESYSTEMS[index]
+                    ));
+                }
+                self.selected_fs = index;
                 self.dirty_structure = true;
                 done()
             }
