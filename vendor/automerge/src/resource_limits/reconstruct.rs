@@ -6,7 +6,7 @@
 //! native parse state exists; the unmodified 0.12 load primitives then run
 //! under that reservation and the result is adopted into custody (which
 //! fails closed if the loaded document's retained bound exceeds the peak).
-mod load;
+pub(crate) mod load;
 
 use super::apply::budget::Charge;
 use super::apply::preflight;
