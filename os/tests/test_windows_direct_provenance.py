@@ -161,7 +161,7 @@ class ProvenanceTests(unittest.TestCase):
                                           firmware_manifest_sha256=None)
             generic["guest_proof"]["installed_update_origin"] = (
                 "ostree-unverified-image:docker://code.podesta.ai/qos/tilo:gen7")
-            generic_ci = dict(ci, image_kind="generic-index", generation=7,
+            generic_ci = dict(ci, image_kind="generic-child", generation=7,
                               firmware_candidate=None, firmware_manifest_sha256=None)
             path.write_text(json.dumps(generic))
             self.assertEqual(proof.checked_guest_proof(
@@ -289,6 +289,81 @@ class ProvenanceTests(unittest.TestCase):
                 change(bad)
                 with self.assertRaisesRegex(ValueError, "does not uniquely bind"):
                     proof.checked_slsa_attestation(wrapped(bad), digest, [], "lenovo-83ed")
+
+    def test_generic_child_requires_its_own_signed_slsa(self):
+        pinned = "sha256:" + "a" * 64
+        statement = {"predicateType": "https://slsa.dev/provenance/v1",
+                     "subject": [{"digest": {"sha256": "a" * 64}}],
+                     "predicate": {"buildDefinition": {
+                         "buildType": proof.BUILD_TYPE,
+                         "externalParameters": {"generation": 7},
+                         "internalParameters": {"expectedReleaseDigest": pinned},
+                         "resolvedDependencies": [{"uri":
+                             "git+ssh://code.podesta.ai/qos/qos@" + "b" * 40}]},
+                         "runDetails": {"builder": {"id": proof.BUILDER_ID},
+                             "metadata": {"invocationId": "321"},
+                             "byproducts": [{"name": "independent-rebuild",
+                                 "uri": "urn:tilo:verification:manifest-digest-equal"}]}}}
+        def wrapped(value):
+            return json.dumps({"payload": proof.base64.b64encode(
+                json.dumps(value).encode()).decode()})
+        self.assertEqual(proof.checked_slsa_attestation(
+            wrapped(statement), pinned, [], "generic-child")["generation"], 7)
+        for field in ("children", "hardwareProfile", "architecture"):
+            broken = copy.deepcopy(statement)
+            broken["predicate"]["buildDefinition"]["externalParameters"][field] = []
+            with self.assertRaises(ValueError):
+                proof.checked_slsa_attestation(wrapped(broken), pinned, [], "generic-child")
+
+    def test_signed_medium_identity_and_paired_host_proofs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key = root / "cosign.pub"
+            key.write_bytes(b"key")
+            image = "code.podesta.ai/qos/tilo@sha256:" + "a" * 64
+            base = "code.podesta.ai/qos/tilo@sha256:" + "b" * 64
+            native = {"schema": "tilo.vm-install-image-proof.v2", "architecture": "arm64",
+                      "installed_image_digest": image.split("@", 1)[1],
+                      "selected_target": {"schema": "tilo.installer-offline-target.v1",
+                                          "target_ref": image,
+                                          "target_digest": image.split("@", 1)[1],
+                                          "hardware_profile": "lenovo-83ed"}}
+            ci_proof = root / "native.json"
+            ci_proof.write_text(json.dumps(native))
+            identity = {"schema": "tilo.whpx-ci-installer-medium.v1",
+                        "target_profile": "lenovo-83ed", "target_image": image,
+                        "live_base_image": base, "build_revision": "c" * 40,
+                        "run_id": "12", "run_attempt": "1", "qcow2_sha256": "d" * 64,
+                        "archive_sha256": "e" * 64,
+                        "guest_proof_sha256": hashlib.sha256(ci_proof.read_bytes()).hexdigest()}
+            path = root / "medium.whpx-source.json"
+            path.write_text(json.dumps(identity))
+            Path(str(path) + ".sig").write_text("signature")
+            Path(str(path) + ".bundle").write_text("bundle")
+            with patch.object(proof.subprocess, "run", return_value=SimpleNamespace(
+                    returncode=0, stderr="", stdout="")) as runner:
+                board = proof.signed_medium_identity(path, ci_proof, key)
+                self.assertIn("verify-blob", runner.call_args.args[0])
+            generic = dict(board, target_profile="generic", target_image=base,
+                           qcow2_sha256="f" * 64)
+            proof.checked_medium_pair(board, generic,
+                                      {"first_boot_verified": False,
+                                       "installer_medium_sha256": "d" * 64},
+                                      {"first_boot_verified": True,
+                                       "installer_medium_sha256": "f" * 64},
+                                      image.split("@", 1)[1], base.split("@", 1)[1], base)
+            with self.assertRaisesRegex(ValueError, "paired WHPX"):
+                proof.checked_medium_pair(board, generic,
+                                          {"first_boot_verified": False,
+                                           "installer_medium_sha256": "0" * 64},
+                                          {"first_boot_verified": True,
+                                           "installer_medium_sha256": "f" * 64},
+                                          image.split("@", 1)[1], base.split("@", 1)[1], base)
+            ci_proof.write_text(json.dumps({**native, "architecture": "amd64"}))
+            with patch.object(proof.subprocess, "run", return_value=SimpleNamespace(
+                    returncode=0, stderr="", stdout="")):
+                with self.assertRaisesRegex(ValueError, "native guest proof differs"):
+                    proof.signed_medium_identity(path, ci_proof, key)
 
 
 if __name__ == "__main__":

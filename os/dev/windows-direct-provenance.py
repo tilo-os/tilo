@@ -115,7 +115,7 @@ def checked_guest_proof(path, child_digest, ci_image=None, ci_provenance=None):
         installed_composefs = booted_composefs
     else:
         require(type(ci_provenance) is dict
-                and ci_provenance.get("image_kind") in ("lenovo-83ed", "generic-index"),
+                and ci_provenance.get("image_kind") in ("lenovo-83ed", "generic-child"),
                 "VM selected target has no independently verified CI provenance")
         board = ci_provenance["image_kind"] == "lenovo-83ed"
         require(guest.get("schema") == "tilo.vm-install-image-proof.v2"
@@ -217,6 +217,99 @@ def cosign_prefix(command_json):
     return argv
 
 
+def cosign_file_arg(path, key_arg):
+    resolved = path.resolve(strict=True)
+    if key_arg is None:
+        return str(resolved)
+    require(platform.system() == "Windows" and resolved.drive
+            and len(resolved.drive) == 2 and resolved.drive[1] == ":",
+            "WSL Cosign file path requires a native Windows file")
+    return "/mnt/" + resolved.drive[0].lower() + "/" + "/".join(resolved.parts[1:])
+
+
+def bounded_file(path, maximum):
+    require(path.is_file() and not path.is_symlink() and path.stat().st_size <= maximum,
+            "signed CI medium input must be a bounded regular file")
+    return path.read_bytes()
+
+
+def signed_medium_identity(identity_path, ci_guest_proof_path, key,
+                           command_json=None, key_arg=None):
+    raw = bounded_file(identity_path, 64 * 1024)
+    signature = Path(str(identity_path) + ".sig")
+    bundle = Path(str(identity_path) + ".bundle")
+    bounded_file(signature, 64 * 1024)
+    bounded_file(bundle, 2 * 1024 * 1024)
+    ci_proof_raw = bounded_file(ci_guest_proof_path, 64 * 1024)
+    require(key.is_file() and not key.is_symlink(),
+            "CI verification key is not a regular file")
+    key_value = key_arg if key_arg is not None else str(key.resolve(strict=True))
+    if key_arg is not None:
+        require(cosign_file_arg(key, key_arg) == key_arg,
+                "WSL Cosign key path differs from the native verified key")
+    argv = [*cosign_prefix(command_json), "verify-blob", "--offline", "--key", key_value,
+            "--bundle", cosign_file_arg(bundle, key_arg),
+            "--signature", cosign_file_arg(signature, key_arg),
+            cosign_file_arg(identity_path, key_arg)]
+    result = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+    require(result.returncode == 0,
+            "CI installer medium identity signature verification failed: " + result.stderr.strip())
+    identity = json.loads(raw)
+    require(type(identity) is dict and set(identity) == {
+        "schema", "target_profile", "target_image", "live_base_image",
+        "build_revision", "run_id", "run_attempt", "qcow2_sha256",
+        "archive_sha256", "guest_proof_sha256"},
+        "CI installer medium identity has unexpected fields")
+    require(identity["schema"] == "tilo.whpx-ci-installer-medium.v1"
+            and identity["target_profile"] in ("generic", "lenovo-83ed")
+            and type(identity["target_image"]) is str
+            and re.fullmatch(r"code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}",
+                             identity["target_image"])
+            and type(identity["live_base_image"]) is str
+            and re.fullmatch(r"code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}",
+                             identity["live_base_image"])
+            and type(identity["build_revision"]) is str
+            and re.fullmatch(r"[0-9a-f]{40}", identity["build_revision"])
+            and type(identity["run_id"]) is str
+            and re.fullmatch(r"[0-9]+", identity["run_id"])
+            and type(identity["run_attempt"]) is str
+            and re.fullmatch(r"[0-9]+", identity["run_attempt"])
+            and all(type(identity[key]) is str and HEX.fullmatch(identity[key])
+                    for key in ("qcow2_sha256", "archive_sha256", "guest_proof_sha256"))
+            and hashlib.sha256(ci_proof_raw).hexdigest() == identity["guest_proof_sha256"],
+            "CI installer medium identity or native guest proof differs")
+    ci_proof = json.loads(ci_proof_raw)
+    require(type(ci_proof) is dict
+            and ci_proof.get("schema") == "tilo.vm-install-image-proof.v2"
+            and ci_proof.get("architecture") == "arm64"
+            and ci_proof.get("installed_image_digest") == identity["target_image"].split("@", 1)[1]
+            and type(ci_proof.get("selected_target")) is dict
+            and ci_proof["selected_target"].get("schema") == "tilo.installer-offline-target.v1"
+            and ci_proof["selected_target"].get("target_ref") == identity["target_image"]
+            and ci_proof["selected_target"].get("target_digest")
+            == ci_proof["installed_image_digest"]
+            and ci_proof["selected_target"].get("hardware_profile") == identity["target_profile"],
+            "CI-native guest proof differs from signed medium target")
+    return {**identity, "identity_sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def checked_medium_pair(board, generic, board_checked, generic_checked,
+                        board_child_digest, generic_child_digest, generic_index_image):
+    require(board["target_profile"] == "lenovo-83ed"
+            and generic["target_profile"] == "generic"
+            and board["target_image"] == "code.podesta.ai/qos/tilo@" + board_child_digest
+            and generic["target_image"] == "code.podesta.ai/qos/tilo@" + generic_child_digest
+            and board["live_base_image"] == generic_index_image
+            and generic["live_base_image"] == generic_index_image
+            and all(board[key] == generic[key]
+                    for key in ("build_revision", "run_id", "run_attempt"))
+            and board["qcow2_sha256"] == board_checked.get("installer_medium_sha256")
+            and generic["qcow2_sha256"] == generic_checked.get("installer_medium_sha256")
+            and board_checked.get("first_boot_verified") is False
+            and generic_checked.get("first_boot_verified") is True,
+            "signed CI media do not match the paired WHPX install proofs")
+
+
 def wrappers(output):
     require(type(output) is str and 0 < len(output) <= 8 * 1024 * 1024,
             "Cosign verification output is empty or oversized")
@@ -273,6 +366,14 @@ def checked_slsa_attestation(output, pinned, children, kind):
                     or type(external.get("generation")) is not int
                     or external["generation"] < 1
                     or "hardwareProfile" in external):
+                continue
+            firmware_candidate = None
+        elif kind == "generic-child":
+            if (type(external.get("generation")) is not int
+                    or external["generation"] < 1
+                    or any(field in external for field in
+                           ("children", "hardwareProfile", "architecture",
+                            "firmwareManifestSha256"))):
                 continue
             firmware_candidate = None
         elif kind == "lenovo-83ed":
@@ -355,3 +456,49 @@ def verify_ci_image(image, key, children, kind, command_json=None, key_arg=None)
     statement = checked_slsa_attestation(outputs[1], pinned, children, kind)
     return {"key_sha256": hashlib.sha256(key.read_bytes()).hexdigest(),
             **statement}
+
+
+def dual_ci_medium_gate(args, board_checked, board_child_digest):
+    """Require paired CI media and separate generic full-boot proof for board copy."""
+    names = ("generic_ci_image", "generic_index_manifest", "generic_child_manifest",
+             "generic_vm_proof_checked", "generic_medium_identity",
+             "generic_ci_guest_proof", "board_medium_identity", "board_ci_guest_proof")
+    require(all(getattr(args, name, None) is not None for name in names),
+            "physical Lenovo install requires paired signed CI media and generic WHPX proof")
+    index_digest, child_digest, children, kind = signed_ci_child(
+        args.generic_ci_image, args.generic_index_manifest,
+        args.generic_child_manifest)
+    require(kind == "generic-index", "paired generic image must be signed release index")
+    index_provenance = verify_ci_image(
+        args.generic_ci_image, args.verify_key, children, "generic-index",
+        args.cosign_command_json, args.cosign_key_arg)
+    child_image = "code.podesta.ai/qos/tilo@" + child_digest
+    child_provenance = verify_ci_image(
+        child_image, args.verify_key, [], "generic-child",
+        args.cosign_command_json, args.cosign_key_arg)
+    require(all(index_provenance[field] == child_provenance[field]
+                for field in ("source_revision", "generation", "invocation_id")),
+            "generic child SLSA differs from signed release index")
+    generic_checked = checked_guest_proof(
+        args.generic_vm_proof_checked, child_digest, child_image, child_provenance)
+    require(generic_checked["schema"] == PROOF_SCHEMA_V2,
+            "generic WHPX cycle requires signed offline target proof v2")
+    board_medium = signed_medium_identity(
+        args.board_medium_identity, args.board_ci_guest_proof, args.verify_key,
+        args.cosign_command_json, args.cosign_key_arg)
+    generic_medium = signed_medium_identity(
+        args.generic_medium_identity, args.generic_ci_guest_proof, args.verify_key,
+        args.cosign_command_json, args.cosign_key_arg)
+    checked_medium_pair(board_medium, generic_medium, board_checked, generic_checked,
+                        board_child_digest, child_digest, args.generic_ci_image)
+    return {"generic_ci_index_digest": index_digest,
+            "generic_ci_child_digest": child_digest,
+            "generic_ci_source_revision": child_provenance["source_revision"],
+            "generic_ci_generation": child_provenance["generation"],
+            "generic_ci_slsa_statement_sha256": child_provenance["statement_sha256"],
+            "generic_vm_proof_checked_sha256": hashlib.sha256(
+                bounded_file(args.generic_vm_proof_checked, 64 * 1024)).hexdigest(),
+            "board_medium_identity_sha256": board_medium["identity_sha256"],
+            "generic_medium_identity_sha256": generic_medium["identity_sha256"],
+            "board_medium_sha256": board_medium["qcow2_sha256"],
+            "generic_medium_sha256": generic_medium["qcow2_sha256"]}
