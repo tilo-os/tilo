@@ -4545,7 +4545,7 @@ mod tests {
             "btrfs",
             "hidden ext4 CRDT actions must be rejected"
         );
-        assert!(!InstallerApp::read_flag(&doc, &root, fs_path(1).as_str()));
+        assert!(!read_bool(&doc, &root, fs_path(1).as_str()).unwrap_or(false));
 
         app.selected_fs = 1; // stale selection from a media profile or UI rebuild
         assert!(!app.filesystem_policy_ready());
