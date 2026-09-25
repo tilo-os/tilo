@@ -69,9 +69,11 @@ fn a_reference_whose_content_is_coming_reads_as_pending_and_then_resolved() {
 
     // The receiving machine: its own empty store, and a door it can ask through.
     let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::default());
-    blobstore::set_store(Arc::clone(&store));
     let transport = Arc::new(RecordingTransport::default());
-    blobstore::set_transport(&(Arc::clone(&transport) as Arc<dyn BlobTransport>));
+    let _scope = blobstore::scope(
+        Arc::clone(&store),
+        Some(Arc::clone(&transport) as Arc<dyn BlobTransport>),
+    );
 
     let doc = Document::new();
 
@@ -111,8 +113,7 @@ fn a_reference_nothing_can_fetch_is_reported_as_unavailable_rather_than_arriving
     let _guard = serialised();
     // No door out of this process, so a miss is permanent by construction and
     // calling it "arriving" would be a placeholder that never resolves.
-    blobstore::set_store(Arc::new(MemoryBlobStore::default()));
-    blobstore::clear_transport();
+    let _scope = blobstore::scope(Arc::new(MemoryBlobStore::default()), None);
 
     let hash = blobstore::hash_bytes(&png());
     let doc = Document::new();
@@ -127,10 +128,11 @@ fn a_reference_nothing_can_fetch_is_reported_as_unavailable_rather_than_arriving
 #[test]
 fn content_this_machine_stored_itself_is_resolved_and_offered_onward() {
     let _guard = serialised();
-    let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::default());
-    blobstore::set_store(Arc::clone(&store));
     let transport = Arc::new(RecordingTransport::default());
-    blobstore::set_transport(&(Arc::clone(&transport) as Arc<dyn BlobTransport>));
+    let _scope = blobstore::scope(
+        Arc::new(MemoryBlobStore::default()),
+        Some(Arc::clone(&transport) as Arc<dyn BlobTransport>),
+    );
 
     let mut doc = Document::new();
     let bytes = png();
@@ -153,13 +155,15 @@ fn content_this_machine_stored_itself_is_resolved_and_offered_onward() {
 #[test]
 fn a_quota_refusal_does_not_commit_a_descriptor_that_would_dangle() {
     let _guard = serialised();
-    blobstore::set_store(Arc::new(MemoryBlobStore::new(BlobStoreLimits {
-        max_blob_bytes: 2,
-        max_total_bytes: 2,
-        max_entries: 1,
-        max_scan_entries: 1,
-    })));
-    blobstore::clear_transport();
+    let _scope = blobstore::scope(
+        Arc::new(MemoryBlobStore::new(BlobStoreLimits {
+            max_blob_bytes: 2,
+            max_total_bytes: 2,
+            max_entries: 1,
+            max_scan_entries: 1,
+        })),
+        None,
+    );
 
     let mut doc = Document::new();
     let bytes = b"too large";
@@ -171,4 +175,42 @@ fn a_quota_refusal_does_not_commit_a_descriptor_that_would_dangle() {
         qdoc::model::blob_hashes(&raw, &containers).is_empty(),
         "a rejected local blob must not leave a CRDT descriptor behind"
     );
+}
+
+#[test]
+fn a_scoped_store_is_gone_when_its_scope_ends() {
+    let _guard = serialised();
+    let bytes = png();
+    let hash = blobstore::hash_bytes(&bytes);
+    {
+        let _scope = blobstore::scope(
+            Arc::new(MemoryBlobStore::new(BlobStoreLimits {
+                max_blob_bytes: 2,
+                max_total_bytes: 2,
+                max_entries: 1,
+                max_scan_entries: 1,
+            })),
+            None,
+        );
+        assert_eq!(
+            Document::new().put_blob(&bytes),
+            None,
+            "the scope's quota applies"
+        );
+        let inner = Arc::new(MemoryBlobStore::default());
+        {
+            let _nested = blobstore::scope(Arc::clone(&inner) as Arc<dyn BlobStore>, None);
+            assert!(Document::new().put_blob(&bytes).is_some());
+        }
+        assert!(inner.has(&hash), "the nested scope wrote to its own store");
+        assert_eq!(
+            Document::new().put_blob(&bytes),
+            None,
+            "leaving the nested scope restores the outer one"
+        );
+    }
+    // Whatever runs after a scope sees the process's store again, not the scope's quota.
+    let mut doc = Document::new();
+    assert_eq!(doc.put_blob(&bytes).as_deref(), Some(hash.as_str()));
+    assert_eq!(doc.blob(&hash).as_deref(), Some(bytes.as_slice()));
 }

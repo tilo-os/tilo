@@ -45,43 +45,8 @@ pub const COMPUTE_PENDING_DIR: &str = "compute-pending";
 
 /// Root-signed device revocations enforced during relay authentication.
 pub const REVOCATIONS_FILE: &str = "revocations.json";
-/// Last daemon counter snapshot, consumed by offline admin/status commands.
-pub const METRICS_FILE: &str = "metrics.json";
-
-/// Atomically persist a daemon metrics snapshot.
-///
-/// # Errors
-///
-/// Returns an error if the state root can't be created, `snapshot`
-/// can't be JSON-encoded, or the atomic write fails.
-pub fn save_metrics(
-    state_root: &Path,
-    snapshot: &crate::metrics::MetricsSnapshot,
-) -> Result<(), StoreError> {
-    fs::create_dir_all(state_root)?;
-    let bytes =
-        serde_json::to_vec_pretty(snapshot).map_err(|error| StoreError::Json(error.to_string()))?;
-    atomic_file::write(&state_root.join(METRICS_FILE), &bytes)?;
-    Ok(())
-}
-
-/// Read the last daemon metrics snapshot, if the daemon has written one.
-///
-/// # Errors
-///
-/// Returns an error if the file exists but can't be read, or fails to
-/// decode as JSON.
-pub fn load_metrics(
-    state_root: &Path,
-) -> Result<Option<crate::metrics::MetricsSnapshot>, StoreError> {
-    let path = state_root.join(METRICS_FILE);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let snapshot = serde_json::from_slice(&fs::read(path)?)
-        .map_err(|error| StoreError::Json(error.to_string()))?;
-    Ok(Some(snapshot))
-}
+/// The metrics snapshot file is read by clients as well as the daemon.
+pub use tilo_relay_protocol::metrics::{METRICS_FILE, load_metrics, save_metrics};
 
 /// Load root-signed revocation entries from the relay state root.
 ///

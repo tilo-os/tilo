@@ -27,6 +27,7 @@ import urllib.request
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 KERNEL_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-kernel@sha256:([0-9a-f]{64})$")
 RPMS_REF = re.compile(r"^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$")
+WPE_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -54,6 +55,17 @@ def rpms_contents(rpms_ref: str) -> str:
         "# Digest-pinned frozen RPM repository used by os/Containerfile.",
         "# Updated by the snapshot-rpms workflow when the package set changes.",
         f"RPMS_REF={rpms_ref}",
+        "",
+    ))
+
+
+def wpe_contents(x86_ref: str, arm_ref: str) -> str:
+    """Return the canonical os/wpe-buildroot-snapshot.env for both buildroots."""
+    return "\n".join((
+        "# Per-architecture WPE buildroots, signed and pinned by digest.",
+        "# Updated atomically by snapshot-wpe-buildroot.yml after both native builds verify.",
+        f"WPE_BUILDROOT_X86_64_REF={x86_ref}",
+        f"WPE_BUILDROOT_AARCH64_REF={arm_ref}",
         "",
     ))
 
@@ -86,6 +98,23 @@ def rpms_snapshot(args, parser) -> tuple[str, dict]:
                     "After this merges, build-kernel.yml rebuilds the kernels "
                     "against the new index (their provenance binds RPMS_REF); "
                     "OS image builds need that kernel pin before they verify."),
+    }
+
+
+def wpe_snapshot(args, parser) -> tuple[str, dict]:
+    x86 = WPE_REF.fullmatch(args.x86_ref)
+    arm = WPE_REF.fullmatch(args.arm_ref)
+    if x86 is None or arm is None:
+        parser.error("WPE refs must be immutable tilo-wpe-buildroot sha256 references")
+    if x86.group(1) == arm.group(1):
+        parser.error("native WPE buildroot refs must have distinct digests")
+    return wpe_contents(args.x86_ref, args.arm_ref), {
+        "label": "WPE buildroot",
+        "branch_prefix": "automation/wpe-buildroot-snapshot-",
+        "title": "build(os): refresh native WPE buildroot snapshots",
+        "summary": ("Automated atomic promotion of the signed native x86-64 and "
+                    "ARM64 WPE buildroots, each audited for its architecture "
+                    "marker and the absence of Fedora repositories."),
     }
 
 
@@ -141,6 +170,10 @@ def promote() -> int:
     rpms = kinds.add_parser("rpms", help="the frozen two-architecture RPM index")
     rpms.add_argument("--rpms-ref", required=True)
     rpms.set_defaults(snapshot=rpms_snapshot)
+    wpe = kinds.add_parser("wpe", help="both native WPE buildroots")
+    wpe.add_argument("--x86-ref", required=True)
+    wpe.add_argument("--arm-ref", required=True)
+    wpe.set_defaults(snapshot=wpe_snapshot)
     args = parser.parse_args()
 
     token = os.environ.get("FORGEJO_TOKEN", "")

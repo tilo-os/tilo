@@ -468,6 +468,21 @@ jobs:
           fi
           (cd "$work" && sha256sum --check --strict SHA256SUMS)
           [[ $(jq -er .architecture "$work/manifest.json") == "$architecture" ]]
+          # The payload is reused only while it is this commit's desktop. A
+          # payload built before any Rust or Cargo input changed would ship an
+          # old compositor (and has failed newer image gates), so build the
+          # desktop from this source instead. Anything that cannot be shown
+          # current is rebuilt.
+          payload_source=$(jq -r '.source // empty' "$work/manifest.json")
+          if [[ $payload_source != "$GITHUB_SHA" ]]; then
+            if [[ ! $payload_source =~ ^[0-9a-f]{40}$ ]] \
+                || ! git fetch --quiet --no-tags --depth=1 origin "$payload_source" \
+                || [[ -n $(git diff --name-only "$payload_source" "$GITHUB_SHA" -- \
+                             Cargo.toml Cargo.lock rust-toolchain.toml .cargo crates apps vendor) ]]; then
+              echo "::notice::desktop payload from ${payload_source:-an unknown revision} predates this commit's desktop inputs; building the desktop from source"
+              exit 0
+            fi
+          fi
           find os/desktop-artifacts -mindepth 1 ! -name .gitignore -delete
           install -m 0755 "$work/shell" "$work/tilo-launcher" \
             "$work/tilo-unlock-helper" os/desktop-artifacts/
@@ -741,9 +756,20 @@ jobs:
           # carry, so a lookup finds a file with no credential in it and the read
           # fails as "authentication required".
           TILO_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
+          PUBLISH: ${{ steps.release-mode.outputs.publish }}
+          # The very first publication finds no repository at all, which a
+          # publication otherwise refuses: a renamed or deleted repository must
+          # never silently restart the series at gen1. An operator authorizes
+          # that genesis for one exact commit; once gen1 exists the repository
+          # does too, and the variable no longer changes anything.
+          SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}
         run: |
-          if [[ '${{ steps.release-mode.outputs.publish }}' != true ]]; then
+          set -euo pipefail
+          if [[ $PUBLISH != true ]]; then
             export TILO_ALLOW_EMPTY_SERIES=1
+          elif [[ $SERIES_GENESIS_REVISION =~ ^[0-9a-f]{40}$ && $SERIES_GENESIS_REVISION == "$GITHUB_SHA" ]]; then
+            export TILO_ALLOW_EMPTY_SERIES=1
+            echo "::notice::TILO_OS_SERIES_GENESIS_REVISION authorizes $GITHUB_SHA to start an absent series at gen1"
           fi
           gen="$(./os/dev/next-generation.sh)"
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
@@ -1040,7 +1066,8 @@ jobs:
             resealed_digest="$(tr -d '\n\r' < "$TILO_RESEALED_DIGEST_FILE")"
             ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
           fi
-          if [[ -n "$TILO_PCR_PREDICTION_SIGNER" ]]; then
+          # Only a publication exports the signer; this step runs under set -u.
+          if [[ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ]]; then
             ./os/dev/sign-target-prediction.sh "$repro_image" "$TILO_PCR_PREDICTION_SIGNER"
           fi
           final_manifest="$(skopeo inspect --raw "containers-storage:$TILO_IMAGE" | sha256sum | awk '{print $1}')"
