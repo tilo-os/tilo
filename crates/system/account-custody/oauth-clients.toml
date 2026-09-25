@@ -1,4 +1,6 @@
-# Tilo's public OAuth client registrations for cloud storage sign-in.
+# Tilo's public OAuth client registrations: one client per provider, shared
+# by every app that signs in with it (Settings for cloud storage, Mail for
+# Gmail and Outlook).
 #
 # These are the values each provider's developer console issued to Tilo as an
 # installed app. None of them is confidential: an installed app cannot keep a
@@ -9,7 +11,11 @@
 # time (TILO_OAUTH_{GOOGLE,MICROSOFT,DROPBOX}_CLIENT_ID and
 # TILO_OAUTH_GOOGLE_CLIENT_SECRET), so private deployments can bring their
 # own registration. An empty `client_id` with no override is the "not
-# configured" state Settings shows for that provider.
+# configured" state Settings and Mail show for that provider.
+#
+# Scopes are per use of the client, not per provider: `files` is what cloud
+# storage asks for, `mail` what IMAP and SMTP (XOAUTH2) ask for. A use with
+# no scopes is not offered for that provider.
 #
 # Every sign-in redirects to `http://127.0.0.1:<port>/oauth`.
 
@@ -21,6 +27,11 @@ client_id = "765058527434-b02qovqoi7lb7cbq872s8ec5ueaovjru.apps.googleuserconten
 # the code exchange and every refresh.
 client_secret = "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"
 
+[google.scopes]
+files = ["https://www.googleapis.com/auth/drive"]
+# Full IMAP and SMTP access; Gmail offers no narrower scope for either.
+mail = ["https://mail.google.com/"]
+
 [microsoft]
 # Microsoft Entra app registration, "Accounts in any organizational directory
 # and personal Microsoft accounts", public client. Registered redirect URI
@@ -30,6 +41,16 @@ client_secret = "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"
 # a loopback redirect but matches its host and path.
 client_id = "4859a21d-e6df-4983-8725-2dc20060103b"
 
+[microsoft.scopes]
+# `offline_access` makes Microsoft issue the refresh token.
+files = ["offline_access", "Files.ReadWrite.All", "User.Read"]
+# Exchange Online's IMAP and SMTP AUTH resources, not Microsoft Graph.
+mail = [
+    "offline_access",
+    "https://outlook.office.com/IMAP.AccessAsUser.All",
+    "https://outlook.office.com/SMTP.Send",
+]
+
 [dropbox]
 # Dropbox App Console app key, PKCE without an app secret. Dropbox matches
 # redirect URIs exactly, port included, so each port below is registered as
@@ -38,3 +59,12 @@ client_id = "4859a21d-e6df-4983-8725-2dc20060103b"
 client_id = "uzpownxibaxmz18"
 redirect_ports = [47651, 47652, 47653]
 paste_code_fallback = true
+
+[dropbox.scopes]
+files = [
+    "account_info.read",
+    "files.metadata.read",
+    "files.metadata.write",
+    "files.content.read",
+    "files.content.write",
+]

@@ -252,25 +252,23 @@ mod live_probe {
                 Ok((user, None))
             }
             AuthMethod::OAuth => {
-                let token = oauth_access_token(&cfg.email)?;
+                let token = oauth_access_token(cfg)?;
                 Ok((user, Some(token)))
             }
         }
     }
 
-    /// Read the OAuth access token for the account from the vault (it is sealed
-    /// there by the sign-in flow before the account is saved).
-    fn oauth_access_token(email: &str) -> Result<String, String> {
-        let vault = accounts::SecretVault::open();
-        let secret = vault
-            .get(&accounts::AccountId::from(email.to_string()))
-            .ok_or("sign in first — no OAuth token stored yet")?;
-        let tokens = crate::oauth::tokens_from_secret(&secret)
-            .ok_or("stored credential is not an OAuth token")?;
-        if tokens.access_token.is_empty() {
-            return Err("stored OAuth token is empty; sign in again".into());
-        }
-        Ok(tokens.access_token)
+    /// A current OAuth access token for the account from custody (the
+    /// sign-in flow sealed the grant before the account is saved).
+    fn oauth_access_token(cfg: &AccountConfig) -> Result<String, String> {
+        let provider = crate::oauth::OAuthProvider::for_account(&cfg.email, &cfg.imap_host)
+            .ok_or("OAuth sign-in is not supported for this provider")?;
+        crate::oauth::access_token(
+            &account_custody::Custodian::live(),
+            &cfg.email,
+            provider,
+            false,
+        )
     }
 
     pub fn imap_login(
