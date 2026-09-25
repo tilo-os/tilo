@@ -30,6 +30,11 @@ pub(super) enum ControlStage {
     RelayChallenge,
     RefreshChallenge(u32),
     RefreshComplete(u32, Box<media_wire::RefreshChallenge>),
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    Close(u32),
 }
 /// Safe operational projection. Grant bytes remain inside Rust custody.
 pub(in super::super) struct GrantView {
@@ -299,6 +304,32 @@ impl NativeControl {
             ControlStage::GrantChallenge(GrantOperation::Heartbeat),
         )
     }
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    pub fn close_relay(
+        &mut self,
+        view: &OwnerView<'_>,
+        handle: u32,
+        carrier: u32,
+    ) -> Result<PreparedRequest, String> {
+        let part = self
+            .participation
+            .as_ref()
+            .filter(|p| p.id == handle)
+            .ok_or("stale media participation")?;
+        let session_id = part
+            .relays
+            .get(&carrier)
+            .ok_or("stale media carrier")?
+            .session_id;
+        self.control_request(
+            view,
+            ControlCommand::RelayClose { session_id },
+            ControlStage::Close(carrier),
+        )
+    }
     /// Fence publication immediately; only the exact retained Leave proof can continue.
     pub fn leave(&mut self, view: &OwnerView<'_>, handle: u32) -> Result<Step, String> {
         if self.participation.as_ref().is_none_or(|p| p.id != handle) {
@@ -330,6 +361,24 @@ impl NativeControl {
             .map(Step::Request);
         self.ending = self.participation.take();
         result
+    }
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    pub fn can_publish(&self, view: &CurrentView<'_>) -> Result<bool, String> {
+        self.check_current(view)?;
+        let Some(part) = &self.participation else {
+            return Ok(false);
+        };
+        if part.leaving || !part.request.directions.publish {
+            return Ok(false);
+        }
+        policy(&view.current_view(), &part.request)?;
+        Ok(part
+            .grant
+            .as_ref()
+            .is_some_and(|g| g.metadata.expires_at_ns > view.now_ns))
     }
     fn context(
         &self,
@@ -495,6 +544,7 @@ impl NativeControl {
                 stage,
                 ControlStage::GrantChallenge(GrantOperation::Leave)
                     | ControlStage::GrantComplete(GrantOperation::Leave)
+                    | ControlStage::Close(_)
             )
         {
             return Err("media participation ended".into());
@@ -780,6 +830,13 @@ impl NativeControl {
                 };
                 part.context = Some(presence.context);
                 Ok(Step::Presence(result))
+            }
+            (ControlStage::Close(carrier), ControlResult::Closed) => {
+                if let Some(part) = &mut self.participation {
+                    part.relays.remove(&carrier);
+                    part.relay_expires.remove(&carrier);
+                }
+                Ok(Step::RelayClosed)
             }
             _ => Err("unexpected media control response".into()),
         }

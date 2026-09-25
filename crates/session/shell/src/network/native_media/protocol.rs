@@ -25,6 +25,42 @@ pub(super) struct OwnerView<'a> {
     pub now_ns: u64,
 }
 impl OwnerView<'_> {
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    /// An enrollment refresh replaces only an inert candidate, never the pins.
+    pub fn validate_enrollment_hint(
+        &self,
+        workspace: u64,
+        room: &str,
+        governor: &DeviceCert,
+        host: &DeviceCert,
+        device: &DeviceCert,
+        hint: &qos_peer_state::join::TransportHint,
+    ) -> Result<(), String> {
+        if workspace != self.workspace
+            || room != self.peer.room()
+            || governor != self.governor
+            || host != self.host
+            || device != self.device
+        {
+            return Err("media enrollment custody mismatch".into());
+        }
+        let descriptor =
+            descriptor::verify_transport_hint(hint, &self.descriptor_authority()).map_err(fail)?;
+        descriptor
+            .client_scope(
+                &self.descriptor_authority(),
+                self.device,
+                Carrier::Https,
+                0,
+                0,
+            )
+            .map_err(fail)?;
+        Ok(())
+    }
+
     fn descriptor_authority(&self) -> descriptor::DescriptorAuthority<'_> {
         descriptor::DescriptorAuthority {
             peer: self.peer,
@@ -117,6 +153,13 @@ impl<'a> OwnerView<'a> {
     }
 }
 impl CurrentView<'_> {
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    fn current_view(&self) -> Self {
+        *self
+    }
     fn descriptor_authority(&self) -> descriptor::DescriptorAuthority<'_> {
         descriptor::DescriptorAuthority {
             peer: self.peer,
@@ -145,6 +188,11 @@ pub(super) enum Step {
     Presence(control::PresenceView),
     Refreshed,
     Left,
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    RelayClosed,
 }
 struct HttpSession {
     proof: auth::ServerProof,
@@ -172,6 +220,7 @@ pub(super) struct NativeControl {
     pending: BTreeMap<u32, Pending>,
     next: u32,
     session: Option<HttpSession>,
+    closed: bool,
     participation: Option<control::Participation>,
     ending: Option<control::Participation>,
 }
@@ -206,6 +255,7 @@ impl NativeControl {
             pending: BTreeMap::new(),
             next: 0,
             session: None,
+            closed: false,
             participation: None,
             ending: None,
         };
@@ -213,7 +263,8 @@ impl NativeControl {
         Ok(value)
     }
     fn check_current(&self, view: &CurrentView<'_>) -> Result<(), String> {
-        if self.continuity != view.continuity
+        if self.closed
+            || self.continuity != view.continuity
             || self.identity.0 != view.workspace
             || self.identity.1 != view.peer.room()
             || &self.identity.2 != view.governor
@@ -413,6 +464,13 @@ impl NativeControl {
                 .as_ref()
                 .is_some_and(|session| view.now_ns < session.proof.transcript.expires_at_ns)
     }
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    pub fn supported(&self, view: &CurrentView<'_>) -> bool {
+        self.current(view) && self.descriptor.media_capabilities() & descriptor::MEDIA_VOICE_V1 != 0
+    }
     /// Fresh owner validation of an already issued carrier; no signing key is
     /// borrowed or exported on the transport/audio current path.
     pub fn current_carrier(
@@ -449,6 +507,24 @@ impl NativeControl {
             return Err("native media carrier authority expired".into());
         }
         self.grant_view(view)
+    }
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    pub fn http_ready(&self) -> bool {
+        !self.closed && self.session.is_some()
+    }
+    #[allow(
+        dead_code,
+        reason = "exercised by qos-session-peer's native control tests, which compile this file directly"
+    )]
+    pub fn close(&mut self) {
+        self.closed = true;
+        self.pending.clear();
+        self.session = None;
+        self.participation = None;
+        self.ending = None;
     }
 }
 #[path = "control.rs"]
