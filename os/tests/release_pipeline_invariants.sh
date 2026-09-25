@@ -269,6 +269,18 @@ grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
   && ok 'tags always ship the browser; the nightly ships it once both WPE buildroots are promoted' \
   || bad 'the nightly browser profile can fail on a missing WPE pin, or a tag can omit the browser'
 
+# CI and os/dev/build-image.sh derive the Windows provider with one command, so
+# x86_64 can never drop it and ARM includes it as soon as both pins exist.
+grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
+  && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
+  && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
+  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 3 ] \
+  && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
+  && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
+  && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \
+  && ok 'CI and the local builder derive the Windows provider from the same pins' \
+  || bad 'the Windows provider mode is chosen differently in CI and os/dev/build-image.sh'
+
 if ! grep -q '^  pull_request:' "$os" \
   && ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$os" | grep -q '^    branches:' \
   && grep -Fq '  schedule:' "$os" \
