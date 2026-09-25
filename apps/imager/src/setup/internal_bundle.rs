@@ -228,6 +228,7 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
                 "randomize_kstack_offset" => value == "on",
                 "vsyscall" => value == "none",
                 "preempt" => value == "full",
+                "systemd.import_credentials" => value == "no",
                 "tilo.generation" => {
                     !value.is_empty()
                         && value.len() <= 10

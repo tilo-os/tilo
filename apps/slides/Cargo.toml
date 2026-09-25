@@ -27,6 +27,8 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 qdoc = { path = "../../crates/doc/qdoc" }
+# The XML entity helpers shared with the office document codecs.
+qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["office"] }
 # Zip-bomb and XXE bounds for imported .odp/.pptx packages.
 bounded-zip = { path = "../../crates/doc/bounded-zip" }
 vello.workspace = true
