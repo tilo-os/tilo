@@ -11,6 +11,7 @@
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroize as _;
 
 pub mod console;
 pub mod drive;
@@ -99,7 +100,7 @@ impl Graphics {
     }
 }
 
-/// A secret the scenario itself chose: never `Debug`-printed, wiped when
+/// A disposable or supplied secret: never `Debug`-printed, wiped when
 /// dropped, and only ever sent to the guest (console argument or typed at
 /// the unlock prompt through stdin, never argv).
 pub struct Secret(zeroize::Zeroizing<String>);
@@ -118,6 +119,77 @@ impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Secret([redacted])")
     }
+}
+
+/// Credentials supplied over stdin for a retained install. The default
+/// disposable scenario uses one public secret and leaves `disk` unset.
+pub struct Credentials {
+    pub account: Secret,
+    pub disk: Option<Secret>,
+}
+
+impl Credentials {
+    pub fn disposable(unlock: Unlock) -> Self {
+        Self {
+            account: unlock.scenario_secret(),
+            disk: None,
+        }
+    }
+
+    pub fn unlock_secret(&self) -> &Secret {
+        self.disk.as_ref().unwrap_or(&self.account)
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialsInput {
+    account_password: String,
+    disk_passphrase: String,
+}
+
+impl Drop for CredentialsInput {
+    fn drop(&mut self) {
+        self.account_password.zeroize();
+        self.disk_passphrase.zeroize();
+    }
+}
+
+/// Parse one bounded, exact JSON object without ever echoing supplied text.
+pub fn parse_credentials(bytes: &[u8]) -> Result<Credentials, &'static str> {
+    if bytes.is_empty() || bytes.len() > 8192 {
+        return Err("credentials stdin must contain one bounded JSON object");
+    }
+    let mut input: CredentialsInput = serde_json::from_slice(bytes)
+        .map_err(|_| "credentials stdin must contain account_password and disk_passphrase")?;
+    let valid = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 4096
+            && !value
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n' | '\0'))
+            && !value.trim().is_empty()
+    };
+    if !valid(&input.account_password)
+        || !valid(&input.disk_passphrase)
+        || input.account_password == input.disk_passphrase
+    {
+        return Err("account and disk secrets must be distinct, nonempty single-line values");
+    }
+    Ok(Credentials {
+        account: Secret::new(std::mem::take(&mut input.account_password)),
+        disk: Some(Secret::new(std::mem::take(&mut input.disk_passphrase))),
+    })
+}
+
+/// Read credentials before creating artifacts or booting the VM.
+pub fn credentials_from_stdin() -> Result<Credentials, &'static str> {
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    std::io::stdin()
+        .take(8193)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "could not read credentials stdin")?;
+    parse_credentials(&bytes)
 }
 
 /// Is `text` shaped like a recovery key: at least six dash-separated groups
@@ -146,7 +218,7 @@ pub const RECOVERY_KEY_MARKER: &str = "::tilo-recovery-key::";
 /// # Errors
 ///
 /// An I/O error walking or rewriting the directory.
-pub fn scrub(dir: &Path, secret: &str) -> std::io::Result<Vec<PathBuf>> {
+pub fn scrub(dir: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
     let mut withheld = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
     while let Some(path) = pending.pop() {
@@ -163,7 +235,9 @@ pub fn scrub(dir: &Path, secret: &str) -> std::io::Result<Vec<PathBuf>> {
             let mut bytes = Vec::new();
             std::fs::File::open(entry.path())?.read_to_end(&mut bytes)?;
             let text = String::from_utf8_lossy(&bytes);
-            if (!secret.is_empty() && text.contains(secret))
+            if secrets
+                .iter()
+                .any(|secret| !secret.is_empty() && text.contains(secret))
                 || text.contains(RECOVERY_KEY_MARKER)
                 || has_recovery_key_shape(&text)
             {
@@ -213,7 +287,7 @@ mod tests {
             "bbbbbbbb-cccccccc-dddddddd-ffffffff-gggggggg-hhhhhhhh-jjjjjjjj-kkkkkkkk",
         )
         .unwrap();
-        let withheld = scrub(dir.path(), "scenario-passphrase-2026").unwrap();
+        let withheld = scrub(dir.path(), &["scenario-passphrase-2026"]).unwrap();
         assert_eq!(withheld.len(), 3, "{withheld:?}");
         for path in [&leaked, &marker, &key] {
             assert!(
@@ -223,6 +297,43 @@ mod tests {
             );
         }
         assert!(!std::fs::read(&clean).unwrap().is_empty());
+    }
+
+    #[test]
+    fn credentials_from_stdin_are_distinct_bounded_and_never_echoed() {
+        let account = "account-random-2026";
+        let disk = "disk-random-unlock-2026";
+        let input = serde_json::json!({"account_password": account, "disk_passphrase": disk});
+        let credentials = parse_credentials(input.to_string().as_bytes()).unwrap();
+        assert_eq!(credentials.account.expose(), account);
+        assert_eq!(credentials.unlock_secret().expose(), disk);
+        assert_eq!(format!("{:?}", credentials.account), "Secret([redacted])");
+        for bad in [
+            serde_json::json!({"account_password": account, "disk_passphrase": account}),
+            serde_json::json!({"account_password": "", "disk_passphrase": disk}),
+            serde_json::json!({"account_password": account, "disk_passphrase": "line\nother"}),
+            serde_json::json!({"account_password": account, "disk_passphrase": disk, "extra": true}),
+        ] {
+            let error = parse_credentials(bad.to_string().as_bytes()).err().unwrap();
+            assert!(!error.contains(account) && !error.contains(disk));
+        }
+    }
+
+    #[test]
+    fn scrubber_checks_both_retained_install_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = dir.path().join("account.txt");
+        let disk = dir.path().join("disk.txt");
+        std::fs::write(&account, "account-random-2026").unwrap();
+        std::fs::write(&disk, "disk-random-unlock-2026").unwrap();
+        let withheld = scrub(
+            dir.path(),
+            &["account-random-2026", "disk-random-unlock-2026"],
+        )
+        .unwrap();
+        assert_eq!(withheld.len(), 2);
+        assert!(std::fs::read(account).unwrap().is_empty());
+        assert!(std::fs::read(disk).unwrap().is_empty());
     }
 
     #[test]

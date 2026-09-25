@@ -49,7 +49,7 @@ pub fn region_resource(index: usize) -> String {
 
 /// Everything the installer can be asked to do.
 ///
-/// Not `Debug`: `SetPassphrase` and `ConnectNetwork` carry secrets, and a
+/// Not `Debug`: password, disk passphrase and network actions carry secrets, and a
 /// derived `Debug` would print them into any log that formats an operation.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -86,6 +86,10 @@ pub enum Operation {
         full_name: Option<String>,
     },
     SetPassphrase {
+        passphrase: String,
+        confirmation: String,
+    },
+    SetDiskPassphrase {
         passphrase: String,
         confirmation: String,
     },
@@ -142,6 +146,7 @@ impl Operation {
             Self::SelectFreeRegion { .. } => "select-region",
             Self::SetIdentity { .. } => "set-identity",
             Self::SetPassphrase { .. } => "set-passphrase",
+            Self::SetDiskPassphrase { .. } => "set-disk-passphrase",
             Self::SetFilesystem { .. } => "set-filesystem",
             Self::SetSecurityKey { .. } => "set-security-key",
             Self::SetHostname { .. } => "set-hostname",
