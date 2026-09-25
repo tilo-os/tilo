@@ -521,6 +521,24 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected"], [])
         self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_check_workflow_and_builder_resolution_contract_need_no_rust(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        changes = [
+            ".forgejo/workflows/check.yml",
+            "tools/tests/test_ci_check_aggregate.py",
+            "tools/tests/test_resolve_ci_builder.py",
+            "tools/ci/affected_packages.py",
+            "tools/tests/test_ci_select.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertTrue(plan["security_required"])
+        # A missing mandatory observer removes the exception.
+        (self.root / "tools/tests/test_resolve_ci_builder.py").unlink()
+        self.assertTrue(ci_select.make_plan(self.metadata, self.root, changes, 2)["rust_required"])
+
     def test_mold_builder_policy_does_not_compile_unrelated_rust(self) -> None:
         self.install_quality_helpers()
         self.install_control_inputs()
