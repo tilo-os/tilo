@@ -1,5 +1,7 @@
 //! Moving a running dev VM onto another image with bootc: a dev image built on
-//! this host (`vm upgrade --from local`) or one from a registry.
+//! this host (`vm upgrade --from local`), a CI build (`--from ci:<tag>`: its
+//! published dev image, or one built here FROM its integration image) or any
+//! dev image from a registry.
 //!
 //! A local image travels as an OCI layout. `skopeo` writes it from podman's
 //! storage into a per-VM directory on the host, reusing every blob already
@@ -37,19 +39,85 @@ pub fn layout_imgref() -> String {
 }
 const LOCKS: &str = "/var/lib/tilo-vm/locks";
 
-/// `--from local` or `--from local:<image>`: the image, and whether to build it.
+/// What `vm upgrade --from` names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpgradeFrom {
+    /// `local`: build this worktree's dev image; `local:<image>`: one already
+    /// in podman's storage.
+    Local { image: String, build: bool },
+    /// `ci:<tag>` or `sha:<commit>`: a CI build of the OS, by its `main-<sha7>`
+    /// (or release) tag.
+    Ci { tag: String },
+}
+
+const FROM_FORMS: &str = "tilo-vm vm upgrade --from local (build this worktree's dev image)   |   --from ci:main-<sha7> or --from sha:<commit> (a CI build)   |   --from local:localhost/tilo-vm:<tag> (one already built)   |   --image code.sandbox.example/qos/tilo-vm:<tag> (a published one)";
+
+/// Parse `--from`; a `sha:` is resolved through the worktree's git.
 ///
 /// # Errors
 /// Anything else.
-pub fn parse_from(from: &str) -> Result<(String, bool), CliError> {
+pub fn parse_from(
+    from: &str,
+    worktree: Option<&crate::context::Worktree>,
+) -> Result<UpgradeFrom, CliError> {
+    let unsupported = || CliError::Unsupported {
+        what: format!("--from {from} for vm upgrade"),
+        alternative: FROM_FORMS.into(),
+    };
     match from.split_once(':') {
-        None if from == "local" => Ok((LOCAL_DEV_IMAGE.to_owned(), true)),
-        Some(("local", image)) if !image.is_empty() => Ok((image.to_owned(), false)),
-        _ => Err(CliError::Unsupported {
-            what: format!("--from {from} for vm upgrade"),
-            alternative: "tilo-vm vm upgrade --from local (build this worktree's dev image)   |   --from local:localhost/tilo-vm:<tag> (one already built)   |   --image code.sandbox.example/qos/tilo-vm:<tag> (a published one)".into(),
+        None if from == "local" => Ok(UpgradeFrom::Local {
+            image: LOCAL_DEV_IMAGE.to_owned(),
+            build: true,
         }),
+        Some(("local", image)) if !image.is_empty() => Ok(UpgradeFrom::Local {
+            image: image.to_owned(),
+            build: false,
+        }),
+        Some(("ci" | "sha", _)) => match crate::ci::parse(from, worktree) {
+            Ok(crate::ci::Source::Ci { tag, .. }) => Ok(UpgradeFrom::Ci { tag }),
+            _ => Err(unsupported()),
+        },
+        _ => Err(unsupported()),
     }
+}
+
+/// Where a CI build of `tag` can come from, in the order `vm upgrade` tries
+/// them: the dev images dev-disk.yml publishes (from the unsigned integration
+/// image, then from a signed release), which the VM pulls itself; then the
+/// production images a dev image can be built FROM here: the integration image
+/// build-image.yml pushes for every main build, then the signed release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiCandidates {
+    pub dev_images: Vec<String>,
+    pub bases: Vec<String>,
+}
+
+pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
+    // `ci:main-1a2b3c4-x86_64` names the integration image's own tag.
+    let tag = tag.strip_suffix(&format!("-{arch}")).unwrap_or(tag);
+    let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
+    CiCandidates {
+        dev_images: vec![
+            format!("code.sandbox.example/qos/tilo-vm:{dev_tag}-ci"),
+            format!("code.sandbox.example/qos/tilo-vm:{dev_tag}"),
+        ],
+        bases: vec![
+            format!("code.sandbox.example/qos/tilo-ci:{dev_tag}-{arch}"),
+            format!("code.sandbox.example/qos/tilo:{dev_tag}"),
+        ],
+    }
+}
+
+/// The local tag of a dev image built FROM a CI base.
+pub fn ci_dev_image(base: &str) -> String {
+    let tag = base.rsplit_once(':').map_or(base, |(_, tag)| tag);
+    format!("localhost/tilo-vm:ci-{tag}")
+}
+
+/// Does `reference` exist in its registry? (`skopeo inspect --raw` reads only
+/// the manifest.)
+pub fn exists_command(reference: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["inspect", "--raw"]).arg(format!("docker://{reference}"))
 }
 
 /// A dev image may only be named `localhost/tilo-vm` or
@@ -601,22 +669,77 @@ mod tests {
     #[test]
     fn from_local_builds_and_from_local_image_does_not() {
         assert_eq!(
-            parse_from("local").unwrap(),
-            (LOCAL_DEV_IMAGE.to_owned(), true)
+            parse_from("local", None).unwrap(),
+            UpgradeFrom::Local {
+                image: LOCAL_DEV_IMAGE.to_owned(),
+                build: true
+            }
         );
         assert_eq!(
-            parse_from("local:localhost/tilo-vm:mine").unwrap(),
-            ("localhost/tilo-vm:mine".to_owned(), false)
+            parse_from("local:localhost/tilo-vm:mine", None).unwrap(),
+            UpgradeFrom::Local {
+                image: "localhost/tilo-vm:mine".to_owned(),
+                build: false
+            }
         );
-        for bad in ["local:", "ci:main", "worktree", "locally"] {
-            let error = parse_from(bad).unwrap_err();
+        for bad in ["local:", "ci:", "ci:a b", "sha:xyz", "worktree", "locally"] {
+            let error = parse_from(bad, None).unwrap_err();
             assert!(
                 error
                     .hint()
-                    .contains("--from local:localhost/tilo-vm:<tag>"),
+                    .contains("--from local:localhost/tilo-vm:<tag>")
+                    && error.hint().contains("--from ci:main-<sha7>"),
                 "{bad}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn from_ci_and_sha_name_a_ci_tag() {
+        assert_eq!(
+            parse_from("ci:main-1a2b3c4", None).unwrap(),
+            UpgradeFrom::Ci {
+                tag: "main-1a2b3c4".into()
+            }
+        );
+        assert_eq!(
+            parse_from("sha:1A2B3C4D", None).unwrap(),
+            UpgradeFrom::Ci {
+                tag: "main-1a2b3c4".into()
+            }
+        );
+    }
+
+    #[test]
+    fn ci_candidates_try_published_dev_images_then_bases() {
+        let expected = CiCandidates {
+            dev_images: vec![
+                "code.sandbox.example/qos/tilo-vm:main-1a2b3c4-ci".into(),
+                "code.sandbox.example/qos/tilo-vm:main-1a2b3c4".into(),
+            ],
+            bases: vec![
+                "code.sandbox.example/qos/tilo-ci:main-1a2b3c4-x86_64".into(),
+                "code.sandbox.example/qos/tilo:main-1a2b3c4".into(),
+            ],
+        };
+        assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
+        // The integration image's own tag and the dev disk's -ci tag name the same build.
+        assert_eq!(ci_candidates("main-1a2b3c4-x86_64", "x86_64"), expected);
+        assert_eq!(ci_candidates("main-1a2b3c4-ci", "x86_64"), expected);
+        for image in expected.dev_images {
+            assert!(is_dev_name(&image), "{image}");
+        }
+    }
+
+    #[test]
+    fn a_dev_image_built_from_a_ci_base_is_a_local_dev_name() {
+        let image = ci_dev_image("code.sandbox.example/qos/tilo-ci:main-1a2b3c4-x86_64");
+        assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
+        assert!(is_dev_name(&image));
+        assert_eq!(
+            exists_command("code.sandbox.example/qos/tilo-ci:main-1a2b3c4-x86_64").display(),
+            "skopeo inspect --raw docker://code.sandbox.example/qos/tilo-ci:main-1a2b3c4-x86_64"
+        );
     }
 
     #[test]

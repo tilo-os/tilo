@@ -32,6 +32,12 @@ class Response:
 
 
 class RegionalBuilderReplicationTest(unittest.TestCase):
+    def test_expected_identity_is_the_one_the_aws_role_trusts(self):
+        # The IAM trust policy (infra: qos_builder_replication_assume) names
+        # Forgejo's owner/repository IDs. A renamed subject is refused by AWS.
+        self.assertEqual(MODULE.OIDC_ISSUER, "https://code.sandbox.example/api/actions")
+        self.assertEqual(MODULE.OIDC_SUBJECT, "repo:qos-11/qos-23:ref:refs/heads/main")
+
     @staticmethod
     def token_for(**overrides):
         claims = {

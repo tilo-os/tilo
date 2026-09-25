@@ -21,10 +21,17 @@
 //!   scopes nest on one thread.
 //! - [`script`] writes an executable fixture script without racing
 //!   concurrent `fork`/`exec` in sibling tests.
+//! - [`require_capability!`] skips a test that needs a GPU, audio, codecs,
+//!   FUSE or fanotify where the host lacks it, and fails it instead on a CI
+//!   lane that sets `TILO_REQUIRE_<CAP>=1`.
 //!
 //! The lock only orders code that takes it. Code under test that reads the
 //! environment from a thread of its own is still racing any other test that
 //! mutates the variable without this crate.
+
+mod capability;
+
+pub use capability::{Capability, Probe, capability_unavailable};
 
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;

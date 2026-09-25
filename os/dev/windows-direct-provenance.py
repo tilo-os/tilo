@@ -294,7 +294,11 @@ def signed_medium_identity(identity_path, ci_guest_proof_path, key,
 
 
 def checked_medium_pair(board, generic, board_checked, generic_checked,
-                        board_child_digest, generic_child_digest, generic_index_image):
+                        board_child_digest, generic_child_digest, generic_index_image,
+                        source_revision):
+    require(board["build_revision"] == source_revision
+            and generic["build_revision"] == source_revision,
+            "signed CI media source revision differs from signed CI OS images")
     require(board["target_profile"] == "lenovo-83ed"
             and generic["target_profile"] == "generic"
             and board["target_image"] == "code.sandbox.example/qos/tilo@" + board_child_digest
@@ -494,7 +498,8 @@ def dual_ci_medium_gate(args, board_checked, board_child_digest,
         args.generic_medium_identity, args.generic_ci_guest_proof, args.verify_key,
         args.cosign_command_json, args.cosign_key_arg)
     checked_medium_pair(board_medium, generic_medium, board_checked, generic_checked,
-                        board_child_digest, child_digest, args.generic_ci_image)
+                        board_child_digest, child_digest, args.generic_ci_image,
+                        board_source_revision)
     return {"generic_ci_index_digest": index_digest,
             "generic_ci_child_digest": child_digest,
             "generic_ci_source_revision": child_provenance["source_revision"],
