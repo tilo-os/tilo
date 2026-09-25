@@ -15,6 +15,12 @@ chmod +x "$tmp/compiler" "$tmp/cache"
 TRACE="$tmp/trace" TILO_KERNEL_CC_LAUNCHER="$tmp/cache" \
     sh "$repo/os/kernel/cc-wrapper.sh" "$tmp/compiler" -c certs/system_certificates.S
 TRACE="$tmp/trace" TILO_KERNEL_CC_LAUNCHER="$tmp/cache" \
+    sh "$repo/os/kernel/cc-wrapper.sh" "$tmp/compiler" -c arch/x86/boot/compressed/piggy.S
+TRACE="$tmp/trace" TILO_KERNEL_CC_LAUNCHER="$tmp/cache" \
+    sh "$repo/os/kernel/cc-wrapper.sh" "$tmp/compiler" -c arch/x86/boot/compressed/sbat.S
+TRACE="$tmp/trace" TILO_KERNEL_CC_LAUNCHER="$tmp/cache" \
     sh "$repo/os/kernel/cc-wrapper.sh" "$tmp/compiler" -c kernel/module/main.c
 grep -Fx 'direct -c certs/system_certificates.S' "$tmp/trace"
+grep -Fx 'direct -c arch/x86/boot/compressed/piggy.S' "$tmp/trace"
+grep -Fx 'direct -c arch/x86/boot/compressed/sbat.S' "$tmp/trace"
 grep -Fx "cached $tmp/compiler -c kernel/module/main.c" "$tmp/trace"

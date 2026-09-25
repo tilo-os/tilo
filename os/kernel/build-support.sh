@@ -375,11 +375,6 @@ case "$command" in
         jobs=${8:?expected a job count}
         positive_jobs "$jobs"
         case "$stage" in /*) ;; *) echo "kernel staging directory must be absolute" >&2; exit 1 ;; esac
-        # A module's cryptographic self-check alone cannot prove that the
-        # kernel was linked with the same per-build signer. Check the exact
-        # certificate bytes in vmlinux before packaging or deleting the key.
-        python3 /work/check-signing-identity.py "$ksrc/vmlinux" \
-          "$ksrc/certs/signing_key.x509" "$signing/signing-cert.der"
         rm -rf "$stage"
         mkdir -p "$stage/lib/modules/$kver"
         # bootc / ostree find the boot artifacts alongside the modules,
@@ -388,15 +383,18 @@ case "$command" in
         # co-located with the module tree. /boot itself is populated at
         # deploy time from these files.
         sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"
+        # Check both the linked kernel and the image actually staged for boot.
+        # On x86 the compressed payload can be stale even when vmlinux is fresh.
+        if [ "$arch" = x86_64 ]; then
+            python3 /work/check-signing-identity.py "$ksrc/vmlinux" \
+              "$ksrc/certs/signing_key.x509" "$signing/signing-cert.der" \
+              "$stage/lib/modules/$kver/vmlinuz" "$ksrc/scripts/extract-vmlinux"
+        else
+            python3 /work/check-signing-identity.py "$ksrc/vmlinux" \
+              "$ksrc/certs/signing_key.x509" "$signing/signing-cert.der" \
+              "$stage/lib/modules/$kver/vmlinuz"
+        fi
         cd "$ksrc"
-        # The kernel must trust the certificate the modules are signed with
-        # below; a stale embedded certificate boots a kernel that rejects
-        # every module.
-        python3 -c 'import sys; sys.exit(open(sys.argv[2], "rb").read() not in open(sys.argv[1], "rb").read())' \
-            vmlinux "$signing/signing-cert.der" || {
-            echo "vmlinux does not embed this build's module signing certificate" >&2
-            exit 1
-        }
         # Install and strip before signing. Automatic Kbuild signing is disabled
         # because its host utility links libcrypto.
         make -j"$jobs" INSTALL_MOD_PATH="$stage" INSTALL_MOD_STRIP=1 modules_install
