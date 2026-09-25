@@ -13,10 +13,13 @@
 //! first chunk is a document chunk; mark ordering is always validated.
 use crate::author::Authors;
 use crate::change_graph::ChangeGraphCols;
+use crate::op_set2::change::batch::native_validation::validate_incoming;
 use crate::op_set2::change::ChangeCollector;
 use crate::op_set2::op_set::MarkOrderValidator;
 use crate::op_set2::OpSet;
+use crate::resource_limits::apply::budget::Charge;
 use crate::resource_limits::dims;
+use crate::resource_limits::NativeMutationError;
 use crate::resource_limits::NativeResourceError as Error;
 use crate::resource_limits::{NativeAllowance, NativeReservation};
 use crate::storage::{self, parse, Bundle, Chunk};
@@ -54,10 +57,6 @@ impl Fragments<'_> {
     }
 }
 
-// TODO(L2): run the ported 0.8 incoming preflight
-// (`resource_limits/apply/preflight.rs` on codex/am012-l2) over every document
-// and change chunk before parsing: 0.12 change parsing panics in `OpId::new`
-// when obj/key/pred counters or actor indexes exceed u32::MAX.
 pub(super) fn load_strict(
     data: &[u8],
     allowance: &NativeAllowance,
@@ -119,10 +118,17 @@ pub(super) fn load_strict(
             .checked_add(changes.len())
             .ok_or(Error::WorkBytes)?;
         fragments.reserve(&changes, actors, graph_changes)?;
-        // TODO(L2): run `native_validate_incoming` on `changes` against `doc`
-        // here once it exists, so a hostile change or orphan chunk cannot
-        // panic inside 0.12's batch apply.
+        // L2's semantic preflight simulates the exact batch (queue plus these
+        // changes) so a hostile change or orphan chunk is refused before
+        // 0.12's batch apply could error midway or panic. Its tables are
+        // charged to this turn and released after the apply.
+        let mut charge = Charge::new(fragments.allowance);
+        validate_incoming(&doc, &changes, &mut charge).map_err(|error| match error {
+            NativeMutationError::Resource(error) => error,
+            _ => Error::Invalid,
+        })?;
         doc.apply_changes(changes).map_err(|_| Error::Invalid)?;
+        drop(charge);
     }
     if !first_document && !doc.queue.is_empty() {
         return Err(Error::Invalid);

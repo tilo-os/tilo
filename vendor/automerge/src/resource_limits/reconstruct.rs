@@ -8,6 +8,8 @@
 //! fails closed if the loaded document's retained bound exceeds the peak).
 mod load;
 
+use super::apply::budget::Charge;
+use super::apply::preflight;
 use super::custody::{self, NativeAllocationSet, NativeOwned, NativeWorkTurn};
 use super::dims::{self, IncomingDims};
 use super::{NativeResourceError, NormalizedStorage};
@@ -29,6 +31,14 @@ impl NormalizedStorage<'_> {
         // otherwise their buffer would be retained under another ledger.
         if !turn.accepts_reservation(&self._reservation) {
             return Err(NativeResourceError::Unaccounted);
+        }
+        // Borrowed column preflight (L2) over every chunk before any native
+        // decoder runs: 0.12 change parsing panics in `OpId::new` on
+        // counters or actor indexes above u32::MAX. Its per-chunk scratch is
+        // charged to this turn and released here.
+        {
+            let mut charge = Charge::new(allowance);
+            preflight::validate(&self.bytes, &mut charge)?;
         }
         let incoming = IncomingDims::from_shape(&self.shape);
         let bound = dims::load_peak_bound(&incoming)?;
