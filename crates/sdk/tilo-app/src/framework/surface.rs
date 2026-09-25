@@ -134,6 +134,19 @@ impl<R: Resource, S: ResourceSurface<R>> Widget for SurfaceHost<R, S> {
         self.surface.sync(state, path);
     }
 
+    // A subtree that swaps its children (a `ModelView`, an `Each`) reports
+    // it here; the host rebuilds its layout tree only when a container
+    // passes that on.
+    fn take_structure_dirty(&mut self) -> bool {
+        self.surface.take_structure_dirty()
+    }
+
+    // The per-frame update pass drives retained models (a virtual list's
+    // pages, a table's rows); every child must see it.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.surface.update(state, path)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
