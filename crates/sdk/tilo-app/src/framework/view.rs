@@ -11,10 +11,12 @@ use ui_core::LocalState;
 use ui_core::record::RecordSaveStatus;
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 
+use super::controls::{ActionControl, Actions};
 use super::dispatch::Dispatcher;
 use super::each::Each;
 use super::live::Live;
 use super::surface::{ResourceSurface, SurfaceCx, SurfaceHost};
+use super::switch::Switch;
 
 fn disabled(mut button: Button) -> Button {
     button.set_enabled(false);
@@ -169,16 +171,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     }
 
     fn binding<I: 'static>(&self, binds: impl Binds<R, I>) -> Option<ActionBinding<I>> {
-        let id = binds.action_id();
-        let spec = self
-            .published
-            .actions
-            .iter()
-            .find(|spec| spec.id == id)?
-            .clone();
-        ActionBinding::new(&self.published, &spec, move |input| binds.arguments(input))
-            .map_err(|error| tracing::warn!(%error, action = id, "control not bound"))
-            .ok()
+        self.actions().binding(binds)
     }
 
     /// Keep `sink` in step with a value derived from the resource.
@@ -312,6 +305,81 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                 row(&mut cx)
             }),
         )
+    }
+
+    /// The resource's published actions, for binding controls built outside
+    /// the view function: the rows a table, list or tree creates on demand.
+    pub fn actions(&self) -> Actions<R> {
+        Actions::new(Rc::clone(&self.published))
+    }
+
+    /// A value that follows `read` of the resource, for any toolkit control
+    /// built from a [`LocalState`] (`Slider::from_state`, `Dropdown::from_state`).
+    pub fn value<V>(&self, read: impl Fn(&T) -> V + 'static) -> LocalState<V>
+    where
+        V: PartialEq + Default + Clone + 'static,
+    {
+        let state = LocalState::new(V::default());
+        let sink = state.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        state.set(initial);
+        state
+    }
+
+    /// Any action-bound toolkit control, showing `read` of the resource and
+    /// invoking `action` with each committed value:
+    /// `cx.control(Slider::from_state, |p| p.volume, Profile::SET_VOLUME)`.
+    /// The control is disabled when the action is not published.
+    pub fn control<V, C>(
+        &self,
+        make: impl FnOnce(&LocalState<V>) -> C,
+        read: impl Fn(&T) -> V + 'static,
+        action: impl Binds<R, V>,
+    ) -> C
+    where
+        V: PartialEq + Default + Clone + 'static,
+        C: ActionControl<V>,
+    {
+        let control = make(&self.value(read));
+        self.actions().bind(control, action)
+    }
+
+    /// A part of the view chosen by view-local state — the detail pane of the
+    /// selected item, the page of a wizard. The part is built again, with its
+    /// own bindings, whenever `key` changes; the previous one is dropped.
+    pub fn switch<K>(
+        &self,
+        key: &LocalState<K>,
+        part: impl Fn(&mut ViewCx<R, T>, &K) -> Element + 'static,
+    ) -> Element
+    where
+        K: Clone + PartialEq + 'static,
+    {
+        let live = self.live.clone();
+        let focus = Rc::clone(&self.focus);
+        let updaters = self.updaters.clone();
+        let dispatch = self.dispatch.clone();
+        let published = Rc::clone(&self.published);
+        let item = self.item.clone();
+        let saved = self.saved.clone();
+        Box::new(Switch::new(
+            key.clone(),
+            Box::new(move |value: &K, alive: &Rc<()>| {
+                let mut cx = ViewCx {
+                    live: live.clone(),
+                    focus: Rc::clone(&focus),
+                    updaters: updaters.clone(),
+                    alive: Rc::downgrade(alive),
+                    dispatch: dispatch.clone(),
+                    published: Rc::clone(&published),
+                    item: item.clone(),
+                    // Each build of the part names its controls afresh.
+                    controls: Rc::default(),
+                    saved: saved.clone(),
+                };
+                part(&mut cx, value)
+            }),
+        ))
     }
 
     /// Host a custom widget or renderer that takes part through the
