@@ -139,6 +139,9 @@ impl WindowsPlatform {
     ) -> IoResult<()> {
         self.require_elevated()?;
         let (current, _) = self.current_for(disk)?;
+        if &current != disk {
+            return Err("installed ESP geometry changed during readback".into());
+        }
         let part = ops::find(&current, esp_guid)?;
         if !super::super::same_guid(&part.type_guid, super::super::ESP_TYPE) {
             return Err("final loader read requires an EFI System Partition".into());
@@ -164,6 +167,9 @@ impl WindowsPlatform {
     ) -> IoResult<String> {
         self.require_elevated()?;
         let (current, _) = self.current_for(disk)?;
+        if &current != disk {
+            return Err("installed ESP geometry changed during readback".into());
+        }
         let part = ops::find(&current, esp_guid)?;
         if !super::super::same_guid(&part.type_guid, super::super::ESP_TYPE) {
             return Err("final loader read requires an EFI System Partition".into());
