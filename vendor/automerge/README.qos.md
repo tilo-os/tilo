@@ -79,10 +79,8 @@ and the mutation sweep: `crates/doc/tilo-automerge/tests/am012_hardening.rs`.
   list is `InvalidColumnLength` (both were `max_ops[..]` index panics), and
   the extra-bytes lengths must add up to the extra-bytes column (change
   metadata iteration sliced past it).
-- Still open, owned by lane L2 (`src/op_set2/change/batch.rs`): batch apply
-  does not check seq contiguity, so on the plain load paths a ready change
-  from an unknown actor with `seq != 1` panics in `Automerge::import_ops`
-  (`lookup_actor(..).unwrap()`) and a seq gap hits `ChangeGraph::add_changes`
-  `assert_eq!` (`change_graph.rs:571`). The checked path refuses these in
-  L2's validator. Regression inputs: `am012_hardening.rs`
-  `PENDING_BATCH_SEQ_GUARD` (ignored test).
+- Batch apply seq contiguity (lane L2, `src/op_set2/change/batch.rs`): a
+  ready change from an unknown actor with `seq != 1` used to panic in
+  `Automerge::import_ops` (`lookup_actor(..).unwrap()`) and a seq gap hit
+  `ChangeGraph::add_changes` `assert_eq!`; L2's guard refuses both.
+  Regression inputs: `am012_hardening.rs` `BATCH_SEQ_GAPS`.
