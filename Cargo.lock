@@ -9796,6 +9796,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-automerge",
  "tracing",
  "vello",
  "wayland-client",
@@ -11158,6 +11159,7 @@ dependencies = [
 name = "qos-action-broker"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "automerge",
  "blake3",
  "capnp",
@@ -11182,6 +11184,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-actions",
+ "tilo-automerge",
  "tilo-relay",
  "tilo-ui",
  "tilo-user-identity",
@@ -13619,6 +13622,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-net",
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
