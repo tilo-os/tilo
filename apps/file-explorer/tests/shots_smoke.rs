@@ -14,7 +14,6 @@
 )]
 
 use std::fs;
-use std::process::Command;
 
 const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
@@ -24,7 +23,7 @@ fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images(
     let directory = tempfile::tempdir().unwrap();
     for scenario in ["sync", "thumbnails-fs", "history"] {
         let output = directory.path().join(format!("{scenario}.png"));
-        let result = Command::new(env!("CARGO_BIN_EXE_file-explorer"))
+        let result = crate::common::app_command()
             .arg("--shots")
             .arg(&output)
             .args(["--scenario", scenario])
@@ -41,14 +40,13 @@ fn unavailable_projection_scenarios_fail_instead_of_producing_misleading_images(
 
 #[test]
 fn file_explorer_shots_flag_writes_png() {
-    let bin = env!("CARGO_BIN_EXE_file-explorer");
     let out = std::env::temp_dir().join(format!(
         "file-explorer-shots-smoke-{}.png",
         std::process::id()
     ));
     let _ = fs::remove_file(&out);
 
-    let status = Command::new(bin)
+    let status = crate::common::app_command()
         .arg("--shots")
         .arg(&out)
         .status()

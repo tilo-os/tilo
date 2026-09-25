@@ -675,12 +675,42 @@ impl SigningIdentity {
     }
 }
 
+/// Where a manager's connection stands, as the UI shows it.
+///
+/// Construction never waits for the network: a manager that has a service
+/// to reach starts in [`Self::Connecting`] and moves to [`Self::Ready`] or
+/// [`Self::Offline`] on a later [`CollaborationManager::poll`]. The owner is
+/// woken when that happens, so a frame loop observes the change without
+/// polling on a timer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CollaborationState {
+    /// Reaching the collaboration service and announcing the primary route.
+    /// Requests sent meanwhile are queued, in order, for when it is ready.
+    Connecting,
+    /// Connected, with the primary route acknowledged.
+    Ready,
+    /// No collaboration: the service is absent, refused the route, or the
+    /// connection closed. Carries a human-readable reason.
+    Offline(String),
+}
+
+impl CollaborationState {
+    /// Whether requests currently reach peers.
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+}
+
+/// Reason reported by a manager that never had a service to reach.
+const NO_SERVICE: &str = "no collaboration service is available";
+
 /// Which transport the manager is speaking.
 enum Backend {
     /// No collab service reachable. `poll` yields nothing, `send` is a
     /// black hole; every widget already handles this via
-    /// [`CollaborationManager::is_connected`].
-    Disabled,
+    /// [`CollaborationManager::is_connected`]. Carries the reason the
+    /// manager is offline.
+    Disabled(String),
     /// One transport, driven from the owner thread by `send` / `poll`.
     Transport(Box<dyn CollabTransport>),
 }
@@ -722,6 +752,12 @@ impl PrimaryRouteState {
 pub struct CollaborationManager {
     backend: Backend,
     primary_route: PrimaryRouteState,
+    /// Set while the connection is still being established in the
+    /// background: the manager reports [`CollaborationState::Connecting`]
+    /// until the transport acknowledges the primary route.
+    awaiting_primary: bool,
+    /// The state last handed out by [`Self::take_state_change`].
+    reported_state: Option<CollaborationState>,
     /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
     /// dispatches [`CollabRequest::SignedOperation`]. This explicit
     /// policy-envelope API is separate from document mutations, which the SDK
@@ -745,16 +781,25 @@ impl CollaborationManager {
     pub fn with_transport(mut transport: Box<dyn CollabTransport>) -> Self {
         let wake = crate::wake::WakeHandle::new();
         transport.set_wake(Box::new(move || wake.notify_events()));
-        Self {
+        let mut manager = Self {
             backend: Backend::Transport(transport),
             primary_route: PrimaryRouteState::default(),
+            awaiting_primary: false,
+            reported_state: None,
             identity: None,
             action_directory_published: false,
-        }
+        };
+        manager.reported_state = Some(manager.state());
+        manager
     }
 
     /// Connects to the launcher-inherited collaboration service when this
     /// build has one, entering Disabled mode when it is unavailable.
+    ///
+    /// Returns at once: the connection is made in the background and its
+    /// progress is reported by [`Self::state`]. Nothing here waits on the
+    /// service, so this is safe to call on a UI thread before the first
+    /// frame.
     ///
     /// Both modes auto-send `Hello` announcing **no record** (one document
     /// per `(app, room)`); use [`Self::for_record`] for apps that have
@@ -795,11 +840,74 @@ impl CollaborationManager {
 
     /// Explicitly disconnected construction: no identity, service or worker discovery.
     pub(crate) fn disabled() -> Self {
+        Self::offline(NO_SERVICE.to_owned())
+    }
+
+    fn offline(reason: String) -> Self {
         Self {
-            backend: Backend::Disabled,
+            reported_state: Some(CollaborationState::Offline(reason.clone())),
+            backend: Backend::Disabled(reason),
             primary_route: PrimaryRouteState::default(),
+            awaiting_primary: false,
             identity: None,
             action_directory_published: false,
+        }
+    }
+
+    /// Ask the transport to report the broker's decision about the primary
+    /// route announced just before, without waiting for it: the manager
+    /// reports [`CollaborationState::Connecting`] until [`Self::poll`]
+    /// observes the answer.
+    fn confirm_primary_route_in_background(&mut self) {
+        self.awaiting_primary = true;
+        if self.submit(TransportCommand::ConfirmPrimaryRoute).is_err() {
+            self.go_offline("collaboration setup thread is unavailable or overloaded".into());
+        }
+        self.reported_state = Some(self.state());
+    }
+
+    /// Drop the transport and report `reason` as the offline cause.
+    fn go_offline(&mut self, reason: String) {
+        tracing::warn!(%reason, "collab: continuing without collaboration");
+        self.backend = Backend::Disabled(reason);
+        self.awaiting_primary = false;
+        self.primary_route = PrimaryRouteState::default();
+        self.action_directory_published = false;
+    }
+
+    /// Where the connection stands. Cheap; call it every frame.
+    pub fn state(&self) -> CollaborationState {
+        match &self.backend {
+            Backend::Disabled(reason) => CollaborationState::Offline(reason.clone()),
+            Backend::Transport(transport) => match transport.status() {
+                TransportStatus::Closed(reason) => CollaborationState::Offline(reason),
+                TransportStatus::Connecting => CollaborationState::Connecting,
+                TransportStatus::Ready | TransportStatus::Degraded(_) if self.awaiting_primary => {
+                    CollaborationState::Connecting
+                }
+                TransportStatus::Ready | TransportStatus::Degraded(_) => CollaborationState::Ready,
+            },
+        }
+    }
+
+    /// The current state when it differs from the one this method last
+    /// returned (initially, the state the manager was constructed in). Lets
+    /// an owner run connect-time work once, when the manager becomes ready.
+    pub fn take_state_change(&mut self) -> Option<CollaborationState> {
+        let state = self.state();
+        if self.reported_state.as_ref() == Some(&state) {
+            return None;
+        }
+        self.reported_state = Some(state.clone());
+        Some(state)
+    }
+
+    /// The primary route most recently announced by a `Hello`, acknowledged
+    /// or not.
+    pub(crate) fn requested_primary_route(&self) -> Option<&RouteSpec> {
+        match self.backend {
+            Backend::Disabled(_) => None,
+            Backend::Transport(_) => self.primary_route.requested.as_ref(),
         }
     }
 
@@ -815,17 +923,19 @@ impl CollaborationManager {
         self.primary_route.current(self.is_connected())
     }
 
+    /// Whether requests currently reach peers: [`Self::state`] is
+    /// [`CollaborationState::Ready`].
     pub fn is_connected(&self) -> bool {
         match &self.backend {
-            Backend::Disabled => false,
-            Backend::Transport(transport) => transport.status().is_open(),
+            Backend::Disabled(_) => false,
+            Backend::Transport(transport) => !self.awaiting_primary && transport.status().is_open(),
         }
     }
 
     /// Submit one command, reporting whether the transport admitted it.
     fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
         match &mut self.backend {
-            Backend::Disabled => Err(TransportError::Closed),
+            Backend::Disabled(_) => Err(TransportError::Closed),
             Backend::Transport(transport) => transport.submit(command),
         }
     }
@@ -877,6 +987,11 @@ impl CollaborationManager {
     /// disconnects the manager, so callers never continue under the illusion
     /// it was sent. Document mutations never disconnect: see
     /// [`Self::try_send`] for why one was not sent.
+    ///
+    /// While the manager is [`CollaborationState::Connecting`] only a
+    /// `Hello` is accepted: there is no acknowledged primary route to carry
+    /// anything else, so other requests return `false` exactly as they do
+    /// offline. Owners re-publish their state once the manager is ready.
     pub fn send(&mut self, req: CollabRequest) -> bool {
         self.try_send(req).is_ok()
     }
@@ -889,23 +1004,35 @@ impl CollaborationManager {
     ///
     /// # Errors
     ///
-    /// Returns [`CollabSendError`] when the request was not queued.
+    /// Returns [`CollabSendError`] when the request was not queued, and
+    /// [`CollabSendError::Unavailable`] for anything but a `Hello` while the
+    /// manager is still connecting.
     pub fn try_send(&mut self, req: CollabRequest) -> Result<(), CollabSendError> {
-        if let CollabRequest::Hello {
+        let CollabRequest::Hello {
             app_id,
             cluster_id,
             record,
             ..
         } = &req
-        {
-            self.primary_route.announce(RouteSpec {
-                app_id: app_id.clone(),
-                cluster_id: *cluster_id,
-                record: record.clone(),
-            });
-            self.action_directory_published = false;
+        else {
+            if self.awaiting_primary {
+                return Err(CollabSendError::Unavailable);
+            }
+            return Ok(self.submit(TransportCommand::Primary(req))?);
+        };
+        self.primary_route.announce(RouteSpec {
+            app_id: app_id.clone(),
+            cluster_id: *cluster_id,
+            record: record.clone(),
+        });
+        self.action_directory_published = false;
+        self.submit(TransportCommand::Primary(req))?;
+        if self.awaiting_primary {
+            // The pending acknowledgement answers the previous Hello; ask
+            // again, behind this one.
+            self.confirm_primary_route_in_background();
         }
-        Ok(self.submit(TransportCommand::Primary(req))?)
+        Ok(())
     }
 
     /// Ask the transport for a completion receipt covering every document
@@ -921,7 +1048,7 @@ impl CollaborationManager {
         &mut self,
     ) -> Result<DocumentPublicationReceipt, DocumentPublicationError> {
         match &mut self.backend {
-            Backend::Disabled => Err(DocumentPublicationError::Unavailable),
+            Backend::Disabled(_) => Err(DocumentPublicationError::Unavailable),
             Backend::Transport(transport) => transport.publication_barrier(),
         }
     }
@@ -930,7 +1057,9 @@ impl CollaborationManager {
     /// Re-registering is harmless: the broker atomically replaces the old
     /// capability for this live connection.
     pub fn publish_action_directory(&mut self, app_id: impl Into<String>) {
-        if matches!(self.backend, Backend::Disabled) || self.action_directory_published {
+        // The directory rides the primary route, so it waits for the route's
+        // acknowledgement; the owner publishes again once the manager is ready.
+        if !self.is_connected() || self.action_directory_published {
             return;
         }
         if self
@@ -984,6 +1113,11 @@ impl CollaborationManager {
         if group.channel_id() != expected {
             return Err("MLS group does not belong to the requested document route".into());
         }
+        if self.awaiting_primary {
+            // The worker answers only after connecting; waiting here would
+            // stall the owner thread for as long as the connection takes.
+            return Err("collaboration is still connecting".into());
+        }
         let Backend::Transport(transport) = &mut self.backend else {
             return Err("collaboration broker is unavailable".into());
         };
@@ -1006,6 +1140,9 @@ impl CollaborationManager {
     /// Publish on an explicitly named additional route. The route is joined
     /// lazily and retained, and its inbound streams feed this manager's normal
     /// [`Self::poll`] queue.
+    ///
+    /// Like [`Self::send`], this sends nothing while the manager is still
+    /// connecting.
     pub fn send_to_route(&mut self, route: RouteSpec, req: CollabRequest) {
         let _ = self.try_send_to_route(route, req);
     }
@@ -1024,6 +1161,9 @@ impl CollaborationManager {
             tracing::warn!("collab: send_to_route ignores Hello; use join_route");
             return Err(CollabSendError::Unavailable);
         }
+        if self.awaiting_primary {
+            return Err(CollabSendError::Unavailable);
+        }
         Ok(self.submit(TransportCommand::ToRoute(route, req))?)
     }
 
@@ -1031,14 +1171,29 @@ impl CollaborationManager {
     ///
     /// Also records a primary-route acknowledgement the transport reported
     /// since the last poll.
+    ///
+    /// While the manager is [`CollaborationState::Connecting`], this is also
+    /// where it settles: a primary-route acknowledgement makes it ready; a
+    /// refusal or a closed connection takes it offline.
     pub fn poll(&mut self) -> Vec<CollabEvent> {
         let mut events = Vec::new();
-        if let Backend::Transport(transport) = &mut self.backend {
-            transport.drain(&mut events);
-            if let Some(result) = transport.take_primary_route_result()
-                && let Err(error) = self.primary_route.accept(result)
-            {
+        let Backend::Transport(transport) = &mut self.backend else {
+            return events;
+        };
+        transport.drain(&mut events);
+        let acknowledged = transport.take_primary_route_result().map(|result| {
+            let outcome = self.primary_route.accept(result);
+            if let Err(error) = &outcome {
                 tracing::warn!(%error, "collab: primary route was not acknowledged");
+            }
+            outcome
+        });
+        if self.awaiting_primary {
+            match (acknowledged, transport.status()) {
+                (Some(Ok(())), _) => self.awaiting_primary = false,
+                (Some(Err(error)), _) => self.go_offline(error),
+                (None, TransportStatus::Closed(reason)) => self.go_offline(reason),
+                (None, _) => {}
             }
         }
         events

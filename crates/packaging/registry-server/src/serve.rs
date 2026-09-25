@@ -93,19 +93,26 @@ pub async fn handle(
             &serde_json::json!({"ok": true}),
         )),
         (Method::GET, "/registry") => handle_get_registry(&state),
-        (Method::GET, "/entries") => handle_get_entries(&state),
+        (Method::GET, "/entries") => read_file(&state, handle_get_entries).await,
         (Method::GET, p) if p.starts_with("/entries/") => {
-            let id = p.trim_start_matches("/entries/");
-            handle_get_entry(&state, id)
+            let id = p.trim_start_matches("/entries/").to_owned();
+            read_file(&state, move |state| handle_get_entry(state, &id)).await
         }
         (Method::POST, "/entries") => handle_post_entries(&state, req).await,
         (Method::POST, "/moderation/mutations") => handle_post_moderation(&state, req).await,
-        (Method::GET, p) if p.starts_with("/moderation/cases/") => Ok(handle_get_moderation_case(
-            &state,
-            p.trim_start_matches("/moderation/cases/"),
-        )),
+        (Method::GET, p) if p.starts_with("/moderation/cases/") => {
+            let case_id = p.trim_start_matches("/moderation/cases/").to_owned();
+            blocking(&state, move |state| {
+                Ok(handle_get_moderation_case(state, &case_id))
+            })
+            .await
+        }
         (Method::GET, "/moderation/transparency") => {
-            Ok(handle_get_transparency(&state, req.uri().query()))
+            let query = req.uri().query().map(str::to_owned);
+            blocking(&state, move |state| {
+                Ok(handle_get_transparency(state, query.as_deref()))
+            })
+            .await
         }
         _ => Ok(text_response(StatusCode::NOT_FOUND, "not found")),
     };
@@ -120,6 +127,31 @@ pub async fn handle(
             ))
         }
     }
+}
+
+/// Run a handler step that reads whole storage files on the I/O pool, off
+/// the async workers.
+async fn read_file<F>(state: &AppState, op: F) -> Result<Response<Full<Bytes>>, HandlerError>
+where
+    F: FnOnce(&AppState) -> Result<Response<Full<Bytes>>, HandlerError> + Send + 'static,
+{
+    let state = state.clone();
+    tilo_rt::io::run(move || Ok(op(&state)))
+        .await
+        .map_err(HandlerError::Blocking)?
+}
+
+/// Run a handler step with other blocking storage work — directory scans,
+/// and mutations that wait on the registry lock — on the runtime's blocking
+/// pool, off the async workers.
+async fn blocking<F>(state: &AppState, op: F) -> Result<Response<Full<Bytes>>, HandlerError>
+where
+    F: FnOnce(&AppState) -> Result<Response<Full<Bytes>>, HandlerError> + Send + 'static,
+{
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || op(&state))
+        .await
+        .map_err(|error| HandlerError::Blocking(std::io::Error::other(error.to_string())))?
 }
 
 async fn handle_post_moderation(
@@ -149,6 +181,13 @@ async fn handle_post_moderation(
             ));
         }
     };
+    blocking(state, move |state| apply_moderation(state, &request)).await
+}
+
+fn apply_moderation(
+    state: &AppState,
+    request: &SignedModerationMutation,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
     let allowlist = state
         .inner
         .storage
@@ -158,7 +197,7 @@ async fn handle_post_moderation(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    match state.inner.moderation_api.apply(&request, now, &allowlist) {
+    match state.inner.moderation_api.apply(request, now, &allowlist) {
         Ok(case) => Ok(json_response(StatusCode::OK, &case)),
         Err(error) => Ok(moderation_error_response(&error)),
     }
@@ -331,6 +370,14 @@ async fn handle_post_entries(
         }
     };
 
+    blocking(state, move |state| verify_and_apply_change(state, change)).await
+}
+
+/// Verify a parsed change request against the allowlist and apply it.
+fn verify_and_apply_change(
+    state: &AppState,
+    change: EntryChangeRequest,
+) -> Result<Response<Full<Bytes>>, HandlerError> {
     let allow_snapshot = state
         .inner
         .storage
@@ -363,7 +410,7 @@ async fn handle_post_entries(
 }
 
 /// Apply a verified change request. Returns the resulting HTTP
-/// response so [`handle_post_entries`] just forwards.
+/// response so [`verify_and_apply_change`] just forwards.
 fn apply_change(
     state: &AppState,
     change: EntryChangeRequest,
@@ -468,6 +515,8 @@ enum HandlerError {
     Body(String),
     #[error("storage: {0}")]
     Storage(StorageError),
+    #[error("blocking storage task: {0}")]
+    Blocking(std::io::Error),
     #[error("moderation: {0}")]
     Moderation(ModerationError),
 }

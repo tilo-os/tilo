@@ -25,9 +25,8 @@
 //! Writes go through atomic rename (`.tmp` → target path) so a
 //! crash mid-write cannot leave a torn file.
 //!
-//! The store is read-locked with `tokio::sync::RwLock` at the
-//! server layer; this module owns no concurrency — it's a thin
-//! path/serde wrapper.
+//! Every call here is blocking std I/O; the HTTP layer runs them off
+//! the async workers. Mutations serialize through [`SnapshotLock`].
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
