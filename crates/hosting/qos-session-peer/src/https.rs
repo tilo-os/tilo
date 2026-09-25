@@ -635,10 +635,11 @@ pub(crate) fn ingress_channel() -> (Ingress, IngressReceiver) {
     try_ingress_channel().expect("test ingress inventory allocation")
 }
 impl IngressReceiver {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "media"))]
     pub(crate) fn idle_available_bytes(&self) -> usize {
         self.initial_bytes
     }
+    #[cfg(feature = "media")]
     pub(crate) fn host_bytes(&self) -> HostBytes {
         self.bytes.clone()
     }
