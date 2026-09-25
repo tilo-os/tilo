@@ -399,6 +399,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn surface<S: ResourceSurface<R> + 'static>(&self, mut surface: S) -> Element {
         surface.attach(SurfaceCx {
             dispatch: self.dispatch.clone(),
+            live: self.live.clone(),
         });
         surface.present(&self.live.get());
         Box::new(SurfaceHost::new(
