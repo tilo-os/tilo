@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
-use tilo_resource::{ActionCx, Collection, Id, Model, Replica, Resource, resource};
+use tilo_resource::{ActionCx, Collection, Id, Invoke, Model, Replica, Resource, resource};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {
@@ -227,4 +227,39 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
         out
     })
+}
+
+#[test]
+fn a_group_is_one_change_that_replays_exactly() {
+    let mut first = Replica::<Board>::new();
+    let mut second = first.fork();
+    let before = first.versions().len();
+    first
+        .apply(Invoke::group([
+            Board::ADD_CARD.with("milk".into()),
+            Board::ADD_CARD.with("milk".into()),
+            Board::RENAME.with("Shopping".into()),
+        ]))
+        .unwrap();
+    let state = first.state().unwrap();
+    assert_eq!(state.cards.len(), 2, "each member mints its own id");
+    assert_eq!(state.title, "Shopping");
+    assert_eq!(first.versions().len(), before + 1, "one change");
+    for envelope in first.log().to_vec() {
+        second.replay(&envelope).unwrap();
+    }
+    assert_eq!(first.heads(), second.heads());
+    assert_eq!(second.state().unwrap(), state);
+
+    // A member that refuses refuses the whole group.
+    let missing = Id::from_raw("missing");
+    assert!(
+        first
+            .apply(Invoke::group([
+                Board::ADD_CARD.with("eggs".into()),
+                Board::ADVANCE.with(missing),
+            ]))
+            .is_err()
+    );
+    assert_eq!(first.state().unwrap(), state);
 }
