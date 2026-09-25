@@ -784,9 +784,9 @@ impl ChatApp {
         let radius = 16.0;
 
         // A real decoded screen frame from the sharer takes over the tile. This
-        // slot is only ever filled by the live media pump with a genuinely
-        // decoded frame, so when present it is an honest live view of the shared
-        // screen; otherwise we fall through to the drawn placeholder.
+        // slot only ever holds a genuinely decoded frame (the native voice path
+        // carries no video today, so it stays empty); otherwise we fall
+        // through to the drawn placeholder.
         if let Some(img) = self.remote_screens.get(sharer) {
             fill_round(scene, tf, rect, radius, Color::from_rgba8(0, 0, 0, 255));
             ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
@@ -1201,9 +1201,9 @@ impl ChatApp {
         let u = self.user(&p.user);
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         // A real decoded camera/screen frame from this peer takes over the tile.
-        // This is only ever populated by the live media pump with a genuinely
-        // decoded frame — never a fabricated picture — so when present it is an
-        // honest live feed; otherwise we fall through to the avatar placeholder.
+        // This only ever holds a genuinely decoded frame — never a fabricated
+        // picture (the native voice path carries no video today, so it stays
+        // empty); otherwise we fall through to the avatar placeholder.
         if let Some(img) = self.remote_frames.get(&p.user) {
             ui::image_store::paint_image_cover(scene, tf, rect, img, 14.0);
             if p.talking {

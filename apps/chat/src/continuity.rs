@@ -224,17 +224,6 @@ impl ChatApp {
         self.realtime.target_media_ready = true;
     }
 
-    /// The target could not re-establish the offered media: leave the call and
-    /// tell the broker, so the source call stays live.
-    pub(crate) fn fail_realtime_target(&mut self, session: String) {
-        self.call.leave();
-        let request = self
-            .realtime
-            .request(ui::realtime_continuity::RealtimeCommand::TargetFailed { session });
-        self.realtime.requests.push(request);
-        self.realtime.offer = None;
-    }
-
     pub(crate) fn apply_realtime_stop(&mut self, _doc: &mut AutoCommit) {
         if self.realtime.stop_source.take().is_none() || !self.call.active {
             return;

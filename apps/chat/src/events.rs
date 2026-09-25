@@ -325,8 +325,6 @@ impl ChatApp {
                     hit,
                     Hit::CallParticipantsToggle
                         | Hit::CallMute
-                        | Hit::CallDeafen
-                        | Hit::CallAudioOnly
                         | Hit::CallShareScreen
                         | Hit::CallExpand
                         | Hit::CallLeave
@@ -820,7 +818,7 @@ impl ChatApp {
                     self.media_error = Some(error);
                 }
             }
-            Hit::CallDeafen | Hit::CallAudioOnly | Hit::CallShareScreen => {
+            Hit::CallShareScreen => {
                 self.media_error = Some("This call supports microphone audio only".into());
             }
             Hit::CallExpand => {
@@ -1002,24 +1000,6 @@ impl ChatApp {
         if let Err(error) = self.native_voice_command(&channel, ui::native_media::Command::Leave) {
             self.media_error = Some(error);
         }
-    }
-
-    /// Mirror this peer's screen-share state into the shared voice membership.
-    pub(crate) fn sync_local_sharing(&mut self, doc: &mut AutoCommit) {
-        if !self.call.active {
-            return;
-        }
-        let ch = self.call.channel.clone();
-        let sharing = self.call.sharing;
-        let me = self.me.id.clone();
-        self.perform_action(
-            doc,
-            &actions::ChatAction::SetScreenShare {
-                channel: ch,
-                user: me,
-                sharing,
-            },
-        );
     }
 
     // --- structure CRUD ---------------------------------------------------
@@ -3644,11 +3624,6 @@ mod tests {
             0,
             "no mute control outside a call"
         );
-        assert_eq!(
-            count_hits(&app, |h| matches!(h, Hit::CallDeafen)),
-            0,
-            "no deafen control outside a call"
-        );
         // Join a call → the sidebar identity bar now offers real toggles.
         app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
         assert!(app.call.active);
@@ -3698,7 +3673,7 @@ mod tests {
         })
     }
     #[test]
-    fn voice_profile_rejects_screen_camera_and_deafen_even_with_a_portal_source() {
+    fn voice_profile_rejects_screen_share_even_with_a_portal_source() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
         let before = doc.save();
@@ -3707,11 +3682,9 @@ mod tests {
         let (services, recorder) = ui::host::HostServices::recording();
         let _host = ui::host::enter(&services);
         recorder.respond_to_screen_capture(granted(42));
-        for hit in [Hit::CallShareScreen, Hit::CallAudioOnly, Hit::CallDeafen] {
-            app.on_hit(hit, &mut doc);
-            assert!(!app.sharing_screen() && app.call.audio_only && !app.call.deafened);
-            assert!(app.media_error.is_some());
-        }
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen() && app.call.audio_only && !app.call.deafened);
+        assert!(app.media_error.is_some());
         assert!(
             recorder.screen_capture_requests().is_empty(),
             "a voice-only call never asks the host for a screen source"
@@ -3732,10 +3705,11 @@ mod tests {
             ),
         );
         let (_, controls) = app.overlay_controls_layout();
-        assert!(controls.iter().all(|(_, _, _, _, hit, _)| !matches!(
-            hit,
-            Hit::CallShareScreen | Hit::CallAudioOnly | Hit::CallDeafen
-        )));
+        assert!(
+            controls
+                .iter()
+                .all(|(_, _, _, _, hit, _)| !matches!(hit, Hit::CallShareScreen))
+        );
         app.on_hit(Hit::CallShareScreen, &mut doc);
         assert!(!app.sharing_screen());
         app.on_hit(Hit::CallLeave, &mut doc);

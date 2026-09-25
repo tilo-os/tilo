@@ -79,8 +79,6 @@ pub mod render_chat;
 pub mod responsive;
 pub mod search_provider;
 pub mod storage;
-#[cfg(feature = "live-media")]
-pub mod video;
 
 pub use app::ChatApp;
 

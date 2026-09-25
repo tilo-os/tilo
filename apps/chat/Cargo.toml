@@ -15,22 +15,18 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The default app includes the real-time media engine. Shots and tests use the
-# simulated engine and do not start an iroh endpoint or ScreenCast portal.
+# The default app includes the legacy diagnostic media engine. Shots and tests
+# use the simulated engine and do not start an iroh endpoint.
 default = ["live-media"]
-# Voice, camera, and screen sharing use iroh QUIC, GStreamer capture/playback,
-# `tilo-callstream`, and the ScreenCast portal. This is a default feature for
-# the shipped app; disable default features only for explicitly media-free
-# builds and hermetic tests.
+# Calls themselves run through the shell's native voice service
+# (`ui::native_media`). This feature only adds the legacy custom-Iroh media
+# transport and the device-free Opus codec diagnostics. Disable default
+# features for explicitly media-free builds and hermetic tests.
 live-media = [
     "media/voice",
-    "dep:gstreamer",
-    "dep:gstreamer-app",
     "dep:iroh",
     "dep:tokio",
     "dep:wire-frame",
-    "dep:tilo-callstream",
-    "ui/portal",
 ]
 
 [dependencies]
@@ -61,15 +57,12 @@ xdg-paths = { path = "../../crates/system/xdg-paths" }
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
-# Live-media dependencies. Versions match the workspace media, transport, and
-# portal stacks to avoid duplicate copies.
-gstreamer = { workspace = true, optional = true }
-gstreamer-app = { workspace = true, optional = true }
+# Live-media dependencies. Versions match the workspace media and transport
+# stacks to avoid duplicate copies.
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["sync"] }
 # Length-prefixed media frames on the call stream.
 wire-frame = { path = "../../crates/system/wire-frame", optional = true, features = ["tokio"] }
-tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
