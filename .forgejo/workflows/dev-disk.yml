@@ -7,6 +7,7 @@ name: Release / Dev VM disk
 #   code.sandbox.example/qos/tilo-vm:<tag>              OCI index, one child per arch
 #   <generic packages>/tilo-vm-disk/<tag>/<disk>   qcow2 (and optional VHDX) disks
 #   <generic packages>/tilo-vm-disk/<tag>/tilo-vm-disk.json
+#   <generic packages>/tilo-vm-disk/<tag>/*direct* ARM64 direct-boot companion
 #
 # Disks are cross-workflow outputs that outlive this run, so they go to the
 # generic package registry (docs/release-pipeline.md); workflow artifacts are
@@ -204,7 +205,7 @@ jobs:
               qemu_packages=(qemu-efi-aarch64 qemu-system-arm)
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              btrfs-progs dosfstools fuse-overlayfs openssh-client podman \
+              binutils btrfs-progs dosfstools fuse-overlayfs openssh-client podman \
               jq qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
               uidmap util-linux "${qemu_packages[@]}"
           elif command -v dnf >/dev/null; then
@@ -213,14 +214,14 @@ jobs:
             else
               qemu_packages=(edk2-aarch64 qemu-system-aarch64-core)
             fi
-            sudo -n dnf install -y btrfs-progs dosfstools fuse-overlayfs \
+            sudo -n dnf install -y binutils btrfs-progs dosfstools fuse-overlayfs \
               jq openssh-clients podman qemu-img skopeo slirp4netns socat sshpass \
               sudo systemd util-linux "${qemu_packages[@]}"
           else
             echo '::error::native disk runner must provide apt-get or dnf'
             exit 1
           fi
-          command -v jq podman qemu-img "qemu-system-$ARCH" skopeo sshpass socat systemd-repart >/dev/null
+          command -v jq objcopy podman qemu-img "qemu-system-$ARCH" skopeo sshpass socat systemd-repart >/dev/null
 
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign
@@ -339,8 +340,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
+          if [[ $ARCH == aarch64 ]]; then
+            rm -rf -- "$TILO_OUTPUT/direct-boot"
+            export TILO_DEV_DIRECT_BUNDLE_DIR="$TILO_OUTPUT/direct-boot"
+          fi
           ./os/dev/build-image.sh
           test -s "$TILO_OUTPUT/qcow2/disk.qcow2"
+          if [[ $ARCH == aarch64 ]]; then
+            test -s "$TILO_OUTPUT/direct-boot/boot.json"
+          fi
 
       - name: Boot the disk and reach it over SSH
         timeout-minutes: 45
@@ -394,6 +402,7 @@ jobs:
           BASE_INDEX_DIGEST: ${{ steps.base.outputs.index-digest }}
           BASE_CHILD_DIGEST: ${{ steps.base.outputs.child-digest }}
           BASE_REPOSITORY: ${{ steps.base.outputs.repository }}
+          SOURCE_BOOT: /var/tmp/tilo-vm-disk-${{ matrix.arch }}/direct-boot
         run: |
           set -euo pipefail
           out=/var/tmp/tilo-vm-publish
@@ -420,13 +429,36 @@ jobs:
               '. + [{format:$format,file:$file,sha256:$sha256,size:$size,virtualSize:$virtual}]' \
               <<< "$disks")
           done
+          direct_boot=null
+          if [[ $ARCH == aarch64 ]]; then
+            test -s "$SOURCE_BOOT/Image" && test -s "$SOURCE_BOOT/initrd" && test -s "$SOURCE_BOOT/boot.json"
+            kernel_file="tilo-vm-$DEV_TAG-$ARCH-direct-Image"
+            initrd_file="tilo-vm-$DEV_TAG-$ARCH-direct-initrd"
+            manifest_file="tilo-vm-$DEV_TAG-$ARCH-direct-boot.json"
+            mv -- "$SOURCE_BOOT/Image" "$out/$kernel_file"
+            mv -- "$SOURCE_BOOT/initrd" "$out/$initrd_file"
+            jq --arg kernel "$kernel_file" --arg initrd "$initrd_file" \
+              '.kernel=$kernel | .initrd=$initrd' "$SOURCE_BOOT/boot.json" > "$out/$manifest_file"
+            files='[]'
+            for file in "$kernel_file" "$initrd_file" "$manifest_file"; do
+              (cd "$out" && sha256sum "$file" > "$file.sha256")
+              sha256=$(awk '{print $1}' "$out/$file.sha256")
+              size=$(stat -c %s "$out/$file")
+              files=$(jq -c --arg file "$file" --arg sha256 "$sha256" --argjson size "$size" \
+                '. + [{file:$file,sha256:$sha256,size:$size}]' <<< "$files")
+            done
+            direct_boot=$(jq -nc --arg manifest "$manifest_file" --argjson files "$files" \
+              '{manifest:$manifest,files:$files}')
+          fi
           jq -n --arg arch "$ARCH" --arg source "$SOURCE_REVISION" --arg tag "$DEV_TAG" \
             --arg image "$IMAGE_DIGEST" --arg baseIndex "$BASE_INDEX_DIGEST" \
             --arg base "$BASE_CHILD_DIGEST" --arg baseImage "$BASE_REPOSITORY" \
             --arg baseTrust "$BASE_TRUST" --argjson disks "$disks" \
+            --argjson directBoot "$direct_boot" \
             '{arch:$arch,sourceRevision:$source,tag:$tag,imageDigest:$image,
               baseImage:$baseImage,baseTrust:$baseTrust,
-              baseIndexDigest:$baseIndex,baseDigest:$base,disks:$disks}' \
+              baseIndexDigest:$baseIndex,baseDigest:$base,disks:$disks,
+              directBoot:$directBoot}' \
             > "dev-disk-fragment/$ARCH.json"
           ls -l "$out"
           cat "dev-disk-fragment/$ARCH.json"
@@ -456,10 +488,11 @@ jobs:
           while read -r file; do
             printf '%s\t%s\n' "$out/$file" "$package_api/tilo-vm-disk/$DEV_TAG/$file" >> "$uploads"
             printf '%s\t%s\n' "$out/$file.sha256" "$package_api/tilo-vm-disk/$DEV_TAG/$file.sha256" >> "$uploads"
-          done < <(jq -r '.disks[].file' "dev-disk-fragment/$ARCH.json")
+          done < <(jq -r '.disks[].file, .directBoot.files[]?.file' "dev-disk-fragment/$ARCH.json")
           TILO_PACKAGE_UPLOAD_WORKERS=2 tools/upload_immutable_packages.sh "$uploads"
           jq --arg base "$package_api/tilo-vm-disk/$DEV_TAG" \
-            '.disks |= map(. + {url: ($base + "/" + .file)})' \
+            '.disks |= map(. + {url: ($base + "/" + .file)})
+             | if .directBoot then .directBoot.files |= map(. + {url: ($base + "/" + .file)}) else . end' \
             "dev-disk-fragment/$ARCH.json" > "dev-disk-fragment/$ARCH.json.tmp"
           mv "dev-disk-fragment/$ARCH.json.tmp" "dev-disk-fragment/$ARCH.json"
 
@@ -529,12 +562,20 @@ jobs:
                  and (map(.baseImage) | unique | length) == 1
                  and (map(.baseTrust) | unique | length) == 1
                  and (map(.imageDigest) | unique | length) == length
-                 and all(.[]; (.imageDigest | test("^sha256:[0-9a-f]{64}$"))
+                 and all(.[]; . as $lane | (.imageDigest | test("^sha256:[0-9a-f]{64}$"))
                               and (.baseDigest | test("^sha256:[0-9a-f]{64}$"))
                               and ([.disks[].format] | sort) == $formats
                               and all(.disks[]; (.sha256 | test("^[0-9a-f]{64}$"))
                                                 and (.size | type == "number" and . > 0)
-                                                and (.url | startswith("https://"))))
+                                                and (.url | startswith("https://")))
+                              and (if .arch == "aarch64" then
+                                     (.directBoot.files | length == 3)
+                                     and ([.directBoot.files[].file] | index($lane.directBoot.manifest) != null)
+                                     and all(.directBoot.files[];
+                                             (.sha256 | test("^[0-9a-f]{64}$"))
+                                             and (.size | type == "number" and . > 0)
+                                             and (.url | startswith("https://")))
+                                   else .directBoot == null end))
               then . else error("missing, extra or inconsistent architecture descriptors") end
           ' "${fragments[@]}")
 
@@ -580,6 +621,8 @@ jobs:
               baseImage: $lanes[0].baseImage,
               baseTrust: $lanes[0].baseTrust,
               baseDigest: $lanes[0].baseIndexDigest,
+              directBoot: [$lanes[] | select(.directBoot != null) |
+                {arch:.arch,manifest:.directBoot.manifest,files:.directBoot.files}],
               disks: [$lanes[] as $lane | $lane.disks[] | {
                 arch: $lane.arch,
                 format: .format,

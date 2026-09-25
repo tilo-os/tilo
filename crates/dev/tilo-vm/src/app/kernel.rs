@@ -552,6 +552,7 @@ impl App {
             kernel: kernel.display().to_string(),
             initrd: initramfs.display().to_string(),
             cmdline: cmdline.to_owned(),
+            loader_partuuid: None,
             kver: built.kver.clone(),
         };
         let (confirm, reboot_seconds) = self.redefine_and_restart(vm, Some(direct))?;
