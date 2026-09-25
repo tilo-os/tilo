@@ -15,6 +15,7 @@
 //! replica, so the change hash is content-addressed identical everywhere.
 
 use automerge::transaction::{CommitOptions, Transactable};
+use tilo_automerge::ApplyIncoming;
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
 use crate::context::ActionContext;
@@ -226,7 +227,7 @@ pub fn replay(
     // transport can retry once it has the missing base changes.
     let mut replay_base = doc.fork_at(&base_heads)?;
     apply_under_envelope(&mut replay_base, action.as_ref(), env)?;
-    doc.merge(&mut replay_base)?;
+    doc.merge_incoming(&mut replay_base)?;
     Ok(())
 }
 

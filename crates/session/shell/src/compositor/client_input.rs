@@ -1740,7 +1740,7 @@ mod tests {
         );
         let moved = WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(1210.0, 109.0),
+            position: winit::dpi::PhysicalPosition::new(1210.0, 70.0),
         };
 
         assert!(
@@ -1749,7 +1749,7 @@ mod tests {
         );
         assert_eq!(
             fb.host().pointer_position(),
-            Some(vello::kurbo::Point::new(1210.0, 109.0)),
+            Some(vello::kurbo::Point::new(1210.0, 70.0)),
         );
         assert!(chrome_captures_input(&fb));
     }

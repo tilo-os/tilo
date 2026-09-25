@@ -361,6 +361,7 @@ impl EditorDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn project_identity_persists_and_does_not_collide() {
@@ -455,7 +456,7 @@ mod tests {
         EditorDoc::splice(&mut b, &tb, 0, 0, "// head\n");
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         let merged = a.text(&t).unwrap();
         assert!(merged.contains("// head"));
         assert!(merged.contains("// tail"));

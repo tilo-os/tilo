@@ -39,6 +39,7 @@ blake3.workspace = true
 getrandom.workspace = true
 rand_core.workspace = true
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

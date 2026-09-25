@@ -13,8 +13,9 @@ fn with_sample() -> HeadlessApp<VideoEditor> {
     let mut app = HeadlessApp::<VideoEditor>::new().unwrap();
     // The demo project goes in through the generic typed `apply` action — the
     // same door a script or an agent would use to submit a whole edit.
+    // Replacing the whole project is destructive, so it is confirmed.
     let invoke = Invoke::<VideoProject>::apply(&load_project_action(&sample_project())).unwrap();
-    app.invoke(invoke).unwrap();
+    app.invoke_confirmed(invoke).unwrap();
     app
 }
 
@@ -86,7 +87,7 @@ fn named_declarations_are_offered_to_the_palette_and_agents() {
 fn a_viewer_sees_the_timeline_but_cannot_change_it() {
     let mut app = HeadlessApp::<VideoEditor>::with_role(ui::Role::Viewer).unwrap();
     let invoke = Invoke::<VideoProject>::apply(&load_project_action(&sample_project())).unwrap();
-    assert!(app.invoke(invoke).is_err());
+    assert!(app.invoke_confirmed(invoke).is_err());
     app.harness().click_named("video_editor_root").unwrap();
     app.harness().key("m");
     assert!(app.state().markers.is_empty());
@@ -115,5 +116,48 @@ fn existing_actions_replay_byte_identically_through_the_resource_contract() {
     assert_eq!(
         peer.state().unwrap().clips.len(),
         sample_project().clips.len() - 1
+    );
+}
+
+fn typed(action: &VideoEditorAction) -> Invoke<VideoProject> {
+    Invoke::<VideoProject>::apply(action).unwrap()
+}
+
+#[test]
+fn deleting_a_clip_is_confirmed_and_trimming_one_is_not() {
+    let mut app = with_sample();
+    let clip = app.state().clips.first().cloned().unwrap();
+    let clips = app.state().clips.len();
+
+    // A trim — any edit that keeps the work — applies directly.
+    let mut trimmed = clip.clone();
+    trimmed.out_point = trimmed.in_point + (trimmed.out_point - trimmed.in_point) / 2.0;
+    app.invoke(typed(&video_editor::actions::upsert_clip_action(&trimmed)))
+        .unwrap();
+    let stored = app.state().clip(clip.id).cloned().unwrap();
+    assert!((stored.out_point - trimmed.out_point).abs() < 1e-9);
+
+    // Deleting it is destructive: refused until confirmed, like a declared
+    // destructive action.
+    let delete = typed(&video_editor::actions::delete_clip_action(&clip.id));
+    assert!(matches!(
+        app.invoke(delete.clone()),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(app.state().clips.len(), clips, "nothing was deleted");
+    app.invoke_confirmed(delete).unwrap();
+    assert_eq!(app.state().clips.len(), clips - 1);
+}
+
+#[test]
+fn a_delete_key_on_the_surface_waits_for_confirmation() {
+    let mut app = with_sample();
+    let clips = app.state().clips.len();
+    app.harness().click_named("video_editor_root").unwrap();
+    app.harness().key("Delete");
+    assert_eq!(
+        app.state().clips.len(),
+        clips,
+        "the surface's delete is held for the host's confirmation"
     );
 }

@@ -33,6 +33,8 @@ KERNEL_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-kernel@sha256:([0-9a-f]{64
 RPMS_REF = re.compile(r"^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 WPE_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
+KERNEL_BUILDROOT_REF = re.compile(
+    r"^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
 TOKEN_HINT = ("set the workflow's FORGEJO_TOKEN to secrets.RELEASE_TOKEN, a token "
@@ -72,6 +74,17 @@ def wpe_contents(x86_ref: str, arm_ref: str) -> str:
         "# Updated atomically by snapshot-wpe-buildroot.yml after both native builds verify.",
         f"WPE_BUILDROOT_X86_64_REF={x86_ref}",
         f"WPE_BUILDROOT_AARCH64_REF={arm_ref}",
+        "",
+    ))
+
+
+def kernel_buildroot_contents(x86_ref: str, arm_ref: str) -> str:
+    """Return the canonical os/kernel-buildroot-snapshot.env for both buildroots."""
+    return "\n".join((
+        "# Per-architecture Tilo kernel buildroots, signed and pinned by digest.",
+        "# Updated atomically by snapshot-kernel-buildroot.yml after both native builds verify.",
+        f"KERNEL_BUILDROOT_X86_64_REF={x86_ref}",
+        f"KERNEL_BUILDROOT_AARCH64_REF={arm_ref}",
         "",
     ))
 
@@ -125,6 +138,26 @@ def wpe_snapshot(args, parser) -> tuple[str, dict]:
     }
 
 
+def kernel_buildroot_snapshot(args, parser) -> tuple[str, dict]:
+    x86 = KERNEL_BUILDROOT_REF.fullmatch(args.x86_ref)
+    arm = KERNEL_BUILDROOT_REF.fullmatch(args.arm_ref)
+    if x86 is None or arm is None:
+        parser.error("kernel buildroot refs must be immutable tilo-kernel-buildroot sha256 references")
+    if x86.group(1) == arm.group(1):
+        parser.error("native kernel buildroot refs must have distinct digests")
+    return kernel_buildroot_contents(args.x86_ref, args.arm_ref), {
+        "label": "Kernel buildroot",
+        "branch_prefix": "automation/kernel-buildroot-snapshot-",
+        "title": "build(os): refresh native kernel buildroot snapshots",
+        "summary": ("Automated atomic promotion of the signed native x86-64 and "
+                    "ARM64 kernel buildroots, each audited for its architecture, "
+                    "base, signature-checked kernel SRPM and the absence of "
+                    "Fedora repositories.\n\n"
+                    "After this merges, build-kernel.yml rebuilds both native "
+                    "kernels on these buildroots."),
+    }
+
+
 def request(server: str, repository: str, token: str, path: str,
             method: str = "GET", payload: dict | None = None):
     url = f"{server.rstrip('/')}/api/v1/repos/{repository}{path}"
@@ -169,6 +202,8 @@ def promote() -> int:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--snapshot-digest", required=True)
+    parser.add_argument("--supersede", action="append", default=[], metavar="BRANCH",
+                        help="close the open pin pull request from this older automation branch")
     kinds = parser.add_subparsers(dest="kind", required=True)
     kernel = kinds.add_parser("kernel", help="both native kernel RPM repositories")
     kernel.add_argument("--x86-ref", required=True)
@@ -180,6 +215,10 @@ def promote() -> int:
     wpe.add_argument("--x86-ref", required=True)
     wpe.add_argument("--arm-ref", required=True)
     wpe.set_defaults(snapshot=wpe_snapshot)
+    buildroot = kinds.add_parser("kernel-buildroot", help="both native kernel buildroots")
+    buildroot.add_argument("--x86-ref", required=True)
+    buildroot.add_argument("--arm-ref", required=True)
+    buildroot.set_defaults(snapshot=kernel_buildroot_snapshot)
     args = parser.parse_args()
 
     token = os.environ.get("FORGEJO_TOKEN", "")
@@ -223,7 +262,30 @@ def promote() -> int:
     if not isinstance(url, str) or not isinstance(number, int):
         raise PromotionError("Forgejo returned an invalid pull-request record")
     print(f"{kind['label']} snapshot promotion PR #{number}: {url}")
+    for branch in args.supersede:
+        close_superseded(args.server, args.repository, token, branch, number)
     return 0
+
+
+def close_superseded(server: str, repository: str, token: str, branch: str, keep: int) -> None:
+    """Close an open pin pull request that the new one replaces.
+
+    Best effort: the new pull request already exists, and a superseded one
+    left open only conflicts with it once either merges.
+    """
+    if not branch.startswith("automation/"):
+        raise PromotionError(f"refusing to supersede non-automation branch {branch}")
+    try:
+        pull = find_open(server, repository, token, branch)
+        if pull is None or pull.get("number") == keep:
+            return
+        request(server, repository, token, f"/pulls/{pull['number']}", "PATCH",
+                {"state": "closed"})
+    except (PromotionError, urllib.error.HTTPError, KeyError) as error:
+        print(f"::warning::could not close superseded pin PR for {branch}: {error}",
+              file=sys.stderr)
+        return
+    print(f"Closed superseded snapshot PR #{pull['number']} ({branch})")
 
 
 def main() -> int:

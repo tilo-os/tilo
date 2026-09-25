@@ -1374,6 +1374,7 @@ fn block_kind_value(doc: &AutoCommit, block: &ObjId) -> Option<String> {
 mod tests {
     use super::*;
     use crate::model::PageMeta;
+    use tilo_automerge::ApplyIncoming;
     use uuid::Uuid;
 
     #[test]
@@ -1488,7 +1489,7 @@ mod tests {
 
         // A pulls B's new page back.
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
 
         let titles: Vec<_> = NotesDoc::list_pages(&a)
             .into_iter()
@@ -1693,7 +1694,7 @@ mod tests {
         )
         .unwrap();
         let mut merged_peer = AutoCommit::load(&peer.save()).unwrap();
-        doc.merge(&mut merged_peer).unwrap();
+        doc.merge_incoming(&mut merged_peer).unwrap();
         assert!(
             NotesDoc::page_block_marks(&doc, page)[0]
                 .1

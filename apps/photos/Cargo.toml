@@ -29,6 +29,7 @@ tilo-vision = { path = "../../crates/media/vision" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true

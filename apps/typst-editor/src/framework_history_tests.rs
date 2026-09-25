@@ -1,3 +1,5 @@
+use tilo_automerge::ApplyIncoming;
+
 include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 fn malformed_fixture(doc: &mut AutoCommit) {
     doc.put(ROOT, "source", false).unwrap();
@@ -37,7 +39,7 @@ fn production_library_persisted_restore_and_fresh_reopen() {
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.typst-editor").unwrap();
         if stage == "write" {
             let (mut doc, selected, _) = fixture();
-            state.doc.merge(&mut doc).unwrap();
+            state.doc.merge_incoming(&mut doc).unwrap();
             state.doc.get_heads();
             saver.request(&mut state.doc);
             saver.try_flush().unwrap();

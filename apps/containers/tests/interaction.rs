@@ -20,6 +20,7 @@
 )]
 
 use std::collections::HashMap;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 use containers::app::ContainersApp;
@@ -452,7 +453,7 @@ fn create_field_ime_commit_replicates_as_crdt_text() {
         ViewDoc::create_field(&mut d.doc, CreateField::Image),
         "接続"
     );
-    peer.merge(&mut d.doc).expect("peer merge");
+    peer.merge_incoming(&mut d.doc).expect("peer merge");
     assert_eq!(
         ViewDoc::create_field(&mut peer, CreateField::Image),
         "接続",

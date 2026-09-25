@@ -30,6 +30,9 @@ fn krate() -> Tokens {
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; `Default::default()` on read).
+///
+/// A struct's `Model::SHAPE` lists its stored fields, so layout-aware services
+/// (History restore) reconcile it field by field.
 #[proc_macro_derive(Model, attributes(model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -79,6 +82,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let mut missing = Vec::new();
                 let mut writes = Vec::new();
                 let mut texts = Vec::new();
+                let mut shapes = Vec::new();
                 for field in &fields.named {
                     let ident = field.ident.as_ref().ok_or_else(|| {
                         syn::Error::new(field.span(), "named field without a name")
@@ -97,9 +101,15 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     ));
                     writes.push(quote!(#krate::write_key::<#ty>(doc, obj, #key, &self.#ident)?;));
                     texts.push(quote!(#krate::Model::collect_text(&self.#ident, out);));
+                    shapes.push(quote!(#krate::FieldShape {
+                        key: #key,
+                        shape: <#ty as #krate::Model>::SHAPE,
+                    }));
                 }
                 Ok(quote! {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+                        const SHAPE: #krate::Shape = #krate::Shape::Record(&[#(#shapes),*]);
+
                         fn load(
                             doc: &#krate::Doc,
                             value: &#krate::__private::Value<'_>,
@@ -156,6 +166,8 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     .ok_or_else(|| syn::Error::new(fields.span(), "expected one field"))?;
                 Ok(quote! {
                     impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+                        const SHAPE: #krate::Shape = <#ty as #krate::Model>::SHAPE;
+
                         fn load(
                             doc: &#krate::Doc,
                             value: &#krate::__private::Value<'_>,
@@ -457,7 +469,10 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `ActionRef` views bind controls to and tests apply) and `impl Resource`.
 /// An action method takes `&mut self`, optionally `cx: &mut ActionCx`, then
 /// its parameters, and returns `()` or `Result<(), impl Into<Refusal>>`.
-/// Options: `#[action(label = "...", permission = "comment", destructive)]`;
+/// Options: `#[action(label = "...", permission = "comment", destructive)]`
+/// (`destructive` applies both to the named declaration and to the same
+/// operation reached through the generic `apply` action, so either path asks
+/// for the same confirmation);
 /// `#[resource(search = path, children = path)]` override search entries and
 /// nested resources.
 #[proc_macro_attribute]
@@ -488,6 +503,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
     let mut variants = Vec::new();
     let mut arms = Vec::new();
+    let mut risks = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
 
@@ -608,6 +624,11 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                 record.#method_ident(#cx_arg #(#call_args,)*)
             ),
         });
+        if action.destructive {
+            risks.push(quote! {
+                Self::#variant { .. } => #krate::__private::RiskLevel::Destructive,
+            });
+        }
         let const_ident = format_ident!("{}", method_name.to_uppercase());
         let param_names: Vec<String> = field_idents.iter().map(ToString::to_string).collect();
         let tys: Vec<&Type> = fields.iter().map(|(_, ty, _, _)| ty).collect();
@@ -694,6 +715,19 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     } else {
         quote!(record)
     };
+    let risk = if risks.is_empty() {
+        quote!()
+    } else {
+        quote! {
+            fn risk(&self) -> #krate::__private::RiskLevel {
+                #[allow(unreachable_patterns, reason = "every other operation is low risk")]
+                match self {
+                    #(#risks)*
+                    _ => #krate::__private::RiskLevel::Low,
+                }
+            }
+        }
+    };
     let body = if arms.is_empty() {
         quote!(match *self {})
     } else {
@@ -720,6 +754,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             ) -> ::core::result::Result<(), #krate::Refusal> {
                 #body
             }
+            #risk
         }
 
         impl #self_ty {
@@ -755,6 +790,10 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
 
             fn search(state: &Self) -> ::std::vec::Vec<#krate::SearchEntry> {
                 #search
+            }
+
+            fn shape() -> ::core::option::Option<#krate::Shape> {
+                ::core::option::Option::Some(<Self as #krate::Model>::SHAPE)
             }
         }
     })
