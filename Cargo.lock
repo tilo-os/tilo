@@ -492,6 +492,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "clap",
+ "clap_complete",
  "ed25519-dalek 3.0.0",
  "hex",
  "launcher",
@@ -2094,6 +2095,15 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+]
+
+[[package]]
+name = "clap_complete"
+version = "4.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3be2ad0423bdbbb0e25bc89add796f3559706d4a95e1bc98e4d9662a957b6a19"
+dependencies = [
+ "clap",
 ]
 
 [[package]]
@@ -12896,6 +12906,7 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-relay",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-startup-metrics",
  "tilo-test-env",
@@ -14266,6 +14277,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "clap_complete",
 ]
 
 [[package]]
@@ -14468,6 +14480,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-actions",
  "tilo-app-package",
+ "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-user-identity",
  "tokio",
@@ -14479,15 +14492,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-relay-client"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "ed25519-dalek 3.0.0",
+ "iroh",
+ "iroh-base",
+ "postcard",
+ "rand 0.10.1",
+ "serde",
+ "thiserror 2.0.18",
+ "tilo-relay-protocol",
+ "tilo-user-identity",
+ "tokio",
+]
+
+[[package]]
 name = "tilo-relay-protocol"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
  "blake3",
+ "ed25519-dalek 3.0.0",
  "hex",
  "iroh-base",
  "postcard",
  "serde",
+ "serde_bytes",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -15966,6 +15998,7 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
+ "strsim",
  "tempfile",
  "thiserror 2.0.18",
  "tilo-test-env",

@@ -60,10 +60,6 @@ use shortcuts::{
 #[cfg(test)]
 use std::path::PathBuf;
 
-#[cfg(test)]
-#[path = "../../../tests/support/offscreen.rs"]
-mod overlay_test_offscreen;
-
 use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
@@ -27967,9 +27963,9 @@ mod overlay_event_absorb_tests {
     //! overlay must short-circuit rather than leak to the content widget
     //! underneath. The test runs `host.handle_event` with a
     //! [`RecordingContent`] sink.
-    use super::overlay_test_offscreen as offscreen;
     use super::*;
     use crate::shell::chrome_state::ChromeState;
+    use crate::shell::osd::review_offscreen as offscreen;
     use crate::shell::state::WorkspaceTree;
     use std::cell::RefCell;
     use std::collections::HashMap as StdHashMap;
