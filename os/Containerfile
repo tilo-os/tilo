@@ -2450,7 +2450,7 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
       \( -type f -o -type l \) -delete \
     && rpm -e --nodeps libshout \
-    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay \
+    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay qatlib-service qatlib \
        | xargs -r rpm -e --nodeps \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \

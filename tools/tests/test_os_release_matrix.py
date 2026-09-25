@@ -1,8 +1,13 @@
 from pathlib import Path
+import hashlib
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
+import tarfile
 import tempfile
 import textwrap
 import unittest
@@ -239,6 +244,120 @@ class ReleaseGateTests(unittest.TestCase):
         condition = next(line for line in gate.splitlines() if "sign-target-prediction.sh" in line)
         guard = gate.splitlines()[gate.splitlines().index(condition) - 1]
         self.assertIn('[[ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ]]', guard)
+
+    def test_oci_archive_reads_select_a_tagged_descriptor(self):
+        workflow = WORKFLOW.read_text()
+        archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
+        uses = list(archive.finditer(workflow))
+        self.assertEqual(len(uses), 5)
+        for use in uses:
+            self.assertRegex(
+                workflow[use.end():use.end() + 24],
+                r"^:\$(?:source_ref|first_ref|repro_ref)\b",
+            )
+        self.assertIn("'${{ steps.build.outputs.digest }}'", workflow)
+        self.assertIn("'${{ steps.repro.outputs.digest }}'", workflow)
+        self.assertNotIn("podman load --input /var/tmp/tilo-image", workflow)
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("skopeo"), "skopeo on POSIX required")
+    def test_two_ref_archive_needs_an_explicit_source_reference(self):
+        # Buildx emits one top-level OCI index descriptor for each image tag.
+        # The selected ref must work for both inspection and copy/import.
+        first = "code.sandbox.example/qos/tilo:gen1"
+        second = "code.sandbox.example/qos/tilo:main-abcdef0"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = root / "layout"
+            layout.mkdir()
+
+            def blob(payload: bytes) -> tuple[str, int]:
+                digest = hashlib.sha256(payload).hexdigest()
+                target = layout / "blobs" / "sha256" / digest
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(payload)
+                return digest, len(payload)
+
+            def encoded(value: dict) -> bytes:
+                return json.dumps(value, separators=(",", ":")).encode()
+
+            layer_buffer = io.BytesIO()
+            with tarfile.open(fileobj=layer_buffer, mode="w"):
+                pass
+            layer_digest, layer_size = blob(layer_buffer.getvalue())
+            config_digest, config_size = blob(encoded({
+                "architecture": "arm64", "os": "linux", "config": {},
+                "rootfs": {"type": "layers", "diff_ids": [f"sha256:{layer_digest}"]},
+            }))
+            manifest_digest, manifest_size = blob(encoded({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {
+                    "mediaType": "application/vnd.oci.image.config.v1+json",
+                    "digest": f"sha256:{config_digest}", "size": config_size,
+                },
+                "layers": [{
+                    "mediaType": "application/vnd.oci.image.layer.v1.tar",
+                    "digest": f"sha256:{layer_digest}", "size": layer_size,
+                }],
+            }))
+            (layout / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}')
+            (layout / "index.json").write_bytes(encoded({
+                "schemaVersion": 2,
+                "manifests": [{
+                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                    "digest": f"sha256:{manifest_digest}", "size": manifest_size,
+                    "annotations": {
+                        "io.containerd.image.name": ref,
+                        "org.opencontainers.image.ref.name": ref.rsplit(":", 1)[1],
+                    },
+                } for ref in (first, second)],
+            }))
+            archive = root / "image.tar"
+            with tarfile.open(archive, "w") as tar:
+                for path in sorted(layout.rglob("*"), key=lambda p: (len(p.parts), p.as_posix())):
+                    if path.is_dir():
+                        entry = tarfile.TarInfo(path.relative_to(layout).as_posix() + "/")
+                        entry.type = tarfile.DIRTYPE
+                        entry.mode = 0o755
+                    else:
+                        payload = path.read_bytes()
+                        entry = tarfile.TarInfo(path.relative_to(layout).as_posix())
+                        entry.size = len(payload)
+                        entry.mode = 0o644
+                    entry.uid = os.getuid()
+                    entry.gid = os.getgid()
+                    if path.is_dir():
+                        tar.addfile(entry)
+                    else:
+                        tar.addfile(entry, io.BytesIO(payload))
+
+            ambiguous = subprocess.run(
+                ["skopeo", "inspect", "--raw", f"oci-archive:{archive}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(ambiguous.returncode, 0)
+            selector = ROOT / "os/scripts/oci-archive-ref.py"
+            chosen_ref = subprocess.check_output(
+                [sys.executable, str(selector), str(archive), first,
+                 f"sha256:{manifest_digest}"], text=True,
+            ).strip()
+            self.assertEqual(chosen_ref, "gen1")
+            wrong_digest = subprocess.run(
+                [sys.executable, str(selector), str(archive), first,
+                 f"sha256:{'0' * 64}"], capture_output=True, text=True,
+            )
+            self.assertNotEqual(wrong_digest.returncode, 0)
+            chosen = subprocess.run(
+                ["skopeo", "inspect", "--raw", f"oci-archive:{archive}:{chosen_ref}"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(chosen.returncode, 0, chosen.stderr)
+            self.assertEqual(hashlib.sha256(chosen.stdout.encode()).hexdigest(), manifest_digest)
+            subprocess.run(
+                ["skopeo", "copy", f"oci-archive:{archive}:{chosen_ref}",
+                 f"dir:{root / 'selected'}"],
+                capture_output=True, text=True, check=True,
+            )
 
 
 def concurrency_group(ref: str, event: str, requested: str) -> str:
