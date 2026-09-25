@@ -11,7 +11,9 @@ use tilo_actions::{
     ExecutionLocus, ParamType, PermissionRequirement,
 };
 
+use crate::delta::Delta;
 use crate::model::{Doc, ModelError};
+use crate::reader::Demand;
 
 /// A resource type. Implement it by hand for a type with its own storage
 /// layout and merge semantics (a timeline, a rich-text document, a photo edit
@@ -22,6 +24,12 @@ use crate::model::{Doc, ModelError};
 /// * [`read`](Self::read) — materialise the state views render, from the live
 ///   document *or* from any historical version (time travel is just `read` on
 ///   an older document);
+/// * [`refresh`](Self::refresh) — optionally, bring a state up to date after a
+///   change by re-reading only what the change touched, so an edit costs as
+///   much as the edit rather than as much as the resource;
+/// * [`load`](Self::load) — optionally, read on demand the parts of a large
+///   resource that views are looking at (the pages of a long document on
+///   screen), so opening or refreshing it never reads all of it;
 /// * [`Action`](Self::Action) — the replayable mutation vocabulary: a
 ///   serializable value whose `apply` is a pure function of the document;
 /// * [`declarations`](Self::declarations) — which mutations are offered by
@@ -47,6 +55,35 @@ pub trait Resource: Sized + 'static {
     /// # Errors
     /// Returns [`ModelError`] when the document does not hold this resource.
     fn read(doc: &Doc) -> Result<Self::State, ModelError>;
+
+    /// Bring `state`, read earlier from this document, up to date after the
+    /// changes in `delta`. Re-read only what they touched: this runs on every
+    /// keystroke, local or a collaborator's. The default reads everything
+    /// again, which is right for small resources.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold this resource.
+    fn refresh(state: &mut Self::State, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
+        if !delta.is_empty() {
+            *state = Self::read(doc)?;
+        }
+        Ok(())
+    }
+
+    /// Make sure the parts of the state views asked for are read, and drop
+    /// parts nobody asks for any more. For a resource too large to read
+    /// whole, [`read`](Self::read) reads a spine (the order of a document's
+    /// paragraphs, the rows of a sheet) and this reads the parts on screen.
+    /// Called after every read and refresh and whenever the demand changes,
+    /// so it must be cheap when everything demanded is already there. The
+    /// default reads nothing: the state is read whole.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold this resource.
+    fn load(state: &mut Self::State, doc: &Doc, demand: &Demand) -> Result<(), ModelError> {
+        let _ = (state, doc, demand);
+        Ok(())
+    }
 
     /// Write the initial content of a brand-new record.
     ///

@@ -13,6 +13,7 @@ use tilo_automerge::ApplyIncoming;
 use crate::action::Invoke;
 use crate::history::{self, Version};
 use crate::model::{Doc, ModelError};
+use crate::reader::{Demand, Reader};
 use crate::resource::{self, Resource};
 
 /// One replica of an `R` resource. See the module docs.
@@ -22,6 +23,8 @@ pub struct Replica<R: Resource> {
     log: Vec<ActionEnvelope>,
     author: Option<Vec<u8>>,
     now_ms: i64,
+    /// The incrementally maintained state views would see, once asked for.
+    reader: Option<Reader<R>>,
     marker: std::marker::PhantomData<fn() -> R>,
 }
 
@@ -60,6 +63,7 @@ impl<R: Resource> Replica<R> {
             log: Vec::new(),
             author: None,
             now_ms: 1_700_000_000_000,
+            reader: None,
             marker: std::marker::PhantomData,
         }
     }
@@ -150,6 +154,41 @@ impl<R: Resource> Replica<R> {
         R::read(&self.doc)
     }
 
+    /// The state as a view sees it: read once, then kept current by applying
+    /// only what each change touched ([`Resource::refresh`]) and reading
+    /// what is demanded ([`Resource::load`]). A test comparing it with
+    /// [`Self::state`] proves the resource's incremental reads exact.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold the resource.
+    pub fn live(&mut self) -> Result<&R::State, ModelError> {
+        if let Some(reader) = &mut self.reader {
+            reader.sync(&mut self.doc)?;
+        } else {
+            self.reader = Some(Reader::open(&mut self.doc)?);
+        }
+        match &self.reader {
+            Some(reader) => Ok(reader.state()),
+            None => Err(ModelError::invalid("no reader")),
+        }
+    }
+
+    /// Ask the view state of [`Self::live`] for the parts `demand` names.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document does not hold the resource.
+    pub fn demand(&mut self, demand: Demand) -> Result<&R::State, ModelError>
+    where
+        R::State: Clone,
+    {
+        self.live()?;
+        let Some(reader) = self.reader.as_mut() else {
+            return Err(ModelError::invalid("no reader"));
+        };
+        reader.demand(&self.doc, demand)?;
+        Ok(reader.state())
+    }
+
     /// A second replica sharing this one's history, as a collaborator who
     /// just joined would hold.
     #[must_use]
@@ -176,6 +215,12 @@ impl<R: Resource> Replica<R> {
 
     pub fn doc(&self) -> &Doc {
         &self.doc
+    }
+
+    /// The document, for a test that changes it the way something outside
+    /// the resource's actions would (a restore, a raw merge).
+    pub fn doc_mut(&mut self) -> &mut Doc {
+        &mut self.doc
     }
 
     pub fn heads(&mut self) -> Vec<ChangeHash> {
