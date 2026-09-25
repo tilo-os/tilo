@@ -46,6 +46,8 @@ pub(crate) struct ChangeGraph {
     fragments: Vec<FragmentNode>,
 }
 
+mod native_dims;
+
 pub(crate) struct ChangeGraphCols(ChangeGraph);
 
 const CACHE_STEP: u32 = 16;
