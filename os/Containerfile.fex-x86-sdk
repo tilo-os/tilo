@@ -10,6 +10,8 @@ RUN test "$(uname -m)" = x86_64 \
       glibc-devel.x86_64 glibc-devel.i686 \
       libstdc++-devel.x86_64 libstdc++-devel.i686 \
       libX11-devel.x86_64 libX11-devel.i686 \
+      libXrandr-devel.x86_64 libXrandr-devel.i686 \
+      libXrender-devel.x86_64 libXrender-devel.i686 \
       libxcb-devel.x86_64 libxcb-devel.i686 \
       mesa-libGL-devel.x86_64 mesa-libGL-devel.i686 \
       mesa-libEGL-devel.x86_64 mesa-libEGL-devel.i686 \
