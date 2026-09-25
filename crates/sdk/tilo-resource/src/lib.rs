@@ -61,7 +61,11 @@
 //!   label and time ([`history`]); any version can be read back
 //!   ([`history::read_at`]) and restored, field by field and item by item,
 //!   from the record's stored [`Shape`];
-//! * **search** — text fields are indexed by default ([`Resource::search`]).
+//! * **search** — text fields are indexed by default ([`Resource::search`]);
+//! * **incremental reads** — after a change only what it touched is read
+//!   again ([`Resource::refresh`], [`Delta`]); a record resource gets this
+//!   field by field and item by item, and a resource too large to read whole
+//!   reads what views look at ([`Resource::load`], [`Demand`]).
 //!
 //! ## Custom resource types
 //!
@@ -91,11 +95,13 @@
 
 pub mod action;
 pub mod collection;
+pub mod delta;
 pub mod group;
 pub mod history;
 pub mod items;
 pub mod model;
 pub mod order;
+pub mod reader;
 pub mod replica;
 pub mod resource;
 pub mod shape;
@@ -104,8 +110,12 @@ pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
 pub use collection::{Collection, Id};
+pub use delta::{Delta, Touch, Touched, Tracker};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
-pub use model::{Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, write_key};
+pub use model::{
+    Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
+};
+pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, build_action, encode,
