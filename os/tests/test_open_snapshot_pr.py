@@ -239,6 +239,39 @@ class RpmAndKernelSnapshotPullRequestTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(SystemExit):
                 run_main(self.argv(source=source))
 
+    def test_closes_superseded_open_pin_pulls_only(self):
+        older = "automation/rpm-snapshot-" + "1" * 16
+        gone = "automation/kernel-snapshot-" + "2" * 16
+        argv = self.argv()
+        argv[argv.index("kernel"):argv.index("kernel")] = [
+            "--supersede", older, "--supersede", gone]
+        opened = {older: {"number": 5}, gone: None, self.branch: None}
+        calls = []
+
+        def request(server, repository, token, path, method="GET", payload=None):
+            calls.append((path, method, payload))
+            return {"number": 8, "html_url": "https://forge.invalid/qos/qos/pulls/8"}
+
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
+                mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(MODULE, "find_open",
+                                  side_effect=lambda s, r, t, branch: opened[branch]), \
+                mock.patch.object(MODULE, "request", side_effect=request), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(MODULE.main(), 0)
+        self.assertEqual(calls[-1], ("/pulls/5", "PATCH", {"state": "closed"}))
+        self.assertEqual([c for c in calls if c[1] == "PATCH"], [calls[-1]])
+
+    def test_never_supersedes_a_non_automation_branch(self):
+        argv = self.argv()
+        argv[argv.index("kernel"):argv.index("kernel")] = ["--supersede", "main"]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+            result, request = run_main(argv)
+        self.assertEqual(result, 1)
+        self.assertNotIn("PATCH", [call.args[4] for call in request.call_args_list
+                                   if len(call.args) > 4])
+
     def test_rejects_digest_or_branch_not_bound_to_both_pins(self):
         kernel_only = MODULE.kernel_contents(self.x86_ref, self.arm_ref)
         kernel_digest = hashlib.sha256(kernel_only.encode()).hexdigest()
