@@ -4,10 +4,12 @@
 //! planning call. It does not include a general `LiteLLM` control plane.
 
 use std::fs;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::future::Future;
+use std::os::fd::FromRawFd;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use accounts::{AccountId, Secret, SecretVault};
@@ -15,8 +17,10 @@ use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile, P
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use tilo_model_gateway::{
-    FaceImage, Frame, RPC_VERSION, Request, Response, VisionImage, read_frame, write_frame,
+    ClientError, FaceImage, Frame, RPC_VERSION, Request, Response, VisionImage,
 };
+use tokio::net::UnixStream;
+use tokio::sync::Semaphore;
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
@@ -56,6 +60,10 @@ const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 const MAX_FACE_IMAGES: usize = 12;
 const MAX_FACE_IMAGE_BYTES: usize = 128 * 1024;
 const VISION_TIMEOUT: Duration = Duration::from_secs(45);
+/// How many clients the gateway serves at once. Its callers are a few
+/// same-user apps; past this, new connections wait in the listen backlog.
+const MAX_CLIENTS: usize = 64;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(serde::Deserialize)]
 struct Handoff {
@@ -91,18 +99,54 @@ fn control(request: Request) -> Result<(), String> {
 }
 
 fn serve(socket: &PathBuf) -> Result<(), String> {
+    // Activation is taken over before the runtime starts any thread.
     let listener = if let Some(listener) = systemd_listener(socket)? {
         listener
     } else {
         bind_listener(socket)?
     };
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => serve_client(stream),
-            Err(error) => return Err(error.to_string()),
-        }
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let http = Arc::new(provider_client()?);
+    tilo_rt::daemon("model-gateway")
+        .run(async move {
+            let listener =
+                tokio::net::UnixListener::from_std(listener).map_err(|error| error.to_string())?;
+            serve_on(listener, http, MAX_CLIENTS).await
+        })
+        .map_err(|error| error.to_string())?
+}
+
+/// The one HTTP client every provider request shares, so connections and
+/// TLS sessions to a provider are reused across requests and clients.
+fn provider_client() -> Result<reqwest::Client, String> {
+    tilo_net::http::client()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .map_err(|_| "gateway HTTP client is unavailable".to_string())
+}
+
+/// Serve clients concurrently, each as its own task, at most `limit` at
+/// once. Returns only when accepting fails.
+async fn serve_on(
+    listener: tokio::net::UnixListener,
+    http: Arc<reqwest::Client>,
+    limit: usize,
+) -> Result<(), String> {
+    let slots = Arc::new(Semaphore::new(limit.max(1)));
+    loop {
+        let slot = Arc::clone(&slots)
+            .acquire_owned()
+            .await
+            .map_err(|error| error.to_string())?;
+        let (stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
+        let http = Arc::clone(&http);
+        tokio::spawn(async move {
+            serve_client(stream, &http).await;
+            drop(slot);
+        });
     }
-    Ok(())
 }
 
 fn bind_listener(socket: &PathBuf) -> Result<UnixListener, String> {
@@ -165,27 +209,63 @@ fn systemd_listener(expected: &Path) -> Result<Option<UnixListener>, String> {
     Ok(Some(listener))
 }
 
-fn serve_client(mut stream: UnixStream) {
+async fn serve_client(mut stream: UnixStream, http: &reqwest::Client) {
     if !same_user(&stream) {
         return;
     }
-    let Ok(handoff) = read_handoff(&mut stream) else {
+    let Ok(handoff) = read_handoff(&mut stream).await else {
         return;
     };
     loop {
-        let response = match read_frame::<Frame<Request>>(&mut stream) {
-            Ok(frame) if frame.version == RPC_VERSION => handle(&handoff.app_id, frame.value),
+        let response = match read_frame::<Frame<Request>>(&mut stream).await {
+            Ok(frame) if frame.version == RPC_VERSION => {
+                handle(&handoff.app_id, frame.value, http).await
+            }
             Ok(_) => rejected("unsupported gateway RPC version"),
             Err(_) => return,
         };
-        if write_frame(&mut stream, &response).is_err() {
+        if write_frame(&mut stream, &response).await.is_err() {
             return;
         }
     }
 }
 
-fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
-    let body = match HANDOFF_FRAMING.read(stream) {
+async fn write_frame<T: serde::Serialize + Sync>(
+    stream: &mut UnixStream,
+    value: &T,
+) -> Result<(), ClientError> {
+    let body = Zeroizing::new(
+        serde_json::to_vec(value).map_err(|error| ClientError::Protocol(error.to_string()))?,
+    );
+    tilo_model_gateway::FRAMING
+        .write_async(stream, &body)
+        .await
+        .map_err(|error| match error {
+            wire_frame::FrameError::Io(_) => ClientError::Unavailable,
+            _ => ClientError::Protocol("response exceeds gateway frame limit".into()),
+        })
+}
+
+async fn read_frame<T: for<'a> serde::Deserialize<'a>>(
+    stream: &mut UnixStream,
+) -> Result<T, ClientError> {
+    let mut body = Zeroizing::new(Vec::new());
+    match tilo_model_gateway::FRAMING
+        .read_into_async(stream, &mut body)
+        .await
+    {
+        Ok(true) => {}
+        Err(wire_frame::FrameError::TooLarge(_)) => {
+            return Err(ClientError::Protocol("gateway frame exceeds limit".into()));
+        }
+        Ok(false) | Err(_) => return Err(ClientError::Unavailable),
+    }
+    serde_json::from_slice(&body)
+        .map_err(|_| ClientError::Protocol("invalid gateway request".into()))
+}
+
+async fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
+    let body = match HANDOFF_FRAMING.read_async(stream).await {
         Ok(Some(body)) => body,
         Ok(None) => return Err("missing launcher authentication".into()),
         Err(wire_frame::FrameError::TooLarge(_)) => {
@@ -205,7 +285,19 @@ fn read_handoff(stream: &mut UnixStream) -> Result<Handoff, String> {
     Ok(handoff)
 }
 
-fn handle(app_id: &str, request: Request) -> Response {
+async fn handle(app_id: &str, request: Request, http: &reqwest::Client) -> Response {
+    let output = |output| Response {
+        ok: true,
+        output: Some(output),
+        configured: None,
+        error: None,
+    };
+    let done = |()| Response {
+        ok: true,
+        output: None,
+        configured: None,
+        error: None,
+    };
     let result = match request {
         Request::Plan {
             profile_id,
@@ -213,30 +305,22 @@ fn handle(app_id: &str, request: Request) -> Response {
             body,
             timeout_ms,
         } if app_id == AGENT_APP => plan(
-            &profile_id,
-            &model_id,
+            http,
+            profile_id,
+            model_id,
             &body,
             Duration::from_millis(timeout_ms),
         )
-        .map(|output| Response {
-            ok: true,
-            output: Some(output),
-            configured: None,
-            error: None,
-        }),
+        .await
+        .map(output),
         Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
         Request::AnalyzeImage {
             profile_id,
             model_id,
             image,
-        } if app_id == PHOTOS_APP => {
-            analyze_image(&profile_id, &model_id, &image).map(|output| Response {
-                ok: true,
-                output: Some(output),
-                configured: None,
-                error: None,
-            })
-        }
+        } if app_id == PHOTOS_APP => analyze_image(http, profile_id, model_id, image)
+            .await
+            .map(output),
         Request::AnalyzeImage { .. } => {
             Err("only Photos may request fixed local image analysis".into())
         }
@@ -244,41 +328,31 @@ fn handle(app_id: &str, request: Request) -> Response {
             profile_id,
             model_id,
             images,
-        } if app_id == PHOTOS_APP => {
-            cluster_faces(&profile_id, &model_id, &images).map(|output| Response {
-                ok: true,
-                output: Some(output),
-                configured: None,
-                error: None,
-            })
-        }
+        } if app_id == PHOTOS_APP => cluster_faces(http, profile_id, model_id, images)
+            .await
+            .map(output),
         Request::ClusterFaces { .. } => {
             Err("only Photos may request fixed local face clustering".into())
         }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
-            secret_status(&profile_id).map(|configured| Response {
-                ok: true,
-                output: None,
-                configured: Some(configured),
-                error: None,
-            })
+            blocking(move || secret_status(&profile_id))
+                .await
+                .map(|configured| Response {
+                    ok: true,
+                    output: None,
+                    configured: Some(configured),
+                    error: None,
+                })
         }
         Request::SetApiKey {
             profile_id,
             api_key,
-        } if app_id == SETTINGS_APP => set_key(&profile_id, api_key).map(|()| Response {
-            ok: true,
-            output: None,
-            configured: None,
-            error: None,
-        }),
-        Request::RemoveApiKey { profile_id } if app_id == SETTINGS_APP => remove_key(&profile_id)
-            .map(|()| Response {
-                ok: true,
-                output: None,
-                configured: None,
-                error: None,
-            }),
+        } if app_id == SETTINGS_APP => blocking(move || set_key(&profile_id, api_key))
+            .await
+            .map(done),
+        Request::RemoveApiKey { profile_id } if app_id == SETTINGS_APP => {
+            blocking(move || remove_key(&profile_id)).await.map(done)
+        }
         _ => Err("caller is not authorized for this gateway operation".into()),
     };
     result.unwrap_or_else(|error| rejected(&error))
@@ -363,34 +437,53 @@ struct ProviderFailure {
     again: Again,
 }
 
-fn plan(
+/// Run synchronous configuration and vault work — file reads, key
+/// decryption, saves — on the runtime's bounded blocking pool rather than
+/// on a worker that is serving other clients.
+async fn blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|_| "gateway worker failed".to_string())?
+}
+
+/// The configured profile for a planning call and its API key.
+fn plan_profile(
     profile_id: &str,
     model_id: &str,
-    body: &serde_json::Value,
-    requested_timeout: Duration,
-) -> Result<String, String> {
+) -> Result<(ProviderProfile, Zeroizing<String>), String> {
     let profile = configured_profile(profile_id)?;
     if !profile.models.iter().any(|model| model.id == model_id) {
         return Err("model is not configured for this provider".into());
     }
-    let mut secret = SecretVault::open()
+    let secret = SecretVault::open()
         .get(&vault_id(profile_id)?)
         .map(|secret| Zeroizing::new(secret.password))
         .filter(|secret| !secret.is_empty())
         .ok_or_else(|| "API key is not configured".to_string())?;
+    Ok((profile, secret))
+}
+
+async fn plan(
+    http: &reqwest::Client,
+    profile_id: String,
+    model_id: String,
+    body: &serde_json::Value,
+    requested_timeout: Duration,
+) -> Result<String, String> {
+    let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model_id)).await?;
     let endpoint = provider_url(&profile);
     let timeout = requested_timeout.min(MAX_PROVIDER_TIMEOUT);
     let began = Instant::now();
-    let client = tilo_net::http::blocking_client()
-        .connect_timeout(std::time::Duration::from_secs(8))
-        .build()
-        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
     let result = while_busy(
         || timeout.checked_sub(began.elapsed()),
-        std::thread::sleep,
+        tokio::time::sleep,
         |budget| {
             provider_attempt(
-                &client,
+                http,
                 &profile,
                 &endpoint,
                 Some(secret.as_str()),
@@ -398,16 +491,21 @@ fn plan(
                 budget,
             )
         },
-    );
+    )
+    .await;
     secret.zeroize();
     result
 }
 
-/// Run Photos' one fixed local-only visual-analysis operation. No arbitrary
-/// prompt crosses the app boundary: the schema, token budget, and image URL
-/// shape are all constructed here after validating the launcher-authenticated
-/// caller and model capability.
-fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Result<String, String> {
+/// Validate Photos' one fixed local-only visual-analysis operation and
+/// build its request. No arbitrary prompt crosses the app boundary: the
+/// schema, token budget, and image URL shape are all constructed here after
+/// validating the launcher-authenticated caller and model capability.
+fn vision_request(
+    profile_id: &str,
+    model_id: &str,
+    image: &VisionImage,
+) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_vision_image(image)?;
     let profile = configured_profile(profile_id)?;
     if profile.location != EndpointLocation::ThisDevice
@@ -427,28 +525,40 @@ fn analyze_image(profile_id: &str, model_id: &str, image: &VisionImage) -> Resul
     if !model.revision.as_deref().is_some_and(is_pinned_revision) {
         return Err("the selected local vision model has no pinned revision".into());
     }
-
-    let endpoint = provider_url(&profile);
     let body = local_vision_body(model_id, image);
-    let client = tilo_net::http::blocking_client()
-        .connect_timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    Ok((profile, body))
+}
+
+/// Run Photos' fixed visual-analysis operation (see [`vision_request`]).
+async fn analyze_image(
+    http: &reqwest::Client,
+    profile_id: String,
+    model_id: String,
+    image: VisionImage,
+) -> Result<String, String> {
+    let (profile, body) = blocking(move || vision_request(&profile_id, &model_id, &image)).await?;
+    let endpoint = provider_url(&profile);
     let began = Instant::now();
     // A local vLLM endpoint is normally unauthenticated. Do not invent a
     // bearer token, and never look up a hosted-provider secret for it.
     while_busy(
         || VISION_TIMEOUT.checked_sub(began.elapsed()),
-        std::thread::sleep,
-        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+        tokio::time::sleep,
+        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
     )
+    .await
 }
 
-/// Run one fixed face-clustering request against the separate signed local
-/// capability.  An OpenAI-compatible local runner can expose its face model
-/// behind the normal chat endpoint, but it must explicitly advertise
-/// `face_recognition`; generic image description models cannot use this path.
-fn cluster_faces(profile_id: &str, model_id: &str, images: &[FaceImage]) -> Result<String, String> {
+/// Validate one fixed face-clustering request against the separate signed
+/// local capability and build it.  An OpenAI-compatible local runner can
+/// expose its face model behind the normal chat endpoint, but it must
+/// explicitly advertise `face_recognition`; generic image description models
+/// cannot use this path.
+fn face_request(
+    profile_id: &str,
+    model_id: &str,
+    images: &[FaceImage],
+) -> Result<(ProviderProfile, serde_json::Value), String> {
     validate_face_images(images)?;
     let profile = configured_profile(profile_id)?;
     if profile.location != EndpointLocation::ThisDevice
@@ -468,18 +578,26 @@ fn cluster_faces(profile_id: &str, model_id: &str, images: &[FaceImage]) -> Resu
     if !model.revision.as_deref().is_some_and(is_pinned_revision) {
         return Err("the selected local face model has no pinned revision".into());
     }
-    let endpoint = provider_url(&profile);
     let body = local_face_body(model_id, images);
-    let client = tilo_net::http::blocking_client()
-        .connect_timeout(Duration::from_secs(8))
-        .build()
-        .map_err(|_| "gateway HTTP client is unavailable".to_string())?;
+    Ok((profile, body))
+}
+
+/// Run one fixed face-clustering request (see [`face_request`]).
+async fn cluster_faces(
+    http: &reqwest::Client,
+    profile_id: String,
+    model_id: String,
+    images: Vec<FaceImage>,
+) -> Result<String, String> {
+    let (profile, body) = blocking(move || face_request(&profile_id, &model_id, &images)).await?;
+    let endpoint = provider_url(&profile);
     let began = Instant::now();
     while_busy(
         || VISION_TIMEOUT.checked_sub(began.elapsed()),
-        std::thread::sleep,
-        |budget| provider_attempt(&client, &profile, &endpoint, None, &body, budget),
+        tokio::time::sleep,
+        |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
     )
+    .await
 }
 
 fn validate_vision_image(image: &VisionImage) -> Result<(), String> {
@@ -582,7 +700,7 @@ fn local_vision_body(model_id: &str, image: &VisionImage) -> serde_json::Value {
 
 fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
     const INSTRUCTIONS: &str = "You are a device-local face detection and clustering component. Return JSON only with exactly one key, clusters: an array of objects with id and photo_ids. Detect visible faces and group only faces that you can determine are the same person among the supplied photographs. Never output a person's name, age, gender, race, emotion, face rectangle, crop, confidence, embedding, or any biometric value. A cluster id must be a short opaque token and photo_ids must contain only supplied ids. Omit uncertain matches and omit single-photo clusters.";
-    let mut content = Vec::with_capacity(images.len() + 1);
+    let mut content = Vec::with_capacity(images.len().saturating_add(1));
     content.push(serde_json::json!({
         "type": "text",
         "text": "Detect and cluster faces in this bounded local batch using the fixed JSON schema."
@@ -609,8 +727,8 @@ fn local_face_body(model_id: &str, images: &[FaceImage]) -> serde_json::Value {
     })
 }
 
-fn provider_attempt(
-    client: &reqwest::blocking::Client,
+async fn provider_attempt(
+    client: &reqwest::Client,
     profile: &ProviderProfile,
     endpoint: &str,
     secret: Option<&str>,
@@ -639,18 +757,22 @@ fn provider_attempt(
             }
         }
     }
-    let response = request.json(body).send().map_err(|error| ProviderFailure {
-        why: if error.is_timeout() {
-            "provider request timed out".into()
-        } else {
-            "provider transport failed".into()
-        },
-        again: if error.is_timeout() || error.is_connect() {
-            Again::Soon(None)
-        } else {
-            Again::Never
-        },
-    })?;
+    let response = request
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| ProviderFailure {
+            why: if error.is_timeout() {
+                "provider request timed out".into()
+            } else {
+                "provider transport failed".into()
+            },
+            again: if error.is_timeout() || error.is_connect() {
+                Again::Soon(None)
+            } else {
+                Again::Never
+            },
+        })?;
     let status = response.status();
     if !status.is_success() {
         let retry_after = response
@@ -662,7 +784,7 @@ fn provider_attempt(
             again: again_after(status.as_u16(), retry_after),
         });
     }
-    response.text().map_err(|_| ProviderFailure {
+    response.text().await.map_err(|_| ProviderFailure {
         why: "provider response was unreadable".into(),
         again: Again::Never,
     })
@@ -693,11 +815,13 @@ fn retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
         .min(LONGEST_RETRY_WAIT)
 }
 
-fn while_busy<L, W, A>(left: L, mut wait: W, mut attempt: A) -> Result<String, String>
+async fn while_busy<L, W, WF, A, AF>(left: L, mut wait: W, mut attempt: A) -> Result<String, String>
 where
     L: Fn() -> Option<Duration>,
-    W: FnMut(Duration),
-    A: FnMut(Duration) -> Result<String, ProviderFailure>,
+    W: FnMut(Duration) -> WF,
+    WF: Future<Output = ()>,
+    A: FnMut(Duration) -> AF,
+    AF: Future<Output = Result<String, ProviderFailure>>,
 {
     let began = left();
     let elapsed = |now: Option<Duration>| match (began, now) {
@@ -711,7 +835,7 @@ where
             return Err("provider request timed out".into());
         };
         made = made.saturating_add(1);
-        let ProviderFailure { why, again } = match attempt(budget) {
+        let ProviderFailure { why, again } = match attempt(budget).await {
             Ok(output) => return Ok(output),
             Err(failure) => failure,
         };
@@ -735,7 +859,7 @@ where
         if left().is_none_or(|remaining| remaining < waiting.saturating_add(ROOM_TO_ANSWER)) {
             return Err(give_up());
         }
-        wait(waiting);
+        wait(waiting).await;
     }
 }
 
@@ -749,24 +873,11 @@ fn provider_url(profile: &ProviderProfile) -> String {
     }
 }
 
+/// Whether the peer's `SO_PEERCRED` uid is this process's effective uid.
 fn same_user(stream: &UnixStream) -> bool {
-    let mut credentials = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let Ok(mut length) = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()) else {
-        return false;
-    };
-    // SAFETY: getsockopt writes into a correctly sized ucred buffer.
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            credentials.as_mut_ptr().cast(),
-            &raw mut length,
-        )
-    };
-    result == 0
-        && usize::try_from(length).ok() == Some(std::mem::size_of::<libc::ucred>())
-        && unsafe { credentials.assume_init().uid } == unsafe { libc::geteuid() }
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    stream.peer_cred().is_ok_and(|peer| peer.uid() == euid)
 }
 
 #[cfg(test)]
@@ -787,12 +898,18 @@ mod tests {
     #[test]
     fn launcher_handoff_bytes_are_pinned() {
         use std::io::Write as _;
-        let (mut launcher, mut gateway) = UnixStream::pair().unwrap();
+        let (mut launcher, gateway) = std::os::unix::net::UnixStream::pair().unwrap();
         launcher.write_all(&[39, 0, 0, 0]).unwrap();
         launcher
             .write_all(br#"{"protocol":1,"app_id":"so.tilo.agent"}"#)
             .unwrap();
-        assert_eq!(read_handoff(&mut gateway).unwrap().app_id, AGENT_APP);
+        gateway.set_nonblocking(true).unwrap();
+        let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
+        let handoff = runtime.block_on(async {
+            let mut gateway = UnixStream::from_std(gateway).unwrap();
+            read_handoff(&mut gateway).await
+        });
+        assert_eq!(handoff.unwrap().app_id, AGENT_APP);
     }
 
     #[test]
@@ -846,7 +963,7 @@ mod tests {
             data_base64: base64::engine::general_purpose::STANDARD.encode(b"preview"),
             source_content_hash: "a".repeat(64),
         };
-        assert!(validate_face_images(&[face.clone()]).is_ok());
+        assert!(validate_face_images(std::slice::from_ref(&face)).is_ok());
         let mut duplicate = face.clone();
         duplicate.photo_id = face.photo_id.clone();
         assert!(validate_face_images(&[face.clone(), duplicate]).is_err());
@@ -872,7 +989,7 @@ mod tests {
             waits: Vec::new(),
             calls: 0,
         });
-        let result = while_busy(
+        let result = tilo_rt::block_on(while_busy(
             || {
                 let fake = fake.borrow();
                 (!fake.left.is_zero()).then_some(fake.left)
@@ -881,21 +998,23 @@ mod tests {
                 let mut fake = fake.borrow_mut();
                 fake.waits.push(duration);
                 fake.left = fake.left.saturating_sub(duration);
+                std::future::ready(())
             },
             |_budget| {
                 let mut fake = fake.borrow_mut();
                 let index = fake.calls.min(outcomes.len().saturating_sub(1));
                 fake.calls = fake.calls.saturating_add(1);
                 fake.left = fake.left.saturating_sub(Duration::from_millis(200));
-                match outcomes[index] {
+                std::future::ready(match outcomes[index] {
                     Ok(output) => Ok(output.to_string()),
                     Err((status, retry_after)) => Err(ProviderFailure {
                         why: format!("provider returned HTTP {status}"),
                         again: again_after(status, retry_after),
                     }),
-                }
+                })
             },
-        );
+        ))
+        .unwrap();
         (result, fake.into_inner())
     }
 
@@ -941,5 +1060,55 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(fake.calls, 1);
         assert!(fake.waits.is_empty());
+    }
+
+    #[test]
+    fn a_stalled_client_does_not_hold_up_another() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gateway.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        // One worker: concurrency has to come from serving clients as
+        // tasks, not from a thread each.
+        let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
+        let http = Arc::new(provider_client().unwrap());
+        runtime.spawn(async move {
+            let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+            serve_on(listener, http, MAX_CLIENTS).await
+        });
+
+        // Connected first, then silent partway through its authentication.
+        let mut stalled = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        stalled.write_all(&[0x20]).unwrap();
+
+        let mut client = std::os::unix::net::UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let handoff =
+            serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": AGENT_APP })).unwrap();
+        client
+            .write_all(&u32::try_from(handoff.len()).unwrap().to_le_bytes())
+            .unwrap();
+        client.write_all(&handoff).unwrap();
+        tilo_model_gateway::write_frame(
+            &mut client,
+            &Frame {
+                version: RPC_VERSION,
+                value: Request::SecretStatus {
+                    profile_id: "hosted".into(),
+                },
+            },
+        )
+        .unwrap();
+        let response: Response = tilo_model_gateway::read_frame(&mut client).unwrap();
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("caller is not authorized for this gateway operation")
+        );
+        drop(stalled);
     }
 }
