@@ -29,7 +29,10 @@ use super::live::Live;
 ///   undo step per action, attributes it in history and replicates it. A
 ///   surface never writes the document.
 /// * **Undo granularity** — one action is one undo step. Preview a gesture
-///   locally (a drag, a scrub) and dispatch one action when it ends.
+///   locally (a drag, a scrub) and dispatch one action when it ends; a
+///   gesture that is several edits goes in one [`Dispatcher::group`] (or
+///   holds a [`Dispatcher::begin_group`] guard for the input event), so one
+///   Ctrl+Z takes all of it back.
 /// * **Permissions** — [`SurfaceCx::read_only`] says the participant may
 ///   only view; present accordingly. Refused actions change nothing.
 /// * **Presence** — report where the user is as a [`ResourceSelection`] from

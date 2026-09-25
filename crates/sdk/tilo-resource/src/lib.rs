@@ -91,6 +91,7 @@
 
 pub mod action;
 pub mod collection;
+pub mod group;
 pub mod history;
 pub mod model;
 pub mod order;
@@ -102,6 +103,7 @@ pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
 pub use collection::{Collection, Id};
+pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use model::{Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, write_key};
 pub use replica::Replica;
 pub use resource::{
