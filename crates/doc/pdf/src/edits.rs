@@ -100,7 +100,7 @@ pub enum NewAnnotationKind {
 }
 
 /// One line of text in a [`NewAnnotationKind::Stamp`] appearance, shaped
-/// and set in a system font that covers it, embedded as a subset.
+/// and set in the pinned font that covers it, embedded as a subset.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StampText {
     /// Start of the baseline, in user space.

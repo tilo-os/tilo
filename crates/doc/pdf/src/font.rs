@@ -1,54 +1,104 @@
-//! Text for appearance streams: system fonts that cover the text, shaping,
-//! and embedding exactly the glyphs used.
+//! Text for appearance streams: a pinned set of fonts, shaping, and
+//! embedding exactly the glyphs used.
 //!
 //! Appearance text (a typed signature, a stamp's lines, free text) can be in
-//! any script, so it is never set in a standard font. Each run of the text is
-//! given the first system font that covers it — preferring sans-serif
-//! regular faces, and staying with the previous run's font while it covers
-//! the text — shaped with `harfrust` in its bidi direction (so Arabic joins
-//! and combining marks sit where they belong), and the glyphs used are
-//! embedded as a CID-keyed subset font with a `ToUnicode` map, so the text
-//! stays selectable and searchable in every reader.
-//!
-//! Font discovery runs where export runs: in the sandboxed helper, which may
-//! read the system font directories (and nothing else). The scan is done
-//! once per process and only reads each file's table directory and names.
+//! any script, so it is never set in a standard font. An export must also be
+//! the same bytes for the same edits on every machine, so the fonts are not
+//! the host's: they are Tilo's own pinned Noto set (the checked-in font
+//! catalog, `crates/sdk/ui-core/assets/fonts`, whose files are pinned by
+//! hash), compiled into the helper and handed to the engine with
+//! [`install_faces`]. Each run of the text is given the first face of that
+//! set, in a fixed order, that covers it (staying with the previous run's
+//! face while it covers the text), shaped with `harfrust` in its bidi
+//! direction (so Arabic joins and combining marks sit where they belong) at
+//! the regular weight, and the glyphs used are embedded as a CID-keyed subset
+//! font with a `ToUnicode` map, so the text stays selectable and searchable
+//! in every reader. A character none of the faces covers becomes the first
+//! face's missing glyph — also the same everywhere.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use pdf_writer::types::{CidFontType, FontFlags, SystemInfo, UnicodeCmap};
 use pdf_writer::{Chunk, Filter, Name, Ref, Str};
 use skrifa::attribute::Style;
-use skrifa::instance::{LocationRef, Size};
+use skrifa::instance::{Location, Size};
 use skrifa::raw::TableProvider;
 use skrifa::string::StringId;
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
 
-/// Upper bounds on the scan: a font directory is system data, but a
-/// pathological tree must not stall an export.
-const MAX_FONT_FILES: usize = 8192;
-const MAX_SCAN_DEPTH: usize = 8;
-
-/// One face in a font file.
-struct FaceSource {
-    data: Arc<memmap2::Mmap>,
-    index: u32,
-    family: String,
-    path: PathBuf,
-    /// Lower sorts first: how good a default this face is for text.
-    rank: (u8, u16),
+/// One face of a pinned font file handed to [`install_faces`].
+#[derive(Clone, Copy, Debug)]
+pub struct BundledFace {
+    /// The font file (a collection for `index > 0`).
+    pub data: &'static [u8],
+    pub index: u32,
+    /// Its family name, recorded in the embedded font.
+    pub family: &'static str,
 }
 
-impl FaceSource {
-    fn face(&self) -> Option<FontRef<'_>> {
-        FontRef::from_index(&self.data, self.index).ok()
+/// The faces appearance text is set in, in preference order. Installed once
+/// per process before the first export ([`install_faces`]); without them
+/// appearance text is left out.
+static FACES: OnceLock<Vec<BundledFace>> = OnceLock::new();
+
+/// The installed faces that parse and have outlines, checked on first use
+/// (not at start-up, which every helper pays).
+static USABLE: OnceLock<Vec<BundledFace>> = OnceLock::new();
+
+/// Hand the engine the faces appearance text is set in. The first call wins:
+/// the set must not change within a process, or two exports of the same
+/// edits could differ.
+pub fn install_faces(faces: Vec<BundledFace>) {
+    let _ = FACES.set(faces);
+}
+
+fn library() -> &'static [BundledFace] {
+    USABLE.get_or_init(|| {
+        FACES
+            .get()
+            .into_iter()
+            .flatten()
+            .filter(|face| {
+                FontRef::from_index(face.data, face.index).is_ok_and(|f| {
+                    has_table(&f, Tag::new(b"glyf"))
+                        || has_table(&f, Tag::new(b"CFF "))
+                        || has_table(&f, Tag::new(b"CFF2"))
+                })
+            })
+            .copied()
+            .collect()
+    })
+}
+
+/// The regular weight, for faces with a weight axis.
+const WEIGHT: (Tag, f32) = (Tag::new(b"wght"), 400.0);
+
+impl BundledFace {
+    fn face(&self) -> Option<FontRef<'static>> {
+        FontRef::from_index(self.data, self.index).ok()
     }
 
     fn covers(&self, c: char) -> bool {
         self.face().is_some_and(|f| f.charmap().map(c).is_some())
     }
+
+    /// Variation coordinates the subset is instanced at.
+    fn coordinates(&self) -> Vec<(subsetter::Tag, f32)> {
+        let variable = self
+            .face()
+            .is_some_and(|f| f.axes().get_by_tag(WEIGHT.0).is_some());
+        if variable {
+            vec![(subsetter::Tag::new(b"wght"), WEIGHT.1)]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Where `face` is read: at the regular weight when it is variable.
+fn regular(face: &FontRef<'_>) -> Location {
+    face.axes().location([WEIGHT])
 }
 
 /// Whether `face` has the table `tag`.
@@ -81,153 +131,6 @@ fn is_italic(face: &FontRef<'_>) -> bool {
 )]
 fn font_units(value: f32) -> u16 {
     value.round().clamp(0.0, f32::from(u16::MAX)) as u16
-}
-
-/// Every usable system face, best default first. Scanned once.
-fn library() -> &'static [FaceSource] {
-    static LIBRARY: OnceLock<Vec<FaceSource>> = OnceLock::new();
-    LIBRARY.get_or_init(|| scan(&crate::pdfium::font_directories()))
-}
-
-fn scan(roots: &[PathBuf]) -> Vec<FaceSource> {
-    let mut files = Vec::new();
-    for root in roots {
-        collect_font_files(root, 0, &mut files);
-    }
-    files.sort();
-    files.dedup();
-    let cjk_pref = cjk_preference();
-    let mut faces = Vec::new();
-    for path in files {
-        let Ok(file) = std::fs::File::open(&path) else {
-            continue;
-        };
-        // SAFETY: a read-only private mapping of a system font file. A file
-        // truncated underneath us would fault, as it would for pdfium's own
-        // font loading; system font directories are not written while in use.
-        let Ok(map) = (unsafe { memmap2::Mmap::map(&file) }) else {
-            continue;
-        };
-        let data = Arc::new(map);
-        let count = match skrifa::raw::FileRef::new(&data) {
-            Ok(skrifa::raw::FileRef::Collection(collection)) => collection.len().min(64),
-            _ => 1,
-        };
-        for index in 0..count {
-            let Ok(face) = FontRef::from_index(&data, index) else {
-                continue;
-            };
-            // CFF2 outlines cannot be subset; faces without outlines (bitmap
-            // emoji, colour-only) cannot be drawn as vector text.
-            if has_table(&face, Tag::new(b"CFF2"))
-                || (!has_table(&face, Tag::new(b"glyf")) && !has_table(&face, Tag::new(b"CFF ")))
-            {
-                continue;
-            }
-            let Some(family) = family_name(&face) else {
-                continue;
-            };
-            let rank = rank_face(&face, &family, &cjk_pref);
-            faces.push(FaceSource {
-                data: Arc::clone(&data),
-                index,
-                family,
-                path: path.clone(),
-                rank,
-            });
-        }
-    }
-    faces.sort_by(|a, b| {
-        a.rank
-            .cmp(&b.rank)
-            .then_with(|| a.family.cmp(&b.family))
-            .then_with(|| a.path.cmp(&b.path))
-            .then_with(|| a.index.cmp(&b.index))
-    });
-    faces
-}
-
-fn collect_font_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > MAX_SCAN_DEPTH || out.len() >= MAX_FONT_FILES {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
-    entries.sort();
-    for path in entries {
-        if out.len() >= MAX_FONT_FILES {
-            return;
-        }
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if meta.is_dir() {
-            // Symlinked directories are skipped: they only alias fonts that
-            // are reachable anyway, and following them could loop.
-            if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.file_type().is_symlink()) {
-                collect_font_files(&path, depth.saturating_add(1), out);
-            }
-        } else if meta.is_file() {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(str::to_ascii_lowercase);
-            if matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc" | "otc")) {
-                out.push(path);
-            }
-        }
-    }
-}
-
-fn family_name(face: &FontRef<'_>) -> Option<String> {
-    name(face, StringId::TYPOGRAPHIC_FAMILY_NAME).or_else(|| name(face, StringId::FAMILY_NAME))
-}
-
-/// Which CJK face variant suits the user's language (`LANG`), as the suffix
-/// Noto uses (`SC`, `TC`, `HK`, `JP`, `KR`).
-fn cjk_preference() -> String {
-    let lang = std::env::var("LANG").unwrap_or_default();
-    let pref = if lang.starts_with("ja") {
-        "JP"
-    } else if lang.starts_with("ko") {
-        "KR"
-    } else if lang.starts_with("zh_TW") {
-        "TC"
-    } else if lang.starts_with("zh_HK") {
-        "HK"
-    } else {
-        "SC"
-    };
-    pref.to_string()
-}
-
-fn rank_face(face: &FontRef<'_>, family: &str, cjk_pref: &str) -> (u8, u16) {
-    let metrics = face.metrics(Size::unscaled(), LocationRef::default());
-    let lower = family.to_ascii_lowercase();
-    let mut class: u8 = if family == "Noto Sans" {
-        0
-    } else if lower.starts_with("noto sans") {
-        1
-    } else if lower.contains("sans") {
-        2
-    } else {
-        4
-    };
-    if lower.contains("mono") || metrics.is_monospace {
-        class = class.saturating_add(3);
-    }
-    if lower.contains("symbol") || lower.contains("emoji") || lower.contains("math") {
-        class = class.saturating_add(2);
-    }
-    if lower.contains("cjk") && !family.ends_with(cjk_pref) {
-        class = class.saturating_add(1);
-    }
-    if is_italic(face) || metrics.italic_angle != 0.0 {
-        class = class.saturating_add(8);
-    }
-    (class, weight_class(face).abs_diff(400))
 }
 
 /// A glyph placed on a line.
@@ -344,10 +247,18 @@ impl TextSetter {
         let Some(face) = face_source.face() else {
             return pen;
         };
+        let location = regular(&face);
         let shaper_data = harfrust::ShaperData::new(&face);
-        let shaper = shaper_data.shaper(&face).build();
-        let metrics = face.metrics(Size::unscaled(), LocationRef::default());
-        let advances = face.glyph_metrics(Size::unscaled(), LocationRef::default());
+        let instance = harfrust::ShaperInstance::from_variations(
+            &face,
+            [harfrust::Variation {
+                tag: WEIGHT.0,
+                value: WEIGHT.1,
+            }],
+        );
+        let shaper = shaper_data.shaper(&face).instance(Some(&instance)).build();
+        let metrics = face.metrics(Size::unscaled(), &location);
+        let advances = face.glyph_metrics(Size::unscaled(), &location);
         let scale = size / f32::from(metrics.units_per_em.max(1));
         let mut buffer = harfrust::UnicodeBuffer::new();
         buffer.push_str(segment);
@@ -505,7 +416,7 @@ fn attaches(c: char) -> bool {
 /// while it covers the text, otherwise the best face that covers the next
 /// character. Characters nothing covers go with the current face (they
 /// become its missing glyph).
-fn font_segments(faces: &[FaceSource], text: &str) -> Vec<(usize, std::ops::Range<usize>)> {
+fn font_segments(faces: &[BundledFace], text: &str) -> Vec<(usize, std::ops::Range<usize>)> {
     let mut out: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
     let mut current: Option<usize> = None;
     for (at, c) in text.char_indices() {
@@ -534,7 +445,7 @@ fn font_segments(faces: &[FaceSource], text: &str) -> Vec<(usize, std::ops::Rang
 
 /// A subset tag (six capitals) derived from the glyph set, so the same
 /// glyphs always name the font the same way.
-fn subset_tag(source: &FaceSource, used: &UsedFont) -> String {
+fn subset_tag(source: &BundledFace, used: &UsedFont) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(source.family.as_bytes());
     for (cid, text) in &used.text {
@@ -558,23 +469,37 @@ fn subset_tag(source: &FaceSource, used: &UsedFont) -> String {
 fn embed_font(
     objects: &mut Vec<Chunk>,
     next: &mut i32,
-    source: &FaceSource,
+    source: &BundledFace,
     used: &UsedFont,
 ) -> Option<Ref> {
     let face = source.face()?;
-    let is_cff = !has_table(&face, Tag::new(b"glyf"));
-    let subset = subsetter::subset(&source.data, source.index, &used.remapper).ok()?;
+    let location = regular(&face);
+    // Instanced at the regular weight; variable CFF2 outlines come back as
+    // TrueType.
+    let subset = subsetter::subset_with_variations(
+        source.data,
+        source.index,
+        &source.coordinates(),
+        &used.remapper,
+    )
+    .ok()?;
+    let is_cff = !has_table(&FontRef::new(&subset).ok()?, Tag::new(b"glyf"));
     let font_bytes = if is_cff {
         let raw = FontRef::new(&subset).ok()?;
         raw.table_data(Tag::new(b"CFF "))?.as_bytes().to_vec()
     } else {
         subset
     };
-    let metrics = face.metrics(Size::unscaled(), LocationRef::default());
+    let metrics = face.metrics(Size::unscaled(), &location);
     let upem = f32::from(metrics.units_per_em.max(1));
     let to_pdf = |v: f32| v * 1000.0 / upem;
-    let postscript =
-        name(&face, StringId::POSTSCRIPT_NAME).unwrap_or_else(|| source.family.replace(' ', ""));
+    // A variable face's own name is its default instance's; name the
+    // instance embedded.
+    let postscript = if face.axes().is_empty() {
+        name(&face, StringId::POSTSCRIPT_NAME).unwrap_or_else(|| source.family.replace(' ', ""))
+    } else {
+        format!("{}-Regular", source.family.replace(' ', ""))
+    };
     let postscript: String = postscript
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')

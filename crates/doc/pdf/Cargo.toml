@@ -45,7 +45,7 @@ pdfium-render = { version = "0.8.37", default-features = false, features = ["pdf
 # — all inside the sandboxed helper.
 harfrust = "0.5.2"
 skrifa = "0.40.0"
-subsetter = "0.2.6"
+subsetter = { version = "0.2.6", features = ["variable-fonts"] }
 pdf-writer = "0.15.0"
 hayro-syntax = { version = "0.7.2", default-features = false, features = ["std"] }
 flate2.workspace = true

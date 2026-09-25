@@ -882,9 +882,20 @@ fn free_text_and_non_latin_stamps_draw_with_embedded_subset_fonts() {
         "free text drawn by pdfium ({free_text} px)"
     );
     assert!(stamp > 200, "the non-Latin signature is drawn ({stamp} px)");
-    // The same export again is byte-identical, fonts included.
+    // The same export again is byte-identical, fonts included — also from
+    // another helper process.
     let (again, _) = annotated_source(&engine);
     assert_eq!(bytes, again);
+    let (elsewhere, _) = annotated_source(&self::engine().unwrap());
+    assert_eq!(bytes, elsewhere, "deterministic across processes");
+    // Set in the pinned Noto faces, never a host font.
+    for family in [
+        "NotoSans-Regular",
+        "NotoSansArabic-Regular",
+        "NotoSansCJKSC-Regular",
+    ] {
+        assert!(text.contains(family), "{family} embedded");
+    }
 }
 
 #[test]
