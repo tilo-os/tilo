@@ -205,7 +205,9 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
 grep -Fq 'publish-os-payload:' "$desktop" \
-  && grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
+  && grep -Fq 'PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}' "$desktop" \
+  && grep -Fq 'VARIABLE_TOKEN: ${{ secrets.RELEASE_TOKEN }}' "$desktop" \
+  && ! grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
   && grep -Fq 'CONTINUOUS_OS_RELEASE: "0"' "$desktop" \
   && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
   && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
