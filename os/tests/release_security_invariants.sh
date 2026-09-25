@@ -132,8 +132,8 @@ grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh"
 if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
    && grep -Fq 'if [[ $GITHUB_REF == refs/tags/v* ]]; then' "$workflow" \
-   && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
-   && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
+   && grep -Fq 'runner":"runner-large"' "$workflow" \
+   && grep -Fq 'runner":"runner-large-arm64"' "$workflow" \
    && grep -Fq "if: needs.plan.outputs.publish == 'true'" "$workflow" \
    && grep -Fq 'for candidate in /dev/dri/renderD*; do' "$workflow" \
    && grep -Fq 'installed-desktop gate will use the bounded QEMU TCG fallback' "$workflow" \
