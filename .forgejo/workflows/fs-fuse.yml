@@ -109,6 +109,7 @@ on:
       - "crates/dev/test-env/**"
       - "crates/system/fs-native/**"
       - "crates/system/fs-content/**"
+      - "crates/system/tilo-seal/**"
       - "crates/system/tilo-clock/**"
       - "scripts/ci-run.sh"
       - "tools/ci/focused_test.py"
