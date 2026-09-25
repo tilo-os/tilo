@@ -267,11 +267,11 @@ fn run_viewer_thread(
             if let ReceiverEvent::Frame(frame) = ev {
                 let _decoded: Option<_> = decoder.decode(&frame.payload);
                 recv_count.fetch_add(1, Ordering::AcqRel);
-                if let Some(captured_at) = frame_capture_times
+                let captured = frame_capture_times
                     .lock()
                     .expect("frame capture times")
-                    .remove(&frame.sequence)
-                {
+                    .remove(&frame.sequence);
+                if let Some(captured_at) = captured {
                     latency_samples
                         .push(u64::try_from(captured_at.elapsed().as_nanos()).unwrap_or(u64::MAX));
                 }
@@ -395,7 +395,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     assert!(
         video_p95_ns < 100_000_000,
         "capture-to-decode p95 must stay below 100 ms, got {:.1} ms",
-        video_p95_ns as f64 / 1_000_000.0,
+        Duration::from_nanos(video_p95_ns).as_secs_f64() * 1_000.0,
     );
 
     let inputs_received = host_input_ts.lock().expect("input log").len();
@@ -413,6 +413,8 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
         .zip(received_at.iter())
         .map(|(sent, received)| received.saturating_sub(*sent))
         .collect();
+    drop(received_at);
+    drop(sent);
     input_latencies.sort_unstable();
     assert!(
         input_latencies.len() >= 5,
@@ -422,14 +424,14 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     assert!(
         input_p95_ns < 50_000_000,
         "input send-to-apply p95 must stay below 50 ms, got {:.1} ms",
-        input_p95_ns as f64 / 1_000_000.0,
+        Duration::from_nanos(input_p95_ns).as_secs_f64() * 1_000.0,
     );
 
     eprintln!(
         "netns pipeline: {received} frames received (p95 {:.1} ms), \
          {inputs_received}/{input_sent} inputs echoed (p95 {:.1} ms)",
-        video_p95_ns as f64 / 1_000_000.0,
-        input_p95_ns as f64 / 1_000_000.0,
+        Duration::from_nanos(video_p95_ns).as_secs_f64() * 1_000.0,
+        Duration::from_nanos(input_p95_ns).as_secs_f64() * 1_000.0,
     );
 }
 
