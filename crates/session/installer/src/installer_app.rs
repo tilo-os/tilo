@@ -2454,7 +2454,7 @@ impl InstallerApp {
         {
             children.push(Box::new(
                 Text::new(&format!(
-                    "Ready to use {} GiB of unallocated space: a new 2 GiB Tilo EFI partition and a new {} GiB encrypted root. Existing partitions will not be changed.",
+                    "Ready to use {} GiB of unallocated space: a new 2 GiB Tilo EFI partition, a new 1 GiB Tilo boot partition, and a new {} GiB encrypted root. Existing partitions will not be changed.",
                     plan.free_size_bytes / (1024 * 1024 * 1024),
                     plan.root_size_bytes / (1024 * 1024 * 1024)
                 ))
