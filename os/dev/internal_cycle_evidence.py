@@ -35,6 +35,7 @@ LINUX_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
 TILO_ROOT_TYPE = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 MIB_SECTORS = 2048
 TILO_ESP_BYTES = 2 << 30
+TILO_BOOT_BYTES = 1 << 30
 
 
 # --- collection (guest, root) ------------------------------------------------
@@ -277,15 +278,18 @@ def check_final(baseline, staged, summary, final):
     target_first, _ = extent(summary, 'target_extent')
     _, root_last = extent(summary, 'staging_root')
     esps = [p for p in new if p['type'] == ESP_TYPE]
+    boots = [p for p in new if p['type'] == LINUX_TYPE]
     roots = [p for p in new if p['type'] == TILO_ROOT_TYPE]
-    verdict.require(len(new) == 2 and len(esps) == 1 and len(roots) == 1,
-                    'expected exactly one new Tilo ESP and one Tilo root, found %s' % [identity(p) for p in new])
-    if esps and roots:
-        esp, root = esps[0], roots[0]
-        verdict.facts.update(tilo_esp=esp['uuid'], tilo_root=root['uuid'])
+    verdict.require(len(new) == 3 and len(esps) == 1 and len(boots) == 1 and len(roots) == 1,
+                    'expected exactly one new Tilo ESP, boot, and encrypted root, found %s' % [identity(p) for p in new])
+    if esps and boots and roots:
+        esp, boot, root = esps[0], boots[0], roots[0]
+        verdict.facts.update(tilo_esp=esp['uuid'], tilo_boot=boot['uuid'], tilo_root=root['uuid'])
         verdict.require(esp['first_lba'] == target_first, 'Tilo ESP does not start at the staged target extent')
         verdict.require((esp['last_lba'] - esp['first_lba'] + 1) * 512 == TILO_ESP_BYTES, 'Tilo ESP is not 2 GiB')
-        verdict.require(root['first_lba'] == esp['last_lba'] + 1, 'Tilo root does not follow the Tilo ESP')
+        verdict.require(boot['first_lba'] == esp['last_lba'] + 1, 'Tilo boot does not follow the Tilo ESP')
+        verdict.require((boot['last_lba'] - boot['first_lba'] + 1) * 512 == TILO_BOOT_BYTES, 'Tilo boot is not 1 GiB')
+        verdict.require(root['first_lba'] == boot['last_lba'] + 1, 'Tilo root does not follow Tilo boot')
         verdict.require(root['last_lba'] == root_last,
                         'Tilo root ends at LBA %d, not at the end of the former staging region (%d)'
                         % (root['last_lba'], root_last))

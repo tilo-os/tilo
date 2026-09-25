@@ -31,6 +31,7 @@ FEDORA_ESP = '11111111-0000-4000-8000-000000000002'
 STAGING_ESP = 'aaaaaaaa-0000-4000-8000-000000000001'
 STAGING_ROOT = 'bbbbbbbb-0000-4000-8000-000000000002'
 TILO_ESP = 'cccccccc-0000-4000-8000-000000000003'
+TILO_BOOT = 'dddddddd-0000-4000-8000-000000000004'
 TILO_ROOT = 'eeeeeeee-0000-4000-8000-000000000005'
 ROOT_END = 45 * GIB - 1
 TARGET = (ROOT_END + 1 + 2048, ROOT_END + 2048 + 64 * GIB)
@@ -98,9 +99,11 @@ def staged():
 def final():
     doc = baseline()
     esp_end = TARGET[0] + 2 * GIB - 1
+    boot_end = esp_end + GIB
     doc['partition_table']['partitions'] += [
         part(TILO_ESP, evidence.ESP_TYPE, TARGET[0], esp_end, name='Tilo EFI'),
-        part(TILO_ROOT, evidence.TILO_ROOT_TYPE, esp_end + 1, S_ROOT[1], name='Tilo root'),
+        part(TILO_BOOT, evidence.LINUX_TYPE, esp_end + 1, boot_end, name='Tilo boot'),
+        part(TILO_ROOT, evidence.TILO_ROOT_TYPE, boot_end + 1, S_ROOT[1], name='Tilo root'),
     ]
     doc['firmware']['entries']['0003'] = entry(TILO_ESP, TARGET[0], 2 * GIB, '\\EFI\\systemd\\systemd-bootx64.efi',
                                                'Linux Boot Manager')
@@ -167,6 +170,10 @@ class EvidenceTests(unittest.TestCase):
         cases = {}
         doc = final(); doc['partition_table']['partitions'][-1]['size'] -= GIB
         cases['not at the end of the former staging region'] = doc
+        doc = final(); doc['partition_table']['partitions'][-2]['size'] -= GIB
+        cases['Tilo boot is not 1 GiB'] = doc
+        doc = final(); doc['partition_table']['partitions'].pop(-2)
+        cases['expected exactly one new Tilo ESP, boot, and encrypted root'] = doc
         doc = final(); doc['partition_table']['partitions'].append(part(STAGING_ROOT, evidence.LINUX_TYPE, *S_ROOT))
         cases['a staging partition survived'] = doc
         doc = final(); doc['firmware']['entries']['0100'] = staged()['firmware']['entries']['0100']
