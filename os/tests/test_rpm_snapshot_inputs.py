@@ -45,10 +45,11 @@ class Inputs(unittest.TestCase):
     def test_deleted_source_cannot_prove_equivalence(self):
         (self.repo/'os/Containerfile').unlink();head=self.commit()
         with self.assertRaises(subprocess.CalledProcessError):gate.equivalent(self.repo,self.base,head,self.inputs)
-    def invoke(self,base,event='push',require=False):
-        args=['gate','--base',base,'--head',self.base,'--event',event]+(['--require-equivalent'] if require else [])
+    def invoke(self,base,event='push',require=False,head=None):
+        selector=['--since-pin'] if base is None else ['--base',base]
+        args=['gate',*selector,'--head',head or self.base,'--event',event]+(['--require-equivalent'] if require else [])
         output=self.repo/'output'
-        with patch.object(gate,'ROOT',self.repo),patch.object(gate,'INPUTS',tuple(self.inputs)),patch('sys.argv',args),patch.dict(os.environ,{'GITHUB_OUTPUT':str(output)}),contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(gate,'ROOT',self.repo),patch.object(gate,'INPUTS',tuple(self.inputs+[gate.PIN])),patch('sys.argv',args),patch.dict(os.environ,{'GITHUB_OUTPUT':str(output)}),contextlib.redirect_stdout(io.StringIO()):
             result=gate.main()
         return result,output.read_text().splitlines()[-1]
     def test_manual_forces_unchanged_inputs(self):self.assertEqual(self.invoke(self.base,'workflow_dispatch'),(0,'changed=true'))
@@ -56,10 +57,27 @@ class Inputs(unittest.TestCase):
         self.assertEqual(self.invoke('0'*40),(0,'changed=true'))
         self.assertEqual(self.invoke('0'*40,require=True),(1,'changed=true'))
     def test_known_unchanged_history_skips(self):self.assertEqual(self.invoke(self.base),(0,'changed=false'))
-    def test_snapshot_workflow_triggers_on_every_input_but_its_pin(self):
+    def test_snapshot_workflow_triggers_on_every_input(self):
         workflow=(ROOT/'.forgejo/workflows/snapshot-rpms.yml').read_text(encoding='utf-8')
         push=workflow.split('\n  push:\n',1)[1].split('\n\n',1)[0]
         paths={line.strip()[2:].strip('"').removesuffix('/**') for line in push.splitlines() if line.strip().startswith('- ') and '/' in line}
-        self.assertEqual(paths,set(gate.INPUTS)-{'os/rpms-snapshot.env'})
+        self.assertEqual(paths,set(gate.INPUTS))
+    def pin(self,revision):
+        self.write(gate.PIN,'RPMS_REF=code.podesta.ai/qos/rpms@sha256:'+'a'*64+'\n'+(f'RPMS_SOURCE_REVISION={revision}\n' if revision else ''))
+        return self.commit()
+    def test_since_pin_ignores_the_pin_and_intermediate_pushes(self):
+        pinned=self.pin(self.base)
+        self.write('unrelated.txt','x\n');head=self.commit()
+        self.assertEqual(self.invoke(None,head=head),(0,'changed=false'))
+        self.assertNotEqual(pinned,head)
+    def test_since_pin_sees_a_change_that_landed_before_an_earlier_push(self):
+        self.write('os/Containerfile',(ROOT/'os/Containerfile').read_text(encoding='utf-8')+'\nRUN dnf install -y new-package\n')
+        self.commit()
+        # The pin still names the older source; a later unrelated push must refresh.
+        self.pin(self.base);self.write('unrelated.txt','x\n');head=self.commit()
+        self.assertEqual(self.invoke(None,head=head),(0,'changed=true'))
+    def test_pin_without_source_revision_refreshes(self):
+        head=self.pin(None)
+        self.assertEqual(self.invoke(None,head=head),(0,'changed=true'))
 
 if __name__=='__main__':unittest.main()

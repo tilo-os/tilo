@@ -178,20 +178,23 @@ class RpmAndKernelSnapshotPullRequestTests(unittest.TestCase):
     rpms_ref = "code.podesta.ai/qos/rpms@sha256:" + "d" * 64
     x86_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "a" * 64
     arm_ref = "code.podesta.ai/qos/tilo-kernel@sha256:" + "b" * 64
+    source = "c" * 40
 
     def setUp(self):
-        contents = (MODULE.rpms_contents(self.rpms_ref)
+        contents = (MODULE.rpms_contents(self.rpms_ref, self.source)
                     + MODULE.kernel_contents(self.x86_ref, self.arm_ref))
         self.digest = hashlib.sha256(contents.encode()).hexdigest()
         self.branch = "automation/rpm-kernel-snapshot-" + self.digest[:16]
 
     def argv(self, **overrides):
-        values = {"branch": self.branch, "digest": self.digest, "ref": self.rpms_ref}
+        values = {"branch": self.branch, "digest": self.digest, "ref": self.rpms_ref,
+                  "source": self.source}
         values.update(overrides)
         return [
             str(SCRIPT), "--server", "https://forge.invalid",
             "--repository", "qos/qos", "--branch", values["branch"],
             "--snapshot-digest", values["digest"], "kernel", "--rpms-ref", values["ref"],
+            "--rpms-source-revision", values["source"],
             "--x86-ref", self.x86_ref, "--arm-ref", self.arm_ref,
         ]
 
@@ -206,16 +209,22 @@ class RpmAndKernelSnapshotPullRequestTests(unittest.TestCase):
 
     def test_canonical_contents_match_the_committed_pin_shape(self):
         committed = (REPO / "os/rpms-snapshot.env").read_text()
-        ref = next(line.split("=", 1)[1] for line in committed.splitlines()
-                   if line.startswith("RPMS_REF="))
-        self.assertEqual(MODULE.rpms_contents(ref), committed)
+        fields = dict(line.split("=", 1) for line in committed.splitlines()
+                      if line and not line.startswith("#"))
+        # A pin published before source revisions were recorded lacks one.
+        if "RPMS_SOURCE_REVISION" in fields:
+            self.assertEqual(MODULE.rpms_contents(fields["RPMS_REF"],
+                                                  fields["RPMS_SOURCE_REVISION"]), committed)
+        else:
+            self.assertEqual(set(fields), {"RPMS_REF"})
 
     def test_workflow_writes_the_canonical_pin_files(self):
         workflow = (REPO / ".forgejo/workflows/build-kernel.yml").read_text()
-        for line in (MODULE.rpms_contents("$CALLER_RPMS_REF").splitlines()[:2]
+        for line in (MODULE.rpms_contents("$CALLER_RPMS_REF", "$GITHUB_SHA").splitlines()[:2]
                      + MODULE.kernel_contents("$X", "$Y").splitlines()[:2]):
             self.assertIn(f"'{line}'", workflow)
         self.assertIn('"RPMS_REF=$CALLER_RPMS_REF"', workflow)
+        self.assertIn('"RPMS_SOURCE_REVISION=$GITHUB_SHA" > os/rpms-snapshot.env', workflow)
         self.assertIn('pins=(os/rpms-snapshot.env os/kernel-snapshot.env)', workflow)
         self.assertIn('snapshot_digest="$(cat "${pins[@]}" | sha256sum', workflow)
 
@@ -224,6 +233,11 @@ class RpmAndKernelSnapshotPullRequestTests(unittest.TestCase):
                     "code.podesta.ai/qos/tilo-kernel@sha256:" + "d" * 64):
             with self.subTest(ref=ref), self.assertRaises(SystemExit):
                 run_main(self.argv(ref=ref))
+
+    def test_rejects_abbreviated_or_missing_source_revision(self):
+        for source in ("c" * 12, ""):
+            with self.subTest(source=source), self.assertRaises(SystemExit):
+                run_main(self.argv(source=source))
 
     def test_rejects_digest_or_branch_not_bound_to_both_pins(self):
         kernel_only = MODULE.kernel_contents(self.x86_ref, self.arm_ref)

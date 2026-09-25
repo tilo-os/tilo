@@ -19,7 +19,9 @@ on:
       # These are the only files used below to derive the frozen package set.
       # Refreshing on changes prevents an OS build from asking an older snapshot
       # for a package that was added to one of the Containerfiles. Keep this
-      # list equal to INPUTS in os/dev/rpm-snapshot-inputs.py minus the pin.
+      # list equal to INPUTS in os/dev/rpm-snapshot-inputs.py. Landing a pin
+      # rechecks it against main, so a change that landed while the pin was in
+      # review still refreshes the snapshot.
       - os/Containerfile
       - os/base-snapshot.env
       - os/dev/rpm-snapshot-inputs.py
@@ -40,6 +42,7 @@ on:
       - os/containers/tilo-relay/Containerfile
       - os/kernel/Containerfile
       - .forgejo/workflows/snapshot-rpms.yml
+      - os/rpms-snapshot.env
 
 concurrency:
   # Keep manual publications serialized. Each automatic revision is independent
@@ -61,16 +64,17 @@ jobs:
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:
+      # Shallow: the comparison fetches the pinned snapshot's source commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
           token: ${{ secrets.REGISTRY_TOKEN }}
+      # Compare with the commit the pinned snapshot was built from, not the
+      # previous push, so no change is lost to a refused publication.
       - name: Compare actual snapshot inputs before native fanout
         id: compare
         env:
-          BEFORE: ${{ github.event.before }}
           EVENT: ${{ github.event_name }}
-        run: python3 os/dev/rpm-snapshot-inputs.py --base "$BEFORE" --head "$GITHUB_SHA" --event "$EVENT"
+        run: python3 os/dev/rpm-snapshot-inputs.py --since-pin --head "$GITHUB_SHA" --event "$EVENT"
 
   signing-preflight:
     needs: inputs
