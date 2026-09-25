@@ -17,6 +17,7 @@ path = "src/main.rs"
 # constraint that shaped tilo-rollback the same way.
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 
 [dev-dependencies]
 

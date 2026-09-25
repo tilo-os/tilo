@@ -16,6 +16,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+use ui::widget::NumberInput;
 use ui::widget::{
     Button, Card, Column, Container, Row, Scrollable, Spacer, Text, TextInput, Widget,
 };
@@ -31,8 +33,14 @@ use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
 use super::import_view::ImportApp;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::internal_download_flow::InternalDownloadFlow;
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+use super::internal_install_flow::{
+    self as install_flow, HostCommand, InternalInstall, Readiness, RunState,
+};
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+use super::staging::helper::Action as HelperAction;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
 use super::{page, stack};
 use crate::rhythm::px::{FOOTER_INSET, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
@@ -79,6 +87,23 @@ enum SetupCommand {
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
     ReleaseInternalDownload,
     InternalInstallUnavailable,
+    /// Install, or continue the unfinished operation, with the shown plan.
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    InstallInternal,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    RestartInternal,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    RestartInternalLater,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    RetryInternal,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    RemoveInternal,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    InternalFirmwareSettings,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    InternalDisableFastStartup,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    RecheckInternal,
 }
 
 #[derive(Debug)]
@@ -87,6 +112,16 @@ enum WorkerMessage {
     ScanFinished {
         destination: Option<PathBuf>,
         result: Result<FolderScan, String>,
+    },
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    HostProbe {
+        facts: super::staging::probe::HostFacts,
+        records: Vec<super::staging::record::Record>,
+    },
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    HostCommandFinished {
+        command: HostCommand,
+        result: Result<(), String>,
     },
 }
 
@@ -132,6 +167,14 @@ pub struct SetupApp {
     internal_download_error: Option<String>,
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
     internal_download_revision: u64,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    internal_install: InternalInstall,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    internal_install_revision: u64,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    host_command_pending: Option<HostCommand>,
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    internal_run_announced: RunState,
 }
 
 impl Default for SetupApp {
@@ -142,7 +185,10 @@ impl Default for SetupApp {
 
 impl SetupApp {
     /// Start live setup with only capabilities backed by actual adapters.
-    /// Platform identity alone never enables Desktop or Full qOS.
+    /// Platform identity alone never enables Desktop or Full qOS. Full Tilo
+    /// becomes available only after the host probe passes, the catalog offers
+    /// an internal release for this architecture and the product gate is open
+    /// (design spec §5, §9).
     #[must_use]
     pub fn new() -> Self {
         let host = if cfg!(target_os = "windows") {
@@ -152,19 +198,30 @@ impl SetupApp {
         } else {
             HostOs::Other
         };
-        let mut app = Self::with_worker_launcher(
-            SetupCapabilities {
-                platform: Capabilities {
-                    host,
-                    desktop_session: false,
-                    internal_dual_boot: false,
-                },
-                connected_folders: false,
+        let capabilities = SetupCapabilities {
+            platform: Capabilities {
+                host,
+                desktop_session: false,
+                internal_dual_boot: false,
             },
+            connected_folders: false,
+        };
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        let mut app = Self::with_parts(
+            capabilities,
             launch_worker,
+            InternalInstall::new(
+                install_flow::StagingRuntime::live(),
+                install_flow::live_gate_open(),
+                host,
+            ),
         );
+        #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+        let mut app = Self::with_worker_launcher(capabilities, launch_worker);
         app.desktop_flow = DesktopFlow::new_live();
         app.start_known_folder_lookup();
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        app.start_host_probe();
         app
     }
 
@@ -178,6 +235,26 @@ impl SetupApp {
         capabilities: SetupCapabilities,
         worker_launcher: WorkerLauncher,
     ) -> Self {
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        {
+            Self::with_parts(
+                capabilities,
+                worker_launcher,
+                InternalInstall::gated(capabilities.platform.host),
+            )
+        }
+        #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+        {
+            Self::with_parts(capabilities, worker_launcher)
+        }
+    }
+
+    fn with_parts(
+        capabilities: SetupCapabilities,
+        worker_launcher: WorkerLauncher,
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        internal_install: InternalInstall,
+    ) -> Self {
         let (worker_tx, worker_rx) = mpsc::channel();
         let desktop_flow = fixture_desktop_flow(capabilities.platform.desktop_session);
         #[cfg(all(any(target_os = "linux", windows, unix), test))]
@@ -189,7 +266,7 @@ impl SetupApp {
         );
         #[cfg(all(any(target_os = "linux", windows), not(test)))]
         let (internal_download_flow, internal_download_error) =
-            match InternalDownloadFlow::new(capabilities.platform) {
+            match InternalDownloadFlow::new(capabilities.platform, internal_install.link()) {
                 Ok(flow) => (Some(flow), None),
                 Err(error) => (None, Some(error)),
             };
@@ -223,15 +300,28 @@ impl SetupApp {
             internal_download_error,
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
             internal_download_revision: 0,
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            internal_install,
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            internal_install_revision: 0,
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            host_command_pending: None,
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            internal_run_announced: RunState::Idle,
         }
     }
 
     #[must_use]
     pub fn for_shot(scenario: &str) -> Self {
         let experience_only = scenario.starts_with("setup-experience");
+        let full_os = scenario.starts_with("setup-full");
         let mut app = Self::with_capabilities(SetupCapabilities {
             platform: Capabilities {
-                host: HostOs::Linux,
+                host: if full_os {
+                    HostOs::Windows
+                } else {
+                    HostOs::Linux
+                },
                 desktop_session: !experience_only,
                 internal_dual_boot: !experience_only,
             },
@@ -261,8 +351,16 @@ impl SetupApp {
                 unavailable_reason: None,
             })
             .collect();
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        if full_os {
+            app.pose_internal_install_for_shot(scenario);
+        }
         if !experience_only {
-            app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+            app.apply_command(SetupCommand::ChooseExperience(if full_os {
+                Experience::FullOs
+            } else {
+                Experience::Desktop
+            }));
             app.apply_command(SetupCommand::Next);
             let mut documents = shot_scan("Documents", 38, 2_460_000_000);
             if scenario == "setup-review" {
@@ -284,7 +382,10 @@ impl SetupApp {
             app.apply_command(SetupCommand::SetMode(FolderMode::Later));
         } else if scenario == "setup-folders-connected" {
             app.apply_command(SetupCommand::SetMode(FolderMode::Connected));
-        } else if matches!(scenario, "setup-review" | "setup-desktop-installed") {
+        } else if matches!(
+            scenario,
+            "setup-review" | "setup-desktop-installed" | "setup-full-review" | "setup-full-restart"
+        ) {
             app.apply_command(SetupCommand::Next);
         }
         if scenario == "setup-desktop-installed" {
@@ -299,6 +400,36 @@ impl SetupApp {
                 "Tilo Desktop is installed and verified. Sign out when you are ready.".into();
         }
         app
+    }
+
+    /// Full Tilo review fixtures: a planned Windows disk, a verified download
+    /// and either a Secure Boot blocker or a staged installer.
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    fn pose_internal_install_for_shot(&mut self, scenario: &str) {
+        let staged = scenario == "setup-full-restart";
+        let blockers = if staged {
+            Vec::new()
+        } else {
+            vec![super::staging::probe::Blocker::SecureBootOn]
+        };
+        let mut install = InternalInstall::new(
+            install_flow::fixture::shot_runtime(blockers),
+            true,
+            HostOs::Windows,
+        );
+        if let Some(probe) = install.probe_task() {
+            let (facts, records) = probe();
+            install.accept_probe(facts, records, true);
+        }
+        if staged {
+            install.set_fixture_state(RunState::Succeeded {
+                action: HelperAction::Stage,
+            });
+        }
+        self.internal_install = install;
+        if let Some(flow) = &mut self.internal_download_flow {
+            flow.pose_for_shot(staged);
+        }
     }
 
     fn controller(&self) -> Ref<'_, SetupController> {
@@ -321,6 +452,229 @@ impl SetupApp {
 
     fn folder_selection_settled(&self) -> bool {
         self.picker_rx.is_none() && self.pending_scans == 0
+    }
+
+    fn on_review_for(&self, experience: Experience) -> bool {
+        let controller = self.controller();
+        controller.page() == SetupPage::Review && controller.plan().experience == experience
+    }
+
+    fn setup_projection(&self) -> super::actions::SetupProjection {
+        let controller = self.controller();
+        let page = controller.page();
+        let folders = controller
+            .folders()
+            .iter()
+            .enumerate()
+            .map(|(index, folder)| super::actions::FolderProjection {
+                identity: controller
+                    .folder_token(index)
+                    .expect("folder identities stay aligned with folder choices"),
+                index,
+                mode: super::actions::mode_key(folder.mode),
+                overridden: folder.mode_overridden,
+            })
+            .collect::<Vec<_>>();
+        let suggestions = self
+            .known_folders
+            .iter()
+            .map(|known| super::actions::SuggestionProjection {
+                identity: known.kind.label().to_ascii_lowercase(),
+                name: known.kind.label().to_string(),
+                available: known.path.is_some(),
+                unavailable_reason: known.unavailable_reason.clone(),
+            })
+            .collect();
+        let folder_count = folders.len();
+        let active_folder_count = controller
+            .folders()
+            .iter()
+            .filter(|folder| folder.mode != FolderMode::Later)
+            .count();
+        let chosen_experience = controller.chosen_experience();
+        let next = match page {
+            SetupPage::Experience => chosen_experience
+                .is_some_and(|experience| self.capabilities.platform.supports(experience)),
+            SetupPage::Folders => self.folder_selection_settled(),
+            SetupPage::Review => false,
+        };
+        let on_folder_choices = page == SetupPage::Folders;
+        super::actions::SetupProjection {
+            page: super::actions::page_key(page),
+            selection: super::actions::SelectionProjection {
+                experience: chosen_experience.map(super::actions::experience_key),
+                common_mode: super::actions::mode_key(controller.default_mode()),
+                folder_count,
+                active_folder_count,
+                folders,
+                suggestions,
+                help_open: self.show_help,
+                imports_open: self.import_requested || self.import_app.is_some(),
+            },
+            review: super::actions::ReviewProjection {
+                ready: page == SetupPage::Review,
+            },
+            availability: super::actions::AvailabilityProjection {
+                desktop: page == SetupPage::Experience
+                    && self.capabilities.platform.supports(Experience::Desktop),
+                full_os: page == SetupPage::Experience
+                    && self.capabilities.platform.supports(Experience::FullOs),
+                connected: on_folder_choices && self.capabilities.connected_folders,
+                next,
+                back: page != SetupPage::Experience,
+                folder_policies: on_folder_choices,
+                folder_edits: on_folder_choices && folder_count > 0,
+                help: page == SetupPage::Folders,
+                open_imports: matches!(page, SetupPage::Experience | SetupPage::Review),
+                choose_folder: on_folder_choices && self.folder_selection_settled(),
+            },
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            internal: self.internal_projection(),
+            #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+            internal: super::actions::InternalProjection {
+                readiness: "gated",
+                download: "none",
+                run: "idle",
+                ..Default::default()
+            },
+        }
+    }
+
+    fn apply_setup_operation(
+        &mut self,
+        operation: super::actions::SetupOperation,
+    ) -> Result<(), String> {
+        if self.import_app.is_some() {
+            return Err("Guided setup is closed while folder imports are open.".into());
+        }
+        let command = match operation {
+            super::actions::SetupOperation::ChooseExperience { experience } => {
+                if self.controller().page() != SetupPage::Experience {
+                    return Err("Experience choices are available on the first setup page.".into());
+                }
+                let experience = super::actions::parse_experience(&experience)?;
+                if !self.capabilities.platform.supports(experience) {
+                    return Err(experience_unavailable_reason(
+                        self.capabilities.platform,
+                        experience,
+                    ));
+                }
+                SetupCommand::ChooseExperience(experience)
+            }
+            super::actions::SetupOperation::SetCommonMode { mode } => {
+                if !matches!(self.controller().page(), SetupPage::Folders) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                let mode = super::actions::parse_mode(&mode)?;
+                if mode == FolderMode::Connected && !self.capabilities.connected_folders {
+                    return Err("Folder syncing is not available in this build yet.".into());
+                }
+                SetupCommand::SetMode(mode)
+            }
+            super::actions::SetupOperation::SetFolderMode { folder, mode } => {
+                let index = self
+                    .controller()
+                    .folder_index(&folder)
+                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                if !matches!(self.controller().page(), SetupPage::Folders) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                let mode = super::actions::parse_mode(&mode)?;
+                if mode == FolderMode::Connected && !self.capabilities.connected_folders {
+                    return Err("Folder syncing is not available in this build yet.".into());
+                }
+                SetupCommand::SetFolderMode(index, mode)
+            }
+            super::actions::SetupOperation::ClearFolderMode { folder } => {
+                let index = self
+                    .controller()
+                    .folder_index(&folder)
+                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                if !matches!(self.controller().page(), SetupPage::Folders) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                if !self.controller().folders()[index].mode_overridden {
+                    return Err("This folder already follows the common choice.".into());
+                }
+                SetupCommand::ClearFolderMode(index)
+            }
+            super::actions::SetupOperation::RemoveFolder { folder } => {
+                let index = self
+                    .controller()
+                    .folder_index(&folder)
+                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                if !matches!(self.controller().page(), SetupPage::Folders) {
+                    return Err("Folder choices are not open on the current setup page.".into());
+                }
+                SetupCommand::RemoveFolder(index)
+            }
+            super::actions::SetupOperation::SelectSuggestion { suggestion } => {
+                if self.controller().page() != SetupPage::Folders
+                    || !self.folder_selection_settled()
+                {
+                    return Err("Folder choices are not open or a scan is still running.".into());
+                }
+                let index = self
+                    .known_folders
+                    .iter()
+                    .position(|known| {
+                        known.kind.label().eq_ignore_ascii_case(&suggestion) && known.path.is_some()
+                    })
+                    .ok_or_else(|| {
+                        "That suggested folder is unavailable on this computer.".to_string()
+                    })?;
+                SetupCommand::AddSuggested(index)
+            }
+            super::actions::SetupOperation::ChooseFolder => {
+                if self.controller().page() != SetupPage::Folders
+                    || !self.folder_selection_settled()
+                {
+                    return Err("The folder picker is not available right now.".into());
+                }
+                SetupCommand::AddFolder
+            }
+            super::actions::SetupOperation::ToggleHelp => {
+                if self.controller().page() != SetupPage::Folders {
+                    return Err("Folder help is available on the folder page.".into());
+                }
+                SetupCommand::ToggleHelp
+            }
+            super::actions::SetupOperation::Next => {
+                if self.controller().page() == SetupPage::Folders
+                    && !self.folder_selection_settled()
+                {
+                    return Err("Wait for the selected folders to finish scanning.".into());
+                }
+                SetupCommand::Next
+            }
+            super::actions::SetupOperation::Back => {
+                if self.controller().page() == SetupPage::Experience {
+                    return Err("Setup is already on its first page.".into());
+                }
+                SetupCommand::Back
+            }
+            super::actions::SetupOperation::OpenImports => {
+                if self.controller().page() == SetupPage::Folders {
+                    return Err(
+                        "Folder imports are available on the experience and review pages.".into(),
+                    );
+                }
+                SetupCommand::OpenImports
+            }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            operation => match self.internal_operation_command(operation)? {
+                Some(command) => command,
+                None => return Ok(()),
+            },
+            #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+            _ => return Err(super::strings::t("imager-setup-internal-error-unavailable")),
+        };
+        self.apply_command(command);
+        if self.status_is_error {
+            return Err(self.status.clone());
+        }
+        self.ensure_import_app();
+        Ok(())
     }
 
     fn start_desktop_install(&mut self) {
@@ -512,6 +866,15 @@ impl SetupApp {
                     "Installation has not started. Protected staging is not available yet.".into();
                 self.status_is_error = true;
             }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            SetupCommand::InstallInternal
+            | SetupCommand::RestartInternal
+            | SetupCommand::RestartInternalLater
+            | SetupCommand::RetryInternal
+            | SetupCommand::RemoveInternal
+            | SetupCommand::InternalFirmwareSettings
+            | SetupCommand::InternalDisableFastStartup
+            | SetupCommand::RecheckInternal => self.apply_internal_install_command(command),
         }
         self.structure_dirty = true;
     }
@@ -688,6 +1051,20 @@ impl SetupApp {
                     }
                 }
             }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            WorkerMessage::HostProbe { facts, records } => {
+                let has_release = self
+                    .internal_download_flow
+                    .as_ref()
+                    .is_some_and(|flow| flow.offered_selection().is_some());
+                self.internal_install
+                    .accept_probe(facts, records, has_release);
+                self.apply_install_capability();
+            }
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            WorkerMessage::HostCommandFinished { command, result } => {
+                self.apply_host_command_result(command, result);
+            }
         }
         self.structure_dirty = true;
     }
@@ -724,7 +1101,7 @@ impl SetupApp {
             platform.desktop_session = self.desktop_flow.desktop_available();
             self.capabilities.platform = platform;
             self.controller.borrow_mut().set_capabilities(platform);
-            if self.controller.borrow().page() == SetupPage::Review {
+            if self.on_review_for(Experience::Desktop) {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Installed { .. } => {
                         self.status =
@@ -743,11 +1120,13 @@ impl SetupApp {
             changed = true;
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        let on_full_os_review = self.on_review_for(Experience::FullOs);
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         if let Some(flow) = &mut self.internal_download_flow {
             changed |= flow.poll();
             if self.internal_download_revision != flow.revision() {
                 self.internal_download_revision = flow.revision();
-                if self.controller.borrow().page() == SetupPage::Review {
+                if on_full_os_review {
                     self.status.clone_from(&flow.presentation().title);
                     self.status_is_error = matches!(
                         flow.presentation().phase,
@@ -757,6 +1136,10 @@ impl SetupApp {
                 self.structure_dirty = true;
                 changed = true;
             }
+        }
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        {
+            changed |= self.poll_internal_install();
         }
         changed
     }
@@ -835,6 +1218,10 @@ impl SetupApp {
                 "Setup keeps your current operating system. Options that are not ready in this build stay unavailable.",
             ).dimmed()));
         let mut body = stack();
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        if let Some(resume) = self.internal_resume_card() {
+            body = body.push(Box::new(resume));
+        }
 
         for experience in [Experience::Desktop, Experience::FullOs] {
             let supported = self.capabilities.platform.supports(experience);
@@ -884,6 +1271,19 @@ impl SetupApp {
                 }
             }
             card_body = card_body.push(Box::new(actions.push(Box::new(choose))));
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            if experience == Experience::FullOs && self.internal_install.gate() {
+                card_body = card_body.push(Box::new(
+                    Text::new(&self.internal_readiness_text())
+                        .with_id("setup.internal.readiness")
+                        .with_live(Politeness::Polite),
+                ));
+                body = body.push(Box::new(Card::titled(
+                    experience_label(experience),
+                    Box::new(card_body),
+                )));
+                continue;
+            }
             if !supported && experience != Experience::Desktop {
                 card_body = card_body.push(Box::new(
                     Text::new(&experience_unavailable_reason(
@@ -961,7 +1361,7 @@ impl SetupApp {
                 if enabled { "Add" } else { "Unavailable" },
                 SetupCommand::AddSuggested(index),
             )
-            .with_enabled(enabled);
+            .with_enabled(enabled && self.folder_selection_settled());
         Card::titled(
             known.kind.label(),
             Box::new(
@@ -1128,11 +1528,10 @@ impl SetupApp {
         for (index, known) in self.known_folders.iter().enumerate() {
             suggested = suggested.push(Box::new(self.known_folder_card(index, known)));
         }
-        suggested = suggested.push(Box::new(self.button(
-            "setup.add-folder",
-            "Add folder…",
-            SetupCommand::AddFolder,
-        )));
+        suggested = suggested.push(Box::new(
+            self.button("setup.add-folder", "Add folder…", SetupCommand::AddFolder)
+                .with_enabled(self.folder_selection_settled()),
+        ));
         let mut body = page(header).push(Box::new(modes)).push(Box::new(suggested));
 
         let controller = self.controller();
@@ -1385,7 +1784,13 @@ impl SetupApp {
             .iter()
             .any(|folder| folder.mode == FolderMode::Connected)
             .then_some("Folder syncing is not available in this build yet.");
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        let internal_offered =
+            plan.experience == Experience::FullOs && self.internal_install.offers_full_os();
+        #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+        let internal_offered = false;
         let mut blockers = match plan.experience {
+            Experience::FullOs if internal_offered => String::new(),
             Experience::FullOs => FULL_OS_UNAVAILABLE.to_string(),
             Experience::Desktop => match self.desktop_flow.state() {
                 DesktopFlowState::Unavailable { reasons, .. } => reasons.join("\n"),
@@ -1395,14 +1800,17 @@ impl SetupApp {
             },
         };
         if let Some(blocker) = connected_blocker {
-            blockers.push('\n');
+            if !blockers.is_empty() {
+                blockers.push('\n');
+            }
             blockers.push_str(blocker);
         }
         let copy_status = self.review_copy_status(plan.experience);
-        let installed = matches!(
-            self.desktop_flow.state(),
-            DesktopFlowState::Installed { .. }
-        );
+        let installed = plan.experience == Experience::Desktop
+            && matches!(
+                self.desktop_flow.state(),
+                DesktopFlowState::Installed { .. }
+            );
         let header = stack().push(Box::new(
             Text::new(if installed {
                 "Tilo Desktop is installed"
@@ -1415,6 +1823,18 @@ impl SetupApp {
         let mut body = stack();
         if plan.experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
+        }
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        if internal_offered {
+            if let Some(run) = self.internal_run_card() {
+                body = body.push(Box::new(run));
+            }
+            if let Some(resume) = self.internal_resume_card() {
+                body = body.push(Box::new(resume));
+            }
+            body = body
+                .push(Box::new(self.internal_plan_card()))
+                .push(Box::new(self.internal_blockers_card(connected_blocker)));
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         if plan.experience == Experience::FullOs {
@@ -1434,11 +1854,13 @@ impl SetupApp {
                 .push(Box::new(Card::titled(
                     "Space estimate",
                     Box::new(Text::new(&estimate).with_id("setup.review.estimate")),
-                )))
-                .push(Box::new(Card::titled(
-                    "Current blockers",
-                    Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
                 )));
+        if !internal_offered {
+            body = body.push(Box::new(Card::titled(
+                "Current blockers",
+                Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
+            )));
+        }
         Box::new(page(header).push(Box::new(body.push(Box::new(copy_status)))))
     }
 
@@ -1492,7 +1914,18 @@ impl SetupApp {
             )));
         }
         nav = nav.push(Box::new(Spacer::new()));
-        if page == SetupPage::Review {
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        let internal_nav = page == SetupPage::Review
+            && self.controller().plan().experience == Experience::FullOs
+            && self.internal_install.offers_full_os();
+        #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+        let internal_nav = false;
+        if internal_nav {
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            {
+                nav = self.internal_nav(nav);
+            }
+        } else if page == SetupPage::Review {
             let experience = self.controller().plan().experience;
             let (id, label, command, enabled) = if experience == Experience::FullOs {
                 (
@@ -1578,6 +2011,833 @@ impl SetupApp {
                     .push(Box::new(nav)),
             )),
         )
+    }
+}
+
+/// Full Tilo installed alongside the current system (design spec §5, §8).
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+impl SetupApp {
+    fn on_full_os_review(&self) -> bool {
+        self.on_review_for(Experience::FullOs)
+    }
+
+    /// Validate a semantic Full Tilo operation against what is shown now and
+    /// map it to the command its button dispatches (`None` when it was
+    /// applied here). Stale digests and operation IDs are refused before
+    /// anything runs.
+    fn internal_operation_command(
+        &mut self,
+        operation: super::actions::SetupOperation,
+    ) -> Result<Option<SetupCommand>, String> {
+        use super::actions::SetupOperation as Op;
+        let t = super::strings::t;
+        let review_only = |app: &Self| {
+            if app.on_full_os_review() {
+                Ok(())
+            } else {
+                Err(t("imager-setup-internal-error-not-review"))
+            }
+        };
+        let current_operation = |app: &Self, operation: &str| match app.internal_install.pending() {
+            Some(record) if record.operation_id == operation => Ok(()),
+            Some(_) => Err(t("imager-setup-internal-error-pending-changed")),
+            None => Err(t("imager-setup-internal-error-no-pending")),
+        };
+        Ok(Some(match operation {
+            Op::StartInternalDownload => {
+                review_only(self)?;
+                SetupCommand::StartInternalDownload
+            }
+            Op::PauseInternalDownload => {
+                review_only(self)?;
+                SetupCommand::PauseInternalDownload
+            }
+            Op::ResumeInternalDownload => {
+                review_only(self)?;
+                SetupCommand::ResumeInternalDownload
+            }
+            Op::CancelInternalDownload => {
+                review_only(self)?;
+                SetupCommand::CancelInternalDownload
+            }
+            Op::DiscardInternalDownload => {
+                review_only(self)?;
+                SetupCommand::DiscardInternalDownload
+            }
+            Op::ReleaseInternalDownload => {
+                review_only(self)?;
+                SetupCommand::ReleaseInternalDownload
+            }
+            Op::SetInternalTargetSize { gib } => {
+                review_only(self)?;
+                if !self.internal_install.offers_full_os()
+                    || self.internal_install.pending().is_some()
+                    || self.internal_install.is_running()
+                    || self.internal_install.can_restart()
+                {
+                    return Err(t("imager-setup-internal-error-command-unavailable"));
+                }
+                let gib = u64::try_from(gib)
+                    .map_err(|_| t("imager-setup-internal-error-command-unavailable"))?;
+                self.internal_install.set_target_gib(gib)?;
+                self.status = super::strings::t_args(
+                    "imager-setup-internal-status-size",
+                    &[("gib", gib.into())],
+                );
+                self.status_is_error = false;
+                self.structure_dirty = true;
+                return Ok(None);
+            }
+            Op::InstallInternal { reviewed } => {
+                review_only(self)?;
+                if self.internal_install.reviewed_digest().as_deref() != Some(reviewed.as_str()) {
+                    return Err(t("imager-setup-internal-error-plan-changed"));
+                }
+                SetupCommand::InstallInternal
+            }
+            Op::RestartInternal => SetupCommand::RestartInternal,
+            Op::RestartInternalLater => SetupCommand::RestartInternalLater,
+            Op::RetryInternal { operation_id } => {
+                current_operation(self, &operation_id)?;
+                SetupCommand::RetryInternal
+            }
+            Op::RemoveInternal { operation_id } => {
+                current_operation(self, &operation_id)?;
+                SetupCommand::RemoveInternal
+            }
+            Op::InternalFirmwareSettings => {
+                review_only(self)?;
+                SetupCommand::InternalFirmwareSettings
+            }
+            Op::InternalDisableFastStartup => {
+                review_only(self)?;
+                SetupCommand::InternalDisableFastStartup
+            }
+            Op::RecheckInternal => SetupCommand::RecheckInternal,
+            _ => return Err(t("imager-setup-internal-error-command-unavailable")),
+        }))
+    }
+
+    fn internal_download_ready(&self) -> bool {
+        self.internal_download_flow
+            .as_ref()
+            .is_some_and(InternalDownloadFlow::is_ready)
+    }
+
+    /// Probe the host off the UI thread; Full Tilo shows as checking until
+    /// the result arrives.
+    fn start_host_probe(&mut self) {
+        let Some(task) = self.internal_install.probe_task() else {
+            return;
+        };
+        let tx = self.worker_tx.clone();
+        if let Err(error) = (self.worker_launcher)(
+            "imager-host-probe",
+            Box::new(move || {
+                let (facts, records) = task();
+                let _ = tx.send(WorkerMessage::HostProbe { facts, records });
+            }),
+        ) {
+            self.internal_install.probe_failed();
+            self.apply_install_capability();
+            self.status = super::strings::t_args(
+                "imager-setup-internal-command-failed",
+                &[("detail", error.into())],
+            );
+            self.status_is_error = true;
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Mirror the gated readiness into the capabilities the controller and
+    /// download flow check. A closed gate leaves fixture capabilities alone.
+    fn apply_install_capability(&mut self) {
+        if !self.internal_install.gate() {
+            return;
+        }
+        let mut platform = self.capabilities.platform;
+        platform.internal_dual_boot = self.internal_install.offers_full_os();
+        self.capabilities.platform = platform;
+        self.controller.borrow_mut().set_capabilities(platform);
+        if let Some(flow) = &mut self.internal_download_flow {
+            flow.set_capabilities(platform);
+        }
+    }
+
+    fn launch_host_command(&mut self, command: HostCommand) -> Result<(), String> {
+        if self.host_command_pending.is_some() {
+            return Err(super::strings::t(
+                "imager-setup-internal-error-command-unavailable",
+            ));
+        }
+        let run = std::sync::Arc::clone(&self.internal_install.runtime().host_command);
+        let tx = self.worker_tx.clone();
+        (self.worker_launcher)(
+            "imager-host-command",
+            Box::new(move || {
+                let result = run(command);
+                let _ = tx.send(WorkerMessage::HostCommandFinished { command, result });
+            }),
+        )?;
+        self.host_command_pending = Some(command);
+        Ok(())
+    }
+
+    fn launch_helper(&mut self, action: HelperAction) -> Result<(), String> {
+        let operation = self
+            .internal_install
+            .pending()
+            .map(|record| record.operation_id.clone())
+            .ok_or_else(|| super::strings::t("imager-setup-internal-error-no-pending"))?;
+        let task = self.internal_install.helper_task(action, &operation)?;
+        if let Err(error) = (self.worker_launcher)("imager-staging-helper", task) {
+            self.internal_install
+                .helper_task_failed(action, error.clone());
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn start_internal_install(&mut self) -> Result<(), String> {
+        if !self.on_full_os_review() {
+            return Err(super::strings::t("imager-setup-internal-error-not-review"));
+        }
+        let reviewed = self
+            .internal_install
+            .reviewed_digest()
+            .ok_or_else(|| super::strings::t("imager-setup-internal-error-no-plan"))?;
+        let ready = self.internal_download_ready();
+        self.internal_install.begin_stage(&reviewed, ready)?;
+        let consumed = self
+            .internal_download_flow
+            .as_mut()
+            .ok_or_else(|| super::strings::t("imager-setup-internal-error-download"))
+            .and_then(InternalDownloadFlow::consume);
+        if let Err(error) = consumed {
+            self.internal_install.abort_stage("download", error.clone());
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn apply_internal_install_command(&mut self, command: SetupCommand) {
+        let t = super::strings::t;
+        let (result, pending) = match command {
+            SetupCommand::InstallInternal => (
+                self.start_internal_install(),
+                t("imager-setup-internal-status-installing"),
+            ),
+            SetupCommand::RestartInternal => (
+                if self.internal_install.can_restart() {
+                    self.launch_host_command(HostCommand::Restart)
+                } else {
+                    Err(t("imager-setup-internal-error-no-restart"))
+                },
+                t("imager-setup-internal-restarting"),
+            ),
+            SetupCommand::RestartInternalLater => (
+                self.internal_install.defer_restart(),
+                t("imager-setup-internal-restart-deferred"),
+            ),
+            SetupCommand::RetryInternal => (
+                self.launch_helper(HelperAction::Arm),
+                t("imager-setup-internal-status-retrying"),
+            ),
+            SetupCommand::RemoveInternal => (
+                self.launch_helper(HelperAction::Remove),
+                t("imager-setup-internal-status-removing"),
+            ),
+            SetupCommand::InternalFirmwareSettings => (
+                self.internal_install
+                    .firmware_command()
+                    .ok_or_else(|| t("imager-setup-internal-error-remedy-unavailable"))
+                    .and_then(|command| self.launch_host_command(command)),
+                t("imager-setup-internal-status-firmware"),
+            ),
+            SetupCommand::InternalDisableFastStartup => (
+                if self
+                    .internal_install
+                    .command_available(HostCommand::DisableFastStartup)
+                {
+                    self.launch_host_command(HostCommand::DisableFastStartup)
+                } else {
+                    Err(t("imager-setup-internal-error-remedy-unavailable"))
+                },
+                t("imager-setup-internal-status-fast-startup"),
+            ),
+            SetupCommand::RecheckInternal => (
+                if self.internal_install.gate()
+                    && !self.internal_install.is_probing()
+                    && !self.internal_install.is_running()
+                {
+                    self.start_host_probe();
+                    Ok(())
+                } else {
+                    Err(t("imager-setup-internal-error-command-unavailable"))
+                },
+                t("imager-setup-internal-status-checking"),
+            ),
+            _ => return,
+        };
+        self.apply_internal_command_result(result, &pending);
+    }
+
+    fn apply_host_command_result(&mut self, command: HostCommand, result: Result<(), String>) {
+        self.host_command_pending = None;
+        match result {
+            Ok(()) => {
+                self.status_is_error = false;
+                if command == HostCommand::DisableFastStartup {
+                    self.start_host_probe();
+                    self.status = super::strings::t("imager-setup-internal-status-checking");
+                } else {
+                    self.status = super::strings::t("imager-setup-internal-restarting");
+                }
+            }
+            Err(error) => {
+                self.status = super::strings::t_args(
+                    "imager-setup-internal-command-failed",
+                    &[("detail", error.into())],
+                );
+                self.status_is_error = true;
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Follow helper runs and stepper commits; announce finished runs.
+    fn poll_internal_install(&mut self) -> bool {
+        let mut changed = self.internal_install.poll();
+        if matches!(
+            self.internal_install.run_state(),
+            RunState::Running {
+                action: HelperAction::Stage,
+                ..
+            }
+        ) && let Some(detail) = self
+            .internal_download_flow
+            .as_ref()
+            .and_then(InternalDownloadFlow::consume_failure)
+            .map(str::to_string)
+        {
+            self.internal_install.abort_stage("download", detail);
+            changed = true;
+        }
+        if self.internal_install_revision != self.internal_install.revision() {
+            self.internal_install_revision = self.internal_install.revision();
+            let host = self.internal_install.host();
+            let announced = match self.internal_install.run_state() {
+                RunState::Succeeded {
+                    action: HelperAction::Stage | HelperAction::Arm,
+                } => Some((
+                    super::strings::t_args(
+                        "imager-setup-internal-done",
+                        &[("host", install_flow::host_arg(host).into())],
+                    ),
+                    false,
+                )),
+                RunState::Succeeded {
+                    action: HelperAction::Remove,
+                } => Some((super::strings::t("imager-setup-internal-removed"), false)),
+                RunState::Failed { failure, .. } => {
+                    Some((install_flow::failure_text(failure, host), true))
+                }
+                _ => None,
+            };
+            if let Some((status, is_error)) = announced
+                && self.internal_run_announced != *self.internal_install.run_state()
+            {
+                self.internal_run_announced = self.internal_install.run_state().clone();
+                self.status = status;
+                self.status_is_error = is_error;
+            }
+            self.structure_dirty = true;
+            changed = true;
+        }
+        if self.internal_install.take_reprobe() {
+            self.start_host_probe();
+            changed = true;
+        }
+        changed
+    }
+
+    fn internal_projection(&self) -> super::actions::InternalProjection {
+        let install = &self.internal_install;
+        let page = self.controller().page();
+        let on_review = self.on_full_os_review();
+        let ready = install.offers_full_os();
+        let flow = self.internal_download_flow.as_ref();
+        let running = install.is_running();
+        let idle_host = self.host_command_pending.is_none();
+        let resume_page = matches!(page, SetupPage::Experience | SetupPage::Review);
+        let pending = install.pending();
+        let plan = match install.plan() {
+            Some(Ok(plan)) => Some(plan),
+            _ => None,
+        };
+        let (run, run_action, failure) = match install.run_state() {
+            RunState::Idle => ("idle", None, None),
+            RunState::Running { action, .. } => ("running", Some(*action), None),
+            RunState::Succeeded { action } => ("succeeded", Some(*action), None),
+            RunState::Failed { action, failure } => (
+                "failed",
+                Some(*action),
+                Some(failure.code.clone().unwrap_or_else(|| "failed".into())),
+            ),
+        };
+        let bounds = install.bounds_gib();
+        super::actions::InternalProjection {
+            readiness: match install.readiness() {
+                Readiness::Gated => "gated",
+                Readiness::Checking => "checking",
+                Readiness::NoRelease => "no-release",
+                Readiness::Unsupported(_) => "unsupported",
+                Readiness::Ready => "ready",
+            },
+            on_review,
+            download: flow
+                .and_then(|flow| flow.presentation().phase)
+                .map_or("none", download_phase_key),
+            target_gib: ready.then(|| install.target_bytes() >> 30),
+            min_gib: bounds.map(|(min, _)| min),
+            max_gib: bounds.map(|(_, max)| max),
+            reviewed: install.reviewed_digest(),
+            shrink_bytes: plan
+                .and_then(|plan| plan.shrink.as_ref())
+                .map(|shrink| shrink.from_bytes.saturating_sub(shrink.to_bytes)),
+            staging_bytes: plan.map(install_flow::staging_bytes),
+            blockers: install
+                .blockers()
+                .iter()
+                .map(|blocker| install_flow::blocker_key(*blocker))
+                .collect(),
+            run,
+            run_action: run_action.map(|action| match action {
+                HelperAction::Stage => "stage",
+                HelperAction::Arm => "arm",
+                HelperAction::Remove => "remove",
+            }),
+            failure,
+            pending_operation: pending.map(|record| record.operation_id.clone()),
+            availability: super::actions::InternalAvailability {
+                start_download: on_review && flow.is_some_and(InternalDownloadFlow::can_start),
+                pause_download: on_review && flow.is_some_and(InternalDownloadFlow::can_pause),
+                resume_download: on_review && flow.is_some_and(InternalDownloadFlow::can_resume),
+                cancel_download: on_review && flow.is_some_and(InternalDownloadFlow::can_cancel),
+                discard_download: on_review && flow.is_some_and(InternalDownloadFlow::can_discard),
+                release_download: on_review && flow.is_some_and(InternalDownloadFlow::can_release),
+                set_target_size: on_review
+                    && ready
+                    && bounds.is_some()
+                    && pending.is_none()
+                    && !running
+                    && !install.can_restart(),
+                install: on_review
+                    && install
+                        .install_blocker(self.internal_download_ready())
+                        .is_ok(),
+                restart: on_review && install.can_restart() && idle_host,
+                restart_later: on_review && install.can_restart() && !install.restart_deferred(),
+                retry: install.gate() && resume_page && pending.is_some() && !running,
+                remove: install.gate() && resume_page && pending.is_some() && !running,
+                firmware_settings: on_review && idle_host && install.firmware_command().is_some(),
+                disable_fast_startup: on_review
+                    && idle_host
+                    && install.command_available(HostCommand::DisableFastStartup),
+                recheck: install.gate() && resume_page && !install.is_probing() && !running,
+            },
+        }
+    }
+
+    fn internal_readiness_text(&self) -> String {
+        let host = install_flow::host_arg(self.internal_install.host());
+        match self.internal_install.readiness() {
+            Readiness::Gated => super::strings::t("imager-setup-internal-gated"),
+            Readiness::Checking => {
+                super::strings::t_args("imager-setup-internal-checking", &[("host", host.into())])
+            }
+            Readiness::NoRelease => super::strings::t("imager-setup-internal-no-release"),
+            Readiness::Unsupported(blockers) => super::strings::t_args(
+                "imager-setup-internal-unsupported",
+                &[(
+                    "reasons",
+                    blockers
+                        .iter()
+                        .map(|blocker| {
+                            install_flow::blocker_text(*blocker, self.internal_install.host())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .into(),
+                )],
+            ),
+            Readiness::Ready => {
+                super::strings::t_args("imager-setup-internal-ready", &[("host", host.into())])
+            }
+        }
+    }
+
+    /// A text on the left that grows, and its control on the right.
+    fn detail_row(text: Text, control: Option<Box<dyn Widget>>) -> Row {
+        let mut row = Row::new().push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_flex_grow()
+                .with_child(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(Box::new(text)),
+                )),
+        ));
+        if let Some(control) = control {
+            row = row.push(control);
+        }
+        row
+    }
+
+    fn internal_plan_card(&self) -> Card {
+        let t = super::strings::t;
+        let t_args = super::strings::t_args;
+        let install = &self.internal_install;
+        let host = install_flow::host_arg(install.host());
+        let pending_plan = install.pending().map(|record| &record.plan);
+        let plan = pending_plan.map(Ok).or_else(|| {
+            install
+                .plan()
+                .map(|plan| plan.as_ref().map_err(Clone::clone))
+        });
+        let summary = match plan {
+            None => t("imager-setup-internal-plan-checking"),
+            Some(Err(super::staging::plan::PlanError::InsufficientSpace {
+                needed_bytes,
+                available_bytes,
+            })) => t_args(
+                "imager-setup-internal-plan-error-space",
+                &[
+                    ("needed", ui::format::bytes(needed_bytes).into()),
+                    ("available", ui::format::bytes(available_bytes).into()),
+                ],
+            ),
+            Some(Err(super::staging::plan::PlanError::Unsupported(detail))) => t_args(
+                "imager-setup-internal-plan-error-other",
+                &[("detail", detail.into())],
+            ),
+            Some(Ok(plan)) => {
+                let space = plan.shrink.as_ref().map_or_else(
+                    || t("imager-setup-internal-plan-free"),
+                    |shrink| {
+                        t_args(
+                            "imager-setup-internal-plan-shrink",
+                            &[
+                                ("host", host.into()),
+                                (
+                                    "shrink",
+                                    ui::format::bytes(
+                                        shrink.from_bytes.saturating_sub(shrink.to_bytes),
+                                    )
+                                    .into(),
+                                ),
+                                ("from", ui::format::bytes(shrink.from_bytes).into()),
+                                ("to", ui::format::bytes(shrink.to_bytes).into()),
+                            ],
+                        )
+                    },
+                );
+                [
+                    space,
+                    t_args(
+                        "imager-setup-internal-plan-target",
+                        &[(
+                            "target",
+                            ui::format::bytes(install_flow::target_extent_bytes(plan)).into(),
+                        )],
+                    ),
+                    t_args(
+                        "imager-setup-internal-plan-staging",
+                        &[(
+                            "staging",
+                            ui::format::bytes(install_flow::staging_bytes(plan)).into(),
+                        )],
+                    ),
+                ]
+                .join("\n")
+            }
+        };
+        let mut content = stack().push(Box::new(
+            Text::new(&summary)
+                .with_id("setup.internal.plan")
+                .with_live(Politeness::Polite),
+        ));
+        if pending_plan.is_none()
+            && let Some((min, max)) = install.bounds_gib()
+        {
+            let editable = !install.is_running() && !install.can_restart();
+            content = content
+                .push(Box::new(
+                    Text::new(&t("imager-setup-internal-size-label")).with_role(TextRole::Label),
+                ))
+                .push(Box::new(
+                    NumberInput::from_state(install.target_state())
+                        .with_range(min as f64, max as f64)
+                        .with_step(1.0)
+                        .with_suffix("GiB")
+                        .with_id("setup.internal.target-size")
+                        .with_accessible_name(t("imager-setup-internal-size-label"))
+                        .with_size(180.0, 40.0)
+                        .with_enabled(editable),
+                ))
+                .push(Box::new(
+                    Text::new(&t_args(
+                        "imager-setup-internal-size-help",
+                        &[
+                            ("min", min.into()),
+                            ("max", max.into()),
+                            ("host", host.into()),
+                        ],
+                    ))
+                    .dimmed(),
+                ));
+        }
+        content = content.push(Box::new(Text::new(&t_args(
+            "imager-setup-internal-expect",
+            &[("host", host.into())],
+        ))));
+        if install_flow::BUILD_GATE != Some("1") {
+            content = content.push(Box::new(
+                Text::new(&t("imager-setup-internal-unverified"))
+                    .with_id("setup.internal.unverified")
+                    .dimmed(),
+            ));
+        }
+        Card::titled(t("imager-setup-internal-plan-title"), Box::new(content))
+    }
+
+    fn internal_blockers_card(&self, extra: Option<&str>) -> Card {
+        let t = super::strings::t;
+        let install = &self.internal_install;
+        let idle_host = self.host_command_pending.is_none();
+        let mut content = stack();
+        if install.blockers().is_empty() {
+            content = content.push(Box::new(
+                Text::new(&t("imager-setup-internal-blockers-none"))
+                    .with_id("setup.internal.blockers"),
+            ));
+        }
+        for blocker in install.blockers() {
+            let control: Option<Box<dyn Widget>> = match install.remedy(*blocker) {
+                Some(HostCommand::FirmwareSettings { .. }) => Some(Box::new(
+                    self.button(
+                        "setup.internal.firmware-settings",
+                        &t("imager-setup-internal-remedy-firmware"),
+                        SetupCommand::InternalFirmwareSettings,
+                    )
+                    .with_enabled(idle_host),
+                )),
+                Some(HostCommand::DisableFastStartup) => Some(Box::new(
+                    self.button(
+                        "setup.internal.disable-fast-startup",
+                        &t("imager-setup-internal-remedy-fast-startup"),
+                        SetupCommand::InternalDisableFastStartup,
+                    )
+                    .with_enabled(idle_host),
+                )),
+                _ => None,
+            };
+            content = content.push(Box::new(Self::detail_row(
+                Text::new(&install_flow::blocker_text(*blocker, install.host()))
+                    .with_id(format!(
+                        "setup.internal.blocker.{}",
+                        install_flow::blocker_key(*blocker)
+                    ))
+                    .with_live(Politeness::Polite),
+                control,
+            )));
+        }
+        if let Some(extra) = extra {
+            content = content.push(Box::new(Text::new(extra)));
+        }
+        content = content.push(Box::new(
+            self.button(
+                "setup.internal.recheck",
+                &t("imager-setup-internal-recheck"),
+                SetupCommand::RecheckInternal,
+            )
+            .with_enabled(!install.is_probing() && !install.is_running()),
+        ));
+        Card::titled(t("imager-setup-internal-blockers-title"), Box::new(content))
+    }
+
+    fn internal_resume_card(&self) -> Option<Card> {
+        let t = super::strings::t;
+        let install = &self.internal_install;
+        install.pending()?;
+        let enabled = !install.is_running();
+        Some(Card::titled(
+            t("imager-setup-internal-resume-title"),
+            Box::new(
+                stack()
+                    .push(Box::new(
+                        Text::new(&t("imager-setup-internal-resume"))
+                            .with_id("setup.internal.resume"),
+                    ))
+                    .push(Box::new(
+                        Row::new()
+                            .push(Box::new(
+                                self.button(
+                                    "setup.internal.retry",
+                                    &t("imager-setup-internal-resume-retry"),
+                                    SetupCommand::RetryInternal,
+                                )
+                                .with_enabled(enabled),
+                            ))
+                            .push(Box::new(
+                                self.button(
+                                    "setup.internal.remove",
+                                    &t("imager-setup-internal-resume-remove"),
+                                    SetupCommand::RemoveInternal,
+                                )
+                                .with_enabled(enabled),
+                            )),
+                    )),
+            ),
+        ))
+    }
+
+    fn internal_run_card(&self) -> Option<Card> {
+        let t = super::strings::t;
+        let install = &self.internal_install;
+        let host = install.host();
+        let (title, detail, politeness) = match install.run_state() {
+            RunState::Idle => return None,
+            RunState::Running { progress, .. } => (
+                t("imager-setup-internal-run-title"),
+                progress.as_ref().map_or_else(
+                    || t("imager-setup-internal-run-waiting"),
+                    |progress| {
+                        let step = t(&format!(
+                            "imager-setup-internal-step-{}",
+                            install_flow::step_key(progress.step)
+                        ));
+                        if progress.total_bytes == 0 {
+                            super::strings::t_args(
+                                "imager-setup-internal-run-step",
+                                &[("step", step.into())],
+                            )
+                        } else {
+                            super::strings::t_args(
+                                "imager-setup-internal-run-progress",
+                                &[
+                                    ("step", step.into()),
+                                    ("done", ui::format::bytes(progress.done_bytes).into()),
+                                    ("total", ui::format::bytes(progress.total_bytes).into()),
+                                ],
+                            )
+                        }
+                    },
+                ),
+                Politeness::Polite,
+            ),
+            RunState::Succeeded {
+                action: HelperAction::Remove,
+            } => (
+                t("imager-setup-internal-run-title"),
+                t("imager-setup-internal-removed"),
+                Politeness::Polite,
+            ),
+            RunState::Succeeded { .. } => {
+                let mut detail = super::strings::t_args(
+                    "imager-setup-internal-done",
+                    &[("host", install_flow::host_arg(host).into())],
+                );
+                if install.restart_deferred() {
+                    detail.push('\n');
+                    detail.push_str(&t("imager-setup-internal-restart-deferred"));
+                }
+                (
+                    t("imager-setup-internal-done-title"),
+                    detail,
+                    Politeness::Polite,
+                )
+            }
+            RunState::Failed { failure, .. } => (
+                t("imager-setup-internal-run-title"),
+                install_flow::failure_text(failure, host),
+                Politeness::Assertive,
+            ),
+        };
+        Some(Card::titled(
+            &title,
+            Box::new(
+                Text::new(&detail)
+                    .with_id("setup.internal.run")
+                    .with_live(politeness),
+            ),
+        ))
+    }
+
+    /// Review navigation for an offered Full Tilo: Install, or Restart now /
+    /// Restart later once the installer is set to start.
+    fn internal_nav(&self, mut nav: Row) -> Row {
+        let t = super::strings::t;
+        let install = &self.internal_install;
+        if install.can_restart() {
+            if !install.restart_deferred() {
+                nav = nav.push(Box::new(self.button(
+                    "setup.internal.restart-later",
+                    &t("imager-setup-internal-restart-later"),
+                    SetupCommand::RestartInternalLater,
+                )));
+            }
+            return nav.push(Box::new(
+                self.button(
+                    "setup.internal.restart",
+                    &t("imager-setup-internal-restart-now"),
+                    SetupCommand::RestartInternal,
+                )
+                .primary()
+                .with_enabled(self.host_command_pending.is_none()),
+            ));
+        }
+        let label = if install.is_running() {
+            t("imager-setup-internal-installing")
+        } else if install.pending().is_some() {
+            t("imager-setup-internal-continue")
+        } else {
+            t("imager-setup-internal-install")
+        };
+        nav.push(Box::new(
+            self.button(
+                "setup.internal.install",
+                &label,
+                SetupCommand::InstallInternal,
+            )
+            .primary()
+            .with_enabled(
+                install
+                    .install_blocker(self.internal_download_ready())
+                    .is_ok(),
+            ),
+        ))
+    }
+}
+
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+const fn download_phase_key(phase: super::internal_cache::coordinator::Phase) -> &'static str {
+    use super::internal_cache::coordinator::Phase;
+    match phase {
+        Phase::Authenticating => "authenticating",
+        Phase::Acquiring => "acquiring",
+        Phase::Preparing => "preparing",
+        Phase::Downloading => "downloading",
+        Phase::Ready => "ready",
+        Phase::Consuming => "consuming",
+        Phase::Consumed => "consumed",
+        Phase::Paused => "paused",
+        Phase::Cancelled => "cancelled",
+        Phase::Failed => "failed",
+        Phase::Released => "released",
+        Phase::Discarded => "discarded",
     }
 }
 
@@ -1771,6 +3031,51 @@ impl Drop for SetupApp {
 }
 
 impl Widget for SetupApp {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            super::actions::SETUP_OPERATION_TYPE,
+            super::import_actions::IMPORT_OPERATION_TYPE,
+        ]
+    }
+
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if let Some(import_app) = &self.import_app {
+            return import_app.resources(doc);
+        }
+        vec![super::actions::resource(&self.setup_projection())]
+    }
+
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if let Some(import_app) = &mut self.import_app {
+            return import_app.invoke_resource_operation_v2(kind, type_id, payload, doc, path);
+        }
+        let Some(operation) = super::actions::decode(type_id, payload)? else {
+            for child in self.children_mut() {
+                if let Some(output) =
+                    child.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(output));
+                }
+            }
+            return Ok(None);
+        };
+        if kind != tilo_actions::OperationKind::View {
+            return Err("Guided setup operations are local view operations.".into());
+        }
+        self.apply_setup_operation(operation)?;
+        Ok(Some(tilo_actions::ActionOutput {
+            value: Some(self.setup_projection().value()),
+            resources: Vec::new(),
+        }))
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.ensure_import_app();
         if let Some(import_app) = &mut self.import_app {
@@ -1970,6 +3275,9 @@ impl Widget for SetupApp {
                     self.internal_download_flow
                         .as_ref()
                         .is_some_and(InternalDownloadFlow::has_pending_operation)
+                        || self.internal_install.is_probing()
+                        || self.internal_install.is_running()
+                        || self.host_command_pending.is_some()
                 }
                 #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
                 {
@@ -2342,7 +3650,8 @@ mod tests {
         assert_eq!(app.controller().folders().len(), 1);
     }
 
-    // Catches routing Full qOS through the Desktop installer or implying installation is ready.
+    // Catches routing Full qOS through the Desktop installer or implying
+    // installation is ready while the product gate is closed.
     #[test]
     fn full_os_review_has_a_distinct_download_surface_and_no_install_action() {
         let mut app = supported_fixture();
@@ -2350,6 +3659,20 @@ mod tests {
         app.apply_command(SetupCommand::Next);
         app.apply_command(SetupCommand::SetMode(FolderMode::Later));
         app.apply_command(SetupCommand::Next);
+        let composition = app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.install"),
+            0
+        );
+        let doc = AutoCommit::new();
+        assert!(
+            !internal_action(&app, "setup.internal.install", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(invoke_internal(&mut app, "setup.internal.install").is_err());
+        assert_eq!(app.internal_install.run_state(), &RunState::Idle);
         let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (960, 720));
 
         harness
@@ -3110,5 +4433,1348 @@ mod tests {
         ));
         assert_eq!(app.controller().folders().len(), 1);
         assert_eq!(app.controller().default_mode(), FolderMode::Copy);
+    }
+
+    #[test]
+    fn embedded_import_routes_the_live_child_without_publishing_stale_setup_resources() {
+        let mut app = supported_fixture();
+        app.import_launcher = || ImportApp::for_shot("import-first-login-later");
+        let doc = AutoCommit::new();
+        let setup = Widget::resources(&app, &doc).pop().unwrap();
+        let open = setup
+            .actions
+            .iter()
+            .find(|action| action.id == "open-imports")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        Widget::invoke_resource_operation_v2(
+            &mut app,
+            tilo_actions::OperationKind::View,
+            &open.type_id,
+            &open.payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .unwrap();
+        let mut state = AutoCommit::new();
+        Widget::sync(&mut app, &mut state, &automerge::ROOT);
+
+        let resources = Widget::resources(&app, &state);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].kind, "imager.import");
+        assert!(
+            resources
+                .iter()
+                .all(|resource| resource.kind != "imager.setup")
+        );
+        assert!(
+            Widget::invoke_resource_operation_v2(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                &open.type_id,
+                &open.payload,
+                &state,
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .is_none(),
+            "a retained setup action must not mutate the hidden parent flow"
+        );
+        let folder = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "imager.import.folder")
+            .unwrap();
+        let copy_action = folder
+            .actions
+            .iter()
+            .find(|action| action.id == "one-time-copy")
+            .unwrap();
+        let copy = copy_action.build_json(&serde_json::Map::new()).unwrap();
+        Widget::invoke_resource_operation_v2(
+            &mut app,
+            copy_action.kind,
+            &copy.type_id,
+            &copy.payload,
+            &state,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .unwrap();
+
+        let updated = Widget::resources(&app, &state);
+        let folder = updated[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "imager.import.folder")
+            .unwrap();
+        assert!(
+            folder
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.detail.as_deref())
+                .is_some_and(|detail| detail.contains("copy"))
+        );
+    }
+
+    #[test]
+    fn embedded_import_publicly_observes_completed_issue_pages_before_layout() {
+        let mut app = supported_fixture();
+        app.import_launcher = || ImportApp::for_shot("import-issue-pages");
+        let mut state = AutoCommit::new();
+        let setup = Widget::resources(&app, &state).pop().unwrap();
+        let open = setup
+            .actions
+            .iter()
+            .find(|action| action.id == "open-imports")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &open).unwrap();
+        Widget::sync(&mut app, &mut state, &automerge::ROOT);
+
+        let resource = Widget::resources(&app, &state).pop().unwrap();
+        let operation = resource
+            .children
+            .iter()
+            .find(|resource| resource.kind == "imager.import.operation")
+            .unwrap_or_else(|| {
+                let read = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "read-status")
+                    .unwrap()
+                    .build_json(&serde_json::Map::new())
+                    .unwrap();
+                panic!(
+                    "issue-page fixture has no operation: {}",
+                    invoke_encoded_setup(&mut app, &read).unwrap()
+                );
+            });
+        let next = operation
+            .actions
+            .iter()
+            .find(|action| action.id == "next-issues")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &next).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let observed = loop {
+            Widget::update(&mut app, &mut state, &automerge::ROOT);
+            let resource = Widget::resources(&app, &state).pop().unwrap();
+            let read = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "read-status")
+                .unwrap()
+                .build_json(&serde_json::Map::new())
+                .unwrap();
+            let observed = invoke_encoded_setup(&mut app, &read).unwrap();
+            if observed["operations"][0]["issues"]
+                .as_array()
+                .is_some_and(|issues| issues.len() == 8)
+            {
+                break observed;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "embedded completed issue page was not publicly observable"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(observed["operations"][0]["next_issues_available"], false);
+
+        let resource = Widget::resources(&app, &state).pop().unwrap();
+        let read = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "read-status")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        let repeated = invoke_encoded_setup(&mut app, &read).unwrap();
+        assert_eq!(repeated, observed);
+    }
+
+    fn setup_resource(app: &SetupApp, doc: &AutoCommit) -> tilo_actions::Resource {
+        Widget::resources(app, doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == super::super::actions::SETUP_RESOURCE_ID)
+            .unwrap()
+    }
+
+    fn setup_action(app: &SetupApp, id: &str, doc: &AutoCommit) -> tilo_actions::ActionSpec {
+        setup_resource(app, doc)
+            .actions
+            .into_iter()
+            .find(|action| action.id == id)
+            .unwrap()
+    }
+
+    fn folder_action(
+        app: &SetupApp,
+        index: usize,
+        id: &str,
+        doc: &AutoCommit,
+    ) -> tilo_actions::ActionSpec {
+        child_resource(&setup_resource(app, doc), "imager.setup.selection").children[index]
+            .actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap()
+            .clone()
+    }
+
+    fn setup_args(
+        entries: &[(&str, serde_json::Value)],
+    ) -> serde_json::Map<String, serde_json::Value> {
+        entries
+            .iter()
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect()
+    }
+
+    fn invoke_setup(
+        app: &mut SetupApp,
+        id: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let action = setup_action(app, id, &doc);
+        let encoded = action
+            .build_json(&arguments)
+            .map_err(|error| error.to_string())?;
+        Widget::invoke_resource_operation_v2(
+            app,
+            action.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "setup operation returned no state projection".to_string())
+    }
+
+    fn invoke_folder_setup(
+        app: &mut SetupApp,
+        index: usize,
+        id: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let action = folder_action(app, index, id, &doc);
+        let encoded = action
+            .build_json(&arguments)
+            .map_err(|error| error.to_string())?;
+        invoke_encoded_setup(app, &encoded)
+    }
+
+    fn invoke_setup_raw(
+        app: &mut SetupApp,
+        operation: super::super::actions::SetupOperation,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let encoded = super::super::actions::encode(&operation);
+        Widget::invoke_resource_operation_v2(
+            app,
+            tilo_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "setup operation returned no state projection".to_string())
+    }
+
+    fn child_resource<'a>(
+        resource: &'a tilo_actions::Resource,
+        kind: &str,
+    ) -> &'a tilo_actions::Resource {
+        resource
+            .children
+            .iter()
+            .find(|child| child.kind == kind)
+            .unwrap_or_else(|| panic!("missing child resource kind {kind}"))
+    }
+
+    fn invoke_encoded_setup(
+        app: &mut SetupApp,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        Widget::invoke_resource_operation_v2(
+            app,
+            tilo_actions::OperationKind::View,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )?
+        .and_then(|output| output.value)
+        .ok_or_else(|| "setup operation returned no state projection".to_string())
+    }
+
+    fn retained_setup_help_before_import(
+        app: &SetupApp,
+        doc: &AutoCommit,
+    ) -> tilo_actions::EncodedAction {
+        let resource = Widget::resources(app, doc).pop().unwrap();
+        assert_eq!(
+            resource.id.as_str(),
+            super::super::actions::SETUP_RESOURCE_ID
+        );
+        assert_eq!(
+            resource.presentation.as_ref().unwrap().badge.as_deref(),
+            Some("Folders")
+        );
+        let selection = child_resource(&resource, "imager.setup.selection");
+        let detail = selection
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert!(detail.contains("help open"), "{detail}");
+        assert!(detail.contains("imports closed"), "{detail}");
+        let toggle_help = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "toggle-help")
+            .unwrap();
+        assert!(toggle_help.contract.availability.is_available());
+        toggle_help.build_json(&serde_json::Map::new()).unwrap()
+    }
+
+    fn assert_live_import_after_activation(
+        app: &mut SetupApp,
+        doc: &AutoCommit,
+        retained_setup: &tilo_actions::EncodedAction,
+    ) {
+        let resource = Widget::resources(app, doc).pop().unwrap();
+        assert_eq!(
+            resource.id.as_str(),
+            super::super::import_actions::IMPORT_RESOURCE_ID
+        );
+        assert_eq!(resource.kind, "imager.import");
+        let read = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "read-status")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        assert_eq!(
+            invoke_encoded_setup(app, &read).unwrap()["operations"][0]["state"],
+            "complete"
+        );
+        assert!(
+            Widget::invoke_resource_operation_v2(
+                app,
+                tilo_actions::OperationKind::View,
+                &retained_setup.type_id,
+                &retained_setup.payload,
+                doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .is_none(),
+            "the retained setup action must not reach the hidden parent flow"
+        );
+        assert_eq!(Widget::resources(app, doc)[0].kind, "imager.import");
+    }
+
+    #[test]
+    fn semantic_operations_choose_navigate_retain_and_invalidate_review() {
+        let mut app = supported_fixture();
+        let selected = invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        assert_eq!(selected["selection"]["experience"], "desktop");
+        assert_eq!(
+            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap()["page"],
+            "folders"
+        );
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Documents", 4096)),
+        });
+        invoke_folder_setup(
+            &mut app,
+            0,
+            "set-mode",
+            setup_args(&[("mode", serde_json::json!("later"))]),
+        )
+        .unwrap();
+        let cleared =
+            invoke_folder_setup(&mut app, 0, "use-common-mode", serde_json::Map::new()).unwrap();
+        assert_eq!(cleared["selection"]["folders"][0]["mode"], "copy");
+        assert_eq!(cleared["selection"]["folders"][0]["overridden"], false);
+        invoke_folder_setup(
+            &mut app,
+            0,
+            "set-mode",
+            setup_args(&[("mode", serde_json::json!("later"))]),
+        )
+        .unwrap();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Pictures", 2048)),
+        });
+        let removed = invoke_folder_setup(&mut app, 1, "remove", serde_json::Map::new()).unwrap();
+        assert_eq!(removed["selection"]["folder_count"], 1);
+        let review = invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        assert_eq!(review["page"], "review");
+        assert_eq!(review["review"]["ready"], true);
+        assert_eq!(review["selection"]["folder_count"], 1);
+        assert_eq!(review["selection"]["active_folder_count"], 0);
+        assert!(
+            invoke_setup_raw(
+                &mut app,
+                super::super::actions::SetupOperation::SetCommonMode {
+                    mode: "copy".into()
+                }
+            )
+            .is_err()
+        );
+        invoke_setup(&mut app, "back", serde_json::Map::new()).unwrap();
+        let edited = invoke_setup(
+            &mut app,
+            "set-common-mode",
+            setup_args(&[("mode", serde_json::json!("copy"))]),
+        )
+        .unwrap();
+        assert_eq!(edited["page"], "folders");
+        assert_eq!(edited["review"]["ready"], false);
+        assert_eq!(edited["selection"]["folders"][0]["mode"], "later");
+        let back = invoke_setup(&mut app, "back", serde_json::Map::new()).unwrap();
+        assert_eq!(back["page"], "experience");
+        assert_eq!(back["selection"]["experience"], "desktop");
+        assert_eq!(back["selection"]["folder_count"], 1);
+    }
+
+    #[test]
+    fn semantic_operations_refuse_unavailable_choices_without_mutating_state() {
+        let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: true,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        let error = invoke_setup_raw(
+            &mut app,
+            super::super::actions::SetupOperation::ChooseExperience {
+                experience: "full_os".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("not available"), "{error}");
+        assert_eq!(app.controller().chosen_experience(), None);
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        let error = invoke_setup_raw(
+            &mut app,
+            super::super::actions::SetupOperation::SetCommonMode {
+                mode: "connected".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("not available"), "{error}");
+        assert_eq!(app.controller().default_mode(), FolderMode::Copy);
+        assert_eq!(app.controller().page(), SetupPage::Folders);
+    }
+
+    #[test]
+    fn setup_actions_follow_visible_pages_and_import_takeover() {
+        let mut app = supported_fixture();
+        let doc = AutoCommit::new();
+        assert!(
+            setup_action(&app, "choose-experience", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            setup_action(&app, "open-imports", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        assert!(
+            !setup_action(&app, "choose-experience", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            !setup_action(&app, "open-imports", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            setup_action(&app, "choose-folder", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            invoke_setup_raw(
+                &mut app,
+                super::super::actions::SetupOperation::ChooseExperience {
+                    experience: "desktop".into()
+                }
+            )
+            .is_err()
+        );
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        assert!(
+            !setup_action(&app, "set-common-mode", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            !setup_action(&app, "choose-folder", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(
+            setup_action(&app, "open-imports", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+        assert!(
+            Widget::resources(&app, &doc)
+                .iter()
+                .all(|resource| resource.kind != "imager.setup")
+        );
+        assert!(invoke_setup_raw(&mut app, super::super::actions::SetupOperation::Next).is_err());
+    }
+
+    #[test]
+    fn suggested_folder_action_uses_live_choice_and_rechecks_availability() {
+        let mut app = supported_fixture();
+        app.worker_launcher = accepted_without_completion_worker;
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        app.known_folders = vec![KnownFolder {
+            kind: KnownFolderKind::Documents,
+            path: Some(PathBuf::from(TEST_SOURCE_ROOT).join("Documents")),
+            unavailable_reason: None,
+        }];
+        let doc = AutoCommit::new();
+        let root = setup_resource(&app, &doc);
+        let suggestion = child_resource(&root, "imager.setup.suggestions")
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.setup.suggestion")
+            .unwrap();
+        assert!(
+            suggestion
+                .actions
+                .iter()
+                .find(|action| action.id == "select")
+                .unwrap()
+                .contract
+                .availability
+                .is_available()
+        );
+        let encoded = suggestion
+            .actions
+            .iter()
+            .find(|action| action.id == "select")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &encoded).unwrap();
+        assert_eq!(app.pending_scans, 1);
+        assert!(invoke_encoded_setup(&mut app, &encoded).is_err());
+    }
+
+    #[test]
+    fn desktop_review_ignores_unselected_full_os_download_status() {
+        let mut app = SetupApp::for_shot("setup-review");
+        app.desktop_revision = app.desktop_flow.revision();
+        app.internal_download_revision = u64::MAX;
+        let expected = app.status.clone();
+
+        assert!(app.poll_background());
+        assert_eq!(app.status, expected);
+    }
+
+    #[test]
+    fn full_os_review_ignores_unselected_desktop_install_status() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::Next);
+        assert_eq!(app.controller().page(), SetupPage::Review);
+        app.internal_download_revision = app.internal_download_flow.as_ref().unwrap().revision();
+        app.desktop_flow = DesktopFlow::from_fixture_state(DesktopFlowState::Installed {
+            selection: fixture_desktop_selection(false),
+            result: super::super::desktop_install::InstalledDesktop {
+                version: "0.1.9-1.fc44".into(),
+                session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
+            },
+        });
+        app.desktop_revision = u64::MAX;
+        let expected = app.status.clone();
+
+        assert!(app.poll_background());
+        assert_eq!(app.status, expected);
+        let harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+        assert!(harness.a11y_node_named("Review Tilo setup").is_some());
+        assert!(
+            harness
+                .a11y_node_named("Tilo Desktop is installed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn semantic_operations_refuse_stale_identities_and_malformed_arguments() {
+        let mut app = supported_fixture();
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Documents", 4096)),
+        });
+        let before = app.controller().folders().to_vec();
+        for operation in [
+            super::super::actions::SetupOperation::SetFolderMode {
+                folder: "missing".into(),
+                mode: "copy".into(),
+            },
+            super::super::actions::SetupOperation::ClearFolderMode {
+                folder: "missing".into(),
+            },
+            super::super::actions::SetupOperation::RemoveFolder {
+                folder: "missing".into(),
+            },
+        ] {
+            assert!(
+                invoke_setup_raw(&mut app, operation)
+                    .unwrap_err()
+                    .contains("folder selection")
+            );
+            assert_eq!(app.controller().folders(), before.as_slice());
+        }
+        let doc = AutoCommit::new();
+        let set_mode = folder_action(&app, 0, "set-mode", &doc);
+        assert!(set_mode.build_json(&serde_json::Map::new()).is_err());
+        assert!(
+            set_mode
+                .build_json(&setup_args(&[("mode", serde_json::json!(7))]))
+                .is_err()
+        );
+        assert!(
+            Widget::invoke_resource_operation_v2(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                super::super::actions::SETUP_OPERATION_TYPE,
+                b"{not-json",
+                &doc,
+                &automerge::ROOT,
+            )
+            .is_err()
+        );
+        assert_eq!(app.controller().folders(), before.as_slice());
+    }
+
+    #[test]
+    fn setup_resource_projects_availability_help_and_import_navigation() {
+        let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: true,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        app.import_launcher = || ImportApp::for_shot("import-complete");
+        let doc = AutoCommit::new();
+        let resource = Widget::resources(&app, &doc).pop().unwrap();
+        assert_eq!(resource.kind, "imager.setup");
+        assert_eq!(
+            resource.presentation.as_ref().unwrap().badge.as_deref(),
+            Some("Experience")
+        );
+        assert_eq!(resource.actions.len(), 7);
+        let detail = resource
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert!(detail.contains("Full OS no"), "{detail}");
+        assert!(detail.contains("Connected no"), "{detail}");
+        let choose = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "choose-experience")
+            .unwrap();
+        assert_eq!(
+            choose.params()[0]
+                .choices
+                .iter()
+                .map(std::convert::AsRef::as_ref)
+                .collect::<Vec<&str>>(),
+            vec!["desktop"]
+        );
+        assert!(resource.actions.iter().all(|action| {
+            action.operation_type.as_deref() == Some(super::super::actions::SETUP_OPERATION_TYPE)
+        }));
+        let chosen = invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        assert_eq!(chosen["availability"]["desktop"], true);
+        assert_eq!(chosen["availability"]["full_os"], false);
+        assert_eq!(chosen["availability"]["connected"], false);
+        assert_eq!(chosen["availability"]["next"], true);
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        let folders = invoke_setup(&mut app, "toggle-help", serde_json::Map::new()).unwrap();
+        assert_eq!(folders["selection"]["help_open"], true);
+        assert_eq!(folders["page"], "folders");
+        let retained_help = retained_setup_help_before_import(&app, &doc);
+        assert!(
+            !setup_action(&app, "open-imports", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+        assert_eq!(opened["selection"]["imports_open"], true);
+        assert_eq!(app.children()[0].name(), "ImportApp");
+        assert_live_import_after_activation(&mut app, &doc, &retained_help);
+    }
+
+    #[test]
+    fn setup_resource_browses_complete_path_free_folder_selection() {
+        let mut app = supported_fixture();
+        for (name, bytes) in [("Documents", 4096), ("Pictures", 2048)] {
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: None,
+                result: Ok(scan(name, bytes)),
+            });
+        }
+        app.controller
+            .borrow_mut()
+            .set_folder_mode(1, FolderMode::Later);
+
+        let root = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+        let selection = child_resource(&root, "imager.setup.selection");
+        let detail = selection
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert_eq!(
+            detail,
+            "experience no experience selected · common copy · 2 folders · 1 active · help closed · imports closed"
+        );
+        assert_eq!(selection.children.len(), 2);
+        assert_eq!(selection.children[0].kind, "imager.setup.folder");
+        assert_eq!(selection.children[1].kind, "imager.setup.folder");
+        assert!(
+            selection.children[0]
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("copy · common")
+        );
+        assert!(
+            selection.children[1]
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("later · override")
+        );
+        for folder in &selection.children {
+            assert!(!folder.label.contains("Documents"));
+            assert!(!folder.label.contains("Pictures"));
+            assert_eq!(folder.actions.len(), 3);
+            assert!(folder.actions.iter().all(|action| {
+                action.operation_type.as_deref()
+                    == Some(super::super::actions::SETUP_OPERATION_TYPE)
+            }));
+            assert_eq!(
+                folder
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "set-mode")
+                    .unwrap()
+                    .params()
+                    .len(),
+                1
+            );
+        }
+        let review = child_resource(&root, "imager.setup.review");
+        assert!(
+            review
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("ready no")
+        );
+        let availability = child_resource(&root, "imager.setup.availability");
+        assert!(
+            availability
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("Desktop yes")
+        );
+    }
+
+    #[test]
+    fn retained_folder_action_uses_identity_after_earlier_folder_is_removed() {
+        let mut app = supported_fixture();
+        invoke_setup(
+            &mut app,
+            "choose-experience",
+            setup_args(&[("experience", serde_json::json!("desktop"))]),
+        )
+        .unwrap();
+        invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+        for (name, bytes) in [("A", 1), ("B", 2), ("C", 3)] {
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: None,
+                result: Ok(scan(name, bytes)),
+            });
+        }
+
+        let root = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+        let folders = &child_resource(&root, "imager.setup.selection").children;
+        let remove_a = folders[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .unwrap()
+            .clone();
+        let set_b = folders[1]
+            .actions
+            .iter()
+            .find(|action| action.id == "set-mode")
+            .unwrap()
+            .clone();
+        let remove_a = match &remove_a.input {
+            tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("remove must be immediate"),
+        };
+        let set_b = match &set_b.input {
+            tilo_actions::ActionInput::Prompted { build, .. } => build("later"),
+            tilo_actions::ActionInput::Immediate(_) => panic!("set-mode must prompt for one mode"),
+        };
+        assert_ne!(set_b.type_id, "tilo.invalid_arguments");
+
+        invoke_encoded_setup(&mut app, &remove_a).unwrap();
+        invoke_encoded_setup(&mut app, &set_b).unwrap();
+        assert_eq!(app.controller().folders().len(), 2);
+        assert_eq!(app.controller().folders()[0].scan.bytes, 2);
+        assert_eq!(app.controller().folders()[0].mode, FolderMode::Later);
+        assert_eq!(app.controller().folders()[1].scan.bytes, 3);
+        assert_eq!(app.controller().folders()[1].mode, FolderMode::Copy);
+    }
+
+    fn retained_widget_count(root: &dyn Widget, id: &str) -> usize {
+        usize::from(root.test_id() == Some(id))
+            + root
+                .children()
+                .into_iter()
+                .map(|child| retained_widget_count(child, id))
+                .sum::<usize>()
+    }
+
+    fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
+        if root.test_id() == Some(id) {
+            return root.accessibility().and_then(|node| node.name);
+        }
+        root.children()
+            .into_iter()
+            .find_map(|child| retained_name(child, id))
+    }
+
+    fn internal_action(app: &SetupApp, id: &str, doc: &AutoCommit) -> tilo_actions::ActionSpec {
+        child_resource(&setup_resource(app, doc), "imager.setup.internal")
+            .actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap_or_else(|| panic!("missing internal action {id}"))
+            .clone()
+    }
+
+    fn invoke_internal(app: &mut SetupApp, id: &str) -> Result<serde_json::Value, String> {
+        let doc = AutoCommit::new();
+        let encoded = internal_action(app, id, &doc)
+            .build_json(&serde_json::Map::new())
+            .map_err(|error| error.to_string())?;
+        invoke_encoded_setup(app, &encoded)
+    }
+
+    fn run_inline(_: &str, task: WorkerTask) -> Result<(), String> {
+        task();
+        Ok(())
+    }
+
+    struct GatedFixture {
+        app: SetupApp,
+        fakes: install_flow::tests::Fakes,
+        bytes: Vec<u8>,
+        _server: Server,
+        _root: tempfile::TempDir,
+        _preference: tempfile::TempDir,
+    }
+
+    /// Setup with the product gate open, a fake host and helper, and a real
+    /// fixture download worker whose consumer is the staging consumer.
+    fn gated_app(fakes: install_flow::tests::Fakes, host: HostOs) -> GatedFixture {
+        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let server = Server::new(vec![
+            response(200, "", &bytes),
+            response(200, "", &vec![b'E'; 4096]),
+            response(200, "", &vec![b'R'; 8192]),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let preference = tempfile::tempdir().unwrap();
+        let capabilities = SetupCapabilities {
+            platform: Capabilities {
+                host,
+                desktop_session: true,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        };
+        let install = InternalInstall::new(fakes.runtime(), true, host);
+        let worker = Worker::fixture_for_test(
+            root.path(),
+            server.transport(),
+            install_flow::staging_consumer(install.link()),
+        );
+        let mut app = SetupApp::with_parts(capabilities, run_inline, install);
+        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+            capabilities.platform,
+            preference.path().join("selection.json"),
+            worker,
+            vec![
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+                vec![server.release(&bytes)],
+            ],
+            "x86_64",
+        ));
+        GatedFixture {
+            app,
+            fakes,
+            bytes,
+            _server: server,
+            _root: root,
+            _preference: preference,
+        }
+    }
+
+    fn open_full_review(app: &mut SetupApp) {
+        app.start_host_probe();
+        app.poll_background();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+        app.apply_command(SetupCommand::Next);
+        assert!(app.on_full_os_review(), "{}", app.status);
+    }
+
+    fn wait_for_app(app: &mut SetupApp, what: &str, done: impl Fn(&SetupApp) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_background();
+            if done(app) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    // Catches Full Tilo being offered before the host probe reports, and the
+    // gate, probe and catalog not all being required.
+    #[test]
+    fn full_os_is_checking_until_the_probe_passes_with_the_gate_open() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let app = &mut fixture.app;
+        assert!(!app.capabilities.platform.supports(Experience::FullOs));
+        let composition = app.build_composition();
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.experience.full"
+        ));
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.readiness")
+                .unwrap()
+                .starts_with("Checking whether Tilo can be installed")
+        );
+        app.start_host_probe();
+        assert!(app.poll_background());
+        assert!(app.capabilities.platform.supports(Experience::FullOs));
+        let composition = app.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.experience.full"
+        ));
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
+
+        let mut blocked = gated_app(
+            install_flow::tests::Fakes::new(vec![super::super::staging::probe::Blocker::NotGpt]),
+            HostOs::Linux,
+        );
+        blocked.app.start_host_probe();
+        blocked.app.poll_background();
+        assert!(
+            !blocked
+                .app
+                .capabilities
+                .platform
+                .supports(Experience::FullOs)
+        );
+        let composition = blocked.app.build_composition();
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.readiness")
+                .unwrap()
+                .contains("MBR")
+        );
+    }
+
+    // Catches Install enabling before the verified download is held, the
+    // helper receiving anything but the reviewed plan and verified paths, or
+    // a success that does not offer the restart.
+    #[test]
+    fn gated_full_os_install_stages_the_reviewed_plan_and_offers_restart() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let app = &mut fixture.app;
+        open_full_review(app);
+        let composition = app.build_composition();
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.install-unavailable"),
+            0
+        );
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.target-size"),
+            1
+        );
+        let doc = AutoCommit::new();
+        assert!(
+            !internal_action(app, "setup.internal.install", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+
+        invoke_internal(app, "setup.internal.download").unwrap();
+        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+        let composition = app.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        let reviewed_plan = app.internal_install.plan().unwrap().clone().unwrap();
+        let projection = invoke_internal(app, "setup.internal.install").unwrap();
+        assert_eq!(projection["internal"]["run"], "running");
+        wait_for_app(app, "staging outcome", |app| {
+            !app.internal_install.is_running()
+        });
+        assert_eq!(
+            app.internal_install.run_state(),
+            &RunState::Succeeded {
+                action: HelperAction::Stage
+            }
+        );
+        {
+            let launches = fixture.fakes.launches.lock().unwrap();
+            assert_eq!(launches.len(), 1);
+            assert_eq!(launches[0].action, HelperAction::Stage);
+            // Review ran on provisional installer sizes; the stage request
+            // carries the planner's layout for the verified bundle's sizes,
+            // with the same Tilo size and no further shrink than reviewed.
+            let staged = &launches[0].plan;
+            assert_eq!(launches[0].plan_sha256, staged.digest());
+            assert_eq!(
+                staged.target_extent.lbas(),
+                reviewed_plan.target_extent.lbas()
+            );
+            let kept = |p: &super::super::staging::plan::Plan| {
+                p.shrink.as_ref().map_or(u64::MAX, |x| x.to_bytes)
+            };
+            assert!(kept(staged) >= kept(&reviewed_plan));
+            assert_eq!(
+                launches[0].component_paths.staging_root,
+                "/verified/staging-root.img"
+            );
+            assert_eq!(fixture.fakes.manifests.lock().unwrap()[0], fixture.bytes);
+        }
+        wait_for_app(app, "download consumed", |app| {
+            app.internal_download_flow
+                .as_ref()
+                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Consumed))
+        });
+        let composition = app.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.restart"
+        ));
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.restart-later"),
+            1
+        );
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.run")
+                .unwrap()
+                .contains("stays the startup default")
+        );
+        assert!(invoke_internal(app, "setup.internal.install").is_err());
+
+        invoke_internal(app, "setup.internal.restart-later").unwrap();
+        let composition = app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.restart-later"),
+            0
+        );
+        invoke_internal(app, "setup.internal.restart").unwrap();
+        app.poll_background();
+        assert_eq!(
+            *fixture.fakes.commands.lock().unwrap(),
+            vec![HostCommand::Restart]
+        );
+    }
+
+    // Catches an install invoked with a digest read before the plan changed.
+    #[test]
+    fn install_action_refuses_a_plan_digest_from_before_a_size_change() {
+        let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
+        let app = &mut fixture.app;
+        open_full_review(app);
+        invoke_internal(app, "setup.internal.download").unwrap();
+        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+        let doc = AutoCommit::new();
+        let stale = internal_action(app, "setup.internal.install", &doc)
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        let size = internal_action(app, "setup.internal.set-target-size", &doc)
+            .build_json(&setup_args(&[("gib", serde_json::json!(100))]))
+            .unwrap();
+        invoke_encoded_setup(app, &size).unwrap();
+        assert_eq!(app.internal_install.target_bytes(), 100 << 30);
+        let out_of_range = internal_action(app, "setup.internal.set-target-size", &doc)
+            .build_json(&setup_args(&[("gib", serde_json::json!(10))]))
+            .unwrap();
+        assert!(invoke_encoded_setup(app, &out_of_range).is_err());
+        assert_eq!(app.internal_install.target_bytes(), 100 << 30);
+
+        let error = invoke_encoded_setup(app, &stale).unwrap_err();
+        assert!(error.contains("plan changed"), "{error}");
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+        assert!(app.internal_download_ready());
+        invoke_internal(app, "setup.internal.install").unwrap();
+        assert!(app.internal_install.is_running());
+    }
+
+    // Catches remedies offered for blockers that do not have them, Install
+    // enabling while a blocker remains, or a remedy action running the wrong
+    // host command.
+    #[test]
+    fn blockers_show_remedies_and_keep_install_disabled() {
+        use super::super::staging::probe::Blocker;
+        let mut fixture = gated_app(
+            install_flow::tests::Fakes::new(vec![Blocker::SecureBootOn, Blocker::Hibernation]),
+            HostOs::Windows,
+        );
+        let app = &mut fixture.app;
+        open_full_review(app);
+        invoke_internal(app, "setup.internal.download").unwrap();
+        wait_for_app(app, "download ready", SetupApp::internal_download_ready);
+        let composition = app.build_composition();
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.firmware-settings"
+        ));
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.disable-fast-startup"
+        ));
+        assert!(invoke_internal(app, "setup.internal.install").is_err());
+        invoke_internal(app, "setup.internal.disable-fast-startup").unwrap();
+        app.poll_background();
+        invoke_internal(app, "setup.internal.firmware-settings").unwrap();
+        app.poll_background();
+        assert_eq!(
+            *fixture.fakes.commands.lock().unwrap(),
+            vec![
+                HostCommand::DisableFastStartup,
+                HostCommand::FirmwareSettings {
+                    suspend_bitlocker: false
+                }
+            ]
+        );
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 2);
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+
+        let mut battery = gated_app(
+            install_flow::tests::Fakes::new(vec![Blocker::OnBattery]),
+            HostOs::Linux,
+        );
+        open_full_review(&mut battery.app);
+        let composition = battery.app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.blocker.on-battery"),
+            1
+        );
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.firmware-settings"),
+            0
+        );
+        let doc = AutoCommit::new();
+        assert!(
+            !internal_action(&battery.app, "setup.internal.firmware-settings", &doc)
+                .contract
+                .availability
+                .is_available()
+        );
+        assert!(invoke_internal(&mut battery.app, "setup.internal.firmware-settings").is_err());
+        assert!(battery.fakes.commands.lock().unwrap().is_empty());
+    }
+
+    // Catches the resume card acting on a record other than the one shown,
+    // and a removal that leaves stale records on screen.
+    #[test]
+    fn unfinished_record_shows_a_resume_card_and_acts_on_that_record_only() {
+        use super::super::staging::probe::Blocker;
+        let mut fakes = install_flow::tests::Fakes::new(vec![Blocker::PendingOperation]);
+        fakes.records = vec![install_flow::tests::record("op-1")];
+        let mut fixture = gated_app(fakes, HostOs::Linux);
+        let app = &mut fixture.app;
+        app.start_host_probe();
+        app.poll_background();
+        let composition = app.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.resume"),
+            1
+        );
+        let stale = super::super::actions::SetupOperation::RemoveInternal {
+            operation_id: "op-0".into(),
+        };
+        assert!(
+            invoke_setup_raw(app, stale)
+                .unwrap_err()
+                .contains("no longer the current")
+        );
+        assert!(fixture.fakes.launches.lock().unwrap().is_empty());
+
+        invoke_internal(app, "setup.internal.retry").unwrap();
+        app.poll_background();
+        assert_eq!(
+            app.internal_install.run_state(),
+            &RunState::Succeeded {
+                action: HelperAction::Arm
+            }
+        );
+        invoke_internal(app, "setup.internal.remove").unwrap();
+        app.poll_background();
+        let launches = fixture.fakes.launches.lock().unwrap();
+        assert_eq!(
+            launches
+                .iter()
+                .map(|request| (request.action, request.operation_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(HelperAction::Arm, "op-1"), (HelperAction::Remove, "op-1")]
+        );
+        assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn full_os_shot_fixtures_pose_a_plan_blocker_and_restart() {
+        let review = SetupApp::for_shot("setup-full-review");
+        assert!(review.on_full_os_review());
+        let composition = review.build_composition();
+        assert_eq!(
+            retained_widget_count(composition.as_ref(), "setup.internal.firmware-settings"),
+            1
+        );
+        assert!(retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.install"
+        ));
+        assert!(
+            retained_name(composition.as_ref(), "setup.internal.plan")
+                .unwrap()
+                .contains("Windows (C:) shrinks by")
+        );
+        let staged = SetupApp::for_shot("setup-full-restart");
+        let composition = staged.build_composition();
+        assert!(!retained_widget_disabled(
+            composition.as_ref(),
+            "setup.internal.restart"
+        ));
     }
 }

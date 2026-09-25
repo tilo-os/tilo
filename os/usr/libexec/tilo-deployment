@@ -124,13 +124,17 @@ cmd_list() {
   cur="$(current_entry)"
 
   printf 'Deployments (from bootc):\n'
-  local booted staged rollback
-  booted="$(bootc_field booted-image)"
-  staged="$(bootc_field staged-image)"
-  rollback="$(bootc_field rollback-image)"
+  local booted staged rollback status
+  # One coherent snapshot is both faster and more accurate than asking bootc
+  # four times while a deployment may be changing underneath us.
+  status="$(bootc_status_json)"
+  booted="$(printf '%s' "$status" | tilo-image-trust bootc-status-field booted-image 2>/dev/null)"
+  staged="$(printf '%s' "$status" | tilo-image-trust bootc-status-field staged-image 2>/dev/null)"
+  rollback="$(printf '%s' "$status" | tilo-image-trust bootc-status-field rollback-image 2>/dev/null)"
   printf '  booted   : %s\n' "${booted:-<unknown>}"
   printf '             generation %s, composefs %.16s\n' \
-    "$(tilo_running_generation)" "$(bootc_field booted-composefs)"
+    "$(tilo_running_generation)" \
+    "$(printf '%s' "$status" | tilo-image-trust bootc-status-field booted-composefs 2>/dev/null)"
   printf '  staged   : %s\n' "${staged:-<none>}"
   printf '  rollback : %s\n' "${rollback:-<none>}"
 
