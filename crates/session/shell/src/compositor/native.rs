@@ -2038,26 +2038,27 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
     for request in requests {
         tracing::info!(
             target: "shell::compositor::host_launch",
-            desktop_id = %request.desktop_id,
-            display_name = %request.display_name,
+            desktop_id = %request.app.desktop_id,
+            display_name = %request.app.name,
             placement = ?request.placement,
             x11 = ?crate::shell::host_apps::x11_availability(),
+            request_to_dispatch_us = request.requested_at.elapsed().as_micros(),
             "dispatching user-requested host application launch"
         );
         let token = state.issue_host_launch_activation(
-            request.desktop_id.clone(),
-            request.display_name.clone(),
+            request.app.desktop_id.clone(),
+            request.app.name.clone(),
             request.placement,
         );
-        if let Err(error) = crate::shell::host_apps::launch_with_document_and_activation(
-            &request.desktop_id,
+        if let Err(error) = crate::shell::host_apps::launch_resolved_with_activation(
+            request.app.clone(),
             None,
             request.portal_workspace_id,
             Some(&token),
         ) {
             tracing::error!(
                 target: "shell::compositor::host_launch",
-                desktop_id = %request.desktop_id,
+                desktop_id = %request.app.desktop_id,
                 %error,
                 "host application launch was refused before spawn"
             );
@@ -2067,7 +2068,7 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             frame_builder.with_chrome(|chrome| {
                 chrome.push_notification_full(
                     crate::shell::notification::Notification::new(
-                        crate::shell::launcher::launch_failure_title(&request.display_name),
+                        crate::shell::launcher::launch_failure_title(&request.app.name),
                         error.notification_message(),
                     )
                     .with_severity(crate::shell::notification::NotificationSeverity::Error)
@@ -5937,6 +5938,7 @@ pub fn run() {
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
+    let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
     // Test-control commands are intentionally serviced after this tick's
     // paint gate. Preserve their redraw edge for the following iteration;
     // dropping it here records input latency forever without ever producing
@@ -7305,12 +7307,14 @@ pub fn run() {
         let pump_apps_started = pump_presence_done;
         let mut apps_changed = foreign_capture_changed
             | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        crate::shell::launcher::record_presented_launches(|surface| {
+            crate::compositor::foreign::store().frame_seq(surface)
+        });
         if desktop_continuation
             .as_mut()
             .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
-            && let Err(error) = crate::shell::host_apps::queue_launch(
-                crate::shell::desktop_continuation::launch_request(),
-            )
+            && let Err(error) = crate::shell::desktop_continuation::launch_request()
+                .and_then(crate::shell::host_apps::queue_launch)
         {
             tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
         }
@@ -7363,7 +7367,8 @@ pub fn run() {
         let pump_finalize_started = Instant::now();
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
-        let animating = frame_builder.needs_animation_frame();
+        let animation_demand = frame_builder.animation_demand();
+        let animating = animation_demand.any();
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -7462,6 +7467,7 @@ pub fn run() {
             && let Some(p) = present_pipe.as_mut()
         {
             p.note_backpressure();
+            metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
         // If content became dirty off-cadence, keep cadence in the next park;
@@ -7490,6 +7496,10 @@ pub fn run() {
                 }
                 if animating {
                     cause_anim = cause_anim.saturating_add(1);
+                    animation_sources_seen.host |= animation_demand.host;
+                    animation_sources_seen.floating |= animation_demand.floating;
+                    animation_sources_seen.transient |= animation_demand.transient;
+                    animation_sources_seen.osk |= animation_demand.osk;
                 }
                 if keepalive_due
                     && !(had_backend_events || session_changed || revision_changed || animating)
@@ -7498,11 +7508,21 @@ pub fn run() {
                 }
             }
             if stats_since.elapsed() >= Duration::from_secs(2) {
+                let animation_host_labels =
+                    crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
+                        .collect::<Vec<_>>()
+                        .join(",");
                 eprintln!(
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
+                     anim_sources host=0x{:04x} host_labels={:?} floating={} transient={} osk={} | \
                      {:.3} Hz target | present={} backpressure={}",
+                    animation_sources_seen.host,
+                    animation_host_labels,
+                    animation_sources_seen.floating,
+                    animation_sources_seen.transient,
+                    animation_sources_seen.osk,
                     1.0 / frame_clock.interval().as_secs_f64(),
                     present_pipe
                         .as_ref()
@@ -7518,6 +7538,7 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
+                animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 stats_since = Instant::now();
             }
         }
@@ -7929,6 +7950,13 @@ pub fn run() {
                 output_presentation_repaint_pending = false;
             }
             let submit_done = Instant::now();
+            // Capture lateness against the deadline that admitted this frame.
+            // `note_presented` advances the clock immediately below, so doing
+            // this afterwards would compare against the *next* interval and
+            // hide an overrun by roughly one refresh period.
+            metrics.mark_deadline_lateness(
+                submit_done.saturating_duration_since(frame_clock.next_deadline()),
+            );
             metrics.mark_submit(
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,

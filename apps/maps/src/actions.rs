@@ -579,6 +579,7 @@ mod tests {
     use crate::model::{Category, LatLon, Place, Route, TravelMode};
     use automerge::ActorId;
     use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_automerge::ApplyIncoming;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -987,8 +988,8 @@ mod tests {
             registry().decode(&encoded).unwrap().apply(doc).unwrap();
         }
 
-        a.merge(&mut b).unwrap();
-        b.merge(&mut a).unwrap();
+        a.merge_incoming(&mut b).unwrap();
+        b.merge_incoming(&mut a).unwrap();
         let left = MapsDoc::load(&a).unwrap();
         let right = MapsDoc::load(&b).unwrap();
         assert_eq!(left, right, "both merge directions project identically");

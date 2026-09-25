@@ -100,6 +100,7 @@ wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"
 app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 spellcheck = { path = "../../text/spellcheck" }
 # Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
 # tokenizer over two-face's extended syntax set, the packed set Typst already
@@ -281,6 +282,7 @@ pkg-config = "0.3"
 
 [dev-dependencies]
 regex.workspace = true
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
 # the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.
 # Inspect Vello scene encodings (draw tags) in widget tests so we can pin
@@ -345,6 +347,11 @@ required-features = ["broker-transport"]
 [[test]]
 name = "hosted-platform"
 path = "tests/hosted_platform.rs"
+
+# Its own binary: it installs a counting global allocator.
+[[test]]
+name = "held-memory"
+path = "tests/held_memory.rs"
 
 [lints]
 workspace = true

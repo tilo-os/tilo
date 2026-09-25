@@ -911,6 +911,7 @@ impl PdfDoc {
 mod tests {
     use super::*;
     use crate::model::{AnnoKind, Annotation, Comment, PtRect, Reply, Signature, Swatch};
+    use tilo_automerge::ApplyIncoming;
 
     fn hl(page: usize) -> Annotation {
         Annotation {
@@ -1095,7 +1096,7 @@ mod tests {
         // A retried delivery has the same id and must remain exactly one reply.
         PdfDoc::add_reply(&mut left, &comment.id, &left_reply);
         PdfDoc::add_reply(&mut right, &comment.id, &right_reply);
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let replies = &PdfDoc::list_comments(&left)[0].replies;
         assert_eq!(replies.len(), 2);
         assert!(replies.iter().any(|reply| reply.id == "reply-left"));
@@ -1278,7 +1279,7 @@ mod tests {
         // but the materialised plan has one deterministic occurrence per id.
         PdfDoc::ensure_page_plan(&mut left, 3);
         PdfDoc::ensure_page_plan(&mut right, 3);
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let initial = PdfDoc::list_page_plan(&left);
         assert_eq!(initial.len(), 3);
         assert_eq!(
@@ -1294,13 +1295,13 @@ mod tests {
         let mut b = AutoCommit::load(&checkpoint).unwrap();
         PdfDoc::move_page_plan(&mut a, "source-2", None);
         PdfDoc::move_page_plan(&mut b, "source-2", Some("source-3"));
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         let plan = PdfDoc::list_page_plan(&a);
         assert!(!plan.is_empty());
         let ids: HashSet<&str> = plan.iter().map(|entry| entry.id.as_str()).collect();
         assert_eq!(ids.len(), plan.len(), "each durable id materialises once");
         assert_eq!(ids.len(), 3);
-        b.merge(&mut a).unwrap();
+        b.merge_incoming(&mut a).unwrap();
         assert_eq!(PdfDoc::list_page_plan(&a), PdfDoc::list_page_plan(&b));
     }
 

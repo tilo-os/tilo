@@ -191,6 +191,7 @@ install -Dpm 0755 libexec/tilo-unlock-helper %{buildroot}%{_libexecdir}/tilo-unl
 install -Dpm 0755 libexec/tilo-session       %{buildroot}%{_libexecdir}/tilo-session
 install -Dpm 0755 libexec/tilo-session-runner %{buildroot}%{_libexecdir}/tilo-session-runner
 install -Dpm 0755 libexec/tilo-flight-recorder %{buildroot}%{_libexecdir}/tilo-flight-recorder
+install -Dpm 0755 libexec/tilo-session-report %{buildroot}%{_libexecdir}/tilo-session-report
 install -Dpm 0644 pam/tilo-unlock            %{buildroot}%{_sysconfdir}/pam.d/tilo-unlock
 install -Dpm 0644 wayland-sessions/tilo.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo.desktop
@@ -301,6 +302,7 @@ done
 %{_libexecdir}/tilo-session
 %{_libexecdir}/tilo-session-runner
 %{_libexecdir}/tilo-flight-recorder
+%{_libexecdir}/tilo-session-report
 %config(noreplace) %{_sysconfdir}/pam.d/tilo-unlock
 %{_datadir}/wayland-sessions/tilo.desktop
 %{_datadir}/xdg-desktop-portal/portals/tilo.portal

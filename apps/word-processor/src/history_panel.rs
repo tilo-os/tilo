@@ -542,6 +542,7 @@ fn collab_kind() -> ui::widget::ArtifactKind {
 mod tests {
     use super::*;
     use automerge::transaction::{CommitOptions, Transactable};
+    use tilo_automerge::ApplyIncoming;
     use ui::State;
 
     /// Build a document with three versions of a paragraph, committed the way
@@ -868,7 +869,7 @@ mod tests {
             dm.splice_text(&p, at, 0, " two");
             qdoc::history::commit_stamped_at(&mut peer, stamp);
         }
-        s.doc.merge(&mut peer).expect("peers merge");
+        s.doc.merge_incoming(&mut peer).expect("peers merge");
 
         // Session three, two hours after that, back to the local author.
         for stamp in (1_012_000..).step_by(10).take(4) {

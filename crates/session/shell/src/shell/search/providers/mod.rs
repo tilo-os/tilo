@@ -25,4 +25,4 @@ pub use host_applications::HostApplicationsProvider;
 pub use live_app_actions::LiveAppActionsProvider;
 pub use notes::NotesProvider;
 pub use records::RecordsProvider;
-pub use session_actions::SessionActionsProvider;
+pub use session_actions::{SessionActionPolicy, SessionActionsProvider};

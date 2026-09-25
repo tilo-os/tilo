@@ -161,6 +161,10 @@ fn same_scalar(current: &ScalarValue, next: &ScalarValue) -> bool {
 
 /// A typed value stored in a CRDT document. See the module docs.
 pub trait Model: Sized {
+    /// How the value is laid out in the document; see [`Shape`](crate::Shape).
+    /// Types written whole keep the default.
+    const SHAPE: crate::Shape = crate::Shape::Value;
+
     /// Read from the value a parent found in its slot.
     ///
     /// # Errors
@@ -442,6 +446,8 @@ impl Model for uuid::Uuid {
 
 /// `None` is an absent key (or a null list element).
 impl<T: Model> Model for Option<T> {
+    const SHAPE: crate::Shape = T::SHAPE;
+
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         if matches!(scalar(value), Some(ScalarValue::Null)) {
             return Ok(None);
@@ -465,6 +471,8 @@ impl<T: Model> Model for Option<T> {
 }
 
 impl<T: Model> Model for Box<T> {
+    const SHAPE: crate::Shape = T::SHAPE;
+
     fn load(doc: &Doc, value: &Value<'_>, id: &ObjId) -> Result<Self, ModelError> {
         T::load(doc, value, id).map(Box::new)
     }
@@ -592,6 +600,7 @@ where
 mod tests {
     use super::*;
     use automerge::ROOT;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn unchanged_writes_produce_no_operations() {
@@ -618,7 +627,7 @@ mod tests {
         let mut right = base.fork();
         write_key(&mut left, &ROOT, "body", &"hello brave world".to_owned()).unwrap();
         write_key(&mut right, &ROOT, "body", &"hello world!".to_owned()).unwrap();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         assert_eq!(
             read_key::<String>(&left, &ROOT, "body").unwrap(),
             "hello brave world!"

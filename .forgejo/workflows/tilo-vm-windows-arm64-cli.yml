@@ -1,0 +1,59 @@
+name: CI / Windows ARM64 tilo-vm CLI
+
+# Produce the native development CLI once in CI so Windows ARM64 hosts can
+# download it and iterate with WHPX without setting up a Rust build tree.
+on:
+  workflow_dispatch:
+
+jobs:
+  cli:
+    runs-on: runner-arm64
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require ARM64 build host and install cross toolchain
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          if ! command -v clang-cl >/dev/null || ! command -v lld-link >/dev/null; then
+            if command -v dnf >/dev/null; then
+              sudo dnf install -y clang lld
+            elif command -v apt-get >/dev/null; then
+              sudo apt-get update
+              sudo apt-get install -y clang lld
+            else
+              echo 'No supported LLVM package manager on ARM64 runner' >&2
+              exit 1
+            fi
+          fi
+          mkdir -p "$RUNNER_TEMP/llvm-bin"
+          if ! command -v clang-cl >/dev/null; then
+            # Ubuntu's clang package omits the clang-cl link; Clang selects
+            # the MSVC driver mode from this executable name.
+            ln -s "$(command -v clang-18 || command -v clang)" "$RUNNER_TEMP/llvm-bin/clang-cl"
+          fi
+          if ! command -v lld-link >/dev/null; then
+            ln -s "$(command -v lld-link-18)" "$RUNNER_TEMP/llvm-bin/lld-link"
+          fi
+          export PATH="$RUNNER_TEMP/llvm-bin:$PATH"
+          printf '%s\n' "$RUNNER_TEMP/llvm-bin" >> "$GITHUB_PATH"
+          command -v clang-cl
+          command -v lld-link
+          rustup target add aarch64-pc-windows-msvc
+          cargo install --locked cargo-xwin --version 0.23.1
+      - name: Cross-build tilo-vm for Windows ARM64
+        run: |
+          set -euo pipefail
+          cargo xwin build -p tilo-vm --locked --release --target aarch64-pc-windows-msvc
+      - name: Package exact-source CLI
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp target/aarch64-pc-windows-msvc/release/tilo-vm.exe out/tilo-vm.exe
+          (cd out && sha256sum tilo-vm.exe > tilo-vm.exe.sha256)
+          printf '%s\n' "$GITHUB_SHA" > out/source-commit.txt
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-vm-windows-arm64-${{ github.sha }}
+          path: out/
+          if-no-files-found: error

@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 use automerge::ROOT;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tilo_actions::{ActionError, ExecutionLocus};
+use tilo_actions::{ActionError, ExecutionLocus, RiskLevel};
 
 use crate::collection::Id;
 use crate::model::{Doc, Fields};
@@ -125,6 +125,14 @@ pub trait Operation: Serialize + DeserializeOwned + Clone + std::fmt::Debug + 's
     /// # Errors
     /// Returns the method's refusal.
     fn perform(&self, record: &mut Self::Record, cx: &mut ActionCx) -> Result<(), Refusal>;
+
+    /// The consequence class of this operation. `#[resource]` generates it
+    /// from `#[action(destructive)]`, so the
+    /// same method reached through the generic `apply` action is confirmed
+    /// exactly as its named declaration is.
+    fn risk(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 }
 
 /// A record operation with the origin's time attached: the replayable action
@@ -153,6 +161,10 @@ impl<O: Operation> tilo_actions::Action for Stamped<O> {
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+
+    fn risk(&self) -> RiskLevel {
+        self.operation.risk()
     }
 }
 

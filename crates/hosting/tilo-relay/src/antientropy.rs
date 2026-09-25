@@ -28,6 +28,7 @@
 //!   whose inbound stream you are not otherwise draining.
 
 use std::time::{Duration, Instant};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 
@@ -79,7 +80,7 @@ pub fn apply_sync_response(
     if delta_since.is_empty() {
         return Ok(0);
     }
-    doc.load_incremental(delta_since)
+    doc.load_incoming(delta_since)
 }
 
 /// Send a [`Envelope::SyncRequest`] advertising `doc`'s current heads

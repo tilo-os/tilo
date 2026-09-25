@@ -15,7 +15,8 @@ libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
 for file in /usr/bin/tilo-shell /usr/bin/tilo-launcher /usr/bin/tilo-import-folders \
             "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session" \
             "$libexec_dir/tilo-session-runner" \
-            "$libexec_dir/tilo-flight-recorder"; do
+            "$libexec_dir/tilo-flight-recorder" \
+            "$libexec_dir/tilo-session-report"; do
     [[ -x $(path "$file") ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
 for file in /usr/share/applications/tilo-import-folders.desktop /etc/pam.d/tilo-unlock \
