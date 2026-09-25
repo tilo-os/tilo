@@ -271,6 +271,160 @@ impl ResourcePresentation {
     }
 }
 
+/// How a live resource-view provider accepts a compositor-owned mount.
+///
+/// The named parameters belong to the referenced action's typed contract.
+/// Keeping them explicit avoids inferring view support from conventional
+/// parameter names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceViewMountSpec {
+    pub action: String,
+    pub capability_param: String,
+    pub view_param: String,
+}
+
+impl ResourceViewMountSpec {
+    pub fn new(
+        action: impl Into<String>,
+        capability_param: impl Into<String>,
+        view_param: impl Into<String>,
+    ) -> Self {
+        Self {
+            action: action.into(),
+            capability_param: capability_param.into(),
+            view_param: view_param.into(),
+        }
+    }
+}
+
+/// An explicit presentation of a resource, separate from the actions used to
+/// open or mount it.
+///
+/// `id` is the stable view identity. `open_action` and the optional mount
+/// action are execution bindings and may change without turning every local
+/// [`OperationKind::View`] action into an advertised resource view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceViewSpec {
+    pub id: String,
+    pub label: String,
+    pub description: Option<String>,
+    pub open_action: String,
+    pub primary: bool,
+    pub mount: Option<ResourceViewMountSpec>,
+}
+
+impl ResourceViewSpec {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        open_action: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            open_action: open_action.into(),
+            primary: false,
+            mount: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_primary(mut self, primary: bool) -> Self {
+        self.primary = primary;
+        self
+    }
+
+    #[must_use]
+    pub fn with_mount(mut self, mount: ResourceViewMountSpec) -> Self {
+        self.mount = Some(mount);
+        self
+    }
+
+    /// Validate this declaration against the actions exported by `resource`.
+    ///
+    /// Cross-view invariants such as unique open actions and a single primary
+    /// view are checked by [`crate::validate_surface_contracts`].
+    pub fn validate(&self, resource: &Resource) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.id.is_empty() || self.id.contains(KEY_SEP) {
+            errors.push("view id is empty or contains the separator".into());
+        }
+        if self.label.trim().is_empty() {
+            errors.push("view label must be non-empty".into());
+        }
+        validate_view_action(resource, &self.open_action, "open", &mut errors);
+        if let Some(mount) = &self.mount {
+            validate_view_action(resource, &mount.action, "mount", &mut errors);
+            if mount.capability_param == mount.view_param {
+                errors.push("mount capability and view parameters must be distinct".into());
+            }
+            if let Some(action) = resource
+                .actions
+                .iter()
+                .find(|action| action.id == mount.action)
+            {
+                for (role, name) in [
+                    ("capability", &mount.capability_param),
+                    ("view", &mount.view_param),
+                ] {
+                    if name.trim().is_empty() {
+                        errors.push(format!("mount {role} parameter must be non-empty"));
+                    } else if !action.params().iter().any(|parameter| {
+                        parameter.name.as_ref() == name
+                            && parameter.ty == ParamType::Text
+                            && !parameter.required
+                    }) {
+                        errors.push(format!(
+                            "mount {role} parameter `{name}` must name an optional text parameter"
+                        ));
+                    }
+                }
+            }
+        }
+        errors
+    }
+}
+
+fn validate_view_action(
+    resource: &Resource,
+    action_id: &str,
+    role: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(action) = resource
+        .actions
+        .iter()
+        .find(|action| action.id == action_id)
+    else {
+        errors.push(format!("{role} action `{action_id}` is not exported"));
+        return;
+    };
+    if action.kind != OperationKind::View {
+        errors.push(format!(
+            "{role} action `{action_id}` must be a view operation"
+        ));
+    }
+    if action.contract.confirmation != ConfirmationPolicy::None {
+        errors.push(format!(
+            "{role} action `{action_id}` must not require confirmation"
+        ));
+    }
+    if action.params().iter().any(|parameter| parameter.required) {
+        errors.push(format!(
+            "{role} action `{action_id}` must not require caller parameters"
+        ));
+    }
+}
+
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](Resource::children).
 #[derive(Clone)]
@@ -286,6 +440,9 @@ pub struct Resource {
     pub presentation: Option<ResourcePresentation>,
     pub children: Vec<Resource>,
     pub actions: Vec<ActionSpec>,
+    /// Explicit presentations of this resource. Actions remain invocation
+    /// mechanisms; only entries in this collection are resource views.
+    pub views: Vec<ResourceViewSpec>,
 }
 
 impl Resource {
@@ -297,6 +454,7 @@ impl Resource {
             presentation: None,
             children: Vec::new(),
             actions: Vec::new(),
+            views: Vec::new(),
         }
     }
 
@@ -309,6 +467,12 @@ impl Resource {
     #[must_use]
     pub fn with_action(mut self, action: ActionSpec) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    #[must_use]
+    pub fn with_view(mut self, view: ResourceViewSpec) -> Self {
+        self.views.push(view);
         self
     }
 
@@ -994,6 +1158,63 @@ mod tests {
         .expect("effect payload encodes");
         assert_eq!(spec.kind, OperationKind::Effect);
         assert!(spec.params().is_empty());
+    }
+
+    #[test]
+    fn explicit_resource_view_builders_validate_open_and_mount_bindings() {
+        let open = ActionSpec::typed_operation(
+            "open",
+            "Open",
+            "",
+            OperationKind::View,
+            "notes.open",
+            vec![
+                ActionParam::optional("slot_capability", ParamType::Text, "Capability"),
+                ActionParam::optional("slot_view", ParamType::Text, "Qualified view"),
+            ],
+            |_| EncodedAction::encode_operation("notes.open", &()).unwrap(),
+        );
+        let view = ResourceViewSpec::new("editor", "Editor", "open")
+            .with_description("Edit this note")
+            .with_primary(true)
+            .with_mount(ResourceViewMountSpec::new(
+                "open",
+                "slot_capability",
+                "slot_view",
+            ));
+        let resource = Resource::new("note:1", "notes.note", "Note")
+            .with_action(open)
+            .with_view(view.clone());
+
+        assert!(view.validate(&resource).is_empty());
+        assert_eq!(resource.views, vec![view]);
+    }
+
+    #[test]
+    fn resource_view_validation_rejects_implicit_or_unsafe_bindings() {
+        let effect = ActionSpec::typed_operation(
+            "open",
+            "Open",
+            "value",
+            OperationKind::Effect,
+            "notes.open",
+            vec![ActionParam::required("value", ParamType::Text, "Value")],
+            |_| EncodedAction::encode_operation("notes.open", &()).unwrap(),
+        )
+        .with_contract(ActionContract {
+            confirmation: ConfirmationPolicy::Confirm,
+            ..ActionContract::default()
+        });
+        let resource = Resource::new("note:1", "notes.note", "Note").with_action(effect);
+        let view = ResourceViewSpec::new("editor", "Editor", "open")
+            .with_mount(ResourceViewMountSpec::new("open", "missing", "missing"));
+        let errors = view.validate(&resource).join("\n");
+
+        assert!(errors.contains("must be a view operation"));
+        assert!(errors.contains("must not require confirmation"));
+        assert!(errors.contains("must not require caller parameters"));
+        assert!(errors.contains("must be distinct"));
+        assert!(errors.contains("must name an optional text parameter"));
     }
 
     #[test]

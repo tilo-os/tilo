@@ -130,12 +130,23 @@ mod tests {
             params: Vec::new(),
             contract,
             input: PublishedInput::None,
+            view: None,
         }
     }
 
     /// A broker hosting one workspace the owner's root owns, with one live
     /// files app publishing a cancellable job and a write-gated action.
     fn host() -> (
+        BrokerActionHost,
+        tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
+    ) {
+        host_with(Vec::new())
+    }
+
+    /// [`host`], with `extra` actions published beside the fixture's own.
+    fn host_with(
+        extra: Vec<PublishedAction>,
+    ) -> (
         BrokerActionHost,
         tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>,
     ) {
@@ -176,7 +187,10 @@ mod tests {
                         ..tilo_actions::ActionContract::default()
                     },
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(extra)
+            .collect(),
             live: true,
         }]);
         let invocations = broker.capture_invocations_for_test(7);
@@ -244,6 +258,39 @@ mod tests {
         assert!(
             catalogue(&host, &stranger()).rows.is_empty(),
             "a caller outside the workspace is offered nothing"
+        );
+    }
+
+    #[test]
+    fn the_catalogue_carries_a_published_resource_view() {
+        let mut open = action("open", tilo_actions::ActionContract::view());
+        open.operation_kind = tilo_actions::OperationKind::View;
+        let view = tilo_actions::ResourceViewDescriptor {
+            id: "preview".into(),
+            label: "Preview".into(),
+            description: None,
+            open_action: "open".into(),
+            primary: true,
+            mount: None,
+        };
+        open.view = Some(view.clone());
+        let (host, _) = host_with(vec![open]);
+
+        let page = catalogue(&host, &owner());
+        let offered = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|action| action.address.action == "open")
+            .expect("the view's open action is offered");
+        assert_eq!(offered.view.as_ref(), Some(&view));
+        assert!(
+            page.rows
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .filter(|action| action.address.action != "open")
+                .all(|action| action.view.is_none()),
+            "only the declared open action names a view"
         );
     }
 
