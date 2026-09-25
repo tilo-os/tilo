@@ -1678,11 +1678,14 @@ COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 # install/upgrade, and `bootc container ukify` seals it into the UKI command line
 # at build time — which is what makes this set measured rather than merely
 # applied. 03-boot.toml carries the arguments the install step used to inject.
+# 05-credentials.toml refuses systemd credentials from firmware, fw_cfg, the
+# boot loader or an unsigned command line.
 COPY \
     os/usr/lib/bootc/kargs.d/01-hardening.toml \
     os/usr/lib/bootc/kargs.d/00-root.toml \
     os/usr/lib/bootc/kargs.d/03-boot.toml \
     os/usr/lib/bootc/kargs.d/04-mode.toml \
+    os/usr/lib/bootc/kargs.d/05-credentials.toml \
     /usr/lib/bootc/kargs.d/
 # Which mode the sealed command line boots into. `tilo.mode=repair` is what the
 # repair entry carries, and it can only come from inside the signature — see the
