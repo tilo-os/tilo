@@ -38,9 +38,9 @@ from ci import suites as path_suites
 
 
 # Preserve the existing wire/document/package contract suites, including
-# pkg/tests/{app_manifests,verify_attest} and qdoc/tests/{convergence,office_roundtrip}.
+# pkg/tests/{app_manifests,verify_attest} and qdoc-codecs/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
-ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc"}
+ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc", "qdoc-codecs"}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
