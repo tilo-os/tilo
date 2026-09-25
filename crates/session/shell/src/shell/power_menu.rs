@@ -365,6 +365,10 @@ impl PowerMenu {
         scene.pop_layer();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_panel(
         &self,
         scene: &mut Scene,
@@ -1082,6 +1086,10 @@ mod tests {
     /// rendered pixels are asserted, not just the file: the title band is
     /// the Panel ground and an idle row's interior is its lift floor.
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "menu metrics and sampled colour channels read best as m and r/g/b/e"
+    )]
     fn power_menu_review_fixtures_are_written() {
         use crate::shell::osd::review_offscreen::OffscreenRenderer;
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

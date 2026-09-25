@@ -11,6 +11,10 @@ pub use os_actions::Dispatcher as QsActions;
 pub use os_actions::RealDispatcher as RealQsActions;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag independently records whether one Quick Settings backend is present"
+)]
 pub(crate) struct QsActionAvailability {
     pub(crate) brightness: bool,
     pub(crate) volume: bool,
@@ -38,7 +42,7 @@ impl QsActionAvailability {
             // directly and only falls back to `brightnessctl` on development
             // hosts, so the binary alone is not its capability source.
             availability.brightness |= os_actions::display::has_backlight();
-            return availability;
+            availability
         }
         #[cfg(not(target_os = "linux"))]
         Self::default()

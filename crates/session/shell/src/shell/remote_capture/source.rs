@@ -149,11 +149,11 @@ impl ProductionRemoteCaptureSource {
         Ok(())
     }
 
-    pub(crate) fn drain(&mut self) -> Vec<CapturedRemoteChunk> {
+    pub(crate) fn drain(&self) -> Vec<CapturedRemoteChunk> {
         self.rx.try_iter().take(MAX_DRAIN_PER_PUMP).collect()
     }
 
-    pub(crate) fn drain_failures(&mut self) -> Vec<[u8; 16]> {
+    pub(crate) fn drain_failures(&self) -> Vec<[u8; 16]> {
         self.failure_rx.try_iter().collect()
     }
 
@@ -192,11 +192,11 @@ impl RemoteCaptureSource for ProductionRemoteCaptureSource {
     }
 
     fn drain(&mut self) -> Vec<CapturedRemoteChunk> {
-        self.drain()
+        Self::drain(self)
     }
 
     fn drain_failures(&mut self) -> Vec<[u8; 16]> {
-        self.drain_failures()
+        Self::drain_failures(self)
     }
 
     fn stop(&mut self, session_id: [u8; 16]) {
