@@ -118,7 +118,7 @@ pub struct OwnerHistoryStore {
 
 impl OwnerHistoryStore {
     pub fn open(owner_id: &str) -> Self {
-        let Some(base) = dirs::data_local_dir() else {
+        let Some(base) = xdg_paths::data_local_dir() else {
             return Self::memory();
         };
         Self::open_path(

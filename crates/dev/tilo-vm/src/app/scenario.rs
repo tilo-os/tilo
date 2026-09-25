@@ -22,7 +22,7 @@ use crate::hypervisor::{CommandLine, Runner};
 use crate::scenario::console::{Console, SocketConsole};
 use crate::scenario::drive::{self, Choices, RealPace};
 use crate::scenario::fixture::{self, Preserved, Tools};
-use crate::scenario::{Layout, Unlock, scrub};
+use crate::scenario::{Credentials, Layout, Unlock, scrub};
 
 /// Where `os/dev/build-custom-installer.sh` writes the medium.
 pub const DEFAULT_MEDIUM: &str = "os/output/installer/qcow2/disk.qcow2";
@@ -43,6 +43,7 @@ struct Plan {
     skip_target_boot: bool,
     layout: Layout,
     unlock: Unlock,
+    username: String,
     graphics: crate::scenario::Graphics,
     cycle: String,
     out: PathBuf,
@@ -172,6 +173,7 @@ impl Plan {
             "medium": self.medium,
             "layout": self.layout.name(),
             "encrypt": self.unlock.name(),
+            "username": self.username,
             "graphics": self.graphics,
             "cycle": self.cycle,
             "artifacts": self.out,
@@ -604,6 +606,14 @@ impl App {
                         .into(),
             });
         }
+        let username = args.username.as_deref().unwrap_or("scenario");
+        if !valid_username(username) {
+            return Err(CliError::Unsupported {
+                what: "scenario account username".into(),
+                alternative:
+                    "use 1–32 lowercase letters, digits, _ or -, starting with a letter or _".into(),
+            });
+        }
         let root = self
             .worktree
             .as_ref()
@@ -688,6 +698,7 @@ impl App {
             skip_target_boot: args.skip_target_boot,
             layout: args.layout,
             unlock: args.encrypt,
+            username: username.to_owned(),
             graphics: args.graphics,
             cycle_dir: storage.join("vm-cycles").join(&cycle),
             run: runtime.join(format!("tilo-vm-{cycle}")),
@@ -717,6 +728,14 @@ impl App {
             return Ok(Outcome::new(text, json!({ "plan": plan_json }))
                 .next(&["tilo-vm scenario install", "tilo-vm guide scenarios"]));
         }
+        let credentials = if args.credentials_stdin {
+            crate::scenario::credentials_from_stdin().map_err(|message| CliError::Unsupported {
+                what: "scenario credentials stdin".into(),
+                alternative: message.into(),
+            })?
+        } else {
+            Credentials::disposable(plan.unlock)
+        };
         std::fs::create_dir_all(&plan.out)
             .map_err(CliError::io("creating the artifact directory"))?;
         #[cfg(windows)]
@@ -739,8 +758,7 @@ impl App {
         }
         write_json(&plan.out, "scenario.json", &plan.describe())?;
         self.receipt.set("scenario", plan.describe());
-        let secret = plan.unlock.scenario_secret();
-        let result = self.run_install_scenario(&plan, &secret);
+        let result = self.run_install_scenario(&plan, &credentials);
         // Whatever happened, the VM stops and the evidence is scrubbed.
         let stop = self.runner.output(&plan.vm(&["stop"]));
         #[cfg(windows)]
@@ -767,18 +785,28 @@ impl App {
         let preserve_failed_external = plan.external_target.is_some() && !stopped_cleanly;
         #[cfg(not(windows))]
         let preserve_failed_external = false;
+        let scrubbed = scrub_scenario_logs(
+            &plan.out,
+            &plan.run,
+            &[
+                credentials.account.expose(),
+                credentials.unlock_secret().expose(),
+            ],
+        );
+        if scrubbed.is_err() && plan.run.is_dir() {
+            discard_unsanitized_runtime(&plan, &mut self.runner)?;
+        }
+        let withheld = scrubbed.map_err(CliError::io("scrubbing scenario artifacts and logs"))?;
         if !plan.keep && !preserve_failed_external {
             let _ = std::fs::remove_dir_all(&plan.cycle_dir);
             let _ = std::fs::remove_dir_all(&plan.run);
         }
-        let withheld = scrub(&plan.out, secret.expose())
-            .map_err(CliError::io("scrubbing the artifact directory"))?;
         let mut report = result?;
         if !withheld.is_empty() {
             return Err(failed(
                 "artifacts",
                 format!(
-                    "{} artifact(s) contained the unlock secret or recovery material and were emptied: {}",
+                    "{} artifact(s) contained a supplied secret or recovery material and were emptied: {}",
                     withheld.len(),
                     withheld
                         .iter()
@@ -833,7 +861,7 @@ impl App {
     fn run_install_scenario(
         &mut self,
         plan: &Plan,
-        secret: &crate::scenario::Secret,
+        credentials: &Credentials,
     ) -> Result<Value, CliError> {
         say(&format!(
             "install scenario {} ({} layout, {} unlock); artifacts in {}",
@@ -907,10 +935,18 @@ impl App {
         let choices = Choices {
             layout: plan.layout,
             unlock: plan.unlock,
-            username: "scenario".into(),
-            full_name: "Scenario User".into(),
+            username: plan.username.clone(),
+            full_name: if plan.username == "scenario" {
+                "Scenario User".into()
+            } else {
+                plan.username.clone()
+            },
             hostname: "scenario-tilo".into(),
-            secret: crate::scenario::Secret::new(secret.expose()),
+            account_secret: crate::scenario::Secret::new(credentials.account.expose()),
+            disk_secret: credentials
+                .disk
+                .as_ref()
+                .map(|secret| crate::scenario::Secret::new(secret.expose())),
         };
         let installed = drive::install(
             &mut console,
@@ -1037,7 +1073,7 @@ impl App {
             return Err(failed("boot-target", booted.stderr.trim(), plan));
         }
         say("installed target booting; unlocking at its boot prompt");
-        let greeter = self.unlock_to_greeter(plan, &mut console, secret)?;
+        let greeter = self.unlock_to_greeter(plan, &mut console, credentials.unlock_secret())?;
         let serial = plan.run.join("serial.log");
         if serial.is_file() {
             let _ = std::fs::copy(&serial, plan.out.join("target-serial.log"));
@@ -1181,6 +1217,56 @@ fn after(limit: Duration) -> Instant {
     now.checked_add(limit).unwrap_or(now)
 }
 
+fn valid_username(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some('a'..='z' | '_'))
+        && name.len() <= 32
+        && chars.all(|character| matches!(character, 'a'..='z' | '0'..='9' | '_' | '-'))
+}
+
+/// The VM runtime holds raw serial and UART streams, including material the
+/// installer deliberately withholds from scenario artifacts. Scrub it before
+/// retention or cleanup, even when the install failed.
+fn scrub_scenario_logs(out: &Path, run: &Path, secrets: &[&str]) -> std::io::Result<Vec<PathBuf>> {
+    scrub_scenario_logs_with(out, run, secrets, scrub)
+}
+
+fn scrub_scenario_logs_with(
+    out: &Path,
+    run: &Path,
+    secrets: &[&str],
+    mut inspect: impl FnMut(&Path, &[&str]) -> std::io::Result<Vec<PathBuf>>,
+) -> std::io::Result<Vec<PathBuf>> {
+    // Both paths are attempted even if the first fails. The caller must stop
+    // the VM before deleting a runtime directory after either failure: the
+    // pid file must survive until the stop command has used it.
+    let artifacts = inspect(out, secrets);
+    let runtime = if run.is_dir() {
+        inspect(run, secrets)
+    } else {
+        Ok(Vec::new())
+    };
+    let mut artifacts = artifacts?;
+    artifacts.extend(runtime?);
+    Ok(artifacts)
+}
+
+fn discard_unsanitized_runtime(plan: &Plan, runner: &mut dyn Runner) -> Result<(), CliError> {
+    // A failed first stop may leave QEMU holding serial.log open. Never delete
+    // qemu.pid before a second stop and a confirmed stopped status.
+    let _ = runner.output(&plan.vm(&["stop"]));
+    let stopped = runner
+        .output(&plan.vm(&["status"]))
+        .is_ok_and(|status| status.success && status.stdout.trim_start().starts_with("stopped"));
+    if !stopped {
+        return Err(CliError::Unsupported {
+            what: "unsanitized VM runtime logs".into(),
+            alternative: "VM is still running; stop it and remove its runtime logs before retaining artifacts".into(),
+        });
+    }
+    std::fs::remove_dir_all(&plan.run).map_err(CliError::io("removing unsanitized VM runtime logs"))
+}
+
 /// Poll until the console answers as `app`, returning its first state.
 fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Option<Value> {
     let deadline = after(limit);
@@ -1302,6 +1388,7 @@ mod tests {
             skip_target_boot: false,
             layout,
             unlock: Unlock::Passphrase,
+            username: "scenario".into(),
             graphics: crate::scenario::Graphics::Software,
             cycle: "scenario-install-x".into(),
             out: PathBuf::from("/w/target/tilo-vm-scenarios/scenario-install-x"),
@@ -1318,6 +1405,119 @@ mod tests {
                 qmp: 30002,
             },
         }
+    }
+
+    #[test]
+    fn retained_runtime_logs_are_scrubbed_alongside_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("artifacts");
+        let run = dir.path().join("runtime");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::create_dir(&run).unwrap();
+        std::fs::write(out.join("state.json"), "ready").unwrap();
+        std::fs::write(run.join("serial.log"), "typed accountsecret123").unwrap();
+        std::fs::write(run.join("uart.log"), "typed disksecret456").unwrap();
+        let withheld =
+            scrub_scenario_logs(&out, &run, &["accountsecret123", "disksecret456"]).unwrap();
+        assert_eq!(withheld.len(), 2);
+        assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
+        assert!(std::fs::read(run.join("uart.log")).unwrap().is_empty());
+        assert_eq!(std::fs::read(out.join("state.json")).unwrap(), b"ready");
+    }
+
+    #[test]
+    fn scrub_failure_still_checks_runtime_and_preserves_pid_for_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("artifacts");
+        let run = dir.path().join("runtime");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::create_dir(&run).unwrap();
+        std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
+        let mut inspected = Vec::new();
+        let error = scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
+            inspected.push(path.to_path_buf());
+            if path == out {
+                Err(std::io::Error::other("injected artifact read failure"))
+            } else {
+                scrub(path, secrets)
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected artifact read failure");
+        assert_eq!(inspected, [out, run.clone()]);
+        assert!(run.is_dir(), "the pid file must survive until stop retries");
+        assert!(std::fs::read(run.join("serial.log")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_scrub_failure_preserves_pid_for_stop_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("artifacts");
+        let run = dir.path().join("runtime");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::create_dir(&run).unwrap();
+        std::fs::write(run.join("serial.log"), "typed disksecret456").unwrap();
+        std::fs::write(run.join("qemu.pid"), "123").unwrap();
+        let error = scrub_scenario_logs_with(&out, &run, &["disksecret456"], |path, secrets| {
+            if path == run {
+                Err(std::io::Error::other("injected runtime read failure"))
+            } else {
+                scrub(path, secrets)
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected runtime read failure");
+        assert!(run.join("qemu.pid").exists());
+    }
+
+    #[test]
+    fn failed_stop_keeps_pid_and_successful_retry_removes_runtime() {
+        struct StopRunner {
+            status: &'static str,
+            calls: Vec<String>,
+        }
+        impl Runner for StopRunner {
+            fn output(
+                &mut self,
+                command: &CommandLine,
+            ) -> Result<crate::hypervisor::Output, CliError> {
+                let action = command.args.last().cloned().unwrap_or_default();
+                self.calls.push(action.clone());
+                Ok(crate::hypervisor::Output {
+                    success: true,
+                    status: "0".into(),
+                    stdout: if action == "status" {
+                        self.status.into()
+                    } else {
+                        String::new()
+                    },
+                    stderr: String::new(),
+                })
+            }
+            fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
+                Ok(false)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut plan = plan(Layout::Erase);
+        plan.run = dir.path().join("runtime");
+        std::fs::create_dir(&plan.run).unwrap();
+        std::fs::write(plan.run.join("qemu.pid"), "123").unwrap();
+        std::fs::write(plan.run.join("serial.log"), "sensitive").unwrap();
+        let mut running = StopRunner {
+            status: "running",
+            calls: Vec::new(),
+        };
+        assert!(discard_unsanitized_runtime(&plan, &mut running).is_err());
+        assert_eq!(running.calls, ["stop", "status"]);
+        assert!(plan.run.join("qemu.pid").exists());
+        let mut stopped = StopRunner {
+            status: "stopped",
+            calls: Vec::new(),
+        };
+        discard_unsanitized_runtime(&plan, &mut stopped).unwrap();
+        assert_eq!(stopped.calls, ["stop", "status"]);
+        assert!(!plan.run.exists());
     }
 
     #[cfg(unix)]

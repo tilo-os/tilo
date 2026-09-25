@@ -181,11 +181,7 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
 
 fn cmd_run(path: &Path) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime")?;
-    rt.block_on(async move {
+    tilo_rt::daemon("tilo-relay").run(async move {
         let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;
         let relay = Relay::start(cfg, identity).await?;
         let addr = relay.node_addr();
@@ -197,7 +193,7 @@ fn cmd_run(path: &Path) -> anyhow::Result<()> {
         let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
         relay.shutdown().await;
         Ok::<(), anyhow::Error>(())
-    })
+    })?
 }
 
 fn load_identity(

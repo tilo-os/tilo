@@ -29,7 +29,6 @@
 
 use std::path::PathBuf;
 
-use tokio::runtime::Builder;
 use url::Url;
 
 /// Reason a portal call failed; every entry point returns this so an app
@@ -114,18 +113,18 @@ pub fn is_portal_available() -> bool {
     false
 }
 
-/// Run a future on a fresh single-threaded tokio runtime, used by every sync
-/// wrapper. Surfaces a runtime-build failure (e.g. OOM, fd exhaustion) as
-/// [`PortalError::Other`] instead of panicking.
+/// Drive a portal call to completion for a synchronous caller, on the
+/// process's app runtime ([`tilo_rt::app`]) rather than a runtime per call.
+/// The sync wrappers are for worker threads: on a UI thread this returns
+/// [`PortalError::Other`] instead of freezing the window until the user
+/// answers the dialog — use the `*_async` form there.
 fn block_on<T, F>(fut: F) -> Result<T, PortalError>
 where
     F: std::future::Future<Output = Result<T, PortalError>>,
 {
-    let rt = Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| PortalError::Other(format!("failed to start tokio runtime: {e}")))?;
-    rt.block_on(fut)
+    tilo_rt::try_app()
+        .and_then(|runtime| runtime.block_on(fut))
+        .map_err(|e| PortalError::Other(e.to_string()))?
 }
 
 /// The Open / Save file dialog portal.

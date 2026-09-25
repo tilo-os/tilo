@@ -1560,7 +1560,7 @@ pub fn initial_path() -> PathBuf {
 /// window was on the real home and `format_path` was measuring against
 /// `/run/tilo/app`, which nothing is under.
 pub fn user_home() -> Option<PathBuf> {
-    ui::sysdirs::user_home_override().or_else(dirs::home_dir)
+    ui::sysdirs::user_home_override().or_else(xdg_paths::home)
 }
 
 #[cfg(test)]

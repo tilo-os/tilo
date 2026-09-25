@@ -507,7 +507,7 @@ fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
 }
 
 fn nearby_transfer_root() -> Option<PathBuf> {
-    dirs::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
+    xdg_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
 }
 
 fn nearby_store_cell() -> &'static Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>

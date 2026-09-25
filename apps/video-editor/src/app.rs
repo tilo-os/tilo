@@ -6390,6 +6390,8 @@ impl Widget for VideoEditorApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Everything one input event edits is one undo step.
+        let _gesture = self.actions.gesture();
         let r = self.regions();
         let bin_overlay_open = self.bin_overlay_is_open();
         // An in-flight inline rename owns input: forward every event to the
@@ -7352,6 +7354,8 @@ impl Widget for VideoEditorApp {
         _path: &ObjId,
     ) -> bool {
         use ui::a11y::{Action, hash_key};
+        // An assistive-technology command is one gesture, like a key press.
+        let _gesture = self.actions.gesture();
         let Some(&pane_key) = key_path.first() else {
             return false;
         };

@@ -67,7 +67,7 @@ atomic-file = { path = "../../system/atomic-file" }
 # implementations are stored once per runtime generation.
 chrono-tz = "0.10.4"
 vte = "0.15.0"
-pdfium-render = "0.8.37"
+tilo-pdf = { path = "../../doc/pdf" }
 thumbnail = { path = "../../media/thumbnail", features = ["pdf"] }
 roxmltree.workspace = true
 xattr = "1.6.1"

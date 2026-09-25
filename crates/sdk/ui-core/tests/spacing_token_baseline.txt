@@ -103,9 +103,11 @@ apps/notes/src/sidebar.rs pixel_const 10
 apps/notes/src/sidebar.rs taffy_length 1
 apps/osk/src/widget.rs pixel_const 3
 apps/passwords/src/showcase.rs pixel_const 1
-apps/pdf-viewer/src/app.rs pixel_const 15
+apps/pdf-viewer/src/app.rs pixel_const 16
 apps/pdf-viewer/src/app_draw.rs pixel_const 4
-apps/pdf-viewer/src/model.rs pixel_const 3
+apps/pdf-viewer/src/model.rs pixel_const 4
+apps/pdf-viewer/src/render.rs pixel_const 1
+apps/pdf-viewer/src/tiles.rs pixel_const 1
 apps/photos/src/app.rs pixel_const 20
 apps/photos/src/places.rs pixel_const 2
 apps/photos/src/timeline_projection.rs pixel_const 1

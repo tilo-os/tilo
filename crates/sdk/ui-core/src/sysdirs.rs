@@ -1,6 +1,6 @@
 //! Localized XDG user directories.
 //!
-//! Resolves the user's real, localized home + standard folders (via `dirs`,
+//! Resolves the user's real, localized home + standard folders (via `xdg-paths`,
 //! honouring `~/.config/user-dirs.dirs`) so a German desktop yields `~/Dokumente`,
 //! not hard-coded English names. Shared by every "Places" list so they don't each
 //! re-hardcode English strings. Key any persisted identity off [`UserDir`] *kind*,
@@ -74,13 +74,13 @@ impl UserDirs {
             return Self::under(home);
         }
         Self {
-            home: dirs::home_dir(),
-            desktop: dirs::desktop_dir(),
-            documents: dirs::document_dir(),
-            downloads: dirs::download_dir(),
-            music: dirs::audio_dir(),
-            pictures: dirs::picture_dir(),
-            videos: dirs::video_dir(),
+            home: xdg_paths::home(),
+            desktop: xdg_paths::desktop_dir(),
+            documents: xdg_paths::document_dir(),
+            downloads: xdg_paths::download_dir(),
+            music: xdg_paths::audio_dir(),
+            pictures: xdg_paths::picture_dir(),
+            videos: xdg_paths::video_dir(),
         }
     }
 

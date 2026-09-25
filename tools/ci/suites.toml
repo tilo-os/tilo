@@ -41,6 +41,8 @@ inputs = ["os/"]
 suites = [
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
+  "os/kernel/tests/test-cc-wrapper.sh",
+  "os/kernel/tests/test-signing-identity.py",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
@@ -49,6 +51,7 @@ suites = [
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
+  "os/tests/boot_order_enlist_test.py",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
@@ -111,6 +114,7 @@ suites = [
   "os/tests/test_prepare_windows_direct_source.py",
   "os/tests/test_read_fat32_efi.py",
   "os/tests/test_private_disk_image.py",
+  "os/tests/test_profile_installer_qcow2.py",
   "os/tests/test_produce_wpe_stage.py",
   "os/tests/test_raw_rootfs_receipt.py",
   "os/tests/test_rebind_development_rootfs.py",
@@ -150,6 +154,7 @@ suites = [
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_finalization_checkpoint_fetch.py",
   "os/tests/test_finalization_worker.py",
+  "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
   "os/tests/test_raw_layer_epoch.py",
 ]
@@ -428,6 +433,22 @@ readers = ["apps/disks/src/probe.rs"]
 package = "qdoc"
 inputs = ["crates/doc/fixtures/"]
 readers = ["crates/doc/qdoc/src/codecs/bulk_equivalence.rs", "crates/doc/qdoc/tests/office_roundtrip.rs"]
+
+[[cargo]]
+package = "tilo-pdf"
+# The helper compiles in the pinned fonts appearance text is set in.
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["crates/doc/pdf/src/bin/tilo-pdf-helper.rs"]
+
+[[cargo]]
+package = "pdf-viewer"
+# The reader's tests open the engine's typeset fixtures.
+inputs = ["crates/doc/pdf/tests/fixtures/"]
+readers = [
+  "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
+  "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",
+  "apps/pdf-viewer/tests/capture.rs",
+]
 
 [[cargo]]
 package = "format-host"

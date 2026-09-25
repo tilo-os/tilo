@@ -136,7 +136,7 @@ impl PdfApp {
                 return Some(ToolbarHit::Tool(*t));
             }
         }
-        if matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note) {
+        if self.tool.annotates() {
             for (s, r) in &lay.swatches {
                 if r.contains(p) {
                     return Some(ToolbarHit::Swatch(*s));
@@ -410,6 +410,22 @@ impl PdfApp {
                     self.dirty = true;
                 }
                 Tool::Note => self.create_note(state, page, pt),
+                Tool::Text => {
+                    // On an existing box: select it and arm a move (a tap
+                    // edits it, on release); elsewhere: place a new box.
+                    match self
+                        .note_marker_at(page, pt)
+                        .filter(|(id, _, _)| self.is_free_text(id))
+                    {
+                        Some((id, x, y)) => {
+                            self.clear_selection();
+                            self.selected_anno = Some(id.clone());
+                            self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (x, y)));
+                        }
+                        None => self.create_free_text(state, page, pt),
+                    }
+                    self.dirty = true;
+                }
                 Tool::Sign => self.place_signature(state, page, pt),
             }
         } else {
@@ -847,12 +863,22 @@ impl PdfApp {
         // End a sticky-note marker drag: persist the new anchor once (a
         // no-move release is a plain select, already applied on press).
         if let Some(mdrag) = self.marker_drag.take() {
-            if mdrag.moved() {
+            if self.is_free_text(&mdrag.id) {
+                // A free text box: a drag moves it, a tap edits its text.
+                if mdrag.moved() {
+                    self.persist_free_text_box(state, &mdrag.id);
+                    self.reload(state);
+                } else {
+                    self.edit_free_text(&mdrag.id);
+                }
+            } else if mdrag.moved() {
                 if let Some((x, y)) = self.note_pos(&mdrag.id) {
-                    self.perform_action(
-                        state,
-                        &crate::actions::set_annotation_position_action(&mdrag.id, x, y),
-                    );
+                    self.perform_action(state, &{
+                        let (ux, uy) = self
+                            .page_map(self.anno_page(&mdrag.id).unwrap_or(1))
+                            .card_to_user((x, y));
+                        crate::actions::set_annotation_position_user_action(&mdrag.id, ux, uy)
+                    });
                     self.reload(state);
                 }
             } else {
@@ -892,7 +918,7 @@ impl PdfApp {
             let was_active = self.selection.is_some_and(|s| s.is_active());
             self.finish_selection();
             if !was_active && let Some((page, pt)) = self.hit_page(self.last_mouse) {
-                self.select_at(page, pt);
+                self.click_page(state, page, pt);
             }
             *handled = true;
         } else if self.rail_drag.take().is_some() {
@@ -902,7 +928,7 @@ impl PdfApp {
             // A press that never moved is a selection click.
             if !pan.moved {
                 if let Some((page, pt)) = self.hit_page(pan.start) {
-                    self.select_at(page, pt);
+                    self.click_page(state, page, pt);
                 } else {
                     self.selected_anno = None;
                     self.selected_sig = None;
@@ -1067,6 +1093,25 @@ impl PdfApp {
         }
         if self.on_key_ctrl_shortcuts(key_event, ctrl, handled) {
             return;
+        }
+        // With a free text box selected, `>` and `<` step its text size.
+        if !ctrl
+            && let Key::Character(c) = &key_event.logical_key
+            && let Some(id) = self
+                .selected_anno
+                .clone()
+                .filter(|id| self.is_free_text(id))
+        {
+            let delta = match c.as_str() {
+                ">" => Some(2.0),
+                "<" => Some(-2.0),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                self.resize_free_text(state, &id, delta);
+                *handled = true;
+                return;
+            }
         }
         self.on_key_navigation(key_event, state, handled);
     }
@@ -1240,6 +1285,10 @@ impl PdfApp {
                 self.set_tool(Tool::Sign);
                 true
             }
+            "6" => {
+                self.set_tool(Tool::Text);
+                true
+            }
             "+" | "=" => {
                 self.zoom_by(1.15);
                 true
@@ -1374,7 +1423,7 @@ mod event_tests {
         let hl = app
             .annotations
             .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
             .unwrap()
             .clone();
         app.selected_anno = Some(hl.id.clone());
@@ -2893,12 +2942,13 @@ mod event_tests {
         let hl = app
             .annotations
             .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
             .unwrap()
             .clone();
-        let AnnoKind::Highlight { rect } = hl.kind else {
+        let AnnoKind::Markup { quads, .. } = hl.kind else {
             unreachable!()
         };
+        let rect = quads[0];
         let origin = app.page_origins()[0];
         let (cx, cy) = rect.center();
         let p = (origin.x + cx * app.zoom(), origin.y + cy * app.zoom());

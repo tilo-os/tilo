@@ -80,10 +80,10 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, String> {
         return Ok(None);
     }
     let mut options = Options {
-        state_dir: dirs::data_local_dir()
+        state_dir: xdg_paths::data_local_dir()
             .ok_or("no local data directory")?
             .join("tilo/macos-shell"),
-        files_dir: dirs::home_dir().ok_or("no home directory")?,
+        files_dir: xdg_paths::home().ok_or("no home directory")?,
         shots: None,
     };
     let mut args = args.iter();

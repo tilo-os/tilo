@@ -852,16 +852,38 @@ impl Whpx {
             "-m".into(),
             vm.memory().to_string(),
             "-no-reboot".into(),
-            "-drive".into(),
-            format!("if=pflash,format=raw,readonly=on,file={code}"),
-            "-drive".into(),
-            format!("if=pflash,format=raw,file={vars}"),
+        ];
+        if let Some(direct) = &vm.entry.direct_kernel {
+            let mut cmdline = direct.cmdline.clone();
+            if let Some(partuuid) = &direct.loader_partuuid {
+                cmdline.push_str(" systemd.setenv=TILO_ROOT_LOADER_PARTUUID=");
+                cmdline.push_str(partuuid);
+            }
+            args.extend([
+                "-kernel".into(),
+                direct.kernel.clone(),
+                "-initrd".into(),
+                direct.initrd.clone(),
+                "-append".into(),
+                cmdline,
+            ]);
+        } else {
+            args.extend([
+                "-drive".into(),
+                format!("if=pflash,format=raw,readonly=on,file={code}"),
+                "-drive".into(),
+                format!("if=pflash,format=raw,file={vars}"),
+            ]);
+        }
+        args.extend([
             "-drive".into(),
             format!("if=none,id=osdisk,format=qcow2,file={disk},cache=writeback,aio=threads"),
             "-device".into(),
             "virtio-blk-pci,drive=osdisk,bootindex=1".into(),
-        ];
-        if let Some(esp) = &vm.entry.boot_esp {
+        ]);
+        if let Some(esp) = &vm.entry.boot_esp
+            && vm.entry.direct_kernel.is_none()
+        {
             args.extend([
                 "-drive".into(),
                 format!("if=none,id=bootesp,format=raw,readonly=on,file={esp}"),
@@ -869,21 +891,23 @@ impl Whpx {
                 "virtio-blk-pci,drive=bootesp,bootindex=0".into(),
             ]);
         }
+        if !vm.entry.headless {
+            args.extend([
+                "-device".into(),
+                "virtio-gpu-pci,edid=on,xres=1280,yres=1024".into(),
+                "-device".into(),
+                "qemu-xhci".into(),
+                "-device".into(),
+                "usb-kbd".into(),
+                "-device".into(),
+                "usb-tablet".into(),
+            ]);
+        }
         args.extend([
-            "-device".into(),
-            "virtio-gpu-pci,edid=on,xres=1280,yres=1024".into(),
-            "-device".into(),
-            "qemu-xhci".into(),
-            "-device".into(),
-            "usb-kbd".into(),
-            "-device".into(),
-            "usb-tablet".into(),
             "-netdev".into(),
             format!("user,id=net0,hostfwd=tcp:127.0.0.1:{}-:22", vm.ssh_port()),
             "-device".into(),
             "virtio-net-pci,netdev=net0".into(),
-            "-display".into(),
-            format!("vnc=127.0.0.1:{}", vm.ssh_port() % 1_000),
             "-serial".into(),
             format!("file:{uart}"),
             "-chardev".into(),
@@ -895,6 +919,14 @@ impl Whpx {
             "-monitor".into(),
             "none".into(),
         ]);
+        args.extend(if vm.entry.headless {
+            ["-display".into(), "none".into()]
+        } else {
+            [
+                "-display".into(),
+                format!("vnc=127.0.0.1:{}", vm.ssh_port() % 1_000),
+            ]
+        });
         args
     }
 
@@ -1010,6 +1042,7 @@ impl Hypervisor for Whpx {
         Capabilities {
             serial: true,
             credentials: Some("QEMU SMBIOS type 11"),
+            direct_kernel: true,
             boot_esp: true,
             ..Capabilities::default()
         }
@@ -1245,6 +1278,52 @@ mod tests {
                 .contains("$r.ReadLine()")
         );
         assert_eq!(Whpx.ssh_endpoint(&vm, &mut fake("")).unwrap().port, 2223);
+    }
+
+    #[test]
+    fn whpx_headless_direct_boot_preserves_explicit_esp_binding() {
+        let entry = VmEntry {
+            disk: Some(r"C:\vms\dev.qcow2".into()),
+            boot_esp: Some(r"C:\vms\override.raw".into()),
+            headless: true,
+            direct_kernel: Some(crate::config::DirectKernel {
+                kernel: r"C:\bundle\Image".into(),
+                initrd: r"C:\bundle\initrd".into(),
+                cmdline: "root=tilo-auto composefs=abc".into(),
+                loader_partuuid: Some("fcdfc623-0563-4f91-9db8-f2b87b98b3ce".into()),
+                kver: "7.2.5".into(),
+            }),
+            ..entry()
+        };
+        let args = Whpx::qemu_args(&Vm {
+            name: "dev",
+            entry: &entry,
+        });
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["-kernel", r"C:\bundle\Image"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|p| p == ["-initrd", r"C:\bundle\initrd"])
+        );
+        assert!(args.windows(2).any(|p| p == [
+            "-append",
+            "root=tilo-auto composefs=abc systemd.setenv=TILO_ROOT_LOADER_PARTUUID=fcdfc623-0563-4f91-9db8-f2b87b98b3ce"
+        ]));
+        assert!(args.windows(2).any(|p| p == ["-display", "none"]));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.contains("pflash") || a.contains("bootesp"))
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.contains("virtio-gpu") || a.contains("usb-"))
+        );
+        assert!(!args.iter().any(|a| a.contains("vnc=")));
+        assert!(Whpx.capabilities().direct_kernel);
     }
 
     fn vm_xml(entry: &VmEntry) -> String {
@@ -1759,6 +1838,7 @@ mod tests {
             kernel: "/c/tilo-kernel/direct/dev/vmlinuz".into(),
             initrd: "/c/tilo-kernel/direct/dev/initrd.img".into(),
             cmdline: "root=UUID=1 ro console=ttyS0 a<b".into(),
+            loader_partuuid: None,
             kver: "7.2.5+dev".into(),
         });
         let vm = Vm {

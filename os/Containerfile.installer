@@ -36,7 +36,11 @@ COPY rootfs/ /
 # login surface from release media, and validate the result in one final layer.
 # A developer can opt in to SSH only for a local diagnostic image paired with
 # the explicit non-default password required by build-custom-installer.sh.
+# The installed target is copied from this image. Refuse a release whose
+# manual postboot enlist command or firmware utility was omitted.
 RUN test -x /usr/bin/tilo-installer \
+    && test -x /usr/libexec/tilo-boot-order \
+    && command -v efibootmgr >/dev/null \
     && printf 'kargs = ["tilo.install"]\n' \
       > /usr/lib/bootc/kargs.d/50-installer.toml \
     # Keep tilo.mode=normal: tilo-deployment derives the equal-width repair UKI

@@ -149,6 +149,46 @@ fn the_published_surface_is_valid_on_every_step() {
 }
 
 #[test]
+fn separate_disk_secret_action_keeps_backend_credentials_distinct_and_private() {
+    let backend = FakeBackend::new();
+    let (mut app, mut doc) = app(&backend);
+    app.step = Step::Account;
+    let account = "account-random-value-2026";
+    let disk = "disk-random-value-2026";
+    let set_disk = invoke(
+        &mut app,
+        &mut doc,
+        "set-disk-passphrase@installer.account",
+        &json!({"passphrase": disk, "confirmation": disk}),
+    );
+    assert!(set_disk.get("answer").is_some(), "{set_disk}");
+    let set_account = invoke(
+        &mut app,
+        &mut doc,
+        "set-passphrase@installer.account",
+        &json!({"passphrase": account, "confirmation": account}),
+    );
+    assert!(set_account.get("answer").is_some(), "{set_account}");
+    assert_ne!(app.install_options().pin.as_str(), account);
+    assert_eq!(app.install_options().pin.as_str(), disk);
+    for output in [
+        set_disk.to_string(),
+        set_account.to_string(),
+        state(&mut app, &mut doc).to_string(),
+    ] {
+        assert!(!output.contains(account) && !output.contains(disk));
+    }
+    let same = invoke(
+        &mut app,
+        &mut doc,
+        "set-passphrase@installer.account",
+        &json!({"passphrase": disk, "confirmation": disk}),
+    );
+    assert_eq!(refused(&same), Some("action_failed"));
+    assert!(!same.to_string().contains(disk));
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "one test walks every wizard step in order, asserting each refusal where it happens"

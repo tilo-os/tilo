@@ -117,10 +117,19 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.clone()
     }
 
-    /// Whether this participant may only view. Bound controls already
-    /// disable themselves; custom surfaces read this.
+    /// Whether this participant may only view, when the view is built.
+    /// Bound controls already follow permission changes on their own; to show
+    /// or disable something else while the participant may only view, bind to
+    /// [`Self::read_only_state`], which follows role changes while the app
+    /// runs.
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()
+    }
+
+    /// Whether this participant may only view, as state that follows role
+    /// changes while the app runs.
+    pub fn read_only_state(&self) -> LocalState<bool> {
+        self.dispatch.read_only_state()
     }
 
     /// Whether the record's latest edits are durable, for a status line.
@@ -266,7 +275,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 
     /// One row per item of a collection, kept in collection order. A row is
     /// built once per item and retained while the item exists, so focus and
-    /// caret inside it survive other items changing.
+    /// caret inside it survive other items changing. A row's context menu
+    /// (right-click, the Menu key or Shift+F10) offers the actions the
+    /// resource publishes on its item, with the item already bound.
     pub fn each<I: 'static>(
         &self,
         items: fn(&T) -> &Collection<I>,
@@ -285,6 +296,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         Each::new(
             self.live.clone(),
+            self.dispatch.clone(),
             Box::new(ids),
             Box::new(move |id: &Id, alive: &Rc<()>| {
                 let parent = Rc::clone(&parent_focus);
@@ -389,6 +401,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             dispatch: self.dispatch.clone(),
         });
         surface.present(&self.live.get());
-        Box::new(SurfaceHost::new(self.live.clone(), surface))
+        Box::new(SurfaceHost::new(
+            self.live.clone(),
+            self.dispatch.clone(),
+            surface,
+        ))
     }
 }

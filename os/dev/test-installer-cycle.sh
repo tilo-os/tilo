@@ -473,20 +473,16 @@ prove_prepared_foreign_boot_entries() {
 # byte of the released source image, reserve a 64 KiB device tail, and use the
 # production profile encoder/read-back verifier to customize that tail. The
 # live installer must discover this through its real pre-greetd extractor.
-# Converting the regular-file fixture back to qcow2 makes it bootable by the
-# same VM path without ever mutating the release artifact.
+# The CI path holds only the appended profile in a qcow2 overlay, avoiding two
+# full-disk conversions while keeping the released source immutable.
 source_hash_before="$(sha256sum "$medium" | awk '{print $1}')"
-profiled_raw="$cycle_dir/profiled-medium.raw"
 profiled_medium="$cycle_dir/profiled-medium.qcow2"
-qemu-img convert -f qcow2 -O raw "$medium" "$profiled_raw"
-truncate -s "+$((64 * 1024))" "$profiled_raw"
 if [ "$build_profile_encoder" -eq 0 ]; then
   # Recheck immediately before execution, after potentially long fixture setup.
   [ "$(sha256sum "$encoder" | awk '{print $1}')" = "$encoder_sha" ] \
     || die "profile encoder changed after admission"
 fi
-"${encoder_command[@]}" \
-  --target "$profiled_raw" \
+profile_args=(
   --hostname cycle-tilo \
   --username "$TILO_USER" \
   --full-name 'Cycle User' \
@@ -494,8 +490,20 @@ fi
   --keyboard us \
   --timezone UTC \
   --filesystem btrfs
-qemu-img convert -f raw -O qcow2 "$profiled_raw" "$profiled_medium"
-rm -f -- "$profiled_raw"
+)
+if [ "$build_profile_encoder" -eq 1 ]; then
+  # The local cargo-run mode has a multiword encoder command. Retain its
+  # existing raw-file fixture until its runner can pin a standalone binary.
+  profiled_raw="$cycle_dir/profiled-medium.raw"
+  qemu-img convert -f qcow2 -O raw "$medium" "$profiled_raw"
+  truncate -s "+$((64 * 1024))" "$profiled_raw"
+  "${encoder_command[@]}" --target "$profiled_raw" "${profile_args[@]}"
+  qemu-img convert -f raw -O qcow2 "$profiled_raw" "$profiled_medium"
+  rm -f -- "$profiled_raw"
+else
+  python3 "$dev_dir/profile-installer-qcow2.py" \
+    "$medium" "$profiled_medium" "$encoder" "${profile_args[@]}"
+fi
 [ "$(sha256sum "$medium" | awk '{print $1}')" = "$source_hash_before" ] \
   || die "customization modified the released installer medium"
 export TILO_INSTALLER_DISK="$profiled_medium"

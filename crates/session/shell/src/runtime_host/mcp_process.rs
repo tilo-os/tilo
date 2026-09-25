@@ -319,10 +319,7 @@ where
     R: Read + Send + 'static,
     W: Write,
 {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(io::Error::other)?;
+    let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let session = Session::start(profile)?;
     let broker = session
         .broker
@@ -353,7 +350,10 @@ where
             }
             InputEvent::Frame(Frame::Line(bytes)) => match serde_json::from_slice(&bytes) {
                 Ok(request) => {
-                    if let Some(reply) = runtime.block_on(server.handle(request)) {
+                    if let Some(reply) = runtime
+                        .block_on(server.handle(request))
+                        .map_err(io::Error::other)?
+                    {
                         write_reply(&mut writer, &reply)?;
                     }
                 }

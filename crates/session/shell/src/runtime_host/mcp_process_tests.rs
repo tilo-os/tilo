@@ -81,6 +81,22 @@ impl std::io::Write for BrokenWriter {
     }
 }
 
+/// A helper app's collaboration manager once it has joined the broker.
+/// Construction returns while the connection is still being made; the
+/// helper polls until it settles.
+fn connected_manager() -> ui::collaboration::CollaborationManager {
+    let mut manager = ui::collaboration::CollaborationManager::new();
+    let started = Instant::now();
+    while manager.state() == ui::collaboration::CollaborationState::Connecting
+        && started.elapsed() < Duration::from_secs(10)
+    {
+        let _ = manager.poll();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(manager.is_connected(), "{:?}", manager.state());
+    manager
+}
+
 #[test]
 fn bounded_framing_recovers_after_an_oversized_line() {
     let mut bytes = vec![b'x'; MAX_REQUEST_BYTES + 1];
@@ -355,8 +371,7 @@ fn output_failure_reaps_the_surviving_child_and_releases_the_profile() {
 fn duplicate_app_ids_publish_as_distinct_normal_sdk_instances() {
     const TEST: &str = "runtime_host::mcp_process::tests::duplicate_app_ids_publish_as_distinct_normal_sdk_instances";
     if std::env::var_os("QOS_MCP_PUBLICATION_HELPER").is_some() {
-        let mut manager = ui::collaboration::CollaborationManager::new();
-        assert!(manager.is_connected());
+        let mut manager = connected_manager();
         manager.publish_action_directory(ui::collaboration::local_app_id());
         loop {
             let _ = manager.poll();

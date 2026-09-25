@@ -8,7 +8,6 @@ use super::migration_worker::MigrationJob;
 use super::model::FolderMode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(target_os = "linux")]
 use std::path::{Component, Path, PathBuf};
 
 const MAX_BYTES: usize = 256 * 1024;
@@ -636,7 +635,8 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
     Err("Continue the saved Desktop imports after logging into Tilo on Linux.".into())
 }
 
-#[cfg(test)]
+// Migration fixtures exercise Linux directory handles and session sockets.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::setup::controller::{FolderChoice, FolderDestination};
@@ -966,7 +966,7 @@ mod tests {
         // wrong account and must never prepare another user's continuation.
         let uid = unsafe { libc::getuid() };
         assert_ne!(uid, 0, "run this fixture as the ordinary proof login user");
-        let home = dirs::home_dir().unwrap().canonicalize().unwrap();
+        let home = xdg_paths::home().unwrap().canonicalize().unwrap();
         let requested = PathBuf::from(
             std::env::var_os("QOS_CONTINUATION_FIXTURE_SOURCE")
                 .expect("set the dedicated fixture root"),

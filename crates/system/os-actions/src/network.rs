@@ -1,7 +1,6 @@
 //! Wi-Fi control via `nmcli`.
 
 use crate::process::{run, run_capture};
-use std::sync::OnceLock;
 use zeroize::Zeroizing;
 
 pub const HOTSPOT_PROFILE: &str = "Tilo Hotspot";
@@ -713,17 +712,7 @@ pub fn get_connectivity() -> Result<ConnectivityState, String> {
 /// Returns an error message if the D-Bus runtime cannot start, `NetworkManager` is unreachable,
 /// it has no connectivity-check URI configured, or the configured URI is not `http(s)://`.
 pub fn captive_portal_uri() -> Result<String, String> {
-    static RT: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
-    let runtime = RT
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .ok()
-        })
-        .as_ref()
-        .ok_or("could not start NetworkManager runtime")?;
-    runtime.block_on(async {
+    crate::block_on(async {
         let connection = zbus::Connection::system()
             .await
             .map_err(|e| format!("cannot reach NetworkManager: {e}"))?;
@@ -989,17 +978,7 @@ pub struct ConnectionDiagnostics {
 /// Returns an error message if the D-Bus runtime cannot start or `NetworkManager` is
 /// unreachable.
 pub fn connection_diagnostics() -> Result<ConnectionDiagnostics, String> {
-    static RT: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
-    let rt = RT
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .ok()
-        })
-        .as_ref()
-        .ok_or("could not start NetworkManager runtime")?;
-    let (state, connectivity) = rt.block_on(async {
+    let (state, connectivity) = crate::block_on(async {
         let c = zbus::Connection::system()
             .await
             .map_err(|e| format!("cannot reach NetworkManager: {e}"))?;

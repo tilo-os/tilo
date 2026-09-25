@@ -134,6 +134,21 @@ use std::time::Duration;
 
 use tracing::warn;
 
+/// Drive one system-service call to completion for a synchronous caller.
+///
+/// Every D-Bus client here shares the process's app runtime: the caller polls
+/// the call while the runtime thread drives the bus connection, so no module
+/// keeps a runtime of its own and a connection outlives the call that opened
+/// it. Callers are worker threads; on the UI thread this refuses rather than
+/// freezing a frame.
+pub(crate) fn block_on<T>(
+    call: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tilo_rt::try_app()
+        .and_then(|runtime| runtime.block_on(call))
+        .map_err(|error| error.to_string())?
+}
+
 /// Side-effect interface for the OS actions. The default production impl
 /// ([`RealDispatcher`]) calls into the free functions in the per-domain modules; tests
 /// substitute a recording impl so the click handler can be asserted on without shelling out.

@@ -32,7 +32,7 @@ tilo-crypto = { path = "../tilo-crypto" }
 # calls back into. See src/bluez.rs.
 tilo-bluez = { path = "../tilo-bluez" }
 tilo-power-mgmt = { path = "../power" }
-tokio = { version = "1.52.3", features = ["rt", "rt-multi-thread", "time"] }
+tilo-rt.workspace = true
 zbus = { workspace = true, features = ["tokio"] }
 
 [dev-dependencies]

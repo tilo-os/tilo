@@ -101,15 +101,19 @@ fi
 kernel_verify="$repo/os/dev/verify-kernel-provenance.sh"
 if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF" ;;' "$os" \
    && grep -Fq 'aarch64) ref="$KERNEL_RPMS_AARCH64_REF" ;;' "$os" \
-   && grep -Fq './os/dev/verify-kernel-provenance.sh "$ref" "$BASE_REF" "$RPMS_REF" "$binding"' "$os" \
-   && grep -Fq '[[ $PUBLISH != false ]] || binding=signed-snapshot' "$os" \
+   && grep -Fq './os/dev/verify-kernel-provenance.sh "$ref"' "$os" \
+   && ! grep -Eq 'verify-kernel-provenance\.sh "\$ref" "|binding=signed-snapshot|--arg rpms "\$RPMS_REF"' "$os" \
    && grep -Fq 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$os" \
    && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
-   && grep -Fq 'dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" "$BASE_REF" "$RPMS_REF"' "$repo/os/dev/build-image.sh" \
+   && grep -Fq 'dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" \' "$repo/os/dev/build-image.sh" \
+   && ! grep -Fq 'TILO_KERNEL_RPMS_BINDING' "$repo/os/dev/build-image.sh" \
    && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$kernel_verify" \
    && grep -Fq 'cosign verify --key "$key" "$ref"' "$kernel_verify" \
    && grep -Fq 'cosign verify-attestation --key "$key" --type slsaprovenance1 "$ref"' "$kernel_verify" \
    && grep -Fq 'https://tilo.sh/buildtypes/kernel-rpm/v1' "$kernel_verify" \
+   && grep -Fq 'python3 "$repo/os/dev/kernel-build-environment.py"' "$kernel_verify" \
+   && grep -Fq 'cosign verify --key "$key" "$environment"' "$kernel_verify" \
+   && grep -Fq 'BUILD_TYPE = "https://tilo.sh/buildtypes/kernel-rpm/v1"' "$repo/os/dev/kernel-build-environment.py" \
    && grep -Fq 'actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"' "$kernel_verify"; then
   ok 'CI and local OS builds authenticate kernel digest, architecture, and provenance before consumption'
 else
@@ -117,14 +121,20 @@ else
 fi
 
 kernel_workflow="$workflows/build-kernel.yml"
-if grep -Fq -- '- name: Verify the signed RPM snapshot input' "$kernel_workflow" \
-   && grep -Fq 'cosign verify --key keys/cosign.pub "$RPMS_REF"' "$kernel_workflow" \
-   && grep -Fq './os/dev/derive-rpm-package-set.py --arch x86_64' "$kernel_workflow" \
-   && grep -Fq './os/dev/derive-rpm-package-set.py --arch aarch64' "$kernel_workflow" \
-   && grep -Fq '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' "$kernel_workflow"; then
-  ok 'kernel compilation authenticates the exact multiarch RPM snapshot input'
+kernel_containerfile="$repo/os/kernel/Containerfile"
+if grep -Fq -- '- name: Verify the signed native kernel buildroot' "$kernel_workflow" \
+   && grep -Fq '. os/kernel-buildroot-snapshot.env' "$kernel_workflow" \
+   && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]' "$kernel_workflow" \
+   && grep -Fq 'cosign verify --key keys/cosign.pub "$ref"' "$kernel_workflow" \
+   && test "$(grep -Fc 'KERNEL_BUILDROOT_REF=' "$kernel_workflow")" -ge 3 \
+   && ! grep -Eq 'RPMS_REF|rpms-snapshot\.env|derive-rpm-package-set' "$kernel_workflow" \
+   && grep -Fq 'FROM ${KERNEL_BUILDROOT_REF} AS build-toolchain' "$kernel_containerfile" \
+   && ! grep -Eq 'RPMS_REF|BASE_REF|from=rpms|dnf5? (install|download)|enablerepo' "$kernel_containerfile" \
+   && grep -Fq '! find /etc/yum.repos.d -type f -print -quit' "$kernel_containerfile" \
+   && grep -Fq 'cp /usr/src/tilo-kernel/kernel-*.src.rpm /work/kernel.src.rpm' "$kernel_containerfile"; then
+  ok 'kernel compilation starts only from the signed native kernel buildroot, with no repository fallback'
 else
-  bad 'kernel compilation can start from an unauthenticated RPM snapshot input'
+  bad 'kernel compilation can start from an unauthenticated buildroot or fall back to a package repository'
 fi
 if grep -Fq 'apt_firmware=qemu-efi-aarch64' "$kernel_workflow" \
    && grep -Fq 'apt_firmware=ovmf' "$kernel_workflow" \
@@ -161,20 +171,28 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$kernel_workflow" \
-   && grep -Fq 'kernel inputs changed during promotion; refusing stale PR' "$kernel_workflow" \
+   && grep -Fq 'refusing to regress' "$kernel_workflow" \
+   && grep -Fq 'git merge-base --is-ancestor "$1" "$GITHUB_SHA"' "$kernel_workflow" \
+   && grep -Fq 'superseded+=(--supersede "$candidate")' "$kernel_workflow" \
+   && ! grep -Fq 'refusing stale PR' "$kernel_workflow" \
    && grep -Fq 'automation/kernel-snapshot-${snapshot_digest:0:16}' "$kernel_workflow" \
    && grep -Fq 'python3 os/dev/open-snapshot-pr.py' "$kernel_workflow" \
    && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' "$kernel_workflow" \
    && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' "$kernel_workflow" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' "$kernel_workflow" \
    && ! grep -Fq 'git push origin HEAD:main' "$kernel_workflow" \
-   && grep -Fq "(github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'workflow_call' && inputs.publish)) && github.ref == 'refs/heads/main'" "$kernel_workflow" \
+   && grep -Fq "(github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'" "$kernel_workflow" \
    && ! grep -Fq "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$kernel_workflow" \
    && grep -Fq 'kernel-build-support.sh stage-modules "$(uname -m)"' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq '.pushsection .discard.tilo_module_cert' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq 'python3 /work/check-signing-identity.py "$ksrc/vmlinux"' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq '"$stage/lib/modules/$kver/vmlinuz" "$ksrc/scripts/extract-vmlinux"' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq '"$stage/lib/modules/$kver/vmlinuz"' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq 'check_extracted_image(boot_image, extractor, signed_with)' "$repo/os/kernel/check-signing-identity.py" \
    && grep -Fq 'aarch64) image=arch/arm64/boot/Image' "$repo/os/kernel/build-support.sh" \
    && grep -Fq 'x86_64) image=arch/x86/boot/bzImage' "$repo/os/kernel/build-support.sh" \
-   && grep -Fq 'rpm-build make gcc clang lld bc flex bison rust cargo' "$repo/os/kernel/Containerfile" \
+   && grep -Fq 'rpm-build make gcc clang lld bc flex bison rust cargo' "$repo/os/Containerfile.kernel-buildroot" \
    && ! grep -Fq 'TILO_BUILDER_REF' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'https://tilo.sh/buildtypes/kernel-rpm/v1' "$kernel_workflow" \
    && grep -Fq -- '--predicate kernel-provenance.json --type slsaprovenance1' "$kernel_workflow" \
@@ -185,40 +203,20 @@ else
   bad 'the two-architecture OS release does not have matching native kernel builds'
 fi
 
-# Inside a called workflow Forgejo reports github.event_name as workflow_call.
-# Such a run publishes (signs, pushes tags, opens pin pull requests) only when
-# its caller passes publish: true, and still only on main; the sole caller that
-# does is snapshot-rpms.yml on main. A pull-request-triggered call therefore can
-# never sign or propose pins.
-publish_default="$(sed -n '/^      publish:/,/^concurrency:/p' "$kernel_workflow")"
-unguarded_calls="$(grep -F "workflow_call'" "$kernel_workflow" \
-  | grep -vF "(github.event_name == 'workflow_call' && inputs.publish)) && github.ref == 'refs/heads/main'" || true)"
-publishing_callers="$(grep -lE '^      publish: true$' "$workflows"/*.y*ml || true)"
-snapshot_workflow="$workflows/snapshot-rpms.yml"
-if grep -Fq 'default: false' <<<"$publish_default" \
-   && grep -Fq 'type: boolean' <<<"$publish_default" \
-   && [ -z "$unguarded_calls" ] \
-   && [ "$(grep -Fc "(github.event_name == 'workflow_call' && inputs.publish)" "$kernel_workflow")" -ge 10 ] \
-   && [ "$publishing_callers" = "$snapshot_workflow" ] \
-   && sed -n '/^  kernels:/,$p' "$snapshot_workflow" | grep -Fq "if: github.ref == 'refs/heads/main'" \
-   && ! sed -n '/^on:/,/^concurrency:/p' "$snapshot_workflow" | grep -Fq 'pull_request'; then
-  ok 'a called kernel build publishes only for snapshot-rpms.yml on main'
+# Only kernel inputs rebuild the kernel. The OS RPM snapshot and base are not
+# kernel inputs: the kernel builds on its own signed buildroot, so an OS
+# package change never invalidates the pinned kernel.
+kernel_triggers="$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"
+if grep -Fq '"os/kernel-buildroot-snapshot.env"' <<<"$kernel_triggers" \
+   && grep -Fq '"os/kernel/**"' <<<"$kernel_triggers" \
+   && ! grep -Eq 'rpms-snapshot\.env|base-snapshot\.env|derive-rpm-package-set|kernel-snapshot\.env"|workflow_call' <<<"$kernel_triggers" \
+   && ! grep -Fq 'build-kernel.yml' "$workflows/snapshot-rpms.yml" \
+   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/snapshot-rpms.yml" \
+   && ! grep -Fq 'os/kernel/Containerfile' "$repo/os/dev/derive-rpm-package-set.py" \
+   && grep -Fq 'os/kernel-buildroot-snapshot.env' <<<"$(sed -n '/KERNEL_SNAPSHOT_INPUTS: |/,/^    steps:/p' "$kernel_workflow")"; then
+  ok 'only kernel inputs rebuild the kernel; OS package changes do not'
 else
-  bad 'a called kernel build can sign or propose pins without an explicit main-only publish'
-fi
-
-# A push that lands both pins, or that snapshot-rpms.yml will answer with a
-# snapshot and kernels built against it, must not publish a second kernel whose
-# pin could land against the other RPM snapshot.
-rebuild_job="$(sed -n '/^  rebuild:/,/^  signing-preflight:/p' "$kernel_workflow")"
-if grep -Fq "if: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.rpms_ref }}" <<<"$rebuild_job" \
-   && grep -Fq "printf 'os/kernel-snapshot.env\\nos/rpms-snapshot.env'" <<<"$rebuild_job" \
-   && grep -Fq 'snapshot_changed --base "$BEFORE" && snapshot_changed --since-pin' <<<"$rebuild_job" \
-   && grep -Fq "(needs.rebuild.result == 'skipped' || needs.rebuild.outputs.needed == 'true')" "$kernel_workflow" \
-   && ! grep -Fq 'os/kernel-snapshot.env"' <<<"$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"; then
-  ok 'pin-only merges and snapshot-covered pushes do not publish a redundant kernel'
-else
-  bad 'a pin merge or snapshot refresh can race a redundant kernel publication'
+  bad 'an OS package or base change can invalidate or rebuild the kernel'
 fi
 
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
@@ -263,7 +261,7 @@ grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
   && grep -Fq 'max-parallelism = 1' "$os" \
-  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 3 \
+  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 4 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
@@ -297,7 +295,7 @@ grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
 grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
   && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
   && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
-  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 3 ] \
+  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 4 ] \
   && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
   && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
   && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \

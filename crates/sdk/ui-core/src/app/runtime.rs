@@ -250,6 +250,9 @@ pub(super) struct CollaborationRuntime {
     /// checked-out record route.
     pub(super) room_manager: Option<CollaborationManager>,
     pub(super) local_author: crate::permissions::UserId,
+    /// A record checkout asks its new route for the current document once
+    /// that route is acknowledged.
+    pub(super) snapshot_on_ready: bool,
 }
 
 impl CollaborationRuntime {
@@ -261,6 +264,7 @@ impl CollaborationRuntime {
             manager,
             room_manager: None,
             local_author,
+            snapshot_on_ready: false,
         }
     }
 }

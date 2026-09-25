@@ -268,4 +268,35 @@ else
   bad 'Lenovo firmware input is absent from release provenance or can enter a generic release'
 fi
 
+fex="code.sandbox.example/qos/tilo-fex-payload-candidate@sha256:$hex"
+guest="code.sandbox.example/qos/tilo-development-windows-guest@sha256:$(printf 'b%.0s' {1..64})"
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
+   BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+   TILO_HARDWARE_PROFILE=lenovo-83ed TILO_RELEASE_ARCHITECTURE=aarch64 \
+   TILO_FIRMWARE_CANDIDATE="$firmware" TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
+   TILO_WINDOWS_PROVIDER_INPUT_CLASS=development-only \
+   FEX_PAYLOAD_REF="$fex" WINDOWS_GUEST_REF="$guest" \
+   "$provenance" "$tmp/lenovo-windows-provenance.json" \
+   && jq -e --arg fex "$fex" --arg guest "$guest" '
+     .buildDefinition.externalParameters.windowsProvider == {
+       inputClass: "development-only", runtimeAcceptanceVerified: false,
+       fexRef: $fex, guestRef: $guest
+     }
+     and any(.buildDefinition.resolvedDependencies[]; .uri == $fex)
+     and any(.buildDefinition.resolvedDependencies[]; .uri == $guest)
+   ' "$tmp/lenovo-windows-provenance.json" >/dev/null \
+   && ! (RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
+         BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
+         KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+         TILO_HARDWARE_PROFILE=lenovo-83ed TILO_RELEASE_ARCHITECTURE=aarch64 \
+         TILO_FIRMWARE_CANDIDATE="$firmware" TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
+         TILO_WINDOWS_PROVIDER_INPUT_CLASS=development-only \
+         FEX_PAYLOAD_REF="$fex" WINDOWS_GUEST_REF= \
+         "$provenance" "$tmp/bad-windows-provider.json" >/dev/null 2>&1); then
+  ok 'one-off Lenovo Windows provider provenance binds both digests and development status'
+else
+  bad 'development Windows provider provenance omitted a digest or accepted an incomplete pair'
+fi
+
 exit "$fail"
