@@ -9,36 +9,43 @@ produces (raw, or qcow2 converted with qemu-img) into the two staging
 components the Imager writes onto an internal disk, plus a manifest the Rust
 validator (apps/imager/src/setup/internal_bundle.rs) accepts byte-for-byte:
 
-  staging-esp   the live ESP, with its one live UKI specialised to boot the
-                staging root (`tilo.root=` + 37 zeros becomes
-                `root=UUID=<staging root fsid>` + one space, so no PE offset
-                moves) and that same UKI installed as the removable-media
-                fallback loader /EFI/BOOT/BOOT{X64,AA64}.EFI.
+  staging-esp   the live ESP with its one live UKI left byte-for-byte as
+                built and signed, and that same UKI copied to the
+                removable-media fallback loader /EFI/BOOT/BOOT{X64,AA64}.EFI.
   staging-root  the live Btrfs root, shrunk to its minimum plus 1 GiB of slack
                 and truncated. Its partition keeps the live root size (>= 40
                 GiB); the live installer grows the filesystem at boot.
 
+The staging UKI is never rewritten, so its Authenticode signature and
+measured command line stay those of the release. It finds its root the same
+way every Tilo UKI does, `root=tilo-auto` (os/usr/libexec/tilo-root-discover):
+the Imager creates the staging root with the dedicated Tilo staging root GPT
+type, which the live installer UKI (`tilo.install`) selects on the disk it
+booted from and an installed UKI never considers. That is what keeps the
+staging root and a freshly installed Tilo root on one disk unambiguous until
+tilo-staging-reclaim removes the staging partitions.
+
 Export needs root on Linux: it loop-attaches and mounts PRIVATE COPIES of both
-filesystems (never the source image) to specialise the ESP and to run
-`btrfs filesystem resize`. It refuses up front, before creating any output,
-when it cannot.
+filesystems (never the source image) to install the fallback loader and
+reserve the handoff files on the ESP, and to run `btrfs filesystem resize`.
+It refuses up front, before creating any output, when it cannot.
 
 What export proves structurally, offline: the GPT, both filesystem
 identities, the Btrfs superblock after shrinking (and `btrfs check`), the
-exact specialised UKI bytes read back from the remounted ESP at both paths,
-and a manifest that validates and whose component bytes hash as recorded.
-What it cannot prove, and what the VM round trip
+live UKI bytes read back unchanged from the remounted ESP at both paths, and
+a manifest that validates and whose component bytes hash as recorded. What
+it cannot prove, and what the VM round trip
 (os/dev/test-internal-install-cycle.sh) must: that firmware loading the
-fallback path runs systemd-stub, that the initrd mounts root=UUID from the
-staging partition, and that the grown root boots the installer. Schema
-validation establishes consistency, never release authenticity.
+fallback path runs systemd-stub, that the initrd discovers the staging root
+beside the retained operating system, and that the grown root boots the
+installer. Schema validation establishes consistency, never release
+authenticity.
 """
 import argparse
 import importlib.util
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager
 import hashlib
 import json
-import io
 import os
 from pathlib import Path
 import re
@@ -56,10 +63,14 @@ MAX_IMAGE = 1 << 40
 SECTOR = 512
 ESP_GUID = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 ROOT_GUID = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+# The staging root's partition type: the Tilo staging root, which only the live
+# installer UKI resolves (os/usr/libexec/tilo-root-discover). Never the Tilo
+# root type, so an installed UKI keeps seeing exactly one root beside it.
+STAGING_ROOT_GUID = 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d'
 ROOT_GUIDS = {'x86_64': '4f68bce3-e8cd-4db1-96e7-fbcaf984b709',
               'aarch64': 'b921b045-1df0-41c3-af44-4c6f280d3fae'}
 # The live installer disk's root partition type (os/dev/disk-image.sh). It is
-# accepted only as an export source; the staging root is always ROOT_GUID.
+# accepted only as an export source; the staging root is always STAGING_ROOT_GUID.
 TILO_ROOT_GUID = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 GUID_PATTERN = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 GROW_FILESYSTEM = 1 << 59
@@ -79,16 +90,14 @@ FALLBACK_LOADERS = {'x86_64': '/EFI/BOOT/BOOTX64.EFI', 'aarch64': '/EFI/BOOT/BOO
 # bytes as spaces, so the ESP still verifies against this manifest's digest.
 STAGING_PLACEHOLDERS = ('EFI/tilo-staging/handoff.json', 'EFI/tilo-staging/record.json')
 STAGING_PLACEHOLDER_BYTES = 64 * 1024
-# Length-stable live placeholder and its binding: 47 bytes each.
-ROOT_PLACEHOLDER = 'tilo.root=' + '0' * 37
-# The specialised live command line: flags and exact values. tilo.generation
-# (dense positive integer) and at most two known consoles are checked apart.
+# The live command line: flags and exact values. tilo.generation (dense
+# positive integer) and at most two known consoles are checked apart.
 LIVE_FLAGS = frozenset({'rw', 'quiet', 'splash', 'slab_nomerge', 'plymouth.ignore-serial-consoles',
                         'tilo.install'})
-LIVE_VALUES = {'tilo.mode': 'normal', 'tilo.luks': '0' * 45, 'tilo.unlock': '0' * 75,
-               'init_on_alloc': '1', 'init_on_free': '1', 'lockdown': 'integrity',
-               'randomize_kstack_offset': 'on', 'page_alloc.shuffle': '1', 'vsyscall': 'none',
-               'preempt': 'full'}
+LIVE_VALUES = {'root': 'tilo-auto', 'rd.luks.options': 'tpm2-device=auto,fido2-device=auto',
+               'tilo.mode': 'normal', 'init_on_alloc': '1', 'init_on_free': '1',
+               'lockdown': 'integrity', 'randomize_kstack_offset': 'on', 'page_alloc.shuffle': '1',
+               'vsyscall': 'none', 'preempt': 'full'}
 
 
 def require(condition, message):
@@ -168,29 +177,27 @@ def validate_manifest(manifest):
             text(component['filesystem_uuid'], r'[0-9A-F]{4}-[0-9A-F]{4}', 9)
             require(component['filesystem_uuid'] != '0000-0000', 'zero FAT identity')
         else:
-            # Deliberately the generic Linux type, never the Tilo root type:
-            # installed-target discovery must keep seeing exactly one Tilo root.
-            require(part_type == ROOT_GUID and component['filesystem_type'] == 'btrfs',
+            # The Tilo staging root type, never the Tilo root type: an
+            # installed UKI must keep seeing exactly one Tilo root beside it.
+            require(part_type == STAGING_ROOT_GUID and component['filesystem_type'] == 'btrfs',
                     'unsupported root partition')
             guid(component['filesystem_uuid'])
     disjoint([(c['source_offset'], c['byte_size']) for c in components], image_size)
     boot = manifest['boot_binding']
-    keys(boot, 'efi_path uki_architecture uki_sha256 uki_cmdline root_locator composefs_digest')
+    keys(boot, 'efi_path uki_architecture uki_sha256 uki_cmdline composefs_digest')
     require(boot['uki_architecture'] == arch, 'UKI architecture mismatch')
     require(boot['efi_path'] == FALLBACK_LOADERS[arch], 'EFI path must be the removable-media fallback loader')
     text(boot['uki_sha256'], r'[0-9a-f]{64}', 64)
     text(boot['composefs_digest'], r'[0-9a-f]{128}', 128)
-    expected = 'UUID=' + by_role['staging-root']['filesystem_uuid']
-    require(boot['root_locator'] == expected, 'root UUID binding mismatch')
-    validate_cmdline(boot['uki_cmdline'], expected, boot['composefs_digest'])
+    validate_cmdline(boot['uki_cmdline'], boot['composefs_digest'])
 
 
-def validate_cmdline(cmdline, root_locator, digest):
-    """Accept exactly the specialised live installer command line.
+def validate_cmdline(cmdline, digest):
+    """Accept exactly the live installer command line, as built.
 
     The allow-list is the token set os/Containerfile.installer leaves on the
-    live UKI after projecting /usr/lib/bootc/kargs.d, with the root slot bound.
-    os/tests/internal_bundle_test.py derives that set from those files, so a
+    live UKI after projecting /usr/lib/bootc/kargs.d; the staging ESP carries
+    that UKI unchanged. os/tests/internal_bundle_test.py derives that set from those files, so a
     kargs change that this profile does not know fails there, not in the field.
     Expansion requires consumer evidence, not ignored arguments.
     """
@@ -203,9 +210,9 @@ def validate_cmdline(cmdline, root_locator, digest):
     require(all(names.count(name) == 1 for name in names if name != 'console'), 'duplicate kernel argument')
     consoles = [token for token in tokens if token.startswith('console=')]
     require(len(set(consoles)) == len(consoles) and len(consoles) <= 2, 'duplicate console argument')
-    require('root=' + root_locator in tokens and 'composefs=' + digest in tokens
+    require('root=' + LIVE_VALUES['root'] in tokens and 'composefs=' + digest in tokens
             and 'tilo.install' in tokens, 'missing or mismatched measured boot binding')
-    allowed_values = dict(LIVE_VALUES, root=root_locator, composefs=digest)
+    allowed_values = dict(LIVE_VALUES, composefs=digest)
     for token in tokens:
         if token in LIVE_FLAGS:
             continue
@@ -493,106 +500,6 @@ def inspect_uki(data):
             'uki_sha256': hashlib.sha256(data).hexdigest()}
 
 
-def uki_tool():
-    spec = importlib.util.spec_from_file_location('tilo_uki_cmdline', Path(__file__).with_name('uki-cmdline.py'))
-    uki = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(uki)
-    return uki
-
-
-def root_binding(filesystem_uuid):
-    """The exact bytes that replace ROOT_PLACEHOLDER: same length, one trailing space."""
-    guid(filesystem_uuid)
-    replacement = 'root=UUID=' + filesystem_uuid + ' '
-    require(len(replacement) == len(ROOT_PLACEHOLDER), 'root binding is not length-stable')
-    return replacement
-
-
-def specialize_uki(data, filesystem_uuid):
-    """Prepare bytes only; not signed, boot-qualified, or a published bundle.
-
-    Use the repository's equal-width UKI tool on an owned ordinary-file copy.
-    No source artifact is modified. Reject signed/PCR-signature inputs rather
-    than pretending their authentication survives command-line specialization.
-    """
-    replacement = root_binding(filesystem_uuid)
-    info = inspect_uki(data)
-    uki = uki_tool()
-    require(not any(name in ('.pcrsig', '.pcrpkey', '.profile') for name, *_ in uki.sections(data)),
-            'PCR signature-bearing or multi-profile specialization unsupported')
-    pe = struct.unpack_from('<I', data, 0x3c)[0]
-    directories = struct.unpack_from('<I', data, pe+24+108)[0]
-    if directories > 4:
-        require(struct.unpack_from('<H', data, pe+20)[0] >= 152, 'truncated PE security directory')
-        require(struct.unpack_from('<II', data, pe+24+112+4*8) == (0, 0),
-                'signed UKI specialization unsupported')
-    tokens = info['uki_cmdline'].split()
-    require(tokens.count(ROOT_PLACEHOLDER) == 1 and not any(t.startswith('root=') for t in tokens),
-            'one exact unbound root slot required')
-    digests = [t.partition('=')[2] for t in tokens if t.startswith('composefs=')]
-    require(len(digests) == 1, 'one composefs identity required')
-    text(digests[0], r'[0-9a-f]{128}', 128)
-    locator = 'UUID=' + filesystem_uuid
-    wanted_cmdline = info['uki_cmdline'].replace(ROOT_PLACEHOLDER, replacement)
-    validate_cmdline(wanted_cmdline, locator, digests[0])
-    with tempfile.TemporaryDirectory(prefix='tilo-uki-copy-') as temporary:
-        path = Path(temporary) / 'prepared.efi'
-        path.write_bytes(data)
-        with redirect_stdout(io.StringIO()):
-            uki.main(['uki-cmdline.py', 'replace', ROOT_PLACEHOLDER, replacement, str(path)])
-        prepared = path.read_bytes()
-    offset, size = uki.find_cmdline(data)
-    expected = (data[:offset] +
-                data[offset:offset+size].replace(ROOT_PLACEHOLDER.encode(), replacement.encode()) +
-                data[offset+size:])
-    require(len(prepared) == len(data) and prepared == expected,
-            'specialization changed bytes outside root slot')
-    require(list(uki.section_table(prepared)) == list(uki.section_table(data)),
-            'specialization moved a PE section')
-    require(inspect_uki(prepared)['uki_cmdline'] == wanted_cmdline, 'specialization readback mismatch')
-    return prepared
-
-
-def strip_authenticode(data):
-    """Return an unsigned copy of a UKI whose only signature is a trailing table.
-
-    Specialising the command line invalidates any Authenticode signature, and
-    the internal flow requires Secure Boot to be disabled. Dropping the table
-    explicitly keeps the staged loader honest: it is unsigned, not "signed"
-    with a signature that no longer verifies. Only the canonical layout is
-    accepted: certificate table at the very end, after every section, made of
-    well-formed WIN_CERTIFICATE PKCS#7 entries. An unsigned input is returned
-    unchanged.
-    """
-    info = inspect_uki(data)
-    del info
-    pe = struct.unpack_from('<I', data, 0x3c)[0]
-    if struct.unpack_from('<I', data, pe+24+108)[0] <= 4:
-        return data
-    require(struct.unpack_from('<H', data, pe+20)[0] >= 152, 'truncated PE security directory')
-    directory = pe+24+112+4*8
-    offset, size = struct.unpack_from('<II', data, directory)
-    if (offset, size) == (0, 0):
-        return data
-    sections_end = max(raw + rsz for _n, raw, rsz, _v in uki_tool().sections(data))
-    require(offset % 8 == 0 and offset >= sections_end and offset + size == len(data),
-            'certificate table is not the trailing file region')
-    cursor = offset
-    while cursor < len(data):
-        require(cursor + 8 <= len(data), 'truncated certificate entry')
-        length, revision, kind = struct.unpack_from('<IHH', data, cursor)
-        require(length >= 8 and cursor + length <= len(data) and revision == 0x0200 and kind == 0x0002,
-                'unsupported certificate entry')
-        cursor += (length + 7) & ~7
-    require(cursor == len(data), 'certificate table has trailing bytes')
-    unsigned = bytearray(data[:offset])
-    struct.pack_into('<II', unsigned, directory, 0, 0)
-    unsigned = bytes(unsigned)
-    require(inspect_uki(unsigned)['uki_cmdline'] == inspect_uki(data)['uki_cmdline'],
-            'signature removal changed the command line')
-    return unsigned
-
-
 def qcow_virtual_size(header):
     """Header triage only; no conversion or backing-file resolution is performed."""
     require(type(header) is bytes and len(header) >= 104, 'truncated qcow2 header')
@@ -604,8 +511,12 @@ def qcow_virtual_size(header):
     require(struct.unpack_from('>I', header, 60)[0] == 0 and struct.unpack_from('>Q', header, 64)[0] == 0,
             'qcow2 snapshots unsupported')
     incompatible, compatible, autoclear, refcount_order, header_length = struct.unpack_from('>QQQII', header, 72)
-    require(incompatible == compatible == autoclear == 0 and refcount_order == 4 and header_length == 104,
+    require(incompatible == compatible == autoclear == 0 and refcount_order == 4 and header_length in (104, 112),
             'qcow2 feature/extension profile unsupported (including external data files)')
+    # QEMU 5.1+ writes a 112-byte header: one compression-type byte (0 = zlib,
+    # the only type readable without the incompatible feature bit) and padding.
+    if header_length == 112:
+        require(len(header) >= 112 and header[104:112] == bytes(8), 'qcow2 compression type unsupported')
     integer(size, 68*SECTOR)
     require(size % SECTOR == 0, 'unaligned virtual size')
     return size
@@ -833,26 +744,30 @@ def _replace_contents(path, data):
         os.fsync(output.fileno())
 
 
-def specialize_esp_tree(esp, filesystem_uuid, arch):
-    """Specialise the live UKI in a mounted ESP and install it as the fallback loader.
+def stage_esp_tree(esp, arch):
+    """Install the live UKI, unchanged, as the fallback loader of a mounted ESP.
 
     Firmware boots `\\EFI\\BOOT\\BOOT{X64,AA64}.EFI` from the owned Boot####
-    entry. Making that file the specialised UKI itself, rather than trusting
+    entry. Making that file the live UKI itself, rather than trusting
     systemd-boot's loader.conf to pick it, leaves one boot path to prove:
-    systemd-stub runs, sets LoaderDevicePartUUID and mounts root=UUID. The
-    UKI under /EFI/Linux gets the same bytes so a systemd-boot started by any
-    other route still reaches the staging root, never the unbound placeholder.
+    systemd-stub runs, sets LoaderDevicePartUUID and the initrd resolves
+    root=tilo-auto to the staging root. The UKI under /EFI/Linux keeps the
+    same bytes, so any route through systemd-boot reaches the same root. No
+    byte of either copy differs from the release, so its signature holds.
     """
     uki = live_uki_path(esp)
     fallback = esp / FALLBACK_LOADERS[arch].lstrip('/')
     require(fallback.exists() and _regular(fallback), 'live ESP has no removable-media fallback loader')
-    unsigned = strip_authenticode(uki.read_bytes())
-    require(inspect_uki(unsigned)['uki_architecture'] == arch, 'live UKI architecture mismatch')
-    prepared = specialize_uki(unsigned, filesystem_uuid)
-    _replace_contents(uki, prepared)
-    _replace_contents(fallback, prepared)
+    live = uki.read_bytes()
+    info = inspect_uki(live)
+    require(info['uki_architecture'] == arch, 'live UKI architecture mismatch')
+    digests = [t.partition('=')[2] for t in info['uki_cmdline'].split() if t.startswith('composefs=')]
+    require(len(digests) == 1, 'one composefs identity required')
+    text(digests[0], r'[0-9a-f]{128}', 128)
+    validate_cmdline(info['uki_cmdline'], digests[0])
+    _replace_contents(fallback, live)
     reserve_staging_placeholders(esp)
-    return uki.relative_to(esp), prepared
+    return uki.relative_to(esp), live
 
 
 def reserve_staging_placeholders(esp):
@@ -868,16 +783,16 @@ def reserve_staging_placeholders(esp):
             os.fsync(output.fileno())
 
 
-def verify_esp_tree(esp, uki, arch, prepared):
-    """Read both loader paths back and require the exact specialised bytes."""
+def verify_esp_tree(esp, uki, arch, live):
+    """Read both loader paths back and require the exact live UKI bytes."""
     for path in (esp / uki, esp / FALLBACK_LOADERS[arch].lstrip('/')):
-        require(_regular(path) and path.read_bytes() == prepared,
-                'specialised loader readback mismatch: ' + str(path.relative_to(esp)))
+        require(_regular(path) and path.read_bytes() == live,
+                'live UKI readback mismatch: ' + str(path.relative_to(esp)))
     for relative in STAGING_PLACEHOLDERS:
         path = esp / relative
         require(_regular(path) and path.read_bytes() == b' ' * STAGING_PLACEHOLDER_BYTES,
                 'staging placeholder readback mismatch: ' + relative)
-    return inspect_uki(prepared)
+    return inspect_uki(live)
 
 
 def minimise_root(system, image, work):
@@ -929,7 +844,7 @@ def export_image(image, output, release, arch, *, work_dir=None, system=None):
         raise FileExistsError('output must be a new directory')
     system = system or System()
     with regular_file(image) as stream:
-        header = stream.read(104)
+        header = stream.read(112)
     qcow2 = header[:4] == b'QFI\xfb'
     if qcow2:
         qcow_virtual_size(header)
@@ -963,11 +878,11 @@ def export_image(image, output, release, arch, *, work_dir=None, system=None):
         esp_image, root_image = output / names['staging-esp'], output / names['staging-root']
         filesystem_uuid = read_btrfs_superblock(root_image)['fsid']
         with mounted(system, esp_image, work / 'esp', 'vfat', 'rw,nodev,nosuid,noexec,flush') as tree:
-            uki, prepared = specialize_esp_tree(tree, filesystem_uuid, arch)
+            uki, live = stage_esp_tree(tree, arch)
         with mounted(system, esp_image, work / 'esp', 'vfat', 'ro,nodev,nosuid,noexec') as tree:
-            info = verify_esp_tree(tree, uki, arch, prepared)
+            info = verify_esp_tree(tree, uki, arch, live)
         root_bytes, fsid = minimise_root(system, root_image, work)
-        require(fsid == filesystem_uuid, 'root identity changed after specialisation')
+        require(fsid == filesystem_uuid, 'root identity changed while shrinking')
         with regular_file(esp_image) as stream:
             serial = fat_serial(exact(stream, 0, SECTOR))
         digest = [t.partition('=')[2] for t in info['uki_cmdline'].split() if t.startswith('composefs=')]
@@ -982,13 +897,13 @@ def export_image(image, output, release, arch, *, work_dir=None, system=None):
                  'filesystem_type': 'vfat', 'filesystem_uuid': serial,
                  'minimum_partition_bytes': esp['size'], 'source_offset': esp['offset']},
                 {'role': 'staging-root', 'filename': names['staging-root'], 'byte_size': root_bytes,
-                 'sha256': sha256_file(root_image), 'partition_type_guid': ROOT_GUID,
+                 'sha256': sha256_file(root_image), 'partition_type_guid': STAGING_ROOT_GUID,
                  'filesystem_type': 'btrfs', 'filesystem_uuid': filesystem_uuid,
                  'minimum_partition_bytes': root['size'], 'source_offset': root['offset']}],
             'boot_binding': {
                 'efi_path': FALLBACK_LOADERS[arch], 'uki_architecture': info['uki_architecture'],
                 'uki_sha256': info['uki_sha256'], 'uki_cmdline': info['uki_cmdline'],
-                'root_locator': 'UUID=' + filesystem_uuid, 'composefs_digest': digest[0]}}
+                'composefs_digest': digest[0]}}
         validate_manifest(manifest)
         encoded = (json.dumps(manifest, indent=2, sort_keys=True) + '\n').encode()
         require(parse_manifest(encoded) == manifest, 'manifest encoding round trip mismatch')

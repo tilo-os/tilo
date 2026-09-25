@@ -25,7 +25,8 @@ INSTALLED_HELPER = "/usr/libexec/tilo-uki-cmdline"
 TARGET = "/boot/tilo-target/tilo-target.efi"
 ROOT_TOKEN = "root=tilo-auto"
 OPTIONS_TOKEN = "rd.luks.options=tpm2-device=auto,fido2-device=auto"
-LIVE_KEYS = {"tilo.root", "tilo.luks", "tilo.unlock", "tilo.install"}
+LIVE_ONLY_KEYS = {"tilo.install"}
+BOOT_MOUNT_TOKEN = "systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec"
 
 
 def projection_commands(source):
@@ -41,7 +42,9 @@ def projection_commands(source):
         elif commands:
             commands[-1] += " " + line
     start = f"{INSTALLED_HELPER} remove systemd.show_status"
-    stop = "systemctl enable tilo-firstboot-user.service tilo-installer-setup.service tilo-live-recovery.service"
+    stop = ("systemctl enable tilo-firstboot-user.service "
+            "tilo-firstboot-autologin-cleanup.service "
+            "tilo-installer-setup.service tilo-live-recovery.service")
     if commands.count(start) != 1 or commands.count(stop) != 1:
         raise ValueError("cannot observe exactly one UKI projection span")
     begin, end = commands.index(start), commands.index(stop)
@@ -61,8 +64,11 @@ def projection_commands(source):
     ]
     fixed = {
         boundary,
-        'target_uki="$(find /boot/EFI/Linux -type f -name \'*.efi\' -print -quit)"',
-        f'cp "$target_uki" {TARGET}',
+        "set -- /boot/EFI/Linux/*.efi",
+        '[ "$#" -eq 1 ] && [ -f "$1" ]',
+        f'cp "$1" {TARGET}',
+        f"{INSTALLED_HELPER} append {BOOT_MOUNT_TOKEN} {TARGET}",
+        f"{INSTALLED_HELPER} show {TARGET} | grep -qw {BOOT_MOUNT_TOKEN}",
         f'live_cmdline="$({INSTALLED_HELPER} show)"',
         f'target_cmdline="$({INSTALLED_HELPER} show {TARGET})"',
     }
@@ -182,7 +188,7 @@ class TargetCmdlineTests(unittest.TestCase):
         self.assertEqual(self.base.count(OPTIONS_TOKEN), 1)
         live_before = self.prepare_live()
         live_tokens = self.tokens(self.live)
-        self.assertTrue(LIVE_KEYS.issubset({t.split("=", 1)[0] for t in live_tokens}))
+        self.assertIn("tilo.install", live_tokens)
         result = self.run_commands(self.project)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         target_tokens = self.tokens(self.target)
@@ -190,10 +196,10 @@ class TargetCmdlineTests(unittest.TestCase):
         self.assertEqual(target_tokens.count(OPTIONS_TOKEN), 1)
         self.assertEqual(
             target_tokens,
-            [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_KEYS]
-            + [ROOT_TOKEN, OPTIONS_TOKEN],
+            [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_ONLY_KEYS]
+            + [BOOT_MOUNT_TOKEN],
         )
-        self.assertTrue(LIVE_KEYS.isdisjoint({t.split("=", 1)[0] for t in target_tokens}))
+        self.assertTrue(LIVE_ONLY_KEYS.isdisjoint({t.split("=", 1)[0] for t in target_tokens}))
         for token in ("composefs=" + "a" * 128, "tilo.generation=42", "tilo.mode=normal", "preempt=full"):
             self.assertIn(token, target_tokens)
         self.assertEqual(self.live.read_bytes(), live_before)

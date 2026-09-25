@@ -229,7 +229,7 @@ for uuid, (start, size) in orig.items():
 esp_guid, root_guid = plan['staging_esp']['partition_guid'], plan['staging_root']['partition_guid']
 esp, root = parts[esp_guid], parts[root_guid]
 assert esp['type'].lower() == 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b' and esp.get('name') == 'Tilo installer boot', esp
-assert root['type'].lower() == '0fc63daf-8483-4772-8e79-3d69d8477de4' and root.get('name') == 'Tilo installer', root
+assert root['type'].lower() == 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d' and root.get('name') == 'Tilo installer', root
 target = plan['target_extent']
 sizes = {c['role']: c['minimum_partition_bytes'] for c in manifest['components']}
 assert esp['start'] == target['last_lba'] + 1, 'staging ESP follows the target extent'

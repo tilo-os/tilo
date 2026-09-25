@@ -24,6 +24,7 @@ bundle = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bundle)
 ESP = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 ROOT = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+STAGING_ROOT = 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d'
 TILO_ROOT = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 ROOT_UUID = '12345678-1234-4234-8234-123456789abc'
 DIGEST = 'b' * 128
@@ -61,7 +62,7 @@ def apply(tokens, action, argument):
 
 
 def live_tokens(digest=DIGEST, generation=7):
-    """What os/Containerfile.installer leaves on the live UKI (before specialisation)."""
+    """What os/Containerfile.installer leaves on the live UKI."""
     live = kargs_tokens(generation) + ['composefs=' + digest]
     for action, argument, target in COMMAND.findall(INSTALLER_CONTAINERFILE.read_text(encoding='utf-8')):
         if not target:
@@ -71,12 +72,6 @@ def live_tokens(digest=DIGEST, generation=7):
 
 def live_cmdline(digest=DIGEST, generation=7):
     return ' '.join(live_tokens(digest, generation))
-
-
-def specialized_live_cmdline(filesystem_uuid=ROOT_UUID, digest=DIGEST, generation=7):
-    cmdline = live_cmdline(digest, generation)
-    assert cmdline.count(bundle.ROOT_PLACEHOLDER) == 1
-    return cmdline.replace(bundle.ROOT_PLACEHOLDER, bundle.root_binding(filesystem_uuid))
 
 
 def shared_fixture():
@@ -105,54 +100,61 @@ class LiveCmdlineTests(unittest.TestCase):
         self.assertIn('''printf 'kargs = ["tilo.install"]\\n' ''', installer)
         self.assertIn('tilo.install', live_tokens())
 
-    def test_shared_fixture_carries_the_derived_specialised_live_cmdline(self):
+    def test_shared_fixture_carries_the_derived_live_cmdline(self):
         fixture = shared_fixture()['boot_binding']['uki_cmdline']
-        self.assertEqual(sorted(fixture.split()), sorted(specialized_live_cmdline().split()))
-        self.assertEqual(fixture, specialized_live_cmdline())
+        self.assertEqual(fixture, live_cmdline())
+        self.assertIn('root=tilo-auto', fixture.split())
 
-    def test_validator_accepts_exactly_the_specialised_live_projection(self):
+    def test_validator_accepts_exactly_the_live_projection(self):
         for generation in (1, 7, 4294967295):
             with self.subTest(generation=generation):
-                bundle.validate_cmdline(specialized_live_cmdline(generation=generation),
-                                        'UUID=' + ROOT_UUID, DIGEST)
-        tokens = specialized_live_cmdline().split()
+                bundle.validate_cmdline(live_cmdline(generation=generation), DIGEST)
+        tokens = live_cmdline().split()
         for index in range(len(tokens)):
             if tokens[index].split('=', 1)[0] in ('root', 'composefs', 'tilo.install', 'rw'):
                 with self.subTest(removed=tokens[index]):
                     reduced = ' '.join(tokens[:index] + tokens[index+1:])
                     with self.assertRaises(ValueError):
-                        bundle.validate_cmdline(reduced, 'UUID=' + ROOT_UUID, DIGEST)
+                        bundle.validate_cmdline(reduced, DIGEST)
 
-    def test_unspecialised_live_cmdline_is_rejected(self):
-        with self.assertRaises(ValueError):
-            bundle.validate_cmdline(live_cmdline(), 'UUID=' + ROOT_UUID, DIGEST)
+    def test_device_bound_or_placeholder_roots_are_rejected(self):
+        # The staging UKI is the signed live UKI: it never names a device.
+        base = live_cmdline()
+        for root in ('root=UUID=' + ROOT_UUID, 'root=PARTUUID=' + ROOT_UUID, 'root=/dev/sda2',
+                     'tilo.root=' + '0'*37, 'root=UUID=' + ROOT_UUID + ' tilo.root=' + '0'*37):
+            with self.subTest(root=root):
+                with self.assertRaises(ValueError):
+                    bundle.validate_cmdline(base.replace('root=tilo-auto', root), DIGEST)
 
     def test_legacy_qos_tokens_are_rejected(self):
-        base = specialized_live_cmdline()
+        base = live_cmdline()
         legacy = base
-        for name in ('install', 'mode', 'luks', 'unlock', 'generation'):
+        for name in ('install', 'mode', 'generation'):
             legacy = legacy.replace('tilo.' + name, 'qos.' + name)
         for cmdline in (legacy, base + ' qos.install', base + ' qos.generation=7',
-                        base.replace('tilo.luks=' + '0'*45, 'qos.luks=' + '0'*43)):
+                        base + ' qos.luks=' + '0'*43, base.replace('root=tilo-auto', 'qos.root=' + '0'*37)):
             with self.subTest(cmdline=cmdline[-40:]):
                 with self.assertRaises(ValueError):
-                    bundle.validate_cmdline(cmdline, 'UUID=' + ROOT_UUID, DIGEST)
+                    bundle.validate_cmdline(cmdline, DIGEST)
 
     def test_live_cmdline_profile_is_closed(self):
-        base = specialized_live_cmdline()
+        base = live_cmdline()
         for change in (' ro', ' rw', ' init=/bin/sh', ' console=tty1', ' tilo.generation=0',
                        ' loglevel=3', ' systemd.show_status=auto', ' rd.udev.log_level=3',
                        ' vt.global_cursor_default=0', ' root=tilo-auto', ' unknown',
-                       ' rd.luks.options=tpm2-device=auto,fido2-device=auto'):
+                       ' rd.luks.options=tpm2-device=auto,fido2-device=auto',
+                       # The unlock slots the live UKI no longer carries.
+                       ' tilo.luks=' + '0'*45, ' tilo.unlock=' + '0'*75):
             with self.subTest(change=change):
                 with self.assertRaises(ValueError):
-                    bundle.validate_cmdline(base + change, 'UUID=' + ROOT_UUID, DIGEST)
+                    bundle.validate_cmdline(base + change, DIGEST)
         for old, new in (('tilo.mode=normal', 'tilo.mode=repair'), ('preempt=full', 'preempt=none'),
-                         ('tilo.luks=' + '0'*45, 'tilo.luks=' + '0'*44),
-                         ('tilo.unlock=' + '0'*75, 'tilo.unlock=' + '0'*74)):
+                         ('root=tilo-auto', 'root=tilo-auto2'),
+                         ('rd.luks.options=tpm2-device=auto,fido2-device=auto',
+                          'rd.luks.options=tpm2-device=auto')):
             with self.subTest(old=old):
                 with self.assertRaises(ValueError):
-                    bundle.validate_cmdline(base.replace(old, new), 'UUID=' + ROOT_UUID, DIGEST)
+                    bundle.validate_cmdline(base.replace(old, new), DIGEST)
 
 
 # --- GPT fixtures --------------------------------------------------------------
@@ -318,17 +320,19 @@ class ManifestTests(unittest.TestCase):
             ('zero', lambda m: m['components'][0].update(byte_size=0)),
             ('too large', lambda m: m['components'][0].update(byte_size=1<<63)),
             ('composefs mismatch', lambda m: m['boot_binding'].update(composefs_digest='c'*128)),
-            ('root UUID', lambda m: m['components'][1].update(filesystem_uuid=str(uuid.UUID(int=9)))),
             ('architecture', lambda m: m.update(architecture='aarch64')),
             ('unknown binding', lambda m: m['boot_binding'].update(uki_cmdline='composefs=abc tilo.install')),
             ('duplicate root', lambda m: m['boot_binding'].update(uki_cmdline=m['boot_binding']['uki_cmdline']+' root=UUID='+ROOT_UUID)),
-            ('placeholder', lambda m: m['boot_binding'].update(uki_cmdline=live_cmdline())),
+            ('device-bound root', lambda m: m['boot_binding'].update(
+                uki_cmdline=live_cmdline().replace('root=tilo-auto', 'root=UUID='+ROOT_UUID))),
+            ('root locator field', lambda m: m['boot_binding'].update(root_locator='UUID='+ROOT_UUID)),
             ('legacy placeholder', lambda m: m['boot_binding'].update(uki_cmdline='qos.root='+'0'*37+' qos.install')),
             ('efi escape', lambda m: m['boot_binding'].update(efi_path='/EFI/../evil.efi')),
             ('efi not fallback', lambda m: m['boot_binding'].update(efi_path='/EFI/Linux/fixture.efi')),
             ('efi other arch', lambda m: m['boot_binding'].update(efi_path='/EFI/BOOT/BOOTAA64.EFI')),
             ('efi lower case', lambda m: m['boot_binding'].update(efi_path='/EFI/BOOT/bootx64.efi')),
             ('root is Tilo root type', lambda m: m['components'][1].update(partition_type_guid=TILO_ROOT)),
+            ('root is generic Linux type', lambda m: m['components'][1].update(partition_type_guid=ROOT)),
             ('root is discoverable type', lambda m: m['components'][1].update(
                 partition_type_guid='4f68bce3-e8cd-4db1-96e7-fbcaf984b709')),
             ('root below live floor', lambda m: m['components'][1].update(minimum_partition_bytes=(40 << 30) - 512)),
@@ -373,7 +377,7 @@ class ManifestTests(unittest.TestCase):
 
 def pe_fixture(cmdline=None, machine=0x8664, profile=False):
     """Structurally meaningful PE fixture, not executable kernel/initrd content."""
-    cmdline = cmdline or specialized_live_cmdline()
+    cmdline = cmdline or live_cmdline()
     sections = [(b'.linux', b'fixture kernel'), (b'.initrd', b'fixture initrd'),
                 (b'.osrel', b'ID=tilo\n'), (b'.cmdline', cmdline.encode()+b'\0')]
     if profile:
@@ -414,7 +418,7 @@ class UkiTests(unittest.TestCase):
     def test_measures_machine_and_exact_cmdline(self):
         info = bundle.inspect_uki(bytes(pe_fixture()))
         self.assertEqual(info.get('uki_architecture'), 'x86_64')
-        self.assertEqual(info['uki_cmdline'], specialized_live_cmdline())
+        self.assertEqual(info['uki_cmdline'], live_cmdline())
         self.assertEqual(info['uki_sha256'], hashlib.sha256(pe_fixture()).hexdigest())
 
     def test_rejects_ambiguous_sections_and_truncation(self):
@@ -427,80 +431,6 @@ class UkiTests(unittest.TestCase):
                 if problem == 'wrong machine': struct.pack_into('<H', data, 132, 0x14c)
                 if problem == 'embedded nul': data = pe_fixture('root=UUID='+ROOT_UUID+'\0 tilo.install')
                 with self.assertRaises(ValueError): bundle.inspect_uki(bytes(data))
-
-
-class SpecializationTests(unittest.TestCase):
-    def test_root_binding_is_exactly_as_long_as_the_placeholder(self):
-        self.assertEqual(bundle.ROOT_PLACEHOLDER, 'tilo.root=' + '0'*37)
-        binding = bundle.root_binding(ROOT_UUID)
-        self.assertEqual(binding, 'root=UUID=' + ROOT_UUID + ' ')
-        self.assertEqual(len(binding), len(bundle.ROOT_PLACEHOLDER))
-        for bad in ('00000000-0000-0000-0000-000000000000', ROOT_UUID.upper(), 'not-a-uuid'):
-            with self.subTest(bad=bad):
-                with self.assertRaises(ValueError): bundle.root_binding(bad)
-
-    def test_specializes_the_live_uki_length_stably(self):
-        original = bytes(pe_fixture(live_cmdline()))
-        changed = bundle.specialize_uki(original, ROOT_UUID)
-        self.assertEqual(len(changed), len(original))
-        expected = original.replace(bundle.ROOT_PLACEHOLDER.encode(), bundle.root_binding(ROOT_UUID).encode())
-        self.assertEqual(changed, expected)
-        differing = [i for i in range(len(original)) if original[i] != changed[i]]
-        slot = original.index(bundle.ROOT_PLACEHOLDER.encode())
-        self.assertTrue(differing and slot <= differing[0] and differing[-1] < slot + 47)
-        uki = bundle.uki_tool()
-        self.assertEqual(list(uki.section_table(changed)), list(uki.section_table(original)))
-        info = bundle.inspect_uki(changed)
-        self.assertEqual(info['uki_cmdline'], specialized_live_cmdline())
-        bundle.validate_cmdline(info['uki_cmdline'], 'UUID='+ROOT_UUID, DIGEST)
-
-    def test_placeholder_as_last_token_keeps_one_trailing_space(self):
-        cmdline = 'rw composefs=' + DIGEST + ' tilo.install ' + bundle.ROOT_PLACEHOLDER
-        changed = bundle.inspect_uki(bundle.specialize_uki(bytes(pe_fixture(cmdline)), ROOT_UUID))
-        self.assertTrue(changed['uki_cmdline'].endswith('root=UUID=' + ROOT_UUID + ' '))
-
-    def test_rejects_unrecognized_or_conflicting_producer_binding(self):
-        placeholder = bundle.ROOT_PLACEHOLDER
-        for cmdline in (placeholder + ' tilo.install',
-                        'root=LABEL=root composefs=' + DIGEST + ' tilo.install',
-                        'rw ' + placeholder + ' composefs=' + DIGEST + ' tilo.install rootflags=subvol=other',
-                        'rw qos.root=' + '0'*37 + ' composefs=' + DIGEST + ' qos.install',
-                        'rw ' + placeholder + ' composefs=' + DIGEST + ' tilo.install ' + placeholder):
-            with self.subTest(cmdline=cmdline):
-                with self.assertRaises(ValueError): bundle.specialize_uki(bytes(pe_fixture(cmdline)), ROOT_UUID)
-
-    def test_specialization_rejects_signed_pe(self):
-        cmdline = 'rw ' + bundle.ROOT_PLACEHOLDER + ' composefs=' + DIGEST + ' tilo.install'
-        with self.assertRaises(ValueError): bundle.specialize_uki(signed(pe_fixture(cmdline)), ROOT_UUID)
-
-    def test_profile_specialization_is_refused(self):
-        cmdline = 'rw ' + bundle.ROOT_PLACEHOLDER + ' composefs=' + DIGEST + ' tilo.install'
-        data = bytes(pe_fixture(cmdline, profile=True))
-        self.assertEqual(bundle.inspect_uki(data)['uki_cmdline'], cmdline)
-        with self.assertRaises(ValueError): bundle.specialize_uki(data, ROOT_UUID)
-
-
-class SignatureTests(unittest.TestCase):
-    def test_strips_a_canonical_trailing_signature(self):
-        unsigned = with_directories(pe_fixture(live_cmdline()))
-        stripped = bundle.strip_authenticode(signed(unsigned))
-        self.assertEqual(stripped, unsigned)
-        self.assertEqual(bundle.strip_authenticode(bytes(pe_fixture())), bytes(pe_fixture()))
-        self.assertEqual(bundle.strip_authenticode(unsigned), unsigned)
-        self.assertEqual(bundle.inspect_uki(bundle.specialize_uki(stripped, ROOT_UUID))['uki_cmdline'],
-                         specialized_live_cmdline())
-
-    def test_refuses_noncanonical_certificate_tables(self):
-        base = signed(pe_fixture(live_cmdline()))
-        offset = struct.unpack_from('<I', base, 152+112+4*8)[0]
-        for problem in ('trailing bytes', 'short length', 'wrong revision', 'inside sections'):
-            with self.subTest(problem=problem):
-                data = bytearray(base)
-                if problem == 'trailing bytes': data += b'\0' * 8
-                if problem == 'short length': struct.pack_into('<I', data, offset, 4)
-                if problem == 'wrong revision': struct.pack_into('<H', data, offset + 4, 0x0100)
-                if problem == 'inside sections': struct.pack_into('<I', data, 152+112+4*8, 1024)
-                with self.assertRaises(ValueError): bundle.strip_authenticode(bytes(data))
 
 
 # --- filesystem identities -----------------------------------------------------
@@ -648,7 +578,7 @@ class ExportImageTests(unittest.TestCase):
             bundle.validate_manifest(manifest)
         return image, output, manifest
 
-    def test_exports_specialised_esp_and_minimised_root(self):
+    def test_exports_the_signed_live_uki_unchanged_and_a_minimised_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp) / 'esp-tree'
             live_uki = signed(pe_fixture(live_cmdline()))
@@ -664,14 +594,13 @@ class ExportImageTests(unittest.TestCase):
             self.assertEqual(root['minimum_partition_bytes'], 8 << 20)
             self.assertEqual((output / names['staging-root']).stat().st_size, 3 << 20)
             self.assertEqual(root['filesystem_uuid'], ROOT_UUID)
-            self.assertEqual(root['partition_type_guid'], ROOT)
+            self.assertEqual(root['partition_type_guid'], STAGING_ROOT)
             self.assertIn(('resize', 3 << 20), system.calls)
             self.assertEqual(system.calls[-1], ('check', names['staging-root'], 3 << 20))
             self.assertEqual(system.devices, {})
-            # ESP: both loader paths hold the one specialised, unsigned UKI.
-            prepared = bundle.specialize_uki(bundle.strip_authenticode(live_uki), ROOT_UUID)
-            self.assertEqual((tree / 'EFI/BOOT/BOOTX64.EFI').read_bytes(), prepared)
-            self.assertEqual((tree / 'EFI/Linux/bootc/bootc_composefs-fixture.efi').read_bytes(), prepared)
+            # ESP: both loader paths hold the signed live UKI, byte for byte.
+            self.assertEqual((tree / 'EFI/BOOT/BOOTX64.EFI').read_bytes(), live_uki)
+            self.assertEqual((tree / 'EFI/Linux/bootc/bootc_composefs-fixture.efi').read_bytes(), live_uki)
             self.assertEqual((tree / 'loader/loader.conf').read_text(), 'timeout 0\n')
             # The staging helper overwrites these in place; they must exist,
             # be exactly the reserved size, and hold only spaces.
@@ -682,8 +611,9 @@ class ExportImageTests(unittest.TestCase):
             self.assertEqual(esp['byte_size'], esp['minimum_partition_bytes'])
             boot = manifest['boot_binding']
             self.assertEqual(boot['efi_path'], '/EFI/BOOT/BOOTX64.EFI')
-            self.assertEqual(boot['uki_sha256'], hashlib.sha256(prepared).hexdigest())
-            self.assertEqual(boot['uki_cmdline'], specialized_live_cmdline())
+            self.assertEqual(boot['uki_sha256'], hashlib.sha256(live_uki).hexdigest())
+            self.assertEqual(boot['uki_cmdline'], live_cmdline())
+            self.assertNotIn('root_locator', boot)
             self.assertEqual(boot['composefs_digest'], DIGEST)
             # The written manifest is the one returned, and it inspects clean.
             raw = (output / names['manifest']).read_bytes()
@@ -703,7 +633,7 @@ class ExportImageTests(unittest.TestCase):
             self.assertFalse((Path(tmp) / 'bundle' / names['manifest']).exists())
 
     def test_refuses_an_esp_without_exactly_one_live_uki_or_fallback(self):
-        for problem in ('two ukis', 'no fallback', 'already bound'):
+        for problem in ('two ukis', 'no fallback', 'device-bound root', 'placeholder root'):
             with self.subTest(problem=problem), tempfile.TemporaryDirectory() as tmp:
                 tree = Path(tmp) / 'esp-tree'
                 esp_tree(tree, bytes(pe_fixture(live_cmdline())))
@@ -711,8 +641,10 @@ class ExportImageTests(unittest.TestCase):
                     (tree / 'EFI/Linux/other.efi').write_bytes(bytes(pe_fixture(live_cmdline())))
                 if problem == 'no fallback':
                     (tree / 'EFI/BOOT/BOOTX64.EFI').unlink()
-                if problem == 'already bound':
-                    (tree / 'EFI/Linux/bootc/bootc_composefs-fixture.efi').write_bytes(bytes(pe_fixture()))
+                if problem in ('device-bound root', 'placeholder root'):
+                    root = 'root=UUID=' + ROOT_UUID if problem == 'device-bound root' else 'tilo.root=' + '0'*37
+                    cmdline = live_cmdline().replace('root=tilo-auto', root)
+                    (tree / 'EFI/Linux/bootc/bootc_composefs-fixture.efi').write_bytes(bytes(pe_fixture(cmdline)))
                 with self.assertRaisesRegex(OSError, 'partial output retained'):
                     self.export(tmp, FakeSystem(tree))
                 self.assertFalse((Path(tmp) / 'bundle' / bundle.bundle_names('x86_64')['manifest']).exists())
@@ -829,6 +761,18 @@ def qcow_fixture():
 class QcowTests(unittest.TestCase):
     def test_reads_bounded_self_contained_header(self):
         self.assertEqual(bundle.qcow_virtual_size(bytes(qcow_fixture())), 65536)
+
+    def test_reads_the_112_byte_header_current_qemu_writes(self):
+        data = qcow_fixture() + bytearray(8)
+        struct.pack_into('>I', data, 100, 112)
+        self.assertEqual(bundle.qcow_virtual_size(bytes(data)), 65536)
+        for problem in ('zstd', 'padding', 'truncated'):
+            with self.subTest(problem=problem):
+                changed = bytearray(data)
+                if problem == 'zstd': changed[104] = 1
+                if problem == 'padding': changed[111] = 1
+                if problem == 'truncated': changed = changed[:108]
+                with self.assertRaises(ValueError): bundle.qcow_virtual_size(bytes(changed))
 
     def test_rejects_external_backing_features_encryption_snapshots_and_oversize(self):
         changes = [(8, '>Q', 1024), (16, '>I', 9), (72, '>Q', 4),

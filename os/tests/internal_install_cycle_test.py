@@ -52,6 +52,9 @@ def entry(partuuid, start, size, path, description):
     return decoded
 
 
+LINUX_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+
+
 def part(uuid_, kind, first, last, name=''):
     return {'uuid': uuid_.upper(), 'type': kind.upper(), 'start': first, 'size': last - first + 1, 'name': name,
             'node': '/dev/vda'}
@@ -64,8 +67,8 @@ def baseline():
         'partition_table': {'sectorsize': 512, 'partitions': [
             part('11111111-0000-4000-8000-000000000001', '21686148-6449-6e6f-744e-656564454649', 2048, 4095),
             part(FEDORA_ESP, evidence.ESP_TYPE, 4096, 208895),
-            part('11111111-0000-4000-8000-000000000003', evidence.LINUX_TYPE, 208896, 2306047),
-            part('11111111-0000-4000-8000-000000000004', evidence.LINUX_TYPE, 2306048, ROOT_END),
+            part('11111111-0000-4000-8000-000000000003', LINUX_TYPE, 208896, 2306047),
+            part('11111111-0000-4000-8000-000000000004', LINUX_TYPE, 2306048, ROOT_END),
         ]},
         'firmware': {'boot_order': ['0001', '0000'], 'boot_next': None, 'boot_current': '0001',
                      'entries': {'0001': fedora, '0000': {'description': 'UiApp', 'partuuid': None,
@@ -87,7 +90,7 @@ def staged():
     doc = baseline()
     doc['partition_table']['partitions'] += [
         part(STAGING_ESP, evidence.ESP_TYPE, *S_ESP, name='Tilo installer boot'),
-        part(STAGING_ROOT, evidence.LINUX_TYPE, *S_ROOT, name='Tilo installer'),
+        part(STAGING_ROOT, evidence.STAGING_ROOT_TYPE, *S_ROOT, name='Tilo installer'),
     ]
     doc['firmware']['entries']['0100'] = entry(STAGING_ESP, S_ESP[0], S_ESP[1] - S_ESP[0] + 1,
                                                '\\EFI\\BOOT\\BOOTX64.EFI', 'Tilo installer')
@@ -141,7 +144,9 @@ class EvidenceTests(unittest.TestCase):
         doc = staged(); doc['firmware']['entries']['0100'] = entry(FEDORA_ESP, 4096, 204800, '\\EFI\\BOOT\\BOOTX64.EFI', 'Tilo installer')
         cases['does not point at the staging ESP'] = doc
         doc = staged(); doc['partition_table']['partitions'][-1]['type'] = evidence.TILO_ROOT_TYPE.upper()
-        cases['must be the generic Linux type'] = doc
+        cases['must be the Tilo staging root type'] = doc
+        doc = staged(); doc['partition_table']['partitions'][-1]['type'] = LINUX_TYPE.upper()
+        cases['staging root type or extent differs'] = doc
         doc = staged(); doc['esp_loaders']['EFI/fedora/shimx64.efi'] = 'c' * 64
         cases['retained ESP loader bytes changed'] = doc
         doc = staged(); doc['partition_table']['partitions'][3]['size'] += 2048
@@ -167,7 +172,7 @@ class EvidenceTests(unittest.TestCase):
         cases = {}
         doc = final(); doc['partition_table']['partitions'][-1]['size'] -= GIB
         cases['not at the end of the former staging region'] = doc
-        doc = final(); doc['partition_table']['partitions'].append(part(STAGING_ROOT, evidence.LINUX_TYPE, *S_ROOT))
+        doc = final(); doc['partition_table']['partitions'].append(part(STAGING_ROOT, evidence.STAGING_ROOT_TYPE, *S_ROOT))
         cases['a staging partition survived'] = doc
         doc = final(); doc['firmware']['entries']['0100'] = staged()['firmware']['entries']['0100']
         cases['owned staging entry Boot0100 survived'] = doc
