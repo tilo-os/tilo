@@ -1,6 +1,7 @@
 from unittest.mock import patch
-import contextlib,copy,hashlib,importlib.util,json,struct,subprocess,tempfile,types,unittest
+import contextlib,copy,hashlib,importlib.util,json,struct,tempfile,types,unittest
 from pathlib import Path
+from frozen_source_fixture import NATIVE_DRIVER,NATIVE_RECIPE
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('resume',ROOT/'os/dev/native_resume.py');r=importlib.util.module_from_spec(spec);spec.loader.exec_module(r)
 def sha(data):return hashlib.sha256(data).hexdigest()
@@ -10,8 +11,7 @@ class ReconstructedPartials(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
   self.source=self.root/'source';(self.source/'os/dev').mkdir(parents=True)
-  for name in ['os/Containerfile','os/dev/build-image.sh']:
-   (self.source/name).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show',r.SOURCE+':'+name]))
+  (self.source/'os/Containerfile').write_bytes(NATIVE_RECIPE.encode());(self.source/'os/dev/build-image.sh').write_bytes(NATIVE_DRIVER.encode())
   self.payload=self.root/'payload';(self.payload/'partial').mkdir(parents=True);self.dest=self.root/'dest';self.dest.mkdir()
   data=bytearray(64);data[:7]=b'\x7fELF\x02\x01\x01';struct.pack_into('<H',data,16,3);struct.pack_into('<H',data,18,183)
   (self.payload/'partial/tilo-crypto').write_bytes(data);(self.payload/'partial/tilo-crypto').chmod(0o755)

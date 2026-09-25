@@ -2,11 +2,14 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
+from fixture_host_tools import fixture_path
 
 spec=importlib.util.spec_from_file_location('scratchpad_collector',Path(__file__).with_name('collect-scratchpad-native.py'))
 collector=importlib.util.module_from_spec(spec)
@@ -28,7 +31,8 @@ class CollectorFailureTests(unittest.TestCase):
             output=root/'runs'
             argv=['collector','--binary',str(binary),'--fixture-tool',str(tool),
                   '--scenario',str(scenario),'--mode','typing','--output-root',str(output)]
-            with patch.object(sys,'argv',argv),contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(sys,'argv',argv),patch.dict(os.environ,PATH=fixture_path(root)),\
+                 contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(collector.main(),1)
             run=next(output.iterdir())
             failure=json.loads((run/'failed-report.json').read_text())
@@ -70,3 +74,7 @@ time.sleep(30)
                 collector.window_metadata(lines(dict(valid,**{key:value})))
         with self.assertRaises(ValueError):
             collector.window_metadata([])
+
+
+if __name__ == '__main__':
+    unittest.main()
