@@ -228,9 +228,12 @@ def verify(root=ROOT):
 
 def import_image(root=ROOT):
     metadata, layout = read_target(root)
-    require(RECEIPT.is_file() and not RECEIPT.is_symlink()
-            and json.loads(checked_file(RECEIPT, limit=8192))["target_digest"]
-            == metadata["target_digest"], "offline target has no verified preflight")
+    require(RECEIPT.is_file() and not RECEIPT.is_symlink(),
+            "offline target has no verified preflight")
+    receipt = json.loads(checked_file(RECEIPT, limit=8192))
+    require(type(receipt) is dict
+            and all(receipt.get(key) == value for key, value in metadata.items()),
+            "offline target metadata changed after verified preflight")
     # Cosign's saved layout also contains signature/attestation descriptors.
     # Construct a tiny one-descriptor view with a symlink to the same hashed
     # blobs, so Podman imports only the authenticated target without another

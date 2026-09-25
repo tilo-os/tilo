@@ -48,9 +48,10 @@
 # An older UI may omit `--encrypt`, but the backend still encrypts. It must
 # provide `--pin`; otherwise installation fails closed. We:
 #
-#   1. copy the currently-booted bootc image into local container storage
+#   1. authenticate and import a separately signed offline target when one is
+#      preloaded; otherwise copy the currently-booted image into local storage
 #      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
-#   2. install from that copied image, in a privileged podman container, onto
+#   2. install from the selected image, in a privileged podman container, onto
 #      the target disk (wipes it, --filesystem layout). tilo-disk-encrypt builds
 #      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
@@ -69,8 +70,9 @@
 # Everything human-readable goes to stdout (the UI tails it line by line);
 # exit 0 == success, non-zero == failure.
 #
-# This is intentionally an OFFLINE, self-install model: the live system
-# installs *itself* onto the disk — no network pull needed for the OS bits.
+# This is intentionally an OFFLINE model: no network pull is needed for the OS
+# bits. Development media self-install; CI media can carry a distinct signed
+# target whose digest and provenance are checked before any disk mutation.
 # The target image *reference* recorded in the install (so future
 # `bootc upgrade` knows where to pull from) is bound by a hardware profile.
 # Generic images retain the official latest default and trusted overrides.
