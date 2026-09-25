@@ -37,6 +37,7 @@ const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
 const WIDTH: i32 = 64;
 const HEIGHT: i32 = 48;
 const STRIDE: u32 = WIDTH.unsigned_abs() * 4;
+const BUFFER_LEN: u32 = STRIDE * HEIGHT.unsigned_abs();
 
 #[derive(Default)]
 struct Client {
@@ -180,8 +181,7 @@ fn linear_argb_memfd() -> OwnedFd {
     // SAFETY: memfd_create returned a new descriptor that nothing else owns.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     let file = std::fs::File::from(fd);
-    file.set_len(u64::from(STRIDE * HEIGHT.unsigned_abs()))
-        .expect("size memfd");
+    file.set_len(u64::from(BUFFER_LEN)).expect("size memfd");
     OwnedFd::from(file)
 }
 
