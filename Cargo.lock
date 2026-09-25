@@ -128,6 +128,7 @@ dependencies = [
 name = "accounts"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "atomic-file",
  "bounded-command",
  "dirs 6.0.0",
@@ -198,6 +199,15 @@ name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
+name = "advisory-lock"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rustix 1.1.4",
+ "tempfile",
+]
 
 [[package]]
 name = "aead"
@@ -487,6 +497,7 @@ dependencies = [
 name = "app-cli"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "app-registry",
  "atomic-file",
  "blake3",
@@ -496,7 +507,6 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "launcher",
- "libc",
  "registry-types",
  "reqwest 0.13.2",
  "serde",
@@ -590,12 +600,12 @@ dependencies = [
 name = "app-state"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "atomic-file",
  "automerge",
  "cli",
  "dirs 6.0.0",
  "durable-store",
- "libc",
  "same-file",
  "serial_test",
  "tempfile",
@@ -1492,6 +1502,7 @@ name = "browser"
 version = "0.1.0"
 dependencies = [
  "accesskit_consumer",
+ "advisory-lock",
  "atomic-file",
  "automerge",
  "base64",
@@ -2359,6 +2370,7 @@ dependencies = [
 name = "compat-service"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "collab-types",
  "compat-catalogue",
  "hex",
@@ -6320,6 +6332,7 @@ dependencies = [
 name = "imager"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "automerge",
  "block-devices",
  "bounded-command",
@@ -8737,6 +8750,7 @@ dependencies = [
 name = "notes"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "app-state",
  "atomic-file",
  "automerge",
@@ -10814,6 +10828,7 @@ checksum = "edecfcd5d755a5e5d98e24cf43113e7cdaec5a070edd0f6b250c03a573da30fa"
 name = "qdoc"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "automerge",
  "base64",
  "blake3",
@@ -11324,6 +11339,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "registry-server"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "anyhow",
  "app-registry",
  "atomic-file",
@@ -11336,7 +11352,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "libc",
  "registry-types",
  "reqwest 0.13.2",
  "serde",
@@ -11777,6 +11792,7 @@ dependencies = [
 name = "runtime-fs"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "blake3",
  "cap-std",
  "capnp",
@@ -11798,6 +11814,7 @@ dependencies = [
 name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "argon2",
  "atomic-file",
  "bounded-command",
@@ -12252,6 +12269,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scratchpad"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "anyhow",
  "atomic-file",
  "automerge",
@@ -12357,6 +12375,7 @@ dependencies = [
 name = "secret-vault"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "bounded-command",
  "chacha20poly1305 0.11.0",
  "getrandom 0.4.1",
@@ -12834,6 +12853,7 @@ name = "shell"
 version = "0.1.0"
 dependencies = [
  "accesskit_unix",
+ "advisory-lock",
  "app-state",
  "atomic-file",
  "automerge",
@@ -14622,6 +14642,7 @@ dependencies = [
  "accesskit",
  "accesskit_winit",
  "adblock",
+ "advisory-lock",
  "app-state",
  "arboard",
  "ash",
@@ -14743,6 +14764,7 @@ dependencies = [
 name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "atomic-file",
  "automerge",
  "base32",
@@ -14813,6 +14835,7 @@ dependencies = [
 name = "tilo-vmd"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "base64",
  "chrono",
  "clap",
@@ -17400,6 +17423,7 @@ dependencies = [
 name = "windows-vm"
 version = "0.1.0"
 dependencies = [
+ "advisory-lock",
  "atomic-file",
  "base64",
  "bounded-command",

@@ -1,11 +1,11 @@
 //! Versioned private receipts. A receipt is a hint to revalidate, never overwrite authority.
-use super::advisory_lock::ExclusiveLock;
 use super::migration::{self, CopyProgress, CopyReport, OwnedTemporary, PinnedDirectory, changed};
 use super::{
     destination_security,
     migration_durability::{self as durability, Identity},
     nofollow::metadata_nofollow,
 };
+use advisory_lock::FileLock;
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use serde::{Deserialize, Serialize};
@@ -338,7 +338,7 @@ pub struct MigrationJournal {
     sequence: u64,
     parent: Arc<PinnedDirectory>,
     name: OsString,
-    file: ExclusiveLock,
+    file: FileLock,
     identity: Metadata,
     resume: bool,
     seen: BTreeSet<PathBuf>,
@@ -850,7 +850,7 @@ impl MigrationJournal {
             Self::write_outcome(&mut temporary.file, &mut sequence, outcome)?;
         }
         durability::sync_file(&temporary.file)?;
-        let file = ExclusiveLock::try_new(temporary.file.try_clone()?)
+        let file = FileLock::try_exclusive(temporary.file.try_clone()?)
             .map_err(|e| changed(&format!("journal is busy: {e}")))?;
         self.validate()?;
         #[cfg(test)]

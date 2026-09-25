@@ -39,8 +39,8 @@ mod native {
         Provider, checkpoint::Record, initialize_fresh,
     };
     use super::{effective_mode_allowed, raw_components};
-    use crate::setup::advisory_lock::ExclusiveLock;
     use crate::setup::internal_download::SelectedManifest;
+    use advisory_lock::FileLock;
     use sha2::{Digest, Sha256};
     use std::{
         ffi::{CStr, CString},
@@ -326,7 +326,7 @@ mod native {
     struct LockedRoot {
         ancestry: Vec<Held>,
         lock: Held,
-        _exclusive: ExclusiveLock,
+        _exclusive: FileLock,
         payload: Held,
         journals: [Held; 2],
     }
@@ -432,7 +432,7 @@ mod native {
             )?;
             // Nonblocking cooperative exclusive lease, held through a duplicate
             // of the lock descriptor that releases it explicitly when dropped.
-            let exclusive = match ExclusiveLock::try_new(lock.file.try_clone().map_err(io)?) {
+            let exclusive = match FileLock::try_exclusive(lock.file.try_clone().map_err(io)?) {
                 Ok(exclusive) => exclusive,
                 Err(std::fs::TryLockError::WouldBlock) => return Err("Cache Busy".into()),
                 Err(std::fs::TryLockError::Error(e)) => return Err(io(e)),

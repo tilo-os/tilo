@@ -5,7 +5,7 @@
 //! and file sync workers report transitions here; Settings only reads them.
 
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -133,7 +133,9 @@ impl AccountSyncReporter {
     }
 }
 
-struct StatusLock(File);
+struct StatusLock {
+    _lock: advisory_lock::FileLock,
+}
 
 impl StatusLock {
     fn acquire(config_root: &Path) -> std::io::Result<Self> {
@@ -146,22 +148,14 @@ impl StatusLock {
             .read(true)
             .write(true)
             .create(true)
-            // This file holds no content, only the flock itself; state that
+            // This file holds no content, only the lock itself; state that
             // explicitly rather than leaving `create`'s truncation implicit.
             .truncate(false);
         #[cfg(unix)]
         options.mode(0o600);
-        let file = options.open(path)?;
-        // std uses flock on Unix and LockFileEx on Windows. Both serialize
-        // other processes, and closing the guard releases its exclusive lock.
-        file.lock()?;
-        Ok(Self(file))
-    }
-}
-
-impl Drop for StatusLock {
-    fn drop(&mut self) {
-        let _ = self.0.unlock();
+        Ok(Self {
+            _lock: advisory_lock::FileLock::exclusive(options.open(path)?)?,
+        })
     }
 }
 
