@@ -21,29 +21,45 @@
 ; that transient unit. This module grants exactly that, scoped to the ephemeral
 ; installer medium. It replaces the live medium's former global `enforcing=0`
 ; (os/installer-disk.toml): the whole system — including every privileged
-; install operation — now runs enforcing; only the installer's UI/launcher
-; session domain is relaxed.
+; install operation and greeter session both remain enforcing.
 ;
-; CURRENT POSTURE (reliable default): mark xdm_t permissive.
-; -----------------------------------------------------------
-; `typepermissive` makes the kernel LOG-but-ALLOW denials whose SOURCE domain
-; is xdm_t, while every other domain (init_t, container_runtime_t, the install
-; itself, the kernel) stays enforcing. This is chosen as the shipped default
-; because the precise allow-rule set for "xdm_t may StartTransientUnit" cannot
-; be finalised without capturing live AVCs on a VM install run (this build
-; environment cannot boot the medium). It is a large, honest improvement over
-; global enforcing=0 and carries no regression risk for the privileged path.
-(typepermissive xdm_t)
+; The enforcing VM reported a USER_AVC on StartTransientUnit with xdm_t as
+; source, init_t as target, and system:start as the denied permission. Permit
+; just that operation for the live installer session. The backend itself runs
+; as an init_t transient service and remains enforcing.
+(allow xdm_t init_t (system (start)))
 
-; HARDENING PATH (tighten once a VM install run confirms the AVCs):
+; Only the live installer handoff uses this root-owned /run subtree. A
+; dedicated type avoids granting the greeter access to every generic
+; var_run_t file on the machine. The setup service loads this module before
+; creating the directory and restorecon labels it. A transient system unit
+; creates and labels each run's secret files before the greeter writes them.
+(type tilo_installer_bridge_t)
+(roletype object_r tilo_installer_bridge_t)
+(typeattributeset file_type (tilo_installer_bridge_t))
+(typeattributeset non_auth_file_type (tilo_installer_bridge_t))
+(filecon "/run/tilo-installer/bridge(/.*)?" any
+  (system_u object_r tilo_installer_bridge_t ((s0) (s0))))
+
+; The greeter-side privileged wrapper traverses the private directory,
+; writes the startup secret to stdin, and tails the output. It cannot create,
+; delete, or relabel the bridge files. DAC keeps the directory root-only
+; (0700) and its two files 0600.
+(allow xdm_t tilo_installer_bridge_t (dir (getattr search read watch)))
+(allow xdm_t tilo_installer_bridge_t (file (getattr open read write watch)))
+
+; The system service creates and cleans up its own per-run subtree. PID 1
+; reads stdin while setting up the installer unit and appends its output.
+(allow init_t tilo_installer_bridge_t
+  (dir (getattr search read write add_name remove_name create setattr rmdir)))
+(allow init_t tilo_installer_bridge_t
+  (file (getattr open read write append create setattr unlink)))
+
+; Other D-Bus permissions, if live AVCs require them:
 ; ----------------------------------------------------------------
-; Replace the `(typepermissive xdm_t)` line above with the narrow grants below
-; (extend with whatever `audit2allow` reports from the VM run — see
-; docs/selinux-installer.md). These let xdm_t reach the system manager over
-; D-Bus and issue StartTransientUnit, without making the domain permissive.
+; Add only permissions observed in an enforcing VM run.
 ;
 ; (allow xdm_t system_dbusd_t (dbus (send_msg)))
 ; (allow system_dbusd_t xdm_t (dbus (send_msg)))
 ; (allow xdm_t init_t (dbus (send_msg)))
 ; (allow init_t xdm_t (dbus (send_msg)))
-; (allow xdm_t init_t (system (start status stop reload)))
