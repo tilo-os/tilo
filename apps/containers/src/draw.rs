@@ -678,7 +678,7 @@ mod tests {
     /// raised ground the way a translucent fill alone did.
     #[test]
     fn tinted_pills_and_chips_are_edged_in_their_own_hue() {
-        assert!(TINT_EDGE_ALPHA > TINT_FILL_ALPHA);
+        const { assert!(TINT_EDGE_ALPHA > TINT_FILL_ALPHA) };
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         set_base(Affine::IDENTITY);
