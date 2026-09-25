@@ -171,6 +171,19 @@ fn frame_charge(
         .and_then(|n| u64::try_from(n).ok())
         .ok_or_else(|| invalid("frame allocation charge overflow"))
 }
+/// Charge for re-encoding `envelope` with `transport::encode`, measured on
+/// that encoder's own output `framed` of allocator capacity `capacity`. The
+/// encoder serializes into one growable Vec (length prefix included), so its
+/// peak is that final buffer plus the one it outgrew, which held fewer than
+/// `framed.len()` bytes.
+fn v1_frame_charge(
+    envelope: &Envelope,
+    raw_len: usize,
+    framed: &[u8],
+    capacity: usize,
+) -> Result<u64, StoreError> {
+    frame_charge(envelope, raw_len, frame_payload(framed), capacity)
+}
 fn digest(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
@@ -334,12 +347,9 @@ impl ReplaySnapshot {
         } else {
             false
         };
-        // Measure the exact allocator capacities used by transport::encode:
-        // postcard's growable payload can have almost twice its encoded length.
-        // The final framed Vec coexists with that payload during encoding.
         let encoded =
-            postcard::to_allocvec(&envelope).map_err(|_| invalid("replay re-encoding failed"))?;
-        let v1_charge = frame_charge(&envelope, bytes.len(), &encoded, encoded.capacity())?;
+            transport::encode(&envelope).map_err(|_| invalid("replay re-encoding failed"))?;
+        let v1_charge = v1_frame_charge(&envelope, bytes.len(), &encoded, encoded.capacity())?;
         self.stats.peak_frame_bytes = self.stats.peak_frame_bytes.max(
             bytes
                 .capacity()
@@ -348,7 +358,7 @@ impl ReplaySnapshot {
         );
         // Exact outer re-encoding rejects every unconsumed Envelope suffix;
         // `retained` independently requires complete Coedit consumption.
-        let coverage = !meta.pending && retained && encoded == frame_payload(&bytes);
+        let coverage = !meta.pending && retained && encoded == bytes;
         drop(encoded);
         let v2 = crate::transport_v2::state_payload(&envelope)
             .map_err(|_| invalid("v2 replay re-encoding failed"))?;
@@ -1326,8 +1336,8 @@ impl PublicationCursor {
                 return Err(invalid("recovery frame outside workspace"));
             }
         }
-        let v1 = postcard::to_allocvec(&envelope).map_err(|_| invalid("activation encoding"))?;
-        let mut charge = frame_charge(&envelope, bytes.len(), &v1, v1.capacity())?;
+        let v1 = transport::encode(&envelope).map_err(|_| invalid("activation encoding"))?;
+        let mut charge = v1_frame_charge(&envelope, bytes.len(), &v1, v1.capacity())?;
         drop(v1);
         let v2 = crate::transport_v2::state_payload(&envelope)
             .map_err(|_| invalid("activation v2 encoding"))?;

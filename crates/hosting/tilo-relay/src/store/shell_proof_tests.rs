@@ -151,17 +151,23 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
             }
             proof = Some(next);
         }
-        match peer.receive_from(
-            qos_peer_state::TransportOrigin::RelayDelta(source),
-            msg,
-            now,
-        ) {
-            Ok(outcome) => assert_eq!(outcome.rejected, 0, "prefix {i}"),
-            Err(error) => {
-                assert_eq!(i, 11);
-                assert_eq!(error, "checkpoint does not match governed coverage");
-                rejected = Some((channel, body));
-            }
+        let outcome = peer
+            .receive_from(
+                qos_peer_state::TransportOrigin::RelayDelta(source),
+                msg,
+                now,
+            )
+            .unwrap_or_else(|error| panic!("prefix {i}: {error}"));
+        assert_eq!(outcome.rejected, 0, "prefix {i}");
+        if i == 11 {
+            // Governance already covers this route with the same author's
+            // sequence seven, so the captured sequence-four checkpoint is
+            // settled as superseded instead of wedging delivery.
+            assert!(
+                outcome.duplicate && !outcome.changed,
+                "prefix {i}: {outcome:?}"
+            );
+            rejected = Some((channel, body));
         }
     }
     let room = proof.unwrap();

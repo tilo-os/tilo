@@ -306,14 +306,15 @@ fn replay_budget_includes_transport_encoder_allocation_capacity() {
         .read_replay_batch(&mut snapshot, ReplayLimits::default(), &budget)
         .unwrap();
     let envelope = batch.front().unwrap();
-    let postcard = postcard::to_allocvec(envelope).unwrap();
     let encoded = transport::encode(envelope).unwrap();
     let decoded = match envelope {
         Envelope::Delta { delta, .. } => delta.capacity(),
         _ => unreachable!(),
     };
-    let overlap =
-        decoded + std::mem::size_of::<Envelope>() + postcard.capacity() + encoded.capacity();
+    // The encoder serializes straight into one growable framed Vec; at its
+    // last growth the outgrown buffer (fewer than `len` bytes) coexists with
+    // the final allocation.
+    let overlap = decoded + std::mem::size_of::<Envelope>() + encoded.len() + encoded.capacity();
     assert!(
         batch.charged_bytes >= overlap,
         "reserved {}, actual encode overlap {overlap}",

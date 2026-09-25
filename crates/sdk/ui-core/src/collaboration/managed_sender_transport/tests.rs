@@ -23,6 +23,10 @@ const UPDATE: &str = r#"{"state":"accepted","invocation":"01010101-0101-0101-010
 #[derive(Clone, Copy)]
 enum Mode {
     Good,
+    #[cfg_attr(
+        not(target_os = "macos"),
+        expect(dead_code, reason = "only the macOS cancellation fixture completes a call")
+    )]
     Succeeded,
     Absent,
     WrongHost,

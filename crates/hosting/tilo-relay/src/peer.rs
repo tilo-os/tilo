@@ -6552,6 +6552,13 @@ mod private_transport_tests {
             role: crate::auth::PeerRole::Device,
         };
         runtime.admit_device(peer.device_public_key).unwrap();
+        // This test occupies every normal-message permit below; give the
+        // workspace its own admission budgets so that saturation cannot
+        // starve concurrently running tests that share the process-wide ones.
+        crate::persistence::isolate_test_admission_with_workers(
+            &runtime,
+            crate::persistence::isolated_test_workers(),
+        );
         let workspace = Arc::new(AsyncMutex::new(runtime));
         let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
         let metrics = Arc::new(crate::metrics::Metrics::default());

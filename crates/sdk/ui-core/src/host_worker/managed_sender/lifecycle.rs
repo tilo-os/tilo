@@ -235,7 +235,7 @@ impl ManagedSender {
         };
         Ok(ObservationRead { current, range })
     }
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     pub(super) fn recover_pending(
         &self,
         caller: CallerView<'_>,
