@@ -1,19 +1,33 @@
 //! Crash-safe persistence for authenticated record replicas.
 //!
-//! Each `(workspace, record)` pair is stored in its own atomically replaced
-//! file. The durable form is the ordered set of signed envelopes, not an
-//! unsigned materialized snapshot, so restart reconstructs and verifies the
-//! exact replay watermarks and immutable-version collision decisions.
+//! The durable form is an append-only operation log of signed envelopes
+//! ([`crate::record_log`]), not an unsigned materialized snapshot: restart
+//! replays the log in order and reconstructs the exact replay watermarks and
+//! immutable-version collision decisions. Records, stream cursors and the
+//! history projection are all derived from it.
+//!
+//! Writes are grouped: a changeset scope (one native epoch, or any other
+//! batch a device publishes together) keeps the local author's envelopes in
+//! memory until [`RecordRepository::commit_changeset`] signs them once as a
+//! [`SignedChangesetV1`] and stores them with the changeset in one durable
+//! transaction. Until then they are visible to the local publisher only:
+//! everything served to peers reads durable envelopes. A peer applies a
+//! received changeset with [`RecordRepository::apply_changeset`], also in
+//! one transaction, so no device ever holds half of one.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use collab_types::{FileActor, FileMutationTransaction, FileRecordId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::record_changeset::{
+    ChangesetError, ChangesetId, ChangesetLeafV1, SignedChangesetV1, envelopes_digest,
+};
+use crate::record_log::{RecordLog, RecordLogError};
 use crate::record_replication::{
     RecordAuthorizer, RecordEnvelopeV1, RecordReplica, RecordReplicationError, RecordSnapshot,
 };
@@ -23,12 +37,26 @@ use crate::record_transaction::{
 };
 
 pub const RECORD_REPOSITORY_VERSION: u16 = 1;
-pub const MAX_REPOSITORY_RECORDS: usize = 16_384;
+/// Records one repository holds. The log itself has no practical limit
+/// (positions are `u64`); what bounds a device is the in-memory index,
+/// which keeps each record's replica state and envelopes (a few KiB for a
+/// typical file record). 2^24 records is tens of GiB of index, beyond what
+/// a device serving one workspace holds, so reaching it means corruption or
+/// abuse rather than a large tree.
+pub const MAX_REPOSITORY_RECORDS: usize = 1 << 24;
 pub const MAX_RECORD_OPERATIONS: usize = 4_096;
 pub const MAX_RECORD_VERSIONS: usize = 1_024;
 pub const MAX_RECORD_CONFLICTS: usize = 256;
+/// Bound on one legacy record file read during the one-time import.
 pub const MAX_RECORD_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_RECORD_BATCH_OPERATIONS: usize = 256;
+
+/// The operation log inside the repository root.
+const LOG_FILE: &str = "records.redb";
+/// Where record files from before the log are kept once imported.
+const IMPORTED_DIR: &str = "imported-json";
+/// Position of an envelope a changeset scope still holds back.
+const PENDING: u64 = u64::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordStreamCursor {
@@ -56,7 +84,7 @@ impl RecordStreamCursor {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RecordRepositoryKey {
     pub workspace_id: Uuid,
     pub record_id: FileRecordId,
@@ -85,6 +113,52 @@ struct StoredRecord {
     pending_restore: Option<Uuid>,
     replica: RecordReplica,
     envelopes: Vec<RecordEnvelopeV1>,
+    /// The log position of each envelope, or [`PENDING`].
+    positions: Vec<u64>,
+    /// Envelopes not yet in the log.
+    pending: usize,
+}
+
+impl StoredRecord {
+    fn new(record_id: FileRecordId) -> Self {
+        Self {
+            pending_restore: None,
+            replica: RecordReplica::new(record_id),
+            envelopes: Vec::new(),
+            positions: Vec::new(),
+            pending: 0,
+        }
+    }
+
+    /// Accept an envelope already merged into the replica; it is pending
+    /// until written.
+    fn push_pending(&mut self, envelope: RecordEnvelopeV1) {
+        self.envelopes.push(envelope);
+        self.positions.push(PENDING);
+        self.pending = self.pending.saturating_add(1);
+    }
+
+    /// Envelopes in the log, in accepted order. Only these are ever shown
+    /// to peers.
+    fn durable(&self) -> impl Iterator<Item = &RecordEnvelopeV1> {
+        self.envelopes
+            .iter()
+            .zip(&self.positions)
+            .filter(|(_, position)| **position != PENDING)
+            .map(|(envelope, _)| envelope)
+    }
+
+    fn durable_len(&self) -> usize {
+        self.envelopes.len().saturating_sub(self.pending)
+    }
+
+    fn durable_highest(&self, actor: &FileActor) -> u64 {
+        self.durable()
+            .filter(|envelope| envelope.actor == *actor)
+            .map(|envelope| envelope.sequence)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// Bounded, already-verified state used only to heal the live projection
@@ -105,30 +179,149 @@ struct PersistedRecordV1 {
     envelopes: Vec<RecordEnvelopeV1>,
 }
 
+/// The local author's open publish batch.
+struct ChangesetScope {
+    /// The thread publishing; `None` after a commit that failed, whose
+    /// envelopes the next scope carries on.
+    thread: Option<std::thread::ThreadId>,
+    workspace_id: Uuid,
+    actor: FileActor,
+    keys: Vec<RecordRepositoryKey>,
+    touched: HashSet<RecordRepositoryKey>,
+}
+
+/// Every durable changeset and which envelopes each covers.
+#[derive(Default)]
+struct ChangesetIndex {
+    by_id: BTreeMap<ChangesetId, (Arc<SignedChangesetV1>, u64)>,
+    /// Per record stream: first sequence → (last sequence, changeset).
+    members: HashMap<(RecordRepositoryKey, FileActor), BTreeMap<u64, (u64, ChangesetId)>>,
+}
+
+impl ChangesetIndex {
+    fn insert(&mut self, changeset: Arc<SignedChangesetV1>, first_position: u64) {
+        let id = changeset.header.id();
+        let actor = changeset.header.actor;
+        for leaf in &changeset.leaves {
+            let key = RecordRepositoryKey {
+                workspace_id: id.workspace_id,
+                record_id: leaf.record_id,
+            };
+            self.members
+                .entry((key, actor))
+                .or_default()
+                .insert(leaf.first_sequence, (leaf.last_sequence, id));
+        }
+        self.by_id.insert(id, (changeset, first_position));
+    }
+
+    fn member(
+        &self,
+        key: RecordRepositoryKey,
+        actor: &FileActor,
+        sequence: u64,
+    ) -> Option<ChangesetId> {
+        let (_, (last, id)) = self
+            .members
+            .get(&(key, *actor))?
+            .range(..=sequence)
+            .next_back()?;
+        (*last >= sequence).then_some(*id)
+    }
+
+    fn next_sequence(&self, workspace_id: Uuid, device: [u8; 32]) -> u64 {
+        let low = ChangesetId {
+            workspace_id,
+            device,
+            sequence: 0,
+        };
+        let high = ChangesetId {
+            workspace_id,
+            device,
+            sequence: u64::MAX,
+        };
+        self.by_id
+            .range(low..=high)
+            .next_back()
+            .map_or(1, |(id, _)| id.sequence.saturating_add(1))
+    }
+}
+
+/// One unit of a pull response, in log order: a whole changeset, or a run
+/// of a stream's envelopes that belong to none.
+pub enum PullUnit {
+    Changeset(Arc<SignedChangesetV1>),
+    Stream {
+        key: RecordRepositoryKey,
+        actor: FileActor,
+        after_sequence: u64,
+        envelopes: Vec<RecordEnvelopeV1>,
+    },
+}
+
+/// What [`RecordRepository::apply_changeset`] did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ChangesetApplied {
+    /// The changeset is now durable here; these records changed.
+    Applied(Vec<RecordRepositoryKey>),
+    /// This exact changeset was already here.
+    AlreadyPresent,
+}
+
 /// Single-process durable repository for record-scoped replication state.
+///
+/// The log has one writer: opening a root this process already has open
+/// returns another handle to the same repository.
 pub struct RecordRepository {
+    state: Arc<RepositoryState>,
+}
+
+impl std::ops::Deref for RecordRepository {
+    type Target = RepositoryState;
+
+    fn deref(&self) -> &RepositoryState {
+        &self.state
+    }
+}
+
+/// Repositories open in this process, by canonical root.
+fn open_repositories() -> &'static Mutex<HashMap<PathBuf, std::sync::Weak<RepositoryState>>> {
+    static OPEN: std::sync::OnceLock<Mutex<HashMap<PathBuf, std::sync::Weak<RepositoryState>>>> =
+        std::sync::OnceLock::new();
+    OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub struct RepositoryState {
     root: PathBuf,
+    log: RecordLog,
     records: Mutex<BTreeMap<RecordRepositoryKey, StoredRecord>>,
-    /// Stream cursors per record, with the envelope count they were computed
-    /// at. A record's log only grows, so an unchanged count means unchanged
-    /// cursors; reconciliation then hashes each envelope once, not once per
-    /// exchange.
+    /// Stream cursors per record, with the durable envelope count they were
+    /// computed at. A record's log only grows, so an unchanged count means
+    /// unchanged cursors; reconciliation then hashes each envelope once, not
+    /// once per exchange.
     cursors: Mutex<BTreeMap<RecordRepositoryKey, CachedCursors>>,
+    scope: Mutex<Option<ChangesetScope>>,
+    changesets: Mutex<ChangesetIndex>,
+    /// Held for writing while a changeset is published or applied, and for
+    /// reading by anything that shows namespace or record state to peers or
+    /// to the live tree: none of them ever sees half of a changeset.
+    gate: tokio::sync::RwLock<()>,
 }
 
 type CachedCursors = (usize, std::sync::Arc<[RecordStreamCursor]>);
+type Records = BTreeMap<RecordRepositoryKey, StoredRecord>;
 
 /// Keeps mutable namespace projection serialized against every repository writer.
 /// Acquire only after namespace (and history, if needed); never call public
 /// repository methods while retaining this lease.
 pub(crate) struct RecordProjectionLease<'a> {
-    _records: std::sync::MutexGuard<'a, BTreeMap<RecordRepositoryKey, StoredRecord>>,
+    _records: std::sync::MutexGuard<'a, Records>,
     pub snapshot: RecordSnapshot,
 }
 
 pub(crate) struct RepositoryLease<'a> {
-    root: &'a Path,
-    records: std::sync::MutexGuard<'a, BTreeMap<RecordRepositoryKey, StoredRecord>>,
+    repository: &'a RecordRepository,
+    records: std::sync::MutexGuard<'a, Records>,
 }
 
 pub(crate) struct PreparedRecordTransaction {
@@ -270,11 +463,9 @@ impl RepositoryLease<'_> {
                 )?;
             }
 
-            let mut candidate = current.cloned().unwrap_or_else(|| StoredRecord {
-                pending_restore: None,
-                replica: RecordReplica::new(key.record_id),
-                envelopes: Vec::new(),
-            });
+            let mut candidate = current
+                .cloned()
+                .unwrap_or_else(|| StoredRecord::new(key.record_id));
             if !exact_suffix {
                 if candidate
                     .envelopes
@@ -286,7 +477,7 @@ impl RepositoryLease<'_> {
                 }
                 for envelope in &batch.envelopes {
                     candidate.replica.merge(envelope, authorizer)?;
-                    candidate.envelopes.push(envelope.clone());
+                    candidate.push_pending(envelope.clone());
                 }
             }
             candidate.pending_restore = None;
@@ -338,17 +529,14 @@ impl RepositoryLease<'_> {
                 .ensure_checked_intent_durable(id)
                 .map_err(RecordRepositoryError::TransactionJournal)?;
         }
-        for (index, (key, candidate)) in candidates.iter().enumerate() {
-            let previous = self
-                .records
-                .get(key)
-                .map(|record| record.envelopes.as_slice());
-            persist_record(self.root, *key, &candidate.envelopes, previous)?;
+        // Every participant is written in one log transaction: they become
+        // durable together.
+        let participants = candidates.len();
+        self.repository
+            .commit_candidates(&mut self.records, candidates, None)?;
+        for index in 0..participants {
             checkpoint(RecordTransactionCheckpoint::ParticipantRecordDurable { index })
                 .map_err(RecordRepositoryError::TransactionFailureInjected)?;
-        }
-        for (key, candidate) in candidates {
-            self.records.insert(key, candidate);
         }
         if journal
             .get(id)
@@ -371,12 +559,276 @@ impl RepositoryLease<'_> {
 impl RecordRepository {
     pub(crate) fn lease(&self) -> Result<RepositoryLease<'_>, RecordRepositoryError> {
         Ok(RepositoryLease {
-            root: &self.root,
+            repository: self,
             records: self
                 .records
                 .lock()
                 .map_err(|_| RecordRepositoryError::StatePoisoned)?,
         })
+    }
+
+    fn lock_records(&self) -> Result<std::sync::MutexGuard<'_, Records>, RecordRepositoryError> {
+        self.records
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)
+    }
+
+    /// Held for writing while a changeset is published or applied; readers
+    /// that show state to peers or the live tree take it for reading.
+    pub fn publication_gate(&self) -> &tokio::sync::RwLock<()> {
+        &self.gate
+    }
+
+    /// Write every pending envelope of `candidates` to the log in one
+    /// transaction (with `changeset` beside them), then publish the
+    /// candidates in memory. On failure memory is unchanged.
+    fn commit_candidates(
+        &self,
+        records: &mut Records,
+        candidates: Vec<(RecordRepositoryKey, StoredRecord)>,
+        changeset: Option<&Arc<SignedChangesetV1>>,
+    ) -> Result<(), RecordRepositoryError> {
+        let ops: Vec<(Uuid, &RecordEnvelopeV1)> = candidates
+            .iter()
+            .flat_map(|(key, record)| {
+                record
+                    .envelopes
+                    .iter()
+                    .zip(&record.positions)
+                    .filter(|(_, position)| **position == PENDING)
+                    .map(|(envelope, _)| (key.workspace_id, envelope))
+            })
+            .collect();
+        let count = ops.len();
+        let first = self.log.append(&ops, changeset.map(AsRef::as_ref), false)?;
+        drop(ops);
+        let mut next = first;
+        let mut written = Vec::with_capacity(candidates.len());
+        for (key, mut record) in candidates {
+            for position in record.positions.iter_mut().filter(|p| **p == PENDING) {
+                *position = next;
+                next = next.saturating_add(1);
+            }
+            record.pending = 0;
+            records.insert(key, record);
+            written.push(key);
+        }
+        debug_assert_eq!(next, first.saturating_add(count as u64));
+        if let Some(changeset) = changeset {
+            self.changesets
+                .lock()
+                .map_err(|_| RecordRepositoryError::StatePoisoned)?
+                .insert(Arc::clone(changeset), first);
+        }
+        self.forget_scope_keys(records, &written);
+        Ok(())
+    }
+
+    /// Write the pending envelopes of `keys` in place, with `changeset`.
+    /// On failure they stay pending.
+    fn commit_in_place(
+        &self,
+        records: &mut Records,
+        keys: &[RecordRepositoryKey],
+        changeset: Option<&Arc<SignedChangesetV1>>,
+    ) -> Result<(), RecordRepositoryError> {
+        let first = {
+            let ops: Vec<(Uuid, &RecordEnvelopeV1)> = keys
+                .iter()
+                .filter_map(|key| records.get(key).map(|record| (key, record)))
+                .flat_map(|(key, record)| {
+                    record
+                        .envelopes
+                        .iter()
+                        .zip(&record.positions)
+                        .filter(|(_, position)| **position == PENDING)
+                        .map(|(envelope, _)| (key.workspace_id, envelope))
+                })
+                .collect();
+            if ops.is_empty() && changeset.is_none() {
+                return Ok(());
+            }
+            self.log.append(&ops, changeset.map(AsRef::as_ref), false)?
+        };
+        let mut next = first;
+        for key in keys {
+            if let Some(record) = records.get_mut(key) {
+                for position in record.positions.iter_mut().filter(|p| **p == PENDING) {
+                    *position = next;
+                    next = next.saturating_add(1);
+                }
+                record.pending = 0;
+            }
+        }
+        if let Some(changeset) = changeset {
+            self.changesets
+                .lock()
+                .map_err(|_| RecordRepositoryError::StatePoisoned)?
+                .insert(Arc::clone(changeset), first);
+        }
+        Ok(())
+    }
+
+    /// Records a write outside the scope made durable are no longer the
+    /// scope's to sign.
+    fn forget_scope_keys<'a>(
+        &self,
+        records: &Records,
+        written: impl IntoIterator<Item = &'a RecordRepositoryKey>,
+    ) {
+        if let Ok(mut scope) = self.scope.lock()
+            && let Some(scope) = scope.as_mut()
+        {
+            let mut forgotten = false;
+            for key in written {
+                if scope.touched.contains(key)
+                    && records.get(key).is_none_or(|record| record.pending == 0)
+                {
+                    scope.touched.remove(key);
+                    forgotten = true;
+                }
+            }
+            if forgotten {
+                let touched = &scope.touched;
+                scope.keys.retain(|key| touched.contains(key));
+            }
+        }
+    }
+
+    /// Whether an envelope by `actor` in `workspace_id` written now belongs
+    /// to this thread's open changeset scope.
+    fn deferred(&self, workspace_id: Uuid, actor: &FileActor) -> bool {
+        self.scope.lock().is_ok_and(|scope| {
+            scope.as_ref().is_some_and(|scope| {
+                scope.thread == Some(std::thread::current().id())
+                    && scope.workspace_id == workspace_id
+                    && scope.actor == *actor
+            })
+        })
+    }
+
+    /// Open a changeset scope on this thread: `actor`'s envelopes applied
+    /// from this thread are kept in memory (visible to the local publisher
+    /// only) until [`Self::commit_changeset`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another thread has a scope open, or the state
+    /// lock is poisoned.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the scope lock covers checking and installing the scope"
+    )]
+    pub fn begin_changeset(
+        &self,
+        workspace_id: Uuid,
+        actor: FileActor,
+    ) -> Result<(), RecordRepositoryError> {
+        let mut scope = self
+            .scope
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let thread = std::thread::current().id();
+        match scope.as_mut() {
+            Some(open) if open.thread.is_some_and(|t| t != thread) => {
+                return Err(RecordRepositoryError::ChangesetInProgress);
+            }
+            // A scope whose commit failed: its envelopes go into this one.
+            Some(open) if open.workspace_id == workspace_id && open.actor == actor => {
+                open.thread = Some(thread);
+            }
+            Some(_) => return Err(RecordRepositoryError::ChangesetInProgress),
+            None => {
+                *scope = Some(ChangesetScope {
+                    thread: Some(thread),
+                    workspace_id,
+                    actor,
+                    keys: Vec::new(),
+                    touched: HashSet::new(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Sign the open scope's envelopes as one changeset and write them with
+    /// it in one durable transaction. Returns `None` when the scope wrote
+    /// nothing. On failure the envelopes stay pending, hidden from peers,
+    /// and the next scope of the same actor carries them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when signing or the log write fails.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the records lock spans signing and the durable write, so nothing changes the batch meanwhile"
+    )]
+    pub fn commit_changeset(
+        &self,
+        device_key: &ed25519_dalek::SigningKey,
+        created_at_ms: u64,
+    ) -> Result<Option<Arc<SignedChangesetV1>>, RecordRepositoryError> {
+        let mut records = self.lock_records()?;
+        let Some(mut scope) = self
+            .scope
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?
+            .take()
+        else {
+            return Ok(None);
+        };
+        let mut leaves = Vec::with_capacity(scope.keys.len());
+        for key in &scope.keys {
+            let Some(record) = records.get(key) else {
+                continue;
+            };
+            let pending: Vec<&RecordEnvelopeV1> = record
+                .envelopes
+                .iter()
+                .zip(&record.positions)
+                .filter(|(envelope, position)| {
+                    **position == PENDING && envelope.actor == scope.actor
+                })
+                .map(|(envelope, _)| envelope)
+                .collect();
+            let (Some(first), Some(last)) = (pending.first(), pending.last()) else {
+                continue;
+            };
+            leaves.push(ChangesetLeafV1 {
+                record_id: key.record_id,
+                first_sequence: first.sequence,
+                last_sequence: last.sequence,
+                digest: envelopes_digest(pending.iter().copied())?,
+            });
+        }
+        if leaves.is_empty() {
+            return Ok(None);
+        }
+        let sequence = self
+            .changesets
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?
+            .next_sequence(scope.workspace_id, *scope.actor.device.as_bytes());
+        let signed = Arc::new(SignedChangesetV1::sign(
+            scope.workspace_id,
+            scope.actor,
+            sequence,
+            created_at_ms,
+            leaves,
+            device_key,
+        )?);
+        let keys = std::mem::take(&mut scope.keys);
+        match self.commit_in_place(&mut records, &keys, Some(&signed)) {
+            Ok(()) => Ok(Some(signed)),
+            Err(error) => {
+                scope.keys = keys;
+                scope.thread = None;
+                if let Ok(mut slot) = self.scope.lock() {
+                    *slot = Some(scope);
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Seed admission fences before exposing a reopened repository to writers.
@@ -394,10 +846,7 @@ impl RecordRepository {
         &self,
         journal: &RecordTransactionJournal,
     ) -> Result<(), RecordRepositoryError> {
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let mut records = self.lock_records()?;
         for entry in journal.entries().filter(|entry| {
             entry.phase == RecordTransactionPhase::Prepared
                 && matches!(
@@ -432,12 +881,13 @@ impl RecordRepository {
     /// admits no new signed operations and needs no local-author attribution.
     ///
     /// All exact batches and their committed transaction state are checked
-    /// before any persistence. Re-persisting the verified current records
-    /// establishes durability even after an ambiguous earlier write error and
-    /// retains any later accepted envelopes. A phase alone never clears a fence.
+    /// before any persistence. Writing whatever of the verified current
+    /// records is still pending establishes durability even after an
+    /// ambiguous earlier write error and retains any later accepted
+    /// envelopes. A phase alone never clears a fence.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "R stays held from batch validation through persistence to fence clearing"
+        reason = "the records lock spans validation, the durable write and clearing the fences"
     )]
     pub(crate) fn complete_admitted_restore_participation(
         &self,
@@ -457,10 +907,7 @@ impl RecordRepository {
         {
             return Err(RecordRepositoryError::TransactionManifestMismatch(id));
         }
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let mut records = self.lock_records()?;
         let mut keys = Vec::with_capacity(entry.participant_batches.len());
         for batch in &entry.participant_batches {
             let key = RecordRepositoryKey {
@@ -497,13 +944,17 @@ impl RecordRepository {
         }
 
         journal.ensure_checked_intent_durable(id)?;
-        for key in &keys {
-            let envelopes = &records
-                .get(key)
-                .ok_or(RecordRepositoryError::RecordNotFound)?
-                .envelopes;
-            persist_record(&self.root, *key, envelopes, Some(envelopes))?;
+        if keys
+            .iter()
+            .any(|key| records.get(key).is_some_and(|record| record.pending > 0))
+        {
+            self.commit_in_place(&mut records, &keys, None)?;
+        } else {
+            // Already in the log; an empty commit is the durability barrier
+            // after an ambiguous earlier write error.
+            self.log.append(&[], None, false)?;
         }
+        self.forget_scope_keys(&records, &keys);
         if journal
             .get(id)
             .is_some_and(|entry| entry.phase == RecordTransactionPhase::Prepared)
@@ -529,22 +980,136 @@ impl RecordRepository {
         Ok(())
     }
 
-    /// Open and fully verify every persisted record. A missing root is an
-    /// empty repository; malformed, duplicate, cross-key or oversized state
-    /// fails closed rather than being silently discarded.
+    /// Open the repository at `root`: its operation log, importing the
+    /// per-record files of earlier releases into it on first start.
+    ///
+    /// The import verifies every legacy record exactly as those releases
+    /// did (malformed, duplicate, cross-key or oversized state fails closed
+    /// rather than being silently discarded), writes all of it in one log
+    /// transaction and only then moves the files aside, so an interrupted
+    /// import is simply repeated.
     ///
     /// # Errors
     ///
-    /// Returns an error for I/O, malformed/unsupported state, invalid signed
-    /// envelopes, duplicate keys, or any repository bound violation.
+    /// Returns an error for I/O, a damaged log, invalid legacy state, or any
+    /// repository bound violation.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RecordRepositoryError> {
         let root = root.into();
-        let records = load_records(&root)?;
-        Ok(Self {
+        std::fs::create_dir_all(&root)?;
+        let canonical = std::fs::canonicalize(&root)?;
+        let mut open = open_repositories()
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        open.retain(|_, state| state.strong_count() > 0);
+        if let Some(state) = open.get(&canonical).and_then(std::sync::Weak::upgrade) {
+            return Ok(Self { state });
+        }
+        let state = Arc::new(Self::load(root)?);
+        open.insert(canonical, Arc::downgrade(&state));
+        drop(open);
+        Ok(Self { state })
+    }
+
+    fn load(root: PathBuf) -> Result<RepositoryState, RecordRepositoryError> {
+        let log = RecordLog::open(&root.join(LOG_FILE))?;
+        if !log.legacy_imported()? {
+            let legacy = load_records(&root)?;
+            let ops: Vec<(Uuid, &RecordEnvelopeV1)> = legacy
+                .iter()
+                .flat_map(|(key, record)| {
+                    record
+                        .envelopes
+                        .iter()
+                        .map(|envelope| (key.workspace_id, envelope))
+                })
+                .collect();
+            log.append(&ops, None, true)?;
+            if !legacy.is_empty() {
+                eprintln!(
+                    "imported {} signed record file(s) ({} operations) into the record log",
+                    legacy.len(),
+                    ops.len()
+                );
+            }
+            retire_legacy_records(&root)?;
+        }
+        let mut records = Records::new();
+        log.replay_ops(|position, workspace_id, envelope| {
+            let key = RecordRepositoryKey {
+                workspace_id,
+                record_id: envelope.record_id,
+            };
+            let record = records
+                .entry(key)
+                .or_insert_with(|| StoredRecord::new(key.record_id));
+            // A commit that reported failure but reached the disk is
+            // written again by the retry: the same envelope twice.
+            if record
+                .replica
+                .highest_sequence_for(&envelope.actor)
+                .is_some_and(|highest| envelope.sequence <= highest)
+                && record.envelopes.contains(&envelope)
+            {
+                return Ok(());
+            }
+            record.replica.restore_trusted(&envelope)?;
+            record.envelopes.push(envelope);
+            record.positions.push(position);
+            Ok::<(), RecordRepositoryError>(())
+        })?;
+        if records.len() > MAX_REPOSITORY_RECORDS {
+            return Err(RecordRepositoryError::TooManyRecords);
+        }
+        let mut index = ChangesetIndex::default();
+        for logged in log.changesets()? {
+            index.insert(Arc::new(logged.changeset), logged.first_position);
+        }
+        Ok(RepositoryState {
             root,
+            log,
             records: Mutex::new(records),
             cursors: Mutex::new(BTreeMap::new()),
+            scope: Mutex::new(None),
+            changesets: Mutex::new(index),
+            gate: tokio::sync::RwLock::new(()),
         })
+    }
+
+    /// Make every durable write fail (or succeed again).
+    #[cfg(test)]
+    pub(crate) fn fail_writes(&self, fail: bool) {
+        self.log
+            .fail_appends
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Forget the transient admission fences, as a restarted process has
+    /// none until [`Self::restore_admission_fences`] seeds them.
+    #[cfg(test)]
+    pub(crate) fn clear_admission_fences(&self) {
+        for record in self
+            .records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values_mut()
+        {
+            record.pending_restore = None;
+        }
+    }
+
+    /// The directory this repository lives in.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Operations in the durable log.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the log cannot be read.
+    pub fn logged_operations(&self) -> Result<u64, RecordRepositoryError> {
+        Ok(self.log.op_count()?)
     }
 
     /// Apply an already-signed envelope through the supplied live authorizer,
@@ -564,23 +1129,15 @@ impl RecordRepository {
         self.apply_batch(key, std::slice::from_ref(envelope), authorizer)
     }
 
-    /// Atomically validate and persist one bounded, topologically ordered
-    /// prefix. No envelope becomes visible if any later envelope in the batch
-    /// fails authentication, authorization, sequence, DAG, or size checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid batch/key/workspace data, authorization or
-    /// replication rejection, capacity limits, poisoned state, or persistence.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the writer lock intentionally spans batch validation, durable replacement, and in-memory publication"
-    )]
-    pub fn apply_batch<A: RecordAuthorizer + ?Sized>(
-        &self,
+    /// Validate one batch against `records` and the candidates staged so
+    /// far, and stage its candidate.
+    fn stage_batch<A: RecordAuthorizer + ?Sized>(
+        records: &Records,
+        candidates: &mut BTreeMap<RecordRepositoryKey, StoredRecord>,
         key: RecordRepositoryKey,
         envelopes: &[RecordEnvelopeV1],
         authorizer: &A,
+        signed_here: bool,
     ) -> Result<(), RecordRepositoryError> {
         if envelopes.is_empty() || envelopes.len() > MAX_RECORD_BATCH_OPERATIONS {
             return Err(RecordRepositoryError::InvalidBatchSize);
@@ -600,32 +1157,32 @@ impl RecordRepository {
         }) {
             return Err(RecordRepositoryError::TransactionWorkspaceMismatch);
         }
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
-        let current = records.get(&key);
+        let current = candidates.get(&key).or_else(|| records.get(&key));
         if let Some(id) = current.and_then(|record| record.pending_restore) {
             return Err(RecordRepositoryError::RestoreRecoveryRequired(id));
         }
-        if current.is_none() && records.len() >= MAX_REPOSITORY_RECORDS {
+        if current.is_none()
+            && records.len().saturating_add(candidates.len()) >= MAX_REPOSITORY_RECORDS
+        {
             return Err(RecordRepositoryError::TooManyRecords);
         }
-        if current.is_some_and(|record| {
-            record.envelopes.len().saturating_add(envelopes.len()) > MAX_RECORD_OPERATIONS
-        }) || current.is_none() && envelopes.len() > MAX_RECORD_OPERATIONS
+        if current
+            .map_or(0, |record| record.envelopes.len())
+            .saturating_add(envelopes.len())
+            > MAX_RECORD_OPERATIONS
         {
             return Err(RecordRepositoryError::TooManyOperations);
         }
-
-        let mut candidate = current.cloned().unwrap_or_else(|| StoredRecord {
-            pending_restore: None,
-            replica: RecordReplica::new(key.record_id),
-            envelopes: Vec::new(),
-        });
+        let mut candidate = current
+            .cloned()
+            .unwrap_or_else(|| StoredRecord::new(key.record_id));
         for envelope in envelopes {
-            candidate.replica.merge(envelope, authorizer)?;
-            candidate.envelopes.push(envelope.clone());
+            if signed_here {
+                candidate.replica.merge_own(envelope, authorizer)?;
+            } else {
+                candidate.replica.merge(envelope, authorizer)?;
+            }
+            candidate.push_pending(envelope.clone());
         }
         if candidate.replica.version_count() > MAX_RECORD_VERSIONS {
             return Err(RecordRepositoryError::TooManyVersions);
@@ -633,14 +1190,372 @@ impl RecordRepository {
         if candidate.replica.conflict_count() > MAX_RECORD_CONFLICTS {
             return Err(RecordRepositoryError::TooManyConflicts);
         }
-        persist_record(
-            &self.root,
-            key,
-            &candidate.envelopes,
-            current.map(|record| record.envelopes.as_slice()),
-        )?;
-        records.insert(key, candidate);
+        candidates.insert(key, candidate);
         Ok(())
+    }
+
+    /// Atomically validate and persist one bounded, topologically ordered
+    /// prefix. No envelope becomes visible if any later envelope in the batch
+    /// fails authentication, authorization, sequence, DAG, or size checks.
+    ///
+    /// Inside this thread's changeset scope, the local author's batch is
+    /// accepted in memory and written when the changeset commits.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid batch/key/workspace data, authorization or
+    /// replication rejection, capacity limits, poisoned state, or persistence.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the writer lock intentionally spans batch validation, durable replacement, and in-memory publication"
+    )]
+    pub fn apply_batch<A: RecordAuthorizer + ?Sized>(
+        &self,
+        key: RecordRepositoryKey,
+        envelopes: &[RecordEnvelopeV1],
+        authorizer: &A,
+    ) -> Result<(), RecordRepositoryError> {
+        self.apply_batch_from(key, envelopes, authorizer, false)
+    }
+
+    /// [`Self::apply_batch`] for envelopes the caller signed itself, with
+    /// the actor's device key, just now: their signatures are not checked
+    /// again.
+    pub(crate) fn apply_own_batch<A: RecordAuthorizer + ?Sized>(
+        &self,
+        key: RecordRepositoryKey,
+        envelopes: &[RecordEnvelopeV1],
+        authorizer: &A,
+    ) -> Result<(), RecordRepositoryError> {
+        self.apply_batch_from(key, envelopes, authorizer, true)
+    }
+
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the writer lock intentionally spans batch validation, durable replacement, and in-memory publication"
+    )]
+    fn apply_batch_from<A: RecordAuthorizer + ?Sized>(
+        &self,
+        key: RecordRepositoryKey,
+        envelopes: &[RecordEnvelopeV1],
+        authorizer: &A,
+        signed_here: bool,
+    ) -> Result<(), RecordRepositoryError> {
+        let deferred = envelopes
+            .first()
+            .is_some_and(|first| self.deferred(key.workspace_id, &first.actor))
+            && envelopes
+                .windows(2)
+                .all(|pair| matches!(pair, [a, b] if a.actor == b.actor));
+        let mut records = self.lock_records()?;
+        let mut candidates = BTreeMap::new();
+        Self::stage_batch(
+            &records,
+            &mut candidates,
+            key,
+            envelopes,
+            authorizer,
+            signed_here,
+        )?;
+        if deferred {
+            records.extend(candidates);
+            if let Ok(mut scope) = self.scope.lock()
+                && let Some(scope) = scope.as_mut()
+                && scope.touched.insert(key)
+            {
+                scope.keys.push(key);
+            }
+            return Ok(());
+        }
+        self.commit_candidates(&mut records, candidates.into_iter().collect(), None)
+    }
+
+    /// [`Self::apply_batch`] for several streams at once, all or nothing, in
+    /// one durable write. Batches for the same record apply in order.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply_batch`], for any batch.
+    pub fn apply_batches<A: RecordAuthorizer + ?Sized>(
+        &self,
+        batches: &[(RecordRepositoryKey, Vec<RecordEnvelopeV1>)],
+        authorizer: &A,
+    ) -> Result<(), RecordRepositoryError> {
+        if batches.is_empty() {
+            return Ok(());
+        }
+        let mut records = self.lock_records()?;
+        let mut candidates = BTreeMap::new();
+        for (key, envelopes) in batches {
+            Self::stage_batch(
+                &records,
+                &mut candidates,
+                *key,
+                envelopes,
+                authorizer,
+                false,
+            )?;
+        }
+        self.commit_candidates(&mut records, candidates.into_iter().collect(), None)
+    }
+
+    /// Verify a received changeset and apply all of its envelopes in one
+    /// durable transaction, or none of them. `envelopes` must be exactly
+    /// the envelopes its leaves name; ones this device already holds (the
+    /// same bytes) are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid signature or root, envelopes that do
+    /// not match the leaves, another changeset under the same id, a
+    /// divergent stream, any replication rejection, or a failed write.
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "one pass validates every leaf against the signed set under the records lock before a single durable write"
+    )]
+    pub fn apply_changeset<A: RecordAuthorizer + ?Sized>(
+        &self,
+        workspace_id: Uuid,
+        changeset: &SignedChangesetV1,
+        envelopes: &[RecordEnvelopeV1],
+        authorizer: &A,
+    ) -> Result<ChangesetApplied, RecordRepositoryError> {
+        changeset.verify()?;
+        let header = &changeset.header;
+        if header.workspace_id != workspace_id {
+            return Err(RecordRepositoryError::TransactionWorkspaceMismatch);
+        }
+        if let Some((existing, _)) = self
+            .changesets
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?
+            .by_id
+            .get(&header.id())
+        {
+            return if **existing == *changeset {
+                Ok(ChangesetApplied::AlreadyPresent)
+            } else {
+                Err(RecordRepositoryError::ChangesetEquivocation)
+            };
+        }
+        let mut by_record: BTreeMap<FileRecordId, Vec<&RecordEnvelopeV1>> = BTreeMap::new();
+        for envelope in envelopes {
+            if envelope.actor != header.actor {
+                return Err(RecordRepositoryError::ChangesetMismatch);
+            }
+            by_record
+                .entry(envelope.record_id)
+                .or_default()
+                .push(envelope);
+        }
+        if by_record.len() != changeset.leaves.len() {
+            return Err(RecordRepositoryError::ChangesetMismatch);
+        }
+        for leaf in &changeset.leaves {
+            let list = by_record
+                .get_mut(&leaf.record_id)
+                .ok_or(RecordRepositoryError::ChangesetMismatch)?;
+            list.sort_by_key(|envelope| envelope.sequence);
+            let contiguous = list.first().map(|e| e.sequence) == Some(leaf.first_sequence)
+                && list
+                    .iter()
+                    .zip(leaf.first_sequence..)
+                    .all(|(envelope, sequence)| envelope.sequence == sequence)
+                && list.last().map(|e| e.sequence) == Some(leaf.last_sequence);
+            if !contiguous || envelopes_digest(list.iter().copied())? != leaf.digest {
+                return Err(RecordRepositoryError::ChangesetMismatch);
+            }
+        }
+
+        let mut records = self.lock_records()?;
+        let mut candidates: Vec<(RecordRepositoryKey, StoredRecord)> =
+            Vec::with_capacity(changeset.leaves.len());
+        let mut new_records = 0_usize;
+        for leaf in &changeset.leaves {
+            let key = RecordRepositoryKey {
+                workspace_id,
+                record_id: leaf.record_id,
+            };
+            let current = records.get(&key);
+            if let Some(id) = current.and_then(|record| record.pending_restore) {
+                return Err(RecordRepositoryError::RestoreRecoveryRequired(id));
+            }
+            if current.is_none() {
+                new_records = new_records.saturating_add(1);
+            }
+            let mut candidate = current
+                .cloned()
+                .unwrap_or_else(|| StoredRecord::new(key.record_id));
+            let list = by_record
+                .get(&leaf.record_id)
+                .ok_or(RecordRepositoryError::ChangesetMismatch)?;
+            for envelope in list {
+                let highest = candidate
+                    .replica
+                    .highest_sequence_for(&envelope.actor)
+                    .unwrap_or(0);
+                if envelope.sequence <= highest {
+                    let same = candidate.envelopes.iter().any(|stored| {
+                        stored.actor == envelope.actor
+                            && stored.sequence == envelope.sequence
+                            && stored == *envelope
+                    });
+                    if !same {
+                        return Err(RecordRepositoryError::DivergentStream(leaf.record_id));
+                    }
+                    continue;
+                }
+                // The verified changeset signature covers this envelope's
+                // exact bytes (its leaf digest): one verification for the
+                // whole changeset, as `storage.md` §8.3 has it.
+                candidate
+                    .replica
+                    .merge_authenticated(envelope, authorizer)?;
+                candidate.push_pending((*envelope).clone());
+            }
+            if candidate.envelopes.len() > MAX_RECORD_OPERATIONS {
+                return Err(RecordRepositoryError::TooManyOperations);
+            }
+            if candidate.replica.version_count() > MAX_RECORD_VERSIONS {
+                return Err(RecordRepositoryError::TooManyVersions);
+            }
+            if candidate.replica.conflict_count() > MAX_RECORD_CONFLICTS {
+                return Err(RecordRepositoryError::TooManyConflicts);
+            }
+            candidates.push((key, candidate));
+        }
+        if records.len().saturating_add(new_records) > MAX_REPOSITORY_RECORDS {
+            return Err(RecordRepositoryError::TooManyRecords);
+        }
+        let touched = candidates
+            .iter()
+            .filter(|(_, record)| record.pending > 0)
+            .map(|(key, _)| *key)
+            .collect();
+        let changeset = Arc::new(changeset.clone());
+        self.commit_candidates(&mut records, candidates, Some(&changeset))?;
+        Ok(ChangesetApplied::Applied(touched))
+    }
+
+    /// The envelopes one leaf of a durable changeset names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for poisoned state, or when this device does not
+    /// hold every envelope the leaf names.
+    pub fn changeset_leaf_envelopes(
+        &self,
+        changeset: &SignedChangesetV1,
+        leaf: &ChangesetLeafV1,
+    ) -> Result<Vec<RecordEnvelopeV1>, RecordRepositoryError> {
+        let key = RecordRepositoryKey {
+            workspace_id: changeset.header.workspace_id,
+            record_id: leaf.record_id,
+        };
+        let records = self.lock_records()?;
+        let record = records
+            .get(&key)
+            .ok_or(RecordRepositoryError::RecordNotFound)?;
+        let envelopes: Vec<RecordEnvelopeV1> = record
+            .durable()
+            .filter(|envelope| {
+                envelope.actor == changeset.header.actor
+                    && (leaf.first_sequence..=leaf.last_sequence).contains(&envelope.sequence)
+            })
+            .cloned()
+            .collect();
+        drop(records);
+        let expected = leaf
+            .last_sequence
+            .saturating_sub(leaf.first_sequence)
+            .saturating_add(1);
+        if envelopes.len() as u64 != expected {
+            return Err(RecordRepositoryError::ChangesetMismatch);
+        }
+        Ok(envelopes)
+    }
+
+    /// What a peer that holds each stream up to `after_sequence` is missing,
+    /// as whole changesets and runs of envelopes outside any changeset, in
+    /// the order they entered this device's log.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for poisoned state.
+    pub fn pull_units(
+        &self,
+        workspace_id: Uuid,
+        streams: &[(FileRecordId, FileActor, u64)],
+    ) -> Result<Vec<PullUnit>, RecordRepositoryError> {
+        let records = self.lock_records()?;
+        let index = self
+            .changesets
+            .lock()
+            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let mut changesets: BTreeMap<ChangesetId, u64> = BTreeMap::new();
+        let mut runs: Vec<(u64, PullUnit)> = Vec::new();
+        for (record_id, actor, after) in streams {
+            let key = RecordRepositoryKey {
+                workspace_id,
+                record_id: *record_id,
+            };
+            let Some(record) = records.get(&key) else {
+                continue;
+            };
+            let mut run: Option<(u64, u64, Vec<RecordEnvelopeV1>)> = None;
+            let flush = |run: &mut Option<(u64, u64, Vec<RecordEnvelopeV1>)>,
+                         runs: &mut Vec<(u64, PullUnit)>| {
+                if let Some((position, after_sequence, envelopes)) = run.take() {
+                    for chunk in envelopes.chunks(MAX_RECORD_BATCH_OPERATIONS) {
+                        let after_sequence = chunk
+                            .first()
+                            .map_or(after_sequence, |e| e.sequence.saturating_sub(1));
+                        runs.push((
+                            position,
+                            PullUnit::Stream {
+                                key,
+                                actor: *actor,
+                                after_sequence,
+                                envelopes: chunk.to_vec(),
+                            },
+                        ));
+                    }
+                }
+            };
+            for (envelope, position) in record.envelopes.iter().zip(&record.positions) {
+                if *position == PENDING || envelope.actor != *actor || envelope.sequence <= *after {
+                    continue;
+                }
+                if let Some(id) = index.member(key, actor, envelope.sequence) {
+                    flush(&mut run, &mut runs);
+                    if let Some((_, first)) = index.by_id.get(&id) {
+                        changesets.insert(id, *first);
+                    }
+                    continue;
+                }
+                match run.as_mut() {
+                    Some((_, _, envelopes)) => envelopes.push(envelope.clone()),
+                    None => {
+                        run = Some((
+                            *position,
+                            envelope.sequence.saturating_sub(1),
+                            vec![envelope.clone()],
+                        ));
+                    }
+                }
+            }
+            flush(&mut run, &mut runs);
+        }
+        for (id, first) in changesets {
+            if let Some((changeset, _)) = index.by_id.get(&id) {
+                runs.push((first, PullUnit::Changeset(Arc::clone(changeset))));
+            }
+        }
+        drop(index);
+        drop(records);
+        runs.sort_by_key(|(position, _)| *position);
+        Ok(runs.into_iter().map(|(_, unit)| unit).collect())
     }
 
     /// Inspect the exact participant set without projecting a partial commit.
@@ -658,10 +1573,7 @@ impl RecordRepository {
         workspace_id: Uuid,
         transaction_id: Uuid,
     ) -> Result<Option<RecordTransactionStatus>, RecordRepositoryError> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let mut transaction: Option<FileMutationTransaction> = None;
         let mut prepared = 0_usize;
         let mut committed = 0_usize;
@@ -698,10 +1610,10 @@ impl RecordRepository {
     }
 
     /// Validate every participant against one locked repository snapshot,
-    /// durably journal the exact intent, then replace all participant files.
-    /// Memory is published only after every file is durable. A crash after one
-    /// physical replace leaves an invisible prepared record which exact retry
-    /// completes from the journal.
+    /// durably journal the exact intent, then write all participants in one
+    /// log transaction. Memory is published only after they are durable. A
+    /// crash after the journal write leaves an invisible prepared record
+    /// which exact retry completes from the journal.
     ///
     /// # Errors
     ///
@@ -723,7 +1635,6 @@ impl RecordRepository {
     /// Returns the same errors as [`Self::apply_transaction`], plus a supplied
     /// checkpoint failure.
     #[allow(
-        clippy::too_many_lines,
         clippy::significant_drop_tightening,
         reason = "the transaction coordinator intentionally keeps one writer lock across all participant validation and durable record replacement"
     )]
@@ -770,10 +1681,10 @@ impl RecordRepository {
             .collect())
     }
 
-    /// Every stream cursor of one workspace with a key in `[lower, upper)`
-    /// (unbounded where `None`), optionally only streams whose actor is
-    /// `person`, in stream-key order. This is the item set of range-based
-    /// reconciliation; callers authorise the requester first.
+    /// Every durable stream cursor of one workspace with a key in
+    /// `[lower, upper)` (unbounded where `None`), optionally only streams
+    /// whose actor is `person`, in stream-key order. This is the item set of
+    /// range-based reconciliation; callers authorise the requester first.
     ///
     /// # Errors
     ///
@@ -786,10 +1697,7 @@ impl RecordRepository {
         upper: Option<RecordStreamKey>,
         person: Option<[u8; 32]>,
     ) -> Result<Vec<RecordStreamCursor>, RecordRepositoryError> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let mut cache = self
             .cursors
             .lock()
@@ -805,17 +1713,16 @@ impl RecordRepository {
             {
                 break;
             }
+            let durable = record.durable_len();
+            if durable == 0 {
+                continue;
+            }
             let cursors = match cache.get(key) {
-                Some((count, cursors)) if *count == record.envelopes.len() => {
-                    std::sync::Arc::clone(cursors)
-                }
+                Some((count, cursors)) if *count == durable => std::sync::Arc::clone(cursors),
                 _ => {
                     let cursors: std::sync::Arc<[RecordStreamCursor]> =
                         record_stream_cursors(*key, record)?.into();
-                    cache.insert(
-                        *key,
-                        (record.envelopes.len(), std::sync::Arc::clone(&cursors)),
-                    );
+                    cache.insert(*key, (durable, std::sync::Arc::clone(&cursors)));
                     cursors
                 }
             };
@@ -831,7 +1738,7 @@ impl RecordRepository {
         Ok(out)
     }
 
-    /// Return a bounded contiguous suffix for one actor stream.
+    /// Return a bounded contiguous durable suffix for one actor stream.
     ///
     /// # Errors
     ///
@@ -847,20 +1754,16 @@ impl RecordRepository {
         if limit == 0 || limit > MAX_RECORD_BATCH_OPERATIONS {
             return Err(RecordRepositoryError::InvalidBatchSize);
         }
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let record = records
             .get(&key)
+            .filter(|record| record.durable_len() > 0)
             .ok_or(RecordRepositoryError::RecordNotFound)?;
-        let highest = record.replica.highest_sequence_for(actor).unwrap_or(0);
-        if after_sequence > highest {
+        if after_sequence > record.durable_highest(actor) {
             return Err(RecordRepositoryError::CursorAhead);
         }
         let envelopes = record
-            .envelopes
-            .iter()
+            .durable()
             .filter(|envelope| envelope.actor == *actor && envelope.sequence > after_sequence)
             .take(limit)
             .cloned()
@@ -869,9 +1772,9 @@ impl RecordRepository {
         Ok(envelopes)
     }
 
-    /// Recompute the authenticated prefix cursor through an exact sequence.
-    /// This detects equal-watermark divergence before a mesh peer accepts a
-    /// suffix based on a different history.
+    /// Recompute the authenticated durable prefix cursor through an exact
+    /// sequence. This detects equal-watermark divergence before a mesh peer
+    /// accepts a suffix based on a different history.
     ///
     /// # Errors
     ///
@@ -883,20 +1786,16 @@ impl RecordRepository {
         actor: &FileActor,
         through_sequence: u64,
     ) -> Result<RecordStreamCursor, RecordRepositoryError> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let record = records
             .get(&key)
+            .filter(|record| record.durable_len() > 0)
             .ok_or(RecordRepositoryError::RecordNotFound)?;
-        let highest = record.replica.highest_sequence_for(actor).unwrap_or(0);
-        if through_sequence == 0 || through_sequence > highest {
+        if through_sequence == 0 || through_sequence > record.durable_highest(actor) {
             return Err(RecordRepositoryError::CursorAhead);
         }
         let envelopes = record
-            .envelopes
-            .iter()
+            .durable()
             .filter(|envelope| envelope.actor == *actor && envelope.sequence <= through_sequence)
             .collect::<Vec<_>>();
         if envelopes.len() != usize::try_from(through_sequence).unwrap_or(usize::MAX) {
@@ -925,10 +1824,7 @@ impl RecordRepository {
         requester: &FileActor,
         authorizer: &A,
     ) -> Result<RecordSnapshot, RecordRepositoryError> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let record = records
             .get(&key)
             .ok_or(RecordRepositoryError::RecordNotFound)?;
@@ -942,10 +1838,7 @@ impl RecordRepository {
         &self,
         key: RecordRepositoryKey,
     ) -> Result<RecordProjectionLease<'_>, RecordRepositoryError> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let snapshot = projected_snapshot(&records, key, None)?;
         Ok(RecordProjectionLease {
             _records: records,
@@ -953,8 +1846,8 @@ impl RecordRepository {
         })
     }
 
-    /// Highest durably accepted sequence for one actor and record. `None`
-    /// means either the record or that actor's stream does not yet exist.
+    /// Highest accepted sequence for one actor and record. `None` means
+    /// either the record or that actor's stream does not yet exist.
     #[must_use]
     pub fn highest_sequence(&self, key: RecordRepositoryKey, actor: &FileActor) -> Option<u64> {
         self.records
@@ -964,8 +1857,8 @@ impl RecordRepository {
             .and_then(|record| record.replica.highest_sequence_for(actor))
     }
 
-    /// Whether `envelope` is the latest durably accepted operation for its
-    /// actor on this exact record.
+    /// Whether `envelope` is the latest accepted operation for its actor on
+    /// this exact record.
     ///
     /// This is deliberately stricter than a general membership check. It is
     /// used only to make the repository-to-materializer handoff retryable: an
@@ -997,8 +1890,7 @@ impl RecordRepository {
         is_latest
     }
 
-    /// Stable keys for one workspace's persisted records. The repository's
-    /// global cardinality bound also bounds this allocation.
+    /// Stable keys for one workspace's records.
     pub(crate) fn reconciliation_keys(&self, workspace_id: Uuid) -> Vec<RecordRepositoryKey> {
         self.records
             .lock()
@@ -1045,10 +1937,7 @@ impl RecordRepository {
         &self,
         workspace_id: Uuid,
     ) -> Result<Vec<FileMutationTransaction>, RecordRepositoryError> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let mut candidates = BTreeMap::<Uuid, FileMutationTransaction>::new();
         for (key, record) in records
             .iter()
@@ -1106,10 +1995,7 @@ impl RecordRepository {
         if transaction.manifest.workspace_id != workspace_id {
             return Err(RecordRepositoryError::TransactionWorkspaceMismatch);
         }
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| RecordRepositoryError::StatePoisoned)?;
+        let records = self.lock_records()?;
         let mut participant_batches = Vec::with_capacity(transaction.manifest.participants.len());
         for participant in &transaction.manifest.participants {
             let record = records
@@ -1483,7 +2369,7 @@ fn record_stream_cursors(
     record: &StoredRecord,
 ) -> Result<Vec<RecordStreamCursor>, RecordRepositoryError> {
     let mut streams = BTreeMap::<([u8; 32], [u8; 32]), Vec<&RecordEnvelopeV1>>::new();
-    for envelope in &record.envelopes {
+    for envelope in record.durable() {
         streams
             .entry((
                 *envelope.actor.person.as_bytes(),
@@ -1524,19 +2410,25 @@ fn envelope_prefix_digest<'a>(
     Ok(*digest.finalize().as_bytes())
 }
 
-fn load_records(
-    root: &Path,
-) -> Result<BTreeMap<RecordRepositoryKey, StoredRecord>, RecordRepositoryError> {
+/// Whether a root entry is the log (or anything else that is not a legacy
+/// workspace directory of record files).
+fn is_repository_entry(name: &str) -> bool {
+    name == IMPORTED_DIR || name.starts_with(LOG_FILE)
+}
+
+/// Read and fully verify the per-record files of releases before the log.
+fn load_records(root: &Path) -> Result<Records, RecordRepositoryError> {
     let root_entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Records::new()),
         Err(error) => return Err(error.into()),
     };
-    let mut records = BTreeMap::new();
+    let mut records = Records::new();
     for workspace_entry in root_entries {
         let workspace_entry = workspace_entry?;
         let workspace_name = entry_name(&workspace_entry)?;
         if is_atomic_temp(&workspace_name)
+            || is_repository_entry(&workspace_name)
             || crate::durable_backup::is_backup_directory_name(&workspace_name)
         {
             continue;
@@ -1617,6 +2509,32 @@ fn load_records(
     Ok(records)
 }
 
+/// Move imported legacy workspace directories under [`IMPORTED_DIR`]. They
+/// are never read again; they stay as the pre-import copy.
+fn retire_legacy_records(root: &Path) -> Result<(), RecordRepositoryError> {
+    let mut moved = false;
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry_name(&entry)?;
+        if is_repository_entry(&name)
+            || is_atomic_temp(&name)
+            || crate::durable_backup::is_backup_directory_name(&name)
+            || !entry.file_type()?.is_dir()
+            || Uuid::parse_str(&name).is_err()
+        {
+            continue;
+        }
+        let target = root.join(IMPORTED_DIR);
+        std::fs::create_dir_all(&target)?;
+        std::fs::rename(entry.path(), target.join(&name))?;
+        moved = true;
+    }
+    if moved {
+        atomic_file::sync_directory(root)?;
+    }
+    Ok(())
+}
+
 fn decode_stored_record(
     bytes: &[u8],
     key: RecordRepositoryKey,
@@ -1639,8 +2557,8 @@ fn decode_stored_record(
     if persisted.envelopes.len() > MAX_RECORD_OPERATIONS {
         return Err(RecordRepositoryError::TooManyOperations);
     }
-    let mut replica = RecordReplica::new(key.record_id);
-    for envelope in &persisted.envelopes {
+    let mut record = StoredRecord::new(key.record_id);
+    for envelope in persisted.envelopes {
         if envelope.record_id != key.record_id {
             return Err(RecordRepositoryError::CrossRecordEnvelope);
         }
@@ -1651,75 +2569,16 @@ fn decode_stored_record(
         ) {
             return Err(RecordRepositoryError::TransactionWorkspaceMismatch);
         }
-        replica.restore_envelope(envelope)?;
-        if replica.version_count() > MAX_RECORD_VERSIONS {
+        record.replica.restore_envelope(&envelope)?;
+        if record.replica.version_count() > MAX_RECORD_VERSIONS {
             return Err(RecordRepositoryError::TooManyVersions);
         }
-        if replica.conflict_count() > MAX_RECORD_CONFLICTS {
+        if record.replica.conflict_count() > MAX_RECORD_CONFLICTS {
             return Err(RecordRepositoryError::TooManyConflicts);
         }
+        record.push_pending(envelope);
     }
-    Ok(StoredRecord {
-        pending_restore: None,
-        replica,
-        envelopes: persisted.envelopes,
-    })
-}
-
-/// Borrowing twin of [`PersistedRecordV1`]; serializes to the same bytes.
-#[derive(Serialize)]
-struct PersistedRecordRef<'a> {
-    schema_version: u16,
-    workspace_id: Uuid,
-    record_id: FileRecordId,
-    envelopes: &'a [RecordEnvelopeV1],
-}
-
-fn encode_record(
-    key: RecordRepositoryKey,
-    envelopes: &[RecordEnvelopeV1],
-) -> Result<Vec<u8>, RecordRepositoryError> {
-    Ok(serde_json::to_vec(&PersistedRecordRef {
-        schema_version: RECORD_REPOSITORY_VERSION,
-        workspace_id: key.workspace_id,
-        record_id: key.record_id,
-        envelopes,
-    })?)
-}
-
-/// Durably replace a record file with `envelopes`, keeping the previous file
-/// as a backup generation.
-///
-/// Every envelope in memory was signature-verified when it was merged or
-/// loaded, so the new bytes, and previous bytes identical to the encoding of
-/// the in-memory `previous` envelopes, are accepted without verifying every
-/// signature again. Any other bytes found on disk get the full verification.
-fn persist_record(
-    root: &Path,
-    key: RecordRepositoryKey,
-    envelopes: &[RecordEnvelopeV1],
-    previous: Option<&[RecordEnvelopeV1]>,
-) -> Result<(), RecordRepositoryError> {
-    let bytes = encode_record(key, envelopes)?;
-    if bytes.len() as u64 > MAX_RECORD_FILE_BYTES {
-        return Err(RecordRepositoryError::RecordFileTooLarge);
-    }
-    let previous = previous
-        .map(|envelopes| encode_record(key, envelopes))
-        .transpose()?;
-    let path = record_path(root, key);
-    crate::durable_backup::write(&path, &bytes, |candidate| {
-        candidate.len() as u64 <= MAX_RECORD_FILE_BYTES
-            && (candidate == bytes.as_slice()
-                || previous.as_deref() == Some(candidate)
-                || decode_stored_record(candidate, key).is_ok())
-    })?;
-    Ok(())
-}
-
-fn record_path(root: &Path, key: RecordRepositoryKey) -> PathBuf {
-    root.join(key.workspace_id.to_string())
-        .join(format!("{}.json", key.record_id.0))
+    Ok(record)
 }
 
 fn entry_name(entry: &std::fs::DirEntry) -> Result<String, RecordRepositoryError> {
@@ -1744,6 +2603,8 @@ pub enum RecordRepositoryError {
     RestoreRecoveryRequired(Uuid),
     #[error("record repository I/O failed: {0}")]
     Io(#[from] std::io::Error),
+    #[error("record log failed: {0}")]
+    Log(#[from] RecordLogError),
     #[error("record repository contains invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("unsupported record repository schema version {0}")]
@@ -1788,6 +2649,16 @@ pub enum RecordRepositoryError {
     InvalidBatchSize,
     #[error("record stream cursor is ahead of durable state")]
     CursorAhead,
+    #[error("another changeset is being published")]
+    ChangesetInProgress,
+    #[error("changeset is invalid: {0}")]
+    Changeset(#[from] ChangesetError),
+    #[error("a different changeset was already accepted under the same author and sequence")]
+    ChangesetEquivocation,
+    #[error("changeset envelopes do not match its signed leaves")]
+    ChangesetMismatch,
+    #[error("record {0:?} holds different envelopes at the sequences a changeset names")]
+    DivergentStream(FileRecordId),
     #[error("record envelope encoding failed: {0}")]
     Canonical(#[from] collab_types::CanonicalError),
     #[error("record operation was rejected: {0}")]
@@ -2701,13 +3572,13 @@ mod tests {
                 )
                 .unwrap();
         }
-        for repository in [&repository, &RecordRepository::open(&fixture.root).unwrap()] {
-            let snapshot = repository
-                .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
-                .unwrap();
-            assert_eq!(snapshot.content_revision, Some(later_revision));
-            assert_eq!(snapshot.binding, Some(later_binding.clone()));
-        }
+        drop(repository);
+        let repository = RecordRepository::open(&fixture.root).unwrap();
+        let snapshot = repository
+            .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, true))
+            .unwrap();
+        assert_eq!(snapshot.content_revision, Some(later_revision));
+        assert_eq!(snapshot.binding, Some(later_binding));
     }
 
     #[test]
@@ -3037,79 +3908,140 @@ mod tests {
         assert!(reopened.is_latest_envelope(fixture.key, &second));
     }
 
+    /// A record file as releases before the operation log wrote it.
+    fn legacy_path(root: &Path, key: RecordRepositoryKey) -> PathBuf {
+        root.join(key.workspace_id.to_string())
+            .join(format!("{}.json", key.record_id.0))
+    }
+
+    fn legacy_json(key: RecordRepositoryKey, envelopes: &[RecordEnvelopeV1]) -> serde_json::Value {
+        serde_json::to_value(PersistedRecordV1 {
+            schema_version: RECORD_REPOSITORY_VERSION,
+            workspace_id: key.workspace_id,
+            record_id: key.record_id,
+            envelopes: envelopes.to_vec(),
+        })
+        .unwrap()
+    }
+
+    fn write_legacy(root: &Path, key: RecordRepositoryKey, value: &serde_json::Value) {
+        let path = legacy_path(root, key);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        crate::durable_backup::write(&path, &serde_json::to_vec(value).unwrap(), |_| true).unwrap();
+    }
+
     #[test]
-    fn tampered_signed_state_is_rejected_on_restart() {
+    fn legacy_record_files_are_imported_once_and_kept_aside() {
         let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        repo.apply(
-            fixture.key,
-            &fixture.metadata_envelope(1),
-            &fixture.auth(true, true),
+        let other = RecordRepositoryKey {
+            workspace_id: fixture.key.workspace_id,
+            record_id: FileRecordId::new(),
+        };
+        let other_envelope = RecordEnvelopeV1::signed(
+            other.record_id,
+            fixture.actor,
+            1,
+            RecordOperationV1::SetMetadata(FileMetadataV1 {
+                schema_version: 1,
+                record_id: other.record_id,
+                content_hash: None,
+                byte_len: 0,
+                mime: None,
+                previews: Vec::new(),
+                latest_actor: Some(fixture.actor),
+                observed_at_ms: 5,
+                index_status: IndexStatus::Indexed,
+                properties: None,
+            }),
+            &fixture.device_key,
         )
         .unwrap();
+        write_legacy(
+            &fixture.root,
+            fixture.key,
+            &legacy_json(
+                fixture.key,
+                &[fixture.metadata_envelope(1), fixture.metadata_envelope(2)],
+            ),
+        );
+        write_legacy(&fixture.root, other, &legacy_json(other, &[other_envelope]));
+
+        let repo = RecordRepository::open(&fixture.root).unwrap();
+        assert_eq!(repo.len(), 2);
+        assert_eq!(repo.logged_operations().unwrap(), 3);
+        assert_eq!(
+            repo.snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
+                .unwrap()
+                .metadata
+                .unwrap()
+                .observed_at_ms,
+            2
+        );
+        assert!(!legacy_path(&fixture.root, fixture.key).exists());
+        assert!(
+            fixture
+                .root
+                .join(IMPORTED_DIR)
+                .join(fixture.key.workspace_id.to_string())
+                .join(format!("{}.json", fixture.key.record_id.0))
+                .exists()
+        );
+        let cursors = repo
+            .stream_cursors_in(fixture.key.workspace_id, None, None, None)
+            .unwrap();
         drop(repo);
-        let path = record_path(&fixture.root, fixture.key);
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+
+        // A second start neither imports again nor loses anything.
+        let reopened = RecordRepository::open(&fixture.root).unwrap();
+        assert_eq!(reopened.logged_operations().unwrap(), 3);
+        assert_eq!(
+            reopened
+                .stream_cursors_in(fixture.key.workspace_id, None, None, None)
+                .unwrap(),
+            cursors
+        );
+        reopened
+            .apply(
+                fixture.key,
+                &fixture.metadata_envelope(3),
+                &fixture.auth(true, true),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_tampered_legacy_record_is_rejected_on_import() {
+        let fixture = Fixture::new();
+        let mut value = legacy_json(fixture.key, &[fixture.metadata_envelope(1)]);
         value["envelopes"][0]["sequence"] = serde_json::json!(2);
-        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        write_legacy(&fixture.root, fixture.key, &value);
         assert!(matches!(
             RecordRepository::open(&fixture.root),
             Err(RecordRepositoryError::Replication(
                 RecordReplicationError::Signature(_)
             ))
         ));
+        // Nothing was imported, and the file is where it was.
+        assert!(legacy_path(&fixture.root, fixture.key).exists());
     }
 
     #[test]
-    fn a_record_file_changed_behind_the_repository_is_verified_before_it_becomes_a_backup() {
+    fn a_damaged_legacy_primary_is_imported_from_its_latest_valid_generation() {
         let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        repo.apply(
+        write_legacy(
+            &fixture.root,
             fixture.key,
-            &fixture.metadata_envelope(1),
-            &fixture.auth(true, true),
-        )
-        .unwrap();
-        // The in-memory envelopes were verified once; bytes on disk that no
-        // longer encode them get the full signature check again.
-        let path = record_path(&fixture.root, fixture.key);
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        value["envelopes"][0]["sequence"] = serde_json::json!(7);
-        let tampered = serde_json::to_vec(&value).unwrap();
-        std::fs::write(&path, &tampered).unwrap();
-        assert!(
-            repo.apply(
-                fixture.key,
-                &fixture.metadata_envelope(2),
-                &fixture.auth(true, true),
-            )
-            .is_err(),
-            "a forged primary is never rotated into the backup generations"
+            &legacy_json(fixture.key, &[fixture.metadata_envelope(1)]),
         );
-        assert_eq!(std::fs::read(&path).unwrap(), tampered);
-    }
-
-    #[test]
-    fn tampered_primary_recovers_latest_valid_signed_generation_with_evidence() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        repo.apply(
+        write_legacy(
+            &fixture.root,
             fixture.key,
-            &fixture.metadata_envelope(1),
-            &fixture.auth(true, true),
-        )
-        .unwrap();
-        repo.apply(
-            fixture.key,
-            &fixture.metadata_envelope(2),
-            &fixture.auth(true, true),
-        )
-        .unwrap();
-        drop(repo);
-
-        let path = record_path(&fixture.root, fixture.key);
+            &legacy_json(
+                fixture.key,
+                &[fixture.metadata_envelope(1), fixture.metadata_envelope(2)],
+            ),
+        );
+        let path = legacy_path(&fixture.root, fixture.key);
         let damaged = b"{\"schema_version\":1,\"tampered\":true}";
         std::fs::write(&path, damaged).unwrap();
         let reopened = RecordRepository::open(&fixture.root).unwrap();
@@ -3118,10 +4050,15 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
 
-        let backup_dir = path.with_file_name(format!(
-            ".{}.tilo-backups",
-            path.file_name().unwrap().to_string_lossy()
-        ));
+        // The evidence moved aside with the imported files.
+        let backup_dir = fixture
+            .root
+            .join(IMPORTED_DIR)
+            .join(fixture.key.workspace_id.to_string())
+            .join(format!(
+                ".{}.tilo-backups",
+                path.file_name().unwrap().to_string_lossy()
+            ));
         let entries = std::fs::read_dir(backup_dir)
             .unwrap()
             .map(|entry| entry.unwrap())
@@ -3131,11 +4068,6 @@ mod tests {
             .find(|entry| entry.file_name().to_string_lossy().starts_with("evidence-"))
             .unwrap();
         assert_eq!(std::fs::read(evidence.path()).unwrap(), damaged);
-        assert!(
-            entries
-                .iter()
-                .any(|entry| { entry.file_name().to_string_lossy().starts_with("recovery-") })
-        );
     }
 
     #[test]
@@ -3153,7 +4085,7 @@ mod tests {
             ))
         ));
         assert!(repo.is_empty());
-        assert!(!record_path(&fixture.root, fixture.key).exists());
+        assert_eq!(repo.logged_operations().unwrap(), 0);
     }
 
     #[test]
@@ -3186,7 +4118,7 @@ mod tests {
     }
 
     #[test]
-    fn out_of_order_and_duplicate_persisted_operations_fail_closed() {
+    fn out_of_order_and_duplicate_operations_fail_closed() {
         let fixture = Fixture::new();
         let repo = RecordRepository::open(&fixture.root).unwrap();
         assert!(matches!(
@@ -3220,14 +4152,15 @@ mod tests {
         ));
         drop(repo);
 
-        let path = record_path(&fixture.root, fixture.key);
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let duplicate = value["envelopes"][0].clone();
-        value["envelopes"].as_array_mut().unwrap().push(duplicate);
-        std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let other = Fixture::new();
+        let first = other.metadata_envelope(1);
+        write_legacy(
+            &other.root,
+            other.key,
+            &legacy_json(other.key, &[first.clone(), first]),
+        );
         assert!(matches!(
-            RecordRepository::open(&fixture.root),
+            RecordRepository::open(&other.root),
             Err(RecordRepositoryError::Replication(
                 RecordReplicationError::Replay { sequence: 1 }
             ))
@@ -3235,7 +4168,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_record_state_is_rejected_on_apply_and_restart() {
+    fn cross_record_state_is_rejected_on_apply_and_import() {
         let fixture = Fixture::new();
         let repo = RecordRepository::open(&fixture.root).unwrap();
         let other_key = RecordRepositoryKey {
@@ -3250,59 +4183,268 @@ mod tests {
             ),
             Err(RecordRepositoryError::CrossRecordEnvelope)
         ));
-        repo.apply(
-            fixture.key,
-            &fixture.metadata_envelope(1),
-            &fixture.auth(true, true),
-        )
-        .unwrap();
         drop(repo);
 
-        let old_path = record_path(&fixture.root, fixture.key);
-        let new_path = record_path(&fixture.root, other_key);
-        std::fs::rename(old_path, new_path).unwrap();
+        let legacy = Fixture::new();
+        let misplaced = RecordRepositoryKey {
+            workspace_id: legacy.key.workspace_id,
+            record_id: FileRecordId::new(),
+        };
+        let value = legacy_json(legacy.key, &[legacy.metadata_envelope(1)]);
+        write_legacy(&legacy.root, misplaced, &value);
         assert!(matches!(
-            RecordRepository::open(&fixture.root),
+            RecordRepository::open(&legacy.root),
             Err(RecordRepositoryError::PathKeyMismatch)
         ));
     }
 
-    #[test]
-    fn failed_atomic_replace_does_not_publish_candidate_in_memory() {
-        let fixture = Fixture::new();
-        let repo = RecordRepository::open(&fixture.root).unwrap();
-        repo.apply(
-            fixture.key,
-            &fixture.metadata_envelope(1),
-            &fixture.auth(true, true),
-        )
-        .unwrap();
-        let path = record_path(&fixture.root, fixture.key);
-        let backup_path = path.with_extension("json.test-backup");
-        std::fs::rename(&path, &backup_path).unwrap();
-        std::fs::create_dir(&path).unwrap();
-
-        assert!(matches!(
-            repo.apply(
+    /// Two records' worth of one actor's envelopes, as a publisher signs
+    /// them within one changeset.
+    fn two_record_batches(fixture: &Fixture) -> Vec<(RecordRepositoryKey, Vec<RecordEnvelopeV1>)> {
+        let second = Fixture {
+            dir: tempfile::tempdir().unwrap(),
+            root: fixture.root.clone(),
+            key: RecordRepositoryKey {
+                workspace_id: fixture.key.workspace_id,
+                record_id: FileRecordId::new(),
+            },
+            device_key: fixture.device_key.clone(),
+            actor: fixture.actor,
+        };
+        vec![
+            (
                 fixture.key,
-                &fixture.metadata_envelope(2),
-                &fixture.auth(true, true)
+                vec![fixture.metadata_envelope(1), fixture.metadata_envelope(2)],
             ),
-            Err(RecordRepositoryError::Io(_))
-        ));
-        let snapshot = repo
-            .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
+            (second.key, vec![second.metadata_envelope(1)]),
+        ]
+    }
+
+    struct AnyRecord(FileActor);
+
+    impl RecordAuthorizer for AnyRecord {
+        fn actor_is_certified(&self, actor: &FileActor) -> bool {
+            *actor == self.0
+        }
+
+        fn allows(&self, actor: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
+            *actor == self.0
+        }
+    }
+
+    #[test]
+    fn an_uncommitted_changeset_is_never_served_and_is_gone_after_a_crash() {
+        let fixture = Fixture::new();
+        let batches = two_record_batches(&fixture);
+        let auth = AnyRecord(fixture.actor);
+        let repo = RecordRepository::open(&fixture.root).unwrap();
+        repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
             .unwrap();
-        assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
-        std::fs::remove_dir(&path).unwrap();
-        std::fs::rename(backup_path, path).unwrap();
+        for (key, envelopes) in &batches {
+            repo.apply_batch(*key, envelopes, &auth).unwrap();
+        }
+        // The local publisher sees the batch ...
+        assert_eq!(repo.highest_sequence(fixture.key, &fixture.actor), Some(2));
+        // ... peers see none of it.
+        assert!(
+            repo.stream_cursors_in(fixture.key.workspace_id, None, None, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            repo.envelopes_after(fixture.key, &fixture.actor, 0, 8),
+            Err(RecordRepositoryError::RecordNotFound)
+        ));
+        assert!(
+            repo.pull_units(
+                fixture.key.workspace_id,
+                &[(fixture.key.record_id, fixture.actor, 0)]
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(repo.logged_operations().unwrap(), 0);
+        // A crash before the commit: nothing of the changeset survives.
+        drop(repo);
+        let reopened = RecordRepository::open(&fixture.root).unwrap();
+        assert!(reopened.is_empty());
+    }
+
+    #[test]
+    fn a_committed_changeset_is_durable_whole_and_served_as_one_unit() {
+        let fixture = Fixture::new();
+        let batches = two_record_batches(&fixture);
+        let auth = AnyRecord(fixture.actor);
+        let repo = RecordRepository::open(&fixture.root).unwrap();
+        repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
+            .unwrap();
+        for (key, envelopes) in &batches {
+            repo.apply_batch(*key, envelopes, &auth).unwrap();
+        }
+        let signed = repo
+            .commit_changeset(&fixture.device_key, 42)
+            .unwrap()
+            .unwrap();
+        assert_eq!(signed.header.sequence, 1);
+        assert_eq!(signed.leaves.len(), 2);
+        signed.verify().unwrap();
+        assert_eq!(repo.logged_operations().unwrap(), 3);
+        // An empty scope commits nothing.
+        repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
+            .unwrap();
+        assert!(
+            repo.commit_changeset(&fixture.device_key, 43)
+                .unwrap()
+                .is_none()
+        );
         drop(repo);
 
         let reopened = RecordRepository::open(&fixture.root).unwrap();
-        let snapshot = reopened
-            .snapshot(fixture.key, &fixture.actor, &fixture.auth(true, false))
+        assert_eq!(reopened.len(), 2);
+        let wanted: Vec<_> = batches
+            .iter()
+            .map(|(key, _)| (key.record_id, fixture.actor, 0))
+            .collect();
+        let units = reopened
+            .pull_units(fixture.key.workspace_id, &wanted)
             .unwrap();
-        assert_eq!(snapshot.metadata.unwrap().observed_at_ms, 1);
+        assert_eq!(units.len(), 1, "both records come as the one changeset");
+        let PullUnit::Changeset(served) = &units[0] else {
+            panic!("expected the changeset");
+        };
+        assert_eq!(**served, *signed);
+        // The next changeset of this device continues the sequence.
+        reopened
+            .begin_changeset(fixture.key.workspace_id, fixture.actor)
+            .unwrap();
+        reopened
+            .apply(fixture.key, &fixture.metadata_envelope(3), &auth)
+            .unwrap();
+        let next = reopened
+            .commit_changeset(&fixture.device_key, 44)
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.header.sequence, 2);
+        assert_eq!(next.leaves[0].first_sequence, 3);
+    }
+
+    #[test]
+    fn a_received_changeset_applies_whole_or_not_at_all() {
+        let author = Fixture::new();
+        let batches = two_record_batches(&author);
+        let auth = AnyRecord(author.actor);
+        let repo = RecordRepository::open(&author.root).unwrap();
+        repo.begin_changeset(author.key.workspace_id, author.actor)
+            .unwrap();
+        for (key, envelopes) in &batches {
+            repo.apply_batch(*key, envelopes, &auth).unwrap();
+        }
+        let signed = repo
+            .commit_changeset(&author.device_key, 1)
+            .unwrap()
+            .unwrap();
+        let all: Vec<RecordEnvelopeV1> = batches
+            .iter()
+            .flat_map(|(_, envelopes)| envelopes.iter().cloned())
+            .collect();
+        let workspace = author.key.workspace_id;
+
+        let peer_dir = tempfile::tempdir().unwrap();
+        let peer = RecordRepository::open(peer_dir.path().join("records")).unwrap();
+        // Missing one envelope: nothing is applied.
+        assert!(matches!(
+            peer.apply_changeset(workspace, &signed, &all[..2], &auth),
+            Err(RecordRepositoryError::ChangesetMismatch)
+        ));
+        // Envelopes other than the signed ones: nothing is applied.
+        let mut swapped = all.clone();
+        swapped[2] = author.metadata_envelope(3);
+        assert!(
+            peer.apply_changeset(workspace, &signed, &swapped, &auth)
+                .is_err()
+        );
+        // A forged leaf breaks the signed root.
+        let mut forged = (*signed).clone();
+        forged.leaves[0].digest[0] ^= 1;
+        assert!(
+            peer.apply_changeset(workspace, &forged, &all, &auth)
+                .is_err()
+        );
+        assert!(peer.is_empty());
+        assert_eq!(peer.logged_operations().unwrap(), 0);
+
+        let applied = peer
+            .apply_changeset(workspace, &signed, &all, &auth)
+            .unwrap();
+        let ChangesetApplied::Applied(mut keys) = applied else {
+            panic!("expected the changeset to apply");
+        };
+        keys.sort();
+        let mut expected: Vec<_> = batches.iter().map(|(key, _)| *key).collect();
+        expected.sort();
+        assert_eq!(keys, expected);
+        assert_eq!(peer.logged_operations().unwrap(), 3);
+        assert_eq!(
+            peer.apply_changeset(workspace, &signed, &all, &auth)
+                .unwrap(),
+            ChangesetApplied::AlreadyPresent
+        );
+        // It relays: the peer serves the same changeset onward.
+        let wanted: Vec<_> = expected
+            .iter()
+            .map(|key| (key.record_id, author.actor, 0))
+            .collect();
+        let units = peer.pull_units(workspace, &wanted).unwrap();
+        assert!(matches!(&units[..], [PullUnit::Changeset(c)] if **c == *signed));
+        drop(peer);
+        let reopened = RecordRepository::open(peer_dir.path().join("records")).unwrap();
+        assert_eq!(reopened.len(), 2);
+    }
+
+    #[test]
+    fn a_write_outside_the_changeset_takes_its_pending_envelopes_along() {
+        let fixture = Fixture::new();
+        let auth = fixture.auth(true, true);
+        let repo = std::sync::Arc::new(RecordRepository::open(&fixture.root).unwrap());
+        repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
+            .unwrap();
+        repo.apply(fixture.key, &fixture.metadata_envelope(1), &auth)
+            .unwrap();
+        // Another thread writes the next envelope of the same stream: it
+        // cannot be durable without the one before it.
+        let other = std::sync::Arc::clone(&repo);
+        let next = fixture.metadata_envelope(2);
+        let key = fixture.key;
+        let actor = fixture.actor;
+        let record = fixture.key.record_id;
+        std::thread::spawn(move || {
+            other
+                .apply(
+                    key,
+                    &next,
+                    &TestAuthorizer {
+                        actor,
+                        record,
+                        read: true,
+                        write: true,
+                    },
+                )
+                .unwrap();
+        })
+        .join()
+        .unwrap();
+        assert_eq!(repo.logged_operations().unwrap(), 2);
+        assert!(
+            repo.commit_changeset(&fixture.device_key, 1)
+                .unwrap()
+                .is_none()
+        );
+        drop(repo);
+        let reopened = RecordRepository::open(&fixture.root).unwrap();
+        assert_eq!(
+            reopened.highest_sequence(fixture.key, &fixture.actor),
+            Some(2)
+        );
     }
 
     #[test]
@@ -3369,6 +4511,6 @@ mod tests {
             ))
         ));
         assert!(repo.is_empty());
-        assert!(!record_path(&fixture.root, fixture.key).exists());
+        assert_eq!(repo.logged_operations().unwrap(), 0);
     }
 }

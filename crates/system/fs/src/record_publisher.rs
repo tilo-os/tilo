@@ -122,6 +122,34 @@ impl RecordPublisher {
         &self.repository
     }
 
+    /// Start a publish batch on this thread: what this publisher signs from
+    /// here on is kept back from peers until [`Self::commit_changeset`]
+    /// writes it as one signed changeset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another thread is publishing a batch.
+    pub fn begin_changeset(&self) -> Result<(), RecordPublisherError> {
+        Ok(self
+            .repository
+            .begin_changeset(self.workspace_id, self.actor)?)
+    }
+
+    /// Sign the batch started by [`Self::begin_changeset`] once and make it
+    /// durable in one write. `None` when the batch published nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when signing or the durable write fails; the batch
+    /// then stays unpublished and the next one carries it.
+    pub fn commit_changeset(
+        &self,
+    ) -> Result<Option<Arc<crate::record_changeset::SignedChangesetV1>>, RecordPublisherError> {
+        Ok(self
+            .repository
+            .commit_changeset(&self.signing_key, crate::clock::unix_now_ms())?)
+    }
+
     /// Build the exact bounded restore batch while the caller retains P and R.
     pub(crate) fn sign_checked_restore(
         &self,
@@ -775,7 +803,7 @@ impl RecordPublisher {
                     &self.signing_key,
                 )?);
             }
-            match self.repository.apply_batch(key, &envelopes, authorizer) {
+            match self.repository.apply_own_batch(key, &envelopes, authorizer) {
                 Ok(()) => applied.extend(chunk.iter().map(|(kind, _)| (*kind, true))),
                 Err(RecordRepositoryError::Replication(RecordReplicationError::Replay {
                     ..
@@ -841,7 +869,10 @@ impl RecordPublisher {
                 operation.clone(),
                 &self.signing_key,
             )?;
-            match self.repository.apply(key, &envelope, authorizer) {
+            match self
+                .repository
+                .apply_own_batch(key, std::slice::from_ref(&envelope), authorizer)
+            {
                 Ok(()) => return Ok(true),
                 Err(RecordRepositoryError::Replication(RecordReplicationError::Replay {
                     ..
