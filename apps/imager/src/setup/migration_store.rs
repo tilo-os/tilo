@@ -419,7 +419,7 @@ pub(super) struct MigrationStore {
 
 impl MigrationStore {
     pub(super) fn open_default() -> Result<Self, String> {
-        let root = dirs::data_local_dir()
+        let root = xdg_paths::data_local_dir()
             .ok_or_else(|| "no private local data directory is available".to_string())?
             .join("qos-imager")
             .join("migrations");

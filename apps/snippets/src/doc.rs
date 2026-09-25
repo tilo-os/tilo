@@ -212,6 +212,7 @@ impl SnippetsDoc {
 mod tests {
     use super::*;
     use crate::model::Language;
+    use tilo_automerge::ApplyIncoming;
 
     fn sample() -> Snippet {
         Snippet {
@@ -329,7 +330,7 @@ mod tests {
         SnippetsDoc::upsert(&mut b, &s2);
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         let titles: Vec<_> = SnippetsDoc::list(&a).into_iter().map(|s| s.title).collect();
         assert!(titles.contains(&"Deploy".to_string()));
         assert!(titles.contains(&"Amend".to_string()));

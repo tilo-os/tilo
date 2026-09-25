@@ -3390,6 +3390,7 @@ mod tests {
     use super::*;
     use tilo_actions::ActionInput;
     use tilo_actions::LocalTransport;
+    use tilo_automerge::ApplyIncoming;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -4376,7 +4377,7 @@ mod tests {
         let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-08", "Will do");
         tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
         tilo_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
-        a.doc.merge(&mut b.doc).unwrap();
+        a.doc.merge_incoming(&mut b.doc).unwrap();
 
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
         assert!(qdoc::model::comment_is_tombstoned(&a.doc, &c, &comment));
@@ -4519,10 +4520,10 @@ mod tests {
 
         let mut merged_a = a.doc.clone();
         let mut b_for_a = b.doc.clone();
-        merged_a.merge(&mut b_for_a).unwrap();
+        merged_a.merge_incoming(&mut b_for_a).unwrap();
         let mut merged_b = b.doc.clone();
         let mut a_for_b = a.doc.clone();
-        merged_b.merge(&mut a_for_b).unwrap();
+        merged_b.merge_incoming(&mut a_for_b).unwrap();
         assert_eq!(
             body_blocks(&merged_a),
             body_blocks(&merged_b),
@@ -4559,7 +4560,7 @@ mod tests {
             set_style_property_action("custom1", qdoc::schema::STYLE_SIZE, AttrVal::Float(28.0));
         tilo_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
         tilo_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
-        a.doc.merge(&mut b.doc).unwrap();
+        a.doc.merge_incoming(&mut b.doc).unwrap();
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
         let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
         assert_eq!(
@@ -4583,7 +4584,7 @@ mod tests {
         );
         tilo_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
         tilo_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
-        deleted.doc.merge(&mut divergent.doc).unwrap();
+        deleted.doc.merge_incoming(&mut divergent.doc).unwrap();
         let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
         assert!(qdoc::model::style_is_tombstoned(
             &deleted.doc,
@@ -4685,10 +4686,10 @@ mod tests {
 
         let mut merged_a = deleted.doc.clone();
         let mut divergent_for_a = divergent.doc.clone();
-        merged_a.merge(&mut divergent_for_a).unwrap();
+        merged_a.merge_incoming(&mut divergent_for_a).unwrap();
         let mut merged_b = divergent.doc.clone();
         let mut deleted_for_b = deleted.doc.clone();
-        merged_b.merge(&mut deleted_for_b).unwrap();
+        merged_b.merge_incoming(&mut deleted_for_b).unwrap();
         assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
         assert!(body_blocks(&merged_a)
             .iter()

@@ -1,5 +1,6 @@
 include!("../../../crates/sdk/ui-core/tests/support/history_adapter_conformance.rs");
 use crate::{doc::WeatherDoc, model::SavedLocation};
+use tilo_automerge::ApplyIncoming;
 use ui::widget::Widget;
 fn test_root() -> Box<dyn Widget> {
     Box::new(crate::WeatherApp::history_test_root())
@@ -219,7 +220,7 @@ fn invalid_coordinates_identity_duplicates_types_and_conflicts_refuse_before_pro
                 let mut fork = d.fork();
                 d.put(&row, "name", "one").unwrap();
                 fork.put(&row, "name", "two").unwrap();
-                d.merge(&mut fork).unwrap();
+                d.merge_incoming(&mut fork).unwrap();
             }
             _ => {
                 d.put(ROOT, "locations", 7).unwrap();
@@ -397,7 +398,7 @@ fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_syn
             target
                 .put(ROOT, "runtime_metadata", "current identity")
                 .unwrap();
-            state.doc.merge(&mut target).unwrap();
+            state.doc.merge_incoming(&mut target).unwrap();
             let selected = state.doc.get_heads()[0];
             WeatherDoc::upsert_location(
                 &mut state.doc,

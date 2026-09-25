@@ -47,10 +47,8 @@ pub fn seed_native_fixture(directory: &Path) -> anyhow::Result<NativeFixtureMani
         prefixed_x_hash: blake3::hash(prefixed.as_bytes()).to_hex().to_string(),
         prefixed_x_bytes: prefixed.len(),
     };
-    // Launch errors own the record's recovery handles and stay on this thread.
-    let fail = |error: &dyn std::fmt::Display| anyhow::anyhow!("{error}");
-    let mut app = HeadlessApp::<Scratchpad>::open_data_dir(directory).map_err(|e| fail(&e))?;
-    app.invoke(Note::EDIT.with(body)).map_err(|e| fail(&e))?;
-    app.flush().map_err(|e| fail(&e))?;
+    let mut app = HeadlessApp::<Scratchpad>::open_data_dir(directory)?;
+    app.invoke(Note::EDIT.with(body))?;
+    app.flush()?;
     Ok(manifest)
 }

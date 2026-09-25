@@ -157,6 +157,14 @@ pub enum CliError {
     NoHypervisor(Missing),
     #[error("--image {path} is not a file")]
     ImageNotFound { path: String },
+    #[error("{flag} {path} {detail}")]
+    ImageFormat {
+        flag: String,
+        path: String,
+        detail: String,
+    },
+    #[error("VM {vm} is running")]
+    VmRunning { vm: String },
     #[error("the VM disk {path} already exists")]
     DiskExists { path: String },
     #[error("{place} has {free} free, but {what} needs {needed}")]
@@ -368,6 +376,15 @@ impl CliError {
             Self::ImageNotFound { .. } => {
                 "check the path, or leave out --image to download the published dev disk (tilo-vm doctor says whether one is published)".into()
             }
+            Self::ImageFormat { flag, .. } if flag == "--boot-esp" => {
+                "pass the raw ESP disk os/dev/make-boot-esp.sh wrote (its --output), on a local drive".into()
+            }
+            Self::ImageFormat { .. } => {
+                "pass a qcow2 dev disk, or a raw disk with a GPT (os/dev/disk-image.sh --raw writes one), or leave out --image to download the published dev disk".into()
+            }
+            Self::VmRunning { vm } => format!(
+                "stop it first: tilo-vm vm stop {vm}   |   or power it off and delete it: tilo-vm vm rm {vm} --force"
+            ),
             Self::DiskExists { .. } => {
                 "pass another path with --disk, or delete that file if no registered VM uses it (tilo-vm vm list)".into()
             }
@@ -440,6 +457,8 @@ impl CliError {
             | Self::NoDiskForHost { .. }
             | Self::NoHypervisor(_)
             | Self::ImageNotFound { .. }
+            | Self::ImageFormat { .. }
+            | Self::VmRunning { .. }
             | Self::DiskExists { .. }
             | Self::ChecksumMismatch { .. }
             | Self::DownloadFailed { .. }
@@ -709,6 +728,17 @@ mod tests {
                         .into(),
             }),
             CliError::ImageNotFound { path: "x".into() },
+            CliError::ImageFormat {
+                flag: "--image".into(),
+                path: "x".into(),
+                detail: "is 0 bytes".into(),
+            },
+            CliError::ImageFormat {
+                flag: "--boot-esp".into(),
+                path: "x".into(),
+                detail: "is 0 bytes".into(),
+            },
+            CliError::VmRunning { vm: "try1".into() },
             CliError::DiskExists { path: "x".into() },
             CliError::NoSpace {
                 place: "p".into(),
@@ -796,6 +826,8 @@ mod tests {
                 | CliError::NoDiskForHost { .. }
                 | CliError::NoHypervisor(_)
                 | CliError::ImageNotFound { .. }
+                | CliError::ImageFormat { .. }
+                | CliError::VmRunning { .. }
                 | CliError::DiskExists { .. }
                 | CliError::NoSpace { .. }
                 | CliError::ForgeAuth { .. }

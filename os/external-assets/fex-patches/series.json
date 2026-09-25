@@ -9,6 +9,10 @@
     {
       "file": "0002-reject-arm-vector-prctls-for-x86.patch",
       "sha256": "e3233adc3b55d5d6dee18755d26f254e47f4a24fbe51de5a932274e258c7d493"
+    },
+    {
+      "file": "0003-use-llvm-sha256-for-thunk-ids.patch",
+      "sha256": "62e7e66791604039db9ad4abd79343ca91d05dde3c737f1c9889a2424fc85f05"
     }
   ]
 }

@@ -46,6 +46,10 @@ pub struct FrameSample {
     /// Input-to-presenter-retirement for an asynchronously presented frame.
     /// Unlike `input_latency_us`, this cannot be satisfied merely by enqueueing.
     pub input_retirement_latency_us: Option<u32>,
+    /// Presentation queue was full while this tick had paint work to do.
+    pub backpressured: bool,
+    /// Microseconds after the target deadline when this frame was submitted.
+    pub deadline_late_us: u32,
 }
 
 impl FrameSample {
@@ -60,7 +64,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -80,6 +84,8 @@ impl FrameSample {
             self.input_retirement_latency_us
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
+            u8::from(self.backpressured),
+            self.deadline_late_us,
         )
     }
 }
@@ -87,7 +93,7 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to [`FrameSample::write_csv_row`] so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us";
+input_retirement_latency_us,backpressured,deadline_late_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -156,6 +162,8 @@ pub struct FrameSummary {
     /// Input-to-submit-return; this is input-to-queue on threaded presenters.
     pub input_latency: Percentiles,
     pub input_retirement_latency: Percentiles,
+    pub backpressured_ticks: u64,
+    pub deadline_lateness: Percentiles,
     /// Fraction of painted frames whose period was within [`ON_CADENCE_TOLERANCE_US`] of `target_period_us`; meaningless (reported 0.0) when no target was supplied.
     pub on_cadence_ratio: f64,
     /// The refresh interval the loop was aiming at, microseconds.
@@ -167,6 +175,10 @@ pub struct FrameSummary {
 pub const ON_CADENCE_TOLERANCE_US: u32 = 2_000;
 
 /// Reduce samples to a [`FrameSummary`]. Pure: no clock, no I/O, no env. `target_period_us` is the refresh interval the loop was pacing to; 0 disables the cadence ratio.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one pure reduction keeps every summary field derived from the same sample pass"
+)]
 pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary {
     if samples.is_empty() {
         return FrameSummary::default();
@@ -266,6 +278,14 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
             &samples
                 .iter()
                 .filter_map(|s| s.input_retirement_latency_us)
+                .collect::<Vec<_>>(),
+        ),
+        backpressured_ticks: samples.iter().filter(|s| s.backpressured).count() as u64,
+        deadline_lateness: percentiles(
+            &samples
+                .iter()
+                .filter(|s| s.painted)
+                .map(|s| s.deadline_late_us)
                 .collect::<Vec<_>>(),
         ),
         on_cadence_ratio,
@@ -482,6 +502,12 @@ impl FrameRecorder {
         self.cur.sleep_us = us(d);
     }
 
+    pub fn mark_backpressured(&mut self) {
+        if self.enabled {
+            self.cur.backpressured = true;
+        }
+    }
+
     /// Record the submit phase and close any outstanding input-latency measurement. `async_present` records whether the submit merely queued the frame for another thread.
     pub fn mark_submit(
         &mut self,
@@ -512,6 +538,12 @@ impl FrameRecorder {
             } else {
                 self.cur.input_retirement_latency_us = self.cur.input_latency_us;
             }
+        }
+    }
+
+    pub fn mark_deadline_lateness(&mut self, d: Duration) {
+        if self.enabled {
+            self.cur.deadline_late_us = us(d);
         }
     }
 
@@ -784,6 +816,24 @@ mod tests {
     }
 
     #[test]
+    fn summarize_reports_backpressure_and_painted_deadline_lateness() {
+        let mut idle = sample(0, 0, 0, false);
+        idle.backpressured = true;
+        idle.deadline_late_us = 99_000;
+        let mut first = sample(1, 7_000, 7_000, true);
+        first.deadline_late_us = 300;
+        let mut second = sample(2, 14_000, 7_000, true);
+        second.backpressured = true;
+        second.deadline_late_us = 1_200;
+
+        let summary = summarize(&[idle, first, second], 6_944);
+        assert_eq!(summary.backpressured_ticks, 2);
+        assert_eq!(summary.deadline_lateness.count, 2);
+        assert_eq!(summary.deadline_lateness.p50, 300);
+        assert_eq!(summary.deadline_lateness.max, 1_200);
+    }
+
+    #[test]
     fn summarize_fps_is_painted_frames_over_the_measured_span() {
         // 61 painted ticks spanning exactly 1 s → 61 painted / 1 s. Span is last.start - first.start, so 61 samples 16.667 ms apart span 1.0 s.
         let mut s = Vec::new();
@@ -1036,6 +1086,8 @@ mod tests {
             present_async: false,
             input_latency_us: Some(12),
             input_retirement_latency_us: Some(13),
+            backpressured: true,
+            deadline_late_us: 14,
         }
         .write_csv_row(&mut buf)
         .expect("write csv row into a Vec");

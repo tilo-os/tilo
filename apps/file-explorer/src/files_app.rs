@@ -579,7 +579,7 @@ impl FileExplorerWidget {
         // Under a sandbox this process's `HOME` is its own per-package
         // directory — `/run/tilo/app` — while the directory actually
         // opened is the user's real home, bound by a grant and named by
-        // `TILO_USER_HOME`. Reading `dirs::home_dir()` here made the two
+        // `TILO_USER_HOME`. Reading `xdg_paths::home()` here made the two
         // disagree, and the breadcrumb is where a disagreement shows:
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise

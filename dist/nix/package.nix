@@ -89,6 +89,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm755 "$p/libexec/tilo-session" "$out/libexec/tilo-session"
     install -Dm755 "$p/libexec/tilo-session-runner" "$out/libexec/tilo-session-runner"
     install -Dm755 "$p/libexec/tilo-flight-recorder" "$out/libexec/tilo-flight-recorder"
+    install -Dm755 "$p/libexec/tilo-session-report" "$out/libexec/tilo-session-report"
     install -Dm644 "$p/pam/tilo-unlock" "$out/etc/pam.d/tilo-unlock"
     install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"

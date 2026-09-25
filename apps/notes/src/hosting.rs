@@ -108,9 +108,8 @@ pub fn prepare_default(
                                 ..
                             } => LaunchError::ComponentSetup {
                                 source: Box::new(LaunchError::Operation(message)),
-                                record: checkout,
-                                records,
-                                reports: Vec::new(),
+                                record: Box::new(checkout),
+                                recovery: ui::launch::LaunchRecovery::records(records),
                             },
                             other => LaunchError::Operation(other.to_string()),
                         })?;

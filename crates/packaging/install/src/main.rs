@@ -431,7 +431,7 @@ fn data_root() -> Result<PathBuf, Error> {
     if let Some(dir) = std::env::var_os("TILO_APPS_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let base = dirs::data_dir().ok_or(Error::NoDataDir)?;
+    let base = xdg_paths::data_dir().ok_or(Error::NoDataDir)?;
     Ok(base.join("tilo-apps"))
 }
 
@@ -2308,7 +2308,7 @@ fn runtime_install(
 }
 
 fn runtime_list() -> Result<(), Error> {
-    let base = dirs::data_dir()
+    let base = xdg_paths::data_dir()
         .ok_or(Error::NoDataDir)?
         .join("tilo-runtime");
     if !base.exists() {

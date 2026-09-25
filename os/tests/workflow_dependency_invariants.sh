@@ -38,6 +38,7 @@ cosign_workflows=(
   "$workflows/release-imager.yml"
   "$workflows/snapshot-rpms.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
+  "$workflows/snapshot-kernel-buildroot.yml"
   "$workflows/dev-disk.yml"
 )
 dev_disk_workflow="$workflows/dev-disk.yml"
@@ -75,9 +76,10 @@ fi
 
 if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}" "$rpm_snapshot_workflow" \
    && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-newer-than-pin' \
      "$rpm_snapshot_workflow" \
-   && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' "$kernel_workflow" \
+   && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' "$rpm_snapshot_workflow" \
+   && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$kernel_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
 else
@@ -94,7 +96,7 @@ fi
 
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$kernel_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$kernel_workflow" \
-   && grep -Fq 'needs: [rebuild, signing-preflight, applicability]' "$kernel_workflow" \
+   && grep -Fq 'needs: [signing-preflight, applicability]' "$kernel_workflow" \
    && grep -Fq "(needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')" "$kernel_workflow"; then
   printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
 else

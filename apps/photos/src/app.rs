@@ -16690,6 +16690,7 @@ mod tests;
 mod history_reconcile_tests {
     use super::*;
     use automerge::ROOT;
+    use tilo_automerge::ApplyIncoming;
     fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
         let heads = doc.get_heads();
         let plan = ui::history_mode::restore::prepare_content_restore(
@@ -16740,7 +16741,7 @@ mod history_reconcile_tests {
                 .unwrap();
             left.put(&left_row, "Valid", true).unwrap();
             right.put(&right_row, "Invalid", "not a boolean").unwrap();
-            left.merge(&mut right).unwrap();
+            left.merge_incoming(&mut right).unwrap();
             assert_eq!(left.get_all(&column, id.as_str()).unwrap().len(), 2);
             assert!(crate::framework_history::validate(&left).is_err());
 
@@ -16749,7 +16750,7 @@ mod history_reconcile_tests {
             let mut right = doc.fork();
             left.put(&row, "Conflict", true).unwrap();
             right.put(&row, "Conflict", "not a boolean").unwrap();
-            left.merge(&mut right).unwrap();
+            left.merge_incoming(&mut right).unwrap();
             assert_eq!(left.get_all(&row, "Conflict").unwrap().len(), 2);
             assert!(crate::framework_history::validate(&left).is_err());
 
@@ -16799,7 +16800,7 @@ mod history_reconcile_tests {
             } else {
                 right.insert(&conflicting, 0, ids[0].as_str()).unwrap();
             }
-            left.merge(&mut right).unwrap();
+            left.merge_incoming(&mut right).unwrap();
             assert_eq!(left.get_all(&row, "photo_ids").unwrap().len(), 2);
             assert_eq!(
                 crate::framework_history::validate(&left).is_err(),
@@ -16811,7 +16812,7 @@ mod history_reconcile_tests {
         let mut right = legacy.fork();
         left.put(&members, 0, ids[3].as_str()).unwrap();
         right.put(&members, 0, false).unwrap();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         assert_eq!(left.get_all(&members, 0).unwrap().len(), 2);
         assert!(crate::framework_history::validate(&left).is_err());
 

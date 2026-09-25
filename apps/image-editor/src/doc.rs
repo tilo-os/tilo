@@ -634,9 +634,10 @@ fn put_if_changed<V: Into<ScalarValue>>(doc: &mut AutoCommit, obj: &ObjId, key: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
     fn merged(left: &mut AutoCommit, right: &mut AutoCommit) {
         let mut copy = AutoCommit::load(&right.save()).unwrap();
-        left.merge(&mut copy).unwrap();
+        left.merge_incoming(&mut copy).unwrap();
     }
     #[test]
     fn migrates_legacy_scalar_without_changing_project_identity() {

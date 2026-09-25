@@ -101,6 +101,11 @@ def summarize(rows: list[dict], warmup_us: int, target_us: int) -> dict:
     ]
     span = rows[-1]["start_us"] - rows[0]["start_us"]
     lat = [r["input_latency_us"] for r in rows if r.get("input_latency_us")]
+    retirement = [
+        r["input_retirement_latency_us"]
+        for r in rows
+        if r.get("input_retirement_latency_us")
+    ]
     on_cadence = (
         sum(1 for g in paint_gaps if abs(g - target_us) <= 2000) / len(paint_gaps)
         if paint_gaps and target_us
@@ -145,6 +150,11 @@ def summarize(rows: list[dict], warmup_us: int, target_us: int) -> dict:
         "clients": block([r["clients_us"] for r in rows]),
         "sleep": block([r["sleep_us"] for r in rows]),
         "input_latency": block(lat),
+        "input_retirement_latency": block(retirement),
+        "backpressured_ticks": sum(bool(r.get("backpressured")) for r in rows),
+        "deadline_lateness": block(
+            [r.get("deadline_late_us", 0) or 0 for r in painted]
+        ),
         "present_async": bool(painted and painted[-1]["present_async"]),
     }
 
@@ -187,6 +197,10 @@ def print_summary(s: dict, title: str) -> None:
     print(fmt_block("parked", s["sleep"]))
     kind = "input->queued" if s.get("present_async") else "input->present"
     print(fmt_block(kind, s["input_latency"]))
+    empty = {"count": 0}
+    print(fmt_block("input->retired", s.get("input_retirement_latency", empty)))
+    print(fmt_block("deadline late", s.get("deadline_lateness", empty)))
+    print(f"  backpressured ticks: {s.get('backpressured_ticks', 0)}")
 
 
 def print_compare(a: dict, b: dict, na: str, nb: str) -> None:
@@ -338,6 +352,22 @@ def response_ok(reply: dict) -> bool:
     return isinstance(reply, dict) and "err" not in reply
 
 
+def process_cpu_ticks(pid: int) -> int:
+    """Read process+retired-thread CPU time without touching the compositor hot path."""
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+    # Fields after the comm start at proc field 3; utime/stime/cutime/cstime are 14..17.
+    return sum(int(fields[index]) for index in range(11, 15))
+
+
+def cpu_percent_between(pid: int, seconds: float) -> float:
+    started = time.monotonic()
+    first = process_cpu_ticks(pid)
+    time.sleep(seconds)
+    last = process_cpu_ticks(pid)
+    elapsed = time.monotonic() - started
+    return (last - first) / os.sysconf("SC_CLK_TCK") / elapsed * 100.0 if elapsed else 0.0
+
+
 def foreign_frames(ctl: Control) -> list[dict]:
     reply = ctl.send({"op": "foreign_frames"})
     body = reply.get("foreign_frames", reply.get("ok", reply))
@@ -352,6 +382,8 @@ def launch_and_wait_for_app(
     timeout: float,
     snapshot: Path | None = None,
     system_apps_dir: str | None = None,
+    *,
+    require_presented: bool = False,
 ) -> tuple[bool, float, str]:
     """Launch through the real palette keyboard path and require a first frame."""
     before = {f.get("surface_id") for f in foreign_frames(ctl)}
@@ -384,6 +416,7 @@ def launch_and_wait_for_app(
                 frame.get("surface_id") not in before
                 and frame.get("app_id") == app_id
                 and frame.get("frame_seq", 0) > 0
+                and (not require_presented or frame.get("presented") is True)
             ):
                 if snapshot is not None:
                     reply = ctl.send({"op": "snapshot", "path": str(snapshot)})
@@ -396,7 +429,7 @@ def launch_and_wait_for_app(
         # observer from becoming a continuously-chatty Wayland/control client
         # that changes the scheduling we are trying to measure.
         time.sleep(0.1)
-    return False, timeout, "new Chat surface did not paint before the deadline"
+    return False, timeout, "new app surface did not map and present before the deadline"
 
 
 def dismiss_first_login(ctl: Control, timeout: float = 5.0) -> None:
@@ -459,6 +492,35 @@ def gate_failures(stats: dict, args: argparse.Namespace) -> list[str]:
         failures.append(
             f"input latency p99 {latency['p99'] / 1000:.1f} ms > "
             f"{args.max_input_p99_ms:.1f} ms"
+        )
+    retirement = stats.get("input_retirement_latency", {})
+    if retirement.get("count", 0) < args.min_input_samples:
+        failures.append(
+            f"only {retirement.get('count', 0)} input-retirement samples "
+            f"(< {args.min_input_samples})"
+        )
+    elif retirement.get("p99", 0) > args.max_retirement_p99_ms * 1000:
+        failures.append(
+            f"input retirement p99 {retirement['p99'] / 1000:.1f} ms > "
+            f"{args.max_retirement_p99_ms:.1f} ms"
+        )
+    if stats.get("on_cadence_ratio", 0.0) < args.min_on_cadence:
+        failures.append(
+            f"on-cadence {stats.get('on_cadence_ratio', 0.0) * 100:.1f}% < "
+            f"{args.min_on_cadence * 100:.1f}%"
+        )
+    if stats.get("backpressured_ticks", 0) > args.max_backpressured_ticks:
+        failures.append(
+            f"{stats['backpressured_ticks']} backpressured ticks > "
+            f"{args.max_backpressured_ticks}"
+        )
+    if stats.get("cpu_failure"):
+        failures.append(f"CPU sampler failed: {stats['cpu_failure']}")
+    elif stats.get("cpu_percent") is None:
+        failures.append("CPU sampler produced no result")
+    elif stats["cpu_percent"] > args.max_cpu_percent:
+        failures.append(
+            f"compositor CPU {stats['cpu_percent']:.1f}% > {args.max_cpu_percent:.1f}%"
         )
     if args.launch_app and not stats.get("app_painted"):
         failures.append(stats.get("app_failure", f"{args.launch_app} did not paint"))
@@ -654,6 +716,7 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                         args.app_timeout,
                         app_snapshot,
                         env.get("TILO_APPS_SYSTEM_DIR"),
+                        require_presented=args.require_presented_app,
                     )
                     launch_result.update(
                         painted=painted, seconds=seconds, failure=failure
@@ -670,6 +733,14 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
             )
 
             input_result: dict[str, object] = {"sent": 0, "error": None}
+            cpu_result: dict[str, object] = {"percent": None, "error": None}
+            def sample_cpu() -> None:
+                try:
+                    cpu_result["percent"] = cpu_percent_between(proc.pid, args.seconds)
+                except (OSError, ValueError) as exc:
+                    cpu_result["error"] = str(exc)
+            cpu_thread = threading.Thread(target=sample_cpu, daemon=True)
+            cpu_thread.start()
             input_thread = None
             if args.input_hz > 0:
 
@@ -696,6 +767,7 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
                 print(f"[bench] injected {sent} pointer moves at {args.input_hz} Hz")
                 if input_result["error"]:
                     input_failure = f"input driver failed: {input_result['error']}"
+            cpu_thread.join(timeout=args.seconds + 2.0)
 
             if args.launch_app:
                 app_painted = bool(launch_result["painted"])
@@ -748,6 +820,8 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
     stats["app_failure"] = app_failure
     stats["app_snapshot"] = str(app_snapshot) if app_snapshot else None
     stats["input_failure"] = input_failure
+    stats["cpu_percent"] = cpu_result["percent"]
+    stats["cpu_failure"] = cpu_result["error"]
     (out_dir / f"{label}.stats.json").write_text(json.dumps(stats, indent=2))
     return stats
 
@@ -810,6 +884,15 @@ def main() -> None:
     )
     p.add_argument("--min-fps", type=float, default=120.0)
     p.add_argument("--max-input-p99-ms", type=float, default=25.0)
+    p.add_argument("--max-retirement-p99-ms", type=float, default=25.0)
+    p.add_argument("--min-on-cadence", type=float, default=0.90)
+    p.add_argument("--max-backpressured-ticks", type=int, default=0)
+    p.add_argument("--max-cpu-percent", type=float, default=100.0)
+    p.add_argument(
+        "--require-presented-app",
+        action="store_true",
+        help="require the launched foreign surface to retire a presented frame, not merely map",
+    )
     p.add_argument("--min-input-samples", type=int, default=20)
     p.add_argument("--min-ticks", type=int, default=100)
     p.add_argument(

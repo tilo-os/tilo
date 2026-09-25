@@ -59,7 +59,8 @@
 //!   scripts list and invoke ([`publish`]), with permissions per action;
 //! * **history** — every action is a change attributed to its author with its
 //!   label and time ([`history`]); any version can be read back
-//!   ([`history::read_at`]);
+//!   ([`history::read_at`]) and restored, field by field and item by item,
+//!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]).
 //!
 //! ## Custom resource types
@@ -71,7 +72,11 @@
 //! [`declarations`](Resource::declarations) for named, typed palette entries.
 //! It then gets exactly the same services. Edits without a named declaration
 //! travel as the generic [`APPLY`] action, so nothing a custom surface does
-//! has to bypass permissions, history or undo.
+//! has to bypass permissions, history or undo. `APPLY` is for surfaces,
+//! agents and scripts, never a palette row; each value's own
+//! [`risk`](tilo_actions::Action::risk) decides whether it needs
+//! confirmation, so a destructive typed edit is confirmed exactly as a
+//! declared destructive action is.
 
 #![cfg_attr(
     test,
@@ -86,22 +91,27 @@
 
 pub mod action;
 pub mod collection;
+pub mod group;
 pub mod history;
+pub mod items;
 pub mod model;
 pub mod order;
 pub mod replica;
 pub mod resource;
+pub mod shape;
 
 pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
 pub use collection::{Collection, Id};
+pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use model::{Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, write_key};
 pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, build_action, encode,
     origin_now_ms, publish,
 };
+pub use shape::{FieldShape, Shape};
 pub use tilo_resource_macros::{Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
@@ -110,7 +120,9 @@ pub mod __private {
     pub use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
     pub use serde;
     pub use serde_json;
-    pub use tilo_actions::{ActionArgs, ActionParam, ParamType, PermissionRequirement, Resource};
+    pub use tilo_actions::{
+        ActionArgs, ActionParam, ParamType, PermissionRequirement, Resource, RiskLevel,
+    };
 
     /// The default search entry of a record: all of its text, in one entry.
     pub fn default_search<T: crate::Model>(label: &str, record: &T) -> Vec<crate::SearchEntry> {
@@ -124,6 +136,16 @@ pub mod __private {
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
         }]
+    }
+
+    /// The label an item is offered under: its first text, else its id.
+    pub fn item_label<T: crate::Model>(id: &crate::Id, item: &T) -> String {
+        let mut text = Vec::new();
+        item.collect_text(&mut text);
+        text.into_iter()
+            .map(|line| line.lines().next().unwrap_or_default().trim().to_owned())
+            .find(|line| !line.is_empty())
+            .unwrap_or_else(|| id.to_string())
     }
 
     /// Decode a declared operation from bound arguments.

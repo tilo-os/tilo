@@ -3158,6 +3158,7 @@ impl WordProcessor {
 mod tests {
     use super::*;
     use automerge::{AutoCommit, ROOT};
+    use tilo_automerge::ApplyIncoming;
 
     fn bound() -> (WordProcessor, AutoCommit) {
         let mut wp = WordProcessor::new();
@@ -3280,7 +3281,7 @@ mod tests {
             .unwrap();
         let mut remote = state.fork();
         remote.splice_text(&text, 0, 6, "é🦀").unwrap();
-        state.merge(&mut remote).unwrap();
+        state.merge_incoming(&mut remote).unwrap();
         let before = qdoc::model::ordered_keys_scan_count();
         wp.bind(&mut state, &ROOT);
         assert_eq!(qdoc::model::ordered_keys_scan_count(), before);

@@ -15,6 +15,7 @@ filesystem = [
     "dep:iroh-base",
     "dep:iroh-gossip",
     "dep:automerge",
+    "dep:tilo-automerge",
     "dep:qdoc",
     "dep:collab-types",
     "dep:ed25519-dalek",
@@ -30,7 +31,6 @@ filesystem = [
     "dep:thiserror",
     "dep:hex",
     "dep:blake3",
-    "dep:futures-util",
     "dep:rand",
     "dep:getrandom",
     "dep:fuser",
@@ -57,6 +57,11 @@ path = "tests/exact_share_process_fuse.rs"
 required-features = ["filesystem"]
 
 [[test]]
+name = "held_memory"
+path = "tests/held_memory.rs"
+required-features = ["filesystem"]
+
+[[test]]
 name = "integration_test"
 path = "tests/integration_test.rs"
 required-features = ["filesystem"]
@@ -77,6 +82,7 @@ iroh-base = { workspace = true, optional = true }
 iroh-blobs.workspace = true
 iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
+tilo-automerge = { workspace = true, optional = true }
 qdoc = { path = "../../doc/qdoc", optional = true }
 collab-types = { path = "../../collab/collab-types", optional = true }
 getrandom = { workspace = true, optional = true }
@@ -106,11 +112,11 @@ tokio = { workspace = true, features = ["full"] }
 hex = { workspace = true, optional = true }
 blake3 = { workspace = true, optional = true }
 postcard = { workspace = true, features = ["use-std"] }
-futures-lite.workspace = true
-futures-util = { workspace = true, optional = true }
+futures-util.workspace = true
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
 
 [lints]

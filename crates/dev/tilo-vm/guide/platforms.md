@@ -12,7 +12,8 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
 
 In-VM builds sync the worktree with rsync over SSH, so the host needs
-`rsync` (on Windows: MSYS2 or cwRsync on `PATH`). Headless and vkms
+`rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
+rsync on `PATH`). Headless and vkms
 slots need no GPU, so every row runs them.
 
 ## Linux: libvirt's user session
@@ -63,9 +64,9 @@ the Hyper-V PowerShell module, `vm create` selects `whpx` automatically; use
 CPU emulation.
 
 For component swaps that build inside the VM, install MSYS2's `rsync`
-package too (`pacman -S rsync`) and put `%USERPROFILE%\msys64\usr\bin` on
-your Windows user `PATH`. `tilo-vm` passes the Windows worktree as an MSYS2
-`/c/...` path, so `rsync` treats it as a local source.
+package too (`pacman -S rsync`). `tilo-vm` discovers the default per-user
+location automatically without changing `PATH` and passes the Windows
+worktree as an MSYS2 `/c/...` path, so `rsync` treats it as a local source.
 
 The published QCOW2 remains unchanged. Each VM gets a small QCOW2 child and
 its own copy of the UEFI variables template beside that child. Before a
@@ -76,6 +77,59 @@ with SSH forwarded to `127.0.0.1:<ssh_port>` (default 2222), and a local VNC
 display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
 `<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` sends an ACPI power button
 through QMP and waits for QEMU to exit.
+
+For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
+virtual GPU, USB devices and VNC. `--memory-mb` controls guest RAM; less RAM
+can shorten WHPX's cold start, but choose enough for the components being
+tested. A 2 GiB VM is suitable only for light service work. Neither option
+changes the disk image or the installer test path.
+
+### Direct kernel boot for a fast service VM
+
+WHPX can boot a development kernel and initrd directly, without EDK2. Prepare
+`Image`, `initrd` and the UKI's `.cmdline` from the **same dev disk** once,
+and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline
+publishes the three checksum-listed companion files under `directBoot` in
+`tilo-vm-disk.json` for ARM64. Download those files into one directory;
+for a local disk, an operator may extract the same files from its UKI.
+The bundle JSON beside `Image` and `initrd` has this shape:
+
+```json
+{
+  "kernel": "Image",
+  "initrd": "initrd",
+  "cmdline": "<the complete UKI .cmdline section>",
+  "loader_partuuid": "<the source disk ESP partition UUID>"
+}
+```
+
+Create the COW VM with `--direct-boot-bundle` to validate and register these
+files before the image download or disk creation:
+
+```powershell
+tilo-vm vm create dev --hypervisor whpx --direct-boot-bundle C:\tilo-vm\boot\boot.json --headless --memory-mb 2048
+```
+
+Alternatively, add a `direct_kernel` table to an existing VM's
+`%APPDATA%\tilo-vm\vms.toml` entry:
+
+```toml
+[vms.dev.direct_kernel]
+kernel = 'C:\tilo-vm\boot\Image'
+initrd = 'C:\tilo-vm\boot\initrd'
+cmdline = 'root=tilo-auto composefs=<the UKI cmdline, unchanged>'
+loader_partuuid = '<the VM disk ESP partition UUID>'
+```
+
+`cmdline` must be the complete `.cmdline` section, not the abbreviated example
+above. `loader_partuuid` is the GPT **partition** UUID of the ESP in the
+source disk, not the disk GUID or FAT volume ID. WHPX passes it through
+`systemd.setenv=TILO_ROOT_LOADER_PARTUUID=...`, preserving Tilo's existing
+ESP-to-root binding when systemd-stub is absent. Without the correct value,
+Tilo root discovery stops in the initrd. This mode is for local development:
+it bypasses firmware and UKI boot verification, so installer and release
+acceptance still use the normal firmware boot. Remove the table to restore
+normal boot.
 
 ## Creating a VM
 
@@ -120,6 +174,46 @@ code.sandbox.example. That token is read only for disk downloads; image pulls
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
 - or, when this checkout has `os/dev/build-dev-image.sh`, build a disk
   locally and pass it as `--image`. The error says whether it exists here.
+
+## A local disk, and throwaway VMs
+
+`--image` takes a qcow2 dev disk or a raw disk with a GPT, such as
+`os/dev/disk-image.sh --raw` writes. `vm create` reads the file's first bytes
+and refuses anything else (a blank or half-written disk) before it creates
+anything. The image is never written: the VM's disk is a qcow2 child of it,
+with a fresh UEFI variable store, so every VM made from one image is a clean
+boot of it. That makes a VM per attempt cheap:
+
+```sh
+tilo-vm vm create try1 --image ~/tilo-vm/media/disk.raw
+tilo-vm vm start try1         # waits up to 180s for SSH; an early-boot failure ends with its serial command
+tilo-vm vm serial try1
+tilo-vm vm rm try1 --force    # power off, unregister, delete its disk, variables, logs and key
+```
+
+`vm rm` keeps the image, and forgets a VM it did not create (one registered by
+hand) without touching its hypervisor, disk or key.
+
+On WHPX, an image on a network path (`\\wsl.localhost\...` from WSL, or an SMB
+share) is imported once into the cache (`tilo-vm/imports/` in the platform
+cache dir) and the VM is made from that copy: QEMU on Windows reads a backing
+file behind a UNC path unreliably. The import converts it to qcow2 and
+compares every guest-visible byte with the source before it is used; it is
+reused until the source's size or modification time changes.
+
+### Booting a candidate ESP
+
+To try a candidate UKI or boot loader without rebuilding the disk, build a
+small override ESP with `os/dev/make-boot-esp.sh` (`os/dev/local-boot-esp.md`)
+and attach it ahead of the VM's disk:
+
+```sh
+tilo-vm vm create esp1 --image base.raw --boot-esp tilo-boot-override.raw
+```
+
+The ESP is attached read-only with the first boot index, so firmware boots its
+loader and UKI, which mounts the root from the VM's disk. libvirt and WHPX
+support it; keep the ESP on a local drive.
 
 ## The root SSH key
 

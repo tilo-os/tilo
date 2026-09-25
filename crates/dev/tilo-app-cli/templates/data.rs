@@ -1,42 +1,40 @@
 use std::collections::HashMap;
 use std::ops::Range;
-use ui::prelude::{
-    Button, ColumnDef, ColumnWidth, DataTable, LatestRequest, TableModel, TableModelChange,
-    TableRowState, Widget, tilo_actions,
-};
+use ui::prelude::*;
 
 const ROW_COUNT: usize = 100_000_000;
+/// How many recently opened rows the review keeps.
+const RECENT: usize = 5;
 
+/// One row of the external data set. It is not part of the resource: the rows
+/// come from a sparse source (a database, a service) and only the visible
+/// window is ever loaded.
 #[derive(Clone)]
 pub struct Row {
     pub id: u64,
     pub name: String,
 }
 
-fn row_resource() -> tilo_actions::Resource {
-    let mut resource = ui::widget::resource_actions::typed_resource(
-        "generated.table",
-        "Results",
-        "open",
-        "Open row",
-        vec![tilo_actions::ActionParam::required_owned(
-            "id",
-            tilo_actions::ParamType::Integer,
-            "Stable row id",
-        )],
-    );
-    if let Some(action) = resource.actions.first_mut() {
-        action.contract.result = tilo_actions::ResultSpec::Resource {
-            resource_kind: "generated.table.row".into(),
-        };
-    }
-    resource
+/// The app's own state: what the user did with the data. It is stored, synced
+/// and undoable; the rows themselves stay in their source.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Review {
+    /// Recently opened row ids, newest first.
+    pub opened: Vec<u64>,
 }
 
-fn open_row(id: u64) -> tilo_actions::ActionOutput {
-    tilo_actions::ActionOutput {
-        value: None,
-        resources: vec![format!("generated.table.row:{id}")],
+#[resource(kind = "generated.table", label = "Results")]
+impl Review {
+    /// Open a row.
+    #[action]
+    pub fn open(&mut self, #[param("Stable row id")] id: u64) -> Result<(), &'static str> {
+        if !usize::try_from(id).is_ok_and(|index| index < ROW_COUNT) {
+            return Err("no such row");
+        }
+        self.opened.retain(|opened| *opened != id);
+        self.opened.insert(0, id);
+        self.opened.truncate(RECENT);
+        Ok(())
     }
 }
 
@@ -146,48 +144,51 @@ impl TableModel for Rows {
 }
 
 /// A hundred-million-row table with bounded data and retained-widget windows.
-///
-/// # Panics
-///
-/// Panics if a generated row binding no longer matches the exported action.
-#[expect(
-    clippy::expect_used,
-    reason = "the binding uses the sole action constructed immediately above"
-)]
-pub fn app_root() -> Box<dyn Widget> {
-    crate::install_catalog();
-    let columns = vec![
-        ColumnDef::<Row>::new("name", "data-name-column", ColumnWidth::Flex(1.0))
-            .with_text(|row| row.name.clone()),
-        ColumnDef::<Row>::new("actions", "data-actions-column", ColumnWidth::Fixed(120.0))
-            .with_widget(|row, _| {
-                let id = row.id;
-                let resource = row_resource();
-                let binding = tilo_actions::ActionBinding::static_json_for(
-                    &resource,
-                    "open",
-                    serde_json::Map::from_iter([("id".into(), serde_json::json!(id))]),
-                )
-                .expect("generated row arguments match the exported action");
-                Box::new(
-                    Button::new(&format!("open-{}", row.id), "data-open", None)
-                        .on_action(binding)
-                        .fit_content(28.0),
-                )
-            }),
-    ];
-    let mut table = DataTable::from_model(columns, Rows::new())
-        .with_id("rows-table")
-        .with_accessible_name("data-accessible-name")
-        .selectable(true);
-    table.set_viewport(720.0, 32.0);
-    ui::widget::resource_actions::immediate(Box::new(table), row_resource(), |payload| {
-        let args: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let id = args
-            .get("id")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or("missing id")?;
-        Ok(open_row(id))
-    })
+pub struct App;
+
+impl ResourceApp for App {
+    type Resource = Review;
+    const ID: &'static str = crate::APP_ID;
+    const TITLE: &'static str = crate::APP_TITLE;
+
+    fn view(cx: &mut ViewCx<Review>) -> Element {
+        crate::install_catalog();
+        // Rows are built on demand as the table scrolls, long after this view
+        // was; they bind their buttons through the resource's actions.
+        let actions = cx.actions();
+        let columns = vec![
+            ColumnDef::<Row>::new("name", "data-name-column", ColumnWidth::Flex(1.0))
+                .with_text(|row| row.name.clone()),
+            ColumnDef::<Row>::new("actions", "data-actions-column", ColumnWidth::Fixed(120.0))
+                .with_widget(move |row, _| {
+                    Box::new(
+                        actions.bind_invocation(
+                            Button::new(&format!("open-{}", row.id), "data-open", None)
+                                .fit_content(28.0),
+                            Review::OPEN.with(row.id),
+                        ),
+                    )
+                }),
+        ];
+        let mut table = DataTable::from_model(columns, Rows::new())
+            .with_id("rows-table")
+            .with_accessible_name("data-accessible-name")
+            .selectable(true);
+        table.set_viewport(720.0, 32.0);
+        let recent = cx
+            .text(|review| {
+                if review.opened.is_empty() {
+                    return ui::i18n::I18nManager::lookup_plain("data-none-opened");
+                }
+                let rows = review
+                    .opened
+                    .iter()
+                    .map(|id| format!("Row {id}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui::i18n::I18nManager::format("data-recent", &[("rows", rows.as_str().into())])
+            })
+            .with_id("recently-opened");
+        Box::new(ui::column![table, recent])
+    }
 }

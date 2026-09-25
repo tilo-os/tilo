@@ -25,6 +25,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 use std::sync::Arc;
+use tilo_automerge::ApplyIncoming;
 
 mod bulk;
 #[cfg(test)]
@@ -444,7 +445,7 @@ pub fn init(doc: &mut AutoCommit, root: &ObjId) -> Containers {
     if root == &ROOT {
         // The genesis has no dependencies, so it applies to any document, and a
         // replica already holding it is unaffected: same hash, one copy kept.
-        if doc.load_incremental(genesis()).is_ok()
+        if doc.load_incoming(genesis()).is_ok()
             && let Ok(adopted) = open(doc, root)
         {
             return adopted;
@@ -3355,7 +3356,7 @@ mod genesis_detection_tests {
         own.commit();
 
         let mut merged = shared.clone();
-        merged.merge(&mut own).unwrap();
+        merged.merge_incoming(&mut own).unwrap();
         let shadowed = shadowed_containers(&merged, &ROOT);
         assert!(
             shadowed.contains(&KEY_BLOCKS.to_string()),
@@ -3450,7 +3451,7 @@ mod region_tests {
                 let y = dm.insert_block_in(Region::Header, None, "paragraph");
                 dm.splice_text_in(Region::Header, &y, 0, 0, "right");
             }
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             let merged = open(&a, &ROOT).unwrap();
             let texts: Vec<String> = materialize_region(&a, &merged, Region::Header)
                 .into_iter()

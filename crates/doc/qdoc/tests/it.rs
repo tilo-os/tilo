@@ -10,6 +10,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use tilo_automerge::heap;
+
 /// Counts heap per thread, for the tests comparing what documents hold (see `heap`).
 #[global_allocator]
 static HEAP: heap::ThreadCounting = heap::ThreadCounting;
@@ -26,8 +28,6 @@ mod codec_scaling;
 mod convergence;
 #[path = "docx_header_footer.rs"]
 mod docx_header_footer;
-#[path = "support/heap.rs"]
-mod heap;
 #[path = "import_memory.rs"]
 mod import_memory;
 #[path = "independent_documents.rs"]

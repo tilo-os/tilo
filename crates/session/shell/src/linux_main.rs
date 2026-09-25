@@ -45,7 +45,7 @@ const SECRET_SERVICE_STARTUP_RETRY_DELAY: std::time::Duration =
 /// stderr copy is made: a shared fallback such as `/tmp` would let another user
 /// plant the path.
 fn install_crash_log_hook() {
-    let dir = dirs::cache_dir()
+    let dir = xdg_paths::cache_dir()
         .map(|cache| cache.join("tilo").join("crashes"))
         .filter(|dir| private_fs::directory(dir).is_ok());
     let default_hook = std::panic::take_hook();

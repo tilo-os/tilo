@@ -1344,7 +1344,7 @@ impl NotesApp {
         }
     }
 
-    /// Default constructor — resolves the workspace root via `dirs`,
+    /// Default constructor — resolves the workspace root via `xdg-paths`,
     /// falls back to `./notes` if the home dir is unavailable.
     ///
     /// # Errors

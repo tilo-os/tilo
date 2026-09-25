@@ -13,8 +13,13 @@ on:
         required: true
         type: string
       rpms_candidate:
-        description: Immutable native RPM snapshot with the kernel SRPM and build dependencies
+        description: Immutable native RPM snapshot with the kernel SRPM and build dependencies (sources that predate the kernel buildroot)
         required: true
+        type: string
+      buildroot_candidate:
+        description: Immutable native kernel buildroot (sources whose kernel Containerfile builds FROM KERNEL_BUILDROOT_REF)
+        required: false
+        default: ''
         type: string
 
 concurrency:
@@ -32,6 +37,7 @@ jobs:
       SOURCE_REVISION: ${{ inputs.source_revision }}
       BASE_REF: ${{ inputs.base_candidate }}
       RPMS_REF: ${{ inputs.rpms_candidate }}
+      KERNEL_BUILDROOT_REF: ${{ inputs.buildroot_candidate }}
     steps:
       - name: Validate immutable development inputs
         run: |
@@ -40,6 +46,8 @@ jobs:
           [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BASE_REF" =~ ^code\.podesta\.ai/qos/fedora-bootc@sha256:[0-9a-f]{64}$ ]]
           [[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/(rpms|tilo-development-rpms-aarch64)@sha256:[0-9a-f]{64}$ ]]
+          [ -z "$KERNEL_BUILDROOT_REF" ] \
+            || [[ "$KERNEL_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]]
           [[ "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
 
@@ -70,7 +78,7 @@ jobs:
       - name: Require native input images
         run: |
           set -euo pipefail
-          for ref in "$BASE_REF" "$RPMS_REF"; do
+          for ref in "$BASE_REF" "$RPMS_REF" ${KERNEL_BUILDROOT_REF:+"$KERNEL_BUILDROOT_REF"}; do
             docker pull --platform=linux/arm64 "$ref"
             test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ref")" = linux/arm64
           done
@@ -97,6 +105,7 @@ jobs:
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_BUILDROOT_REF=${{ env.KERNEL_BUILDROOT_REF }}
             KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
           cache-from: |
             type=registry,ref=code.sandbox.example/qos/tilo-development-kernel-buildcache:aarch64
@@ -168,7 +177,8 @@ jobs:
           receipt = dict(schema=1, purpose='tilo-development-native-kernel', architecture='aarch64',
               reference=reference, config_digest=image['Id'], source_revision=os.environ['SOURCE_REVISION'],
               source_date_epoch=int(os.environ['SOURCE_DATE_EPOCH']), base=os.environ['BASE_REF'],
-              rpms=os.environ['RPMS_REF'], recipe_sha256=recipes,
+              rpms=os.environ['RPMS_REF'], buildroot=os.environ['KERNEL_BUILDROOT_REF'] or None,
+              recipe_sha256=recipes,
               package=dict(name=package.name, sha256=hashlib.file_digest(package.open('rb'), 'sha256').hexdigest()),
               run_id=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'],
               kernel_build_jobs=int(os.environ['KERNEL_BUILD_JOBS']), production_signed=False, boot_validated=False)

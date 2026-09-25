@@ -174,6 +174,10 @@ Action ids there are `<action>@<resource>` (`next@installer`,
 `begin@installer.review`). A contract that asks for confirmation takes it as
 an argument, the same projection the compositor publishes for app actions:
 `confirm: true` for `Confirm`, `confirmation_phrase` for a typed `Phrase`.
+An action tagged `confirmation:by-argument` (a framework app's generic `apply`
+edit) advertises an optional `confirm`: the app classifies each value, and a
+destructive one — deleting a clip — is refused with
+`action_confirmation_required` until it is resent with `confirm: true`.
 Input injection is not served; the surface is semantic only.
 `tilo-vm scenario install` drives the installer this way end to end
 (`tilo-vm guide scenarios`).

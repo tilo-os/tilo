@@ -308,6 +308,7 @@ mod tests {
     use crate::doc::ConnectionsDoc;
     use crate::model::Engine;
     use automerge::{ActorId, AutoCommit};
+    use tilo_automerge::ApplyIncoming;
 
     fn profile() -> ConnectionProfile {
         let mut p = ConnectionProfile::new("Analytics", Engine::Postgres);
@@ -425,9 +426,9 @@ mod tests {
         .unwrap();
         left.commit();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let mut merged_left = left.fork();
-        right.merge(&mut merged_left).unwrap();
+        right.merge_incoming(&mut merged_left).unwrap();
 
         let visible = crate::doc::SavedQueriesDoc::read(&left);
         assert_eq!(visible.len(), 3);

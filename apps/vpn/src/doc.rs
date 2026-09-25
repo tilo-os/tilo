@@ -153,6 +153,7 @@ impl VpnDoc {
 mod tests {
     use super::*;
     use crate::model::sample_vault;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn vault_round_trips_through_crdt() {
@@ -191,7 +192,7 @@ mod tests {
         let extra = Connection::new("Travel", ConnKind::WireGuard);
         VpnDoc::write_connection(&mut b, &extra);
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         let names: Vec<String> = VpnDoc::read_vault(&a)
             .connections
             .into_iter()

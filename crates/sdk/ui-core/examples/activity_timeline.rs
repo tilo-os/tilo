@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::{ActorId, AutoCommit, AutomergeError, ROOT};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
@@ -83,7 +84,7 @@ fn collaborated_document() -> Result<AutoCommit, AutomergeError> {
         dm.splice_text(&body, 40, 0, " Costs fell by four percent.");
     }
     qdoc::history::commit_stamped(&mut bob);
-    alice.merge(&mut bob)?;
+    alice.merge_incoming(&mut bob)?;
 
     // Alice renames the heading, adds a scratch note, then deletes it.
     {

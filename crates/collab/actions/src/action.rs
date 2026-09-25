@@ -133,6 +133,18 @@ pub trait Action: std::fmt::Debug {
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
     }
+
+    /// The consequence class of this particular value — what it would do,
+    /// not what its type can do. A generic edit action classifies each value
+    /// (deleting a clip is [`Destructive`](crate::RiskLevel::Destructive),
+    /// trimming one is not), and the host asks for the same confirmation a
+    /// declared destructive action gets whenever
+    /// [`requires_confirmation`](crate::RiskLevel::requires_confirmation)
+    /// holds. Must be a pure function of `self`. Defaults to
+    /// [`Low`](crate::RiskLevel::Low).
+    fn risk(&self) -> crate::contract::RiskLevel {
+        crate::contract::RiskLevel::Low
+    }
 }
 
 /// A serialized action ready to cross a process/network boundary: the

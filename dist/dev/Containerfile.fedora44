@@ -1,14 +1,36 @@
 # A deliberately small, persistent build image for the desktop-session edit
-# loop.  It contains build dependencies only; the source tree and Cargo target
-# directory are mounted by distrobox, so editing source does not invalidate
-# this image and no application binaries are baked into it.
+# loop.  It contains build and test dependencies only; the source tree and Cargo
+# target directory are mounted by distrobox, so editing source does not
+# invalidate this image and no application binaries are baked into it.
+#
+# The build context is exactly these files, flat, so callers can assemble it
+# without walking the repository:
+#   install-build-deps.sh  <- dist/ci/install-build-deps.sh
+#   install-pdfium.sh      <- tools/ci/install-pdfium.sh
+#   github-assets.tsv      <- os/external-assets/github-assets.tsv
 FROM registry.fedoraproject.org/fedora-toolbox:44
 
+# The test profile is the workspace package set the CI builder installs
+# (os/Containerfile.builder) plus the suites' runtime, so the whole test suite
+# runs here as in CI (tools/test-env.sh sets up its environment). Only
+# interactive conveniences are added on top.
 COPY install-build-deps.sh /usr/local/libexec/tilo-install-build-deps
-
-RUN /usr/local/libexec/tilo-install-build-deps fedora \
+RUN /usr/local/libexec/tilo-install-build-deps fedora test \
  && dnf install -y --setopt=install_weak_deps=False \
-      libavcodec-free-devel libavformat-free-devel libswscale-free-devel \
       mold sccache openssh-clients \
  && dnf clean all \
  && rm -rf /var/cache/dnf /usr/local/libexec/tilo-install-build-deps
+
+# PDFium for the native PDF capture tests, from the same pinned manifest entry
+# and installer CI uses. The archive is fetched here rather than from the
+# external-asset cache so the context stays three small files; install-pdfium.sh
+# verifies it against the manifest digest before extracting anything.
+COPY install-pdfium.sh github-assets.tsv /tmp/tilo-pdfium/
+RUN cd /tmp/tilo-pdfium \
+ && asset=$(bash install-pdfium.sh --asset-name) \
+ && url=$(awk -F '\t' -v name="$asset" '$1 !~ /^#/ && $2 == name {print $3}' github-assets.tsv) \
+ && test -n "$url" \
+ && curl --proto '=https' --tlsv1.2 -fsSL --retry 5 -o "$asset" "$url" \
+ && bash install-pdfium.sh . /usr github-assets.tsv \
+ && cd / && rm -rf /tmp/tilo-pdfium
+ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
