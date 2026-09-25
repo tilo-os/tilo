@@ -1,19 +1,13 @@
 //! The contract a custom widget or renderer implements to take part in a
 //! resource: collaboration, history, undo, permissions and the action door.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
-use taffy::{NodeId, TaffyTree};
 use tilo_resource::Resource;
+use ui_core::PresencePayload;
 use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::presence::{PresenceCtx, PresenceKey};
-use ui_core::text_render::TextRenderer;
-use ui_core::vello::Scene;
-use ui_core::vello::kurbo::{Affine, Point, Rect};
-use ui_core::widget::Widget;
-use ui_core::winit::event::{Modifiers, WindowEvent};
-use ui_core::{PresencePayload, Theme, taffy};
+use ui_core::presence::PresenceKey;
+use ui_core::widget::{Decorator, Widget};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -38,12 +32,6 @@ use super::live::Live;
 ///   locally (a drag, a scrub) and dispatch one action when it ends.
 /// * **Permissions** — [`SurfaceCx::read_only`] says the participant may
 ///   only view; present accordingly. Refused actions change nothing.
-/// * **Confirmation** — a typed value whose
-///   [`risk`](tilo_actions::Action::risk) is destructive (deleting a clip)
-///   waits for the user's confirmation, like a declared destructive action.
-///   When an edit is refused or held for confirmation, the surface is
-///   presented the stored state again, undoing any optimistic preview; a
-///   confirmed edit then arrives as an ordinary change.
 /// * **Presence** — report where the user is as a [`ResourceSelection`] from
 ///   the toolkit's `Widget::presence_payload` (one line:
 ///   `selection.presence::<R>(app_id)`), and draw collaborators from the
@@ -131,107 +119,24 @@ impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
     }
 }
 
-impl<R: Resource, S: ResourceSurface<R>> Widget for SurfaceHost<R, S> {
+// The host adds one thing to the surface — presenting new resource state
+// before the surface syncs — and forwards everything else to it.
+impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
+    type Inner = S;
+
+    fn inner(&self) -> &S {
+        &self.surface
+    }
+
+    fn inner_mut(&mut self) -> &mut S {
+        &mut self.surface
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if self.live.revision() != self.presented {
             self.presented = self.live.revision();
             self.surface.present(&self.live.get());
         }
         self.surface.sync(state, path);
-    }
-
-    // A subtree that swaps its children (a `ModelView`, an `Each`) reports
-    // it here; the host rebuilds its layout tree only when a container
-    // passes that on.
-    fn take_structure_dirty(&mut self) -> bool {
-        self.surface.take_structure_dirty()
-    }
-
-    // The per-frame update pass drives retained models (a virtual list's
-    // pages, a table's rows); every child must see it.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        self.surface.update(state, path)
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.surface.build_layout(taffy, theme, node_map)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.surface.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.surface.draw(scene, transform, text, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.surface.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, taffy,
-        );
-    }
-
-    fn wants_pointer_capture(&self) -> bool {
-        self.surface.wants_pointer_capture()
-    }
-
-    // A transparent container forwards document-capable operation admission
-    // to the handlers it hosts (see the toolkit's `Widget` docs).
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
-        for child in self.children_mut() {
-            if let Some(started) = child.start_resource_operation_with_document(
-                invocation, kind, type_id, payload, doc, path,
-            )? {
-                return Ok(Some(started));
-            }
-        }
-        Ok(None)
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.surface]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.surface]
-    }
-
-    fn name(&self) -> &'static str {
-        "ResourceSurface"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.surface.get_rect()
     }
 }
