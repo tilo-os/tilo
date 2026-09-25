@@ -1660,15 +1660,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             .enumerate()
             .into_iter()
             .map(|a| {
-                let hierarchy = if a.resource.provider
-                    == crate::shell::search::providers::live_app_actions::PROVIDER_ID
-                {
-                    crate::shell::search::providers::live_app_actions::LiveAppActionsProvider::hierarchy(
-                        &a.resource.id,
-                    )
-                } else {
-                    None
-                };
+                let hierarchy = a.hierarchy.as_ref();
                 serde_json::json!({
                     "provider": a.resource.provider,
                     "id": a.resource.id,
@@ -1681,14 +1673,13 @@ impl ControlState for FrameBuilderControlState<'_> {
                     // an invocation, it is not one, so enumeration stays side-effect-free.
                     "params": params_json(&a.params),
                     "contract": a.contract,
-                    // Canonical application actions already carry this hierarchy in
-                    // their opaque palette id. Expose it as data for headless clients;
-                    // presentation-only providers leave the fields null.
-                    "application": hierarchy.map(|parts| parts.0),
-                    "room": hierarchy.map(|parts| parts.1),
-                    "record": hierarchy.map(|parts| parts.2),
-                    "resource": hierarchy.map(|parts| parts.3),
-                    "operation": hierarchy.map(|parts| parts.4),
+                    // The provider resolves identity from its authenticated source;
+                    // opaque invocation IDs and presentation labels stay independent.
+                    "application": hierarchy.map(|value| &value.application),
+                    "room": hierarchy.map(|value| &value.room),
+                    "record": hierarchy.map(|value| &value.record),
+                    "resource": hierarchy.map(|value| &value.resource),
+                    "operation": hierarchy.map(|value| &value.operation),
                 })
             })
             .collect();
@@ -2329,9 +2320,16 @@ fn execute_invoke_action(
             }
         }
     } else {
-        let message = format!(
-            "action ({provider}, {id}) vanished between resolve and invoke; nothing was run"
-        );
+        use crate::shell::search::providers::live_app_actions;
+        let message = if provider == live_app_actions::PROVIDER_ID
+            && live_app_actions::job_control_target(id).is_some()
+        {
+            live_app_actions::JOB_UNAVAILABLE_MESSAGE.to_string()
+        } else {
+            format!(
+                "action ({provider}, {id}) vanished between resolve and invoke; nothing was run"
+            )
+        };
         eprintln!("tilo compositor: {message}");
         Err(InvokeFailure {
             code: "action_failed".to_string(),
@@ -10073,6 +10071,92 @@ mod tests {
             "manual status must remain inspectable: {presence}"
         );
         assert!(presence["following"].is_null());
+    }
+
+    #[test]
+    fn action_enumeration_preserves_directory_resource_hierarchy() {
+        use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, CapnpBrokerState};
+        use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
+
+        let mut fb = FrameBuilder::new((800, 600));
+        let (room, actor) = {
+            let chrome = fb.chrome();
+            let room = chrome.tree().desktop.active_workspace().unwrap().room;
+            (room.to_string(), chrome.local_user_for_room(&room))
+        };
+        fb.chrome()
+            .tree_handle()
+            .write()
+            .desktop
+            .active_workspace_mut()
+            .unwrap()
+            .owner = Some(actor.clone());
+        let broker = CapnpBrokerState::test_broker_with_membership(fb.chrome().tree_handle());
+        broker.replace_action_directory_roots_for_test(vec![ActionDirectoryRoot {
+            peer_id: 4096,
+            app_id: "dev.tilo.calculator".into(),
+            cluster_id: room.clone(),
+            record_id: "calculator-document".into(),
+        }]);
+        let page = tilo_actions::remote::CataloguePage {
+            revision: "revision-3".into(),
+            rows: vec![tilo_actions::remote::CatalogueRow {
+                provider: "4096".into(),
+                app_id: "dev.tilo.calculator".into(),
+                parent_resource: String::new(),
+                resource: tilo_actions::remote::CatalogueResource {
+                    id: "calculator.graph:curve2d:stable-17".into(),
+                    kind: "calculator.graph".into(),
+                    label: "A presentation label without routing metadata".into(),
+                    presentation: None,
+                },
+                action: Some(tilo_actions::ActionDescriptor {
+                    address: tilo_actions::ActionAddress::new(
+                        "calculator.graph:curve2d:stable-17",
+                        "toggle-visibility",
+                    ),
+                    resource_kind: "calculator.graph".into(),
+                    resource_label: "A presentation label without routing metadata".into(),
+                    action_label: "Hide".into(),
+                    description: Some("Do not infer identity from this text".into()),
+                    locus: tilo_actions::ExecutionLocus::default(),
+                    kind: tilo_actions::OperationKind::View,
+                    contract: tilo_actions::ActionContract::view(),
+                    input: tilo_actions::InputSpec::None,
+                    params: Vec::new(),
+                    view: None,
+                }),
+                has_children: false,
+                visibility: None,
+            }],
+            exhausted: true,
+            ..tilo_actions::remote::CataloguePage::default()
+        };
+        let provider = fixture_with_directory_page(broker, 4096, actor, page);
+        crate::shell::overlay_host::install_fixture_search_provider(fb.host_mut(), provider);
+        let doc = AutoCommit::new();
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: Some((&doc, &automerge::ROOT)),
+            shares: None,
+            lock: None,
+        };
+        let answer = state.enumerate_actions("").expect("enumerated actions");
+        let row = answer["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["provider"] == "app-actions" && row["title"] == "Hide")
+            .expect("real directory action must be visible");
+        assert_eq!(row["application"], "dev.tilo.calculator");
+        assert_eq!(row["room"], room);
+        assert_eq!(row["record"], "calculator-document");
+        assert_eq!(row["resource"], "calculator.graph:curve2d:stable-17");
+        assert_eq!(row["operation"], "toggle-visibility");
+        assert_eq!(
+            row["id"],
+            "directory\u{1f}4096\u{1f}revision-3\u{1f}calculator.graph:curve2d:stable-17\u{1f}toggle-visibility"
+        );
     }
 
     /// `workspace_tree_json` exposes a `workspaces` array on the bootstrap
