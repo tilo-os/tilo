@@ -808,7 +808,11 @@ impl PhotosDoc {
         })
     }
 
-    fn component_value<T>(doc: &AutoCommit, maps: Vec<ObjId>, id: &str) -> Option<Option<T>>
+    #[expect(
+        clippy::option_option,
+        reason = "distinguishes an absent component (None) from an explicit removal (Some(None))"
+    )]
+    fn component_value<T>(doc: &AutoCommit, maps: &[ObjId], id: &str) -> Option<Option<T>>
     where
         T: serde::de::DeserializeOwned + serde::Serialize,
     {
@@ -847,12 +851,12 @@ impl PhotosDoc {
         );
         let ocr_state = Self::component_value::<OcrAnalysisComponent>(
             doc,
-            Self::maps_at(doc, root, PHOTO_ANALYSIS_OCR_KEY),
+            &Self::maps_at(doc, root, PHOTO_ANALYSIS_OCR_KEY),
             id,
         );
         let vision_state = Self::component_value::<VisionAnalysisComponent>(
             doc,
-            Self::maps_at(doc, root, PHOTO_ANALYSIS_VISION_KEY),
+            &Self::maps_at(doc, root, PHOTO_ANALYSIS_VISION_KEY),
             id,
         );
         let ocr = ocr_state.clone().unwrap_or(legacy_ocr);
@@ -1308,7 +1312,7 @@ impl PhotosDoc {
         }
         // Fresh imports carry only immutable core + order when metadata is at
         // its model default; retain non-default imported annotations.
-        if old.is_none() {
+        let Some(old) = old else {
             if photo.favorite {
                 Self::write_json_at(doc, favorite, &photo.id, &true);
             }
@@ -1343,52 +1347,36 @@ impl PhotosDoc {
                 Self::write_json_at(doc, location, &photo.id, &photo.location);
             }
             return;
-        }
-        if old.is_none_or(|value| value.favorite != photo.favorite) {
+        };
+        if old.favorite != photo.favorite {
             Self::write_json_at(doc, favorite, &photo.id, &photo.favorite);
         }
-        if old.and_then(|value| value.folder.as_ref()) != photo.folder.as_ref() {
+        if old.folder != photo.folder {
             Self::write_json_at(doc, folder, &photo.id, &photo.folder);
         }
-        if old.map(|value| &value.people) != Some(&photo.people) {
-            Self::write_label_delta(
-                doc,
-                people,
-                &photo.id,
-                &old.expect("existing photo").people,
-                &photo.people,
-            );
+        if old.people != photo.people {
+            Self::write_label_delta(doc, people, &photo.id, &old.people, &photo.people);
         }
-        if old.map(|value| &value.tags) != Some(&photo.tags) {
-            Self::write_label_delta(
-                doc,
-                tags,
-                &photo.id,
-                &old.expect("existing photo").tags,
-                &photo.tags,
-            );
+        if old.tags != photo.tags {
+            Self::write_label_delta(doc, tags, &photo.id, &old.tags, &photo.tags);
         }
-        if old.and_then(|value| value.captured_at.as_ref()) != photo.captured_at.as_ref() {
+        if old.captured_at != photo.captured_at {
             Self::write_json_at(doc, captured, &photo.id, &photo.captured_at);
         }
-        if old.and_then(|value| value.analysis.as_ref()) != photo.analysis.as_ref() {
+        if old.analysis != photo.analysis {
             Self::write_json_at(doc, analysis, &photo.id, &photo.analysis);
         }
-        let old_ocr = old
-            .and_then(|value| value.analysis.as_ref())
-            .and_then(Self::ocr_component);
+        let old_ocr = old.analysis.as_ref().and_then(Self::ocr_component);
         let next_ocr = photo.analysis.as_ref().and_then(Self::ocr_component);
         if old_ocr != next_ocr {
             Self::write_json_at(doc, analysis_ocr, &photo.id, &next_ocr);
         }
-        let old_vision = old
-            .and_then(|value| value.analysis.as_ref())
-            .and_then(Self::vision_component);
+        let old_vision = old.analysis.as_ref().and_then(Self::vision_component);
         let next_vision = photo.analysis.as_ref().and_then(Self::vision_component);
         if old_vision != next_vision {
             Self::write_json_at(doc, analysis_vision, &photo.id, &next_vision);
         }
-        if old.and_then(|value| value.location.as_ref()) != photo.location.as_ref() {
+        if old.location != photo.location {
             Self::write_json_at(doc, location, &photo.id, &photo.location);
         }
     }

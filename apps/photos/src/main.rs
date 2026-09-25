@@ -72,6 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature is fixed by the `LaunchSpec::new_with_args` root constructor callback"
+)]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // Live and headless launches restore the same persistent image content.
     photos::strings::install();
@@ -170,7 +174,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     // The shared shot policy: `QOS_SHOTS_THEME`, `--text-scale` /
     // `QOS_SHOTS_TEXT_SCALE` and the reduced-motion preference resolve the
     // same way here as in every app on the standard launcher.
-    render_scenario(scenario, viewport, ui::launch::shot_theme(args), out)
+    render_scenario(scenario, viewport, &ui::launch::shot_theme(args), out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -185,7 +189,7 @@ fn parse_size(s: &str) -> Option<(u32, u32)> {
 fn render_scenario(
     scenario: &str,
     viewport: (u32, u32),
-    theme: Theme,
+    theme: &Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
@@ -238,7 +242,7 @@ fn render_scenario(
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
         widget.sync(&mut state.doc, &state.root);
-        let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = widget.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy.new_with_children(
             Style {
                 size: Size {
@@ -274,7 +278,7 @@ fn render_scenario(
             &mut scene,
             Affine::IDENTITY,
             &mut text_renderer,
-            &theme,
+            theme,
             &presence,
             &permission,
         );
@@ -287,7 +291,7 @@ fn render_scenario(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
     );
 

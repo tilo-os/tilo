@@ -88,6 +88,12 @@ pub fn analyze_image(
 /// model receives only JPEG previews and stable photo ids.  The returned
 /// memberships remain local and must be reviewed before any person label is
 /// shared.
+///
+/// # Errors
+///
+/// Returns a user-facing message when the batch is empty or larger than
+/// [`tilo_vision::MAX_FACE_BATCH`], when a photograph's bytes are not yet
+/// available locally or cannot be decoded, or when face clustering fails.
 pub fn detect_people(
     images: Vec<(String, OpenImage)>,
     capability: &tilo_vision::LocalFaceCapability,
