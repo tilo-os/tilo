@@ -35,6 +35,7 @@ PORTAL_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/portals/tilo.portal"
 PORTAL_PREFERENCE_FILE="$OS_ROOT/usr/share/xdg-desktop-portal/tilo-portals.conf"
 DBUS_SERVICE_FILE="$OS_ROOT/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tilo.service"
 SYSTEMD_UNIT_FILE="$OS_ROOT/usr/lib/systemd/user/shell-portal.service"
+CONTAINERFILE="$OS_ROOT/Containerfile"
 
 EXPECTED_BUS_NAME="org.freedesktop.impl.portal.desktop.tilo"
 # Interfaces the Rust backend registers in `tilo_desktop::portal::serve`.
@@ -124,6 +125,27 @@ fi
 if assert_file_exists "$PORTAL_PREFERENCE_FILE"; then
     assert_contains "$PORTAL_PREFERENCE_FILE" '^\[preferred\]$'
     assert_contains "$PORTAL_PREFERENCE_FILE" '^default=tilo$'
+fi
+
+# The source tree contains the preference file even when the production image
+# does not. Assert its exact rootfs mapping whenever this check runs from the
+# source layout; Containerfile.test independently runs this script against the
+# assembled rootfs with OS_ROOT=/.
+if [[ -f "$CONTAINERFILE" ]]; then
+    # shellcheck source=lib/containerfile.sh
+    . "$OS_ROOT/tests/lib/containerfile.sh"
+    if ! containerfile_has_copy "$CONTAINERFILE" \
+        'os/usr/share/xdg-desktop-portal/portals/tilo.portal' \
+        '/usr/share/xdg-desktop-portal/portals/tilo.portal'; then
+        echo "FAIL: $CONTAINERFILE does not install the Tilo portal definition" >&2
+        fail=1
+    fi
+    if ! containerfile_has_copy "$CONTAINERFILE" \
+        'os/usr/share/xdg-desktop-portal/tilo-portals.conf' \
+        '/usr/share/xdg-desktop-portal/tilo-portals.conf'; then
+        echo "FAIL: $CONTAINERFILE does not install the Tilo portal preference" >&2
+        fail=1
+    fi
 fi
 
 # --- no second claimant for the bus name -----------------------------

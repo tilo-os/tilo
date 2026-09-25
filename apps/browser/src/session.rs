@@ -23,7 +23,7 @@ pub struct Snapshot {
 }
 pub struct SessionStore {
     root: PathBuf,
-    _lock: std::fs::File,
+    _lock: advisory_lock::FileLock,
 }
 impl Snapshot {
     /// Validate session version, URLs, active selection and pinned ordering.
@@ -63,15 +63,16 @@ impl SessionStore {
             return Err("Browser app root must be absolute".into());
         }
         std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(root.join("session.lock"))
-            .map_err(|e| e.to_string())?;
-        lock.try_lock()
-            .map_err(|_| "This browser app root is already open in another process".to_string())?;
+        let lock = advisory_lock::FileLock::try_open(
+            &root.join("session.lock"),
+            advisory_lock::LockMode::Exclusive,
+        )
+        .map_err(|error| match error {
+            advisory_lock::TryLockError::WouldBlock => {
+                "This browser app root is already open in another process".to_string()
+            }
+            advisory_lock::TryLockError::Error(error) => error.to_string(),
+        })?;
         // An interrupted replacement can leave a temp file. Never follow it.
         let next = root.join("session.next");
         if std::fs::symlink_metadata(&next)

@@ -8,6 +8,8 @@
 #     --bootloader systemd|grub|none
 #     --size 20G              whole-disk size (raised if the parts don't fit)
 #     --root-min 12G          minimum root partition size
+#     --root-max 40G          optional root partition ceiling
+#     --rootfs btrfs|ext4     root filesystem (default: btrfs)
 #     --esp 2G                ESP size
 #     --retain 3              rollback generations the ESP must hold (see below)
 #     --uki-budget 160M       per-generation kernel budget used by that check
@@ -15,6 +17,13 @@
 #     --no-default-kargs      drop the implicit rw + console=tty0,ttyS0
 #     --user NAME:PASS[:G,G]  create a login account in the installed system
 #     --target-imgref REF     what the installed system updates FROM
+#     --sealed-source-imgref REF
+#                            digest-equivalent registry mirror used for a sealed
+#                            install without first importing IMAGE locally
+#     --firstboot-seed FILE   install an installer-format NAME:SHA512_CRYPT seed;
+#                            create the account on first boot, never in this step
+#     --bootc-helper FILE     execute this verified ARM64 bootc inside the image
+#                            instead of the image's /usr/bin/bootc
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #
 # Why not bib: bib has no composefs, UKI or backend-selection surface anywhere
@@ -64,9 +73,12 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 IMAGE=""; OUTDIR=""
-COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ESP_SIZE=2G
+COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ROOT_MAX=""; ROOTFS=btrfs; ESP_SIZE=2G
 RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
-KARGS=(); USERSPEC=""; TARGET_IMGREF=""; KEEP_RAW=0; DEFAULT_KARGS=yes
+KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
+FIRSTBOOT_SEED=""
+BOOTC_HELPER=""
+KEEP_RAW=0; DEFAULT_KARGS=yes
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,6 +87,8 @@ while [ $# -gt 0 ]; do
     --bootloader) BOOTLOADER="$2"; shift ;;
     --size) SIZE="$2"; shift ;;
     --root-min) ROOT_MIN="$2"; shift ;;
+    --root-max) ROOT_MAX="$2"; shift ;;
+    --rootfs) ROOTFS="$2"; shift ;;
     --esp) ESP_SIZE="$2"; shift ;;
     --retain) RETAIN="$2"; shift ;;
     --uki-budget) UKI_BUDGET="$2"; shift ;;
@@ -82,6 +96,9 @@ while [ $# -gt 0 ]; do
     --no-default-kargs) DEFAULT_KARGS=no ;;
     --user) USERSPEC="$2"; shift ;;
     --target-imgref) TARGET_IMGREF="$2"; shift ;;
+    --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
+    --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
+    --bootc-helper) BOOTC_HELPER="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -91,8 +108,68 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$IMAGE" ] && [ -n "$OUTDIR" ] || { sed -n '2,20p' "$0"; exit 1; }
+case "$ROOTFS" in
+  btrfs|ext4) ;;
+  *) die "--rootfs must be btrfs or ext4, got: $ROOTFS" ;;
+esac
 
-podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
+if [ -n "$FIRSTBOOT_SEED" ]; then
+  [ -f "$FIRSTBOOT_SEED" ] && [ ! -L "$FIRSTBOOT_SEED" ] \
+    || die "--firstboot-seed must name a regular, non-symlink file"
+  [ "$(wc -l < "$FIRSTBOOT_SEED")" -eq 1 ] \
+    || die "--firstboot-seed must contain exactly one line"
+  IFS= read -r firstboot_line < "$FIRSTBOOT_SEED" || true
+  firstboot_user="${firstboot_line%%:*}"
+  firstboot_hash="${firstboot_line#*:}"
+  [[ "$firstboot_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] \
+    || die "--firstboot-seed contains an invalid account name"
+  # Use the production first-boot parser as the authority rather than carrying
+  # a second password-hash grammar in this disk tool.
+  source "$(dirname "${BASH_SOURCE[0]}")/../usr/libexec/tilo-firstboot-user"
+  valid_sha512_crypt "$firstboot_hash" \
+    || die "--firstboot-seed must contain a complete SHA-512 crypt hash"
+fi
+
+if [ -n "$BOOTC_HELPER" ]; then
+  [ -f "$BOOTC_HELPER" ] && [ ! -L "$BOOTC_HELPER" ] && [ -x "$BOOTC_HELPER" ] \
+    || die "--bootc-helper must name an executable regular, non-symlink file"
+  python3 - "$BOOTC_HELPER" <<'PY' \
+    || die "--bootc-helper must be an ARM64 ELF executable"
+import struct
+import sys
+
+with open(sys.argv[1], "rb") as source:
+    header = source.read(20)
+if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] not in (1, 2):
+    raise SystemExit(1)
+byteorder = "<" if header[5] == 1 else ">"
+if struct.unpack_from(byteorder + "H", header, 18)[0] != 183:  # EM_AARCH64
+    raise SystemExit(1)
+PY
+  BOOTC_HELPER="$(readlink -f "$BOOTC_HELPER")"
+fi
+
+if [ -z "$SEALED_SOURCE_IMGREF" ]; then
+  podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
+else
+  [ "$COMPOSEFS" = yes ] || die "--sealed-source-imgref requires --composefs"
+  [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] \
+    || die "--sealed-source-imgref requires digest-pinned IMAGE as the authoritative target-imgref"
+  command -v skopeo >/dev/null || die "--sealed-source-imgref requires skopeo to verify the mirror digest"
+  source_identity="$(skopeo inspect --tls-verify=false --format '{{.Name}} {{.Digest}}' \
+    "docker://${SEALED_SOURCE_IMGREF#docker://}")" \
+    || die "cannot inspect sealed registry source $SEALED_SOURCE_IMGREF"
+  read -r source_repository source_digest <<< "$source_identity"
+  [ -n "$source_repository" ] && [ -n "$source_digest" ] \
+    || die "sealed registry source inspection returned no repository or digest"
+  target_digest="sha256:${IMAGE##*@sha256:}"
+  [ "$source_digest" = "$target_digest" ] || die "sealed registry source digest is $source_digest,
+  but authoritative IMAGE is $target_digest. Refusing to install different content."
+  # From this point on, address the mirror by the digest that was just compared
+  # with the authoritative image. A mutable convenience tag is useful for
+  # populating the mirror, but it must not remain in the install invocation.
+  SEALED_SOURCE_IMGREF="$source_repository@$source_digest"
+fi
 
 # --- sizes -------------------------------------------------------------------
 # Everything is compared in MiB so a check can talk about "864 MiB" instead of
@@ -113,7 +190,11 @@ to_mib() {
 # A UKI in the image means bootc selects the composefs backend by itself, and
 # the install must agree — so detect rather than make the caller remember.
 HAS_UKI=no; WANTS_SYSTEMD_BOOT=no
-if podman run --rm --entrypoint /bin/sh "$IMAGE" \
+if [ -n "$SEALED_SOURCE_IMGREF" ]; then
+  # The explicit option names the source as sealed and its digest was verified
+  # above. Avoid importing a multi-gigabyte image only to rediscover that fact.
+  HAS_UKI=yes
+elif podman run --rm --entrypoint /bin/sh "$IMAGE" \
      -c 'ls /boot/EFI/Linux/*.efi >/dev/null 2>&1'; then
   HAS_UKI=yes
 fi
@@ -125,7 +206,7 @@ fi
 # backend, whether or not it has a UKI. This is also why the last bib-built
 # desktop qcow2 could not have had systemd-boot: bib hits the same refusal, from
 # the same drop-in.
-if podman run --rm --entrypoint /bin/sh "$IMAGE" \
+if [ -z "$SEALED_SOURCE_IMGREF" ] && podman run --rm --entrypoint /bin/sh "$IMAGE" \
      -c 'grep -rqs "bootloader *= *\"systemd\"" /usr/lib/bootc/install/'; then
   WANTS_SYSTEMD_BOOT=yes
 fi
@@ -213,6 +294,11 @@ REPAIR_UKI=1
 KERNEL_FS_SLACK_MIB=64
 esp_mib="$(to_mib "$ESP_SIZE")"
 root_mib="$(to_mib "$ROOT_MIN")"
+if [ -n "$ROOT_MAX" ]; then
+  root_max_mib="$(to_mib "$ROOT_MAX")"
+  [ "$root_max_mib" -ge "$root_mib" ] \
+    || die "--root-max $ROOT_MAX is smaller than --root-min $ROOT_MIN"
+fi
 uki_mib="$(to_mib "$UKI_BUDGET")"
 [ "$RETAIN" -ge 1 ] 2>/dev/null || die "--retain must be a positive integer, got: $RETAIN"
 kernels_need=$(( (RETAIN + RETAINED_NEWER + REPAIR_UKI) * uki_mib + KERNEL_FS_SLACK_MIB ))
@@ -255,11 +341,25 @@ QCOW="$OUTDIR/disk.qcow2"
 MNT="$OUTDIR/.mnt"
 DEFS="$OUTDIR/.repart.d"
 LOG="$OUTDIR/.install.log"
+ESP_VERIFY="$OUTDIR/.esp-verify"
+ESP_STAGED=0
+ESP_STAGE_BIND_MOUNTED=0
+ESP_STAGE=""
+ESP_UUID=""
 
 cleanup() {
+  if [ "$ESP_STAGE_BIND_MOUNTED" = 1 ]; then
+    sudo -n umount "$ESP_AT" 2>/dev/null || true
+    ESP_STAGE_BIND_MOUNTED=0
+  fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
-  rm -rf "$DEFS"
+  if [ -n "$ESP_STAGE" ] && [ -d "$ESP_STAGE" ]; then
+    sudo -n rm -rf -- "$ESP_STAGE" 2>/dev/null || true
+    ESP_STAGE=""
+  fi
+  [ -z "${SOURCE_POLICY:-}" ] || rm -f "$SOURCE_POLICY"
+  rm -rf "$DEFS" "$ESP_VERIFY"
 }
 trap cleanup EXIT
 
@@ -271,7 +371,7 @@ trap cleanup EXIT
 # splitstream reader: Invalid splitstream content type". The same image pulled
 # over HTTP installs. So a local registry is started and the image published to
 # it; this is a new requirement of dropping bib.
-REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=()
+REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=(); SOURCE_POLICY=""
 start_registry() {
   local want="${TILO_DISK_REG_PORT:-5000}" port
   # An already-present registry container of ours is authoritative: reuse it on
@@ -309,7 +409,39 @@ start_registry() {
   return 1
 }
 
-if [ "$COMPOSEFS" = yes ]; then
+if [ -n "$SEALED_SOURCE_IMGREF" ]; then
+  RUNREF="${SEALED_SOURCE_IMGREF#docker://}"
+  SRC_REF="docker://$RUNREF"
+  REG="${RUNREF%%/*}"
+  TLS_ARGS=(--tls-verify=false)
+  REGCONF="$OUTDIR/.registries.conf"
+  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+  # The image's runtime policy correctly trusts its signed authoritative
+  # repository, not an unsigned transport mirror. bootc evaluates the running
+  # mirror reference against that policy before install, so give this one
+  # invocation a policy that rejects everything except the digest-verified
+  # mirror repository. This file is bind-mounted over the running container's
+  # policy only; the installed system retains the policy shipped in the image.
+  SOURCE_POLICY="$OUTDIR/.source-policy.json"
+  python3 - "$SOURCE_POLICY" "$source_repository" <<'PY'
+import json
+import sys
+
+path, repository = sys.argv[1:]
+policy = {
+    "default": [{"type": "reject"}],
+    "transports": {
+        "docker": {
+            repository: [{"type": "insecureAcceptAnything"}],
+        },
+    },
+}
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(policy, output, separators=(",", ":"))
+    output.write("\n")
+PY
+  msg "using verified sealed registry source $SRC_REF (no local import or republish)"
+elif [ "$COMPOSEFS" = yes ]; then
   REG="$(start_registry)" || die "could not bring up a local registry, and the composefs
   backend cannot install from container storage: pulling an image out of
   containers-storage (or one moved across with \`podman save | sudo podman load\`)
@@ -351,10 +483,13 @@ fi
 mkdir -p "$DEFS"
 printf '[Partition]\nType=esp\nFormat=vfat\nSizeMinBytes=%s\nSizeMaxBytes=%s\n' \
   "$ESP_SIZE" "$ESP_SIZE" > "$DEFS/01-esp.conf"
-printf '[Partition]\nType=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab\nLabel=Tilo root\nFormat=btrfs\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
-  "$ROOT_MIN" > "$DEFS/02-root.conf"
+printf '[Partition]\nType=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab\nLabel=Tilo root\nFormat=%s\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
+  "$ROOTFS" "$ROOT_MIN" > "$DEFS/02-root.conf"
+if [ -n "$ROOT_MAX" ]; then
+  printf 'SizeMaxBytes=%s\n' "$ROOT_MAX" >> "$DEFS/02-root.conf"
+fi
 
-msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + btrfs root >= $ROOT_MIN, disk $SIZE)"
+msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + $ROOTFS root >= $ROOT_MIN, disk $SIZE)"
 rm -f "$RAW"
 truncate -s "$SIZE" "$RAW"
 sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
@@ -366,8 +501,45 @@ mkdir -p "$MNT"
 sudo -n mount "${LOOP}p2" "$MNT"
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
 sudo -n mkdir -p "$ESP_AT"
-sudo -n mount "${LOOP}p1" "$ESP_AT"
-msg "2/4 mounted ${LOOP}p2 -> $MNT, ${LOOP}p1 -> $ESP_AT"
+if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
+   && sudo -n mount "${LOOP}p1" "$ESP_AT" 2>"$OUTDIR/.esp-mount.log"; then
+  msg "2/4 mounted ${LOOP}p2 -> $MNT, ${LOOP}p1 -> $ESP_AT"
+else
+  if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
+     && grep -qw vfat /proc/filesystems 2>/dev/null; then
+    die "mounting the vfat ESP ${LOOP}p1 at $ESP_AT failed even though this kernel
+  advertises vfat support. Refusing to hide a disk or mount failure behind the
+  userspace ESP fallback. See $OUTDIR/.esp-mount.log"
+  fi
+  command -v mcopy >/dev/null \
+    || die "this kernel cannot mount vfat and mcopy is unavailable; install mtools"
+  ESP_UUID="$(sudo -n blkid -s UUID -o value "${LOOP}p1")"
+  [[ "$ESP_UUID" =~ ^[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}$ ]] \
+    || die "could not read the formatted ESP UUID from ${LOOP}p1"
+  # bootc's empty-root verifier requires /boot (or /boot/efi) to be a mount
+  # point and rejects every unrelated directory inside the target root. Keep
+  # the bind source outside $MNT on a real host filesystem with a UUID. bootc
+  # can inspect that mount while --boot-mount-spec below remains authoritative
+  # for the real ESP UUID in the UKI arguments and installed fstab.
+  esp_stage_parent="${TILO_DISK_ESP_STAGE_PARENT:-/var/tmp}"
+  [ -d "$esp_stage_parent" ] \
+    || die "ESP staging parent does not exist: $esp_stage_parent"
+  ESP_STAGE="$(mktemp -d "$esp_stage_parent/tilo-esp-stage.XXXXXX")"
+  chmod 0700 "$ESP_STAGE"
+  case "$(readlink -f "$ESP_STAGE")/" in
+    "$(readlink -f "$MNT")/"*) die "ESP staging directory must be outside the target root" ;;
+  esac
+  esp_stage_uuid="$(findmnt -n -o UUID --target "$ESP_STAGE")"
+  [ -n "$esp_stage_uuid" ] \
+    || die "ESP staging filesystem at $ESP_STAGE has no UUID; choose a real host filesystem with TILO_DISK_ESP_STAGE_PARENT"
+  sudo -n mount --bind "$ESP_STAGE" "$ESP_AT" \
+    || die "could not bind the ESP staging directory at $ESP_AT"
+  sudo -n mount -o remount,bind,nosuid,nodev,noexec "$ESP_AT" \
+    || die "could not apply safe options to the ESP staging bind mount"
+  ESP_STAGE_BIND_MOUNTED=1
+  ESP_STAGED=1
+  msg "2/4 mounted ${LOOP}p2 -> $MNT; staging ESP files at $ESP_AT for mtools"
+fi
 
 # --- install ------------------------------------------------------------------
 # --generic-image is what keeps the install off the *build host's* firmware: it
@@ -378,6 +550,8 @@ install_args=(to-filesystem --generic-image --skip-fetch-check
   --target-imgref "$TARGET_IMGREF")
 [ "$COMPOSEFS" = yes ] && install_args+=(--composefs-backend)
 [ -n "$BOOTLOADER" ] && install_args+=(--bootloader "$BOOTLOADER")
+[ "$ESP_STAGED" = 1 ] && [ "$BOOT_IS_ESP" = yes ] \
+  && install_args+=(--boot-mount-spec "UUID=$ESP_UUID")
 [ -n "$SRC_REF" ] && install_args+=(--source-imgref "$SRC_REF")
 install_args+=("${KARGS[@]+"${KARGS[@]}"}")
 install_args+=("/run/host$MNT")
@@ -386,14 +560,34 @@ run_args=(--rm --privileged --pid=host
   --security-opt label=type:unconfined_t
   -v /var/lib/containers:/var/lib/containers
   -v /dev:/dev -v /:/run/host)
+# Older bootc resolves the loop backing device while test-mounting composefs.
+# A container-private udev database knows nothing about host loop devices even
+# though /dev itself is shared, producing "Can't lookup blockdev". Project only
+# the host's runtime udev metadata, read-only, when it actually contains a data
+# database. This is an install-harness compatibility seam, not image content.
+host_udev_dir="${TILO_DISK_HOST_UDEV_DIR:-/run/udev}"
+if [ -d "$host_udev_dir/data" ]; then
+  host_udev_dir="$(readlink -f "$host_udev_dir")"
+  run_args+=(-v "$host_udev_dir:/run/udev:ro")
+fi
+bootc_argv=(bootc)
+if [ -n "$BOOTC_HELPER" ]; then
+  run_args+=(-v "$BOOTC_HELPER:/run/tilo-installer-bootc:ro"
+    --entrypoint /run/tilo-installer-bootc)
+  bootc_argv=()
+  msg "using explicit ARM64 bootc helper $BOOTC_HELPER"
+fi
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
     -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
 fi
+if [ -n "$SOURCE_POLICY" ]; then
+  run_args+=(-v "$SOURCE_POLICY:/etc/containers/policy.json:ro")
+fi
 
 msg "3/4 bootc install ${install_args[*]}"
 if ! sudo -n podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
-       "$RUNREF" bootc install "${install_args[@]}" 2>&1 | tee "$LOG"; then
+       "$RUNREF" "${bootc_argv[@]}" install "${install_args[@]}" 2>&1 | tee "$LOG"; then
   # The two failures that are specific to dropping bib get named, because
   # neither message says what to do about it.
   if grep -q 'Invalid splitstream content type' "$LOG"; then
@@ -466,6 +660,73 @@ if [ -n "$USERSPEC" ]; then
       fc=/etc/selinux/targeted/contexts/files/file_contexts
       [ -r \"\$fc\" ] || { echo 'no file_contexts in the image; home left unlabelled' >&2; exit 1; }
       setfiles -F \"\$fc\" /var/home"
+fi
+
+# Exercise the same one-use account handoff as the graphical installer. This
+# deliberately does not call useradd: the baked first-boot service validates
+# and consumes the seed on the installed system, before greetd starts.
+if [ -n "$FIRSTBOOT_SEED" ]; then
+  t_etc="$(sudo -n sh -c "ls -d $MNT/state/deploy/*/etc $MNT/ostree/deploy/*/deploy/*/etc 2>/dev/null | head -1")"
+  [ -n "$t_etc" ] || die "could not find the installed system's /etc under $MNT"
+  sudo -n mount -o remount,rw "$MNT"
+  sudo -n install -d -m 0755 "$t_etc/tilo" \
+    "$t_etc/systemd/system/multi-user.target.wants"
+  sudo -n install -m 0600 "$FIRSTBOOT_SEED" "$t_etc/tilo/install-user.conf"
+  sudo -n ln -sfn /usr/lib/systemd/system/tilo-firstboot-user.service \
+    "$t_etc/systemd/system/multi-user.target.wants/tilo-firstboot-user.service"
+  msg "seeded $firstboot_user for first-boot account creation"
+fi
+
+# WSL kernels can omit vfat entirely. bootc can still finalize the boot tree in
+# the root filesystem; copy that tree into the already-formatted ESP with
+# mtools, verify every payload byte by copying it back, and only then remove the
+# staging copy. Native Linux keeps the normal mounted-vfat path above.
+if [ "$ESP_STAGED" = 1 ]; then
+  shopt -s dotglob nullglob
+  esp_entries=("$ESP_AT"/*)
+  [ "${#esp_entries[@]}" -gt 0 ] || die "bootc produced no staged ESP payload at $ESP_AT"
+  esp_payload_bytes="$(sudo -n du -sb "$ESP_AT" | awk '{print $1}')"
+  [ "$esp_payload_bytes" -le $(( esp_mib * 1024 * 1024 )) ] \
+    || die "staged ESP payload exceeds the formatted ${esp_mib} MiB partition"
+  if sudo -n find "$ESP_AT" -mindepth 1 \( -type l -o ! -type d ! -type f \) -print -quit \
+       | grep -q .; then
+    die "staged ESP contains a symlink or special file, which mtools cannot preserve safely"
+  fi
+  rm -rf "$ESP_VERIFY"
+  mkdir -p "$ESP_VERIFY"
+  msg "copying finalized ESP payload to ${LOOP}p1 with mtools"
+  sudo -n mcopy -s -p -m -i "${LOOP}p1" "${esp_entries[@]}" ::/
+  sudo -n mcopy -s -p -m -i "${LOOP}p1" '::/*' "$ESP_VERIFY/"
+  sudo -n chown -R "$(id -u):$(id -g)" "$ESP_VERIFY"
+  (
+    cd "$ESP_AT"
+    find . -type f -print0 | sort -z | xargs -0 -r sha256sum
+  ) >"$OUTDIR/.esp-source.sha256"
+  (
+    cd "$ESP_VERIFY"
+    find . -type f -print0 | sort -z | xargs -0 -r sha256sum
+  ) >"$OUTDIR/.esp-copied.sha256"
+  cmp -s "$OUTDIR/.esp-source.sha256" "$OUTDIR/.esp-copied.sha256" \
+    || die "mtools ESP verification failed; staged /boot was left intact"
+  if [ "$BOOT_IS_ESP" = yes ]; then
+    t_etc="$(sudo -n sh -c "ls -d $MNT/state/deploy/*/etc $MNT/ostree/deploy/*/deploy/*/etc 2>/dev/null | head -1")"
+    [ -n "$t_etc" ] || die "could not find installed /etc to verify the ESP mount specification"
+    [ "$(sudo -n awk -v source="UUID=$ESP_UUID" \
+        '$1 == source && $2 == "/boot" { count++ } END { print count + 0 }' \
+        "$t_etc/fstab")" -eq 1 ] \
+      || die "installed fstab does not contain exactly one /boot entry for ESP UUID=$ESP_UUID"
+  fi
+  sudo -n mount -o remount,rw "$MNT"
+  sudo -n find "$ESP_AT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  [ -z "$(sudo -n find "$ESP_AT" -mindepth 1 -print -quit)" ] \
+    || die "could not remove the verified duplicate ESP payload from the root filesystem"
+  sudo -n umount "$ESP_AT" \
+    || die "verified ESP copy, but could not unmount its staging bind mount"
+  ESP_STAGE_BIND_MOUNTED=0
+  sudo -n rmdir "$ESP_STAGE" \
+    || die "could not remove the empty ESP staging directory"
+  ESP_STAGE=""
+  msg "verified ESP payload and removed its temporary staging mount"
 fi
 
 cleanup

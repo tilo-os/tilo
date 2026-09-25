@@ -21,6 +21,7 @@ from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILES_DIR, load_de
 
 FIRMWARE_PATH = Path("usr/lib/firmware")
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
+PARSER_PATH = Path("usr/lib/tilo/hardware_profile.py")
 DRACUT_PATH = Path("etc/dracut.conf.d/41-tilo-hardware.conf")
 
 
@@ -74,6 +75,28 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
             raise ValueError("hardware profile device tree has an invalid flattened-device-tree header")
 
     firmware_names = definition["firmware"]
+    system_firmware = definition.get("system_firmware", [])
+    # These files come from the image's reviewed distro RPM snapshot rather
+    # than the board-local OEM artifact. Require their installed bytes before
+    # writing any generated profile state, and explicitly carry them into the
+    # pre-root initramfs where a modular display driver requests them.
+    installed_system_firmware = []
+    for path in system_firmware:
+        logical = FIRMWARE_PATH / path
+        representations = []
+        for suffix in ("", ".xz", ".zst"):
+            relative = Path(str(logical) + suffix)
+            candidate = checked_path(root, relative, required=False)
+            if candidate.exists() or candidate.is_symlink():
+                representations.append((relative, checked_path(root, relative, required=True)))
+        if not representations:
+            raise ValueError(f"required system firmware is missing: {path}")
+        if len(representations) != 1:
+            raise ValueError(f"required system firmware has ambiguous installed representations: {path}")
+        relative, installed = representations[0]
+        if installed.stat().st_size == 0:
+            raise ValueError(f"required system firmware is empty: {path}")
+        installed_system_firmware.append(relative.relative_to(FIRMWARE_PATH).as_posix())
     manifest_path = checked_path(firmware_dir, Path("manifest.json"), required=True) if firmware_names else None
     manifest = {"schema_version": 1, "profile": profile, "files": {}}
     if manifest_path and manifest_path.stat().st_size > 16384:
@@ -110,7 +133,15 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
     }
     outputs[PROFILE_PATH] = (json.dumps(document, indent=2) + "\n").encode("utf-8")
     outputs[DEFINITION_PATH] = (json.dumps(definition, indent=2) + "\n").encode("utf-8")
-    firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in firmware_names.values())
+    # The runtime backend validates the definition with this parser. Keep
+    # both in the same image generation; an older parser rejects schema 2
+    # definitions even when their firmware and DTB bytes are valid.
+    parser = Path(__file__).with_name("hardware_profile.py").read_bytes().replace(b"\r\n", b"\n")
+    if not parser or b"\r" in parser or b"\0" in parser:
+        raise ValueError("hardware profile parser is not a valid LF script")
+    outputs[PARSER_PATH] = parser
+    initramfs_firmware = [*firmware_names.values(), *installed_system_firmware]
+    firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in initramfs_firmware)
     outputs[DRACUT_PATH] = (
         "# Hardware-profile firmware needed before the encrypted root is unlocked.\n"
         f'install_items+=" {firmware_paths} "\n'

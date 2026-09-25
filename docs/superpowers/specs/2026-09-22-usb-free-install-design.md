@@ -30,7 +30,7 @@ Elevated staging helper (same Imager binary, --tilo-staging-helper)
   → create owned Boot#### entry → set BootNext → record every step
 Imager
   "Restart to install Tilo" → user restarts
-Firmware consumes BootNext → staged live installer (tilo.install, root=UUID=<staging root>)
+Firmware consumes BootNext → staged live installer (tilo.install, root=tilo-auto → staging root)
   installer reads handoff, revalidates disk/partitions, preselects guided alongside
   in the reviewed free extent → user confirms → install → owned staging entry removed,
   BootNext → installed Tilo, BootOrder restored unchanged (Windows stays default)
@@ -61,16 +61,39 @@ extent.
   can pick more, up to what the shrink allows.
 - **Staging ESP**: GPT type ESP `c12a7328-f81f-11d2-ba4b-00a0c93ec93b`, name
   `Tilo installer boot`, size = bundle `minimum_partition_bytes` of `staging-esp`.
-- **Staging root**: GPT type Linux filesystem `0fc63daf-8483-4772-8e79-3d69d8477de4`
-  (deliberately *not* the Tilo root type, so installed-target discovery still
-  finds exactly one Tilo root), name `Tilo installer`, size =
-  `minimum_partition_bytes` of `staging-root` (≥ 40 GiB, the live root floor).
+- **Staging root**: GPT type Tilo staging root `d4c4daf6-f72c-43ee-b8e3-5ba32550311d`,
+  name `Tilo installer`, size = `minimum_partition_bytes` of `staging-root`
+  (≥ 40 GiB, the live root floor). See "Root discovery" below for why it has
+  its own type.
 - Staging sits immediately *after* the target free extent. The target root ends
   where staging begins, so reclaim can grow the root in place.
 - Alignment is 1 MiB for every start and size. Nothing is placed within 1 MiB
   of an existing partition.
 - Neither staging partition gets a drive letter (Windows `-NoDefaultDriveLetter`,
   no `AssignDriveLetter`).
+
+### Root discovery
+
+Every Tilo UKI, live or installed, carries `root=tilo-auto`.
+`os/usr/libexec/tilo-root-discover` resolves it in the initrd on the physical
+disk that holds the ESP systemd-stub booted from (`LoaderDevicePartUUID`), and
+each UKI kind selects only its own partition type:
+
+| booted UKI | selects on the boot ESP's disk |
+|---|---|
+| installed (no `tilo.install`) | exactly one Tilo root (`7a2e8d75-…`); staging roots are never considered |
+| live installer (`tilo.install`) | exactly one Tilo staging root (`d4c4daf6-…`) if the disk has any, else exactly one Tilo root (a removable live medium) |
+
+Zero or several candidates of the selected kind fail the boot closed. From the
+end of installation until `tilo-staging-reclaim` runs, the disk holds both the
+staging root and the new Tilo root. The installed UKI boots the Tilo root. If the
+staged installer boots again, for example after a failed attempt that already
+created the target partitions, it still boots its own staging root. Neither
+case can be ambiguous, so the installer does not have to retype or remove
+anything before it reboots. The installer and reclaim identify the staging
+root by this type as well as by its GUID and extent. The generic Linux type is
+not enough: another distribution beside Tilo may have many partitions of that
+type.
 
 Space needed = staging ESP + staging root + target extent. On Windows the shrink
 amount is `need − usable unallocated space already after C:`. It is refused if
@@ -87,12 +110,15 @@ validator (`apps/imager/src/setup/internal_bundle.rs`) and the Python exporter
 - `purpose`: `tilo-internal-installer`. `release.rs` `InternalMetadata.purpose`
   matches it.
 - Command-line tokens use the live image's real names: `tilo.install`,
-  `tilo.mode=normal`, `tilo.generation=N`, `tilo.luks=` + 45 zeros,
-  `tilo.unlock=` + 75 zeros. The legacy `qos.*` tokens are rejected.
-- `root=UUID=<staging-root filesystem UUID>` replaces the live placeholder
-  `tilo.root=` + 37 zeros. The placeholder is one byte longer than the
-  replacement, so the exporter writes `root=UUID=<uuid>` followed by one space.
-  That keeps the `.cmdline` section length and every later PE offset unchanged.
+  `tilo.mode=normal`, `tilo.generation=N`, `root=tilo-auto`,
+  `rd.luks.options=tpm2-device=auto,fido2-device=auto`. The legacy `qos.*`
+  tokens, device-bound roots (`root=UUID=…`) and the retired `tilo.root=`,
+  `tilo.luks=` and `tilo.unlock=` slots are rejected.
+- The staging ESP carries the live UKI exactly as built and signed. The
+  exporter does not rewrite its command line: the staging root is found
+  through `root=tilo-auto` and its partition type (§2, "Root discovery").
+  `boot_binding.uki_sha256` is the digest of the release's live UKI, and the
+  manifest binds no root locator.
 - Component `staging-root`: `byte_size` is the **minimised** btrfs image. The
   exporter shrinks the filesystem with `btrfs filesystem resize` to its minimum
   plus 1 GiB slack, then truncates. `minimum_partition_bytes` stays the live root
@@ -101,9 +127,8 @@ validator (`apps/imager/src/setup/internal_bundle.rs`) and the Python exporter
 - Component `staging-esp`: the exported ESP image. `minimum_partition_bytes` ≥
   `byte_size`.
 - `boot_binding.efi_path`: the fallback loader path inside the staging ESP
-  (`/EFI/BOOT/BOOTX64.EFI` or `/EFI/BOOT/BOOTAA64.EFI`). It must resolve to
-  systemd-boot or to the specialised live UKI. Either way the root locator is
-  the one bound in the manifest.
+  (`/EFI/BOOT/BOOTX64.EFI` or `/EFI/BOOT/BOOTAA64.EFI`). The exporter copies
+  the unchanged live UKI there, so both paths boot identical bytes.
 
 The writer zeroes the first and last 1 MiB of each staging partition before
 writing. This prevents stale signatures (for example NTFS remnants from the

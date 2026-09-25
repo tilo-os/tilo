@@ -32,6 +32,7 @@ import uuid
 EFI_GLOBAL = '8be4df61-93ca-11d2-aa0d-00e098032b8c'
 ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
 LINUX_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+STAGING_ROOT_TYPE = 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d'
 TILO_ROOT_TYPE = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 MIB_SECTORS = 2048
 TILO_ESP_BYTES = 2 << 30
@@ -216,8 +217,8 @@ def check_staged(baseline, staged, summary):
                         'staging ESP type or extent differs from the plan')
         verdict.require(esp['name'] == 'Tilo installer boot', 'staging ESP is not named "Tilo installer boot"')
     if verdict.require(root is not None, 'staging root with the planned GUID is missing'):
-        verdict.require((root['type'], root['first_lba'], root['last_lba']) == (LINUX_TYPE, root_first, root_last),
-                        'staging root type or extent differs from the plan (must be the generic Linux type)')
+        verdict.require((root['type'], root['first_lba'], root['last_lba']) == (STAGING_ROOT_TYPE, root_first, root_last),
+                        'staging root type or extent differs from the plan (must be the Tilo staging root type)')
         verdict.require(root['name'] == 'Tilo installer', 'staging root is not named "Tilo installer"')
     verdict.require(esp_first == target_last + 1, 'staging ESP does not start right after the target extent')
     verdict.require(root_first == esp_last + 1, 'staging root does not follow the staging ESP')

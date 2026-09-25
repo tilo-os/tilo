@@ -7,13 +7,13 @@
 //! and the Python suite derives that fixture's command line from the live
 //! installer's real kargs (design spec 2026-09-22-usb-free-install §3).
 
+use super::staging::STAGING_ROOT_TYPE;
 use serde::Deserialize;
 use std::{path::Path, sync::atomic::AtomicBool};
 
 pub const MAX_MANIFEST_BYTES: usize = 65_536;
 const MAX_IMAGE_BYTES: u64 = 1 << 40;
 const ESP_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-const ROOT_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
 /// The only manifest schema this build accepts. Schema 1 predates the
 /// qos→tilo rename and could never validate a real live image.
 pub const SCHEMA: u32 = 2;
@@ -22,7 +22,10 @@ pub const PURPOSE: &str = "tilo-internal-installer";
 /// The staging root partition is never smaller than the live root floor, even
 /// though its minimised image is; the live installer grows it at boot.
 pub const LIVE_ROOT_FLOOR_BYTES: u64 = 40 << 30;
-/// Bare flags the specialised live command line carries (os/Containerfile.installer).
+/// The one root locator every Tilo UKI carries; os/usr/libexec/tilo-root-discover
+/// resolves it on the disk whose ESP booted the UKI.
+pub const ROOT_LOCATOR: &str = "tilo-auto";
+/// Bare flags the live command line carries (os/Containerfile.installer).
 const LIVE_FLAGS: [&str; 6] = [
     "rw",
     "quiet",
@@ -33,7 +36,7 @@ const LIVE_FLAGS: [&str; 6] = [
 ];
 
 /// The removable-media fallback loader a staging ESP boots through. The
-/// exporter installs the specialised live UKI itself at this path.
+/// exporter installs the unchanged live UKI itself at this path.
 pub fn fallback_loader(architecture: &str) -> Option<&'static str> {
     match architecture {
         "x86_64" => Some("/EFI/BOOT/BOOTX64.EFI"),
@@ -78,7 +81,6 @@ struct BootBinding {
     uki_architecture: String,
     uki_sha256: String,
     uki_cmdline: String,
-    root_locator: String,
     composefs_digest: String,
 }
 
@@ -125,17 +127,13 @@ impl InternalBundle {
         self.component(index)
     }
 
-    /// Fallback loader path inside the staging ESP; it holds the specialised UKI.
+    /// Fallback loader path inside the staging ESP; it holds the live UKI.
     pub fn efi_path(&self) -> &str {
         &self.manifest.boot_binding.efi_path
     }
-    /// SHA-256 of the specialised UKI at `efi_path`.
+    /// SHA-256 of the live UKI at `efi_path`, as built and signed.
     pub fn uki_sha256(&self) -> &str {
         &self.manifest.boot_binding.uki_sha256
-    }
-    /// `UUID=<staging root fsid>`, exactly as bound on the UKI command line.
-    pub fn root_locator(&self) -> &str {
-        &self.manifest.boot_binding.root_locator
     }
 
     pub fn release_id(&self) -> &str {
@@ -185,7 +183,7 @@ fn guid(value: &str) -> bool {
         })
 }
 
-/// Accept exactly the specialised live installer command line. Mirrors
+/// Accept exactly the live installer command line, as built. Mirrors
 /// `validate_cmdline` in os/dev/internal-bundle.py.
 fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
     let text = &boot.uki_cmdline;
@@ -221,11 +219,10 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
             *token == name
         } else {
             match name {
-                "root" => value == boot.root_locator,
+                "root" => value == ROOT_LOCATOR,
+                "rd.luks.options" => value == "tpm2-device=auto,fido2-device=auto",
                 "composefs" => value == boot.composefs_digest,
                 "tilo.mode" => value == "normal",
-                "tilo.luks" => value.len() == 45 && value.bytes().all(|c| c == b'0'),
-                "tilo.unlock" => value.len() == 75 && value.bytes().all(|c| c == b'0'),
                 "init_on_alloc" | "init_on_free" | "page_alloc.shuffle" => value == "1",
                 "lockdown" => value == "integrity",
                 "randomize_kstack_offset" => value == "on",
@@ -349,10 +346,10 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
                 "unsupported ESP",
             )?;
         } else {
-            // Deliberately the generic Linux type, never the Tilo root type:
-            // installed-target discovery must keep seeing exactly one Tilo root.
+            // The Tilo staging root type, never the Tilo root type: an
+            // installed UKI must keep seeing exactly one Tilo root beside it.
             require(
-                c.partition_type_guid == ROOT_GUID
+                c.partition_type_guid == STAGING_ROOT_TYPE
                     && c.filesystem_type == "btrfs"
                     && guid(&c.filesystem_uuid),
                 "unsupported root",
@@ -374,17 +371,11 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
         end = offset + size;
     }
     let boot = &data.boot_binding;
-    let root = data
-        .components
-        .iter()
-        .find(|c| c.role == "staging-root")
-        .ok_or("missing root")?;
     require(
         boot.uki_architecture == data.architecture
             && fallback_loader(&data.architecture) == Some(boot.efi_path.as_str())
             && canonical_digest(&boot.uki_sha256, 64)
-            && canonical_digest(&boot.composefs_digest, 128)
-            && boot.root_locator == format!("UUID={}", root.filesystem_uuid),
+            && canonical_digest(&boot.composefs_digest, 128),
         "invalid boot binding",
     )?;
     validate_cmdline(boot)?;
@@ -967,7 +958,7 @@ pub(crate) mod tests {
     /// The one fixture both validators accept. os/tests/internal_bundle_test.py
     /// derives its command line from the live image's kargs.d and
     /// Containerfile.installer, so this also proves the Rust allow-list
-    /// accepts the real specialised live command line. Its payloads are
+    /// accepts the real live command line. Its payloads are
     /// ordinary synthetic bytes, not filesystems or a bootable UKI.
     const SHARED_FIXTURE: &str =
         include_str!("../../../../os/tests/fixtures/internal-bundle-v2.json");
@@ -999,12 +990,12 @@ pub(crate) mod tests {
         assert_eq!(bundle.purpose(), "tilo-internal-installer");
     }
     #[test]
-    fn shared_fixture_is_the_specialised_live_cmdline() {
+    fn shared_fixture_is_the_live_cmdline() {
         let text = cmdline();
         let tokens: Vec<_> = text.split_ascii_whitespace().collect();
-        let bound = format!("root=UUID={ROOT_UUID}");
         for token in [
-            bound.as_str(),
+            "root=tilo-auto",
+            "rd.luks.options=tpm2-device=auto,fido2-device=auto",
             "tilo.install",
             "tilo.mode=normal",
             "tilo.generation=7",
@@ -1013,12 +1004,10 @@ pub(crate) mod tests {
         ] {
             assert!(tokens.contains(&token), "fixture lacks {token}");
         }
-        assert!(tokens.contains(&format!("tilo.luks={}", "0".repeat(45)).as_str()));
-        assert!(tokens.contains(&format!("tilo.unlock={}", "0".repeat(75)).as_str()));
-        // Length-stable binding: the 47-byte placeholder became the root plus
-        // one space, so the next token follows after two spaces.
-        assert!(text.contains(&format!("{bound}  ")));
         assert!(!text.contains("tilo.root="));
+        assert!(!text.contains("root=UUID="));
+        assert!(!text.contains("tilo.luks="));
+        assert!(!text.contains("tilo.unlock="));
     }
     #[test]
     fn rejects_single_field_schema_corruptions() {
@@ -1064,12 +1053,15 @@ pub(crate) mod tests {
                 "/components/1/partition_type_guid",
                 json!("7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"),
             ),
+            (
+                "/components/1/partition_type_guid",
+                json!("0fc63daf-8483-4772-8e79-3d69d8477de4"),
+            ),
             ("/boot_binding/uki_architecture", json!("aarch64")),
             ("/boot_binding/efi_path", json!("/EFI/../evil.efi")),
             ("/boot_binding/efi_path", json!("/EFI/Linux/fixture.efi")),
             ("/boot_binding/efi_path", json!("/EFI/BOOT/BOOTAA64.EFI")),
             ("/boot_binding/efi_path", json!("/EFI/BOOT/bootx64.efi")),
-            ("/boot_binding/root_locator", json!("UUID=other")),
             ("/boot_binding/composefs_digest", json!("c".repeat(128))),
             ("/boot_binding/uki_sha256", json!("A".repeat(64))),
         ];
@@ -1091,14 +1083,13 @@ pub(crate) mod tests {
         let view = bundle.component_by_role("staging-root").unwrap();
         assert_eq!(view.minimum_partition_bytes, LIVE_ROOT_FLOOR_BYTES);
         assert_eq!(view.byte_size, 8192);
-        assert_eq!(view.partition_type_guid, ROOT_GUID);
+        assert_eq!(view.partition_type_guid, STAGING_ROOT_TYPE);
         assert_eq!(view.filesystem_uuid, ROOT_UUID);
         let esp = bundle.component_by_role("staging-esp").unwrap();
         assert_eq!((esp.byte_size, esp.minimum_partition_bytes), (4096, 4096));
         assert_eq!(esp.filesystem_uuid, "1234-ABCD");
         assert!(bundle.component_by_role("target-root").is_none());
         assert_eq!(bundle.efi_path(), "/EFI/BOOT/BOOTX64.EFI");
-        assert_eq!(bundle.root_locator(), format!("UUID={ROOT_UUID}"));
         assert_eq!(bundle.uki_sha256(), "a".repeat(64));
         // A root that fills its partition exactly is still a valid bundle.
         let mut full = fixture();
@@ -1128,6 +1119,10 @@ pub(crate) mod tests {
         let mut data = fixture();
         data["components"][0]["source_attributes"] = json!(0);
         assert!(validate_internal_bundle(&bytes(&data)).is_err());
+        // The device-bound root locator of earlier exports is not a field.
+        let mut data = fixture();
+        data["boot_binding"]["root_locator"] = json!(format!("UUID={ROOT_UUID}"));
+        assert!(validate_internal_bundle(&bytes(&data)).is_err());
         let mut raw = bytes(&fixture());
         raw.resize(MAX_MANIFEST_BYTES + 1, b' ');
         assert!(validate_internal_bundle(&raw).is_err());
@@ -1149,6 +1144,7 @@ pub(crate) mod tests {
             " vt.global_cursor_default=0",
             " root=tilo-auto",
             " rd.luks.options=tpm2-device=auto,fido2-device=auto",
+            " tilo.luks=000000000000000000000000000000000000000000000",
         ] {
             assert!(
                 with_cmdline(&format!("{base}{tail}")).is_err(),
@@ -1161,8 +1157,8 @@ pub(crate) mod tests {
             ("tilo.generation=7", "tilo.generation=0"),
             ("tilo.generation=7", "tilo.generation=07"),
             ("tilo.generation=7", "tilo.generation=12345678901"),
-            ("tilo.luks=0", "tilo.luks=1"),
-            ("tilo.unlock=00", "tilo.unlock=0"),
+            ("root=tilo-auto", "root=tilo-auto2"),
+            ("fido2-device=auto", "fido2-device=none"),
             (" rw ", " ro "),
         ] {
             assert!(base.contains(old), "fixture lacks {old}");
@@ -1179,7 +1175,7 @@ pub(crate) mod tests {
         ] {
             assert!(with_cmdline(&accepted).is_ok(), "rejected {accepted}");
         }
-        for required in ["tilo.install", "rw"] {
+        for required in ["tilo.install", "rw", "root=tilo-auto"] {
             let removed = base
                 .split_ascii_whitespace()
                 .filter(|token| *token != required)
@@ -1192,26 +1188,22 @@ pub(crate) mod tests {
         }
     }
     #[test]
-    fn legacy_and_unspecialised_cmdlines_are_rejected() {
+    fn legacy_and_device_bound_cmdlines_are_rejected() {
         let base = cmdline();
-        let bound = format!("root=UUID={ROOT_UUID} ");
-        let placeholder = format!("tilo.root={}", "0".repeat(37));
-        assert_eq!(bound.len(), placeholder.len());
+        let auto = "root=tilo-auto";
         let mut legacy = base.clone();
-        for name in ["install", "mode", "luks", "unlock", "generation"] {
+        for name in ["install", "mode", "generation"] {
             legacy = legacy.replace(&format!("tilo.{name}"), &format!("qos.{name}"));
         }
         for cmdline in [
             legacy,
             format!("{base} qos.install"),
             format!("{base} qos.generation=7"),
-            base.replacen(
-                &format!("tilo.luks={}", "0".repeat(45)),
-                &format!("qos.luks={}", "0".repeat(43)),
-                1,
-            ),
-            base.replacen(&bound, &placeholder, 1),
-            base.replacen(&bound, &format!("qos.root={} ", "0".repeat(37)), 1),
+            format!("{base} qos.luks={}", "0".repeat(43)),
+            base.replacen(auto, &format!("root=UUID={ROOT_UUID}"), 1),
+            base.replacen(auto, &format!("root=PARTUUID={ROOT_UUID}"), 1),
+            base.replacen(auto, &format!("tilo.root={}", "0".repeat(37)), 1),
+            base.replacen(auto, &format!("qos.root={}", "0".repeat(37)), 1),
         ] {
             assert!(with_cmdline(&cmdline).is_err(), "accepted {cmdline}");
         }
@@ -1645,7 +1637,7 @@ pub(crate) mod tests {
         assert!(validate_internal_bundle(&bytes(&value)).is_ok());
         value["boot_binding"] = positional_record(
             &value["boot_binding"],
-            "efi_path uki_architecture uki_sha256 uki_cmdline root_locator composefs_digest",
+            "efi_path uki_architecture uki_sha256 uki_cmdline composefs_digest",
         );
         assert!(validate_internal_bundle(&bytes(&value)).is_err());
     }

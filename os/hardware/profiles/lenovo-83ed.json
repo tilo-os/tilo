@@ -1,8 +1,11 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "lenovo-83ed",
   "architecture": "aarch64",
   "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
+  "system_firmware": [
+    "qcom/a740_sqe.fw"
+  ],
   "firmware": {
     "qcdxkmsuc8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcdxkmsuc8380.mbn",
     "qcvss8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcvss8380.mbn",

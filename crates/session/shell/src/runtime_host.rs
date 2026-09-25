@@ -13,7 +13,6 @@ use crate::{
     },
 };
 use std::{
-    fs::File,
     io,
     path::{Path, PathBuf},
     process::{Child, Command},
@@ -35,7 +34,7 @@ pub struct Session {
     identity_socket: PathBuf,
     content_root: PathBuf,
     _membership: crate::shell::state::WorkspaceTreeHandle,
-    _lock: File,
+    _lock: advisory_lock::FileLock,
 }
 
 impl Session {
@@ -44,8 +43,21 @@ impl Session {
     /// Rejects a locked profile, invalid persisted state, or failed provisioning.
     pub fn start(root: &Path) -> io::Result<Self> {
         unix::private_directory(root)?;
-        let lock = unix::private_file(&root.join("runtime.lock"))?;
-        lock.try_lock().map_err(io::Error::other)?;
+        let lock_path = root.join("runtime.lock");
+        let lock = advisory_lock::FileLock::try_exclusive(unix::private_file(&lock_path)?)
+            .map_err(|error| match error {
+                advisory_lock::TryLockError::WouldBlock => {
+                    let owner = advisory_lock::owner_pid(&lock_path)
+                        .map(|pid| format!(" by process {pid}"))
+                        .unwrap_or_default();
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        format!("runtime profile {} is in use{owner}", root.display()),
+                    )
+                }
+                advisory_lock::TryLockError::Error(error) => error,
+            })?;
+        lock.record_owner()?;
         let identity_dir = runtime_identity::identity_dir_from_env()?;
         crate::firstboot::ensure_collaboration_identity(
             &identity_dir,

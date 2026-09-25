@@ -188,6 +188,7 @@ members = [
 
     # System
     "crates/system/accounts",
+    "crates/system/advisory-lock",
     "crates/system/app-state",
     "crates/system/atomic-file",
     "crates/system/block-devices",

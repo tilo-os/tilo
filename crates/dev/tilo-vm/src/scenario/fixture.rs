@@ -273,9 +273,11 @@ pub fn scratch_dir(cycle: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[derive(Default)]
     struct Recorder(Vec<String>);
 
+    #[cfg(unix)]
     impl Tools for Recorder {
         fn run(&mut self, program: &str, args: &[&str], _: Option<&str>) -> Result<(), String> {
             self.0.push(format!("{program} {}", args.join(" ")));

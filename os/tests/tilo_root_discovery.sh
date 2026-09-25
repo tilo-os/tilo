@@ -9,19 +9,25 @@ else
   crypto="$repo/target/debug/tilo-crypto"
 fi
 mkdir -p "$work/dev/disk/by-partuuid" "$work/run" "$work/bin"
-touch "$work/dev/esp" "$work/dev/tilo-root" "$work/dev/linux-root" "$work/dev/removable-root"
+touch "$work/dev/esp" "$work/dev/tilo-root" "$work/dev/tilo-root-2" "$work/dev/linux-root" \
+  "$work/dev/staging-root" "$work/dev/staging-root-2" "$work/dev/removable-root"
 ln -s ../../esp "$work/dev/disk/by-partuuid/11111111-2222-3333-4444-555555555555"
+esp_type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+tilo_type=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
+staging_type=d4c4daf6-f72c-43ee-b8e3-5ba32550311d
+linux_type=0fc63daf-8483-4772-8e79-3d69d8477de4
 
+# Fixture lsblk: the boot ESP's parent disk is TILO_ROOT_TEST_DISK and its
+# partitions are TILO_ROOT_TEST_PARTS, space-separated NAME:PARTTYPE pairs.
 cat >"$work/bin/lsblk" <<'EOF'
 #!/bin/bash
 case "$*" in
-  *PKNAME*) echo disk0 ;;
+  *PKNAME*) echo "$TILO_ROOT_TEST_DISK" ;;
   *NAME,TYPE,PARTTYPE*)
-    printf '%s part %s\n' "$TILO_ROOT_DEVROOT/linux-root" 0fc63daf-8483-4772-8e79-3d69d8477de4
-    printf '%s part %s\n' "$TILO_ROOT_DEVROOT/tilo-root" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
-    if [ "${TILO_ROOT_TEST_DUPLICATE:-0}" = 1 ]; then
-      printf '%s part %s\n' "$TILO_ROOT_DEVROOT/tilo-root-2" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
-    fi ;;
+    printf '%s disk\n' "$TILO_ROOT_DEVROOT/$TILO_ROOT_TEST_DISK"
+    for part in $TILO_ROOT_TEST_PARTS; do
+      printf '%s part %s\n' "$TILO_ROOT_DEVROOT/${part%%:*}" "${part#*:}"
+    done ;;
 esac
 EOF
 cat >"$work/bin/cryptsetup" <<'EOF'
@@ -38,45 +44,80 @@ cat >"$work/bin/signature-check-fail" <<'EOF'
 exit 1
 EOF
 chmod +x "$work/bin/"*
-env TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
-  TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
-  TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/cryptsetup" \
-  TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
-test "$(cat "$work/run/tilo-root/source")" = "$work/dev/tilo-root"
-test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/tilo-root"
-echo 'ok: foreign Linux and removable Tilo roots are ignored; same-disk Tilo root selected'
+printf 'root=tilo-auto rw composefs=abc quiet\n' >"$work/installed-cmdline"
+printf 'root=tilo-auto rw composefs=abc quiet tilo.install\n' >"$work/live-cmdline"
 
-# Two same-disk Tilo roots are ambiguous and must fail closed.
-touch "$work/dev/tilo-root-2"
-if env TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
-  TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
-  TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/cryptsetup" \
-  TILO_ROOT_TEST_DUPLICATE=1 \
-  TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover" 2>"$work/error"; then
-  echo 'duplicate Tilo roots were accepted' >&2; exit 1
-fi
-if ! grep -q 'expected exactly one Tilo root.*found 2' "$work/error"; then
-  cat "$work/error" >&2
-  exit 1
-fi
+# discover KIND DISK PARTS...: resolve with the installed or live command line.
+discover() {
+  local kind="$1" disk="$2"
+  shift 2
+  rm -rf "$work/run/tilo-root"
+  env TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
+    TILO_ROOT_CMDLINE_FILE="$work/$kind-cmdline" \
+    TILO_ROOT_TEST_DISK="$disk" TILO_ROOT_TEST_PARTS="$*" \
+    TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
+    TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/cryptsetup" \
+    TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
+}
+# expect_root NAME KIND DISK PARTS...: the resolver selects exactly NAME.
+expect_root() {
+  local name="$1"
+  shift
+  discover "$@"
+  test "$(cat "$work/run/tilo-root/source")" = "$work/dev/$name"
+  test "$(readlink "$work/run/tilo-root/device")" = "$work/dev/$name"
+}
+# expect_refusal PATTERN KIND DISK PARTS...: the resolver fails closed.
+expect_refusal() {
+  local pattern="$1"
+  shift
+  if discover "$@" 2>"$work/error"; then
+    echo "resolver accepted: $*" >&2; exit 1
+  fi
+  if ! grep -q "$pattern" "$work/error"; then
+    cat "$work/error" >&2; exit 1
+  fi
+  test ! -e "$work/run/tilo-root/source"
+}
+
+esp="esp:$esp_type"
+expect_root tilo-root installed disk0 "$esp" "linux-root:$linux_type" "tilo-root:$tilo_type"
+expect_root tilo-root installed disk0 "$esp" "tilo-root:${tilo_type^^}"
+echo 'ok: foreign Linux roots are ignored; the same-disk Tilo root is selected'
+
+expect_refusal 'expected exactly one Tilo root.*found 2' installed disk0 \
+  "$esp" "tilo-root:$tilo_type" "tilo-root-2:$tilo_type"
 echo 'ok: duplicate same-disk Tilo roots fail closed'
 
-# A boot ESP on another disk must never authorize the first disk's Tilo root.
-cat >"$work/bin/lsblk" <<'EOF'
-#!/bin/bash
-case "$*" in
-  *PKNAME*) echo removable0 ;;
-  *NAME,TYPE,PARTTYPE*)
-    printf '%s part %s\n' "$TILO_ROOT_DEVROOT/removable-root" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ;;
-esac
-EOF
-rm -rf "$work/run/tilo-root"
-env TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
-  TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
-  TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/cryptsetup" \
-  TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
-test "$(cat "$work/run/tilo-root/source")" = "$work/dev/removable-root"
+# A USB-free install leaves the staging ESP and root beside the new Tilo root
+# until the installed system reclaims them. The installed UKI never sees them.
+expect_root tilo-root installed disk0 "$esp" "linux-root:$linux_type" \
+  "tilo-root:$tilo_type" "staging-esp:$esp_type" "staging-root:$staging_type"
+expect_refusal 'expected exactly one Tilo root.*found 0' installed disk0 \
+  "$esp" "staging-root:$staging_type"
+echo 'ok: the installed UKI never boots a staging root'
+
+# The staged live installer boots its own staging root, also when an earlier
+# attempt already created the Tilo root it installs into.
+expect_root staging-root live disk0 "$esp" "linux-root:$linux_type" "staging-root:$staging_type"
+expect_root staging-root live disk0 "$esp" "tilo-root:$tilo_type" "staging-root:${staging_type^^}"
+expect_refusal 'expected exactly one Tilo staging root.*found 2' live disk0 \
+  "$esp" "staging-root:$staging_type" "staging-root-2:$staging_type"
+echo 'ok: the live installer boots its staging root and refuses two of them'
+
+# A live medium carries its own Tilo root and no staging root.
+expect_root removable-root live removable0 "$esp" "removable-root:$tilo_type"
+expect_refusal 'expected exactly one Tilo root.*found 0' live disk0 "$esp" "linux-root:$linux_type"
+echo 'ok: a live medium boots its own Tilo root'
+
+# A boot ESP on another disk must never authorize the first disk's Tilo root:
+# only the partitions of the ESP's parent disk are candidates.
+expect_root removable-root installed removable0 "$esp" "removable-root:$tilo_type"
 echo 'ok: root authority follows the boot ESP physical disk, not disk enumeration order'
+
+rm -f "$work/installed-cmdline"
+expect_refusal 'could not read the kernel command line' installed disk0 "$esp" "tilo-root:$tilo_type"
+echo 'ok: an unreadable kernel command line fails closed'
 
 printf 'root=tilo-auto quiet\n' >"$work/cmdline"
 mkdir -p "$work/generator"

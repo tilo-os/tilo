@@ -1,9 +1,9 @@
 //! Persistent content-addressed documents with one atomic current reference.
 
+use advisory_lock::{FileLock, LockMode};
 use anyhow::{Context, Result};
 use automerge::AutoCommit;
 use fs::store::ContentStore;
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
 
@@ -11,19 +11,13 @@ pub(crate) struct NoteStore {
     store: ContentStore,
     runtime: Runtime,
     current: PathBuf,
-    _lock: File,
+    _lock: FileLock,
 }
 
 impl NoteStore {
     pub(crate) fn open(directory: &Path) -> Result<(Self, AutoCommit)> {
         std::fs::create_dir_all(directory).context("create note directory")?;
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join("lock"))?;
-        lock.try_lock()
+        let lock = FileLock::try_open(&directory.join("lock"), LockMode::Exclusive)
             .context("this note is already open in another instance")?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
