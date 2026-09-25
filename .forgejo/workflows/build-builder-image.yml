@@ -16,6 +16,7 @@ on:
       - "os/dev/cache-github-assets.sh"
       - ".forgejo/actions/cache-github-assets/**"
       - "os/dev/install-cached-cosign.sh"
+      - "os/dev/require-cosign-authority.sh"
       - "os/dev/install-aws-cli.sh"
       - "os/dev/promote-native-index.py"
       - "os/dev/replicate-builder-index.py"
@@ -85,19 +86,7 @@ jobs:
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
-          . os/dev/configure-cosign-kms.sh
-          resolved="$RUNNER_TEMP/builder-signing-authority.pub"
-          cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
-          cmp --silent keys/cosign.pub "$resolved" || {
-            echo '::error::builder KMS/HSM authority does not match keys/cosign.pub'
-            exit 1
-          }
+        run: os/dev/require-cosign-authority.sh
 
   build:
     needs: [plan, signing-preflight]

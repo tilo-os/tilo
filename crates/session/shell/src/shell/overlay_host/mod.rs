@@ -311,12 +311,12 @@ mod device_fabric_ui_tests {
                     bluetooth_codec: Some("AAC".into()),
                 }],
                 transfers: Vec::new(),
-                remote_audio: Default::default(),
+                remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
                 device_health: Vec::new(),
                 calibration_proposals: Vec::new(),
                 revertible_calibrations: Vec::new(),
                 tethering: Vec::new(),
-                remote_capture: Default::default(),
+                remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView::default(),
                 display_mirror_consents: Vec::new(),
                 display_mirrors: Vec::new(),
                 display_mirror_available: false,
@@ -769,7 +769,7 @@ mod device_fabric_ui_tests {
         view.tethering = vec![
             crate::shell::personal_tethering_runtime::TetheringStatusView {
                 request_id: [14; 16],
-                peer: remote.clone(),
+                peer: remote,
                 peer_label: "Travel laptop".into(),
                 direction: crate::shell::personal_tethering_runtime::TetheringDirection::Provider,
                 phase: crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired,
@@ -1136,7 +1136,7 @@ mod device_fabric_ui_tests {
             })
             .collect();
         assert_eq!(
-            device_fabric_pane_rows(&view, &Default::default()).len(),
+            device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default()).len(),
             view.local_media.len() + view.local_outputs.len() + view.devices.len(),
             "the pane model must not truncate media, outputs, or devices"
         );
@@ -2255,7 +2255,7 @@ fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
 
 /// One pill in the search card's filter band, shared by the kind chips
 /// and the "All" reset chip.
-
+///
 /// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
 /// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
 /// hairline and inner glow) and whose label is ink chosen against whatever
@@ -2549,9 +2549,10 @@ impl CollaborationPreferences {
             .get("status_sharing")
             .and_then(serde_json::Value::as_str)
         {
-            Some("manual") => ui::StatusSharing::ManualOnly,
             Some("off") => ui::StatusSharing::Off,
             Some("automatic") | None => ui::StatusSharing::Automatic,
+            // "manual", and any value this build does not know, shares nothing
+            // automatically.
             Some(_) => ui::StatusSharing::ManualOnly,
         };
         let manual_status = values
@@ -4318,6 +4319,10 @@ impl ShellOverlayHost {
                 }
                 PeerSyncAction::PromptInvite => self.open_invite_manager(),
                 PeerSyncAction::PromptConnect => self.peer_sync_overlay.prompt_connect(),
+                #[expect(
+                    clippy::unreachable,
+                    reason = "the palette queues a tracked request around one plain action, never another tracked one"
+                )]
                 PeerSyncAction::Tracked { .. } => unreachable!("tracked requests are unwrapped"),
             }
             if let (Some(request_id), Some(chrome)) = (request_id, self.chrome.as_ref()) {
@@ -5310,21 +5315,21 @@ impl ShellOverlayHost {
             }
         }
         let mut tree = st.tree_mut();
-        let mut changed = false;
+        let mut tree_dirty = false;
         for (_strip_id, group_id, new_value) in changes {
             // Flat scan is correct since group ids are tree-unique.
             for ws in &mut tree.desktop.workspaces {
                 for strip in &mut ws.strips {
-                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                        if g.maximized != new_value {
-                            g.maximized = new_value;
-                            changed = true;
-                        }
+                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id)
+                        && g.maximized != new_value
+                    {
+                        g.maximized = new_value;
+                        tree_dirty = true;
                     }
                 }
             }
         }
-        if changed {
+        if tree_dirty {
             tree.flush_to_disk();
         }
         drop(tree);
@@ -6127,6 +6132,10 @@ impl ShellOverlayHost {
     /// Turns app-launcher worker-thread failures into notifications (a clean
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "launch failures, expiries and placement repair share one ordered drain"
+    )]
     pub(crate) fn drain_launch_events(&mut self) -> bool {
         use crate::shell::launcher::LaunchEventKind;
         if self.desktop_controls.is_explicit() {
@@ -6296,7 +6305,7 @@ impl ShellOverlayHost {
         posted
     }
 
-    fn drain_session_action_results(&mut self) -> bool {
+    fn drain_session_action_results(&self) -> bool {
         let mut posted = false;
         while let Ok(outcome) = self.session_action_channel.1.try_recv() {
             let Err(error) = outcome.result else {
@@ -7767,7 +7776,7 @@ impl ShellOverlayHost {
                 strip.window_groups.insert(insert_at, group.clone());
             }
             // Focus follows the tab out of a source that is gone.
-            for (emptied_strip, emptied_group) in emptied.drain(..) {
+            for (emptied_strip, emptied_group) in std::mem::take(&mut emptied) {
                 if tree.desktop.active_group.get(&emptied_strip) == Some(&emptied_group) {
                     tree.desktop.active_group.insert(emptied_strip, group.id);
                 }
@@ -8765,7 +8774,7 @@ impl ShellOverlayHost {
     /// [`Self::apply_quick_settings_readings`], split out to keep that
     /// function under the line-count ceiling.
     fn apply_one_qs_reading(
-        &mut self,
+        &self,
         st: &mut crate::shell::chrome_state::ChromeState,
         reading: crate::shell::quick_settings::refresh::QsReading,
     ) {
@@ -8862,7 +8871,7 @@ impl ShellOverlayHost {
     }
 
     fn apply_wifi_join_result(
-        &mut self,
+        &self,
         st: &mut crate::shell::chrome_state::ChromeState,
         join: crate::shell::quick_settings::refresh::WifiJoinResult,
     ) {
@@ -8880,7 +8889,9 @@ impl ShellOverlayHost {
                     network.connected = network.ssid == ssid;
                 }
                 st.quick_settings.wifi = true;
-                let share_result = if !shared_credential {
+                let share_result = if shared_credential {
+                    None
+                } else {
                     password.as_ref().and_then(|password| {
                         self.wifi_secret_bridge.as_ref().map(|bridge| {
                             bridge(WifiSecretAction::Share {
@@ -8889,8 +8900,6 @@ impl ShellOverlayHost {
                             })
                         })
                     })
-                } else {
-                    None
                 };
                 let detail = if shared_credential {
                     "Used the encrypted credential from one of your certified devices."
@@ -10107,20 +10116,17 @@ impl ShellOverlayHost {
         request.deterministic_text = deterministic_status;
         if self.status_narrative_request.as_ref() != Some(&request) {
             self.status_narrative_request = Some(request.clone());
-            self.install_inferred_status(
-                request.deterministic_text.clone(),
-                "tilo-deterministic".into(),
-            );
+            self.install_inferred_status(&request.deterministic_text, "tilo-deterministic".into());
             self.status_narrator.request_status(&request);
         }
         if let Some(narrative) = self.status_narrator.take_status_for(&request)
             && let Some(narrative) = ui::validate_narrative(&request, narrative)
         {
-            self.install_inferred_status(narrative.text, narrative.generator);
+            self.install_inferred_status(&narrative.text, narrative.generator);
         }
     }
 
-    fn install_inferred_status(&mut self, text: String, generator: String) {
+    fn install_inferred_status(&mut self, text: &str, generator: String) {
         let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
         if text.is_empty() || text.chars().count() > ui::MAX_STATUS_CHARS {
             return;
@@ -10145,7 +10151,7 @@ impl ShellOverlayHost {
         self.status_sharing = ui::StatusSharing::Automatic;
         self.local_status = None;
         self.local_status_origin = ui::StatusOrigin::Manual;
-        self.install_inferred_status(text.to_string(), "shots-local-model".to_string());
+        self.install_inferred_status(text, "shots-local-model".to_string());
     }
 
     /// Mutable handle to the room-activity sheet, so a test can pin its clock
@@ -13427,6 +13433,10 @@ impl ShellOverlayHost {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one click dispatcher maps every fabric pane row to its action"
+    )]
     fn handle_qs_device_fabric_click(&mut self, point: Point) {
         let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
             return;
@@ -13584,7 +13594,6 @@ impl ShellOverlayHost {
                     ))
                 }
             }
-            DeviceFabricPaneRow::RemoteCaptureDegraded(_) => None,
             DeviceFabricPaneRow::DisplayMirrorConsent(consent) => {
                 let (allow, decline) =
                     Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
@@ -13859,11 +13868,8 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
-                    && self.qs_selected_remote_capture.is_some() =>
+                    && let Some(kind) = self.qs_selected_remote_capture =>
             {
-                let kind = self
-                    .qs_selected_remote_capture
-                    .expect("selection was checked");
                 Some((
                     DeviceFabricUiAction::RequestRemoteCapture {
                         peer: device.id,
@@ -17767,6 +17773,10 @@ impl Widget for ShellOverlayHost {
         performed
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive match maps every accessible overlay to its hit rect"
+    )]
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
@@ -17815,7 +17825,7 @@ impl Widget for ShellOverlayHost {
                         crate::shell::quick_settings::QsLevel::Vpn => self
                             .qs_vpn_pane
                             .accessibility_rect_for_path(self.quick_settings_rect(), child_path),
-                        _ => return None,
+                        _ => None,
                     }
                 });
                 let notification_action = self.chrome.as_ref().and_then(|chrome| {
@@ -20850,6 +20860,10 @@ impl ShellOverlayHost {
     /// The keyboard target lands here on open, so the current room
     /// carries the same accent selection a list row does — without it
     /// the first arrow press would seem to come from nowhere.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a paint step that receives the caller's scene, transform, theme and laid-out row geometry"
+    )]
     fn draw_overview_here_selection(
         &self,
         scene: &mut Scene,
@@ -21714,6 +21728,10 @@ impl ShellOverlayHost {
             .draw(self.rect, scene, transform, text_renderer, theme);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_search_banner(
         &mut self,
         scene: &mut Scene,
@@ -25020,7 +25038,7 @@ mod overview_panel_tests {
             "Files",
             crate::shell::window_actions::Destination::Beside,
         );
-        chrome.borrow_mut().overlays = Default::default();
+        chrome.borrow_mut().overlays = crate::shell::chrome_state::OverlayFlags::default();
         assert!(h.shortcut_help_button_is_suppressed());
         h.last_cursor = Some(h.shortcut_help_button_rect().center());
         let mut handled = false;
@@ -25634,11 +25652,12 @@ mod overview_transition_tests {
             f64::from(ui::tokens::Spacing::BASE.s8),
             "the wheel gutter is a spacing step, not a tuned literal",
         );
-        assert!(
-            WHEEL_TO_STRIP_GAP_PX > crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
-            "the gutter must hold the disc's rim shadow ({}) with wallpaper to spare",
-            crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
-        );
+        const {
+            assert!(
+                WHEEL_TO_STRIP_GAP_PX > crate::shell::sidebar_wheel_disc::RIM_SHADOW_REACH,
+                "the gutter must hold the disc's rim shadow with wallpaper to spare",
+            );
+        }
         assert_eq!(STRIP_TRAILING_GUTTER_PX, WHEEL_TO_STRIP_GAP_PX);
         let mut h = host().with_sidebar(Box::new(Container::new()));
         h.set_output_geometry(&[OutputGeometry {
@@ -25892,7 +25911,7 @@ mod wifi_password_tests {
     }
 
     fn finish_join(
-        host: &mut ShellOverlayHost,
+        host: &ShellOverlayHost,
         chrome: &crate::shell::chrome_state::Chrome,
         password: Option<&str>,
         shared_credential: bool,
@@ -25976,7 +25995,7 @@ mod wifi_password_tests {
                 .is_some_and(|prompt| prompt.connecting),
             "the prompt immediately exposes progress"
         );
-        finish_join(&mut h, &chrome, Some("pw1"), false, Ok(()));
+        finish_join(&h, &chrome, Some("pw1"), false, Ok(()));
         let st = chrome.borrow();
         assert!(st.quick_settings.wifi_joining.is_none());
         assert!(
@@ -26009,7 +26028,7 @@ mod wifi_password_tests {
             press(&mut host, &ch(character));
         }
         press(&mut host, &Key::Named(NamedKey::Enter));
-        finish_join(&mut host, &chrome, Some("pw1"), false, Ok(()));
+        finish_join(&host, &chrome, Some("pw1"), false, Ok(()));
         assert_eq!(
             shared.borrow().as_slice(),
             [("Cafe WiFi".to_string(), "pw1".to_string())]
@@ -26037,13 +26056,7 @@ mod wifi_password_tests {
                 .unwrap()
                 .connecting
         );
-        finish_join(
-            &mut host,
-            &chrome,
-            Some("from-another-device"),
-            true,
-            Ok(()),
-        );
+        finish_join(&host, &chrome, Some("from-another-device"), true, Ok(()));
         assert!(chrome.borrow().quick_settings.wifi_password.is_none());
         assert!(chrome.borrow().quick_settings.wifi_joining.is_none());
     }
@@ -26061,7 +26074,7 @@ mod wifi_password_tests {
             press(&mut h, &ch(c));
         }
         press(&mut h, &Key::Named(NamedKey::Enter));
-        finish_join(&mut h, &chrome, Some("bad"), false, Err("rejected"));
+        finish_join(&h, &chrome, Some("bad"), false, Err("rejected"));
         let st = chrome.borrow();
         let p = st
             .quick_settings
@@ -26085,7 +26098,7 @@ mod wifi_password_tests {
         h.begin_wifi_password("Cafe WiFi");
         press(&mut h, &ch("x"));
         press(&mut h, &Key::Named(NamedKey::Enter));
-        finish_join(&mut h, &chrome, Some("x"), false, Err("rejected"));
+        finish_join(&h, &chrome, Some("x"), false, Err("rejected"));
         assert!(
             chrome
                 .borrow()
@@ -26778,7 +26791,7 @@ mod palette_dispatch_tests {
 
     #[test]
     fn suspend_without_the_power_service_reports_failure() {
-        let (mut host, chrome) = host_with_chrome();
+        let (host, chrome) = host_with_chrome();
 
         assert!(
             host.apply_power_menu_outcome(PowerMenuClick::Execute(
@@ -26807,7 +26820,7 @@ mod palette_dispatch_tests {
 
     #[test]
     fn failed_session_action_is_reported_in_chrome() {
-        let (mut host, chrome) = host_with_chrome();
+        let (host, chrome) = host_with_chrome();
         host.session_action_channel
             .0
             .send(SessionActionResult {
@@ -29113,6 +29126,10 @@ mod overlay_event_absorb_tests {
     /// at — so a screen reader, a script and the UX bench can name a chip
     /// rather than guess where the strip wrapped it to.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn filter_chips_and_scope_segments_are_bounded_semantic_targets() {
         use crate::shell::search::ResourceKind;
         use ui::a11y::Role;
@@ -29219,12 +29236,12 @@ mod overlay_event_absorb_tests {
 
         let scopes = h.host.search_scope_list();
         assert_eq!(scope_group.children.len(), scopes.len());
-        let checked: Vec<_> = scope_group
+        let checked = scope_group
             .children
             .iter()
             .filter(|n| n.state.checked == Some(true))
-            .collect();
-        assert_eq!(checked.len(), 1, "exactly one scope is current");
+            .count();
+        assert_eq!(checked, 1, "exactly one scope is current");
         for (idx, node) in scope_group.children.iter().enumerate() {
             assert_eq!(node.role, Role::RadioButton);
             let hit = h.host.search_scope_segment_hit_rect(idx);
@@ -30540,6 +30557,10 @@ mod overlay_event_absorb_tests {
         clippy::expect_used,
         reason = "a review fixture must fail loudly for a missing GPU or output directory"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn s1_review_fixtures_are_written_in_dark_and_light() {
         use crate::shell::quick_settings::{BtDevice, QsLevel, WifiNetwork};
         use ui::offscreen::OffscreenRenderer;
@@ -30560,13 +30581,14 @@ mod overlay_event_absorb_tests {
                 kind: "wireguard".into(),
             }
         }
-        fn quick_settings_open(h: &mut AbsorbHarness, level: QsLevel) {
+        type AbsorbScene = (&'static str, fn(&mut AbsorbHarness));
+        fn quick_settings_open(h: &AbsorbHarness, level: QsLevel) {
             let mut st = h.chrome.borrow_mut();
             st.overlays.quick_settings = true;
             st.quick_settings.push_level(level);
             st.bump();
         }
-        let scenes: [(&str, fn(&mut AbsorbHarness)); 5] = [
+        let scenes: [AbsorbScene; 5] = [
             ("qs-wifi-drillin", |h| {
                 {
                     let mut st = h.chrome.borrow_mut();
@@ -31009,8 +31031,10 @@ mod tests {
     #[test]
     fn catch_up_waits_for_workspace_transition_ui_instead_of_being_lost() {
         let mut pending = None;
-        let mut occupied = crate::shell::chrome_state::OverlayFlags::default();
-        occupied.overview = true;
+        let occupied = crate::shell::chrome_state::OverlayFlags {
+            overview: true,
+            ..Default::default()
+        };
         assert!(!take_pending_activity_reveal(
             &mut pending,
             true,
@@ -31040,8 +31064,10 @@ mod tests {
     #[test]
     fn manually_opening_catch_up_consumes_a_pending_automatic_reveal() {
         let mut pending = Some(7);
-        let mut overlays = crate::shell::chrome_state::OverlayFlags::default();
-        overlays.room_activity = true;
+        let overlays = crate::shell::chrome_state::OverlayFlags {
+            room_activity: true,
+            ..Default::default()
+        };
         assert!(!take_pending_activity_reveal(
             &mut pending,
             false,
@@ -33985,7 +34011,7 @@ mod resync_strips_tests {
         let (mut reopened, _) = crate::shell::build_tilo_overlay_host_with_records(
             chrome.borrow().tree_handle(),
             false,
-            store.clone(),
+            store,
         );
         reopened.update(&mut AutoCommit::new(), &automerge::ROOT);
         assert!(

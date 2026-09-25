@@ -148,7 +148,7 @@ impl EffectKind {
             EffectKind::Vignette => "Vignette",
         }
     }
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_name(s: &str) -> Option<Self> {
         Some(match s.trim().to_lowercase().as_str() {
             "grayscale" | "greyscale" | "grey" | "gray" | "b&w" => EffectKind::Grayscale,
             "sepia" => EffectKind::Sepia,
@@ -527,7 +527,7 @@ impl MaskShape {
             MaskShape::Ellipse => "Ellipse",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "rect" | "rectangle" | "box" => MaskShape::Rect,
             "ellipse" | "oval" | "circle" => MaskShape::Ellipse,
@@ -719,7 +719,7 @@ impl TextAlign {
             TextAlign::Right => "Right",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "left" => TextAlign::Left,
             "right" => TextAlign::Right,
@@ -817,7 +817,7 @@ impl MediaKind {
             MediaKind::Text => "text",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "audio" => MediaKind::Audio,
             "image" => MediaKind::Image,
@@ -861,7 +861,7 @@ impl TrackKind {
             TrackKind::Audio => "audio",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "audio" => TrackKind::Audio,
             _ => TrackKind::Video,
@@ -905,7 +905,7 @@ impl Transition {
             Transition::Wipe => "Wipe",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "dissolve" => Transition::CrossDissolve,
             "fade" => Transition::FadeIn,
@@ -988,11 +988,15 @@ fn default_hydration() -> Hydration {
 mod hydration_serde {
     use super::Hydration;
     use serde::{Deserialize, Deserializer, Serializer};
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's `serialize_with` hands the field over by reference"
+    )]
     pub fn serialize<S: Serializer>(h: &Hydration, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(h.as_str())
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Hydration, D::Error> {
-        Ok(Hydration::from_str(&String::deserialize(d)?))
+        Ok(Hydration::from_name(&String::deserialize(d)?))
     }
 }
 
@@ -1282,11 +1286,19 @@ pub(crate) fn yes_default() -> bool {
 }
 
 /// `skip_serializing_if` for a `bool` that defaults to true.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` hands the field over by reference"
+)]
 fn is_true(b: &bool) -> bool {
     *b
 }
 
 /// `skip_serializing_if` for a `bool` that defaults to false.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` hands the field over by reference"
+)]
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -2144,7 +2156,7 @@ impl Project {
             .iter()
             .filter(|t| t.kind == TrackKind::Video)
             .collect();
-        video.sort_by(|a, b| b.index.cmp(&a.index));
+        video.sort_by_key(|t| std::cmp::Reverse(t.index));
         let mut audio: Vec<&Track> = self
             .tracks
             .iter()
@@ -2334,14 +2346,13 @@ impl Project {
     pub fn media_kind_of(&self, id: ClipId) -> TrackKind {
         self.clip(id)
             .and_then(|c| self.media(c.media))
-            .map(|m| {
+            .map_or(TrackKind::Video, |m| {
                 if m.kind.is_visual() {
                     TrackKind::Video
                 } else {
                     TrackKind::Audio
                 }
             })
-            .unwrap_or(TrackKind::Video)
     }
 
     // --- linked audio and video ------------------------------------------
@@ -2708,23 +2719,19 @@ impl Project {
 
     /// [`Self::track_audible`] for the track a clip sits on.
     pub fn clip_audible(&self, id: ClipId) -> bool {
-        self.clip(id)
-            .map(|c| self.track_audible(c.track))
-            .unwrap_or(false)
+        self.clip(id).is_some_and(|c| self.track_audible(c.track))
     }
 
     /// Whether `track` refuses edits. A missing track counts as locked: there
     /// is nothing there to edit.
     pub fn track_locked(&self, track: TrackId) -> bool {
-        self.track(track).map(|t| t.locked).unwrap_or(true)
+        self.track(track).is_none_or(|t| t.locked)
     }
 
     /// Whether the clip that owns `id` may currently be edited — false when
     /// its own track is locked.
     pub fn clip_editable(&self, id: ClipId) -> bool {
-        self.clip(id)
-            .map(|c| !self.track_locked(c.track))
-            .unwrap_or(false)
+        self.clip(id).is_some_and(|c| !self.track_locked(c.track))
     }
 
     /// Whether clip `id` may be placed on `track`: the track must exist, be
@@ -2743,10 +2750,11 @@ impl Project {
     /// The first unlocked track of `kind`, preferring `near` when it already
     /// qualifies — the "sensible track" a paste or a duplicate lands on.
     pub fn placement_track(&self, kind: TrackKind, near: Option<TrackId>) -> Option<TrackId> {
-        if let Some(t) = near.and_then(|id| self.track(id)) {
-            if t.kind == kind && !t.locked {
-                return Some(t.id);
-            }
+        if let Some(t) = near.and_then(|id| self.track(id))
+            && t.kind == kind
+            && !t.locked
+        {
+            return Some(t.id);
         }
         self.display_tracks()
             .into_iter()
@@ -2784,7 +2792,7 @@ impl Project {
                 c.anim = c.anim.sliced(on_timeline, c.duration() + on_timeline);
             }
             c.markers.retain(|m| m.t >= on_timeline);
-            for m in c.markers.iter_mut() {
+            for m in &mut c.markers {
                 m.t -= on_timeline;
             }
         }
@@ -2901,6 +2909,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn an_inactive_key_removes_nothing_at_all() {
         let off = ChromaKey::default();
         assert!(!off.enabled);
@@ -2920,6 +2932,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn the_key_colour_goes_and_an_unrelated_colour_stays() {
         let k = keyer();
         assert_eq!(
@@ -2937,6 +2953,10 @@ mod key_and_mask_tests {
     /// same cloth are far apart in RGB and close together in hue, and both
     /// have to key.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn brightness_does_not_change_whether_a_colour_keys() {
         let k = keyer();
         for gain in [0.2_f64, 0.35, 0.6, 1.0, 1.35] {
@@ -2971,6 +2991,10 @@ mod key_and_mask_tests {
     /// is no reliable hue left, so those pixels are kept rather than having
     /// their noise amplified into the key.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn near_black_falls_out_of_the_key_instead_of_keying_on_noise() {
         let k = keyer();
         assert_eq!(
@@ -2986,12 +3010,16 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn softness_gives_the_edge_partial_coverage_rather_than_a_step() {
         // A green diluted halfway toward grey: near the key but not on it.
         let edge = [
-            (GREEN[0] + 0.5) / 2.0,
-            (GREEN[1] + 0.5) / 2.0,
-            (GREEN[2] + 0.5) / 2.0,
+            GREEN[0].midpoint(0.5),
+            GREEN[1].midpoint(0.5),
+            GREEN[2].midpoint(0.5),
         ];
         // Place the band around wherever that colour actually falls, read
         // off the keyer itself rather than recomputed here — a test that
@@ -3057,6 +3085,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn despill_leaves_a_colour_leaning_away_from_the_key_untouched() {
         let k = ChromaKey {
             spill: 1.0,
@@ -3068,6 +3100,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn a_mask_that_is_off_covers_everything() {
         let m = Mask::default();
         assert!(!m.is_active());
@@ -3077,6 +3113,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn an_ellipse_keeps_its_centre_and_drops_its_corners() {
         let m = Mask {
             shape: MaskShape::Ellipse,
@@ -3101,6 +3141,10 @@ mod key_and_mask_tests {
     /// they differ exactly at the corners of the box, which is the only
     /// place the shape choice shows.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn a_rect_keeps_the_corners_an_ellipse_of_the_same_size_drops() {
         let base = Mask {
             w: 0.8,
@@ -3150,6 +3194,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn inverting_a_mask_swaps_what_it_keeps() {
         let m = Mask {
             shape: MaskShape::Ellipse,
@@ -3173,6 +3221,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn moving_a_mask_moves_what_it_keeps() {
         let centred = Mask {
             shape: MaskShape::Ellipse,
@@ -3196,6 +3248,10 @@ mod key_and_mask_tests {
     /// works if the rotation happens in aspect-corrected space — otherwise
     /// the shape shears and a 90° turn is not the same rect stood on end.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn a_rotated_rect_turns_rather_than_shearing() {
         let fa = 16.0 / 9.0;
         let tall = Mask {
@@ -3227,6 +3283,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn a_mask_fitted_over_a_pip_lands_on_the_pip() {
         // A quarter-size picture tucked into the top-right corner.
         let t = Transform::pip(0.3, (1.0, -1.0), 0.04);
@@ -3312,6 +3372,10 @@ mod key_and_mask_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn keying_the_tolerance_ramps_the_matte_open() {
         let mut c = keyed_clip();
         c.set_key_at(Param::KeyTolerance, 2.0, 0.0, Interp::Linear);
@@ -3392,15 +3456,26 @@ mod tests {
     fn speed_divides_the_timeline_length_and_leaves_the_source_window_alone() {
         let (mut p, cid) = speed_fixture();
         let c = p.clip_mut(cid).unwrap();
-        assert_eq!(c.duration(), 20.0, "normal speed is the source window");
-        assert_eq!(
-            c.set_speed(2.0, false),
-            10.0,
+        assert!(
+            ((c.duration()) - (20.0)).abs() < 1e-9,
+            "normal speed is the source window"
+        );
+        assert!(
+            ((c.set_speed(2.0, false)) - (10.0)).abs() < 1e-9,
             "2x halves the timeline length"
         );
-        assert_eq!(c.source_span(), 20.0, "but the source window is untouched");
-        assert_eq!(c.set_speed(0.5, false), 40.0, "and half speed doubles it");
-        assert_eq!(c.end(), 40.0, "which moves the clip's right edge");
+        assert!(
+            ((c.source_span()) - (20.0)).abs() < 1e-9,
+            "but the source window is untouched"
+        );
+        assert!(
+            ((c.set_speed(0.5, false)) - (40.0)).abs() < 1e-9,
+            "and half speed doubles it"
+        );
+        assert!(
+            ((c.end()) - (40.0)).abs() < 1e-9,
+            "which moves the clip's right edge"
+        );
     }
 
     #[test]
@@ -3412,19 +3487,36 @@ mod tests {
             c.out_point = 12.0;
         }
         let at = |p: &Project, t: f64| p.clip(cid).unwrap().source_time(t);
-        assert_eq!(at(&p, 0.0), 2.0, "the head shows the in-point");
-        assert_eq!(at(&p, 3.0), 5.0, "and 3s in is 3s of source");
+        assert!(
+            ((at(&p, 0.0)) - (2.0)).abs() < 1e-9,
+            "the head shows the in-point"
+        );
+        assert!(
+            ((at(&p, 3.0)) - (5.0)).abs() < 1e-9,
+            "and 3s in is 3s of source"
+        );
 
         p.clip_mut(cid).unwrap().set_speed(2.0, false);
-        assert_eq!(at(&p, 0.0), 2.0, "the head is still the in-point");
-        assert_eq!(at(&p, 3.0), 8.0, "but at 2x, 3s in is 6s of source");
+        assert!(
+            ((at(&p, 0.0)) - (2.0)).abs() < 1e-9,
+            "the head is still the in-point"
+        );
+        assert!(
+            ((at(&p, 3.0)) - (8.0)).abs() < 1e-9,
+            "but at 2x, 3s in is 6s of source"
+        );
 
         p.clip_mut(cid).unwrap().set_speed(1.0, true);
-        assert_eq!(at(&p, 0.0), 12.0, "reversed, the head shows the out-point");
-        assert_eq!(at(&p, 3.0), 9.0, "and it walks back through the source");
-        assert_eq!(
-            at(&p, 100.0),
-            2.0,
+        assert!(
+            ((at(&p, 0.0)) - (12.0)).abs() < 1e-9,
+            "reversed, the head shows the out-point"
+        );
+        assert!(
+            ((at(&p, 3.0)) - (9.0)).abs() < 1e-9,
+            "and it walks back through the source"
+        );
+        assert!(
+            ((at(&p, 100.0)) - (2.0)).abs() < 1e-9,
             "held at the in-point rather than running past it"
         );
     }
@@ -3439,11 +3531,16 @@ mod tests {
             c.set_speed(4.0, false);
         }
         let c = p.clip(cid).unwrap();
-        assert_eq!(c.duration(), 0.5, "a 2s window at 4x is half a second");
-        assert_eq!(c.source_time(0.49), 5.96, "still inside the window");
-        assert_eq!(
-            c.source_time(9.0),
-            6.0,
+        assert!(
+            ((c.duration()) - (0.5)).abs() < 1e-9,
+            "a 2s window at 4x is half a second"
+        );
+        assert!(
+            ((c.source_time(0.49)) - (5.96)).abs() < 1e-9,
+            "still inside the window"
+        );
+        assert!(
+            ((c.source_time(9.0)) - (6.0)).abs() < 1e-9,
             "and past the end it holds the out-point"
         );
     }
@@ -3457,16 +3554,29 @@ mod tests {
             c.set_speed(3.0, false);
         }
         // 12s of source at 3x is 4s of timeline; split at 1s in.
-        assert_eq!(p.clip(cid).unwrap().duration(), 4.0);
+        assert!(
+            ((p.clip(cid).unwrap().duration()) - (4.0)).abs() < 1e-9,
+            "p.clip(cid).unwrap().duration() is {}, want {}",
+            p.clip(cid).unwrap().duration(),
+            4.0
+        );
         let right = p.split_clip(cid, 1.0).expect("inside the clip");
         let left = p.clip(cid).unwrap();
         let right = p.clip(right).unwrap();
-        assert_eq!(
-            left.out_point, 3.0,
+        assert!(
+            ((left.out_point) - (3.0)).abs() < 1e-9,
             "one timeline second at 3x is three source seconds"
         );
-        assert_eq!(right.in_point, 3.0, "and the tail picks up exactly there");
-        assert_eq!(right.start, 1.0);
+        assert!(
+            ((right.in_point) - (3.0)).abs() < 1e-9,
+            "and the tail picks up exactly there"
+        );
+        assert!(
+            ((right.start) - (1.0)).abs() < 1e-9,
+            "right.start is {}, want {}",
+            right.start,
+            1.0
+        );
         assert!(
             (left.duration() + right.duration() - 4.0).abs() < 1e-9,
             "the halves still add up to the original length",
@@ -3486,13 +3596,26 @@ mod tests {
         let right = p.split_clip(cid, 2.0).expect("inside the clip");
         let left = p.clip(cid).unwrap();
         let right = p.clip(right).unwrap();
-        assert_eq!(left.in_point, 6.0, "the head half plays source 8 → 6");
-        assert_eq!(left.out_point, 8.0);
-        assert_eq!(
-            right.out_point, 6.0,
+        assert!(
+            ((left.in_point) - (6.0)).abs() < 1e-9,
+            "the head half plays source 8 → 6"
+        );
+        assert!(
+            ((left.out_point) - (8.0)).abs() < 1e-9,
+            "left.out_point is {}, want {}",
+            left.out_point,
+            8.0
+        );
+        assert!(
+            ((right.out_point) - (6.0)).abs() < 1e-9,
             "and the tail picks up at 6 going down"
         );
-        assert_eq!(right.in_point, 0.0);
+        assert!(
+            ((right.in_point) - (0.0)).abs() < 1e-9,
+            "right.in_point is {}, want {}",
+            right.in_point,
+            0.0
+        );
     }
 
     #[test]
@@ -3509,17 +3632,26 @@ mod tests {
         // timeline second, so the clip's left edge moves by one, not two.
         p.trim_in(cid, 2.0);
         let c = p.clip(cid).unwrap();
-        assert_eq!(c.in_point, 2.0);
-        assert_eq!(
-            c.start, 11.0,
+        assert!(
+            ((c.in_point) - (2.0)).abs() < 1e-9,
+            "c.in_point is {}, want {}",
+            c.in_point,
+            2.0
+        );
+        assert!(
+            ((c.start) - (11.0)).abs() < 1e-9,
             "the left edge moved by the timeline seconds trimmed away"
         );
-        assert_eq!(c.duration(), 3.0, "6s of source at 2x");
+        assert!(((c.duration()) - (3.0)).abs() < 1e-9, "6s of source at 2x");
     }
 
     // --- keyframes --------------------------------------------------------
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn a_parameter_reads_its_constant_until_it_is_keyed() {
         let (mut p, cid) = speed_fixture();
         p.clip_mut(cid).unwrap().opacity = 0.4;
@@ -3550,8 +3682,8 @@ mod tests {
         let before = p.clip(cid).unwrap().param_at(Param::Opacity, 2.0);
         p.move_clip(cid, 30.0);
         let after = p.clip(cid).unwrap().param_at(Param::Opacity, 32.0);
-        assert_eq!(
-            before, after,
+        assert!(
+            ((before) - (after)).abs() < 1e-9,
             "the same point in the clip has the same value"
         );
         assert!((before - 0.5).abs() < 1e-9);
@@ -3585,6 +3717,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn the_grade_and_the_transform_read_through_the_same_door() {
         let (mut p, cid) = speed_fixture();
         {
@@ -3661,9 +3797,8 @@ mod tests {
             .unwrap()
             .add_marker(13.0, "beat", 3)
             .expect("inside the clip");
-        assert_eq!(
-            p.clip(cid).unwrap().markers[0].t,
-            3.0,
+        assert!(
+            ((p.clip(cid).unwrap().markers[0].t) - (3.0)).abs() < 1e-9,
             "stored relative to the clip"
         );
         let all = p.all_markers();
@@ -3724,7 +3859,10 @@ mod tests {
         let tail = p.clip(right).unwrap();
         assert_eq!(tail.markers.len(), 1);
         assert_eq!(tail.markers[0].name, "late");
-        assert_eq!(tail.markers[0].t, 2.0, "rebased onto the tail's own start");
+        assert!(
+            ((tail.markers[0].t) - (2.0)).abs() < 1e-9,
+            "rebased onto the tail's own start"
+        );
     }
 
     // --- transform --------------------------------------------------------
@@ -3756,6 +3894,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn speed_is_clamped_to_something_playable_and_labels_itself() {
         assert_eq!(Speed::new(0.0, false).rate(), MIN_SPEED);
         assert_eq!(Speed::new(1e9, false).rate(), MAX_SPEED);
@@ -3802,6 +3944,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn add_clip_uses_full_source_length() {
         let (p, _m, _t, cid) = project_with_clip();
         let c = p.clip(cid).unwrap();
@@ -3974,6 +4120,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
+    )]
     fn split_keeps_fade_in_on_head_and_fade_out_on_tail() {
         let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
         {
@@ -4299,7 +4449,12 @@ mod tests {
             "nothing there to re-shape"
         );
         // Re-shaping must not disturb the value the key holds.
-        assert_eq!(c.param_at(Param::PosX, 3.0), 0.25);
+        assert!(
+            ((c.param_at(Param::PosX, 3.0)) - (0.25)).abs() < 1e-9,
+            "c.param_at(Param::PosX, 3.0) is {}, want {}",
+            c.param_at(Param::PosX, 3.0),
+            0.25
+        );
     }
 
     #[test]

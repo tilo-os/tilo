@@ -129,6 +129,124 @@ RUN --network=none rpm -qa --qf '%{NAME}\n' \
  && ! rpm -qa --qf '%{NAME}\n' | grep -Eq '^(pkgconf-pkg-config|pkgconf|pkgconf-m4|libpkgconf)$' \
  && dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}
 
-# The published artifact contains only the repository.
-FROM scratch
+# Sort the checked repository into content-stable slots, one image layer each
+# (os/dev/layer-rpm-snapshot.py): a package's slot depends only on its name and
+# size class, and every file's mode and time are normalized, so a refresh that
+# updates a few packages changes only their slots' layers. Everyone who pulls
+# the snapshot, CI and local builds alike, then re-downloads those, not 2.3 GB.
+# Derived from offline-check, so the published files are the checked ones.
+FROM metadata-tools AS layers
 COPY --from=offline-check /repo /repo
+COPY os/dev/layer-rpm-snapshot.py /tilo-layer-rpm-snapshot.py
+RUN --network=none python3 /tilo-layer-rpm-snapshot.py /repo /slots
+
+# The published artifact contains only the repository, overlaid from its slots
+# back into the one /repo it always was. The slot list is
+# layer-rpm-snapshot.py's slot_names(); os/tests/test_rpm_snapshot_boundaries.py
+# holds the two to each other.
+FROM scratch
+COPY --from=layers /slots/big/00/ /
+COPY --from=layers /slots/big/01/ /
+COPY --from=layers /slots/big/02/ /
+COPY --from=layers /slots/big/03/ /
+COPY --from=layers /slots/big/04/ /
+COPY --from=layers /slots/big/05/ /
+COPY --from=layers /slots/big/06/ /
+COPY --from=layers /slots/big/07/ /
+COPY --from=layers /slots/big/08/ /
+COPY --from=layers /slots/big/09/ /
+COPY --from=layers /slots/big/10/ /
+COPY --from=layers /slots/big/11/ /
+COPY --from=layers /slots/big/12/ /
+COPY --from=layers /slots/big/13/ /
+COPY --from=layers /slots/big/14/ /
+COPY --from=layers /slots/big/15/ /
+COPY --from=layers /slots/big/16/ /
+COPY --from=layers /slots/big/17/ /
+COPY --from=layers /slots/big/18/ /
+COPY --from=layers /slots/big/19/ /
+COPY --from=layers /slots/big/20/ /
+COPY --from=layers /slots/big/21/ /
+COPY --from=layers /slots/big/22/ /
+COPY --from=layers /slots/big/23/ /
+COPY --from=layers /slots/big/24/ /
+COPY --from=layers /slots/big/25/ /
+COPY --from=layers /slots/big/26/ /
+COPY --from=layers /slots/big/27/ /
+COPY --from=layers /slots/big/28/ /
+COPY --from=layers /slots/big/29/ /
+COPY --from=layers /slots/big/30/ /
+COPY --from=layers /slots/big/31/ /
+COPY --from=layers /slots/big/32/ /
+COPY --from=layers /slots/big/33/ /
+COPY --from=layers /slots/big/34/ /
+COPY --from=layers /slots/big/35/ /
+COPY --from=layers /slots/big/36/ /
+COPY --from=layers /slots/big/37/ /
+COPY --from=layers /slots/big/38/ /
+COPY --from=layers /slots/big/39/ /
+COPY --from=layers /slots/big/40/ /
+COPY --from=layers /slots/big/41/ /
+COPY --from=layers /slots/big/42/ /
+COPY --from=layers /slots/big/43/ /
+COPY --from=layers /slots/big/44/ /
+COPY --from=layers /slots/big/45/ /
+COPY --from=layers /slots/big/46/ /
+COPY --from=layers /slots/big/47/ /
+COPY --from=layers /slots/big/48/ /
+COPY --from=layers /slots/big/49/ /
+COPY --from=layers /slots/big/50/ /
+COPY --from=layers /slots/big/51/ /
+COPY --from=layers /slots/big/52/ /
+COPY --from=layers /slots/big/53/ /
+COPY --from=layers /slots/big/54/ /
+COPY --from=layers /slots/big/55/ /
+COPY --from=layers /slots/big/56/ /
+COPY --from=layers /slots/big/57/ /
+COPY --from=layers /slots/big/58/ /
+COPY --from=layers /slots/big/59/ /
+COPY --from=layers /slots/big/60/ /
+COPY --from=layers /slots/big/61/ /
+COPY --from=layers /slots/big/62/ /
+COPY --from=layers /slots/big/63/ /
+COPY --from=layers /slots/small/00/ /
+COPY --from=layers /slots/small/01/ /
+COPY --from=layers /slots/small/02/ /
+COPY --from=layers /slots/small/03/ /
+COPY --from=layers /slots/small/04/ /
+COPY --from=layers /slots/small/05/ /
+COPY --from=layers /slots/small/06/ /
+COPY --from=layers /slots/small/07/ /
+COPY --from=layers /slots/small/08/ /
+COPY --from=layers /slots/small/09/ /
+COPY --from=layers /slots/small/10/ /
+COPY --from=layers /slots/small/11/ /
+COPY --from=layers /slots/small/12/ /
+COPY --from=layers /slots/small/13/ /
+COPY --from=layers /slots/small/14/ /
+COPY --from=layers /slots/small/15/ /
+COPY --from=layers /slots/small/16/ /
+COPY --from=layers /slots/small/17/ /
+COPY --from=layers /slots/small/18/ /
+COPY --from=layers /slots/small/19/ /
+COPY --from=layers /slots/small/20/ /
+COPY --from=layers /slots/small/21/ /
+COPY --from=layers /slots/small/22/ /
+COPY --from=layers /slots/small/23/ /
+COPY --from=layers /slots/small/24/ /
+COPY --from=layers /slots/small/25/ /
+COPY --from=layers /slots/small/26/ /
+COPY --from=layers /slots/small/27/ /
+COPY --from=layers /slots/small/28/ /
+COPY --from=layers /slots/small/29/ /
+COPY --from=layers /slots/small/30/ /
+COPY --from=layers /slots/small/31/ /
+COPY --from=layers /slots/small/32/ /
+COPY --from=layers /slots/small/33/ /
+COPY --from=layers /slots/small/34/ /
+COPY --from=layers /slots/small/35/ /
+COPY --from=layers /slots/small/36/ /
+COPY --from=layers /slots/small/37/ /
+COPY --from=layers /slots/small/38/ /
+COPY --from=layers /slots/small/39/ /
+COPY --from=layers /slots/meta/ /

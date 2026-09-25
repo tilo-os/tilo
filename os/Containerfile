@@ -91,7 +91,8 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 # CI restores these checksum-pinned files from persistent storage before the
 # build; local builds use the same resumable verifier.
-FROM github-assets AS external-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
 FROM --platform=linux/arm64 ${FEX_PAYLOAD_REF} AS windows-fex-input
 FROM --platform=linux/amd64 ${WINDOWS_GUEST_REF} AS windows-guest-input
@@ -470,6 +471,11 @@ ARG TILO_PREBUILT_APPS=0
 ARG TILO_PREBUILT_DESKTOP=0
 ARG TILO_CARGO_BUILD_JOBS=4
 ARG TILO_REQUIRE_COMPILER_CACHE=0
+# `shared` compiles through sccache (its S3 backend when configured). `off` is
+# for publications: a shared compiler cache is writable by every CI job, so a
+# signed image must be compiled without one. It runs no wrapper, and refuses
+# compiler-cache credentials or settings so none can reach the compile.
+ARG TILO_COMPILER_CACHE=shared
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
 RUN --mount=type=cache,target=/build/.cargo-home \
@@ -486,12 +492,18 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          phase=$1; started=$now; \
        } \
     && trap 'status=$?; printf "TILO_BUILD_TIMING phase=%s elapsed_seconds=%s exit_code=%s\n" "$phase" "$(( $(date +%s) - started ))" "$status"; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
-    && case "$TILO_REQUIRE_COMPILER_CACHE" in \
-         0) ;; \
-         1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
-         *) printf '%s\n' 'TILO_REQUIRE_COMPILER_CACHE must be 0 or 1' >&2; exit 1 ;; \
+    && case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
+         shared:0|off:0) ;; \
+         shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
+         *) printf '%s\n' 'TILO_COMPILER_CACHE must be shared or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)' >&2; exit 1 ;; \
        esac \
-    && if ! sccache --start-server; then \
+    && if [ "$TILO_COMPILER_CACHE" = off ]; then \
+         if [ -n "${AWS_ACCESS_KEY_ID}${AWS_SECRET_ACCESS_KEY}${SCCACHE_BUCKET}${SCCACHE_ENDPOINT}" ]; then \
+           printf '%s\n' 'A build without the compiler cache received compiler-cache settings' >&2; exit 1; \
+         fi; \
+         export RUSTC_WRAPPER=; \
+         printf '%s\n' 'compiling without a compiler cache' >&2; \
+       elif ! sccache --start-server; then \
          if [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
            printf '%s\n' 'Required compiler cache is unavailable; refusing an uncached build' >&2; exit 1; \
          fi; \
@@ -1686,11 +1698,14 @@ COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 # install/upgrade, and `bootc container ukify` seals it into the UKI command line
 # at build time — which is what makes this set measured rather than merely
 # applied. 03-boot.toml carries the arguments the install step used to inject.
+# 05-credentials.toml refuses systemd credentials from firmware, fw_cfg, the
+# boot loader or an unsigned command line.
 COPY \
     os/usr/lib/bootc/kargs.d/01-hardening.toml \
     os/usr/lib/bootc/kargs.d/00-root.toml \
     os/usr/lib/bootc/kargs.d/03-boot.toml \
     os/usr/lib/bootc/kargs.d/04-mode.toml \
+    os/usr/lib/bootc/kargs.d/05-credentials.toml \
     /usr/lib/bootc/kargs.d/
 # Which mode the sealed command line boots into. `tilo.mode=repair` is what the
 # repair entry carries, and it can only come from inside the signature — see the
@@ -2115,6 +2130,16 @@ RUN systemctl enable greetd.service && \
 # pcrlock credentials: its encrypted-root policy is the authority-signed PCR11
 # generation flow in tilo-rollback. Running both performs redundant TPM/NV and
 # filesystem scans before login and creates a second policy state machine.
+# The sealed /usr takes no system or configuration extension at boot. Fedora
+# presets systemd-sysext and systemd-confext, which merge every image or plain
+# directory under /etc, /run and /var/lib/{extensions,confexts} with systemd's
+# default image policy, which accepts unsigned images. A file written to /var
+# would then overlay the composefs-sealed /usr, or /etc, on the next boot.
+# systemd has no global setting that refuses directories or unsigned images,
+# so the image merges nothing itself; a caller merging an extension on purpose
+# passes its own `--image-policy`. Unlike the pcrlock and prune masks,
+# these units must exist: a missing unit is a build failure, not a skip. The
+# unsealed dev image unmasks systemd-sysext for its development layers.
 RUN for u in \
         NetworkManager-wait-online.service \
         systemd-networkd-wait-online.service \
@@ -2134,7 +2159,11 @@ RUN for u in \
         man-db-cache-update.timer \
         man-db-cache-update.service \
         systemd-update-utmp.service \
-    ; do systemctl mask "$u" || true; done
+    ; do systemctl mask "$u" || true; done \
+ && systemctl mask systemd-sysext.service systemd-confext.service systemd-sysext.socket \
+ && for u in systemd-sysext.service systemd-confext.service systemd-sysext.socket; do \
+      test "$(readlink "/etc/systemd/system/$u")" = /dev/null; \
+    done
 
 # C5 firewall policy. Default to the desktop zone (FedoraWorkstation), whose
 # 1025-65535 UDP range covers Iroh's ephemeral QUIC endpoint. Invites carry

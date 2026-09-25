@@ -55,13 +55,14 @@ trap 'rm -rf "$stage"' EXIT
 cp "$TILO_OS_DIR/dev/uki-cmdline.py" "$stage/uki-cmdline.py"
 build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
 if [ -n "$iidfile" ]; then
+  mapfile -t reproducible < <(podman_epoch_args "$epoch" "${podman_args[@]}")
   build_args=(-f - --build-arg "BASE_IMAGE=$image" --iidfile "$iidfile"
-    --pull=never --network=none --source-date-epoch "$epoch" --rewrite-timestamp)
+    --pull=never --network=none "${reproducible[@]}")
 elif [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
   case "$SOURCE_DATE_EPOCH" in *[!0-9]*|'') die "SOURCE_DATE_EPOCH must be an integer" ;; esac
-  # Podman also derives source-date-epoch from this exported variable. Passing
-  # --timestamp alongside it is rejected as ambiguous by current releases.
-  build_args+=(--source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp)
+  # Podman 5 also derives source-date-epoch from this exported variable.
+  mapfile -t reproducible < <(podman_epoch_args "$SOURCE_DATE_EPOCH" "${podman_args[@]}")
+  build_args+=("${reproducible[@]}")
 fi
 # An inherited epoch must not conflict with the explicit immutable-mode input.
 if [ -n "$iidfile" ]; then export SOURCE_DATE_EPOCH="$epoch"; fi

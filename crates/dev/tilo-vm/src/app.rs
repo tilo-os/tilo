@@ -1604,70 +1604,119 @@ impl App {
             status: format!("HTTP {status}"),
             stderr: body.chars().take(300).collect(),
         };
-        let tag = if let Some(tag) = tag {
-            tag.to_owned()
+        // Each architecture's lane publishes its own manifest, so the newest
+        // tag may not have this host's yet: without --tag, take the newest
+        // that does.
+        let tags: Vec<String> = if let Some(tag) = tag {
+            vec![tag.to_owned()]
         } else {
             let (status, body) = disk::get(&mut self.runner, disk::VERSIONS, &auth)?;
             match status {
-                200 => disk::newest_tag(&body).ok_or_else(|| {
-                    if token.is_none() {
-                        self.warnings.push(
-                            "no forge token was found, and the forge hides private packages from anonymous requests: export FORGEJO_TOKEN=<token with package read access>".into(),
-                        );
-                    }
-                    CliError::NoDiskPublished {
-                        tag: "(any)".into(),
-                        url: disk::VERSIONS.into(),
-                        local_build: local_build.clone(),
-                    }
-                })?,
+                200 => {}
                 401 | 403 => return Err(refused(disk::VERSIONS, status)),
                 _ => return Err(unexpected(disk::VERSIONS, status, &body)),
             }
-        };
-        let url = disk::manifest_url(&tag);
-        let (status, body) = disk::get(&mut self.runner, &url, &auth)?;
-        match status {
-            200 => {}
-            401 | 403 => return Err(refused(&url, status)),
-            404 => {
+            let mut tags = disk::candidate_tags(&body);
+            if tags.is_empty() {
                 if token.is_none() {
                     self.warnings.push(
-                        "no forge token was found, and the forge answers 404 for private packages: export FORGEJO_TOKEN=<token with package read access>".into(),
+                        "no forge token was found, and the forge hides private packages from anonymous requests: export FORGEJO_TOKEN=<token with package read access>".into(),
                     );
                 }
                 return Err(CliError::NoDiskPublished {
-                    tag,
-                    url,
+                    tag: "(any)".into(),
+                    url: disk::VERSIONS.into(),
                     local_build,
                 });
             }
-            _ => return Err(unexpected(&url, status, &body)),
-        }
-        let manifest: disk::DiskManifest =
-            serde_json::from_str(&body).map_err(|e| CliError::CommandFailed {
-                command: format!("read {url}"),
-                status: "not a disk manifest".into(),
-                stderr: e.to_string(),
-            })?;
-        let chosen =
-            manifest
-                .pick(arch, format)
-                .cloned()
-                .ok_or_else(|| CliError::NoDiskForHost {
-                    tag: tag.clone(),
-                    arch: arch.to_owned(),
-                    format: format.to_owned(),
-                    available: manifest.offered(),
-                    local_build,
+            tags.truncate(disk::TAGS_SEARCHED);
+            tags
+        };
+        for tag in &tags {
+            let url = disk::manifest_url(tag, arch);
+            let (status, body) = disk::get(&mut self.runner, &url, &auth)?;
+            match status {
+                200 => {}
+                401 | 403 => return Err(refused(&url, status)),
+                404 => continue,
+                _ => return Err(unexpected(&url, status, &body)),
+            }
+            let manifest: disk::DiskManifest =
+                serde_json::from_str(&body).map_err(|e| CliError::CommandFailed {
+                    command: format!("read {url}"),
+                    status: "not a disk manifest".into(),
+                    stderr: e.to_string(),
                 })?;
-        let dest = disk::cache_path(&tag, &chosen.file);
-        Ok(Published {
-            tag,
-            disk: chosen,
-            dest,
-            auth,
-        })
+            let chosen =
+                manifest
+                    .pick(arch, format)
+                    .cloned()
+                    .ok_or_else(|| CliError::NoDiskForHost {
+                        tag: tag.clone(),
+                        arch: arch.to_owned(),
+                        format: format.to_owned(),
+                        available: manifest.offered(),
+                        local_build: local_build.clone(),
+                    })?;
+            let dest = disk::cache_path(tag, &chosen.file);
+            return Ok(Published {
+                tag: tag.clone(),
+                disk: chosen,
+                dest,
+                auth,
+            });
+        }
+        Err(self.no_disk_for_host(
+            &tags,
+            tag.is_some(),
+            (arch, format),
+            &auth,
+            token.is_none(),
+            local_build,
+        ))
+    }
+
+    /// No tag in `tags` has `arch`: say what the newest offers instead.
+    fn no_disk_for_host(
+        &mut self,
+        tags: &[String],
+        explicit: bool,
+        (arch, format): (&str, &str),
+        auth: &disk::AuthHeader,
+        anonymous: bool,
+        local_build: Option<String>,
+    ) -> CliError {
+        let newest = tags.first().cloned().unwrap_or_default();
+        let available = match disk::get(&mut self.runner, &disk::files_url(&newest), auth) {
+            Ok((200, body)) => disk::offered_in_files(&newest, &body),
+            _ => Vec::new(),
+        };
+        if explicit && available.is_empty() {
+            if anonymous {
+                self.warnings.push(
+                    "no forge token was found, and the forge answers 404 for private packages: export FORGEJO_TOKEN=<token with package read access>".into(),
+                );
+            }
+            return CliError::NoDiskPublished {
+                url: disk::manifest_url(&newest, arch),
+                tag: newest,
+                local_build,
+            };
+        }
+        if tags.len() > 1 {
+            self.warnings.push(format!(
+                "none of the {} newest dev disk tags ({}) has a {arch} disk yet",
+                tags.len(),
+                tags.join(", ")
+            ));
+        }
+        CliError::NoDiskForHost {
+            tag: newest,
+            arch: arch.to_owned(),
+            format: format.to_owned(),
+            available,
+            local_build,
+        }
     }
 
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {

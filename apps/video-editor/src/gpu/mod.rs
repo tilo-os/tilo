@@ -169,6 +169,10 @@ pub struct HeadlessCompositor {
 impl HeadlessCompositor {
     /// Borrow the shared device. Fails (rather than panicking) on a box
     /// with no usable adapter, so callers can report it honestly.
+    ///
+    /// # Errors
+    ///
+    /// The adapter's own message when no usable GPU is available.
     pub fn new() -> Result<Self, String> {
         let gpu = ui::offscreen::shared_gpu().map_err(|e| e.to_string())?;
         Ok(Self {
@@ -230,9 +234,9 @@ mod tests {
     fn px(buf: &[u8], w: u32, x: u32, y: u32) -> Rgb {
         let i = ((y * w + x) * 4) as usize;
         Rgb::new(
-            buf[i] as f64 / 255.0,
-            buf[i + 1] as f64 / 255.0,
-            buf[i + 2] as f64 / 255.0,
+            f64::from(buf[i]) / 255.0,
+            f64::from(buf[i + 1]) / 255.0,
+            f64::from(buf[i + 2]) / 255.0,
         )
     }
 
@@ -273,6 +277,10 @@ mod tests {
     /// A [`FrameSource`] handing every layer the same known picture, so a
     /// test can assert on *where the picture landed* rather than on a
     /// stand-in fill. `paint(u, v) -> (r, g, b, a)` in 0..255.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "pixel maths: frame w/h, texel index i, its u/v, and the colour c"
+    )]
     fn painted(
         w: u32,
         h: u32,
@@ -281,8 +289,8 @@ mod tests {
         let mut rgba = vec![0u8; (w * h * 4) as usize];
         for y in 0..h {
             for x in 0..w {
-                let u = (x as f64 + 0.5) / w as f64;
-                let v = (y as f64 + 0.5) / h as f64;
+                let u = (f64::from(x) + 0.5) / f64::from(w);
+                let v = (f64::from(y) + 0.5) / f64::from(h);
                 let c = paint(u, v);
                 let i = ((y * w + x) * 4) as usize;
                 rgba[i..i + 4].copy_from_slice(&c);
@@ -661,9 +669,9 @@ mod tests {
             .chunks_exact(4)
             .filter(|q| {
                 is_green(Rgb::new(
-                    q[0] as f64 / 255.0,
-                    q[1] as f64 / 255.0,
-                    q[2] as f64 / 255.0,
+                    f64::from(q[0]) / 255.0,
+                    f64::from(q[1]) / 255.0,
+                    f64::from(q[2]) / 255.0,
                 ))
             })
             .count();
@@ -808,6 +816,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "test shorthands: project p, media m, track t, clip c and its filters f"
+    )]
     fn the_shader_grade_matches_the_cpu_grade() {
         // The shader is the production path; this pins its arithmetic to
         // `Rgb::graded`, which the inspector and every CPU test rely on.
@@ -869,7 +881,7 @@ mod tests {
         for level in [64u8, 128, 200] {
             let buf = c.frame(&p, 1.0, 32, 32, &mut flat(level));
             let got = px(&buf, 32, 16, 16);
-            let t = level as f64 / 255.0;
+            let t = f64::from(level) / 255.0;
             let (wr, wg, wb) = curve.apply(t, t, t);
             assert!(
                 (got.r - wr).abs() < 0.02 && (got.g - wg).abs() < 0.02 && (got.b - wb).abs() < 0.02,
@@ -1333,6 +1345,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "test shorthands: project p, media m, track t, clip c, and the two frames a/b"
+    )]
     fn the_same_input_always_composites_the_same_frame() {
         // `--shots` determinism, asserted on the production path.
         let mut p = Project::new("t");
@@ -1437,11 +1453,11 @@ mod tests {
                 let a = (y * w as usize + x - 1) * 4;
                 let b = (y * w as usize + x) * 4;
                 for c in 0..3 {
-                    total += buf[a + c].abs_diff(buf[b + c]) as f64;
+                    total += f64::from(buf[a + c].abs_diff(buf[b + c]));
                 }
             }
         }
-        total / (w * h) as f64
+        total / f64::from(w * h)
     }
 
     /// With a hydrated real source under the playhead, the canvas must
@@ -1850,6 +1866,7 @@ mod tests {
         let frame = s
             .frame_at(2_000, std::time::Duration::from_secs(10))
             .expect("a frame at 2s");
+        drop(s);
         match &frame.payload {
             FramePayload::Planar(img) => {
                 assert_eq!(img.planes.len(), 2, "NV12 is luma plus interleaved chroma");
@@ -2026,6 +2043,10 @@ mod tests {
 
     /// A [`FrameSource`] that paints each media its own picture, so a
     /// two-layer stack can be told apart pixel by pixel.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "pixel maths: frame w/h, texel index i, its u/v, and the colour c"
+    )]
     fn per_media(
         w: u32,
         h: u32,
@@ -2037,8 +2058,8 @@ mod tests {
                 let mut buf = vec![0u8; (w * h * 4) as usize];
                 for y in 0..h {
                     for x in 0..w {
-                        let u = (x as f64 + 0.5) / w as f64;
-                        let v = (y as f64 + 0.5) / h as f64;
+                        let u = (f64::from(x) + 0.5) / f64::from(w);
+                        let v = (f64::from(y) + 0.5) / f64::from(h);
                         let c = paint(media, u, v);
                         let i = ((y * w + x) * 4) as usize;
                         buf[i..i + 4].copy_from_slice(&c);
@@ -2143,9 +2164,9 @@ mod tests {
         p.clip_mut(over).unwrap().key = crate::model::ChromaKey {
             enabled: true,
             color: [
-                PLATE[0] as f64 / 255.0,
-                PLATE[1] as f64 / 255.0,
-                PLATE[2] as f64 / 255.0,
+                f64::from(PLATE[0]) / 255.0,
+                f64::from(PLATE[1]) / 255.0,
+                f64::from(PLATE[2]) / 255.0,
             ],
             tolerance: 0.25,
             softness: 0.1,
@@ -2189,9 +2210,9 @@ mod tests {
             // Full exposure at the top down to a fifth of it at the bottom.
             let gain = 1.0 - 0.8 * v;
             [
-                (PLATE[0] as f64 * gain) as u8,
-                (PLATE[1] as f64 * gain) as u8,
-                (PLATE[2] as f64 * gain) as u8,
+                (f64::from(PLATE[0]) * gain) as u8,
+                (f64::from(PLATE[1]) * gain) as u8,
+                (f64::from(PLATE[2]) * gain) as u8,
                 255,
             ]
         });
@@ -2199,9 +2220,9 @@ mod tests {
         p.clip_mut(over).unwrap().key = crate::model::ChromaKey {
             enabled: true,
             color: [
-                PLATE[0] as f64 / 255.0,
-                PLATE[1] as f64 / 255.0,
-                PLATE[2] as f64 / 255.0,
+                f64::from(PLATE[0]) / 255.0,
+                f64::from(PLATE[1]) / 255.0,
+                f64::from(PLATE[2]) / 255.0,
             ],
             tolerance: 0.12,
             softness: 0.05,
@@ -2234,9 +2255,9 @@ mod tests {
         let key = |spill: f64| crate::model::ChromaKey {
             enabled: true,
             color: [
-                PLATE[0] as f64 / 255.0,
-                PLATE[1] as f64 / 255.0,
-                PLATE[2] as f64 / 255.0,
+                f64::from(PLATE[0]) / 255.0,
+                f64::from(PLATE[1]) / 255.0,
+                f64::from(PLATE[2]) / 255.0,
             ],
             // Wide enough to be keying, but nowhere near the tinted subject.
             tolerance: 0.2,
@@ -2255,7 +2276,7 @@ mod tests {
             "the subject is kept either way — spill removal is not a matte",
         );
         // Green comes down relative to the other two channels.
-        let cast = |c: Rgb| c.g - (c.r + c.b) / 2.0;
+        let cast = |c: Rgb| c.g - c.r.midpoint(c.b);
         assert!(
             cast(clean) < cast(plain) - 0.02,
             "spill removal pulls the green cast down: {:.3} → {:.3}",
