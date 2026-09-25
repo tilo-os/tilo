@@ -118,8 +118,8 @@ has "$workflow" 'needs: signing-preflight' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
-has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
-  'snapshot promotion rejects source-input changes during native builds'
+has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-newer-than-pin' \
+  'snapshot promotion refuses only a snapshot that is not newer than the pin on main'
 inputs_job="$(sed -n '/^  inputs:/,/^  signing-preflight:/p' "$workflow")"
 if grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --since-pin --head "$GITHUB_SHA"' <<<"$inputs_job" \
    && ! grep -Fq 'fetch-depth: 0' <<<"$inputs_job" \
@@ -181,6 +181,17 @@ if grep -Fq 'Forgejo refused the snapshot pin push to $branch' <<<"$promotion_st
   ok 'a refused snapshot pin push is reported as refused'
 else
   bad 'a refused snapshot pin push can be misreported'
+fi
+# Inputs moving on main during a run must not starve pin promotion: a combined
+# pin newer than main's lands, supersedes older pin PRs, and requests the next
+# refresh. A standalone kernel pin still refuses, since it binds main's RPM pin.
+if grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-newer-than-pin' <<<"$promotion_step" \
+   && grep -Fq 'if [ -z "$CALLER_RPMS_REF" ] && [ "$moved" = true ]; then' <<<"$promotion_step" \
+   && grep -Fq 'superseded+=(--supersede "$candidate")' <<<"$promotion_step" \
+   && grep -Fq 'actions/workflows/snapshot-rpms.yml/dispatches' <<<"$promotion_step"; then
+  ok 'combined pin promotion converges while inputs keep moving on main'
+else
+  bad 'combined pin promotion can be starved by a busy main'
 fi
 # Kernel provenance binds RPMS_REF, so an OS build can only verify once the
 # new RPM pin and the kernel rebuilt against it have both merged.
