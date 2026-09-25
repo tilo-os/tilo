@@ -494,26 +494,29 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     Ok(())
 }
 
-/// Like [`build`] but keeps the concrete widget type.
+/// Like [`build`] but keeps the concrete widget type, and keeps images in memory: headless
+/// frames leave nothing behind.
 fn build_concrete(file: Option<&Path>) -> Result<(State, WordProcessorWidget), Box<dyn Error>> {
     match file {
         Some(p) => {
-            let (state, widget, _fmt) = open_document(p)?;
+            let (state, widget, _fmt) = open_document(p, tilo_content::ContentStore::memory())?;
             Ok((state, widget))
         }
         None => Ok((State::new(), WordProcessorWidget::new())),
     }
 }
 
-/// Build the document state + widget: open `file` if given, else a blank doc.
+/// Build the document state + widget: open `file` if given, else a blank doc. The document's
+/// images live in the app's content store.
 fn build(file: Option<&Path>) -> Result<(State, Box<dyn Widget>), Box<dyn Error>> {
-    match file {
-        Some(p) => {
-            let (state, widget, _fmt) = open_document(p)?;
-            Ok((state, Box::new(widget)))
-        }
-        None => Ok((State::new(), Box::new(WordProcessorWidget::new()))),
+    let content = tilo_content::ContentStore::for_app();
+    if let Some(p) = file {
+        let (state, widget, _fmt) = open_document(p, content)?;
+        return Ok((state, Box::new(widget)));
     }
+    let mut widget = WordProcessorWidget::new();
+    widget.model_mut().set_content_store(content);
+    Ok((State::new(), Box::new(widget)))
 }
 
 /// Render a single headless frame to `out` (mirrors the other apps' `--shots`).

@@ -18,6 +18,7 @@ crate-type = ["cdylib"]
 # serialized with Automerge, whose actor ids need host entropy.
 qdoc = { path = "../qdoc" }
 qdoc-codecs = { path = "../qdoc-codecs", default-features = false, features = ["markdown"] }
+tilo-content = { path = "../../system/content", default-features = false }
 format-provider-abi = { path = "../format-provider-abi", features = ["entropy"] }
 
 [profile.release]

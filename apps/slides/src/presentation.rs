@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn settled_slide_cache_reuses_an_unchanged_render() {
         let deck = crate::model::seed_deck();
-        let images = ImageStore::new();
+        let images = ImageStore::new(tilo_content::ContentStore::memory());
         let frame =
             PresentationFrame::new(Rect::new(0.0, 0.0, 1280.0, 720.0), &deck, 1, 7, &images);
         let theme = Theme::dark();

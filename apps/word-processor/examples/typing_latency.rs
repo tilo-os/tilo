@@ -125,7 +125,7 @@ struct PassTotals {
 /// profiler. That is what the app really spends before the glyph is on screen.
 fn type_and_time(paragraphs: usize, chars: usize) -> std::io::Result<(Vec<u64>, PassTotals)> {
     let path = document_with(paragraphs)?;
-    let (state, wp, _fmt) = open_document(&path)?;
+    let (state, wp, _fmt) = open_document(&path, tilo_content::ContentStore::memory())?;
     let mut driver = Driver::new(state, Box::new(wp), (1200, 800));
 
     // Warm up the shaping caches so the first reading is not a cold-start
@@ -295,7 +295,7 @@ fn paced_burst_profile(
     per_second: f64,
 ) -> std::io::Result<Vec<usize>> {
     let path = document_with(paragraphs)?;
-    let (state, wp, _fmt) = open_document(&path)?;
+    let (state, wp, _fmt) = open_document(&path, tilo_content::ContentStore::memory())?;
     let mut driver = Driver::new(state, Box::new(wp), (1200, 800));
     driver.type_text("warmup");
 

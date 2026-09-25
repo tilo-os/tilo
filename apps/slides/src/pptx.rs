@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Write};
 
 use crate::odp::Package;
+use tilo_content::ContentStore;
 
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -35,14 +36,20 @@ use crate::model::{Background, Deck, Element, ElementKind, Layout, PaletteKind, 
 
 const EMU: f64 = 9_525.0;
 
-pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
+/// Serialise `deck` to the bytes of a `.pptx` package, bundling the pictures
+/// `content` holds for its image elements.
+///
+/// # Errors
+///
+/// Returns an error if the ZIP writer fails.
+pub fn write_pptx(deck: &Deck, content: &ContentStore) -> std::io::Result<Vec<u8>> {
     let mut pictures = Vec::<Picture>::new();
     for slide in &deck.slides {
         for el in &slide.elements {
             if el.kind != ElementKind::Image || pictures.iter().any(|p| p.src == el.src) {
                 continue;
             }
-            if let Some(bytes) = crate::assets::read_asset(&el.src) {
+            if let Some(bytes) = crate::assets::read_asset(content, &el.src) {
                 if let Some(ext) = image_ext(&bytes) {
                     pictures.push(Picture {
                         src: el.src.clone(),
@@ -119,7 +126,13 @@ pub fn write_pptx(deck: &Deck) -> std::io::Result<Vec<u8>> {
     Ok(zip.finish()?.into_inner())
 }
 
-pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
+/// Parse the bytes of a `.pptx` package into a [`Deck`], storing its
+/// pictures in `content`.
+///
+/// # Errors
+///
+/// Returns an error if `bytes` isn't a readable, bounded presentation package.
+pub fn read_pptx(bytes: &[u8], content: &ContentStore) -> std::io::Result<Deck> {
     let mut zip = crate::odp::open_package(bytes)?;
     let title = read_zip_text(&mut zip, "docProps/core.xml")
         .and_then(|x| first_text(&x, b"dc:title"))
@@ -146,7 +159,7 @@ pub fn read_pptx(bytes: &[u8]) -> std::io::Result<Deck> {
         let rels = read_zip_text(&mut zip, &rel_name)
             .map(|x| parse_rels(&x))
             .unwrap_or_default();
-        let mut slide = parse_slide(&xml, &rels, &mut zip);
+        let mut slide = parse_slide(&xml, &rels, &mut zip, content);
         if let Some(target) = rels.values().find(|target| target.contains("notesSlides/")) {
             let path = format!("ppt/{}", target.trim_start_matches("../"));
             if let Some(notes_xml) = read_zip_text(&mut zip, &path) {
@@ -390,7 +403,12 @@ impl Default for Pending {
     }
 }
 
-fn parse_slide(xml: &str, rels: &HashMap<String, String>, zip: &mut Package<'_>) -> Slide {
+fn parse_slide(
+    xml: &str,
+    rels: &HashMap<String, String>,
+    zip: &mut Package<'_>,
+    content: &ContentStore,
+) -> Slide {
     let mut slide = Slide::new(Layout::Blank);
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
@@ -553,7 +571,7 @@ fn parse_slide(xml: &str, rels: &HashMap<String, String>, zip: &mut Package<'_>)
                 b"bg" => in_slide_background = in_slide_background.saturating_sub(1),
                 b"sp" | b"cxnSp" | b"pic" => {
                     if let Some(c) = cur.take() {
-                        push_pending(&mut slide, c, rels, zip);
+                        push_pending(&mut slide, c, rels, zip, content);
                     }
                     paragraph = false
                 }
@@ -571,6 +589,7 @@ fn push_pending(
     c: Pending,
     rels: &HashMap<String, String>,
     zip: &mut Package<'_>,
+    content: &ContentStore,
 ) {
     let w = if c.w > 0.0 { c.w } else { 1.0 };
     let h = if c.h > 0.0 { c.h } else { 1.0 };
@@ -582,7 +601,7 @@ fn push_pending(
         let Some(bytes) = crate::odp::read_package_picture(zip, &path) else {
             return;
         };
-        let Some(src) = crate::odp::cache_imported_picture(&bytes) else {
+        let Some(src) = crate::odp::cache_imported_picture(content, &bytes) else {
             return;
         };
         Element::image(&src, c.x, c.y, w, h)
@@ -869,6 +888,7 @@ mod tests {
     use super::*;
     #[test]
     fn round_trips_core_content() {
+        let content = ContentStore::memory();
         let mut s = Slide::new(Layout::Blank);
         s.add(
             Element::text("Hello\nPowerPoint", 10.0, 20.0, 500.0, 100.0, 36.0)
@@ -886,9 +906,9 @@ mod tests {
             palette: PaletteKind::Indigo,
             slides: vec![s],
         };
-        let b = write_pptx(&d).unwrap();
+        let b = write_pptx(&d, &content).unwrap();
         assert!(b.starts_with(b"PK"));
-        let got = read_pptx(&b).unwrap();
+        let got = read_pptx(&b, &content).unwrap();
         assert_eq!(got.title, "Talk");
         assert_eq!(got.slides.len(), 1);
         assert_eq!(got.slides[0].elements[0].text, "Hello\nPowerPoint");
@@ -902,6 +922,7 @@ mod tests {
 
     #[test]
     fn round_trips_native_shape_and_text_styling() {
+        let content = ContentStore::memory();
         let mut slide = Slide::new(Layout::Blank);
         let mut shape = Element::shape(ElementKind::Rect, 10.0, 20.0, 100.0, 80.0);
         shape.fill = "#12A4EF".into();
@@ -917,8 +938,8 @@ mod tests {
             slides: vec![slide],
         };
 
-        let bytes = write_pptx(&deck).expect("pptx export");
-        let got = read_pptx(&bytes).expect("pptx import");
+        let bytes = write_pptx(&deck, &content).expect("pptx export");
+        let got = read_pptx(&bytes, &content).expect("pptx import");
         let shape = &got.slides[0].elements[0];
         assert_eq!(shape.fill, "#12A4EF");
         assert_eq!(shape.stroke, "danger");
@@ -928,6 +949,7 @@ mod tests {
 
     #[test]
     fn round_trips_theme_relative_slide_backgrounds() {
+        let content = ContentStore::memory();
         let mut accent = Slide::new(Layout::Blank);
         accent.background = Background::Accent;
         let mut deep = Slide::new(Layout::Blank);
@@ -938,7 +960,7 @@ mod tests {
             slides: vec![accent, deep],
         };
 
-        let bytes = write_pptx(&deck).expect("pptx export");
+        let bytes = write_pptx(&deck, &content).expect("pptx export");
         let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
         let accent_xml = read_zip_text(&mut archive, "ppt/slides/slide1.xml").expect("slide xml");
         let deep_xml = read_zip_text(&mut archive, "ppt/slides/slide2.xml").expect("slide xml");
@@ -951,13 +973,14 @@ mod tests {
             "deep is a native theme background"
         );
 
-        let got = read_pptx(&bytes).expect("pptx import");
+        let got = read_pptx(&bytes, &content).expect("pptx import");
         assert_eq!(got.slides[0].background, Background::Accent);
         assert_eq!(got.slides[1].background, Background::Deep);
     }
 
     #[test]
     fn round_trips_speaker_notes_as_native_notes_slides() {
+        let content = ContentStore::memory();
         let mut with_notes = Slide::new(Layout::Blank);
         with_notes.notes = "Open with the decision.\nPause for questions.".into();
         let without_notes = Slide::new(Layout::Blank);
@@ -967,7 +990,7 @@ mod tests {
             slides: vec![with_notes, without_notes],
         };
 
-        let bytes = write_pptx(&deck).expect("pptx export");
+        let bytes = write_pptx(&deck, &content).expect("pptx export");
         let mut archive = crate::odp::open_package(&bytes).expect("pptx zip");
         let types = read_zip_text(&mut archive, "[Content_Types].xml").expect("content types");
         let notes =
@@ -983,7 +1006,7 @@ mod tests {
         );
         drop(archive);
 
-        let got = read_pptx(&bytes).expect("pptx import");
+        let got = read_pptx(&bytes, &content).expect("pptx import");
         assert_eq!(
             got.slides[0].notes,
             "Open with the decision.\nPause for questions."
@@ -1007,6 +1030,7 @@ mod tests {
 
     #[test]
     fn round_trips_reserved_characters_in_title_text_and_notes() {
+        let content = ContentStore::memory();
         let mut slide = Slide::new(Layout::Blank);
         slide.add(Element::text(
             "R&D <b> & \u{1F600}",
@@ -1022,7 +1046,7 @@ mod tests {
             palette: PaletteKind::Indigo,
             slides: vec![slide],
         };
-        let got = read_pptx(&write_pptx(&deck).unwrap()).unwrap();
+        let got = read_pptx(&write_pptx(&deck, &content).unwrap(), &content).unwrap();
         assert_eq!(got.title, "Q&A <live>");
         assert_eq!(got.slides[0].elements[0].text, "R&D <b> & \u{1F600}");
         assert_eq!(got.slides[0].notes, "a < b && c > d");
@@ -1050,9 +1074,10 @@ mod tests {
 
     #[test]
     fn bundles_local_picture() {
+        let content = ContentStore::memory();
         let p = std::env::temp_dir().join(format!("slides-pptx-{}.png", std::process::id()));
         std::fs::write(&p, b"\x89PNG\r\n\x1a\nbytes").unwrap();
-        let asset = crate::assets::import_asset_file(&p).unwrap();
+        let asset = crate::assets::import_asset_file(&content, &p).unwrap();
         let mut s = Slide::new(Layout::Blank);
         s.add(Element::image(&asset, 1.0, 2.0, 30.0, 40.0));
         let d = Deck {
@@ -1060,11 +1085,11 @@ mod tests {
             palette: PaletteKind::Indigo,
             slides: vec![s],
         };
-        let b = write_pptx(&d).unwrap();
-        let got = read_pptx(&b).unwrap();
+        let b = write_pptx(&d, &content).unwrap();
+        let got = read_pptx(&b, &content).unwrap();
         assert_eq!(got.slides[0].elements[0].kind, ElementKind::Image);
         assert!(
-            crate::assets::read_asset(&got.slides[0].elements[0].src)
+            crate::assets::read_asset(&content, &got.slides[0].elements[0].src)
                 .unwrap()
                 .starts_with(b"\x89PNG")
         );

@@ -137,6 +137,7 @@ fn main() -> anyhow::Result<()> {
         settle: Duration::from_millis(cli.settle_ms),
         directory: None,
         permissions,
+        content: tilo_content::ContentStore::for_app(),
     };
     let mut session = Session::connect(cfg)?;
     if cli.task_runs {

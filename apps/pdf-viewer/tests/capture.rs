@@ -2,13 +2,14 @@
 #![allow(clippy::expect_used, reason = "test assertions")]
 
 use std::time::Duration;
+use tilo_content::ContentStore;
 use ui::headless::FrameHarness;
 
 fn require_raster_worker(path: &std::path::Path) {
     use pdf_viewer::source::{RasterEvent, RasterHandle};
     // Opening text successfully does not qualify the native raster pipeline.
     // Probe the actual owner thread, never bind PDFium from the test thread.
-    let worker = RasterHandle::new().expect("start PDF owner worker");
+    let worker = RasterHandle::new(ContentStore::memory()).expect("start PDF owner worker");
     let request = worker.open_path(path).expect("queue PDF fixture open");
     let started = std::time::Instant::now();
     let result = loop {
@@ -34,13 +35,12 @@ fn require_raster_worker(path: &std::path::Path) {
 
 #[test]
 fn production_open_completes_visual_work() {
-    use qdoc::blobstore::{self, MemoryBlobStore};
-    blobstore::set_store(std::sync::Arc::new(MemoryBlobStore::default()));
+    let content = ContentStore::memory();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf");
     require_raster_worker(&path);
     let mut harness = FrameHarness::new_with_theme(
         ui::State::new(),
-        pdf_viewer::app_root_open(&path),
+        pdf_viewer::app_root_open_with_content(&path, content.clone()),
         (1280, 800),
         ui::theme::Theme::dark(),
     )
@@ -61,14 +61,14 @@ fn production_open_completes_visual_work() {
     )
     .expect("fixture bytes");
     assert!(
-        blobstore::store().has(&blobstore::hash_bytes(
+        content.has(&tilo_content::hash_bytes(
             &std::fs::read(&path).expect("opened bytes")
         )),
         "the opened document is kept in the content-addressed store"
     );
-    let hash = blobstore::hash_bytes(&bytes);
+    let hash = tilo_content::hash_bytes(&bytes);
     assert!(
-        !blobstore::store().has(&hash),
+        !content.has(&hash),
         "the imported payload must be absent before exercising hydration"
     );
     pdf_viewer::PdfDoc::import_pages(
@@ -89,7 +89,7 @@ fn production_open_completes_visual_work() {
     );
     harness.relayout();
     assert!(harness.wait_for_visuals(Duration::from_millis(30)).is_err());
-    assert_eq!(blobstore::put(&bytes), Some(hash));
+    assert_eq!(content.put(&bytes).ok(), Some(hash));
     harness
         .wait_for_visuals(Duration::from_secs(15))
         .expect("arrival of imported bytes completes page rendering");

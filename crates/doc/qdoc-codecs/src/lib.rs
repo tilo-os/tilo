@@ -56,6 +56,8 @@ pub mod ods;
 pub mod odt;
 #[cfg(feature = "office")]
 pub mod preserve;
+#[cfg(any(feature = "html", feature = "docx", feature = "odt"))]
+mod resolved;
 #[cfg(feature = "rtf")]
 pub mod rtf;
 #[cfg(feature = "office")]
@@ -337,12 +339,12 @@ mod tests {
         #[test]
         fn odt_preserves_markdown_model(src in doc_strategy()) {
             let mut d = Document::new();
-            MarkdownCodec.import(src.as_bytes(), &mut d.as_mut()).unwrap();
+            MarkdownCodec.import(src.as_bytes(), &mut d.as_mut(), &mut tilo_content::ContentInputs::new()).unwrap();
             let m1 = norm(&d.materialize());
 
-            let odt = OdtCodec.export(d.as_ref()).unwrap();
+            let odt = OdtCodec.export(d.as_ref(), &tilo_content::NoContent).unwrap();
             let mut d2 = Document::new();
-            OdtCodec.import(&odt, &mut d2.as_mut()).unwrap();
+            OdtCodec.import(&odt, &mut d2.as_mut(), &mut tilo_content::ContentInputs::new()).unwrap();
             let m2 = norm(&d2.materialize());
 
             prop_assert_eq!(m1, m2);
@@ -353,12 +355,12 @@ mod tests {
         #[test]
         fn docx_preserves_markdown_model(src in doc_strategy()) {
             let mut d = Document::new();
-            MarkdownCodec.import(src.as_bytes(), &mut d.as_mut()).unwrap();
+            MarkdownCodec.import(src.as_bytes(), &mut d.as_mut(), &mut tilo_content::ContentInputs::new()).unwrap();
             let m1 = norm(&d.materialize());
 
-            let docx = DocxCodec.export(d.as_ref()).unwrap();
+            let docx = DocxCodec.export(d.as_ref(), &tilo_content::NoContent).unwrap();
             let mut d2 = Document::new();
-            DocxCodec.import(&docx, &mut d2.as_mut()).unwrap();
+            DocxCodec.import(&docx, &mut d2.as_mut(), &mut tilo_content::ContentInputs::new()).unwrap();
             let m2 = norm(&d2.materialize());
 
             prop_assert_eq!(m1, m2);

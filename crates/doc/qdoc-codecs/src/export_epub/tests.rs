@@ -105,7 +105,7 @@ fn first_entry_is_mimetype_stored_with_exact_payload() {
     snap.properties.insert("title".into(), "Hello".into());
     snap.blocks = vec![block("paragraph", "body")];
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
 
     // First entry MUST be `mimetype`.
@@ -131,7 +131,7 @@ fn contains_container_pointing_at_opf() {
     let mut snap = empty_snapshot();
     snap.properties.insert("title".into(), "Doc".into());
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
 
     let container = part_str(&parts, "META-INF/container.xml");
@@ -157,7 +157,7 @@ fn opf_carries_the_document_title_and_author() {
     snap.properties
         .insert("author".into(), "Ada Lovelace".into());
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
 
     let opf = part_str(&parts, "OEBPS/content.opf");
@@ -194,7 +194,7 @@ fn nav_has_a_toc_entry_per_heading() {
         heading(2, "Section B"),
     ];
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
 
     let nav = part_str(&parts, "OEBPS/nav.xhtml");
@@ -237,7 +237,7 @@ fn deeply_nested_headings_yield_well_formed_nested_nav() {
         heading(3, "Two.skip"), // H1 → H3 with no intervening H2
     ];
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
     let nav = part_str(&parts, "OEBPS/nav.xhtml");
 
@@ -271,13 +271,14 @@ fn image_block_adds_an_image_manifest_item_and_packaged_resource() {
     let mut snap = empty_snapshot();
     snap.properties
         .insert("title".into(), "Picture Book".into());
-    snap.blobs.insert("hash-abc".into(), tiny_png());
+    let mut blobs = BTreeMap::new();
+    blobs.insert("hash-abc".to_string(), tiny_png());
     snap.blocks = vec![
         block("paragraph", "before"),
         image_block("hash-abc", "a kitten"),
     ];
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &blobs).expect("render");
     let parts = unzip(&epub);
 
     // A packaged image resource exists under OEBPS/images/.
@@ -332,7 +333,7 @@ fn chapters_are_well_formed_xml_with_self_closing_void_elements() {
         block("paragraph", "ok"),
     ];
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
     let chapter = part_str(&parts, "OEBPS/chapter-1.xhtml");
 
@@ -371,7 +372,7 @@ fn body_splits_into_one_chapter_per_h1() {
         block("paragraph", "b"),
     ];
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
 
     assert!(
@@ -397,7 +398,7 @@ fn body_splits_into_one_chapter_per_h1() {
 #[test]
 fn empty_document_still_produces_a_valid_epub() {
     let snap = empty_snapshot();
-    let epub = render_epub(&snap).expect("render empty");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render empty");
     let parts = unzip(&epub);
 
     assert_eq!(parts[0].0, "mimetype");
@@ -427,7 +428,7 @@ fn text_specials_are_xml_escaped_not_injected() {
         .insert("title".into(), "Tom & Jerry <fight>".into());
     snap.blocks = vec![block("paragraph", "5 < 6 && \"quoted\"")];
 
-    let epub = render_epub(&snap).expect("render");
+    let epub = render_epub(&snap, &tilo_content::NoContent).expect("render");
     let parts = unzip(&epub);
 
     let opf = part_str(&parts, "OEBPS/content.opf");

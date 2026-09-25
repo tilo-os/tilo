@@ -24,6 +24,7 @@ use tilo_automerge::ApplyIncoming;
 use automerge::AutoCommit;
 use tilo_actions::Resource;
 use tilo_agent::{Config, Session};
+use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
 
@@ -202,6 +203,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
             selection: None,
             region: word_processor::actions::RegionKind::Body,
             search_hits: Vec::new(),
+            content: ContentStore::memory(),
         },
         doc,
     )
@@ -431,6 +433,7 @@ fn the_agent_inserts_a_table_on_the_peers_replica() {
         settle: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
+        content: ContentStore::memory(),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -698,6 +701,7 @@ fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
         settle: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
+        content: ContentStore::memory(),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -784,6 +788,7 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
         settle: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
+        content: ContentStore::memory(),
     };
     let mut session = Session::connect(cfg).expect("agent connects");
 
@@ -856,6 +861,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
         settle: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
+        content: ContentStore::memory(),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");
@@ -996,6 +1002,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
         settle: Duration::ZERO,
         directory: None,
         permissions: granted("Scribe"),
+        content: ContentStore::memory(),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");

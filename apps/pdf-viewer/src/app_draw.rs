@@ -1654,8 +1654,8 @@ impl PdfApp {
             return;
         };
         let label = match state {
-            qdoc::blobstore::BlobState::Pending => "Imported page content is loading…",
-            qdoc::blobstore::BlobState::Unavailable | qdoc::blobstore::BlobState::Resolved => {
+            tilo_content::ContentState::Pending => "Imported page content is loading…",
+            tilo_content::ContentState::Unavailable | tilo_content::ContentState::Resolved => {
                 "Imported page content is unavailable"
             }
         };

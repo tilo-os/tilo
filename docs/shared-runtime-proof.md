@@ -58,9 +58,9 @@ Clippy passed for both changed SDK libraries.
   inheritance, usable by both macOS and Linux.
 - `crates/runtime/runtime-identity`: shared connection ownership and framing
   serialization, fixing repeated SDK metadata lookups closing a live signer.
-- `crates/doc/qdoc/src/blobstore.rs`: an explicit `QOS_BLOB_STORE` selects the
-  existing filesystem store, allowing trusted local apps to share content.
-  With no override the existing in-memory default remains.
+- `crates/system/content`: an explicit `TILO_BLOB_STORE` selects a shared
+  content directory, allowing trusted local apps to share content.
+  The launcher's content-store capability takes precedence when present.
 - `shell/examples/shared-runtime-proof.rs`: verification driver, not a second
   action broker or workflow engine.
 

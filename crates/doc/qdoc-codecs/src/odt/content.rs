@@ -13,6 +13,7 @@ use qdoc::snapshot::ChangeKind;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeMap;
+use tilo_content::ContentInputs;
 
 /// Parse an ODF length (`svg:width`/`svg:height`, e.g. `"3cm"`, `"96px"`, `"1in"`) to an
 /// integer pixel count; `px` round-trips exactly, other units convert at 96dpi.
@@ -203,6 +204,7 @@ fn advance_frame(
     frame: &mut Option<FrameState>,
     container: &OdtContainer,
     doc: &mut DocMut,
+    inputs: &mut ContentInputs,
     prev: &mut Option<String>,
     cur: &mut Option<String>,
     cur_len: &mut usize,
@@ -262,9 +264,8 @@ fn advance_frame(
                     .and_then(|h| container.get(h).map(<[u8]>::to_vec));
                 if let Some(bytes) = bytes {
                     let id = start_block(doc, prev, cur, cur_len, "image");
-                    if let Some(hash) = doc.put_blob(&bytes) {
-                        doc.set_attr(&id, "blob", hash.as_str());
-                    }
+                    let hash = doc.attach(&bytes, inputs);
+                    doc.set_attr(&id, "blob", hash.as_str());
                     let alt = if fr.title.is_empty() {
                         &fr.desc
                     } else {
@@ -945,6 +946,7 @@ pub(crate) fn parse_body(
     reg: &StyleRegistry,
     container: &OdtContainer,
     doc: &mut DocMut,
+    inputs: &mut ContentInputs,
 ) -> Result<(), CodecError> {
     let s = std::str::from_utf8(content_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
@@ -980,6 +982,7 @@ pub(crate) fn parse_body(
                 &mut st.frame,
                 container,
                 doc,
+                inputs,
                 &mut st.prev,
                 &mut st.cur,
                 &mut st.cur_len,
@@ -1145,7 +1148,13 @@ mod tests {
         );
         let odt = minimal_odt(body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
 
         assert_eq!(snap.blocks[0].kind, "heading");
@@ -1173,7 +1182,13 @@ mod tests {
         );
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let p = &snap.blocks[0];
         assert_eq!(p.text, "a bold and em");
@@ -1203,7 +1218,13 @@ mod tests {
         let body = r#"<text:p text:style-name="P2"><text:span text:style-name="T1">big</text:span></text:p>"#;
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "big");
         assert_eq!(
@@ -1243,7 +1264,13 @@ mod tests {
         );
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
 
         assert_eq!(
@@ -1296,7 +1323,13 @@ mod tests {
         );
         let odt = minimal_odt_styled("", body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
         assert_eq!(cells.len(), 4, "2x2 cells: {snap:?}");
@@ -1311,9 +1344,17 @@ mod tests {
         assert_eq!(cells[3].attrs.get("row"), Some(&AttrVal::Int(1)));
         assert_eq!(cells[3].attrs.get("col"), Some(&AttrVal::Int(1)));
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let cells2: Vec<_> = d2
             .materialize()
             .blocks
@@ -1335,7 +1376,13 @@ mod tests {
         let body = r#"<text:p>see <text:a xlink:href="https://tilo.so/x">here</text:a>!</text:p>"#;
         let odt = minimal_odt(body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "see here!");
         let link = b
@@ -1359,7 +1406,13 @@ mod tests {
         let body = r#"<text:p><text:a xlink:href="http://x/"><text:span text:style-name="T1">bold</text:span></text:a></text:p>"#;
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "bold");
         assert!(
@@ -1379,7 +1432,13 @@ mod tests {
         let body = r#"<text:p>a <text:span text:style-name="C1">red</text:span></text:p>"#;
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "a red");
         assert!(
@@ -1404,7 +1463,13 @@ mod tests {
         );
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let cells: Vec<_> = d
             .materialize()
             .blocks
@@ -1420,9 +1485,17 @@ mod tests {
         );
         assert_eq!(cells[1].attrs.get("align"), None, "plain cell has no align");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let aligns: Vec<_> = d2
             .materialize()
             .blocks
@@ -1462,7 +1535,8 @@ mod tests {
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        let mut inputs = tilo_content::ContentInputs::new();
+        OdtCodec.import(&odt, &mut d.as_mut(), &mut inputs).unwrap();
         let snap = d.materialize();
 
         assert_eq!(
@@ -1481,9 +1555,9 @@ mod tests {
             other => panic!("image missing blob attr: {other:?}"),
         };
         assert_eq!(
-            snap.blobs.get(&hash).map(std::vec::Vec::as_slice),
+            inputs.get(&hash),
             Some(&TINY_PNG[..]),
-            "blob bytes stored"
+            "image bytes handed to the caller"
         );
         // svg:width="200pt" → 200*96/72 ≈ 267px.
         assert_eq!(
@@ -1505,7 +1579,11 @@ mod tests {
         c.set("Pictures/0.png", TINY_PNG.to_vec());
         let mut d = Document::new();
         OdtCodec
-            .import(&c.write().unwrap(), &mut d.as_mut())
+            .import(
+                &c.write().unwrap(),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let snap = d.materialize();
         let img = snap.blocks.iter().find(|b| b.kind == "image").unwrap();
@@ -1525,7 +1603,13 @@ mod tests {
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         assert_eq!(snap.blocks[0].kind, "paragraph");
         assert_eq!(snap.blocks[0].text, "see ", "leading text kept: {snap:?}");
@@ -1542,7 +1626,13 @@ mod tests {
         );
         let odt = minimal_odt(body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let items: Vec<_> = snap
             .blocks
@@ -1573,7 +1663,13 @@ mod tests {
         let body = "<text:list>\n  <text:list-item>\n    <text:p>a</text:p>\n  </text:list-item>\n  <text:list-item>\n    <text:p>b</text:p>\n  </text:list-item>\n</text:list>";
         let odt = minimal_odt(body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
         let items: Vec<_> = snap
             .blocks
@@ -1597,7 +1693,13 @@ mod tests {
         );
         let odt = minimal_odt_styled("", body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d.materialize();
 
         assert_eq!(snap.blocks.len(), 3, "before / fidelity / after: {snap:?}");
@@ -1616,9 +1718,17 @@ mod tests {
             "captured raw: {raw1}"
         );
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap2 = d2.materialize();
         assert_eq!(snap2.blocks.len(), 3);
         let raw2 = match snap2.blocks[1].attrs.get("xml") {
@@ -1636,7 +1746,13 @@ mod tests {
         let body = r#"<text:p>a <text:span text:style-name="Lf">bonjour</text:span></text:p>"#;
         let odt = minimal_odt_styled(styles, body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &odt,
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let b = &d.materialize().blocks[0];
         assert_eq!(b.text, "a bonjour");
         assert!(
@@ -1659,9 +1775,17 @@ mod tests {
         d.splice_text(&id, 0, 0, "bonjour monde");
         d.add_mark(&id, 0, 7, "lang", "fr");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d2.materialize();
 
         assert_eq!(

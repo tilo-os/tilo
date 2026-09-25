@@ -26,7 +26,7 @@ tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-content = { path = "../../crates/system/content" }
 # The XML entity helpers shared with the office document codecs.
 qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["office"] }
 # Zip-bomb and XXE bounds for imported .odp/.pptx packages.
@@ -40,7 +40,7 @@ image = { workspace = true, default-features = false, features = ["jpeg", "png",
 winit.workspace = true
 taffy.workspace = true
 # LibreOffice .odp read/write: an ODF package is a ZIP of XML parts. Versions
-# match the `qdoc` document codecs so the workspace resolves one copy of each.
+# match the `qdoc-codecs` document codecs so the workspace resolves one copy of each.
 zip.workspace = true
 quick-xml.workspace = true
 # Host-native image open through the XDG Desktop Portal

@@ -386,7 +386,7 @@ fn people_review_commits_only_an_explicit_membership_action() {
     PhotosDoc::seed(&mut doc);
     let photo = LibraryPhoto::from_image(
         OpenImage::from_path("/photos/person.png", 20, 10)
-            .with_content(qdoc::blobstore::hash_bytes(b"people-review")),
+            .with_content(tilo_content::hash_bytes(b"people-review")),
     );
     let photo_id = photo.id.clone();
     crate::actions::PhotosAction::ImportPhoto { photo }
@@ -420,12 +420,12 @@ fn people_surface_completes_review_browse_rename_and_merge_through_canonical_act
     PhotosDoc::seed(&mut doc);
     let first = LibraryPhoto::from_image(
         OpenImage::from_path("/photos/first.png", 20, 10)
-            .with_content(qdoc::blobstore::hash_bytes(b"first-person")),
+            .with_content(tilo_content::hash_bytes(b"first-person")),
     );
     let first_id = first.id.clone();
     let mut second = LibraryPhoto::from_image(
         OpenImage::from_path("/photos/second.png", 20, 10)
-            .with_content(qdoc::blobstore::hash_bytes(b"second-person")),
+            .with_content(tilo_content::hash_bytes(b"second-person")),
     );
     second.people = vec!["Alex".to_owned()];
     crate::actions::PhotosAction::ImportPhoto { photo: first }
@@ -2152,6 +2152,10 @@ fn folder_status_and_details_adapt_to_phone_geometry() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario: store, export, then check the output and that the photo still names its original"
+)]
 fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
     let original = pixels::Rgba::new(
         3,
@@ -2163,7 +2167,8 @@ fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
     )
     .expect("asymmetric source");
     let source_png = pixels::encode_png(&original).expect("source PNG");
-    let source_hash = qdoc::blobstore::put(&source_png).expect("stage source content");
+    let store = tilo_content::ContentStore::memory();
+    let source_hash = store.put(&source_png).expect("stage source content");
     let open = OpenImage::from_path("fixture.png", 3, 2).with_content(source_hash.clone());
     let edits = crate::model::Edits {
         crop: crate::model::Rect01 {
@@ -2209,7 +2214,7 @@ fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
         },
     )
     .expect("export operation encodes");
-    let mut app = PhotosApp::new();
+    let mut app = PhotosApp::with_content(store.clone());
     let started = Widget::start_resource_operation(
         &mut app,
         tilo_actions::InvocationId::new(),
@@ -2231,12 +2236,21 @@ fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
         produced_hash, source_hash,
         "edited bytes must not reuse the source hash"
     );
-    let stored = qdoc::blobstore::get(produced_hash).expect("produced bytes are retrievable");
+    let stored = store
+        .read(produced_hash)
+        .expect("produced bytes are retrievable");
     let decoded = pixels::decode(&stored).expect("produced PNG decodes");
     assert_eq!(
         decoded,
         pixels::render(&original, edits.crop, edits.rotate_quarters)
     );
+    // The rendering is an output: the photograph is still its original plus
+    // the edits recorded against it.
+    assert_eq!(
+        PhotosDoc::image(&doc).and_then(|image| image.content),
+        Some(source_hash)
+    );
+    assert_eq!(PhotosDoc::edits(&doc), edits);
 
     PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default());
     assert!(

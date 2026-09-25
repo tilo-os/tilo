@@ -56,6 +56,7 @@ use crate::source::{
 };
 use crate::text_layer::{PageText, TextMatch};
 use std::sync::Arc;
+use tilo_content::{ContentState, ContentStore};
 
 const TOOLBAR_H: f64 = 56.0;
 /// Default width of the thumbnail rail; the user can drag-resize it within
@@ -466,7 +467,7 @@ pub struct PdfApp {
     raster_links_pending: HashSet<usize>,
     pending_worker_plan: Option<Vec<PagePlanEntry>>,
     applied_worker_plan: Option<Vec<PagePlanEntry>>,
-    worker_plan_blobs: Vec<qdoc::blobstore::BlobState>,
+    worker_plan_blobs: Vec<ContentState>,
     pending_save: Option<SaveRequest>,
     pending_import: Option<ImportRequest>,
     /// False until a file has been loaded — drives the empty state.
@@ -477,6 +478,9 @@ pub struct PdfApp {
     doc_name: String,
     /// A human-readable reason the last open failed, if any.
     load_error: Option<String>,
+    /// Imported pages' bytes, referenced from the shared page plan by hash.
+    /// Created once with the app and shared with its PDF worker session.
+    content: ContentStore,
     /// Seed demonstration markup on first sync. Only ever set on the
     /// screenshot / test path, never for a user document.
     seed_sample: bool,
@@ -771,26 +775,45 @@ pub struct PdfApp {
     permissions: PermissionContext,
 }
 
+/// The content store an app constructed without one uses: the app's own
+/// store, or an in-memory one under unit test so tests never write to the
+/// user's data directory.
+fn default_content() -> ContentStore {
+    #[cfg(test)]
+    {
+        ContentStore::memory()
+    }
+    #[cfg(not(test))]
+    {
+        ContentStore::for_app()
+    }
+}
+
 impl PdfApp {
     /// Open a real PDF from `path`, rendered by the PDF engine. A failure —
     /// including a host without the engine — lands in the empty state
     /// with the error surfaced, rather than crashing.
     pub fn open(path: impl AsRef<std::path::Path>) -> Self {
+        Self::open_with_content(path, default_content())
+    }
+
+    /// [`PdfApp::open`], keeping imported pages in `content`.
+    pub fn open_with_content(path: impl AsRef<std::path::Path>, content: ContentStore) -> Self {
         let path = path.as_ref();
         #[cfg(not(test))]
         {
             // Launch-with-a-file is still a UI entry point.  Queue it through
             // the same session owner as the portal rather than parsing before
             // the first frame; `sync()` installs the matching completion.
-            let mut app = Self::empty();
+            let mut app = Self::empty_with_content(content);
             let state = AutoCommit::new();
             app.load_path(path, &state);
             app
         }
         #[cfg(test)]
-        match crate::source::open(path) {
+        match crate::source::open(path, &content) {
             Ok(loaded) => {
-                let mut app = Self::build(loaded.doc, false);
+                let mut app = Self::build(loaded.doc, false, content);
                 app.source_blob = Some((
                     loaded.raster.source_hash().to_string(),
                     loaded.raster.source_len(),
@@ -804,7 +827,7 @@ impl PdfApp {
                 app
             }
             Err(e) => {
-                let mut app = Self::empty();
+                let mut app = Self::empty_with_content(content);
                 app.load_error = Some(format!("Could not open {}: {e}", path.display()));
                 app
             }
@@ -814,16 +837,21 @@ impl PdfApp {
     /// The no-document state: a clean "open a PDF" surface, no fabricated
     /// content.
     pub fn empty() -> Self {
+        Self::empty_with_content(default_content())
+    }
+
+    fn empty_with_content(content: ContentStore) -> Self {
         Self::build(
             model::Document::blank_pages("", "", 1, PAGE_W, PAGE_H),
             false,
+            content,
         )
     }
 
     /// The bundled demonstration document with example markup seeded on first
     /// sync. Used only by the screenshot harness and tests.
     pub fn sample() -> Self {
-        let mut app = Self::build(model::sample_document(), true);
+        let mut app = Self::build(model::sample_document(), true, default_content());
         app.has_document = true;
         app.doc_name = "Tilo Technical Overview.pdf".to_string();
         app.signer_name = "Alice Daskju".to_string();
@@ -981,7 +1009,7 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "constructor lists the complete explicit state of this custom document workspace"
     )]
-    fn build(doc: Document, seed_sample: bool) -> Self {
+    fn build(doc: Document, seed_sample: bool, content: ContentStore) -> Self {
         let page_count = doc.page_count();
         let source_pages = doc.pages.clone();
         let author = std::env::var("QUICK_APP_ID")
@@ -992,7 +1020,7 @@ impl PdfApp {
             doc,
             #[cfg(test)]
             raster: None,
-            raster_handle: RasterHandle::new().ok(),
+            raster_handle: RasterHandle::new(content.clone()).ok(),
             raster_document: None,
             pending_open: None,
             raster_images: HashMap::new(),
@@ -1012,6 +1040,7 @@ impl PdfApp {
             markup_record: None,
             doc_name: String::new(),
             load_error: None,
+            content,
             seed_sample,
             shots_edit_first_comment: false,
             shots_rail_drag: false,
@@ -1977,19 +2006,17 @@ impl PdfApp {
             if let Some(imported) = plan
                 .iter()
                 .filter_map(|entry| entry.imported.as_ref())
-                .find(|imported| {
-                    qdoc::blobstore::state(&imported.hash) != qdoc::blobstore::BlobState::Resolved
-                })
+                .find(|imported| self.content.state(&imported.hash) != ContentState::Resolved)
             {
-                let state = qdoc::blobstore::state(&imported.hash);
+                let state = self.content.state(&imported.hash);
                 let note = match state {
-                    qdoc::blobstore::BlobState::Pending => {
+                    ContentState::Pending => {
                         Some("Imported page content is arriving from collaborators".into())
                     }
-                    qdoc::blobstore::BlobState::Unavailable => {
+                    ContentState::Unavailable => {
                         Some("Imported page content is unavailable on this device".into())
                     }
-                    qdoc::blobstore::BlobState::Resolved => None,
+                    ContentState::Resolved => None,
                 };
                 if let Some(note) = note {
                     self.status_note = Some(note);
@@ -2021,7 +2048,7 @@ impl PdfApp {
             let blobs: Vec<_> = plan
                 .iter()
                 .filter_map(|entry| entry.imported.as_ref())
-                .map(|imported| qdoc::blobstore::state(&imported.hash))
+                .map(|imported| self.content.state(&imported.hash))
                 .collect();
             let needs_reconcile = self.pending_worker_plan.as_ref().map_or_else(
                 || {
@@ -2163,7 +2190,7 @@ impl PdfApp {
     }
 
     /// Import content-addressed PDF/image bytes as a shared, replayable page
-    /// plan action. The bytes live in qdoc's blob store, never in Automerge.
+    /// plan action. The bytes live in the app's content store, never in Automerge.
     #[allow(
         clippy::items_after_statements,
         clippy::too_many_lines,
@@ -2245,10 +2272,14 @@ impl PdfApp {
         };
         // Only publish validated bytes. A malformed or excessive payload has
         // not mutated either local page plan or shared history at this point.
-        let Some(hash) = qdoc::blobstore::put(&bytes) else {
-            self.status_note =
-                Some("Import failed: local content store refused the payload".into());
-            return false;
+        let hash = match self.content.put(&bytes) {
+            Ok(hash) => hash,
+            Err(error) => {
+                self.status_note = Some(format!(
+                    "Import failed: local content store refused the payload ({error})"
+                ));
+                return false;
+            }
         };
         let pages = sizes
             .into_iter()
@@ -4191,7 +4222,7 @@ impl PdfApp {
 
     #[cfg(test)]
     fn load_path_sync(&mut self, path: &std::path::Path, state: &AutoCommit) {
-        match crate::source::open(path) {
+        match crate::source::open(path, &self.content) {
             Ok(loaded) => {
                 self.doc = loaded.doc;
                 self.source_blob = Some((
@@ -6763,12 +6794,7 @@ mod tests {
     /// assertion so release review can catch a misleading fallback render.
     #[test]
     #[serial(pdfium)]
-    #[serial(pdf_blobstore)]
     fn drive_import_unavailable_shot() {
-        use qdoc::blobstore::{self, MemoryBlobStore};
-        use std::sync::Arc;
-
-        blobstore::set_store(Arc::new(MemoryBlobStore::default()));
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
         let mut app = PdfApp::open(path);
         let mut state = ui::State::new();
@@ -6803,7 +6829,6 @@ mod tests {
                 .is_some_and(|note| note.contains("unavailable")),
             "a missing imported blob is never rendered as a source page"
         );
-        blobstore::set_store(Arc::new(MemoryBlobStore::default()));
     }
 
     /// Run one full `ui::App`-equivalent frame against `app`: build the taffy
@@ -9072,7 +9097,8 @@ mod tests {
         // Reopen the saved file: page 1 carries the markup as standard PDF
         // annotations (a highlight, a note holding the comment text, and a
         // stamp for the signature) that any viewer reads back.
-        let reopened = crate::source::open(&out).expect("the saved PDF reopens");
+        let reopened =
+            crate::source::open(&out, &ContentStore::memory()).expect("the saved PDF reopens");
         let annotations = reopened.raster.page_annotations(0);
         assert!(
             annotations.len() >= before + 3,
@@ -9113,7 +9139,7 @@ mod tests {
             !app.pages_dirty(),
             "a successful save clears the page-dirty flag"
         );
-        crate::source::open(&out)
+        crate::source::open(&out, &ContentStore::memory())
             .expect("the edited PDF reopens")
             .raster
     }

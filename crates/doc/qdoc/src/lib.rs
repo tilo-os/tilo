@@ -3,7 +3,9 @@
 //! A rich-text document ([`Document`], edited through [`DocMut`]) and a workbook ([`Workbook`])
 //! are versioned resources: every edit is a change on a CRDT-backed history that merges
 //! concurrent edits and replays deterministically, read back as a plain snapshot ([`DocSnapshot`],
-//! [`WorkbookSnapshot`]) and compared with structural diffs ([`diff`]).
+//! [`WorkbookSnapshot`]) and compared with structural diffs ([`diff`]). Binary inputs such as
+//! images are referenced by content address ([`DocMut::attach`], [`DocMut::reference_content`]);
+//! the bytes live in the caller's `tilo_content` store, never in the document.
 //!
 //! File formats are not storage: importing and exporting `.docx`, `.odt`, `.md` and the rest is the
 //! job of the `qdoc-codecs` crate, which projects files into and out of these resources.
@@ -27,7 +29,6 @@
     )
 )]
 
-pub mod blobstore;
 pub mod diff;
 pub mod document;
 pub mod export;

@@ -12,9 +12,5 @@
 
 #[path = "blob_reference.rs"]
 mod blob_reference;
-#[path = "blob_state.rs"]
-mod blob_state;
-#[path = "blobstore_fixture.rs"]
-mod blobstore_fixture;
 #[path = "independent_documents.rs"]
 mod independent_documents;

@@ -145,6 +145,9 @@ pub struct View {
     /// The directory the agent is browsing, for an app whose subject is the
     /// filesystem.
     pub directory: Option<PathBuf>,
+    /// The agent's content store: where content one operation produced (an
+    /// image to place) is read from when the next one consumes it.
+    pub content: tilo_content::ContentStore,
 }
 
 impl Default for View {
@@ -158,6 +161,7 @@ impl Default for View {
             region: word_processor::actions::RegionKind::Body,
             subject: None,
             directory: None,
+            content: tilo_content::ContentStore::memory(),
         }
     }
 }
@@ -215,7 +219,7 @@ pub struct AppContract {
 /// document again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Product {
-    /// Bytes, in this machine's blob store, addressed by their content hash.
+    /// Bytes, in this machine's content store, addressed by their content hash.
     /// The hash is the whole of what travels: a document referencing it
     /// carries the descriptor and a peer fetches the bytes when it wants
     /// them, so a picture never becomes a change too large to cross the
@@ -302,6 +306,7 @@ fn word_processor_resources(view: &View, doc: &AutoCommit) -> Vec<Resource> {
             // the shared document below, independently of presentation
             // state.
             search_hits: Vec::new(),
+            content: view.content.clone(),
         },
         doc,
     )
@@ -1348,7 +1353,7 @@ mod tests {
     #[test]
     fn photos_requires_an_explicit_export_result_for_cross_app_content() {
         let png = photos::pixels::encode_png(&photos::shots_pattern(64, 32)).expect("fixture");
-        let hash = qdoc::blobstore::put(&png).expect("blob fixture");
+        let hash = tilo_content::hash_bytes(&png);
         let mut doc = automerge::AutoCommit::new();
         photos::doc::PhotosDoc::seed(&mut doc);
         photos::doc::PhotosDoc::set_image(

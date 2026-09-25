@@ -30,6 +30,7 @@ office = ["dep:zip", "dep:bounded-zip", "dep:quick-xml"]
 
 [dependencies]
 qdoc = { path = "../qdoc" }
+tilo-content = { path = "../../system/content", default-features = false }
 thiserror.workspace = true
 base64 = { workspace = true, optional = true }
 bounded-zip = { path = "../bounded-zip", optional = true }

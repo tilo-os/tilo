@@ -33,7 +33,11 @@ const XXE_ODT: &[u8] = include_bytes!("../../fixtures/xxe.odt");
 fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     let mut d = Document::new();
     codec
-        .import(bytes, &mut d.as_mut())
+        .import(
+            bytes,
+            &mut d.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
         .expect("import into CRDT model");
     d
 }
@@ -188,7 +192,7 @@ fn edit_and_reopen(codec: &dyn FormatProvider, bytes: &[u8], format: &str) {
     );
 
     let out = codec
-        .export(d.as_ref())
+        .export(d.as_ref(), &tilo_content::NoContent)
         .unwrap_or_else(|e| panic!("{format}: export failed: {e}"));
     let reopened = import(codec, &out);
     let snap = reopened.materialize();
@@ -313,7 +317,11 @@ fn zip_bomb_is_rejected_not_inflated() {
     // 300 MiB part — over the 256 MiB per-part cap.
     let mut d = Document::new();
     let err = DocxCodec
-        .import(ZIPBOMB_DOCX, &mut d.as_mut())
+        .import(
+            ZIPBOMB_DOCX,
+            &mut d.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
         .expect_err("zip bomb must be rejected");
     let msg = format!("{err}");
     assert!(
@@ -328,7 +336,11 @@ fn xxe_dtd_is_rejected_in_both_formats() {
     // outright (defence in depth against XXE/entity-expansion), both codecs.
     let mut d = Document::new();
     let err = DocxCodec
-        .import(XXE_DOCX, &mut d.as_mut())
+        .import(
+            XXE_DOCX,
+            &mut d.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
         .expect_err("docx XXE must be rejected");
     assert!(
         format!("{err}").contains("DTD"),
@@ -337,7 +349,11 @@ fn xxe_dtd_is_rejected_in_both_formats() {
 
     let mut d2 = Document::new();
     let err2 = OdtCodec
-        .import(XXE_ODT, &mut d2.as_mut())
+        .import(
+            XXE_ODT,
+            &mut d2.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
         .expect_err("odt XXE must be rejected");
     assert!(
         format!("{err2}").contains("DTD"),
@@ -351,12 +367,20 @@ fn garbage_input_is_rejected_cleanly() {
     let mut d = Document::new();
     assert!(
         DocxCodec
-            .import(b"not a zip at all", &mut d.as_mut())
+            .import(
+                b"not a zip at all",
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new()
+            )
             .is_err()
     );
     assert!(
         OdtCodec
-            .import(&[0xff, 0x00, 0x13, 0x37], &mut d.as_mut())
+            .import(
+                &[0xff, 0x00, 0x13, 0x37],
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new()
+            )
             .is_err()
     );
 }
@@ -436,7 +460,9 @@ fn large_document_parse_and_serialize_is_fast() {
             ("docx", &DocxCodec as &dyn FormatProvider),
         ] {
             let t0 = Instant::now();
-            let bytes = codec.export(d.as_ref()).expect("export large doc");
+            let bytes = codec
+                .export(d.as_ref(), &tilo_content::NoContent)
+                .expect("export large doc");
             let export_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
             let t1 = Instant::now();
