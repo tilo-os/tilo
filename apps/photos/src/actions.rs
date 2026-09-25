@@ -266,6 +266,12 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOp
 /// Both the windowed lifecycle host and headless/test hosts call this same
 /// producer, so no caller may substitute a later mutable Photos replica for
 /// the output of the admitted export operation.
+///
+/// # Errors
+///
+/// Returns a user-facing message when the addressed photograph or edit
+/// snapshot is no longer the open one, or when the source bytes cannot be
+/// read, decoded, re-encoded, or stored as content.
 pub fn export_edited_content(
     expected_resource_id: &str,
     source_content: &str,
@@ -303,6 +309,10 @@ pub fn export_edited_content(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "every Photos operation's kind, contract and retry policy is declared in exhaustive matches side by side"
+)]
 fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> {
     let kind = if matches!(
         op,
@@ -444,8 +454,11 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewLibraryAnalysis
         | PhotosOperation::Open { .. }
         | PhotosOperation::Copy
-        | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
-        PhotosOperation::ExportEditedContent { .. } => spec.retry_policy(RetryPolicy::Idempotent),
+        | PhotosOperation::ShareReference { .. }
+        | PhotosOperation::ExportEditedContent { .. }
+        | PhotosOperation::PauseLibraryAnalysis
+        | PhotosOperation::ManagePeopleRecognition
+        | PhotosOperation::EnablePeopleRecognition => spec.retry_policy(RetryPolicy::Idempotent),
         PhotosOperation::Save { .. }
         | PhotosOperation::ImportDirectory { .. }
         | PhotosOperation::ImportCameraMedia { .. }
@@ -457,10 +470,6 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ResumeLibraryAnalysis
         | PhotosOperation::RetryLibraryAnalysisFailures => {
             spec.retry_policy(RetryPolicy::AtMostOnce)
-        }
-        PhotosOperation::PauseLibraryAnalysis => spec.retry_policy(RetryPolicy::Idempotent),
-        PhotosOperation::ManagePeopleRecognition | PhotosOperation::EnablePeopleRecognition => {
-            spec.retry_policy(RetryPolicy::Idempotent)
         }
     })
 }
@@ -496,6 +505,10 @@ pub enum MetadataLabelsPatch {
 /// Each variant carries absolute post-action state. See the module docs for
 /// why durable changes are deterministic rather than incremental UI commands.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an action is a short-lived value that is decoded, applied once and dropped; it is never stored in bulk, so boxing would only add an allocation"
+)]
 pub enum PhotosAction {
     /// Replace the edits in force with exactly this value.
     SetEdits {
@@ -723,11 +736,6 @@ fn valid_analysis(analysis: &ImageAnalysis) -> bool {
                 .len()
                 == values.len()
     }
-    let valid_ocr = analysis.ocr_text.chars().count() <= MAX_ANALYSIS_TEXT_CHARS
-        && analysis
-            .ocr_text
-            .chars()
-            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'));
     fn valid_provenance(provenance: &crate::model::AnalysisProvenance) -> bool {
         matches!(provenance.scope.as_str(), "shared")
             && matches!(
@@ -754,6 +762,11 @@ fn valid_analysis(analysis: &ImageAnalysis) -> bool {
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
     }
+    let valid_ocr = analysis.ocr_text.chars().count() <= MAX_ANALYSIS_TEXT_CHARS
+        && analysis
+            .ocr_text
+            .chars()
+            .all(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'));
     (!analysis.is_empty()
         || analysis.ocr_provenance.is_some()
         || analysis.vision_provenance.is_some())
@@ -1932,6 +1945,10 @@ pub(crate) fn timeline_boundaries(library: &crate::model::PhotoLibrary) -> Timel
         else {
             continue;
         };
+        #[expect(
+            clippy::string_slice,
+            reason = "timeline_day_from_capture only returns validated ASCII `YYYY-MM-DD`"
+        )]
         let month = day[..7].to_owned();
         *months.entry(month).or_default() += 1;
         *days.entry(day).or_default() += 1;
@@ -1945,12 +1962,9 @@ pub(crate) fn timeline_boundaries(library: &crate::model::PhotoLibrary) -> Timel
 pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
     let day = captured_at.get(..10)?;
     let bytes = day.as_bytes();
-    let month = std::str::from_utf8(&bytes[5..7]).ok()?.parse::<u8>().ok()?;
-    let day_of_month = std::str::from_utf8(&bytes[8..10])
-        .ok()?
-        .parse::<u8>()
-        .ok()?;
-    let year = std::str::from_utf8(&bytes[..4]).ok()?.parse::<u16>().ok()?;
+    let month = day.get(5..7)?.parse::<u8>().ok()?;
+    let day_of_month = day.get(8..10)?.parse::<u8>().ok()?;
+    let year = day.get(..4)?.parse::<u16>().ok()?;
     let days_in_month = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -1959,8 +1973,8 @@ pub(crate) fn timeline_day_from_capture(captured_at: &str) -> Option<String> {
         _ => 0,
     };
     (bytes.len() == 10
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
+        && bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
         && bytes
             .iter()
             .enumerate()
@@ -2528,26 +2542,30 @@ impl PhotoResourceSeed {
     }
 }
 
-fn bounded_text_chunk_ranges(value: &str) -> Vec<std::ops::Range<usize>> {
+#[expect(
+    clippy::string_slice,
+    reason = "every chunk bound is a `char_indices` offset or the string length, so each slice lies on UTF-8 boundaries"
+)]
+fn bounded_text_chunks(value: &str) -> Vec<&str> {
     let mut chunks = Vec::new();
     let mut start = 0;
     let mut bytes = 0_usize;
     for (index, character) in value.char_indices() {
         if bytes > 0 && bytes.saturating_add(character.len_utf8()) > ANALYSIS_TEXT_CHUNK_BYTES {
-            chunks.push(start..index);
+            chunks.push(&value[start..index]);
             start = index;
             bytes = 0;
         }
         bytes += character.len_utf8();
     }
     if start < value.len() {
-        chunks.push(start..value.len());
+        chunks.push(&value[start..]);
     }
     chunks
 }
 
 fn analysis_text_resource(id: &str, kind: &str, label: &str, text: &str) -> Resource {
-    let chunks = bounded_text_chunk_ranges(text);
+    let chunks = bounded_text_chunks(text);
     let mut resource = Resource::new(
         id,
         kind,
@@ -2563,7 +2581,7 @@ fn analysis_text_resource(id: &str, kind: &str, label: &str, text: &str) -> Reso
         resource = resource.with_child(Resource::new(
             format!("{id}/{index}"),
             format!("{kind}.part"),
-            &text[chunk.clone()],
+            *chunk,
         ));
     }
     resource
@@ -2636,10 +2654,10 @@ fn analysis_provenance_resource(
     resource
 }
 
-fn analysis_component_provenance<'a>(
-    analysis: &'a ImageAnalysis,
+fn analysis_component_provenance(
+    analysis: &ImageAnalysis,
     vision: bool,
-) -> Option<&'a crate::model::AnalysisProvenance> {
+) -> Option<&crate::model::AnalysisProvenance> {
     if vision {
         analysis.vision_provenance.as_ref().or_else(|| {
             (!analysis.description.is_empty()
@@ -2818,13 +2836,9 @@ fn analysis_resource_for_id(
         if let Some(index) = requested_id
             .strip_prefix(&prefix)
             .and_then(|index| index.parse::<usize>().ok())
-            && let Some(chunk) = bounded_text_chunk_ranges(text).get(index)
+            && let Some(chunk) = bounded_text_chunks(text).get(index)
         {
-            return Some(Resource::new(
-                requested_id,
-                format!("{kind}.part"),
-                &text[chunk.clone()],
-            ));
+            return Some(Resource::new(requested_id, format!("{kind}.part"), *chunk));
         }
     }
     None
@@ -3073,22 +3087,22 @@ pub(crate) fn canonical_capture_at_value(value: &str) -> Option<String> {
     if canonical.len() == 10 {
         return valid_capture_date(&canonical).then_some(canonical);
     }
-    let (body, offset) = if canonical.ends_with('Z') {
-        (&canonical[..canonical.len() - 1], Some("Z"))
-    } else if canonical.len() >= 6 {
-        let split = canonical.len() - 6;
-        let suffix = &canonical[split..];
-        if matches!(suffix.as_bytes().first(), Some(b'+' | b'-'))
-            && suffix.as_bytes().get(3) == Some(&b':')
-        {
-            (&canonical[..split], Some(suffix))
-        } else {
-            (canonical.as_str(), None)
-        }
+    let (body, offset) = if let Some(body) = canonical.strip_suffix('Z') {
+        (body, Some("Z"))
+    } else if let Some((body, suffix)) = canonical
+        .len()
+        .checked_sub(6)
+        .and_then(|split| canonical.split_at_checked(split))
+        && matches!(suffix.as_bytes().first(), Some(b'+' | b'-'))
+        && suffix.as_bytes().get(3) == Some(&b':')
+    {
+        (body, Some(suffix))
     } else {
         (canonical.as_str(), None)
     };
-    if body.len() < 16 || !valid_capture_date(&body[..10]) || body.as_bytes().get(10) != Some(&b'T')
+    if body.len() < 16
+        || !body.get(..10).is_some_and(valid_capture_date)
+        || body.as_bytes().get(10) != Some(&b'T')
     {
         return None;
     }
@@ -3115,10 +3129,11 @@ pub(crate) fn canonical_capture_at_value(value: &str) -> Option<String> {
     if !valid_capture_time(whole_seconds, second_precision) {
         return None;
     }
-    if let Some(offset) = offset {
-        if offset != "Z" && !valid_capture_offset(offset) {
-            return None;
-        }
+    if let Some(offset) = offset
+        && offset != "Z"
+        && !valid_capture_offset(offset)
+    {
+        return None;
     }
     let mut result = body.to_owned();
     if offset == Some("+00:00") || offset == Some("-00:00") || offset == Some("Z") {
@@ -3137,13 +3152,13 @@ fn decimal(value: &[u8]) -> Option<u32> {
 
 fn valid_capture_date(value: &str) -> bool {
     let bytes = value.as_bytes();
-    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+    if bytes.len() != 10 || bytes.get(4) != Some(&b'-') || bytes.get(7) != Some(&b'-') {
         return false;
     }
     let (Some(year), Some(month), Some(day)) = (
-        decimal(&bytes[..4]),
-        decimal(&bytes[5..7]),
-        decimal(&bytes[8..]),
+        bytes.get(..4).and_then(decimal),
+        bytes.get(5..7).and_then(decimal),
+        bytes.get(8..).and_then(decimal),
     ) else {
         return false;
     };
@@ -3166,9 +3181,11 @@ fn valid_capture_time(value: &str, has_seconds: bool) -> bool {
     {
         return false;
     }
-    let hour = decimal(&bytes[11..13]);
-    let minute = decimal(&bytes[14..16]);
-    let second = has_seconds.then(|| decimal(&bytes[17..19])).flatten();
+    let hour = bytes.get(11..13).and_then(decimal);
+    let minute = bytes.get(14..16).and_then(decimal);
+    let second = has_seconds
+        .then(|| bytes.get(17..19).and_then(decimal))
+        .flatten();
     hour.is_some_and(|value| value <= 23)
         && minute.is_some_and(|value| value <= 59)
         && (!has_seconds || second.is_some_and(|value| value <= 59))
@@ -3176,11 +3193,20 @@ fn valid_capture_time(value: &str, has_seconds: bool) -> bool {
 
 fn valid_capture_offset(value: &str) -> bool {
     let bytes = value.as_bytes();
-    if bytes.len() != 6 || !matches!(bytes[0], b'+' | b'-') || bytes[3] != b':' {
+    if bytes.len() != 6
+        || !matches!(bytes.first(), Some(b'+' | b'-'))
+        || bytes.get(3) != Some(&b':')
+    {
         return false;
     }
-    decimal(&bytes[1..3]).is_some_and(|hour| hour <= 23)
-        && decimal(&bytes[4..]).is_some_and(|minute| minute <= 59)
+    bytes
+        .get(1..3)
+        .and_then(decimal)
+        .is_some_and(|hour| hour <= 23)
+        && bytes
+            .get(4..)
+            .and_then(decimal)
+            .is_some_and(|minute| minute <= 59)
 }
 
 fn canonical_capture_patch(
@@ -3563,17 +3589,15 @@ fn set_metadata_batch_spec() -> ActionSpec {
         ],
         |args| {
             let text_patch = |apply: &str, value: &str| {
-                if !args.boolean(apply).unwrap_or(false) {
-                    MetadataPatch::Keep
-                } else {
+                if args.boolean(apply).unwrap_or(false) {
                     optional_metadata_text(args, value)
                         .map_or(MetadataPatch::Clear, MetadataPatch::Set)
+                } else {
+                    MetadataPatch::Keep
                 }
             };
             let labels_patch = |apply: &str, value: &str, mode: &str| {
-                if !args.boolean(apply).unwrap_or(false) {
-                    MetadataLabelsPatch::Keep
-                } else {
+                if args.boolean(apply).unwrap_or(false) {
                     let labels = metadata_labels(args, value);
                     match args.text(mode).unwrap_or("set") {
                         "clear" => MetadataLabelsPatch::Clear,
@@ -3582,6 +3606,8 @@ fn set_metadata_batch_spec() -> ActionSpec {
                         _ if labels.is_empty() => MetadataLabelsPatch::Clear,
                         _ => MetadataLabelsPatch::Set(labels),
                     }
+                } else {
+                    MetadataLabelsPatch::Keep
                 }
             };
             let location = if !args.boolean("apply_location").unwrap_or(false) {
@@ -4143,6 +4169,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "end-to-end scenario reads top to bottom through every analysis component resource"
+    )]
     fn analysis_components_are_bounded_typed_and_exactly_materializable() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
@@ -4276,9 +4306,7 @@ mod tests {
         };
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(PhotosOperation::AnalyzeImage {
-                resource_id: id.clone(),
-            })
+            Some(PhotosOperation::AnalyzeImage { resource_id: id })
         );
         assert!(
             PhotosResources
@@ -4898,6 +4926,92 @@ mod tests {
                 "{capture} must not be published as a chronological boundary"
             );
         }
+    }
+
+    #[test]
+    fn timeline_day_parsing_handles_short_and_multibyte_captures() {
+        for capture in [
+            "",
+            "2024",
+            "2024-02-2",
+            "2024-0é-01",
+            "2024é02-01",
+            "2024-02-01é",
+        ] {
+            let expected = (capture == "2024-02-01é").then(|| "2024-02-01".to_owned());
+            assert_eq!(timeline_day_from_capture(capture), expected, "{capture:?}");
+        }
+        assert_eq!(
+            timeline_day_from_capture("2000-02-29"),
+            Some("2000-02-29".into())
+        );
+        assert!(timeline_day_from_capture("1900-02-29").is_none());
+        assert!(timeline_day_from_capture("2024+02-01").is_none());
+    }
+
+    #[test]
+    fn capture_values_with_short_bodies_or_suffixes_are_refused_without_panicking() {
+        for value in [
+            "",
+            "Z",
+            "+02:00",
+            "2026-09-18Z",
+            "2026-09-18T14Z",
+            "2026-09-18T14:30:01+2:00",
+            "2026-09-18T14:30:01+02-00",
+            "2026-09-18T14:30:01+24:00",
+            "2026-09-18T14:30:01+02:60",
+            "2026-09-18T14:30+02:00",
+            "2026-09-18T24:00:00",
+            "2026-09-18T14:60:00",
+            "2026-09-18T14:30:60",
+            "2026-09-18é14:30:00",
+        ] {
+            assert!(canonical_capture_at_value(value).is_none(), "{value:?}");
+        }
+        assert_eq!(
+            canonical_capture_at_value("2026:09:18 14:30:01"),
+            Some("2026-09-18T14:30:01".into())
+        );
+        assert_eq!(
+            canonical_capture_at_value("2026-09-18T14:30:01+00:00"),
+            Some("2026-09-18T14:30:01Z".into())
+        );
+        assert_eq!(
+            canonical_capture_at_value("2026-09-18T14:30:01-00:00"),
+            Some("2026-09-18T14:30:01Z".into())
+        );
+        assert_eq!(
+            canonical_capture_at_value("2026-09-18T14:30:01-05:30"),
+            Some("2026-09-18T14:30:01-05:30".into())
+        );
+        assert_eq!(
+            canonical_capture_at_value("2026-09-18"),
+            Some("2026-09-18".into())
+        );
+        assert_eq!(
+            canonical_capture_at_value("2026-09-18T14:30"),
+            Some("2026-09-18T14:30".into())
+        );
+    }
+
+    #[test]
+    fn text_chunks_respect_utf8_boundaries_and_the_byte_budget() {
+        assert!(bounded_text_chunks("").is_empty());
+        assert_eq!(bounded_text_chunks("short"), vec!["short"]);
+        let text = "é".repeat(ANALYSIS_TEXT_CHUNK_BYTES);
+        let chunks = bounded_text_chunks(&text);
+        assert_eq!(chunks.concat(), text);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| !chunk.is_empty() && chunk.len() <= ANALYSIS_TEXT_CHUNK_BYTES)
+        );
+        assert_eq!(chunks.len(), 2);
+        let exact = "a".repeat(ANALYSIS_TEXT_CHUNK_BYTES);
+        assert_eq!(bounded_text_chunks(&exact), vec![exact.as_str()]);
+        let over = "a".repeat(ANALYSIS_TEXT_CHUNK_BYTES + 1);
+        assert_eq!(bounded_text_chunks(&over).len(), 2);
     }
 
     #[test]
@@ -5628,7 +5742,7 @@ mod tests {
         );
 
         PhotosAction::SetMetadataBatch {
-            photo_ids: vec![first.id.clone(), second.id.clone()],
+            photo_ids: vec![first.id.clone(), second.id],
             folder: MetadataPatch::Clear,
             people: MetadataLabelsPatch::Keep,
             tags: MetadataLabelsPatch::Set(vec!["trip".into(), "rain".into()]),
