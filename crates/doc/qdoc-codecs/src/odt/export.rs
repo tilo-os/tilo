@@ -1311,26 +1311,91 @@ fn render_table_run(
         body,
         r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
     );
-    for r in 0..nrows {
+    let grid = CellGrid::new(cells);
+    for r in 0..grid.rows.max(nrows) {
         body.push_str("<table:table-row>");
-        for c in 0..ncols {
-            let cell = cells.iter().find(|cl| snap_cell_rc(cl) == (r, c));
-            let sa = match cell {
-                Some(cl) => style_attr(cl),
-                None => String::new(),
-            };
-            let inner = match cell {
-                Some(cl) => render_inline(&cl.text, &cl.marks, used, notes, note_ctr, comments),
-                None => String::new(),
+        for c in 0..grid.cols.max(ncols) {
+            if grid.covered.contains(&(r, c)) {
+                body.push_str("<table:covered-table-cell/>");
+                continue;
+            }
+            let cell = grid.at.get(&(r, c)).copied();
+            let (sa, inner, spans) = match cell {
+                Some(cl) => (
+                    style_attr(cl),
+                    render_inline(&cl.text, &cl.marks, used, notes, note_ctr, comments),
+                    cell_spans_xml(cl),
+                ),
+                None => (String::new(), String::new(), String::new()),
             };
             let _ = write!(
                 body,
-                r"<table:table-cell><text:p{sa}>{inner}</text:p></table:table-cell>"
+                r"<table:table-cell{spans}><text:p{sa}>{inner}</text:p></table:table-cell>"
             );
         }
         body.push_str("</table:table-row>");
     }
     body.push_str("</table:table>");
+}
+
+/// A cell's `colspan`/`rowspan` (1 when absent).
+fn snap_cell_span(b: &BlockView, key: &str) -> usize {
+    match b.attrs.get(key) {
+        Some(AttrVal::Int(n)) if *n > 1 => usize::try_from(*n).unwrap_or(1).min(1024),
+        _ => 1,
+    }
+}
+
+/// The spanning attributes of a merged cell.
+fn cell_spans_xml(b: &BlockView) -> String {
+    let mut out = String::new();
+    let (cols, rows) = (snap_cell_span(b, "colspan"), snap_cell_span(b, "rowspan"));
+    if cols > 1 {
+        let _ = write!(out, r#" table:number-columns-spanned="{cols}""#);
+    }
+    if rows > 1 {
+        let _ = write!(out, r#" table:number-rows-spanned="{rows}""#);
+    }
+    out
+}
+
+/// The cells of one table by grid position, the positions merged cells cover, and the grid
+/// size including every span.
+struct CellGrid<'a> {
+    at: BTreeMap<(usize, usize), &'a BlockView>,
+    covered: BTreeSet<(usize, usize)>,
+    rows: usize,
+    cols: usize,
+}
+
+impl<'a> CellGrid<'a> {
+    fn new(cells: &'a [BlockView]) -> Self {
+        let mut grid = Self {
+            at: BTreeMap::new(),
+            covered: BTreeSet::new(),
+            rows: 0,
+            cols: 0,
+        };
+        for cell in cells {
+            let (r, c) = snap_cell_rc(cell);
+            let (cols, rows) = (
+                snap_cell_span(cell, "colspan"),
+                snap_cell_span(cell, "rowspan"),
+            );
+            grid.at.entry((r, c)).or_insert(cell);
+            for dr in 0..rows {
+                for dc in 0..cols {
+                    if dr > 0 || dc > 0 {
+                        grid.covered
+                            .insert((r.saturating_add(dr), c.saturating_add(dc)));
+                    }
+                }
+            }
+            grid.rows = grid.rows.max(r.saturating_add(rows));
+            grid.cols = grid.cols.max(c.saturating_add(cols));
+        }
+        grid
+    }
 }
 
 /// Builds the `office:automatic-styles` body: run marks used inline, common named styles
@@ -1952,6 +2017,39 @@ mod tests {
             "{:?}",
             im.attrs
         );
+    }
+
+    #[test]
+    fn merged_cells_roundtrip_through_odt() {
+        let body = concat!(
+            r#"<table:table table:name="T"><table:table-column table:number-columns-repeated="3"/>"#,
+            r#"<table:table-row><table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell>"#,
+            r#"<table:covered-table-cell/><table:table-cell><text:p>c</text:p></table:table-cell></table:table-row>"#,
+            r#"<table:table-row><table:covered-table-cell table:number-columns-repeated="2"/><table:table-cell><text:p>f</text:p></table:table-cell></table:table-row>"#,
+            r#"</table:table>"#,
+        );
+        let mut d = Document::new();
+        OdtCodec
+            .import(&minimal_odt(body), &mut d.as_mut())
+            .unwrap();
+        let snap = d.materialize();
+        let big = snap.blocks.iter().find(|b| b.text == "big").unwrap();
+        assert_eq!(big.attrs.get("colspan"), Some(&AttrVal::Int(2)));
+        assert_eq!(big.attrs.get("rowspan"), Some(&AttrVal::Int(2)));
+        let f = snap.blocks.iter().find(|b| b.text == "f").unwrap();
+        assert_eq!(f.attrs.get("col"), Some(&AttrVal::Int(2)), "{:?}", f.attrs);
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        assert!(
+            content.contains(r#"<table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>big</text:p></table:table-cell><table:covered-table-cell/>"#),
+            "{content}"
+        );
+        assert_eq!(content.matches("<table:covered-table-cell/>").count(), 3);
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        assert_eq!(norm(&d2.materialize()), norm(&snap));
     }
 
     #[test]
