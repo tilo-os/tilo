@@ -5,7 +5,8 @@
 //! counters, marks and Table objects, while a counting global allocator
 //! asserts that each heap allocation made during a visit was reserved on the
 //! current turn first. Also covers the Table and wrapping-counter parity
-//! patches that ship with the 0.12 port.
+//! patches that ship with the 0.12 port (legacy reads wrap; bounded reads
+//! refuse an unrepresentable counter sum as Invalid, the 0.8 contract).
 use automerge::marks::{ExpandMark, Mark};
 use automerge::resource_limits::{
     NativeAllocationSet, NativeAllowance, NativeCloneCandidate, NativeId, NativeObject,
@@ -201,7 +202,9 @@ fn random_scalar(rng: &mut Rng) -> ScalarValue {
         2 => ScalarValue::Int([0, -1, i64::MIN, i64::MAX, 42][rng.below(5)]),
         3 => ScalarValue::Uint([0, 7, u64::MAX][rng.below(3)]),
         4 => ScalarValue::F64([0.0, -0.0, 1.5, f64::INFINITY, f64::NAN][rng.below(5)]),
-        5 => ScalarValue::counter([0, 5, -3, i64::MAX, i64::MIN][rng.below(5)]),
+        // Representable sums only: the bounded reader refuses overflow (see
+        // counter_overflow_wraps_in_legacy_reads_and_is_refused_by_bounded_reads).
+        5 => ScalarValue::counter([0, 5, -3, 1 << 40, -(1 << 40)][rng.below(5)]),
         6 => ScalarValue::Timestamp(rng.next() as i64),
         7 => ScalarValue::Boolean(rng.chance(50)),
         8 => ScalarValue::Unknown {
@@ -217,7 +220,7 @@ const KEYS: [&str; 6] = ["a", "b", "c", "dd", "é", "zz"];
 
 fn random_op(peer: &mut AutoCommit, objects: &mut Vec<(ObjId, ObjType)>, rng: &mut Rng) {
     let (obj, kind) = objects[rng.below(objects.len())].clone();
-    let increment = [1, -1, 7, i64::MAX, i64::MIN][rng.below(5)];
+    let increment = [1, -1, 7, 1 << 20, -(1 << 20)][rng.below(5)];
     match kind {
         ObjType::Map | ObjType::Table => {
             let key = KEYS[rng.below(KEYS.len())];
@@ -1346,7 +1349,7 @@ fn table_objects_round_trip_through_writes_reads_and_storage() {
 }
 
 #[test]
-fn counter_overflow_wraps_without_panicking() {
+fn counter_overflow_wraps_in_legacy_reads_and_is_refused_by_bounded_reads() {
     let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![1]));
     doc.put(ROOT, "max", ScalarValue::counter(i64::MAX))
         .unwrap();
@@ -1354,6 +1357,10 @@ fn counter_overflow_wraps_without_panicking() {
         .unwrap();
     let list = doc.put_object(ROOT, "list", ObjType::List).unwrap();
     doc.insert(&list, 0, ScalarValue::counter(i64::MAX))
+        .unwrap();
+    doc.put(ROOT, "exact", ScalarValue::counter(i64::MAX - 5))
+        .unwrap();
+    doc.put(ROOT, "detour", ScalarValue::counter(i64::MAX))
         .unwrap();
     doc.commit();
     let before = doc.get_heads();
@@ -1363,6 +1370,10 @@ fn counter_overflow_wraps_without_panicking() {
     doc.increment(ROOT, "min", -1).unwrap();
     doc.increment(&list, 0, 2).unwrap();
     doc.increment(ROOT, "max", i64::MAX).unwrap();
+    doc.increment(ROOT, "exact", 5).unwrap();
+    // Final sum representable, but the first increment overflows.
+    doc.increment(ROOT, "detour", 1).unwrap();
+    doc.increment(ROOT, "detour", -1).unwrap();
     doc.commit();
     let expected_max = i64::MAX.wrapping_add(1).wrapping_add(i64::MAX);
     let get = |doc: &AutoCommit, key: &str| match doc.get(ROOT, key).unwrap().unwrap().0 {
@@ -1400,13 +1411,74 @@ fn counter_overflow_wraps_without_panicking() {
     let _ = observed.diff_incremental();
     let expected = expected_max.wrapping_add(i64::MAX).wrapping_add(i64::MAX);
     assert_eq!(get(&observed, "max"), expected);
-    let mut loaded = AutoCommit::load(&observed.save()).unwrap();
+    let loaded = AutoCommit::load(&observed.save()).unwrap();
     assert_eq!(get(&loaded, "max"), expected);
     let _ = loaded.hydrate(&ROOT, None).unwrap();
     // Historical reads scope increments to the clock with wrapping sums.
     let at = loaded.get_at(ROOT, "max", &before).unwrap().unwrap().0;
     assert_eq!(at, Value::from(ScalarValue::counter(i64::MAX)));
-    // The bounded reader wraps exactly like get/list_range.
-    check_parity(&mut loaded);
-    check_parity(&mut doc);
+    // The bounded reader keeps the 0.8 contract: a checked sum, refused as
+    // Invalid at the first unrepresentable step, never a wrapped value.
+    assert_eq!(get(&loaded, "detour"), i64::MAX);
+    for doc in [&doc, &loaded] {
+        assert_bounded_counters(doc, &list);
+    }
+}
+
+fn assert_bounded_counters(doc: &AutoCommit, list: &ObjId) {
+    let mut allocations = NativeAllocationSet::new(allowance()).unwrap();
+    let source = candidate(doc, &mut allocations);
+    let current = allowance();
+    let turn = allocations.work_turn(current.clone()).unwrap();
+    let read = source.read_unqualified(&turn).unwrap();
+    let invalid = || NativeReadError::Resource(NativeResourceError::Invalid);
+    let steps = NativeReadSteps::new(1_000_000).unwrap();
+    for key in ["max", "min", "detour"] {
+        for selection in [NativeSelection::Winner, NativeSelection::All] {
+            assert_eq!(
+                assert_precharged(&current, || read.visit_property(
+                    read.root(),
+                    key,
+                    selection,
+                    |_, _| Err::<(), _>("overflowed counter reached the visitor")
+                )),
+                Err(invalid()),
+                "{key}"
+            );
+            assert_eq!(
+                read.visit_property_with_steps(read.root(), key, selection, &steps, |_, _| {
+                    Err::<(), _>("overflowed counter reached the visitor")
+                }),
+                Err(invalid())
+            );
+        }
+    }
+    // A sum that ends exactly at the bound is still lent.
+    let count = read
+        .visit_property(read.root(), "exact", NativeSelection::All, |value, _| {
+            assert_eq!(value, NativeValue::Scalar(NativeScalar::Counter(i64::MAX)));
+            Ok::<_, ()>(())
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    let mut list_object = None;
+    read.visit_property(read.root(), "list", NativeSelection::Winner, |value, _| {
+        if let NativeValue::Object { object, .. } = value {
+            list_object = Some(object);
+        }
+        Ok::<_, ()>(())
+    })
+    .unwrap();
+    assert_eq!(doc.length(list), 1);
+    assert_eq!(
+        read.visit_list(list_object.unwrap(), &steps, |_| {
+            Err::<ControlFlow<()>, _>("overflowed counter reached the visitor")
+        }),
+        Err(invalid())
+    );
+    // Keys are still visitable; only the counter value is refused.
+    assert_eq!(
+        read.visit_keys(read.root(), |_| Ok::<_, ()>(())).unwrap(),
+        5
+    );
 }
