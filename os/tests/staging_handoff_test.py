@@ -180,8 +180,10 @@ class Fixture:
             'free-size-bytes': (TARGET[1] - TARGET[0] + 1) * 512,
             'efi-start-bytes': TARGET[0] * 512,
             'efi-size-bytes': 2 * GIB,
-            'root-start-bytes': TARGET[0] * 512 + 2 * GIB,
-            'root-size-bytes': (TARGET[1] - TARGET[0] + 1) * 512 - 2 * GIB,
+            'boot-start-bytes': TARGET[0] * 512 + 2 * GIB,
+            'boot-size-bytes': GIB,
+            'root-start-bytes': TARGET[0] * 512 + 3 * GIB,
+            'root-size-bytes': (TARGET[1] - TARGET[0] + 1) * 512 - 3 * GIB,
             'sector-size': 512,
         }
         values.update(overrides)
@@ -456,7 +458,7 @@ class ReclaimRecordTests(unittest.TestCase):
             fixture = Fixture(temporary)
             var = Path(temporary) / 'state/os/default/var'
             var.mkdir(parents=True)
-            root_start = TARGET[0] * 512 + 2 * GIB
+            root_start = TARGET[0] * 512 + 3 * GIB
             root_size = (TARGET[1] + 1) * 512 - root_start
             argv = ['write-reclaim-record', '--handoff', str(fixture.copy), '--target-var', str(var),
                     '--target-root-partuuid', 'EEEEEEEE-0000-4000-8000-000000000005',

@@ -78,16 +78,17 @@ teardown() {
   done
 }
 
-# Prepare an encrypted Tilo root inside one explicitly-prepared partition while
-# preserving the surrounding partition table and shared ESP. Unlike `prepare`,
-# this command never invokes sfdisk, wipefs on the parent disk, or mkfs on ESP.
+# Prepare an encrypted Tilo root and a separate plain /boot inside two
+# explicitly prepared partitions. The surrounding partition table and ESP are
+# preserved. Unlike `prepare`, this never invokes sfdisk or mkfs on the ESP.
 cmd_prepare_partition() {
-  local part="" esp="" fs=btrfs mnt=/run/tilo-install/target key=""
-  local part_parent esp_parent part_type esp_type esp_fs mountpoints signature_types
-  local esp_mountpoints esp_probe esp_available
+  local part="" esp="" boot="" fs=btrfs mnt=/run/tilo-install/target key=""
+  local part_parent esp_parent boot_parent part_type esp_type boot_type esp_fs mountpoints signature_types
+  local esp_mountpoints esp_probe esp_available boot_mountpoints boot_signature
   while [ $# -gt 0 ]; do
     case "$1" in
       --efi) esp="${2:-}"; shift 2 ;;
+      --boot) boot="${2:-}"; shift 2 ;;
       --filesystem) fs="${2:-}"; shift 2 ;;
       --mnt) mnt="${2:-}"; shift 2 ;;
       --key-file) key="${2:-}"; shift 2 ;;
@@ -95,26 +96,46 @@ cmd_prepare_partition() {
       *) [ -z "$part" ] || die "prepare-partition: unexpected argument $1"; part="$1"; shift ;;
     esac
   done
-  [ -n "$part" ] && [ -n "$esp" ] || die "prepare-partition: missing root partition or --efi"
+  [ -n "$part" ] && [ -n "$esp" ] && [ -n "$boot" ] \
+    || die "prepare-partition: missing root partition, --boot, or --efi"
   [ -n "$key" ] || key="$(default_key_file)"
   case "$fs" in btrfs|ext4|xfs) : ;; *) die "prepare-partition: unsupported filesystem '$fs'" ;; esac
-  for t in blockdev cryptsetup df fsck.fat wipefs blkid lsblk mount umount "mkfs.$fs"; do need "$t"; done
+  for t in blockdev cryptsetup df fsck.fat wipefs blkid lsblk mount umount mkfs.ext4 "mkfs.$fs"; do need "$t"; done
   part="$(readlink -f "$part")"
   esp="$(readlink -f "$esp")"
+  boot="$(readlink -f "$boot")"
+  [ "$part" != "$esp" ] && [ "$part" != "$boot" ] && [ "$esp" != "$boot" ] \
+    || die "prepare-partition: root, boot, and EFI must be distinct partitions"
   [ -b "$part" ] && [ "$(lsblk -dno TYPE "$part" 2>/dev/null)" = part ] \
     || die "prepare-partition: $part is not a partition"
   [ -b "$esp" ] && [ "$(lsblk -dno TYPE "$esp" 2>/dev/null)" = part ] \
     || die "prepare-partition: $esp is not an EFI partition"
+  [ -b "$boot" ] && [ "$(lsblk -dno TYPE "$boot" 2>/dev/null)" = part ] \
+    || die "prepare-partition: $boot is not a boot partition"
   part_parent="$(lsblk -no PKNAME "$part" 2>/dev/null | head -1)"
   esp_parent="$(lsblk -no PKNAME "$esp" 2>/dev/null | head -1)"
-  [ -n "$part_parent" ] && [ "$part_parent" = "$esp_parent" ] \
-    || die "prepare-partition: root and EFI partitions are not on the same disk"
-  part_type="$(lsblk -dno PARTTYPE "$part" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-  esp_type="$(lsblk -dno PARTTYPE "$esp" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  boot_parent="$(lsblk -no PKNAME "$boot" 2>/dev/null | head -1)"
+  [ -n "$part_parent" ] && [ "$part_parent" = "$esp_parent" ] && [ "$part_parent" = "$boot_parent" ] \
+    || die "prepare-partition: root, boot, and EFI partitions are not on the same disk"
+  part_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$part" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  esp_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$esp" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  boot_type="$(blkid -p -s PART_ENTRY_TYPE -o value "$boot" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
   [ "$part_type" = "${GUID_TILO_ROOT,,}" ] \
     || die "prepare-partition: $part is not typed as a Tilo root partition"
   [ "$esp_type" = "${GUID_ESP,,}" ] \
     || die "prepare-partition: $esp is not an EFI System Partition"
+  [ "$boot_type" = "${GUID_LINUX,,}" ] \
+    || die "prepare-partition: $boot is not typed as a Linux boot partition"
+  [ "$(blockdev --getsize64 "$boot")" -ge 1073741824 ] \
+    || die "prepare-partition: boot partition is smaller than 1 GiB"
+  boot_mountpoints="$(lsblk -nro MOUNTPOINT "$boot")" \
+    || die "prepare-partition: could not inspect boot mount state"
+  [ -z "$(printf '%s' "$boot_mountpoints" | tr -d '[:space:]')" ] \
+    || die "prepare-partition: boot partition is mounted"
+  boot_signature="$(wipefs --noheadings --no-act --output TYPE "$boot")" \
+    || die "prepare-partition: could not inspect boot signatures"
+  [ -z "$(printf '%s' "$boot_signature" | tr -d '[:space:]')" ] \
+    || die "prepare-partition: boot partition already contains a signature"
   esp_fs="$(blkid -s TYPE -o value "$esp" 2>/dev/null || true)"
   [ "$esp_fs" = vfat ] || die "prepare-partition: $esp is not FAT"
   [ "$(blockdev --getsize64 "$esp")" -ge "$MIN_ALONGSIDE_ESP_BYTES" ] \
@@ -168,10 +189,13 @@ cmd_prepare_partition() {
   mount "/dev/mapper/$mapper" "$mnt"
   chmod 0700 "$mnt"
   find "$mnt" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  mkfs.ext4 -q -L TILO_BOOT "$boot"
+  install -d -m 0755 "$mnt/boot"
+  mount "$boot" "$mnt/boot"
   install -d -m 0755 "$mnt/boot/efi"
   mount "$esp" "$mnt/boot/efi"
-  printf 'MNT=%s\nESP=%s\nLUKS_PART=%s\nLUKS_UUID=%s\nMAPPER=%s\nROOT_FS_UUID=%s\nKEY_FILE=%s\n' \
-    "$mnt" "$esp" "$part" "$luks_uuid" "$mapper" "$root_fs_uuid" "$key"
+  printf 'MNT=%s\nESP=%s\nBOOT_PART=%s\nLUKS_PART=%s\nLUKS_UUID=%s\nMAPPER=%s\nROOT_FS_UUID=%s\nKEY_FILE=%s\n' \
+    "$mnt" "$esp" "$boot" "$part" "$luks_uuid" "$mapper" "$root_fs_uuid" "$key"
   printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto,fido2-device=auto\n' \
     "$luks_uuid" "$luks_uuid"
 }

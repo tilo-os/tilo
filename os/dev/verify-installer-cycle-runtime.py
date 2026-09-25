@@ -50,15 +50,20 @@ def check_runtime(e, cmdline, generation, mount, table):
     require(len(disks) == 1 and disks[0].get("serial") == "tilo-install-target", "medium present or wrong target")
     parts = [x for x in disks[0].get("children", []) if x["type"] == "part"]
     prepared = e["mode"] == "prepared-alongside"
-    require(len(parts) == (4 if prepared else 5), "wrong installed partition count")
+    require(len(parts) == (5 if prepared else 6), "wrong installed partition count")
     expected = [(1, 2048 if prepared else 512), (2049 if prepared else 513, 512), (2561 if prepared else 1025, 512)]
     for index, (start_mib, size_mib) in enumerate(expected):
         p = parts[index]
         require(int(p["start"]) * 512 == start_mib * 2**20 and int(p["size"]) == size_mib * 2**20, "foreign partition geometry differs")
         require(p["partuuid"].lower() == str(index + 1) + "0000000-0000-4000-8000-00000000000" + str(index + 1), "foreign partition UUID differs")
     root = parts[-1]
-    require(int(root["size"]) == (77590000 * 512 if prepared else 37374 * 2**20), "root fixture size differs")
-    require(int(root["start"]) * 512 == (3073 if prepared else 3585) * 2**20, "root fixture offset differs")
+    boot = parts[-2]
+    require(int(boot["size"]) == 2**30 and int(boot["start"]) * 512 ==
+            (3073 if prepared else 3585) * 2**20, "boot fixture geometry differs")
+    require(boot.get("fstype") == "ext4" and boot.get("label") == "TILO_BOOT",
+            "installed boot filesystem differs")
+    require(int(root["size"]) == (75492848 * 512 if prepared else 36350 * 2**20), "root fixture size differs")
+    require(int(root["start"]) * 512 == (4097 if prepared else 4609) * 2**20, "root fixture offset differs")
     require(root.get("fstype") == "crypto_LUKS", "installed root is not encrypted")
     require(any(x["type"] == "crypt" and x.get("fstype") == "btrfs" for x in root.get("children", [])), "encrypted root not opened as Btrfs")
     if not prepared:

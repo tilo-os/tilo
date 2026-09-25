@@ -14,10 +14,18 @@ SOURCE = BACKEND.read_text()
 
 
 class InstallerTargetModeTests(unittest.TestCase):
-    def test_all_three_modes_promote_the_signed_target(self):
+    def test_signed_boot_mount_is_required_before_any_disk_work(self):
+        guard = '[ "$ENCRYPT" -eq 1 ] || die "the signed target UKI requires encrypted TILO_BOOT layout"'
+        self.assertIn(guard, SOURCE)
+        self.assertLess(SOURCE.index(guard), SOURCE.index('validate_disk_identity\n'))
+        self.assertNotIn('--no-encrypt)', SOURCE)
+        self.assertIn('mkfs.ext4 -q -L TILO_BOOT "$boot_part"',
+                      (BACKEND.parent / 'tilo-disk-encrypt').read_text())
+        self.assertIn('mkfs.ext4 -q -L TILO_BOOT "$boot"',
+                      (BACKEND.parent / 'tilo-disk-encrypt').read_text())
+
+    def test_encrypted_mode_promotes_the_signed_target(self):
         self.assertIn('promote_target_uki "$ENC_MNT/boot/efi"', SOURCE)
-        self.assertIn('promote_target_uki "$ALONGSIDE_MNT/boot/efi"', SOURCE)
-        self.assertIn('promote_target_uki "$target_esp_mount"', SOURCE)
         body = SOURCE.split('promote_target_uki() {', 1)[1].split('\n}\n', 1)[0]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

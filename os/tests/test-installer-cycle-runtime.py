@@ -24,8 +24,11 @@ def fixture(mode="prepared-alongside"):
                   partuuid=str(i+1)+"0000000-0000-4000-8000-00000000000"+str(i+1)) for i,(start,size) in enumerate(geometry)]
     if not prepared:
         parts.append(dict(type="part", path="/dev/vda4", start=1537*2048, size=2**31))
-    parts.append(dict(type="part", start=(3073 if prepared else 3585)*2048,
-                      size=77590000*512 if prepared else 37374*2**20,
+    parts.append(dict(type="part", path="/dev/vda4" if prepared else "/dev/vda5",
+                      start=(3073 if prepared else 3585)*2048, size=2**30,
+                      fstype="ext4", label="TILO_BOOT"))
+    parts.append(dict(type="part", start=(4097 if prepared else 4609)*2048,
+                      size=75492848*512 if prepared else 36350*2**20,
                       fstype="crypto_LUKS", children=[dict(type="crypt", fstype="btrfs", path="/dev/mapper/root")]))
     table = dict(blockdevices=[dict(type="disk", serial="tilo-install-target", children=parts)])
     return e, cmd, "1\n", mount, table

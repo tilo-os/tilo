@@ -28,8 +28,8 @@ pub(crate) mod fake;
 
 /// Every start and size is aligned to this many bytes.
 pub const ALIGN_BYTES: u64 = 1 << 20;
-/// The installer's guided-alongside minimum: 2 GiB ESP + 32 GiB root.
-pub const MIN_TARGET_BYTES: u64 = 34 << 30;
+/// The installer's guided-alongside minimum: 2 GiB ESP + 1 GiB boot + 32 GiB root.
+pub const MIN_TARGET_BYTES: u64 = 35 << 30;
 /// Default Tilo size offered on Review.
 pub const DEFAULT_TARGET_BYTES: u64 = 64 << 30;
 /// GPT type of the staging ESP.

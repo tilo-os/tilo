@@ -169,8 +169,8 @@ prepare_alongside_target() {
   done
   # Both fixtures begin with a foreign shared ESP plus valid Windows and Linux
   # filesystems. Prepared mode supplies an empty root and a reusable 2 GiB ESP;
-  # guided mode leaves the remaining >=34 GiB genuinely unallocated so the
-  # installer must append its own dedicated ESP and encrypted root.
+  # guided mode leaves the remaining >=35 GiB genuinely unallocated so the
+  # installer must append its own dedicated ESP, boot and encrypted root.
   truncate -s 40G "$raw"
   if [ "$install_mode" = prepared-alongside ]; then
     esp_size=2G windows_offset=2049 linux_offset=2561
@@ -179,7 +179,8 @@ label: gpt
 start=2048, size=4194304, type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=10000000-0000-4000-8000-000000000001, name="shared EFI"
 start=4196352, size=1048576, type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=20000000-0000-4000-8000-000000000002, name="Windows sentinel"
 start=5244928, size=1048576, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=30000000-0000-4000-8000-000000000003, name="Linux sentinel"
-start=6293504, size=77590000, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=40000000-0000-4000-8000-000000000004, name="Tilo prepared root"
+start=6293504, size=2097152, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=50000000-0000-4000-8000-000000000005, name="Tilo prepared boot"
+start=8390656, size=75492848, type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=40000000-0000-4000-8000-000000000004, name="Tilo prepared root"
 EOF
   else
     esp_size=512M windows_offset=513 linux_offset=1025
@@ -252,7 +253,8 @@ expected = [
     ("10000000-0000-4000-8000-000000000001", 1 << 20, 2 << 30),
     ("20000000-0000-4000-8000-000000000002", 2049 << 20, 512 << 20),
     ("30000000-0000-4000-8000-000000000003", 2561 << 20, 512 << 20),
-    ("40000000-0000-4000-8000-000000000004", 3073 << 20, 77590000 * 512),
+    ("50000000-0000-4000-8000-000000000005", 3073 << 20, 1 << 30),
+    ("40000000-0000-4000-8000-000000000004", 4097 << 20, 75492848 * 512),
 ]
 assert len(parts) == len(expected)
 for part, (uuid, start, size) in zip(parts, expected):
@@ -276,7 +278,7 @@ disk = sys.argv[1]
 table = json.loads(subprocess.check_output(["sfdisk", "--json", disk]))["partitiontable"]
 sector = int(table["sectorsize"])
 parts = table["partitions"]
-assert len(parts) == 5, f"expected five GPT partitions, found {len(parts)}"
+assert len(parts) == 6, f"expected six GPT partitions, found {len(parts)}"
 expected = [
     ("10000000-0000-4000-8000-000000000001", 1 << 20, 512 << 20),
     ("20000000-0000-4000-8000-000000000002", 513 << 20, 512 << 20),
@@ -284,13 +286,15 @@ expected = [
 ]
 for part, (uuid, start, size) in zip(parts[:3], expected):
     assert part["uuid"].lower() == uuid and part["start"] * sector == start and part["size"] * sector == size
-efi, root = parts[3:]
+efi, boot, root = parts[3:]
 assert efi["start"] * sector == 1537 << 20 and efi["size"] * sector == 2 << 30
 assert efi["type"].lower() == "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
-assert root["start"] * sector == 3585 << 20 and root["size"] * sector == 37374 << 20
-assert root["type"].lower() == "0fc63daf-8483-4772-8e79-3d69d8477de4"
-assert efi["uuid"].lower() not in {p[0] for p in expected} and root["uuid"].lower() not in {p[0] for p in expected}
-assert efi["uuid"].lower() != root["uuid"].lower()
+assert boot["start"] * sector == 3585 << 20 and boot["size"] * sector == 1 << 30
+assert boot["type"].lower() == "0fc63daf-8483-4772-8e79-3d69d8477de4"
+assert root["start"] * sector == 4609 << 20 and root["size"] * sector == 36350 << 20
+assert root["type"].lower() == "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"
+assert len({efi["uuid"].lower(), boot["uuid"].lower(), root["uuid"].lower()}) == 3
+assert all(p["uuid"].lower() not in {old[0] for old in expected} for p in (efi, boot, root))
 PY
     MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/loader.conf >/dev/null \
       || die "guided Tilo EFI partition has no systemd-boot loader configuration"
@@ -300,7 +304,7 @@ PY
       || MTOOLS_SKIP_CHECK=1 mdir -i "$raw@@$((1537 * 1024 * 1024))" ::/loader/entries/tilo-linux-fedora.conf >/dev/null 2>&1; then
       die "guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut"
     fi
-    printf 'boot_entries=foreign-esp-preserved;runtime_firmware_selection=not-fixtured;dedicated_tilo_esp_start_mib=1537;dedicated_tilo_root_start_mib=3585\n' \
+    printf 'boot_entries=foreign-esp-preserved;runtime_firmware_selection=not-fixtured;dedicated_tilo_esp_start_mib=1537;dedicated_tilo_boot_start_mib=3585;dedicated_tilo_root_start_mib=4609\n' \
       > "$out/alongside-boot-behavior.txt"
   fi
   printf 'mode=%s\nwindows_partition_sha256=%s\nlinux_partition_sha256=%s\nwindows_loader_sha256=%s\nlinux_loader_sha256=%s\n' \
@@ -519,7 +523,7 @@ field "$out/03-review.json" /options/hostname | grep -Eqi 'cycle.?tilo' \
 # `begin` is published with a typed-phrase confirmation contract: the phrase
 # is the object it formats, and anything else is refused before any work.
 confirmation=/dev/vdb
-[ "$install_mode" != prepared-alongside ] || confirmation=/dev/vdb4
+[ "$install_mode" != prepared-alongside ] || confirmation=/dev/vdb5
 [ "$(field "$out/03-review.json" /storage/confirmation_target)" = "$confirmation" ] \
   || die "Review names a different destructive target than this layout formats"
 ic invoke set-recovery-promise@installer.review '{"acknowledged":true}' \
