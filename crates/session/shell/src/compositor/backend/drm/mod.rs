@@ -158,6 +158,10 @@ const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
 const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one output, reported together when direct scanout is refused"
+)]
 struct DirectEligibility<'a> {
     outputs: usize,
     normal_transform: bool,
@@ -408,7 +412,10 @@ mod phase_window_tests {
         let started = Instant::now();
         window.started = started;
 
-        assert!(!window.due(started + PHASE_WINDOW_INTERVAL - Duration::from_nanos(1)));
+        let just_before = (started + PHASE_WINDOW_INTERVAL)
+            .checked_sub(Duration::from_nanos(1))
+            .unwrap();
+        assert!(!window.due(just_before));
         assert!(window.due(started + PHASE_WINDOW_INTERVAL));
     }
 
@@ -639,18 +646,19 @@ impl DrmPresenter {
         else {
             return;
         };
-        let (retirement, completions) = self.scanouts[index]
+        let Some(entry) = self.scanouts.get_mut(index) else {
+            return;
+        };
+        let (retirement, completions) = entry
             .scanout
             .wait_flip_completions(DIRECT_RETIREMENT_TIMEOUT);
         self.phase_window.record_flip_completions(completions.len());
         for crtc in completions {
-            let entry = &mut self.scanouts[index];
             if let Some(targets) = entry.direct_targets.as_mut() {
                 entry.scanout.mark_direct_flip_complete(targets, crtc);
             }
         }
         if retirement == scanout::DirectRetirement::TimedOut {
-            let entry = &mut self.scanouts[index];
             tracing::error!(
                 timeout_ms = DIRECT_RETIREMENT_TIMEOUT.as_millis(),
                 "DRM direct page flip did not retire; disabling direct scanout"
@@ -681,10 +689,18 @@ impl DrmPresenter {
                 direct_dropped = summary.direct_dropped,
                 flip_completions = summary.flip_completions,
                 window_us = summary.window_us,
-                avg_submit_us = self.phase_window.submit_us / u128::from(frames),
-                avg_gpu_readback_map_us = self.phase_window.gpu_readback_map_us / u128::from(frames),
-                avg_settle_us = self.phase_window.settle_us / u128::from(frames),
-                avg_cpu_swizzle_us = self.phase_window.cpu_swizzle_us / u128::from(frames),
+                avg_submit_us = self.phase_window.submit_us.checked_div(u128::from(frames)).unwrap_or(0),
+                avg_gpu_readback_map_us = self
+                    .phase_window
+                    .gpu_readback_map_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
+                avg_settle_us = self.phase_window.settle_us.checked_div(u128::from(frames)).unwrap_or(0),
+                avg_cpu_swizzle_us = self
+                    .phase_window
+                    .cpu_swizzle_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
                 readback_bytes = summary.readback_bytes,
                 output_bytes = summary.output_bytes,
                 bridge_us = summary.bridge_us,
@@ -1039,7 +1055,7 @@ fn paint_scanouts(
                             }
                         }
                     } else {
-                        if let Some(window) = phase_window.as_deref_mut() {
+                        if let Some(window) = phase_window.as_mut() {
                             window.record_direct_drop();
                         }
                         return PaintScanoutSample::default();

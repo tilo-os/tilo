@@ -83,7 +83,7 @@ impl Card {
 /// aliases exist; ordinary presentation continues using dumb buffers until
 /// the complete direct path is ready.
 struct GbmScanoutBuffers {
-    _device: GbmDevice<Card>,
+    device: GbmDevice<Card>,
     buffers: [gbm::BufferObject<()>; 2],
     dma_fds: [OwnedFd; 2],
     fbs: [framebuffer::Handle; 2],
@@ -144,7 +144,7 @@ impl GbmScanoutBuffers {
         };
         let fbs = [fb0, fb1];
         Ok(Self {
-            _device: device,
+            device,
             buffers,
             dma_fds,
             fbs,
@@ -170,7 +170,7 @@ impl GbmScanoutBuffers {
 impl Drop for GbmScanoutBuffers {
     fn drop(&mut self) {
         for fb in self.fbs {
-            if let Err(error) = self._device.destroy_framebuffer(fb) {
+            if let Err(error) = self.device.destroy_framebuffer(fb) {
                 tracing::debug!(?fb, %error, "failed to destroy GBM framebuffer during teardown");
             }
         }
@@ -232,6 +232,11 @@ fn retirement_after_poll(
 
 impl DirectScanoutTargets {
     /// Build both targets transactionally. No CRTC state changes here.
+    ///
+    /// # Errors
+    ///
+    /// Fails when GBM cannot allocate the scanout buffers or the renderer
+    /// cannot import either of them.
     pub fn new(scanout: &DrmScanout, bridge: &VelloDrmBridge) -> Result<Self, String> {
         let buffers = scanout.allocate_gbm_scanout_buffers()?;
         let import = |index: usize| -> Result<ui::dmabuf_import::ImportedRenderTarget, String> {
@@ -1490,7 +1495,7 @@ impl DrmScanout {
     }
 
     /// Whether event-driven flips are still available. Direct scanout does
-    /// not activate on the legacy dirtyfb/set_crtc fallback because a second
+    /// not activate on the legacy `dirtyfb`/`set_crtc` fallback because a second
     /// renderer-owned buffer could otherwise be reused without a retirement
     /// event.
     pub fn event_pageflips_available(&self) -> bool {
@@ -1579,6 +1584,10 @@ impl DrmScanout {
 
     /// Present one frame, draining this scanout's own page-flip completions first — the single-output
     /// entry point. `fill` writes the back buffer in XRGB8888 given the mapped slice and row pitch; `cursor` is consulted only when the hardware cursor is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error `fill` reports; the frame is then not presented.
     pub fn present_into<F, E>(&mut self, cursor: Option<(f64, f64)>, fill: F) -> Result<bool, E>
     where
         F: FnOnce(&mut [u8], usize) -> Result<(), E>,
@@ -1965,7 +1974,9 @@ impl DrmScanout {
                 return (retirement, completed);
             }
             let remaining = deadline.saturating_duration_since(now);
-            let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+            let timeout_ms = i32::try_from(remaining.as_millis())
+                .unwrap_or(i32::MAX)
+                .max(1);
             let mut fd = libc::pollfd {
                 fd: self.card.as_fd().as_raw_fd(),
                 events: libc::POLLIN,
@@ -1973,7 +1984,7 @@ impl DrmScanout {
             };
             // SAFETY: `fd` points to one valid pollfd for the duration of the
             // call and the borrowed card descriptor outlives it.
-            let ready = unsafe { libc::poll(&mut fd, 1, timeout_ms) };
+            let ready = unsafe { libc::poll(&raw mut fd, 1, timeout_ms) };
             if ready == 0 {
                 return (DirectRetirement::TimedOut, completed);
             }

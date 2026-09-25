@@ -762,12 +762,11 @@ impl RetainedGpuTarget {
             let map_started = timing.as_ref().map(|_| Instant::now());
             let mapped = match output {
                 FrameOutput::GpuOnly => {
-                    let submission = submission_index.ok_or_else(|| {
-                        BridgeError::DevicePoll(
-                            "GPU-only sparse submission did not expose its completion index"
-                                .to_owned(),
-                        )
-                    })?;
+                    // The sparse path does not report its submission; an
+                    // empty submit queued behind it completes no earlier.
+                    let submission = submission_index.unwrap_or_else(|| {
+                        self.queue.submit(std::iter::empty::<wgpu::CommandBuffer>())
+                    });
                     self.wait_submission(submission, policy)?;
                     None
                 }
@@ -1327,6 +1326,10 @@ impl VelloDrmBridge {
     ///
     /// Keeping import here prevents a target created by another device from reaching the render
     /// callback. Retain the returned alias while the scanout allocation remains alive.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the device cannot import the dma-buf as a render target.
     pub fn import_bgra8_target(
         &self,
         image: &ui::dmabuf_import::DmabufRef<'_>,
@@ -1337,6 +1340,11 @@ impl VelloDrmBridge {
 
     /// Render and blit into an imported direct-scanout target in one submission, then wait for
     /// the existing completion marker before returning.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the target size does not match this bridge, rendering or
+    /// submission fails, or the completion marker misses `deadline`.
     pub fn paint_imported_bgra8_until(
         &mut self,
         scene: &Scene,
@@ -3701,7 +3709,7 @@ mod tests {
         assert!(!adapter.name.is_empty());
         assert!(!adapter.backend.is_empty());
         assert!(!adapter.device_type.is_empty());
-        eprintln!("renderer gate adapter: {:?}", adapter);
+        eprintln!("renderer gate adapter: {adapter:?}");
         bridge
     }
 

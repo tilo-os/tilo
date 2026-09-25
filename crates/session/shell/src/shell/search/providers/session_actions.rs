@@ -43,7 +43,7 @@ impl SearchProvider for SessionActionsProvider {
         PROVIDER_ID
     }
 
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Session"
     }
 
@@ -78,7 +78,7 @@ impl SearchProvider for SessionActionsProvider {
             contract: Some(logout_contract()),
             on_open: Rc::new(|_doc, _root, _chrome: &Chrome, _args| {
                 os_actions::perform_session_action(os_actions::SessionAction::Logout)
-                    .map_err(|error| crate::shell::search::action_api::ActionError::Refused(error))
+                    .map_err(crate::shell::search::action_api::ActionError::Refused)
             }),
             on_invoke: None,
             on_begin_invoke: None,
