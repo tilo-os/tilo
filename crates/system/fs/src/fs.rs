@@ -420,6 +420,12 @@ pub struct QuickFS {
     mount_lifetime: uuid::Uuid,
     /// Run after a record group is durable, to persist what depends on it.
     durability_hook: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
+    /// Namespace deltas of the changeset being published, broadcast once it
+    /// is durable (`None` outside a changeset).
+    deferred_deltas: Mutex<Option<Vec<Vec<u8>>>>,
+    /// Deltas of changesets whose durable write failed; broadcast with the
+    /// next changeset that becomes durable.
+    held_deltas: Mutex<Vec<Vec<u8>>>,
     /// Explicit one-time owner migration permission. Joining peers disable
     /// this so unsigned legacy namespace bytes are never automatically
     /// blessed into their certified actor's signed history.
@@ -481,6 +487,8 @@ impl QuickFS {
             checked_history_workspace: None,
             mount_lifetime: uuid::Uuid::new_v4(),
             durability_hook: std::sync::OnceLock::new(),
+            deferred_deltas: Mutex::new(None),
+            held_deltas: Mutex::new(Vec::new()),
             allow_legacy_record_migration: true,
             share_control_path: None,
             #[cfg(test)]
@@ -3859,6 +3867,19 @@ impl QuickFS {
     }
 
     fn publish(&self, delta: Vec<u8>) {
+        {
+            let mut deferred = self
+                .deferred_deltas
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(deltas) = deferred.as_mut() {
+                // Peers learn a changeset's placements only once its records
+                // are durable; the visible index is refreshed once for the
+                // whole changeset then.
+                deltas.push(delta);
+                return;
+            }
+        }
         if self.enforcement.is_some() {
             // Local structural changes have already updated Namespace's
             // incremental record index. Refresh the retained ACL projection
@@ -4050,22 +4071,39 @@ impl QuickFS {
 
     /// [`Self::create_empty_file`] whose binding and metadata are stamped at
     /// `observed_at_ms` (the file's own time) rather than now.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "signed baseline publication must complete before the new file becomes visible in the namespace"
-    )]
     fn create_empty_file_stamped(
         &self,
         parent: u64,
         name: impl AsRef<[u8]>,
         observed_at_ms: u64,
     ) -> Result<(u64, Vec<u8>), i32> {
+        self.create_file_stamped(parent, name, observed_at_ms, None, 0)
+    }
+
+    /// Create a regular file whose first version already has `content`
+    /// (`byte_len` bytes): one signed version, content revision and
+    /// metadata, instead of an empty file followed by an edit.
+    #[allow(
+        clippy::significant_drop_tightening,
+        clippy::too_many_lines,
+        reason = "signed baseline publication must complete before the new file becomes visible in the namespace"
+    )]
+    fn create_file_stamped(
+        &self,
+        parent: u64,
+        name: impl AsRef<[u8]>,
+        observed_at_ms: u64,
+        content: Option<Hash>,
+        byte_len: u64,
+    ) -> Result<(u64, Vec<u8>), i32> {
         let name: &[u8] = name.as_ref();
+        let byte_len = if content.is_some() { byte_len } else { 0 };
+        let content_hash = content.map(|hash| collab_types::ContentHash(*hash.as_bytes()));
         let timestamp_ms = now_ms();
         if let (Some(publisher), Some((history, actor))) = (&self.record_publisher, &self.history) {
             let path = {
                 let mut namespace = self.ns();
-                if namespace.lookup(parent, name).is_some() {
+                if namespace.lookup_kind(parent, name).is_some() {
                     return Err(EEXIST);
                 }
                 let parent_path = namespace.path_for(parent).ok_or(ENOENT)?;
@@ -4075,7 +4113,7 @@ impl QuickFS {
             let metadata_digest = VersionMetadataDigest {
                 path: Some(path),
                 kind: 2,
-                byte_len: 0,
+                byte_len,
                 deleted: false,
             };
             let metadata_hash = collab_types::ContentHash(
@@ -4088,15 +4126,15 @@ impl QuickFS {
                 parents: Vec::new(),
                 actor: *actor,
                 timestamp_ms,
-                content_hash: None,
+                content_hash,
                 metadata_hash,
                 provenance: collab_types::FileProvenance::Create,
             };
             let snapshot = VersionSnapshot {
                 record_id,
-                content_hash: None,
+                content_hash,
                 metadata_hash,
-                byte_len: 0,
+                byte_len,
                 kind: FileType::RegularFile,
             };
             let parent_record = self.ns().record_id_for(parent).ok_or(EIO)?;
@@ -4125,22 +4163,29 @@ impl QuickFS {
                 .and_then(|snapshot| snapshot.content_revision)
                 .ok_or(EIO)?;
             let mut namespace = self.ns();
-            if namespace.lookup(parent, name).is_some() {
+            if namespace.lookup_kind(parent, name).is_some() {
                 return Err(EEXIST);
             }
-            let ino = namespace
-                .create_projected_file(parent, name, record_id, None, 0, observed_at_ms)
-                .ok_or(EIO)?;
-            if !namespace.install_verified_content_revision(revision) {
-                let _ = namespace.remove(ino);
-                return Err(EIO);
-            }
+            let ino = if content.is_some() {
+                namespace
+                    .create_projected_file_at_revision(parent, name, &revision, observed_at_ms)
+                    .ok_or(EIO)?
+            } else {
+                let ino = namespace
+                    .create_projected_file(parent, name, record_id, None, 0, observed_at_ms)
+                    .ok_or(EIO)?;
+                if !namespace.install_verified_content_revision(revision) {
+                    let _ = namespace.remove(ino);
+                    return Err(EIO);
+                }
+                ino
+            };
             return Ok((ino, namespace.save_incremental()));
         }
 
         let mut namespace = self.ns();
         let ino = namespace
-            .create_file(parent, name, None, 0, observed_at_ms)
+            .create_file(parent, name, content.as_ref(), byte_len, observed_at_ms)
             .ok_or(ENOENT)?;
         Ok((ino, namespace.save_incremental()))
     }
@@ -4155,7 +4200,7 @@ impl QuickFS {
         if let (Some(publisher), Some((history, actor))) = (&self.record_publisher, &self.history) {
             let (parent_record, path) = {
                 let mut namespace = self.ns();
-                if namespace.lookup(parent, name).is_some() {
+                if namespace.lookup_kind(parent, name).is_some() {
                     return Err(EEXIST);
                 }
                 let parent_record = namespace.record_id_for(parent).ok_or(ENOENT)?;
@@ -4200,7 +4245,7 @@ impl QuickFS {
                 .map_err(|_| EIO)?;
             history.append(version).map_err(|_| EIO)?;
             let mut namespace = self.ns();
-            if namespace.lookup(parent, name).is_some() {
+            if namespace.lookup_kind(parent, name).is_some() {
                 return Err(EEXIST);
             }
             let ino = namespace
