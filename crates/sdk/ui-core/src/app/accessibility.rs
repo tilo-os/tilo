@@ -457,7 +457,8 @@ impl App {
         };
         let mut visited = std::collections::HashSet::new();
         for (&node, pointer) in &self.layout.node_map {
-            if !visited.insert(pointer.cast::<()>()) {
+            // SAFETY: this layout is unchanged, so every node pointer is live.
+            if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
             let binding = self.bindings.binding_for(node);

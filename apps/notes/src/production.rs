@@ -20,6 +20,9 @@ struct CanonicalCustodyV1 {
     record: String,
 }
 
+/// Package id of deployed qOS Notes custody, reopened through local compatibility.
+const HISTORICAL_QOS_PACKAGE: &str = "dev.qos.notes";
+
 enum SavedCustodyProfile {
     Current(RecordCheckout),
     Historical(ui::record::LocalCanonicalCompatibility),
@@ -152,16 +155,10 @@ fn reopen_saved_custody(
     if saved.state_root != requested_state {
         return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
     }
+    // The historical qOS profile is matched first: `dev.qos.notes` is in the
+    // Notes rename family too, but its record identity is derived differently.
     let profile = match saved.package.as_str() {
-        "dev.tilo.notes" => {
-            let key = crate::legacy_import::source_key(root).map_err(|e| e.to_string())?;
-            let checkout = crate::legacy_import::destination(key);
-            if saved.record != checkout.id.as_str() {
-                return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
-            }
-            SavedCustodyProfile::Current(checkout)
-        }
-        "dev.qos.notes" => {
+        HISTORICAL_QOS_PACKAGE => {
             let key = crate::legacy_import::qos_source_key(root).map_err(|e| e.to_string())?;
             let source_key = crate::legacy_import::source_key_hex(key);
             let record = crate::legacy_import::qos_destination(key);
@@ -175,6 +172,21 @@ fn reopen_saved_custody(
             )
             .ok_or("invalid historical canonical custody marker")?;
             SavedCustodyProfile::Historical(evidence)
+        }
+        // Current Tilo custody, written under `definition().app_id` or a
+        // deployed retired spelling (`dev.tilo.notes`) of the same package.
+        package
+            if ui::application::lookup_compatible_first_party_app_ids(
+                package,
+                crate::definition().app_id,
+            ) =>
+        {
+            let key = crate::legacy_import::source_key(root).map_err(|e| e.to_string())?;
+            let checkout = crate::legacy_import::destination(key);
+            if saved.record != checkout.id.as_str() {
+                return Err("this source is retired into a different canonical storage/workspace; open its original custody".into());
+            }
+            SavedCustodyProfile::Current(checkout)
         }
         _ => {
             return Err("canonical custody marker has an unsupported package".into());

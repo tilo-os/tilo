@@ -677,6 +677,22 @@ pub struct ParticipantPresence {
     pub payload: crate::collaboration::PresencePayload,
 }
 
+/// Identity of one live node-map widget for once-per-widget host sweeps.
+///
+/// Several layout nodes may name the same widget, so sweeps deduplicate. The
+/// data address alone is not an identity: a struct shares it with its first
+/// field, and a `HashMap` sweep would then visit whichever of the two it meets
+/// first and silently skip the other (for example a component's committed
+/// action bracket). The concrete type keeps wrapper and first field distinct.
+///
+/// # Safety
+/// `pointer` must be live and not mutably borrowed for the duration of the call.
+pub(crate) unsafe fn node_sweep_identity(pointer: *const dyn Widget) -> (*const (), &'static str) {
+    // SAFETY: the caller guarantees a live, unaliased-for-writes widget.
+    let concrete = unsafe { (*pointer).concrete_type_name() };
+    (pointer.cast::<()>(), concrete)
+}
+
 pub trait Widget {
     /// Concrete identity for host-side frame maps that must distinguish a
     /// wrapper from its first field even when they share a data address.

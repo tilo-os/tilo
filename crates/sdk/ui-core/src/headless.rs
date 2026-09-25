@@ -1332,7 +1332,8 @@ impl FrameHarness {
         let mut requests = Vec::new();
         let mut visited = HashSet::new();
         for (&node, pointer) in &self.node_map {
-            if !visited.insert(pointer.cast::<()>()) {
+            // SAFETY: node_map pointers are valid until the next `relayout`.
+            if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
             // SAFETY: same invariant as every other `node_map` dereference in
@@ -1418,7 +1419,8 @@ impl FrameHarness {
         let mut outer_status = None;
         let mut visited = HashSet::new();
         for (&node, pointer) in &self.node_map {
-            if !visited.insert(pointer.cast::<()>()) {
+            // SAFETY: node_map pointers are valid until the next `relayout`.
+            if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
             let binding = self.bindings.binding_for(node);
