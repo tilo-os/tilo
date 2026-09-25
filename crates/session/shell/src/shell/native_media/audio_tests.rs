@@ -1,11 +1,21 @@
 //! Chat's semantic call commands (the exact `Command` values its `chat.call`
-//! actions emit: Join, SetMuted, Leave) driven through the real service
+//! actions emit: Join, `SetMuted`, Leave) driven through the real service
 //! lifecycle owner, the real local consent prompt queue and the real capture
 //! lease broker, into a backend that produces actual call audio: real libopus
-//! (shell GStreamer codec) over the real native MoQ Draft 21 client and relay
+//! (shell `GStreamer` codec) over the real native `MoQ` Draft 21 client and relay
 //! on loopback, decoded and tone-checked by a second native participant.
 //! SYNTHETIC device: the capture lease hands a generated tone source to the
-//! backend instead of a PipeWire microphone (no audio device on this host).
+//! backend instead of a `PipeWire` microphone (no audio device on this host).
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "tone synthesis, Goertzel analysis and frame counters over bounded test sample buffers"
+)]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 use super::super::collab_broker_capnp::LocalSessionAuthority;
 use super::*;
 use crate::portal::{LocalCaptureHandle, PromptOutcome, PromptResolver};
@@ -75,7 +85,9 @@ fn connect(relay: &LoopbackRelay, own: char, other: char, proof: &[u8]) -> Clien
 fn tone_packets() -> Vec<Vec<u8>> {
     let mut encoder = OpusEncoder::new().expect("GStreamer opusenc");
     let pcm: Vec<i16> = (0..48_000)
-        .map(|i| ((i as f64 / 48_000.0 * 700.0 * std::f64::consts::TAU).sin() * 16_000.0) as i16)
+        .map(|i| {
+            ((f64::from(i) / 48_000.0 * 700.0 * std::f64::consts::TAU).sin() * 16_000.0) as i16
+        })
         .collect();
     encoder.encode(&pcm)
 }
@@ -125,6 +137,10 @@ impl MediaSession for AudioBackend {
     fn inventory(&self) -> Inventory {
         Inventory::default()
     }
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "the test backend asserts the broker handed it exactly the leased synthetic source"
+    )]
     fn start_capture(
         &mut self,
         source_id: &str,
@@ -235,6 +251,11 @@ impl Listener {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end audio scenario over live loopback endpoints; each phase asserts on \
+              state the previous phase left behind"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
     if OpusEncoder::new().is_none() {

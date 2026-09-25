@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 use super::*;
 use qos_peer_state::NeighbourMsg;
 use qos_peer_state::join::{JoinTransportResponse, MemberRole};
@@ -91,7 +95,7 @@ impl WorkspaceJoinService for ActualService {
 
 #[tokio::test]
 async fn native_enrollment_pinned_exchange_persists_complete_before_send() {
-    actual_exchange(false).await;
+    Box::pin(actual_exchange(false)).await;
 }
 
 #[tokio::test]
@@ -99,6 +103,11 @@ async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_
     Box::pin(actual_exchange(true)).await;
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end enrollment exchange over a real relay; the steps share live \
+              endpoints and custody state that splitting would have to thread through helpers"
+)]
 async fn actual_exchange(restart: bool) {
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{
@@ -163,7 +172,7 @@ async fn actual_exchange(restart: bool) {
                 role: MemberRole::Editor,
                 recipient_user_public_key: Some(device.user_public_key),
                 invitee_name: Some("Native receiver".into()),
-                expires_at_ns: now + 60_000_000_000,
+                expires_at_ns: now.checked_add(60_000_000_000).unwrap(),
             },
             now,
         )
@@ -247,8 +256,8 @@ async fn actual_exchange(restart: bool) {
     let identity = HostIdentity {
         device_cert: device.clone(),
         device_signing_key: device_key,
-        workspace_device_certs: Default::default(),
-        workspace_revocations: Default::default(),
+        workspace_device_certs: std::collections::HashMap::default(),
+        workspace_revocations: std::collections::HashMap::default(),
         identity_paths: None,
     };
     let result = prepare_and_complete(
@@ -385,7 +394,7 @@ async fn actual_exchange(restart: bool) {
                     .admit(&identity)
                     .expect("genuine native relay input must cross actual owner barrier");
                 last = Some(input);
-                count += 1;
+                count = count.saturating_add(1);
             }
         }
     })

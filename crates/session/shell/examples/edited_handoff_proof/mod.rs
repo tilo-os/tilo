@@ -177,6 +177,10 @@ fn succeeded(value: &serde_json::Value) -> Result<tilo_actions::ActionOutput> {
     }
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()> {
     // The isolated fixture grants only Read to a delegated, certified agent.
     // The normal Session host still owns admission and invocation policy.

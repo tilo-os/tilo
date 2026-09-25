@@ -41,6 +41,11 @@ fn raw_fixture() -> (
 ) {
     raw_fixture_at(SystemTime::now())
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear signed-enrollment fixture; splitting it would scatter the protocol \
+              steps each test depends on"
+)]
 fn raw_fixture_at(
     now: SystemTime,
 ) -> (
@@ -50,10 +55,12 @@ fn raw_fixture_at(
     [u8; 32],
     SystemTime,
 ) {
-    let ns = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    let ns = u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
     let governor_key = SigningKey::from_bytes(&[61; 32]);
     let governor = certificate(
         &SigningKey::from_bytes(&[62; 32]),
@@ -103,7 +110,7 @@ fn raw_fixture_at(
             nonce: [65; 16],
             recipient_user_public_key: Some(device.user_public_key),
             invitee_name: Some("Member".into()),
-            expires_at_ns: ns + 60_000_000_000,
+            expires_at_ns: ns.checked_add(60_000_000_000).unwrap(),
             transport: vec![hint.clone(), locator],
         },
         &governor_key,
@@ -121,7 +128,7 @@ fn raw_fixture_at(
         &device,
         [66; 32],
         [67; 32],
-        ns + 30_000_000_000,
+        ns.checked_add(30_000_000_000).unwrap(),
         ns,
     )
     .unwrap();
@@ -146,7 +153,7 @@ fn raw_fixture_at(
             room_changes: seed_room(ROOM, &governor, &[governor.clone(), host.clone()]).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
-                record_id: "".into(),
+                record_id: String::new(),
                 kind: "chat".into(),
                 bytes: chat.save(),
             }],
@@ -533,7 +540,7 @@ fn bootstrap_candidate(
                     origin: "https://native.example".into(),
                     delivery_capabilities: 3,
                     issued_at_ns: ns,
-                    expires_at_ns: ns + 120_000_000_000,
+                    expires_at_ns: ns.checked_add(120_000_000_000).unwrap(),
                     generation,
                 },
                 &authority,
@@ -559,7 +566,10 @@ fn bootstrap_response(
         generation: metadata.generation,
         descriptor_digest: metadata.descriptor_digest,
         issued_at_ns: enrollment::ns(now).unwrap(),
-        expires_at_ns: enrollment::ns(now).unwrap() + 10_000_000_000,
+        expires_at_ns: enrollment::ns(now)
+            .unwrap()
+            .checked_add(10_000_000_000)
+            .unwrap(),
         signature: [[0; 32]; 2],
     };
     response.signature = media_wire::split_signature(
@@ -589,7 +599,7 @@ fn native_bootstrap_floor_requires_exact_governor_ack_and_survives_stale_save_an
     assert!(owner.finish_bootstrap(pending, &bad, fixture.now).is_err());
     assert!(matches!(
         owner
-            .with_current(room, |v| v.descriptor_expectation())
+            .with_current(room, super::NativeCommittedView::descriptor_expectation)
             .unwrap(),
         GenerationExpectation::FirstAccepted { .. }
     ));
@@ -633,7 +643,7 @@ fn native_bootstrap_floor_requires_exact_governor_ack_and_survives_stale_save_an
     loaded.persist_path = Some(path);
     let reopened = NativeWorkspaceOwner::open(loaded.shared()).unwrap();
     match reopened
-        .with_current(room, |v| v.descriptor_expectation())
+        .with_current(room, super::NativeCommittedView::descriptor_expectation)
         .unwrap()
     {
         GenerationExpectation::Current {
@@ -643,7 +653,9 @@ fn native_bootstrap_floor_requires_exact_governor_ack_and_survives_stale_save_an
             assert_eq!(generation, 2);
             assert_eq!(descriptor_digest, response.descriptor_digest);
         }
-        _ => panic!("restart erased acknowledged descriptor floor"),
+        GenerationExpectation::FirstAccepted { .. } => {
+            panic!("restart erased acknowledged descriptor floor")
+        }
     }
     assert!(
         reopened
@@ -759,7 +771,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
         room: ROOM.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
-            record: "".into(),
+            record: String::new(),
             envelope: envelope.clone(),
         },
     };
@@ -786,7 +798,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
                     room: ROOM.into(),
                     operation: CommitOperation::Document {
                         app: APP.into(),
-                        record: "".into(),
+                        record: String::new(),
                         envelope: Box::new(foreign)
                     }
                 },
@@ -1039,21 +1051,16 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
-    struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    /// Lets background fs-authority publication settle before the wrapped
+    /// scope restores the environment it reads.
+    struct RestoreEnv {
+        _scope: tilo_test_env::ScopedEnv,
+    }
     impl Drop for RestoreEnv {
         fn drop(&mut self) {
             let _ = qos_desktop::fs_authority::wait_for_fs_authority_publication_idle(
                 Duration::from_secs(2),
             );
-            // SAFETY: this test owns the existing process_env serial group.
-            unsafe {
-                for (name, old) in self.0.drain(..) {
-                    match old {
-                        Some(value) => std::env::set_var(name, value),
-                        None => std::env::remove_var(name),
-                    }
-                }
-            }
         }
     }
     let directory = tempfile::tempdir().unwrap();
@@ -1065,7 +1072,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     std::fs::write(&publisher, "#!/bin/sh\ncp \"$5\" \"$QOS_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$QOS_NATIVE_OWNER_STATE\" \"$QOS_NATIVE_OWNER_STATE_OBSERVED\"\n").unwrap();
     std::fs::set_permissions(&publisher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let values = [
-        ("QOS_FS_AUTHORITY_PUBLISHER", publisher.clone()),
+        ("QOS_FS_AUTHORITY_PUBLISHER", publisher),
         ("QOS_FS_AUTHORITY_CACHE_DIR", directory.path().join("cache")),
         ("QOS_NATIVE_OWNER_ACL_OBSERVED", observed_acl.clone()),
         ("QOS_NATIVE_OWNER_STATE", path.clone()),
@@ -1073,18 +1080,11 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         ("TILO_IDENTITY_ROOT", directory.path().join("identity")),
         ("XDG_CONFIG_HOME", directory.path().join("config")),
     ];
-    let _restore = RestoreEnv(
-        values
-            .iter()
-            .map(|(name, _)| (*name, std::env::var_os(name)))
-            .collect(),
-    );
-    // SAFETY: this test owns the existing process_env serial group.
-    unsafe {
-        for (name, value) in &values {
-            std::env::set_var(name, value);
-        }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    for (name, value) in &values {
+        env.set(name, value);
     }
+    let _restore = RestoreEnv { _scope: env };
     let (tree, local, previous) = fresh_slot(&path);
     {
         let mut native = tree.write();

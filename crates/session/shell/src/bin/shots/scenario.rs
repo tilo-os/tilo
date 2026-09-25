@@ -1365,6 +1365,10 @@ fn push_groups_per_strip(out: &mut String, host: &shell::shell::overlay_host::Sh
 /// Serialise the chrome's externally-observable state into a compact
 /// JSON object. Hand-rolled instead of pulling `serde_derive` because
 /// `ChromeState` lives in another crate we don't want to annotate.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+)]
 pub fn chrome_state_json(driver: &ShellDriver) -> String {
     let st = driver.chrome();
     let host = driver.host();
@@ -4196,7 +4200,17 @@ fn workspace_switch() -> Scenario {
 // Tests
 // =====================================================================
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use shell::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use shell::shell::state::WorkspaceAuthority as _;
@@ -4651,9 +4665,3 @@ mod tests {
         assert!(json.contains("\"palette_visible\":true"));
     }
 }
-
-#[allow(
-    unused_imports,
-    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
-)]
-use shell::shell::state::WorkspaceExt as _;

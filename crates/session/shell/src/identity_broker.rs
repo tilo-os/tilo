@@ -440,6 +440,12 @@ fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -
     stream.flush()
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1036,9 +1042,3 @@ mod tests {
         drop(identity);
     }
 }
-
-#[allow(
-    unused_imports,
-    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
-)]
-use crate::shell::state::WorkspaceExt as _;

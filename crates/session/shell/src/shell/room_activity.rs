@@ -464,6 +464,10 @@ fn draw_resume_card(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod resume_card_tests {
     use super::*;
     use collab_types::{ArtifactKind, OpClass};
@@ -7936,6 +7940,10 @@ fn join_titles(titles: &[String]) -> String {
 // =====================================================================
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     //! Every fixture mutates the room through the *production* mirrors
     //! and reads the pane back — nothing writes a synthetic `HistoryEntry`.

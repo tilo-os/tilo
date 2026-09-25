@@ -14,7 +14,9 @@ fn wait_for_native_consent_child(
     child: &mut std::process::Child,
     test_name: &str,
 ) -> std::process::ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(20))
+        .expect("deadline within the monotonic clock range");
     loop {
         match child.try_wait().expect("poll isolated native-consent test") {
             Some(status) => return status,
@@ -29,56 +31,53 @@ fn wait_for_native_consent_child(
 }
 
 pub(crate) fn run_isolated_native_consent_test(test_name: &str, assertions: impl FnOnce()) {
-    match std::env::var_os(NATIVE_CONSENT_CHILD_TEST) {
-        Some(marker) => {
-            assert_eq!(marker, test_name, "isolated child ran the wrong exact test");
-            assertions();
-            let proof = PathBuf::from(
-                std::env::var_os(NATIVE_CONSENT_CHILD_PROOF).expect("isolated child proof path"),
-            );
-            std::fs::write(&proof, format!("{test_name}\nassertions-complete\n"))
-                .expect("write isolated child proof");
-        }
-        None => {
-            let temp = tempfile::tempdir().expect("isolated native-consent root");
-            let fixture_root = temp
-                .path()
-                .canonicalize()
-                .expect("canonical isolated native-consent root");
-            std::fs::set_permissions(&fixture_root, std::fs::Permissions::from_mode(0o700))
-                .expect("secure native-consent broker fixture root");
-            let environment = fixture_root.join("environment");
-            let runtime = environment.join("runtime");
-            std::fs::create_dir_all(&runtime).expect("create isolated runtime");
-            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
-                .expect("secure isolated runtime");
-            let proof = temp.path().join("assertions-complete");
-            let mut child = Command::new(std::env::current_exe().expect("current test binary"));
-            child
-                .args(["--exact", test_name, "--nocapture"])
-                .env(NATIVE_CONSENT_CHILD_TEST, test_name)
-                .env(NATIVE_CONSENT_CHILD_PROOF, &proof)
-                .env(NATIVE_CONSENT_FIXTURE_ROOT, &fixture_root)
-                .env("HOME", environment.join("home"))
-                .env("XDG_CONFIG_HOME", environment.join("config"))
-                .env("XDG_DATA_HOME", environment.join("data"))
-                .env("XDG_CACHE_HOME", environment.join("cache"))
-                .env("XDG_STATE_HOME", environment.join("state"))
-                .env("XDG_RUNTIME_DIR", &runtime)
-                .env("TILO_IDENTITY_ROOT", environment.join("identity"))
-                .env("TILO_USER_ID", MISLEADING_TILO_USER_ID);
-            let mut child = child.spawn().expect("spawn isolated native-consent test");
-            let status = wait_for_native_consent_child(&mut child, test_name);
-            assert!(
-                status.success(),
-                "isolated native-consent child failed: {status}"
-            );
-            assert_eq!(
-                std::fs::read_to_string(&proof).expect("isolated child completion proof"),
-                format!("{test_name}\nassertions-complete\n"),
-                "the exact child test did not complete its assertions"
-            );
-        }
+    if let Some(marker) = std::env::var_os(NATIVE_CONSENT_CHILD_TEST) {
+        assert_eq!(marker, test_name, "isolated child ran the wrong exact test");
+        assertions();
+        let proof = PathBuf::from(
+            std::env::var_os(NATIVE_CONSENT_CHILD_PROOF).expect("isolated child proof path"),
+        );
+        std::fs::write(&proof, format!("{test_name}\nassertions-complete\n"))
+            .expect("write isolated child proof");
+    } else {
+        let temp = tempfile::tempdir().expect("isolated native-consent root");
+        let fixture_root = temp
+            .path()
+            .canonicalize()
+            .expect("canonical isolated native-consent root");
+        std::fs::set_permissions(&fixture_root, std::fs::Permissions::from_mode(0o700))
+            .expect("secure native-consent broker fixture root");
+        let environment = fixture_root.join("environment");
+        let runtime = environment.join("runtime");
+        std::fs::create_dir_all(&runtime).expect("create isolated runtime");
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
+            .expect("secure isolated runtime");
+        let proof = temp.path().join("assertions-complete");
+        let mut child = Command::new(std::env::current_exe().expect("current test binary"));
+        child
+            .args(["--exact", test_name, "--nocapture"])
+            .env(NATIVE_CONSENT_CHILD_TEST, test_name)
+            .env(NATIVE_CONSENT_CHILD_PROOF, &proof)
+            .env(NATIVE_CONSENT_FIXTURE_ROOT, &fixture_root)
+            .env("HOME", environment.join("home"))
+            .env("XDG_CONFIG_HOME", environment.join("config"))
+            .env("XDG_DATA_HOME", environment.join("data"))
+            .env("XDG_CACHE_HOME", environment.join("cache"))
+            .env("XDG_STATE_HOME", environment.join("state"))
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("TILO_IDENTITY_ROOT", environment.join("identity"))
+            .env("TILO_USER_ID", MISLEADING_TILO_USER_ID);
+        let mut child = child.spawn().expect("spawn isolated native-consent test");
+        let status = wait_for_native_consent_child(&mut child, test_name);
+        assert!(
+            status.success(),
+            "isolated native-consent child failed: {status}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&proof).expect("isolated child completion proof"),
+            format!("{test_name}\nassertions-complete\n"),
+            "the exact child test did not complete its assertions"
+        );
     }
 }
 
@@ -87,7 +86,9 @@ pub(crate) fn native_consent_fixture_root() -> PathBuf {
 }
 
 pub(crate) fn wait_for_local_session_worker_teardown(lifecycle: &LocalSessionLifecycle) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(2))
+        .expect("deadline within the monotonic clock range");
     while lifecycle.snapshot().is_some() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }

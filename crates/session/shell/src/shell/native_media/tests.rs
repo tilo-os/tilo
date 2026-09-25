@@ -1,5 +1,9 @@
 //! Exercise the service with the real lifecycle owner, prompt queue and lease broker.
 //! The device backend is controlled; these tests do not qualify physical audio.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 use super::super::collab_broker_capnp::LocalSessionAuthority;
 use super::*;
 use crate::portal::{LocalCaptureHandle, PromptOutcome, PromptResolver};
@@ -30,6 +34,10 @@ impl MediaSession for BackendFixture {
             State::Live
         })
     }
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "the test backend asserts the broker handed it exactly the leased synthetic source"
+    )]
     fn start_capture(
         &mut self,
         source_id: &str,
@@ -69,7 +77,7 @@ impl MediaFactory for Factory {
     }
 }
 struct Fixture {
-    _owner: LocalSessionAuthority,
+    owner: LocalSessionAuthority,
     lifecycle: LocalSessionLifecycle,
     service: NativeMediaService,
     caller: Caller,
@@ -127,7 +135,7 @@ impl Fixture {
             current: Arc::new(|| Ok(())),
         };
         Self {
-            _owner: owner,
+            owner,
             lifecycle,
             service,
             caller,
@@ -144,7 +152,7 @@ impl Fixture {
     fn request(&self, command: Command) -> Request {
         let mut request = Request::new(command);
         if !matches!(request.command, Command::Status) {
-            request.intent = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+            request.intent = self.next.fetch_add(1, Ordering::SeqCst).saturating_add(1);
         }
         request
     }
@@ -445,7 +453,7 @@ async fn disconnect_and_owner_drop_stop_capture_synchronously() {
     let fixture = Fixture::new();
     fixture.join().await;
     fixture.unmute().await;
-    drop(fixture._owner);
+    drop(fixture.owner);
     assert!(fixture.device.stops.load(Ordering::SeqCst) > 0);
 }
 
@@ -509,7 +517,7 @@ async fn pending_consent_is_fenced_by_newer_mute_and_live_admission_loss() {
             checked
                 .load(Ordering::Acquire)
                 .then_some(())
-                .ok_or("admission ended".into())
+                .ok_or_else(|| "admission ended".into())
         });
         fixture.join().await;
         fixture.command(Command::SetMuted { muted: false });
@@ -584,7 +592,9 @@ async fn committed_local_privacy_policy_stops_capture_before_setter_returns() {
         .unwrap();
     assert!(fixture.device.stops.load(Ordering::SeqCst) > before);
     assert!(!fixture.command(Command::Status).capture_active);
-    backend.set_policy(Default::default()).unwrap();
+    backend
+        .set_policy(crate::portal::lockdown::LockdownPolicy::default())
+        .unwrap();
     assert_eq!(
         fixture.device.starts.load(Ordering::SeqCst),
         1,
@@ -598,7 +608,9 @@ async fn committed_local_privacy_policy_stops_capture_before_setter_returns() {
             ..Default::default()
         })
         .unwrap();
-    backend.set_policy(Default::default()).unwrap();
+    backend
+        .set_policy(crate::portal::lockdown::LockdownPolicy::default())
+        .unwrap();
     let _ = prompt.reply.send(PromptOutcome::AllowOnce);
     for _ in 0..10 {
         tokio::task::yield_now().await;

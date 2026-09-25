@@ -2962,6 +2962,28 @@ pub fn wayland_socket_display() -> OsString {
     )
 }
 
+/// Package processes require the Linux execution authority.
+///
+/// # Errors
+/// Always fails on hosts without that authority, before spawning any worker.
+#[cfg(all(not(test), not(target_os = "linux")))]
+pub fn spawn_launch(
+    _package_id: String,
+    _display_name: String,
+    _command: LaunchCommand,
+) -> Result<(), String> {
+    Err(LaunchError::ProviderUnavailable {
+        provider: "Linux package execution",
+    }
+    .to_string())
+}
+
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3624,14 +3646,15 @@ mod tests {
     fn each_legacy_first_party_id_reaches_the_current_installed_package_lookup() {
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "so.tilo.notes", "gui");
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
         invalidate_app_cache();
         *lock(&WAYLAND_SOCKET) = None;
 
         let results = ["dev.qos.notes", "dev.tilo.notes"]
             .map(|app_id| (app_id, launch(app_id, RoomId::new())));
 
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        drop(env);
         invalidate_app_cache();
         for (app_id, result) in results {
             assert!(
@@ -4653,25 +4676,3 @@ mod tests {
         );
     }
 }
-
-/// Package processes require the Linux execution authority.
-///
-/// # Errors
-/// Always fails on hosts without that authority, before spawning any worker.
-#[cfg(all(not(test), not(target_os = "linux")))]
-pub fn spawn_launch(
-    _package_id: String,
-    _display_name: String,
-    _command: LaunchCommand,
-) -> Result<(), String> {
-    Err(LaunchError::ProviderUnavailable {
-        provider: "Linux package execution",
-    }
-    .to_string())
-}
-
-#[allow(
-    unused_imports,
-    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
-)]
-use crate::shell::state::WorkspaceExt as _;

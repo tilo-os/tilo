@@ -1837,7 +1837,7 @@ mod legacy_files_opener_regressions {
     ) -> Option<vello::kurbo::Rect> {
         fn in_access(node: &ui::a11y::AccessNode, name: &str) -> Option<vello::kurbo::Rect> {
             if node.name.as_deref() == Some(name) {
-                return node.bounds.map(|bounds| bounds.to_rect());
+                return node.bounds.map(ui::AccessBounds::to_rect);
             }
             node.children
                 .iter()
@@ -1899,7 +1899,7 @@ mod legacy_files_opener_regressions {
             ui::record::RecordId::for_tab(700),
             ui::record::RecordKind::new("files-view-state"),
         );
-        tile.bind_or_create_record(records.clone(), files_checkout);
+        tile.bind_or_create_record(records, files_checkout);
         let mut driver =
             ui::headless::FrameHarness::new(ui::State::new(), Box::new(tile), (1000, 700));
         let row = find_semantic_bounds(&driver.inspection().root, "legacy.txt")

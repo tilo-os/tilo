@@ -296,6 +296,11 @@ mod tests {
         route: String,
     }
     #[test]
+    #[allow(
+        clippy::naive_bytecount,
+        reason = "an obviously correct newline count is the oracle here; a byte-count crate \
+                  would be a dependency for one test"
+    )]
     fn native_outgoing_reserve_counter_matches_exact_pretty_embedding() {
         let value = vec![Entry {
             data: vec![0, 9, 10, 99, 100, 255],

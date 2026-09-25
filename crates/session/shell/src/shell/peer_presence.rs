@@ -1216,6 +1216,10 @@ mod tests {
 /// own, since what a session publishes and what it accepts agree only
 /// by construction. This drives the whole path end to end.
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod two_sessions {
     use super::*;
     use crate::network::actor::NetCmd;

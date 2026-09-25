@@ -1,3 +1,7 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 use super::*;
 use crate::shell::collab_broker_capnp::tests::{
     DirectoryResolveMode, drain_directory_bridge, local_directory_fixture_with_membership,

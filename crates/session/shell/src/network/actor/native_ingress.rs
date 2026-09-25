@@ -536,8 +536,8 @@ mod tests {
         let mut identity = HostIdentity {
             device_cert: certificate,
             device_signing_key: key,
-            workspace_device_certs: Default::default(),
-            workspace_revocations: Default::default(),
+            workspace_device_certs: HashMap::default(),
+            workspace_revocations: HashMap::default(),
             identity_paths: None,
         };
         let topic = crate::shell::network::room_topic_id(room);

@@ -1,6 +1,12 @@
 use super::*;
+use automerge::ReadDoc as _;
 use automerge::transaction::Transactable;
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+#[allow(
+    clippy::too_many_lines,
+    reason = "one owner-service scenario run with and without an injected state-file failure; \
+              both passes assert on the same durable barrier"
+)]
 #[tokio::test]
 async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier() {
     for fail in [false, true] {
@@ -96,7 +102,6 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
                 .with_current(room, |view| {
                     let bytes = view.peer().document("so.tilo.chat", "").unwrap();
                     let doc = automerge::AutoCommit::load(&bytes).unwrap();
-                    use automerge::ReadDoc;
                     assert_eq!(
                         doc.get(automerge::ROOT, "native_owner_commit_test")
                             .unwrap()

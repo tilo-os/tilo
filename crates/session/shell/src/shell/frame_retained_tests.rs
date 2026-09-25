@@ -4,6 +4,10 @@
     clippy::cast_sign_loss,
     reason = "fixed native-4K test allocation and index arithmetic"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use super::*;
 

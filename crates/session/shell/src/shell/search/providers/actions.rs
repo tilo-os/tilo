@@ -2506,6 +2506,39 @@ fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
     true
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
+/// Called only after the existing identity registry accepted the selection.
+#[allow(
+    clippy::similar_names,
+    reason = "`room` and `root` are the protocol's own names for the room and its user root"
+)]
+fn fence_native_selection(
+    st: &ChromeState,
+    local: crate::shell::state::WorkspaceId,
+    room: crate::shell::state::RoomId,
+    root: &[u8; 32],
+) -> Result<(), ActionError> {
+    let owner = st.tree().installed_native_owner();
+    let Some(owner) = owner else { return Ok(()) };
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let selected =
+        tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(root)).ok();
+    native_identity::fence(&owner, room, selected.as_ref()).map_err(ActionError::Refused)?;
+    if let Some(pending) = owner
+        .pending_enrollment_for_slot(local)
+        .map_err(ActionError::Refused)?
+    {
+        native_identity::fence(&owner, pending.id().room(), selected.as_ref())
+            .map_err(ActionError::Refused)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3923,37 +3956,4 @@ mod tests {
             crate::shell::state::Verb::Read,
         ));
     }
-}
-
-#[allow(
-    unused_imports,
-    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
-)]
-use crate::shell::state::WorkspaceExt as _;
-
-/// Called only after the existing identity registry accepted the selection.
-#[allow(
-    clippy::similar_names,
-    reason = "`room` and `root` are the protocol's own names for the room and its user root"
-)]
-fn fence_native_selection(
-    st: &ChromeState,
-    local: crate::shell::state::WorkspaceId,
-    room: crate::shell::state::RoomId,
-    root: &[u8; 32],
-) -> Result<(), ActionError> {
-    let owner = st.tree().installed_native_owner();
-    let Some(owner) = owner else { return Ok(()) };
-    let paths = crate::firstboot::collaboration_identity_paths();
-    let selected =
-        tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(root)).ok();
-    native_identity::fence(&owner, room, selected.as_ref()).map_err(ActionError::Refused)?;
-    if let Some(pending) = owner
-        .pending_enrollment_for_slot(local)
-        .map_err(ActionError::Refused)?
-    {
-        native_identity::fence(&owner, pending.id().room(), selected.as_ref())
-            .map_err(ActionError::Refused)?;
-    }
-    Ok(())
 }

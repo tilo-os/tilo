@@ -75,7 +75,7 @@ impl Fixture {
                 room_changes: vec![],
                 documents: vec![SeedDocument {
                     app_id: "so.tilo.chat".into(),
-                    record_id: "".into(),
+                    record_id: String::new(),
                     kind: "chat".into(),
                     bytes: chat.save(),
                 }],

@@ -99,6 +99,10 @@ impl ActionHost for BrokerActionHost {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::collab_broker::CrdtRoute;

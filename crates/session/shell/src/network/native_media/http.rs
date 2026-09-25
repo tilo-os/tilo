@@ -223,7 +223,9 @@ mod tls_tests {
         let origin = format!("https://{}", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
         let worker = thread::spawn(move || {
-            let end = Instant::now() + Duration::from_secs(2);
+            let end = Instant::now()
+                .checked_add(Duration::from_secs(2))
+                .expect("deadline within the monotonic clock range");
             let stream = loop {
                 if let Ok((stream, _)) = listener.accept() {
                     break stream;
@@ -248,7 +250,7 @@ mod tls_tests {
             while length < request.len() {
                 match tls.read(&mut request[length..]) {
                     Ok(0) | Err(_) => return,
-                    Ok(read) => length += read,
+                    Ok(read) => length = length.saturating_add(read),
                 }
                 if request[..length]
                     .windows(4)

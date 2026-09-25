@@ -1,8 +1,18 @@
 //! Real-clock restart regression; no fresh checkpoint is injected manually.
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "continuation of the parent exchange test: it takes over that test's live relay, \
+              endpoints and custody and runs the restart phase as one linear scenario"
+)]
 pub(super) async fn restart_after_offline_snapshot(
     directory: &tempfile::TempDir,
     owner: NativeWorkspaceOwner,

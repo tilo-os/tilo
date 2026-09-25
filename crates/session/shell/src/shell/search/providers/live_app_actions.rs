@@ -2585,15 +2585,19 @@ pub(crate) fn fixture_with_directory_page(
     actor: String,
     page: CataloguePage,
 ) -> Rc<dyn SearchProvider> {
-    let provider = LiveAppActionsProvider::new(broker);
+    let provider = Rc::new(LiveAppActionsProvider::new(broker));
     provider
         .directory_pages
         .borrow_mut()
         .insert((peer, actor, String::new(), Vec::new()), page);
-    Rc::new(provider)
+    provider
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;

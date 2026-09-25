@@ -324,6 +324,12 @@ fn terminate_group(child: &mut std::process::Child, pgid: libc::pid_t) {
     let _ = child.wait();
 }
 
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
+use crate::shell::state::WorkspaceExt as _;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,9 +400,3 @@ mod tests {
         let _ = child.wait();
     }
 }
-
-#[allow(
-    unused_imports,
-    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
-)]
-use crate::shell::state::WorkspaceExt as _;

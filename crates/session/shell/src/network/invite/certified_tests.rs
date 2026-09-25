@@ -31,6 +31,11 @@ fn actual_redemption() -> (
     actual_redemption_at(SystemTime::now())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear invite-to-bootstrap redemption fixture; splitting it would scatter the \
+              protocol steps each assertion depends on"
+)]
 fn actual_redemption_at(
     now: SystemTime,
 ) -> (
@@ -41,10 +46,12 @@ fn actual_redemption_at(
     TransportHint,
     SystemTime,
 ) {
-    let ns = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    let ns = u64::try_from(
+        now.duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
     let governor_key = SigningKey::from_bytes(&[71; 32]);
     let governor = certificate(
         &SigningKey::from_bytes(&[72; 32]),
@@ -85,7 +92,7 @@ fn actual_redemption_at(
             nonce: [75; 16],
             recipient_user_public_key: Some(device.user_public_key),
             invitee_name: Some("Guest".into()),
-            expires_at_ns: ns + 60_000_000_000,
+            expires_at_ns: ns.checked_add(60_000_000_000).unwrap(),
             transport: vec![hint.clone()],
         },
         &governor_key,
@@ -98,8 +105,15 @@ fn actual_redemption_at(
         ns,
     )
     .unwrap();
-    let challenge =
-        JoinChallenge::new(&join, &device, [76; 32], [77; 32], ns + 30_000_000_000, ns).unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &device,
+        [76; 32],
+        [77; 32],
+        ns.checked_add(30_000_000_000).unwrap(),
+        ns,
+    )
+    .unwrap();
     let proof = join::sign_join_proof(challenge.clone(), &device_key).unwrap();
     let redemption =
         join::verify_join_proof(&proof, &challenge, &device, &RevocationList::new(), ns).unwrap();
@@ -113,7 +127,7 @@ fn actual_redemption_at(
     .unwrap();
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(room, &governor, &[governor.clone()]).unwrap(),
+            room_changes: seed_room(room, &governor, std::slice::from_ref(&governor)).unwrap(),
             documents: vec![],
         },
         &governor_key,

@@ -268,8 +268,8 @@ pub mod tests {
 
             let provider = LiveAppActionsProvider::new(fixture.broker.clone());
             let mut doc = AutoCommit::new();
-            let root = automerge::ROOT.clone();
-            let _same_room_actor = load_directory_result(&fixture, &provider, &doc, &root).await;
+            let doc_root = automerge::ROOT.clone();
+            let _same_room_actor = load_directory_result(&fixture, &provider, &doc, &doc_root).await;
             assert_eq!(fixture.query_count(), 1);
 
             // Re-querying the same root uses its room-derived actor and page;
@@ -279,7 +279,7 @@ pub mod tests {
                 &provider,
                 &fixture.chrome,
                 &doc,
-                &root,
+                &doc_root,
             ));
             assert_eq!(fixture.query_count(), 1);
 
@@ -289,7 +289,7 @@ pub mod tests {
                 .expect("directory result starts through an atomic broker ticket");
             let InvocationDisposition::Pending(ticket) = begin(
                 &mut doc,
-                &root,
+                &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
             )
@@ -315,7 +315,7 @@ pub mod tests {
                 .as_ref()
                 .expect("directory ticket")(
                 &mut doc,
-                &root,
+                &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
             )
@@ -326,7 +326,7 @@ pub mod tests {
             drain_directory_bridge(&fixture).await;
             assert!(stale().is_err(), "stale exact resolution refuses the cached row");
             fixture.set_resolve_mode(DirectoryResolveMode::Found);
-            let _refreshed_after_stale = load_directory_result(&fixture, &provider, &doc, &root).await;
+            let _refreshed_after_stale = load_directory_result(&fixture, &provider, &doc, &doc_root).await;
             assert_eq!(fixture.query_count(), 2);
 
             fixture.set_resolve_mode(DirectoryResolveMode::NotFound);
@@ -334,14 +334,14 @@ pub mod tests {
                 &provider,
                 &fixture.chrome,
                 &doc,
-                &root,
+                &doc_root,
             ));
             let InvocationDisposition::Pending(revoked) = revoked_source
                 .on_begin_invoke
                 .as_ref()
                 .expect("directory ticket")(
                 &mut doc,
-                &root,
+                &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
             )
@@ -351,7 +351,7 @@ pub mod tests {
             drain_directory_bridge(&fixture).await;
             assert!(revoked().is_err(), "revoked exact resolution refuses the cached row");
             fixture.set_resolve_mode(DirectoryResolveMode::Found);
-            let disconnected_source = load_directory_result(&fixture, &provider, &doc, &root).await;
+            let disconnected_source = load_directory_result(&fixture, &provider, &doc, &doc_root).await;
             assert_eq!(fixture.query_count(), 3);
 
             fixture.disconnect_directory();
@@ -360,7 +360,7 @@ pub mod tests {
                 .as_ref()
                 .expect("directory ticket")(
                 &mut doc,
-                &root,
+                &doc_root,
                 &fixture.chrome,
                 &tilo_actions::ActionArgs::none(),
             )
@@ -370,13 +370,13 @@ pub mod tests {
             drain_directory_bridge(&fixture).await;
             assert!(disconnected().is_err(), "disconnect invalidates the cached directory row");
             assert!(
-                query_live_directory(&provider, &fixture.chrome, &doc, &root).is_empty(),
+                query_live_directory(&provider, &fixture.chrome, &doc, &doc_root).is_empty(),
                 "after disconnect the provider must not render its old cached row"
             );
 
             fixture.reconnect_directory();
             drain_directory_bridge(&fixture).await;
-            let reconnected = query_live_directory(&provider, &fixture.chrome, &doc, &root);
+            let reconnected = query_live_directory(&provider, &fixture.chrome, &doc, &doc_root);
             assert!(
                 reconnected.iter().any(|result| result.id.starts_with("directory\u{1f}")),
                 "a reconnected directory is reloaded through the queue, never revived from stale cache"

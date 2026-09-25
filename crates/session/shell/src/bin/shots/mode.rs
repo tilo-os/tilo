@@ -126,6 +126,10 @@ pub mod offscreen {
     ///
     /// Returns an error if the output directory cannot be created, or if a
     /// scene named in `scenes` fails its own setup.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn run_scenes(scenes: &[String], dir: &Path, viewport: (u32, u32)) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
@@ -373,6 +377,10 @@ pub mod window {
     /// `OpenPalette` will not be visible on the live binary's first
     /// frame; a pre-rolled `SwitchWorkspace(1)` will. Useful for
     /// scripted "open the live binary on workspace 2 with these tabs".
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
+    )]
     pub fn run(pre_roll: Option<&Scenario>) {
         if let Some(scenario) = pre_roll {
             println!("shots: window-mode pre-roll scenario '{}'", scenario.name);

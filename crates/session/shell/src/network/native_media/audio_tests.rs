@@ -1,10 +1,17 @@
 //! Device-free native voice pipeline proof. SYNTHETIC capture/playback: a
 //! generated tone-burst signal replaces the microphone and the decoded PCM is
-//! analysed instead of being played (no PipeWire device on this host). Real
-//! libopus encode/decode through the shell's GStreamer codec, and the real
-//! native MoQ Draft 21 client over real loopback WebTransport through the
+//! analysed instead of being played (no `PipeWire` device on this host). Real
+//! libopus encode/decode through the shell's `GStreamer` codec, and the real
+//! native `MoQ` Draft 21 client over real loopback WebTransport through the
 //! host relay implementation; the relay authority here is a test identity map
-//! (product grants are covered by qos-session-peer media_service tests).
+//! (product grants are covered by qos-session-peer `media_service` tests).
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "tone synthesis, Goertzel analysis and frame counters over bounded test sample buffers"
+)]
 use media::voice::gst::{OpusDecoder, OpusEncoder};
 use qos_moq::client::{CapturedOpus, Client, ClientAuthority, Connection, ConnectionScope, Status};
 use qos_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};
@@ -122,6 +129,11 @@ fn percentile(values: &mut [f64], q: f64) -> f64 {
     values[((values.len() - 1) as f64 * q).round() as usize]
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end audio scenario over live loopback endpoints; each phase asserts on \
+              state the previous phase left behind"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency() {
     let Some(mut encoder) = OpusEncoder::new() else {

@@ -2016,6 +2016,10 @@ mod tests {
         clippy::too_many_lines,
         reason = "capture integration tests keep their full scenario setup explicit"
     )]
+    #![allow(
+        clippy::significant_drop_tightening,
+        reason = "test fixtures transitively own long-lived permits and lock guards by design"
+    )]
 
     use super::*;
     use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};

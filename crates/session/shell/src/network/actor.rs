@@ -3468,6 +3468,10 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -4321,11 +4325,11 @@ mod tests {
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
                 shell_authority: None,
-                checkpoint_prefix_recovery: Default::default(),
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
             }],
             ..RelayConfig::default()
         };
-        let relay = Relay::start(
+        let relay = Box::pin(Relay::start(
             config,
             RelayIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
@@ -4333,7 +4337,7 @@ mod tests {
                 device_cert: host_cert.clone(),
                 revocations: RevocationList::new(),
             },
-        )
+        ))
         .await
         .unwrap();
         relay
@@ -4359,7 +4363,7 @@ mod tests {
         let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
         let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        let relay = Box::pin(Relay::start(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 workspaces: vec![WorkspaceBinding {
@@ -4368,7 +4372,7 @@ mod tests {
                     replication: ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
                     shell_authority: None,
-                    checkpoint_prefix_recovery: Default::default(),
+                    checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::default(),
                 }],
                 ..RelayConfig::default()
             },
@@ -4378,7 +4382,7 @@ mod tests {
                 device_cert: host_cert.clone(),
                 revocations: RevocationList::new(),
             },
-        )
+        ))
         .await
         .unwrap();
         relay
@@ -4558,11 +4562,11 @@ mod tests {
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+        let (relay, _state, _host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
             &root,
             a_key.verifying_key().to_bytes(),
             b_key.verifying_key().to_bytes(),
-        )
+        ))
         .await;
 
         let (a, lookup_a) = identified_endpoint(&a_key).await;
@@ -4630,11 +4634,11 @@ mod tests {
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+        let (relay, _state, _host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
             &root,
             a_key.verifying_key().to_bytes(),
             b_key.verifying_key().to_bytes(),
-        )
+        ))
         .await;
         let (a, lookup_a) = identified_endpoint(&a_key).await;
         let (b, lookup_b) = identified_endpoint(&b_key).await;
@@ -4697,9 +4701,12 @@ mod tests {
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let a_public = a_key.verifying_key().to_bytes();
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, host_cert) =
-            spawn_pinned_relay_for_two_members(&root, a_public, b_key.verifying_key().to_bytes())
-                .await;
+        let (relay, _state, host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
+            &root,
+            a_public,
+            b_key.verifying_key().to_bytes(),
+        ))
+        .await;
         let (a, lookup_a) = identified_endpoint(&a_key).await;
         let (b, lookup_b) = identified_endpoint(&b_key).await;
         let identity = |key, cert| HostIdentity {
@@ -4810,11 +4817,11 @@ mod tests {
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+        let (relay, _state, _host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
             &root,
             a_key.verifying_key().to_bytes(),
             b_key.verifying_key().to_bytes(),
-        )
+        ))
         .await;
         let (a, lookup_a) = identified_endpoint(&a_key).await;
         let (b, lookup_b) = identified_endpoint(&b_key).await;

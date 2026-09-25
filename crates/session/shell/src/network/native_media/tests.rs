@@ -11,14 +11,14 @@ async fn actual_actor_custody_opens_only_pinned_discovery_and_fences_late_reply(
     let identity = HostIdentity {
         device_cert: cert,
         device_signing_key: key,
-        workspace_device_certs: Default::default(),
-        workspace_revocations: Default::default(),
+        workspace_device_certs: std::collections::HashMap::default(),
+        workspace_revocations: std::collections::HashMap::default(),
         identity_paths: None,
     };
     let target = CallTarget {
         workspace: room.to_string(),
         app: "so.tilo.chat".into(),
-        record: "".into(),
+        record: String::new(),
         channel: "voice".into(),
     };
     let mut registry = Registry::default();
@@ -78,7 +78,7 @@ async fn open_actual(
                 target: CallTarget {
                     workspace: room.to_string(),
                     app: "so.tilo.chat".into(),
-                    record: "".into(),
+                    record: String::new(),
                     channel: "voice".into(),
                 },
             },
@@ -101,8 +101,8 @@ fn identity_for(
             .with_current(room, |view| Ok(view.device().clone()))
             .unwrap(),
         device_signing_key: key,
-        workspace_device_certs: Default::default(),
-        workspace_revocations: Default::default(),
+        workspace_device_certs: std::collections::HashMap::default(),
+        workspace_revocations: std::collections::HashMap::default(),
         identity_paths: None,
     }
 }
@@ -120,10 +120,11 @@ async fn own_bootstrap_ack_is_correlated_but_leave_during_owner_fence_wins() {
         let response = test_bootstrap_response(&pending, &hint, now);
         let weak = Arc::downgrade(&ticket);
         let _leave = owner.observe_fences(Arc::new(move |changed, _| {
-            if changed == room && leave {
-                if let Some(ticket) = weak.upgrade() {
-                    ticket.stop();
-                }
+            if changed == room
+                && leave
+                && let Some(ticket) = weak.upgrade()
+            {
+                ticket.stop();
             }
         }));
         let result = registry::finish_owner_bootstrap(&ticket, pending, &response);
@@ -165,7 +166,7 @@ async fn revoked_owner_or_wrong_actual_key_cannot_finish_pending_bootstrap() {
                 target: CallTarget {
                     workspace: room.to_string(),
                     app: "so.tilo.chat".into(),
-                    record: "".into(),
+                    record: String::new(),
                     channel: "voice".into(),
                 },
             },

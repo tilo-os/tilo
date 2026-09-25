@@ -984,6 +984,10 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};

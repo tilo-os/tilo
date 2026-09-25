@@ -27,6 +27,10 @@
               closure-level readability in taffy measure callbacks; the parameter names \
               are terse by design and the pattern is consistent throughout"
 )]
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;

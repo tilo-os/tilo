@@ -3568,6 +3568,11 @@ impl ShellNetwork {
     /// is still current. Holding the route registry through command enqueue
     /// gives departure a defined ordering: either enqueue wins, or departure
     /// removes authority first and this call fails without sending.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the route registry guard is held through enqueue on purpose: it orders this \
+                  send against departure, which must remove authority before or after it"
+    )]
     pub(crate) fn send_personal_fabric_action_on_route(
         &self,
         route: &AuthenticatedPersonalRoute,
@@ -3730,6 +3735,7 @@ impl ShellNetwork {
                 expires: now + PERSONAL_DISPLAY_AUTHORIZATION_TTL,
             },
         );
+        drop(authorizations);
         Ok(())
     }
 
@@ -5910,7 +5916,7 @@ pub(crate) fn shell_network_for_test(
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
         pending_invitations_path: None,
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
-        native_enrollment: Default::default(),
+        native_enrollment: native_enrollment::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
@@ -5946,6 +5952,10 @@ impl crate::shell::remote_action_link::RemoteActionLink for ShellNetwork {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     use super::*;
     use crate::shell::state::FreshId as _;

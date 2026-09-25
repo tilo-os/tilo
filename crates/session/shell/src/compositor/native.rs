@@ -8528,6 +8528,10 @@ fn spawn_auto_brightness_worker() {
     clippy::float_cmp,
     reason = "deterministic control-path geometry fixtures use exactly representable values"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tests {
     //! Unit coverage for the test-control execution path. The integration test
     //! (`tests/control_socket_test.rs`) needs a Wayland display and is
@@ -11230,6 +11234,10 @@ mod vt_chord_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod gesture_wireup_tests {
     use super::{
         apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of,

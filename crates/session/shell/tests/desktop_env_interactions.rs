@@ -1420,7 +1420,13 @@ fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
     let layout = lay_out_host(&mut host);
     let row = host.group_row_rect_for_tests(strip).unwrap();
     let clipped = host.group_at_for_tests(strip, 1).unwrap().get_rect();
-    assert!(clipped.x0 < row.x1 && clipped.x1 > row.x1);
+    // The second card straddles the row's right edge: it starts inside the
+    // visible row and ends past it.
+    assert!(clipped.x0 < row.x1, "the card starts inside the row");
+    assert!(
+        clipped.x1 > row.x1,
+        "the card is clipped by the row's right edge"
+    );
     let before = host.group_row_mut_for_tests(strip).unwrap().scroll_x();
     cursor(
         &mut host,

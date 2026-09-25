@@ -118,6 +118,10 @@ struct SessionActionResult {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod clipboard_manager_tests {
     use super::*;
     use crate::compositor::selection::{
@@ -262,6 +266,10 @@ mod clipboard_manager_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod device_fabric_ui_tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -1159,6 +1167,10 @@ mod device_fabric_ui_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod idle_io_animation_tests {
     use super::*;
 
@@ -5319,6 +5331,7 @@ impl ShellOverlayHost {
             let after = tree
                 .desktop
                 .nudge_active_group_off_closing(strip_id, &closing);
+            drop(tree);
             changed |= before != after;
         }
         if changed {
@@ -10124,10 +10137,14 @@ impl ShellOverlayHost {
         };
         let local_ids = {
             let state = chrome.borrow();
-            let tree = state.tree();
+            let active_room = state
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.room);
             let mut ids = vec![state.local_user_id.clone()];
-            if let Some(workspace) = tree.desktop.active_workspace() {
-                ids.push(state.local_user_for_room(&workspace.room));
+            if let Some(room) = active_room {
+                ids.push(state.local_user_for_room(&room));
             }
             ids.retain(|id| !id.is_empty());
             ids
@@ -24275,6 +24292,10 @@ fn quick_settings_settled_bounds(rect: Rect, theme: &Theme, transform: Affine) -
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod tab_context_menu_tests {
     //! The tab right-click menu on the production host: opened by the tab
     //! bar's request through `handle_event`, moved by the arrow keys,
@@ -25223,6 +25244,10 @@ mod empty_workspace_tests {
     clippy::float_cmp,
     reason = "exact overview layout geometry is the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod overview_panel_tests {
     //! The overview is a switcher for rooms: which one you're in, who's in
     //! it, what leaves it, how to get to another. These pin geometry/data,
@@ -25910,6 +25935,10 @@ mod overview_panel_tests {
     clippy::float_cmp,
     reason = "exact transition endpoints are the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod overview_transition_tests {
     use super::*;
     use ui::widget::Container;
@@ -26458,6 +26487,10 @@ mod wifi_password_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod palette_dispatch_tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
@@ -28507,6 +28540,10 @@ mod two_workspace_host_tests {
     clippy::float_cmp,
     reason = "exact modal curve endpoints are the behavior under test"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod modal_curve_tests {
     //! Guards the shared ease-out-cubic curve used by the workspace-settings
     //! modal and the command palette (`modal_transition_curve`, which both
@@ -28685,6 +28722,10 @@ mod modal_curve_tests {
 #[allow(
     clippy::float_cmp,
     reason = "exact overlay hit-test geometry is the behavior under test"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod overlay_event_absorb_tests {
     //! Pins the modal event-absorb gate: every pointer event over an open
@@ -31248,6 +31289,10 @@ mod overlay_event_absorb_tests {
 #[allow(
     clippy::float_cmp,
     reason = "deterministic host geometry fixtures use exactly representable values"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod tests {
     //! Drives `host.handle_event` with real winit events, through the
@@ -35575,6 +35620,10 @@ mod peer_cursor_tests {
 /// says which is which. Dormant membership stays in workspace settings:
 /// immediate presence never invents an idle session.
 #[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 mod roster_rows {
     use super::*;
     use crate::shell::chrome_state::ChromeState;

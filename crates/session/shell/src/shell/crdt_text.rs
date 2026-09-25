@@ -314,6 +314,7 @@ pub fn full_bleed_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming as _;
 
     const KEY: &str = "test_body";
 
@@ -358,7 +359,7 @@ mod tests {
             right.sync(&mut right_doc, &tile);
             left.splice(&mut left_doc, &tile, 0..0, "left");
             right.splice(&mut right_doc, &tile, 0..0, "right");
-            left_doc.merge(&mut right_doc).unwrap();
+            left_doc.merge_incoming(&mut right_doc).unwrap();
             left.sync(&mut left_doc, &tile);
             assert!(
                 left.text.contains("left") && left.text.contains("right"),
@@ -387,7 +388,7 @@ mod tests {
         let mut right_doc = base.fork();
         CrdtTextBody::with_seed(KEY, "hello").sync(&mut left_doc, &tile);
         CrdtTextBody::with_seed(KEY, "hello").sync(&mut right_doc, &tile);
-        left_doc.merge(&mut right_doc).unwrap();
+        left_doc.merge_incoming(&mut right_doc).unwrap();
         assert_eq!(read_body(&left_doc, &tile, KEY).unwrap(), "hello");
     }
 

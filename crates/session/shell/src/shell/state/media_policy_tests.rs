@@ -7,14 +7,14 @@ use std::collections::BTreeMap;
 fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
     let mut host = WorkspaceTree::bootstrap_demo();
     let room = host.desktop.workspaces[0].room;
-    let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+    let governor_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = iroh::SecretKey::from_bytes(&[92; 32]);
     let endpoint = device.public();
-    let owner = hex::encode(root.verifying_key().as_bytes());
+    let owner = hex::encode(governor_root.verifying_key().as_bytes());
     host.desktop.workspaces[0].owner = Some(owner.clone());
     assert!(host.name_peer(room, &owner, &endpoint.to_string(), "Governor"));
     let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
+        user_public_key: governor_root.verifying_key().to_bytes(),
         device_public_key: *endpoint.as_bytes(),
         device_label: "Governor device".into(),
         capabilities: tilo_user_identity::DeviceCapabilities::member(),
@@ -22,7 +22,7 @@ fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
         expires_at_ns: None,
         signature: [0; 64],
     };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    tilo_user_identity::sign_device_cert(&mut cert, &governor_root).unwrap();
     assert!(host.certify_peer_identity(room, &endpoint.to_string(), cert));
     host.sync_room_doc(room);
     let mut guest = WorkspaceTree::bootstrap_demo();
@@ -49,7 +49,7 @@ fn policy(doc: &AutoCommit, room: RoomId) -> media::RoomMediaV1 {
             media::CallV1 {
                 binding: media::ChatCallBindingV1 {
                     app_id: "so.tilo.chat".into(),
-                    record_id: "".into(),
+                    record_id: String::new(),
                     channel_id: "voice".into(),
                     channel_object: "1@01".into(),
                     chat_workspace_id: "home".into(),
@@ -127,9 +127,7 @@ fn media_bootstrap_refuses_unpinned_and_non_authority_origins() {
         assert!(!guest.room_docs.contains_key(&room));
         assert_eq!(
             guest.room_authority(room),
-            pinned
-                .map(RoomAuthority::Peer)
-                .unwrap_or(RoomAuthority::Unpinned)
+            pinned.map_or(RoomAuthority::Unpinned, RoomAuthority::Peer)
         );
     }
 }
@@ -283,14 +281,14 @@ fn malformed_pinned_candidate_and_conflict_leave_heads_and_certificates_unchange
     guest
         .apply_room_changes(room, &changes(doc), &origin)
         .unwrap();
-    let original = guest.room_docs.get(&room).unwrap().clone();
+    let mut original = guest.room_docs.get(&room).unwrap().clone();
     let heads = guest.room_heads(room);
     let authority = guest.room_authority(room);
     let identities = guest.trusted_identity_projection(room);
     let mut malformed = original.clone();
     malformed.put(ROOT, media::FIELD, "not bytes").unwrap();
     let mut left = original.clone().fork();
-    let mut right = original.clone().fork();
+    let mut right = original.fork();
     let mut restricted = value.clone();
     restricted.calls.get_mut(&[7; 32]).unwrap().allowed.publish = false;
     restricted.calls.get_mut(&[7; 32]).unwrap().epoch = 2;
@@ -302,7 +300,7 @@ fn malformed_pinned_candidate_and_conflict_leave_heads_and_certificates_unchange
         .allowed
         .subscribe = false;
     put_policy(&mut right, &restricted);
-    left.merge(&mut right).unwrap();
+    left.merge_incoming(&mut right).unwrap();
     for mut rejected in [malformed, left] {
         assert!(
             !guest
@@ -442,7 +440,7 @@ fn media_requires_exact_admitted_device_certificate_and_current_validity() {
         let (mut host, mut guest, room, origin) = fixture();
         admit_legacy(&mut host, &mut guest, room, &origin);
         let endpoint = iroh::SecretKey::from_bytes(&[92; 32]).public().to_string();
-        let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+        let governor_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
         let mut candidate = host.room_docs.get(&room).unwrap().clone();
         let identities = candidate
             .get(ROOT, WorkspaceTree::ROOM_PEER_IDENTITIES_KEY)
@@ -469,7 +467,7 @@ fn media_requires_exact_admitted_device_certificate_and_current_validity() {
             }
             "renewed" => {
                 row.device_cert.issued_at_ns = 2;
-                tilo_user_identity::sign_device_cert(&mut row.device_cert, &root).unwrap();
+                tilo_user_identity::sign_device_cert(&mut row.device_cert, &governor_root).unwrap();
                 candidate
                     .put(
                         &identities,
@@ -481,7 +479,8 @@ fn media_requires_exact_admitted_device_certificate_and_current_validity() {
             "expired" | "revoked" => {
                 if case == "expired" {
                     row.device_cert.expires_at_ns = Some(2);
-                    tilo_user_identity::sign_device_cert(&mut row.device_cert, &root).unwrap();
+                    tilo_user_identity::sign_device_cert(&mut row.device_cert, &governor_root)
+                        .unwrap();
                 } else {
                     let mut revocation = tilo_user_identity::RevocationEntry {
                         user_public_key: row.device_cert.user_public_key,
@@ -490,7 +489,8 @@ fn media_requires_exact_admitted_device_certificate_and_current_validity() {
                         reason: tilo_user_identity::RevocationReason::Retired,
                         signature: [0; 64],
                     };
-                    tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+                    tilo_user_identity::sign_revocation_entry(&mut revocation, &governor_root)
+                        .unwrap();
                     row.revocations.push(revocation);
                 }
                 candidate
@@ -539,7 +539,7 @@ fn media_requires_exact_admitted_device_certificate_and_current_validity() {
 fn projection_preserves_native_admission_fields_outside_shell_cache() {
     let (mut host, _guest, room, _origin) = fixture();
     let endpoint = iroh::SecretKey::from_bytes(&[92; 32]).public().to_string();
-    let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
+    let governor_root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let doc = host.room_docs.get_mut(&room).unwrap();
     let identities = doc
         .get(ROOT, WorkspaceTree::ROOM_PEER_IDENTITIES_KEY)
@@ -550,7 +550,7 @@ fn projection_preserves_native_admission_fields_outside_shell_cache() {
     let mut native = serde_json::to_value(&row).unwrap();
     native["admission"] = serde_json::json!({
         "invite_id": vec![4u8; 32],
-        "user_public_key": root.verifying_key().to_bytes(),
+        "user_public_key": governor_root.verifying_key().to_bytes(),
         "device_public_key": row.device_cert.device_public_key,
         "request_id": vec![5u8; 32],
         "role": "Editor",

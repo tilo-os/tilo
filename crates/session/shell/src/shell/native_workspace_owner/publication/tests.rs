@@ -1,6 +1,11 @@
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_automerge::ApplyIncoming as _;
 
 fn edit(
     owner: &NativeWorkspaceOwner,
@@ -71,7 +76,7 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
     );
     let path = directory.path().join("state.json");
     let committed = std::fs::read(&path).unwrap();
-    owner.commit_document(request.clone(), now).unwrap();
+    owner.commit_document(request, now).unwrap();
     assert_eq!(
         std::fs::read(&path).unwrap(),
         committed,
@@ -79,7 +84,7 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
     );
     drop(owner);
     let mut tree = persist::load_tree_from(&path).unwrap();
-    tree.persist_path = Some(path.clone());
+    tree.persist_path = Some(path);
     let owner = NativeWorkspaceOwner::open(Arc::new(RwLock::new(tree))).unwrap();
     let bytes = owner
         .with_outgoing(room, now, |_, outgoing| {
@@ -160,7 +165,7 @@ fn snapshot_request(
     else {
         unreachable!()
     };
-    doc.load_incremental(&changes).unwrap();
+    doc.load_incoming(&changes).unwrap();
     envelope.payload = collab_types::DocumentMutation::Snapshot(doc.save())
         .encode()
         .unwrap();
@@ -175,6 +180,11 @@ fn snapshot_request(
     (request, postcard::to_allocvec(&original).unwrap())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one custody scenario across restarts; each phase asserts on the durable state the \
+              previous phase left behind"
+)]
 #[test]
 fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_durable_ack() {
     for snapshot in [false, true] {
@@ -389,6 +399,11 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one custody scenario across restarts; each phase asserts on the durable state the \
+              previous phase left behind"
+)]
 #[test]
 fn native_outgoing_migrates_a2_without_inventing_missing_originals_or_erasing_history() {
     for covered in [false, true] {
@@ -653,6 +668,11 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one custody scenario across restarts; each phase asserts on the durable state the \
+              previous phase left behind"
+)]
 #[test]
 fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody() {
     use atomic_file::test_support::{Checkpoint, with_failure};
