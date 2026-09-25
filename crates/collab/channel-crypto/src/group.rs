@@ -21,10 +21,31 @@
 use openmls::prelude::tls_codec::{Deserialize as _, Serialize as _};
 use openmls::prelude::*;
 
-use collab_types::ChannelId;
+use collab_types::{ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme};
+use tilo_seal::SymmetricKey;
+use zeroize::Zeroizing;
 
+use crate::content::{
+    CONTENT_KEY_EXPORTER_LABEL, ContentKeyring, HISTORY_TRANSPORT_EXPORTER_LABEL, KeyHistory,
+};
 use crate::crypto::{CIPHERSUITE, MemberKey};
 use crate::errors::{Error, Result};
+
+/// Everything an admission produces, handed to the caller's persistence
+/// callback before the local epoch advances.
+#[derive(Clone, Debug)]
+pub struct MemberAddition {
+    /// TLS-serialised MLS Welcome for the joiner.
+    pub welcome: Vec<u8>,
+    /// Commit existing members (other than the adder) must process; `None`
+    /// for the very first join, when there is no other member.
+    pub commit: Option<Vec<u8>>,
+    /// The joiner's content-key history ([`KeyHistory::to_bytes`]): every
+    /// content key the adder holds, sealed for the post-add epoch.
+    pub key_history: Vec<u8>,
+    /// The epoch the group moves to.
+    pub epoch: u64,
+}
 
 /// One device's view of one channel's MLS group.
 ///
@@ -42,6 +63,8 @@ pub struct ChannelGroup {
     /// can't reach around the wrapper (e.g. commit without going through
     /// this crate).
     pub(crate) group: MlsGroup,
+    /// Every content key this member holds (see [`crate::content`]).
+    pub(crate) keyring: ContentKeyring,
 }
 
 /// `MlsGroupCreateConfig` toggles always on: `use_ratchet_tree_extension(true)`
@@ -78,11 +101,146 @@ impl ChannelGroup {
             owner.credential_with_key(),
         )
         .map_err(Error::openmls)?;
-        Ok(Self {
+        let mut created = Self {
             channel_id,
             member: owner,
             group,
-        })
+            keyring: ContentKeyring::new(),
+        };
+        created.record_epoch_key()?;
+        Ok(created)
+    }
+
+    /// Derive the current epoch's content key from the MLS exporter and add
+    /// it to the keyring. A member removed by the last commit is inactive and
+    /// learns nothing new.
+    pub(crate) fn record_epoch_key(&mut self) -> Result<()> {
+        if !self.group.is_active() {
+            return Ok(());
+        }
+        let key = self.export_key(CONTENT_KEY_EXPORTER_LABEL, self.channel_id.0.as_bytes())?;
+        self.keyring.insert(self.epoch(), key)
+    }
+
+    fn export_key(&self, label: &str, context: &[u8]) -> Result<SymmetricKey> {
+        let exported = Zeroizing::new(
+            self.group
+                .export_secret(
+                    openmls_traits::OpenMlsProvider::crypto(&self.member.provider),
+                    label,
+                    context,
+                    32,
+                )
+                .map_err(Error::openmls)?,
+        );
+        SymmetricKey::from_slice(&exported).map_err(Error::ContentCrypto)
+    }
+
+    fn history_transport_context(&self, epoch: u64) -> [u8; 24] {
+        crate::content::history_record(self.channel_id, epoch)
+    }
+
+    /// Every content key this member holds.
+    pub fn keyring(&self) -> &ContentKeyring {
+        &self.keyring
+    }
+
+    /// Seal an op payload for `artifact` under the current epoch's content
+    /// key (encryption scheme version 2). The returned metadata goes into
+    /// `SignedOp.encryption`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MissingContentKey`] if the current epoch has no key (the
+    /// member was removed), or a sealing error.
+    pub fn seal_content(
+        &self,
+        artifact: ArtifactId,
+        retention: ContentRetention,
+        plaintext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>)> {
+        if !self.group.is_active() {
+            return Err(Error::MissingContentKey(self.epoch()));
+        }
+        self.keyring.seal(
+            self.channel_id,
+            self.epoch(),
+            artifact,
+            retention,
+            plaintext,
+        )
+    }
+
+    /// Open an op payload of any supported encryption scheme: version 2
+    /// content-key envelopes through the keyring (any epoch this member holds
+    /// a key for, any number of times), version 1 MLS application messages
+    /// through the MLS ratchet (current epoch only, once).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MissingContentKey`], [`Error::ContentCrypto`] or the MLS
+    /// decryption errors of [`Self::decrypt`].
+    pub fn open_content(
+        &mut self,
+        artifact: ArtifactId,
+        metadata: &EncryptionMetadata,
+        payload: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        if metadata.channel != self.channel_id {
+            return Err(Error::InvalidState("payload names another channel".into()));
+        }
+        match metadata.scheme {
+            EncryptionScheme::ContentKey { .. } => {
+                self.keyring
+                    .open(self.channel_id, artifact, metadata, payload)
+            }
+            EncryptionScheme::MlsApplication => {
+                if metadata.epoch > self.epoch() {
+                    return Err(Error::MissingContentKey(metadata.epoch));
+                }
+                self.decrypt(payload).map(Zeroizing::new)
+            }
+        }
+    }
+
+    /// Seal this member's complete key history for the current epoch, so a
+    /// member who joined at this epoch (and missed the admission's bundle)
+    /// can be handed it again by anyone currently in the group.
+    ///
+    /// # Errors
+    ///
+    /// Export, sealing or encoding errors.
+    pub fn current_key_history(&self) -> Result<Vec<u8>> {
+        let epoch = self.epoch();
+        let transport = self.export_key(
+            HISTORY_TRANSPORT_EXPORTER_LABEL,
+            &self.history_transport_context(epoch),
+        )?;
+        KeyHistory::seal(self.channel_id, epoch, &transport, &self.keyring)?.to_bytes()
+    }
+
+    /// Import a key history sealed for the current epoch (from
+    /// [`MemberAddition::key_history`] or [`Self::current_key_history`]).
+    ///
+    /// # Errors
+    ///
+    /// Decoding, authentication, or key-conflict errors; the keyring is
+    /// unchanged on error.
+    pub fn import_key_history(&mut self, bytes: &[u8]) -> Result<()> {
+        let history = KeyHistory::from_bytes(bytes)?;
+        if history.epoch != self.epoch() {
+            return Err(Error::InvalidState(format!(
+                "key history sealed for epoch {}, group is at {}",
+                history.epoch,
+                self.epoch()
+            )));
+        }
+        let transport = self.export_key(
+            HISTORY_TRANSPORT_EXPORTER_LABEL,
+            &self.history_transport_context(history.epoch),
+        )?;
+        let received = history.open(self.channel_id, &transport)?;
+        self.keyring.merge(&received)
     }
 
     /// The channel this group encrypts for.
@@ -145,16 +303,27 @@ impl ChannelGroup {
                 required_api: "ChannelGroup::add_member_with_commit",
             });
         }
-        let (welcome, _) =
-            self.add_member_transactional(candidate_key_package, |_, _, _, _| Ok(()))?;
-        Ok(welcome)
+        let addition = self.add_member_transactional(candidate_key_package, |_, _| Ok(()))?;
+        Ok(addition.welcome)
+    }
+
+    /// Admit a member and return everything the admission produced: the
+    /// Welcome and key history for the joiner and, from the second join on,
+    /// the commit for existing members.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::add_member_transactional`].
+    pub fn admit(&mut self, candidate_key_package: KeyPackage) -> Result<MemberAddition> {
+        self.add_member_transactional(candidate_key_package, |_, _| Ok(()))
     }
 
     /// Prepare an add, call `persist` with the opaque Welcome, optional
-    /// existing-member commit, and post-change epoch, and only then merge the
-    /// pending commit locally. A persistence failure leaves the epoch
-    /// unchanged, allowing the caller to retry instead of creating a locally
-    /// admitted member with no durable delivery record.
+    /// existing-member commit, the joiner's sealed key history and the
+    /// post-change epoch, and only then merge the pending commit locally. A
+    /// persistence failure leaves the epoch unchanged, allowing the caller to
+    /// retry instead of creating a locally admitted member with no durable
+    /// delivery record.
     ///
     /// # Errors
     ///
@@ -164,9 +333,9 @@ impl ChannelGroup {
         &mut self,
         candidate_key_package: KeyPackage,
         persist: F,
-    ) -> Result<(Vec<u8>, Option<Vec<u8>>)>
+    ) -> Result<MemberAddition>
     where
-        F: FnOnce(&ChannelGroup, &[u8], Option<&[u8]>, u64) -> Result<()>,
+        F: FnOnce(&ChannelGroup, &MemberAddition) -> Result<()>,
     {
         let preexisting_members = self.member_count();
         let (commit_msg, welcome_msg, _gi) = self
@@ -189,23 +358,66 @@ impl ChannelGroup {
         } else {
             None
         };
-        if let Err(error) = persist(
-            self,
-            &welcome,
-            commit.as_deref(),
-            self.epoch().saturating_add(1),
-        ) {
-            self.group
-                .clear_pending_commit(openmls_traits::OpenMlsProvider::storage(
-                    &self.member.provider,
-                ))
-                .map_err(Error::storage)?;
+        let epoch = self.epoch().saturating_add(1);
+        let key_history = match self.pending_key_history(epoch) {
+            Ok(history) => history,
+            Err(error) => {
+                self.clear_pending()?;
+                return Err(error);
+            }
+        };
+        let addition = MemberAddition {
+            welcome,
+            commit,
+            key_history,
+            epoch,
+        };
+        if let Err(error) = persist(self, &addition) {
+            self.clear_pending()?;
             return Err(error);
         }
         self.group
             .merge_pending_commit(&self.member.provider)
             .map_err(Error::openmls)?;
-        Ok((welcome, commit))
+        self.record_epoch_key()?;
+        Ok(addition)
+    }
+
+    fn clear_pending(&mut self) -> Result<()> {
+        self.group
+            .clear_pending_commit(openmls_traits::OpenMlsProvider::storage(
+                &self.member.provider,
+            ))
+            .map_err(Error::storage)
+    }
+
+    /// Seal the key history for the epoch the pending commit moves to. The
+    /// bundle includes that epoch's content key too, derived from the staged
+    /// commit, so the joiner's keyring is complete on arrival.
+    fn pending_key_history(&self, epoch: u64) -> Result<Vec<u8>> {
+        let staged = self
+            .group
+            .pending_commit()
+            .ok_or_else(|| Error::InvalidState("no pending commit".into()))?;
+        let crypto = openmls_traits::OpenMlsProvider::crypto(&self.member.provider);
+        let export = |label: &str, context: &[u8]| -> Result<SymmetricKey> {
+            let exported = Zeroizing::new(
+                staged
+                    .export_secret(crypto, label, context, 32)
+                    .map_err(Error::openmls)?,
+            );
+            SymmetricKey::from_slice(&exported).map_err(Error::ContentCrypto)
+        };
+        let mut keyring = self.keyring.clone();
+        keyring.insert(
+            epoch,
+            export(CONTENT_KEY_EXPORTER_LABEL, self.channel_id.0.as_bytes())?,
+        )?;
+        let transport = export(
+            HISTORY_TRANSPORT_EXPORTER_LABEL,
+            &self.history_transport_context(epoch),
+        )?;
+        KeyHistory::seal(self.channel_id, epoch, &transport, &keyring)?.to_bytes()
     }
 
     /// Same as [`add_member`](Self::add_member) but also returns the commit
@@ -223,13 +435,12 @@ impl ChannelGroup {
         &mut self,
         candidate_key_package: KeyPackage,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let (welcome, commit) =
-            self.add_member_transactional(candidate_key_package, |_, _, _, _| Ok(()))?;
-        let commit = commit.ok_or(Error::CommitPropagationRequired {
+        let addition = self.add_member_transactional(candidate_key_package, |_, _| Ok(()))?;
+        let commit = addition.commit.ok_or(Error::CommitPropagationRequired {
             operation: "ChannelGroup::add_member_with_commit",
             required_api: "ChannelGroup::add_member",
         })?;
-        Ok((welcome, commit))
+        Ok((addition.welcome, commit))
     }
 
     /// Process an inbound commit and advance the local epoch. Called by
@@ -263,7 +474,7 @@ impl ChannelGroup {
                 self.group
                     .merge_staged_commit(&self.member.provider, *staged_commit)
                     .map_err(Error::openmls)?;
-                Ok(())
+                self.record_epoch_key()
             }
             _ => Err(Error::UnexpectedMessageKind {
                 expected: "commit",
@@ -336,11 +547,32 @@ impl ChannelGroup {
         // `CIPHERSUITE` — we never negotiate, so a mismatch means a peer
         // with a different build is on the wire.
         debug_assert_eq!(group.ciphersuite(), CIPHERSUITE);
-        Ok(Self {
+        let mut joined = Self {
             channel_id,
             member,
             group,
-        })
+            keyring: ContentKeyring::new(),
+        };
+        joined.record_epoch_key()?;
+        Ok(joined)
+    }
+
+    /// Join from a Welcome and import the key history that came with it
+    /// ([`MemberAddition::key_history`]), so every earlier content-key op is
+    /// readable immediately and without any other member online.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::process_welcome`] and [`Self::import_key_history`].
+    pub fn process_welcome_with_history(
+        channel_id: ChannelId,
+        welcome_bytes: &[u8],
+        key_history: &[u8],
+        member: MemberKey,
+    ) -> Result<Self> {
+        let mut joined = Self::process_welcome(channel_id, welcome_bytes, member)?;
+        joined.import_key_history(key_history)?;
+        Ok(joined)
     }
 
     /// Encrypt a payload under the current epoch key, returning
@@ -441,16 +673,13 @@ impl ChannelGroup {
             .map_err(Error::openmls)?;
         let commit = commit.tls_serialize_detached().map_err(Error::tls_codec)?;
         if let Err(error) = persist(self, &commit, self.epoch().saturating_add(1)) {
-            self.group
-                .clear_pending_commit(openmls_traits::OpenMlsProvider::storage(
-                    &self.member.provider,
-                ))
-                .map_err(Error::storage)?;
+            self.clear_pending()?;
             return Err(error);
         }
         self.group
             .merge_pending_commit(&self.member.provider)
             .map_err(Error::openmls)?;
+        self.record_epoch_key()?;
         Ok(commit)
     }
 
@@ -467,6 +696,7 @@ impl ChannelGroup {
         self.group
             .merge_pending_commit(&self.member.provider)
             .map_err(Error::openmls)?;
+        self.record_epoch_key()?;
         Ok(true)
     }
 }
@@ -481,6 +711,7 @@ impl std::fmt::Debug for ChannelGroup {
             .field("member", &self.member)
             .field("epoch", &self.epoch())
             .field("member_count", &self.member_count())
+            .field("keyring", &self.keyring)
             .finish_non_exhaustive()
     }
 }
