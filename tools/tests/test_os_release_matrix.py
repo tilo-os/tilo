@@ -297,14 +297,30 @@ class ReleaseGateTests(unittest.TestCase):
                     "digest": f"sha256:{layer_digest}", "size": layer_size,
                 }],
             }))
+            other_config_digest, other_config_size = blob(encoded({
+                "architecture": "arm64", "os": "linux",
+                "config": {"Labels": {"variant": "other"}},
+                "rootfs": {"type": "layers", "diff_ids": [f"sha256:{layer_digest}"]},
+            }))
+            other_manifest = json.loads(
+                (layout / "blobs" / "sha256" / manifest_digest).read_text()
+            )
+            other_manifest["config"] = {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": f"sha256:{other_config_digest}", "size": other_config_size,
+            }
+            other_manifest_digest, other_manifest_size = blob(encoded(other_manifest))
             (layout / "oci-layout").write_text('{"imageLayoutVersion":"1.0.0"}')
             (layout / "index.json").write_bytes(encoded({
                 "schemaVersion": 2,
                 "manifests": [{
                     "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                    "digest": f"sha256:{manifest_digest}", "size": manifest_size,
+                    "digest": f"sha256:{digest}", "size": size,
                     "annotations": {"org.opencontainers.image.ref.name": ref},
-                } for ref in (first, second)],
+                } for ref, digest, size in (
+                    (first, manifest_digest, manifest_size),
+                    (second, other_manifest_digest, other_manifest_size),
+                )],
             }))
             archive = root / "image.tar"
             with tarfile.open(archive, "w") as tar:
@@ -336,6 +352,11 @@ class ReleaseGateTests(unittest.TestCase):
             )
             self.assertEqual(chosen.returncode, 0, chosen.stderr)
             self.assertEqual(hashlib.sha256(chosen.stdout.encode()).hexdigest(), manifest_digest)
+            other = subprocess.run(
+                ["skopeo", "inspect", "--raw", f"oci-archive:{archive}:{second}"],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(hashlib.sha256(other.stdout.encode()).hexdigest(), other_manifest_digest)
             subprocess.run(
                 ["skopeo", "copy", f"oci-archive:{archive}:{first}",
                  f"dir:{root / 'selected'}"],
