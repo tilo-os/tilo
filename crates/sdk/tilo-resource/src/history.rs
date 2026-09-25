@@ -80,10 +80,7 @@ fn unix_now_secs() -> i64 {
 /// any date-range filter over the history — mean something. Returns `None`
 /// when there was nothing to commit, exactly like `AutoCommit::commit`.
 ///
-/// Empty commits abandon any empty transaction and reset Automerge's diff
-/// cursor to avoid stale actor mappings. Explicit-head `diff(before, after)`
-/// remains valid; a [`Tracker`](crate::Tracker) treats the reset as needing a
-/// fresh read.
+/// An empty commit abandons the empty transaction and records nothing.
 pub fn commit_stamped(doc: &mut Doc) -> Option<ChangeHash> {
     commit_stamped_at_with_message(doc, unix_now_secs(), None)
 }
@@ -109,12 +106,12 @@ pub fn commit_stamped_at_with_message(
     message: Option<String>,
 ) -> Option<ChangeHash> {
     // commit_with opens a transaction even when there are no edits, which
-    // can add then prune a fresh actor while leaving it in the patch log,
-    // poisoning the next differently authored transaction. An already-open
-    // empty transaction has the same hazard on commit.
+    // can add then prune a fresh actor, poisoning the next differently
+    // authored transaction. Rolling the empty transaction back discards it
+    // with its own patch log branch, so the document's diff cursor — and a
+    // `Tracker` following it — stays valid.
     if doc.pending_ops() == 0 {
         doc.rollback();
-        doc.reset_diff_cursor();
         return None;
     }
     let mut options = CommitOptions::default().with_time(unix_secs);
@@ -190,7 +187,6 @@ pub fn replay_series<T>(
         })
         .collect()
 }
-
 
 /// Where a newest-first walk of the history stopped: hand it back to [`page`]
 /// for the next older page.
@@ -327,6 +323,24 @@ mod tests {
     #[test]
     fn empty_open_transaction_does_not_poison_next_actor() {
         check_empty_commit_actor_transition(true);
+    }
+
+    #[test]
+    fn an_empty_stamped_commit_keeps_changes_tracked_incrementally() {
+        let mut doc = Doc::new();
+        doc.put(ROOT, "n", 0).unwrap();
+        commit_stamped_at(&mut doc, 1).unwrap();
+        let mut tracker = crate::Tracker::new();
+        tracker.start(&mut doc);
+        for (n, actor) in [(1_i64, 0x10_u8), (2, 0x20)] {
+            doc.set_actor(ActorId::from(vec![actor]));
+            assert_eq!(commit_stamped_at(&mut doc, 2), None);
+            doc.put(ROOT, "n", n).unwrap();
+            commit_stamped_at(&mut doc, 3).unwrap();
+            let delta = tracker.delta(&mut doc);
+            assert!(!delta.is_everything(), "round {n}");
+            assert_eq!(delta.key(&ROOT, "n"), crate::Touch::Written);
+        }
     }
 
     /// Two collaborators' interleaved, combined edits.
