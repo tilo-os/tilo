@@ -53,6 +53,15 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
+# Integration images skip the second uncached build, but every publication
+# (tag, nightly or protected manual main release) must still run it.
+grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
+  && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 2 \
+  && ok 'every publication, and only a publication, pays for the uncached rebuild' \
+  || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
+
 grep -Fq -- '--type https://tilo.sh/security/release-freshness/v1' "$workflow" \
   && grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow" \
   && grep -Fq '604800' "$freshness" \

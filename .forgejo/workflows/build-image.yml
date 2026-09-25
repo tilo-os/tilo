@@ -1023,8 +1023,11 @@ jobs:
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
+      # Only a publication (tag, nightly or protected manual main release)
+      # pays for the second uncached build; integration images for tilo-ci
+      # and dev disks are never signed or published and skip it.
       - name: Independently rebuild the release candidate
-        if: steps.release-mode.outputs.validate == 'true'
+        if: steps.release-mode.outputs.publish == 'true'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -1071,7 +1074,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$BUILDER_NAME"
-          # Both OCI archives are complete and the first build exported its
+          # The OCI archives are complete and the first build exported its
           # registry cache. Free only this job's builder before Podman imports
           # the images and creates the installed disk.
           df -h /var/tmp
@@ -1098,6 +1101,7 @@ jobs:
           TILO_DISTROBOX: ""
           TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_RESEALED_DIGEST_FILE: /var/tmp/tilo-resealed-composefs-digest
+          PUBLISH: ${{ steps.release-mode.outputs.publish }}
         run: |
           set -euo pipefail
 
@@ -1138,13 +1142,15 @@ jobs:
           qemu_binary="qemu-system-${{ matrix.arch }}"
           command -v jq podman qemu-img "$qemu_binary" skopeo sshpass socat systemd-repart >/dev/null
 
-          first_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/tilo-image.tar | sha256sum | awk '{print $1}')"
-          second_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/tilo-image-repro.tar | sha256sum | awk '{print $1}')"
-          test -n "$first_manifest" && test "$first_manifest" = "$second_manifest" || {
-            echo "::error::independent OS builds differ: $first_manifest != $second_manifest"
-            exit 1
-          }
-          echo "::notice::independent OS builds reproduced manifest sha256:$first_manifest"
+          if [[ $PUBLISH == true ]]; then
+            first_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/tilo-image.tar | sha256sum | awk '{print $1}')"
+            second_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/tilo-image-repro.tar | sha256sum | awk '{print $1}')"
+            test -n "$first_manifest" && test "$first_manifest" = "$second_manifest" || {
+              echo "::error::independent OS builds differ: $first_manifest != $second_manifest"
+              exit 1
+            }
+            echo "::notice::independent OS builds reproduced manifest sha256:$first_manifest"
+          fi
 
           printf '%s' "$TILO_REGISTRY_TOKEN" | podman login code.podesta.ai \
             --username "${{ github.actor }}" --password-stdin
@@ -1168,26 +1174,28 @@ jobs:
           ./os/dev/build-image.sh
 
           # build-image may add a deterministic /boot-only UKI reseal layer.
-          # Reproduce that exact final layer on the independent image and gate
-          # the artifact to be published, rather than its base.
-          repro_image="code.podesta.ai/qos/tilo:repro-${GITHUB_SHA}"
-          podman load --input /var/tmp/tilo-image-repro.tar
-          rm -f /var/tmp/tilo-image-repro.tar
-          if [[ -s "$TILO_RESEALED_DIGEST_FILE" ]]; then
-            resealed_digest="$(tr -d '\n\r' < "$TILO_RESEALED_DIGEST_FILE")"
-            ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
+          # A publication reproduces that exact final layer on the independent
+          # image and gates the artifact to be published, rather than its base.
+          if [[ $PUBLISH == true ]]; then
+            repro_image="code.podesta.ai/qos/tilo:repro-${GITHUB_SHA}"
+            podman load --input /var/tmp/tilo-image-repro.tar
+            rm -f /var/tmp/tilo-image-repro.tar
+            if [[ -s "$TILO_RESEALED_DIGEST_FILE" ]]; then
+              resealed_digest="$(tr -d '\n\r' < "$TILO_RESEALED_DIGEST_FILE")"
+              ./os/dev/reseal-image.sh "$repro_image" "$resealed_digest"
+            fi
+            # Only a publication exports the signer; this step runs under set -u.
+            if [[ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ]]; then
+              ./os/dev/sign-target-prediction.sh "$repro_image" "$TILO_PCR_PREDICTION_SIGNER"
+            fi
+            final_manifest="$(skopeo inspect --raw "containers-storage:$TILO_IMAGE" | sha256sum | awk '{print $1}')"
+            repro_manifest="$(skopeo inspect --raw "containers-storage:$repro_image" | sha256sum | awk '{print $1}')"
+            test -n "$final_manifest" && test "$final_manifest" = "$repro_manifest" || {
+              echo "::error::final sealed OS images differ: $final_manifest != $repro_manifest"
+              exit 1
+            }
+            echo "::notice::final sealed OS image reproduced manifest sha256:$final_manifest"
           fi
-          # Only a publication exports the signer; this step runs under set -u.
-          if [[ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ]]; then
-            ./os/dev/sign-target-prediction.sh "$repro_image" "$TILO_PCR_PREDICTION_SIGNER"
-          fi
-          final_manifest="$(skopeo inspect --raw "containers-storage:$TILO_IMAGE" | sha256sum | awk '{print $1}')"
-          repro_manifest="$(skopeo inspect --raw "containers-storage:$repro_image" | sha256sum | awk '{print $1}')"
-          test -n "$final_manifest" && test "$final_manifest" = "$repro_manifest" || {
-            echo "::error::final sealed OS images differ: $final_manifest != $repro_manifest"
-            exit 1
-          }
-          echo "::notice::final sealed OS image reproduced manifest sha256:$final_manifest"
 
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
