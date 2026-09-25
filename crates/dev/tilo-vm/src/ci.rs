@@ -228,6 +228,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn host_extraction_copies_each_manifest_path() {
         let (commands, cleanup) = host_commands(
