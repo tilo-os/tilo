@@ -523,10 +523,12 @@ mod tests {
         target.is_system = true;
         target.internal_plan = Some(crate::disks::GuidedAlongsidePlan {
             free_start_bytes: 1 << 30,
-            free_size_bytes: 34 << 30,
+            free_size_bytes: 35 << 30,
             efi_start_bytes: 1 << 30,
             efi_size_bytes: 2 << 30,
-            root_start_bytes: 3 << 30,
+            boot_start_bytes: 3 << 30,
+            boot_size_bytes: 1 << 30,
+            root_start_bytes: 4 << 30,
             root_size_bytes: 32 << 30,
         });
         let row = DiskRow::new(target, "select", false);

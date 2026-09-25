@@ -42,7 +42,7 @@ die() { echo "$*" >&2; exit 1; }
 fixture_preflight() { return 0; }
 fixture_cmdline() {
   case "$1" in
-    show) printf 'root=tilo-auto tilo.mode=normal composefs=%s\\n' "$FIXTURE_DIGEST" ;;
+    show) printf 'root=tilo-auto tilo.mode=normal systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec composefs=%s\\n' "$FIXTURE_DIGEST" ;;
     boot-digest) printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
     *) return 64 ;;
   esac

@@ -500,7 +500,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'expected five GPT partitions' "$cycle" \
   && grep -Fq 'guided Tilo EFI partition has no architecture-matched systemd-boot binary' "$cycle" \
   && grep -Fq 'guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut' "$cycle" \
-  && grep -Fq 'confirmation=/dev/vdb4' "$cycle" \
+  && grep -Fq 'confirmation=/dev/vdb5' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb' "$cycle" \
   && grep -Fq 'python3 "$dev_dir/installer-console.py" --socket "$console"' "$cycle" \
   && grep -Fq 'ic invoke begin@installer.review "{\"confirmation_phrase\":\"$confirmation\"}"' "$cycle" \
