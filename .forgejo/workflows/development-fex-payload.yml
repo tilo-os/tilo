@@ -2,6 +2,11 @@ name: Development / build retained ARM FEX payload
 
 on:
   workflow_dispatch:
+    inputs:
+      sdk_candidate:
+        description: "Optional previously published x86 SDK digest to reuse after a failed FEX build"
+        required: false
+        type: string
 
 # These candidates are CI-built, digest-addressed and retained. They are not
 # release-accepted: the SDK resolves live Fedora RPMs and translated Wine,
@@ -63,9 +68,21 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build native x86 development SDK candidate
         id: publish
+        env:
+          SDK_CANDIDATE: ${{ inputs.sdk_candidate }}
         run: |
           set -euo pipefail
           test "$(uname -m)" = x86_64
+          if [[ -n "$SDK_CANDIDATE" ]]; then
+            [[ "$SDK_CANDIDATE" =~ ^code\.podesta\.ai/qos/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::sdk_candidate must be a retained immutable x86 SDK digest'; exit 1;
+            }
+            docker buildx imagetools inspect --raw "$SDK_CANDIDATE" \
+              | jq -e '.schemaVersion == 2 and (.config.digest | test("^sha256:[0-9a-f]{64}$"))' >/dev/null
+            echo "ref=$SDK_CANDIDATE" >> "$GITHUB_OUTPUT"
+            echo "::notice::reusing previously published SDK $SDK_CANDIDATE"
+            exit 0
+          fi
           source os/base-snapshot.env
           tag="code.sandbox.example/qos/tilo-fex-x86-sdk-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker buildx build --platform linux/amd64 --push --provenance=false \
