@@ -419,7 +419,9 @@ impl RasterBackend {
             Err(tilo_pdf::Error::Password) => {
                 return Err(anyhow!("the PDF is password protected"));
             }
-            Err(e @ tilo_pdf::Error::Unavailable(_)) => return Err(anyhow!("{e}")),
+            Err(e @ (tilo_pdf::Error::Unavailable(_) | tilo_pdf::Error::Unconfined(_))) => {
+                return Err(anyhow!("{e}"));
+            }
             Err(e) => return Err(anyhow!("the file could not be opened as a PDF ({e})")),
         };
         let source_len = source.page_sizes.len();

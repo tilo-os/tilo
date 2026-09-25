@@ -138,6 +138,21 @@ fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     Some((app, state))
 }
 
+/// Whether appearance text can be checked here. It is set in the pinned fonts
+/// compiled into the sandboxed helper; the in-process engine of a
+/// development build has none, so these tests share the helper's gate.
+fn helper_sets_appearance_text() -> bool {
+    const WHAT: &str = "appearance text in the helper's pinned fonts";
+    match tilo_pdf::sandboxed_for_test(tilo_pdf::Engine::shared(), WHAT) {
+        tilo_pdf::HelperGate::Sandboxed(_) => true,
+        tilo_pdf::HelperGate::StandDown => false,
+        tilo_pdf::HelperGate::Failed(e) => {
+            eprintln!("SKIPPING {WHAT}: no PDF engine on this host ({e})");
+            false
+        }
+    }
+}
+
 fn count(annots: &[tilo_pdf::AnnotationInfo], kind: &tilo_pdf::AnnotationKind) -> usize {
     annots.iter().filter(|a| &a.kind == kind).count()
 }
@@ -325,6 +340,9 @@ fn form_values_in_the_file_become_records_and_only_changes_are_written() {
 #[test]
 #[serial_test::serial(pdfium)]
 fn free_text_is_authored_on_the_page_and_exported_with_an_appearance() {
+    if !helper_sets_appearance_text() {
+        return;
+    }
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("latin.pdf");
     std::fs::copy(engine_fixture("latin.pdf"), &path).expect("copy fixture");
@@ -406,6 +424,9 @@ fn free_text_is_authored_on_the_page_and_exported_with_an_appearance() {
 #[test]
 #[serial_test::serial(pdfium)]
 fn typed_signatures_in_any_script_are_drawn_with_an_embedded_font() {
+    if !helper_sets_appearance_text() {
+        return;
+    }
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("latin.pdf");
     std::fs::copy(engine_fixture("latin.pdf"), &path).expect("copy fixture");
