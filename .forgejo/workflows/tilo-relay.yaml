@@ -62,6 +62,7 @@ on:
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
+      - ".forgejo/actions/cache-github-assets/**"
       - "os/dev/install-cached-cosign.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/tilo-relay.yaml"
@@ -119,6 +120,7 @@ on:
       - "crates/packaging/package-store/**"
       - "crates/system/tilo-clock/**"
       - "os/dev/cache-github-assets.sh"
+      - ".forgejo/actions/cache-github-assets/**"
       - "os/dev/install-cached-cosign.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/tilo-relay.yaml"
@@ -208,28 +210,12 @@ jobs:
       - name: Verify the relay-only Compose contract
         run: bash os/containers/tilo-relay/test-contract.sh
 
-      - name: Restore the pinned compiler-cache client
-        id: sccache-asset
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: os/external-assets/cache
-          key: relay-sccache-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
-
+      # The relay image builds only on the x86_64 runner label.
       - name: Materialize the pinned compiler-cache client
-        run: |
-          case "$(uname -m)" in
-            x86_64) target=x86_64 ;;
-            aarch64) target=aarch64 ;;
-            *) echo "unsupported relay architecture: $(uname -m)" >&2; exit 1 ;;
-          esac
-          ./os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}-unknown-linux-musl.tar.gz"
-
-      - name: Save the pinned compiler-cache client
-        if: steps.sccache-asset.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        uses: ./.forgejo/actions/cache-github-assets
         with:
-          path: os/external-assets/cache
-          key: relay-sccache-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          key: relay-sccache-v1
+          assets: sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 
       - name: Bind the runner compiler-cache configuration
         id: compiler-cache
