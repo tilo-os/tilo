@@ -1,0 +1,716 @@
+# Test suites outside Cargo, and when the required CI checks run them.
+#
+# Every file that looks like a test (see tools/ci/suites.py: SCOPE) is gated by
+# exactly one of:
+#
+#   * tools/security-boundary-invariants.txt, tools/policy/run.sh or a literal
+#     step in check.yml/lint.yml, which run on every applicable change;
+#   * a [[group]] below: a cheap, hermetic suite (no root-only host state, KVM,
+#     built image or network) that the "suites" job in check.yml runs whenever
+#     a changed path matches one of the group's inputs or the suite itself;
+#   * a [[covered]] entry: exercised by the named, already gated suite; or
+#   * an [[unrequired]] entry with the reason it cannot be a required check.
+#
+# `tools/ci/suites.py check` (part of tools/policy/run.sh) rejects a
+# test-shaped file in none of these, so a new suite cannot silently stay
+# ungated.
+#
+# Inputs are repository paths: "dir/" matches everything below it, a pattern
+# containing * ? or [ is an fnmatch pattern (* also matches "/"), anything else
+# is an exact file. Pushes to main run every group, so an input list that
+# misses a real dependency is caught at the merge that broke the suite.
+#
+# Each suite runs as `python3 PATH` or `bash PATH` from the repository root in
+# the ci-fast image, as root, without network. A Python suite that defines
+# unittest cases must call unittest.main() so direct execution runs them.
+
+[[group]]
+name = "os"
+inputs = ["os/"]
+suites = [
+  "os/tests/containerfile_copy_invariants.sh",
+  "os/tests/installer_target_artifacts.py",
+  "os/tests/installer_target_modes.py",
+  "os/tests/internal_bundle_test.py",
+  "os/tests/portal_config_validity.sh",
+  "os/tests/test-installer-cycle-runtime.py",
+  "os/tests/test_adopt_development_wpe.py",
+  "os/tests/test_assembly_registry_cache.py",
+  "os/tests/test_broker_signing_runner.py",
+  "os/tests/test_cache_source_compatibility.py",
+  "os/tests/test_checkpoint_export.py",
+  "os/tests/test_compile_host_crypto.py",
+  "os/tests/test_compile_retention.py",
+  "os/tests/test_compile_tools_cache.py",
+  "os/tests/test_compile_tools_source.py",
+  "os/tests/test_complete_initramfs_rebind.py",
+  "os/tests/test_create_development_disk.py",
+  "os/tests/test_development_boot.py",
+  "os/tests/test_development_composefs.py",
+  "os/tests/test_development_loader.py",
+  "os/tests/test_development_prediction.py",
+  "os/tests/test_development_signer.py",
+  "os/tests/test_development_source.py",
+  "os/tests/test_development_trust.py",
+  "os/tests/test_development_windows_guest.py",
+  "os/tests/test_development_wine_repository.py",
+  "os/tests/test_fetch_windows_guest_assets.py",
+  "os/tests/test_finalization_driver.py",
+  "os/tests/test_finalization_operator.py",
+  "os/tests/test_finalization_staging.py",
+  "os/tests/test_guest_loader_inspection.py",
+  "os/tests/test_hardware_firmware_artifact.py",
+  "os/tests/test_hydrate_assembly_history.py",
+  "os/tests/test_initramfs_module_policy.py",
+  "os/tests/test_initramfs_trust.py",
+  "os/tests/test_installed_development_disk.py",
+  "os/tests/test_installer_cmdline_projection.py",
+  "os/tests/test_installer_overlay.py",
+  "os/tests/test_kernel_config_values.py",
+  "os/tests/test_kernel_failure_checkpoint.py",
+  "os/tests/test_native_builder_artifact.py",
+  "os/tests/test_native_payload_durability.py",
+  "os/tests/test_native_resume_admission.py",
+  "os/tests/test_native_resume_launcher.py",
+  "os/tests/test_native_source_compatibility.py",
+  "os/tests/test_pack_apps_cleanup.py",
+  "os/tests/test_prepare_wpe_stage.py",
+  "os/tests/test_private_disk_image.py",
+  "os/tests/test_produce_wpe_stage.py",
+  "os/tests/test_raw_rootfs_receipt.py",
+  "os/tests/test_rebind_development_rootfs.py",
+  "os/tests/test_rebind_development_trust.py",
+  "os/tests/test_replicate_builder_index.py",
+  "os/tests/test_reseal_image.py",
+  "os/tests/test_retain_development_rootfs.py",
+  "os/tests/test_rootfs_layer_audit.py",
+  "os/tests/test_rpm_snapshot_inputs.py",
+  "os/tests/test_secureboot_evidence.py",
+  "os/tests/test_sign_development_rootfs.py",
+  "os/tests/test_signing_recovery.py",
+  "os/tests/test_signing_spool_transport.py",
+  "os/tests/test_stage_kernel_checkpoint.py",
+  "os/tests/test_supervised_disk.py",
+  "os/tests/test_supervised_install_lane.py",
+  "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_wpe_stage_artifact.py",
+  "os/tests/vm_release_gate_invariants.sh",
+  "os/tests/windows_guest_powershell_syntax.py",
+  "os/tests/windows_owner_backend.sh",
+]
+
+[[group]]
+name = "os-workflows"
+inputs = ["os/", ".forgejo/workflows/"]
+suites = [
+  "os/containers/tilo-relay/test-contract.sh",
+  "os/tests/rpm_snapshot_invariants.sh",
+  "os/tests/test_finalization_checkpoint_fetch.py",
+  "os/tests/test_finalization_worker.py",
+  "os/tests/test_open_snapshot_pr.py",
+]
+
+[[group]]
+name = "containerfile-sources"
+# Every host-side COPY source of every image Containerfile must exist, so a
+# move or deletion anywhere in the build context can break it.
+inputs = [
+  "os/", ".cargo/", ".containerignore", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
+  "apps/", "crates/", "dist/", "docs/", "examples/", "keys/", "tools/", "vendor/",
+]
+suites = ["os/tests/containerfile_sources.sh"]
+
+[[group]]
+name = "workspace-release"
+# The image recipe's release command against every workspace binary target.
+inputs = ["os/", ".cargo/", "Cargo.toml", "*Cargo.toml", "*/src/main.rs", "*/src/bin/*"]
+suites = ["os/tests/native_release_bin_selection.py"]
+
+[[group]]
+name = "app-store"
+inputs = [
+  "os/", "apps/", "Cargo.toml", "*Cargo.toml",
+  "crates/packaging/install/", "crates/packaging/launcher/", "crates/packaging/runtime-bundle/",
+  "crates/session/shell/src/compositor/",
+]
+suites = ["os/tests/app_store.sh"]
+
+[[group]]
+name = "system-extension"
+inputs = ["os/", "crates/system/system-extension/"]
+suites = ["os/tests/boot_pack_invariants.sh"]
+
+[[group]]
+name = "rollback"
+inputs = ["os/", "crates/system/tilo-rollback/"]
+suites = ["os/tests/esp_capacity.sh"]
+
+[[group]]
+name = "home-peer"
+inputs = [
+  "os/", "apps/settings/", "crates/hosting/tilo-relay/", "crates/system/bounded-command/",
+]
+suites = ["os/tests/home_peer_setup.sh"]
+
+[[group]]
+name = "app-publication"
+inputs = ["os/", "tools/"]
+suites = [
+  "os/tests/parallel_package_uploads.sh",
+  "os/tests/prior_app_collection_reuse.sh",
+]
+
+[[group]]
+name = "printing"
+inputs = [
+  "os/", "docs/printing-threat-model.md", "crates/packaging/launcher/",
+  "crates/session/shell/src/portal/", "crates/system/os-actions/", "crates/system/sandbox-core/",
+]
+suites = ["os/tests/printing_isolation.sh"]
+
+[[group]]
+name = "remote-capture"
+inputs = ["os/", "crates/session/shell/src/shell/remote_capture/"]
+suites = ["os/tests/remote_capture_image_contract.sh"]
+
+[[group]]
+name = "windows"
+inputs = [
+  "os/", "docs/windows-compatibility.md", "crates/packaging/launcher/", "crates/windows/",
+  "crates/session/shell/src/shell/windows_compat.rs",
+]
+suites = [
+  "os/tests/windows_compat_stack.sh",
+  "os/tests/windows_presentation_capabilities.sh",
+  "os/tests/windows_vm_isolation.sh",
+]
+
+[[group]]
+name = "imager-packaging"
+inputs = ["apps/imager/packaging/"]
+suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
+
+[[group]]
+name = "ntfs-helper"
+inputs = ["crates/session/qos-ntfs-helper/"]
+suites = ["crates/session/qos-ntfs-helper/tests/test_build_native.py"]
+
+[[group]]
+name = "dist"
+inputs = ["dist/"]
+suites = [
+  "dist/ci/tests/test_package_source_transfer.py",
+  "dist/dev/tests/fedora44-vm-iterate-test.sh",
+  "dist/local-models/smolvlm2-500m/contract-test.sh",
+  "dist/rpm/test-app-store-stage.sh",
+  "dist/rpm/test-build-target-dir.sh",
+  "dist/rpm/test-rename-contract.sh",
+]
+
+[[group]]
+name = "browser-tools"
+inputs = ["scripts/browser/"]
+suites = [
+  "scripts/browser/test_build_host.py",
+  "scripts/browser/test_frame_presentation.py",
+  "scripts/browser/test_package.py",
+  "scripts/browser/test_scroll_presentation.py",
+]
+
+[[group]]
+name = "perf-tools"
+inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
+suites = [
+  "scripts/perf/check_app_coverage_test.py",
+  "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/file_explorer_effects_test.py",
+  "scripts/perf/input_latency_test.py",
+  "scripts/perf/main_stages_test.py",
+  "scripts/perf/native_delivery_test.py",
+  "scripts/perf/presentation_feedback_test.py",
+  "scripts/perf/render_boundaries_test.py",
+  "scripts/perf/runtime_benchmark_test.py",
+  "scripts/perf/scratchpad_effects_test.py",
+  "scripts/perf/settings_effects_test.py",
+  "scripts/perf/word_processor_effects_test.py",
+  "scripts/perf/worker_handoff_test.py",
+]
+
+[[group]]
+name = "developer-scripts"
+inputs = [
+  "scripts/tests/", "scripts/demo/", "scripts/app-launch-sweep.py",
+  "scripts/runtime-mcp-proof.py", "scripts/tilo-mcp-server.py",
+]
+suites = [
+  "scripts/tests/test_app_launch_sweep.py",
+  "scripts/tests/test_demo_scripts.py",
+  "scripts/tests/test_runtime_mcp_proof.py",
+  "scripts/tests/test_tilo_mcp_server.py",
+]
+
+[[group]]
+name = "ux-bench"
+inputs = ["scripts/ux-bench/"]
+suites = [
+  "scripts/ux-bench/test_suite.py",
+  "scripts/ux-bench/usability_test.py",
+]
+
+# Exercised by a suite that is already gated.
+
+[[covered]]
+suite = "apps/imager/packaging/test_release_catalog.py"
+by = "os/tests/imager_release_invariants.sh"
+
+[[covered]]
+suite = "os/containers/tilo-relay/test-base-retry.sh"
+by = "os/containers/tilo-relay/test-contract.sh"
+
+[[covered]]
+suite = "os/tests/forgejo_release_publication.sh"
+by = "os/tests/imager_release_invariants.sh"
+
+[[covered]]
+suite = "os/tests/internal_bundle_catalog.sh"
+by = "os/tests/imager_release_invariants.sh"
+
+[[covered]]
+suite = "os/tests/live_installer_service_invariants.sh"
+by = "os/tests/installer_target_invariants.sh"
+
+[[covered]]
+suite = "os/tests/managed-fex-dxvk-load.py"
+by = "os/tests/test_windows_dxvk_load_evidence.py"
+
+[[covered]]
+suite = "os/tests/public_release_origin.sh"
+by = "os/tests/imager_release_invariants.sh"
+
+[[covered]]
+suite = "os/tests/test_installer_target_boot_digest.py"
+by = "os/tests/installer_target_invariants.sh"
+
+[[covered]]
+suite = "os/tests/test_installer_target_cmdline.py"
+by = "os/tests/installer_target_invariants.sh"
+
+[[covered]]
+suite = "os/tests/test_public_trust_install.py"
+by = "os/tests/installer_target_invariants.sh"
+
+[[covered]]
+suite = "os/tests/test_runtime_crypto_packages.py"
+by = "os/tests/no_openssl_runtime.sh"
+
+[[covered]]
+suite = "os/tests/tls_registry_fixture.py"
+by = "os/tests/test_tls_registry_fixture.py"
+
+[[covered]]
+suite = "os/tests/winget_acceptance_monitor.sh"
+by = "os/tests/imager_release_invariants.sh"
+
+[[covered]]
+suite = "os/tests/winget_publication_idempotency.sh"
+by = "os/tests/imager_release_invariants.sh"
+
+[[covered]]
+suite = "tools/ci/focused_test.py"
+by = "tools/tests/test_focused_test.py"
+
+# Cannot be a required check. "fails on main" entries are hermetic enough to
+# gate but do not pass today; fix the suite, then move it into a group.
+
+[[unrequired]]
+suite = "crates/packaging/registry-server/container/test-image.sh"
+reason = "needs the built registry-server image"
+workflow = "registry-server-image.yml"
+
+[[unrequired]]
+suite = "crates/session/qos-ntfs-helper/tests/test_stage_install.py"
+reason = "needs a built staging binary (QOS_NTFS_STAGING_BINARY)"
+
+[[unrequired]]
+suite = "dist/arch/test-package.sh"
+reason = "needs a built Arch package"
+
+[[unrequired]]
+suite = "dist/ci/run-dev-session-test.sh"
+reason = "needs docker and a built distribution package container"
+workflow = "package-desktop.yml"
+
+[[unrequired]]
+suite = "dist/ci/test-installed-host-startup.sh"
+reason = "needs an installed compositor package"
+
+[[unrequired]]
+suite = "dist/debian/test-package.sh"
+reason = "needs a built Debian package"
+
+[[unrequired]]
+suite = "dist/rpm/test-package.sh"
+reason = "needs built RPM packages"
+
+[[unrequired]]
+suite = "dist/rpm/test-signing-contract.sh"
+reason = "needs a gpg-agent the ci-fast image cannot provide reliably; runs in the package container"
+workflow = "package-desktop.yml"
+
+[[unrequired]]
+suite = "experiments/ci-forgejo/first-x86-qualification/test_policy.py"
+reason = "fails on main: needs commit b4cba221 from an unmerged branch and its policy fixture is incomplete"
+
+[[unrequired]]
+suite = "os/dev/test-encrypted-install.sh"
+reason = "boots VMs (KVM) from a built installer image"
+
+[[unrequired]]
+suite = "os/dev/test-installer-cycle.sh"
+reason = "boots VMs (KVM) from a built installer image"
+workflow = "release-imager.yml"
+
+[[unrequired]]
+suite = "os/dev/test-internal-install-cycle.sh"
+reason = "boots VMs (KVM) from a built installer image"
+
+[[unrequired]]
+suite = "os/dev/test-measured-boot.sh"
+reason = "boots a VM with a software TPM from a built image"
+
+[[unrequired]]
+suite = "os/dev/test-secureboot.sh"
+reason = "boots a VM with OVMF from a built image"
+
+[[unrequired]]
+suite = "os/kernel/tests/test-boot-smoke-compressed.sh"
+reason = "needs a C toolchain and QEMU"
+
+[[unrequired]]
+suite = "os/kernel/tests/test-cn20k-debugfs.py"
+reason = "needs make and a kernel source tree"
+
+[[unrequired]]
+suite = "os/kernel/tests/test-rpm.sh"
+reason = "needs the built kernel RPM"
+workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/test-vm-headless.sh"
+reason = "boots a built image in a VM (KVM)"
+
+[[unrequired]]
+suite = "os/test-vm.sh"
+reason = "boots a built image in a VM (KVM)"
+
+[[unrequired]]
+suite = "os/containers/tilo-relay/test_probe_sccache.py"
+reason = "timing-sensitive: a 50 ms client timeout races Python start-up and fails under CPU contention"
+
+[[unrequired]]
+suite = "os/tests/airplay-encrypted-session.sh"
+reason = "needs the built tilo-doubletake test receiver"
+
+[[unrequired]]
+suite = "os/tests/boot_chain_invariants.sh"
+reason = "needs a built image root (OS_ROOT)"
+
+[[unrequired]]
+suite = "os/tests/boot_performance_gate.sh"
+reason = "needs a running installed image"
+
+[[unrequired]]
+suite = "os/tests/booted_app_store.sh"
+reason = "needs a booted image (SSH into a VM)"
+
+[[unrequired]]
+suite = "os/tests/build-windows-dxvk-load.sh"
+reason = "build helper: needs a Windows guest SDK"
+
+[[unrequired]]
+suite = "os/tests/collaborative-files-image-contract.sh"
+reason = "needs an assembled image root (OS_ROOT)"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/tests/container_build_context.py"
+reason = "needs rootless Podman"
+
+[[unrequired]]
+suite = "os/tests/development_layer_audit_native.py"
+reason = "needs the disposable root native container with Podman"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_prediction_native.py"
+reason = "needs the disposable root native container with Cosign"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_retention_native.py"
+reason = "needs the disposable root native container with Cosign and Podman"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_rootfs.py"
+reason = "needs the disposable root native container with Podman"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_signer.py"
+reason = "needs the disposable root native container"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_source_registry.py"
+reason = "needs Podman, Cosign and a TLS registry"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_stage_reuse.py"
+reason = "needs the disposable root native container with Podman"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/development_wpe_artifact_native.py"
+reason = "needs the disposable root native container with Podman and Skopeo"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/fex-assembler.sh"
+reason = "needs NASM"
+
+[[unrequired]]
+suite = "os/tests/fex-proton-smoke.py"
+reason = "needs a FEX runtime container on ARM"
+
+[[unrequired]]
+suite = "os/tests/fex-wine-smoke.py"
+reason = "needs a FEX runtime container"
+
+[[unrequired]]
+suite = "os/tests/fluxcast-rtsp-receiver.py"
+reason = "driver for a running FluxCast server"
+
+[[unrequired]]
+suite = "os/tests/initramfs_trust_native.py"
+reason = "needs the disposable root native container"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/installed_atspi_apps.sh"
+reason = "needs a logged-in installed image session"
+
+[[unrequired]]
+suite = "os/tests/installed_material_audit.py"
+reason = "needs squashfs-tools, absent from the ci-fast image"
+
+[[unrequired]]
+suite = "os/tests/installer-render-smoke.sh"
+reason = "needs a built tilo-installer binary"
+
+[[unrequired]]
+suite = "os/tests/internal_bundle_export.sh"
+reason = "root: loop devices and vfat/Btrfs mounts"
+workflow = "release-imager.yml"
+
+[[unrequired]]
+suite = "os/tests/kernel-arm-capsule-smoke.py"
+reason = "boots QEMU from a native OCI root"
+
+[[unrequired]]
+suite = "os/tests/kernel-landlock-private-tmp.sh"
+reason = "needs a compiled kernel and QEMU"
+
+[[unrequired]]
+suite = "os/tests/kernel_runtime_probe.sh"
+reason = "needs a compiled kernel tree and QEMU"
+
+[[unrequired]]
+suite = "os/tests/luks_enrolment.sh"
+reason = "needs a built image (tilo-disk-encrypt, cryptsetup)"
+
+[[unrequired]]
+suite = "os/tests/managed-fex-proton-smoke.py"
+reason = "needs a FEX runtime container on ARM"
+
+[[unrequired]]
+suite = "os/tests/managed-fex-wine-smoke.py"
+reason = "needs a FEX runtime container"
+
+[[unrequired]]
+suite = "os/tests/projection-boot-check.sh"
+reason = "runs inside a booted guest"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/tests/prove_kernel_failure_cache.py"
+reason = "needs a live BuildKit daemon"
+
+[[unrequired]]
+suite = "os/tests/prove_kernel_failure_cache_local.py"
+reason = "needs rootful Podman with cached images"
+
+[[unrequired]]
+suite = "os/tests/recovery-boot-check.sh"
+reason = "runs inside a booted guest, as root"
+
+[[unrequired]]
+suite = "os/tests/release_tools_image.sh"
+reason = "needs the built release-tools image"
+workflow = "build-release-tools-image.yml"
+
+[[unrequired]]
+suite = "os/tests/rollback-boot-check.sh"
+reason = "runs inside a booted guest, as root (TPM, LUKS)"
+
+[[unrequired]]
+suite = "os/tests/rollback-wrappers.sh"
+reason = "needs cryptsetup and a built tilo-rollback binary; skips without them"
+
+[[unrequired]]
+suite = "os/tests/run-fex-tests.py"
+reason = "needs FEX sources and a guest rootfs container"
+
+[[unrequired]]
+suite = "os/tests/secureboot_vm_probe.sh"
+reason = "needs a compiled kernel, OVMF and QEMU"
+workflow = "build-kernel.yml"
+
+[[unrequired]]
+suite = "os/tests/staging_helper_loop.sh"
+reason = "destructive, root: loop devices"
+workflow = "staging-loop.yml"
+
+[[unrequired]]
+suite = "os/tests/staging_reclaim_loop.sh"
+reason = "destructive, root: loop devices"
+workflow = "staging-loop.yml"
+
+[[unrequired]]
+suite = "os/tests/system_extension_boot_pack_stage.sh"
+reason = "needs a systemd system manager; skips without one"
+
+[[unrequired]]
+suite = "os/tests/test_cache_reconstruction_approval.py"
+reason = "fails on main: reads commit 4583a44c, which is not in the repository"
+
+[[unrequired]]
+suite = "os/tests/test_development_compile.py"
+reason = "fails on main: a changed firmware artifact reference is not rejected"
+workflow = "development-compile.yml"
+
+[[unrequired]]
+suite = "os/tests/test_import_development_rootfs.py"
+reason = "needs a root-owned /usr/local/bin/tilo-crypto"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/tests/test_kernel_checkpoint_restore.py"
+reason = "fails on main: reads commit 33e83f64, which is not in the repository; also needs make"
+
+[[unrequired]]
+suite = "os/tests/test_native_reconstruction_approval.py"
+reason = "fails on main: reads commit 4583a44c, which is not in the repository"
+
+[[unrequired]]
+suite = "os/tests/test_native_resume.py"
+reason = "fails on main: reads commit 4583a44c, which is not in the repository"
+
+[[unrequired]]
+suite = "os/tests/test_project_kernel_crate.py"
+reason = "fails on main: projected signer dependencies no longer match the workspace manifest"
+
+[[unrequired]]
+suite = "os/tests/test_raw_layer_epoch.py"
+reason = "fails on main: the workflow text it anchors on (docker build --file) is gone"
+
+[[unrequired]]
+suite = "os/tests/test_reconstructed_native_consumer.py"
+reason = "fails on main: the resume hook no longer exposes resume_thin_cache_approval"
+
+[[unrequired]]
+suite = "os/tests/test_reconstructed_partials.py"
+reason = "fails on main: reads commit 4583a44c, which is not in the repository"
+
+[[unrequired]]
+suite = "os/tests/test_restore_thin_cache.py"
+reason = "fails on main: reads commit 4583a44c, which is not in the repository"
+
+[[unrequired]]
+suite = "os/tests/test_signing_spool.py"
+reason = "needs the isolated signing tools container (root-owned tilo-crypto)"
+
+[[unrequired]]
+suite = "os/tests/test_wpe_candidate_receipt.py"
+reason = "fails on main: a mutable or wrong-namespace reference is not rejected"
+
+[[unrequired]]
+suite = "os/tests/test_write_verified_installer_media.py"
+reason = "exercises a Windows-only helper (msvcrt, os.O_BINARY); needs a Windows host"
+
+[[unrequired]]
+suite = "os/tests/tilo-session-lifecycle.sh"
+reason = "drives a VM over SSH"
+workflow = "fs-fuse.yml"
+
+[[unrequired]]
+suite = "os/tests/trust_input_copy_equivalence.py"
+reason = "needs a built tools image (--tools-image) and Podman"
+
+[[unrequired]]
+suite = "os/tests/windows_vm_schema.sh"
+reason = "needs the libvirt domain RelaxNG schema as an argument"
+
+[[unrequired]]
+suite = "os/tests/wpe-webdriver-smoke.py"
+reason = "needs a built WPE browser"
+
+[[unrequired]]
+suite = "os/tests/wpe_stage_cache.py"
+reason = "needs the disposable root native container with Podman"
+workflow = "development-source.yml"
+
+[[unrequired]]
+suite = "os/usr/bin/fs-test.sh"
+reason = "runs inside the booted test image"
+
+[[unrequired]]
+suite = "os/verify-test.sh"
+reason = "boots the test image in a VM"
+
+[[unrequired]]
+suite = "scripts/perf/collect_code_editor_native_test.py"
+reason = "fails on main: the fixture run leaves no app.log"
+
+[[unrequired]]
+suite = "scripts/perf/collect_file_explorer_native_test.py"
+reason = "fails on main: the fixture run leaves no app.log"
+
+[[unrequired]]
+suite = "scripts/perf/collect_scratchpad_native_test.py"
+reason = "fails on main: the fixture run leaves no app.log"
+
+[[unrequired]]
+suite = "scripts/perf/collect_settings_native_test.py"
+reason = "fails on main: the fixture run leaves no app.log"
+
+[[unrequired]]
+suite = "scripts/perf/native_app_capture_test.py"
+reason = "fails on main: shares the scratchpad collector failure fixture"
+
+[[unrequired]]
+suite = "scripts/test-flatpak-share.sh"
+reason = "drives distrobox and host GPU encoders"
+
+[[unrequired]]
+suite = "scripts/tests/test_runtime_auto_attach_proof.py"
+reason = "needs procps (ps), absent from the ci-fast image"
+
+[[unrequired]]
+suite = "scripts/two-host-sync-test.sh"
+reason = "manual smoke test across two hosts on a LAN"
+
+[[unrequired]]
+suite = "tools/tests/test_vendor_history.sh"
+reason = "needs the vendor-upstream refs fetched from the network"
