@@ -16,6 +16,7 @@ DISK="" EXPECT_PTUUID="" EXPECT_SECTOR="" EXPECT_DISK_SIZE="" EXPECT_DEVNUM=""
 EXPECT_WWN="" EXPECT_SERIAL=""
 FREE_START="" FREE_SIZE="" EFI_START="" EFI_SIZE="" ROOT_START="" ROOT_SIZE=""
 EFI_UUID="" ROOT_UUID=""
+IN_USE_DISK=0
 EXPECTED_PARTITIONS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -35,6 +36,10 @@ while [ $# -gt 0 ]; do
     --new-efi-partuuid) EFI_UUID="${2:-}"; shift 2 ;;
     --new-root-partuuid) ROOT_UUID="${2:-}"; shift 2 ;;
     --expect-partition) EXPECTED_PARTITIONS+=("${2:-}"); shift 2 ;;
+    # A staged (USB-free) install runs from two partitions of this disk, so the
+    # kernel refuses a whole-table reread. partx below registers the new pair;
+    # every identity check afterwards is unchanged.
+    --in-use-disk) IN_USE_DISK=1; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -148,7 +153,9 @@ printf 'start=%s, size=%s, type=%s, uuid=%s, name="Tilo EFI"\nstart=%s, size=%s,
   "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
   "$root_sector" "$root_sectors" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab "${ROOT_UUID,,}" \
   | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
-blockdev --rereadpt "$DISK"
+if [ "$IN_USE_DISK" -eq 0 ]; then
+  blockdev --rereadpt "$DISK"
+fi
 partx -u "$DISK"
 
 partition_by_uuid() {

@@ -149,7 +149,7 @@ variables:
 
 Each value is an absolute executable path appropriate to that host. The
 workflow invokes it as `BROKER PLATFORM OUTPUT`, where `PLATFORM` is `linux`,
-`windows`, `macos`, `release`, `homebrew`, `winget`, or `site`. The broker receives
+`windows`, `macos`, `release`, `homebrew`, `winget`, `site`, or `internal-bundle`. The broker receives
 `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, requests the
 configured audience, validates its server-side claims, and exchanges the JWT
 for a narrowly scoped lease. It must create `OUTPUT` with mode 0600 (or a
@@ -194,8 +194,12 @@ lanes before their child manifests can enter the multi-architecture index. Its
 server-side OIDC policy must therefore accept either the protected
 `release-imager.yml` semantic-tag identity above or `build-image.yml` on a
 protected `vMAJOR.MINOR.PATCH` tag, an authorized publishing dispatch from
-`main`, or an enabled continuous publication push to protected `main`. Reject
-all pull requests, branch rehearsals, non-main dispatches, and other workflows.
+`main`, the nightly scheduled run on protected `main`, or an enabled continuous
+publication push to protected `main`. Reject all pull requests, branch
+rehearsals, non-main dispatches, and other workflows. Tag lanes run on the
+`imager-linux-*` hosts; `main` publication lanes run on `runner-disk-100g` and
+`runner-disk-100g-arm64`, so the wrapper must be installed at the same
+canonical path on those runner images too.
 
 For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one
@@ -388,6 +392,9 @@ administrators):
 | `IMAGER_MAC_CERT_SHA256` | uppercase 64-hex SHA-256 fingerprint of the expected Developer ID leaf certificate |
 | `WINGET_GITHUB_USER` | dedicated GitHub submission bot login |
 | `SITE_RELEASE_USER` | Forgejo website bot login; omit to use `oauth2` |
+| `IMAGER_INTERNAL_BUNDLE` | optional: unset (default) skips the internal installer bundle; `export` tests and exports it on every run; `publish` also publishes it for tags and requires it in the catalog. See [Internal installer bundle](#internal-installer-bundle) |
+| `IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER` | with `publish`: absolute broker path on both native Linux runner images, platform `internal-bundle` |
+| `IMAGER_INTERNAL_BUNDLE_OWNER` | optional Forgejo owner of the `tilo-internal-installer` generic package; omit for `qos` |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
 `code.podesta.ai`. Give its service account read-only access to the published
@@ -395,8 +402,8 @@ Tilo image and its signature/attestation attachments. The workflow copies its
 short-lived Podman auth file into a private Docker config for Cosign, then
 destroys both after use; installer-media CI never
 pushes an OS image or allocates a generation. Rotate it independently of
-signing. The WPE buildroot snapshot workflow does **not** use
-that persistent token in steady state; its broker setup is described below.
+signing. The WPE buildroot snapshot workflow uses the same token and signing
+secrets as the other snapshot workflows; see below.
 The source job's `github.token` is deliberately never used for binary
 publication. `IMAGER_RELEASE_CREDENTIAL_BROKER` exchanges the protected-tag
 OIDC identity for the short-lived, target-only token described above.
@@ -410,77 +417,85 @@ release and monitor workflows do not read them:
 `IMAGER_APPLE_TEAM_ID`, `IMAGER_APPLE_APP_PASSWORD`, `HOMEBREW_TAP_TOKEN`,
 `WINGET_GITHUB_TOKEN`, `SITE_RELEASE_TOKEN`, or `IMAGER_WINDOWS_SIGNER`.
 
+### Internal installer bundle
+
+Full Tilo without a USB stick (design spec
+`docs/superpowers/specs/2026-09-22-usb-free-install-design.md` §3) downloads a
+schema-2 internal installer bundle: a manifest plus two raw component images
+the Imager writes to staging partitions on the internal disk. Each native
+`medium` lane derives it from the live disk that has just passed the
+installation cycles:
+
+1. **Test** (`export` or `publish`): installs `btrfs-progs`/`dosfstools`/
+   `qemu-img`, runs `os/tests/internal_bundle_test.py`,
+   `os/tests/internal_bundle_catalog.sh` and, as root,
+   `os/tests/internal_bundle_export.sh` against loop devices.
+2. **Export** (`export` or `publish`): `os/dev/export-internal-bundle.sh`
+   runs `os/dev/internal-bundle.py export` through `sudo -n` on
+   `os/output/installer/qcow2/disk.qcow2`. It specialises the one live UKI
+   to `root=UUID=<staging root>` (length-stable, unsigned: Secure Boot must be
+   off for this flow), installs it as `/EFI/BOOT/BOOT{X64,AA64}.EFI`, shrinks
+   the Btrfs root to its minimum plus 1 GiB, and writes
+   `tilo-internal-installer-ARCH{.json,-esp.img,-root.img}` plus the catalog
+   entry `internal-catalog-ARCH.json`. Tag builds record the tag as
+   `release_id`; rehearsals record `rehearsal-<sha>`.
+3. **Publish** (`publish`, tags only): `publish-internal-bundle.sh` uploads
+   components first and the manifest last to the Forgejo generic package
+   `https://code.podesta.ai/api/packages/OWNER/generic/tilo-internal-installer/TAG/`,
+   then downloads each file anonymously and compares digests. Existing files
+   are never replaced; a rerun only verifies them.
+4. **Catalog** (`publish`, tags only): the lane uploads only the manifest and
+   its entry (artifact `tilo-internal-catalog-ARCH`). `build-release-catalog.sh`
+   checks every entry against the exact manifest bytes beside it, parses the
+   manifest with the exporter's own validator, requires the package URL
+   above, and with `TILO_REQUIRE_INTERNAL_BUNDLE=1` requires both
+   architectures. The entries appear as `CatalogRelease::Internal`
+   (`purpose: tilo-internal-installer`, `layout: internal-bundle-v2`). The
+   GitHub and Forgejo release publishers skip these catalog inputs.
+
+Why a Forgejo package on `code.podesta.ai` rather than a release attachment:
+the Imager accepts internal manifests from that origin only
+(`trusted_catalog_url` in `apps/imager/src/release.rs`); each architecture
+publishes independently without racing one draft release; the root image
+routinely exceeds GitHub's 2 GiB asset limit; and the multi-GiB images never
+travel through workflow artifacts. Configure Forgejo accordingly:
+
+- the package owner is public, so anonymous downloads work;
+- package blobs are served by Forgejo itself: the Imager refuses cross-origin
+  redirects, so object-storage `SERVE_DIRECT` must stay off for packages;
+- `[packages] LIMIT_SIZE_GENERIC` (and any reverse-proxy body limit) admits
+  the root image, typically several GiB;
+- the `internal-bundle` broker returns a 5–15 minute token with
+  `write:package` for that owner only, after the usual protected-tag OIDC
+  validation.
+
+Publishing a bundle does not enable Full Tilo: builds offer it only when
+compiled with `TILO_IMAGER_INTERNAL_INSTALL=1` after the VM round trip
+passes. What export proves offline, and what remains for that round trip, is
+listed in the header of `os/dev/internal-bundle.py`.
+
 ## WPE buildroot snapshot credentials
 
-`snapshot-wpe-buildroot.yml` is a separate main-branch trust boundary. Set the
-protected repository variable `WPE_SNAPSHOT_CREDENTIAL_BROKER` to an absolute,
-root-owned executable on both native Linux golden images. Both snapshot jobs
-enable Forgejo OIDC. They invoke the broker as:
+`snapshot-wpe-buildroot.yml` authenticates, signs and lands its pins exactly
+like `snapshot-rpms.yml` and `build-kernel.yml`; it needs no extra secret or
+variable beyond theirs and `TILO_NATIVE_ARM64_RUNNER=true`:
 
-```text
-BROKER resolve-x86_64 OUTPUT
-BROKER resolve-aarch64 OUTPUT
-BROKER publish-x86_64 OUTPUT
-BROKER publish-aarch64 OUTPUT
-BROKER promote OUTPUT
-```
+- `REGISTRY_TOKEN` logs in to `code.podesta.ai` to read the mirrored base and
+  push `qos/tilo-wpe-buildroot`.
+- `COSIGN_KEY_REF` (a KMS/HSM URI) and `AWS_SIGNING_ROLE_ARN` sign each native
+  buildroot through `os/dev/configure-cosign-kms.sh` and Forgejo OIDC. A
+  preflight job refuses to start the multi-hour builds unless the KMS public
+  key equals `keys/cosign.pub`.
+- The job token pushes an `automation/wpe-buildroot-snapshot-<digest>` branch
+  and `RELEASE_TOKEN` opens the protected-main pull request through
+  `os/dev/open-snapshot-pr.py`.
 
-The broker must fail if `OUTPUT` exists, create it as a regular mode-0600 file
-owned by the runner account, and write exactly one newline-terminated
-`NAME=value` per line. Resolve and promotion leases contain
-`TILO_REGISTRY_USERNAME`, `TILO_REGISTRY_PASSWORD`,
-and `TILO_LEASE_EXPIRES_AT`. Publish leases also contain `TILO_WPE_SIGNER`. The
-expiry is a Unix timestamp no more than 15 minutes in the future. CI acquires a
-read lease to resolve the base image, builds without pushing, logs out, then
-acquires a fresh write/signing lease immediately before push and signing;
-a signing handle is never left to expire during the long Fedora transaction.
-The helper rejects duplicate, malformed, or additional settings, uses the
-registry password only for `docker login`, removes the response, and logs out
-after the job. No registry password is copied to `GITHUB_ENV` or an artifact.
-
-The helper deliberately never handles the JWT itself: it verifies that
-Forgejo injected `ACTIONS_ID_TOKEN_REQUEST_URL` and
-`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, then invokes the trusted broker with both
-still present in its environment. The broker must request the audience
-`tilo-wpe-buildroot-snapshot` from that URL, validate and exchange the returned
-JWT server-side, and must never copy either OIDC value into `OUTPUT`, logs, or
-an artifact. A broker which merely trusts the requested mode or other process
-environment without validating the signed JWT is not conforming.
-
-`TILO_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
-outside the checkout and job temporary directory. It receives one argument:
-the immutable
-`code.podesta.ai/qos/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
-hold or acquire a non-exportable KMS/HSM signing lease, reject every other
-repository/reference shape, sign at most once for its build lease, upload the
-transparency-log entry, and return only after signing succeeds. CI immediately
-verifies the result with `keys/cosign.pub`; the broker cannot rotate the trusted
-identity by returning another public key.
-
-Configure this broker with a dedicated audience such as
-`tilo-wpe-buildroot-snapshot` and the same JWT signature/time/replay checks
-described above, but with a policy specific to this workflow:
-
-- `repository == qos/qos` and the pinned immutable repository ID;
-- `event_name` is `push` or an authorized `workflow_dispatch`, `ref_type` is
-  `branch`, `ref == refs/heads/main`, and main is protected;
-- `workflow == snapshot-wpe-buildroot.yml`, with `workflow_ref` in `qos/qos`;
-- the requested mode is exactly one of the two `resolve-*`, two `publish-*`, or
-  `promote` modes above, and `(run_id, run_attempt, mode)` has not already
-  received a lease.
-
-Give resolve-mode registry leases pull access, publish-mode leases push access,
-and promotion-mode leases pull access only to `qos/tilo-wpe-buildroot`. The
-promotion job explicitly gives `actions/checkout` Forgejo's job-scoped
-`github.token` for its atomic main-branch pin commit, so the broker does not
-mint a repository PAT.
-Its `contents: write` permission exists only on that promotion job; native build
-jobs have `contents: read`.
-
-There is no static-credential bootstrap path. If the broker is absent or fails
-validation, the snapshot stops before resolving or publishing an image. In
-particular, do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`: WPE
-buildroots accept only the broker-returned non-exportable signer.
+Each architecture builds on its native runner with `no-cache`, publishes by
+digest, and must carry a matching `/usr/lib/tilo/wpe-buildroot-arch` marker,
+a recorded package list, and no remaining yum repositories. Both signatures
+are verified with `keys/cosign.pub` before either reference is recorded, and
+promotion refuses to proceed if any snapshot input changed on main while the
+builds ran. Do not configure `COSIGN_PRIVATE_KEY` or `COSIGN_PASSWORD`.
 
 ## Package indexes
 

@@ -1,3 +1,4 @@
+pub mod actions;
 mod advisory_lock;
 pub mod controller;
 pub mod desktop_catalog;
@@ -9,12 +10,15 @@ pub mod desktop_probe;
 pub mod desktop_worker;
 mod destination_security;
 pub mod folders;
+pub mod import_actions;
 pub mod import_view;
 pub mod internal_bundle;
 mod internal_cache;
 pub mod internal_download;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 mod internal_download_flow;
+#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+mod internal_install_flow;
 pub mod known_folders;
 pub mod migration;
 mod migration_durability;
@@ -30,6 +34,8 @@ mod migration_store;
 mod migration_worker;
 pub mod model;
 mod nofollow;
+pub mod staging;
+mod strings;
 #[cfg(all(test, target_os = "linux"))]
 mod test_support;
 pub mod view;
