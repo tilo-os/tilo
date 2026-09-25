@@ -35,10 +35,12 @@ scenario still need to call them as one resumable workflow.
   metadata so the three VM-created PARTUUIDs match the Windows-assigned ones.
   It leaves partition contents, including the CI-signed UKI, untouched.
 - `prepare-windows-direct-source.py receipt` checks a digest-pinned CI OCI
-  image with `cosign verify` and its SLSA provenance attestation using the
-  trusted public key, then hashes each final source extent. This is a local
-  byte-integrity receipt. The VM install run must separately establish that
-  it installed this exact CI image digest.
+  image with `cosign verify` and parses its SLSA provenance attestation using
+  the trusted public key. It requires the signed digest, official builder and
+  source, and the Lenovo board profile and firmware inputs for a physical
+  install. It binds the host-checked VM guest proof to that signed digest,
+  reads the installed UKI and ARM64 loader independently from the source FAT32
+  ESP, then hashes each final source extent.
 - `copy-windows-direct-final-install.py execute` rechecks the CI signature,
   source hashes, both source and physical GPT copies, Windows disk identity,
   suspended BitLocker, the live C: identity, and static Windows partition
@@ -66,8 +68,8 @@ python os/dev/prepare-windows-direct-source.py verify-template --manifest source
 # Run the CI installer in WHPX against source.raw; verify first VM boot; shut it down.
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py finalize --plan realized-plan.json --source-raw source.raw
-python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image <repo@sha256:digest> --ci-index-manifest ci-index.json --ci-child-manifest ci-arm64-child.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output source-receipt.json
-python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image <repo@sha256:digest> --ci-index-manifest ci-index.json --ci-child-manifest ci-arm64-child.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output final-readback.json
+python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image code.sandbox.example/qos/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output source-receipt.json
+python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image code.sandbox.example/qos/tilo@sha256:<digest> --ci-index-manifest ci-arm64-manifest.json --ci-child-manifest ci-arm64-manifest.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output final-readback.json
 ```
 
 `verify-template` prints a JSON record with `disk_guid` and
@@ -76,11 +78,15 @@ empty; after the install it contains the guest-created GPT identities. The
 scenario must compare them to the guest's install proof before `finalize`
 rewrites the final PARTUUIDs to the Windows-assigned values.
 The receipt and physical copier require the host-checked proof from the WHPX
-scenario. They verify that the checked guest image digest equals the unique
-Linux ARM64 child of the signed CI index, then independently hash the
-installed target UKI by reading its FAT32 path in the source ESP. The provided
-index and child JSON files must be exact raw OCI manifest bytes; their SHA256
-digests are checked against the CI pin and child descriptor.
+scenario. For this Lenovo physical install, the CI image is a single ARM64
+manifest, so pass its exact raw OCI manifest bytes to both `--ci-index-manifest`
+and `--ci-child-manifest`. The first option means the top-level OCI object,
+which can also be an index for synthetic VM tests. The copier refuses a
+generic index for physical installation. Both commands compare the checked
+guest image digest to the signed manifest digest, then independently hash the
+installed target UKI and ARM64 EFI loader from the source FAT32 ESP. The
+final readback emits `final_esp_partuuid`, `loader_path`, and `loader_sha256`
+for the guarded BootNext helper to verify against the physical ESP.
 
 On this Windows ARM64 host, Cosign runs in Fedora WSL. Pass
 `--cosign-command-json cosign-runner.json` to both `receipt` and `execute`,
