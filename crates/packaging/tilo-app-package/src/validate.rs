@@ -409,6 +409,22 @@ mode = "off"
     }
 
     #[test]
+    fn stamped_browser_runtime_manifest_accepted() {
+        let source = include_str!("../../../../apps/browser/tilo-app.toml");
+        let stamped = source.replace(
+            "runtime  = \"tilo-runtime/2026.07\"",
+            "runtime  = \"tilo-runtime/2026.7.0-browser\"",
+        );
+        assert_ne!(stamped, source, "browser runtime stamp did not match");
+        let manifest = Manifest::from_toml_str(&stamped).expect("stamped browser TOML");
+        assert_eq!(
+            manifest.package.runtime.as_deref(),
+            Some("tilo-runtime/2026.7.0-browser")
+        );
+        assert_eq!(validate_manifest(&manifest), Ok(()));
+    }
+
+    #[test]
     fn semantic_continuity_requires_presentation() {
         let mut m = minimal_runtime_manifest();
         m.continuity.required = vec![ContinuityFacet::Semantic];
