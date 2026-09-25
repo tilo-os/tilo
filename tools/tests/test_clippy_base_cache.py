@@ -229,6 +229,95 @@ class CachedBaseTests(unittest.TestCase):
             self.assertEqual(len(fixture.base_calls()), 1)
 
 
+SELECTOR_STUB = r'''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ['SELECTOR_ARGS'], 'w') as out:
+    json.dump(sys.argv[1:], out)
+print('{}')
+'''
+
+
+class ComparisonBaseTests(unittest.TestCase):
+    """Run check.yml's production selection step, then Clippy against its base.
+
+    Main has fixed a warning after a pull request branched. The branch still
+    contains the old line, which the PR never touched, so it must not fail.
+    """
+
+    def setUp(self):
+        from test_ci_check_aggregate import step_script
+        workflow = (CI.parents[1] / '.forgejo/workflows/check.yml').read_text()
+        self.plan_script = step_script(workflow, 'plan')
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.fixture = fixture = Fixture(tmp.name)
+        (fixture.root / 'tools/ci/affected_packages.py').write_text(SELECTOR_STUB)
+        (fixture.root / '.gitignore').write_text('target/\nci-plan.json\n')
+        fixture.git('add', '.')
+        fixture.git('commit', '-qm', 'selector')
+        self.branch_point = fixture.git('rev-parse', 'HEAD')
+        fixture.commit_head(BASE_SOURCE.replace('WARN doc_markdown', 'fixed doc_markdown'))
+        self.main_tip = fixture.git('rev-parse', 'HEAD')
+        fixture.git('checkout', '-q', '-b', 'topic', self.branch_point)
+        (fixture.root / 'other.rs').write_text('fn unrelated() {}\n')
+        fixture.git('add', 'other.rs')
+        fixture.git('commit', '-qm', 'topic')
+        self.head = fixture.git('rev-parse', 'HEAD')
+
+    def select(self, event, pull_request_base='', before='', ref='refs/pull/1/head'):
+        output = self.fixture.tmp / 'github-output'
+        output.write_text('')
+        arguments = self.fixture.tmp / 'selector-args.json'
+        result = subprocess.run(
+            ['bash', '-c', self.plan_script], cwd=self.fixture.root, text=True, capture_output=True,
+            env=dict(self.fixture.env, EVENT_NAME=event, PULL_REQUEST_BASE=pull_request_base,
+                     PUSH_BEFORE=before, GITHUB_REF=ref, GITHUB_OUTPUT=str(output),
+                     GITHUB_STEP_SUMMARY=str(self.fixture.tmp / 'summary'),
+                     SELECTOR_ARGS=str(arguments)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        base = dict(line.split('=', 1) for line in output.read_text().splitlines())['base']
+        selector = json.loads(arguments.read_text())
+        self.assertEqual(selector[selector.index('--base') + 1], base,
+                         'Clippy and package selection must share one comparison base')
+        return base
+
+    def test_pull_request_behind_main_compares_with_its_merge_base(self):
+        base = self.select('pull_request', pull_request_base=self.main_tip)
+        self.assertEqual(base, self.branch_point)
+        result = self.fixture.script(base, '-p', 'fixture')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Against main's current tip the untouched old warning looks new.
+        stale = self.fixture.script(self.main_tip, '-p', 'fixture')
+        self.assertEqual(stale.returncode, 1)
+        self.assertIn('introduced 1 Clippy diagnostic site', stale.stderr)
+
+    def test_pull_request_behind_main_reuses_the_record_of_its_merge_base(self):
+        fixture = self.fixture
+        fixture.git('checkout', '-q', '--detach', self.branch_point)
+        exported, cache = fixture.export()
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        fixture.git('checkout', '-q', 'topic')
+        fixture.calls.unlink()
+        base = self.select('pull_request', pull_request_base=self.main_tip)
+        result = fixture.script(base, '-p', 'fixture', CLIPPY_BASE_CACHE=str(cache),
+                                CLIPPY_BASE_CACHE_KEY='fixture-key')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Using cached Clippy diagnostics', result.stdout)
+        self.assertEqual(fixture.base_calls(), [])
+
+    def test_up_to_date_pull_request_compares_with_the_base_tip(self):
+        self.fixture.git('merge', '-q', '--no-edit', self.main_tip)
+        self.assertEqual(self.select('pull_request', pull_request_base=self.main_tip), self.main_tip)
+
+    def test_push_to_main_compares_with_the_previous_tip(self):
+        fixture = self.fixture
+        fixture.git('checkout', '-q', '--detach', self.main_tip)
+        fixture.git('merge', '-q', '--no-ff', '--no-edit', 'topic')
+        self.assertEqual(self.select('push', before=self.main_tip, ref='refs/heads/main'), self.main_tip)
+        head_parent = fixture.git('rev-parse', 'HEAD^')
+        self.assertEqual(self.select('push', before='0' * 40, ref='refs/heads/main'), head_parent)
+
+
 class CacheSelectionTests(unittest.TestCase):
     def test_lint_closure_follows_what_cargo_clippy_builds(self):
         def dep(name, *kinds):
