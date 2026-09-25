@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use tilo_automerge::ApplyIncoming;
 
 use durable_store::{DurableStore, StorageKey};
 
@@ -1049,7 +1050,7 @@ impl RecordSet {
         let mut merged = doc.clone();
         let mut stored = stored;
         if let Some(stored) = stored.as_mut()
-            && let Err(error) = merged.merge(stored)
+            && let Err(error) = merged.merge_incoming(stored)
         {
             tracing::error!(record = %id, %error, "record merge refused; original stored bytes retained");
             return Some(crate::persist::DocWriter::disabled(format!(
@@ -2018,7 +2019,7 @@ impl RecordStore {
                     validate_replica_identity(&incoming, checkout, &workspace, &origin)?;
                     let heads = incoming.get_heads();
                     candidate
-                        .merge(&mut incoming)
+                        .merge_incoming(&mut incoming)
                         .map_err(|error| error.to_string())?;
                     heads
                 }
@@ -2036,7 +2037,7 @@ impl RecordStore {
                         Err(error) => return Err(error.to_string()),
                     }
                     candidate
-                        .load_incremental(&bytes)
+                        .load_incoming(&bytes)
                         .map_err(|error| error.to_string())?;
                     candidate
                         .get_changes(&before)

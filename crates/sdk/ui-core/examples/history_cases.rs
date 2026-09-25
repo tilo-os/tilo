@@ -27,6 +27,7 @@
 //! narrow viewport, and a band still being appended to while you look at it.
 
 use std::path::{Path, PathBuf};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -123,7 +124,7 @@ fn three_session_doc() -> AutoCommit {
         reason = "peer forked from this same doc moments ago with no divergent schema; a merge \
                   failure here means the example's own setup is broken, not a recoverable state"
     )]
-    doc.merge(&mut peer).expect("peers merge");
+    doc.merge_incoming(&mut peer).expect("peers merge");
 
     // Session three, three hours in, back to the local author.
     for i in 0..7i64 {
@@ -206,7 +207,7 @@ fn singleton_bands_doc() -> AutoCommit {
                       merge failure here means the example's own setup is broken, not a \
                       recoverable state"
         )]
-        doc.merge(&mut peer).expect("peers merge");
+        doc.merge_incoming(&mut peer).expect("peers merge");
     }
     doc
 }
@@ -390,7 +391,7 @@ fn shoot_main_bands(
         reason = "peer forked from this same doc moments ago with no divergent schema; a merge \
                   failure here means the example's own setup is broken, not a recoverable state"
     )]
-    doc.merge(&mut peer).expect("peers merge");
+    doc.merge_incoming(&mut peer).expect("peers merge");
 
     // And the local author names their own afternoon.
     if let Some(start) = entries.get(12)

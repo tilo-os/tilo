@@ -35,6 +35,7 @@ qdoc = { path = "../../crates/doc/qdoc" }
 # Calendar invitations are validated as parsed iCalendar content lines.
 pim-lines = { path = "../../crates/text/pim-lines" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
