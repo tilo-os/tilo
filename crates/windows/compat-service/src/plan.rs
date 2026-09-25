@@ -431,6 +431,10 @@ pub trait LaunchResourceBroker: Send + Sync {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent device grants and launch requirements, not states of one machine"
+)]
 pub struct CapsuleCommandPlan {
     /// Bubblewrap flags and the fixed in-sandbox command. Host paths here are
     /// derived only from daemon configuration, capsule state, or resolved grants.
