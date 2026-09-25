@@ -119,6 +119,7 @@ suites = [
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
   "os/tests/test_vm_bootc_copy_cache.py",
+  "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_windows_dualboot_preflight.py",
   "os/tests/test_windows_direct_provenance.py",
   "os/tests/test_wpe_candidate_receipt.py",
