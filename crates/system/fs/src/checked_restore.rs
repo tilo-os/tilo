@@ -1,4 +1,10 @@
 //! Checked history service owned by the actual mounted filesystem.
+use super::{
+    Access, EBUSY, EINVAL, EIO, ENOENT, EROFS, Hash, Namespace, QuickFS, RecordKind,
+    VersionMetadataDigest, now_ms,
+};
+// The test module reaches the whole filesystem scope through this module.
+#[cfg(test)]
 use super::*;
 use crate::record_repository::{RecordRepositoryKey, RepositoryLease};
 #[cfg(test)]
@@ -16,6 +22,10 @@ use collab_types::{
 
 type Request = CheckedRequest;
 
+#[expect(
+    clippy::result_large_err,
+    reason = "the error is the checked-history wire answer, returned by value to the caller unchanged"
+)]
 fn access(
     acl: Option<&crate::acl::WorkspaceAcl>,
     identity: Option<&crate::acl::IdentityKey>,
@@ -65,7 +75,13 @@ fn receipt(entry: &RecordTransactionJournalEntry) -> Option<Receipt> {
     })
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "every checked-history early return is the final wire answer for the caller; boxing it \
+              would only add an allocation on the answer path and change the collab-types protocol type"
+)]
 impl QuickFS {
+    #[must_use]
     pub fn with_checked_history_workspace(mut self, workspace: uuid::Uuid) -> Self {
         self.checked_history_workspace = Some(workspace);
         self
@@ -88,7 +104,7 @@ impl QuickFS {
         Ok(workspace)
     }
 
-    pub(super) fn restore_codec(&self, namespace: &Namespace, ino: u64) -> Result<(), Outcome> {
+    pub(super) fn restore_codec(namespace: &Namespace, ino: u64) -> Result<(), Outcome> {
         if let Some(codec) = namespace.document_codec(ino) {
             return Err(Outcome::UnsupportedOwner {
                 mapping: format!(
@@ -196,6 +212,10 @@ impl QuickFS {
         })
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "a history version's `id` is the version id the content revision points at"
+    )]
     fn legacy_revision(
         namespace: &Namespace,
         ino: u64,
@@ -234,6 +254,11 @@ impl QuickFS {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "replays one journal entry phase by phase under a single buffers/namespace/history \
+                  lock set; splitting it would spread that guard ordering across functions"
+    )]
     pub(super) fn recover_legacy_restores(
         &self,
         journal: &mut crate::record_transaction::RecordTransactionJournal,
@@ -347,6 +372,18 @@ impl QuickFS {
         Ok(())
     }
 
+    /// Review the current checked-history frontier of `ino` for a later restore.
+    ///
+    /// # Errors
+    ///
+    /// Returns the checked-history answer that prevents a review: the file is
+    /// not visible to the caller, has pending writes, has no checked
+    /// content-owner restore route, or its history state is unavailable.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the frontier is computed from one consistent snapshot of buffers, namespace, \
+                  history, repository and ACL; no guard may be released before the review"
+    )]
     pub fn checked_history_review(&self, ino: u64) -> Result<Review, Outcome> {
         self.replacement_transactions
             .as_ref()
@@ -368,7 +405,7 @@ impl QuickFS {
             .as_ref()
             .map(|(acl, _)| acl.admission_lease())
             .transpose()
-            .map_err(|_| Outcome::NotVisible)?;
+            .map_err(|()| Outcome::NotVisible)?;
         let path = namespace.path_for(ino).ok_or(Outcome::NotVisible)?;
         access(
             acl.as_deref(),
@@ -379,7 +416,7 @@ impl QuickFS {
         if buffers.contains_key(&ino) {
             return Err(Outcome::PendingWrites);
         }
-        self.restore_codec(&namespace, ino)?;
+        Self::restore_codec(&namespace, ino)?;
         self.review_locked(ino, &namespace, &history, repository.as_ref())
     }
 
@@ -390,6 +427,10 @@ impl QuickFS {
     }
 
     /// Read the exact durable intent result without resuming or mutating it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the receipt is read while the namespace and ACL that authorized the caller stay held"
+    )]
     pub fn checked_history_result(&self, ino: u64, intent_id: uuid::Uuid) -> Outcome {
         let read = || -> Result<Outcome, Outcome> {
             let runtime = self
@@ -403,7 +444,7 @@ impl QuickFS {
                 .as_ref()
                 .map(|(acl, _)| acl.admission_lease())
                 .transpose()
-                .map_err(|_| Outcome::NotVisible)?;
+                .map_err(|()| Outcome::NotVisible)?;
             let path = namespace.path_for(ino).ok_or(Outcome::NotVisible)?;
             access(
                 acl.as_deref(),
@@ -467,6 +508,11 @@ impl QuickFS {
         if admitted != request {
             return Err(Outcome::InvalidRequest);
         }
+        #[expect(
+            clippy::significant_drop_tightening,
+            reason = "the record binding is checked while the namespace and ACL that authorized the \
+                      caller stay held"
+        )]
         let authorize = || {
             let namespace = self.namespace.lock().map_err(|_| Outcome::Unavailable)?;
             let acl = self
@@ -474,7 +520,7 @@ impl QuickFS {
                 .as_ref()
                 .map(|(acl, _)| acl.admission_lease())
                 .transpose()
-                .map_err(|_| Outcome::NotVisible)?;
+                .map_err(|()| Outcome::NotVisible)?;
             let path = namespace.path_for(ino).ok_or(Outcome::NotVisible)?;
             access(
                 acl.as_deref(),
@@ -553,6 +599,62 @@ impl QuickFS {
         }
     }
 
+    /// Resolve the version a request restores to and the intent it compensates.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the undo/redo precondition compares the journal receipt with the current \
+                  namespace revision while the journal is held"
+    )]
+    fn restore_selection(
+        &self,
+        runtime: &super::ReplacementTransactionRuntime,
+        ino: u64,
+        request: Request,
+    ) -> Result<(collab_types::FileVersionId, Option<uuid::Uuid>), Outcome> {
+        let journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
+        Ok(match request.operation {
+            Operation::Restore { version_id } => (version_id, None),
+            Operation::Undo { restore_intent }
+            | Operation::Redo {
+                undo_intent: restore_intent,
+            } => {
+                let previous = journal
+                    .checked_receipt(restore_intent)
+                    .ok_or(Outcome::InvalidRequest)?;
+                let prior_action = journal
+                    .checked_request(restore_intent)
+                    .ok_or(Outcome::InvalidRequest)?
+                    .operation;
+                if !matches!(
+                    (request.operation, prior_action),
+                    (
+                        Operation::Undo { .. },
+                        Operation::Restore { .. } | Operation::Redo { .. }
+                    ) | (Operation::Redo { .. }, Operation::Undo { .. })
+                ) {
+                    return Err(Outcome::InvalidRequest);
+                }
+
+                if journal.checked_phase(restore_intent) != Some(Phase::BroadcastCommitted)
+                    || previous.record_id != request.review.record_id
+                    || previous.workspace_id != request.review.workspace_id
+                {
+                    return Err(Outcome::ReviewRequired);
+                }
+                if self.ns().content_revision_for(ino) != Some(previous.restored_revision) {
+                    return Err(Outcome::ReviewRequired);
+                }
+                (previous.prior_revision.version_id, Some(restore_intent))
+            }
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one admission-to-broadcast sequence whose guards (journal, publication, buffers, \
+                  namespace, history, repository, ACL) are acquired and released in a fixed order; \
+                  splitting it would scatter that ordering"
+    )]
     fn restore_checked_inner(&self, ino: u64, request: Request) -> Result<Outcome, Outcome> {
         request.validate().map_err(|_| Outcome::InvalidRequest)?;
         self.check_access(ino, Access::Write).map_err(|errno| {
@@ -582,44 +684,7 @@ impl QuickFS {
             }
             return Ok(outcome);
         }
-        let (selected_id, compensates) = {
-            let journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
-            match request.operation {
-                Operation::Restore { version_id } => (version_id, None),
-                Operation::Undo { restore_intent }
-                | Operation::Redo {
-                    undo_intent: restore_intent,
-                } => {
-                    let previous = journal
-                        .checked_receipt(restore_intent)
-                        .ok_or(Outcome::InvalidRequest)?;
-                    let prior_action = journal
-                        .checked_request(restore_intent)
-                        .ok_or(Outcome::InvalidRequest)?
-                        .operation;
-                    if !matches!(
-                        (request.operation, prior_action),
-                        (
-                            Operation::Undo { .. },
-                            Operation::Restore { .. } | Operation::Redo { .. }
-                        ) | (Operation::Redo { .. }, Operation::Undo { .. })
-                    ) {
-                        return Err(Outcome::InvalidRequest);
-                    }
-
-                    if journal.checked_phase(restore_intent) != Some(Phase::BroadcastCommitted)
-                        || previous.record_id != request.review.record_id
-                        || previous.workspace_id != request.review.workspace_id
-                    {
-                        return Err(Outcome::ReviewRequired);
-                    }
-                    if self.ns().content_revision_for(ino) != Some(previous.restored_revision) {
-                        return Err(Outcome::ReviewRequired);
-                    }
-                    (previous.prior_revision.version_id, Some(restore_intent))
-                }
-            }
-        };
+        let (selected_id, compensates) = self.restore_selection(runtime, ino, request)?;
         if request.review.mount_lifetime != self.mount_lifetime {
             return Err(Outcome::ReviewRequired);
         }
@@ -687,7 +752,7 @@ impl QuickFS {
             .as_ref()
             .map(|(acl, _)| acl.admission_lease())
             .transpose()
-            .map_err(|_| Outcome::NotVisible)?;
+            .map_err(|()| Outcome::NotVisible)?;
         let path = namespace.path_for(ino).ok_or(Outcome::NotVisible)?;
         let identity = self.enforcement.as_ref().map(|(_, id)| id);
         access(acl.as_deref(), identity, &path, Access::Write)?;
@@ -718,7 +783,7 @@ impl QuickFS {
         if buffers.contains_key(&ino) {
             return Err(Outcome::PendingWrites);
         }
-        self.restore_codec(&namespace, ino)?;
+        Self::restore_codec(&namespace, ino)?;
         if serialized_document {
             return Err(Outcome::UnsupportedOwner {
                 mapping: "serialized qdoc content: no checked content-owner restore route".into(),
@@ -926,7 +991,7 @@ impl QuickFS {
                 match point {
                     crate::record_repository::RecordTransactionCheckpoint::PreparedJournalDurable => test_fault(request.intent_id, TestFault::Prepared)?,
                     crate::record_repository::RecordTransactionCheckpoint::ParticipantRecordDurable { .. } => test_fault(request.intent_id, TestFault::Participant)?,
-                    _ => {}
+                    crate::record_repository::RecordTransactionCheckpoint::ParticipantPhaseDurable => {}
                 }
                 let _ = point; Ok(())
             }).map_err(|_| pending())?;
@@ -981,6 +1046,7 @@ impl QuickFS {
         journal
             .advance(request.intent_id, Phase::BroadcastCommitted, Some(delta))
             .map_err(|_| pending())?;
+        drop(journal);
         Ok(Outcome::Applied {
             receipt: result_receipt,
         })
@@ -1004,12 +1070,14 @@ static RESTORE_FAULTS: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 #[cfg(test)]
 fn test_fault(id: uuid::Uuid, point: TestFault) -> Result<(), std::io::Error> {
-    let mut faults = RESTORE_FAULTS
-        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-        .lock()
-        .unwrap();
-    if faults.get(&id) == Some(&point) {
-        faults.remove(&id);
+    let fired = {
+        let mut faults = RESTORE_FAULTS
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .unwrap();
+        faults.get(&id) == Some(&point) && faults.remove(&id).is_some()
+    };
+    if fired {
         return Err(std::io::Error::other("checked restore fault"));
     }
     Ok(())
