@@ -1,0 +1,57 @@
+name: Cache checksum-pinned external assets
+description: >-
+  Restore, verify, fetch what is missing, and persist assets named in
+  os/external-assets/github-assets.tsv. Every file is checked against its
+  pinned SHA-256 by os/dev/cache-github-assets.sh; the cache only saves time.
+
+inputs:
+  key:
+    description: >-
+      Cache key prefix naming this asset set, for example github-assets-all-v1.
+      The manifest hash is appended, and any earlier generation of the same
+      prefix is restored and reconciled when the manifest changed.
+    required: true
+  assets:
+    description: Whitespace-separated asset names; empty materializes the whole manifest.
+    required: false
+    default: ""
+  path:
+    description: Cache directory, relative to the workspace.
+    required: false
+    default: os/external-assets/cache
+  fallback-keys:
+    description: Extra restore-key prefixes, one per line, tried after the key's own generations.
+    required: false
+    default: ""
+
+outputs:
+  cache-hit:
+    description: Whether the exact manifest generation was restored.
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: restore
+      uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      continue-on-error: true
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+        restore-keys: |
+          ${{ inputs.key }}-
+          ${{ inputs.fallback-keys }}
+    - shell: bash
+      env:
+        TILO_GITHUB_ASSET_CACHE: ${{ inputs.path }}
+        ASSETS: ${{ inputs.assets }}
+      # Asset names contain no whitespace; split the list into arguments.
+      # shellcheck disable=SC2086
+      run: ./os/dev/cache-github-assets.sh $ASSETS
+    # Save immediately, so a later failure in the job still keeps the downloads.
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      continue-on-error: true
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.key }}-${{ hashFiles('os/external-assets/github-assets.tsv') }}

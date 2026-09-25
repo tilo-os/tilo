@@ -401,8 +401,10 @@ grep -Fq 'tilo-installer-medium-${{ matrix.arch }}' "$workflow" \
   && ok 'native live media is catalogued and verified before writing' \
   || bad 'end-user install medium publication or verification is missing'
 
-grep -Fq 'key: github-assets-all-v1-' "$workflow" \
-  && grep -Fq './os/dev/cache-github-assets.sh' "$workflow" \
+grep -Fq 'uses: ./.forgejo/actions/cache-github-assets' "$workflow" \
+  && grep -Fqx '          key: github-assets-all-v1' "$workflow" \
+  && grep -Fq 'run: ./os/dev/cache-github-assets.sh $ASSETS' \
+    "$repo/.forgejo/actions/cache-github-assets/action.yml" \
   && grep -Fq 'podman login \' "$workflow" \
   && grep -Fq -- '--authfile "$REGISTRY_AUTH_FILE" code.sandbox.example' "$workflow" \
   && grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
@@ -579,10 +581,11 @@ grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \
   && ok 'installer media runs only on explicit, architecture-matched native release or rehearsal hosts' \
   || bad 'installer-medium event, architecture, or registry-auth boundary is incomplete'
 
-grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}-' "$workflow" \
-  && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${arch}.AppImage' "$workflow" \
-  && grep -Fq 'appimagetool-1.9.1-${arch}.AppImage' "$workflow" \
-  && grep -Fq 'type2-runtime-20251108-${arch}' "$workflow" \
+grep -Fq 'key: imager-linux-tools-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq 'linuxdeploy-1-alpha-20251107-1-${{ matrix.arch }}.AppImage' "$workflow" \
+  && grep -Fq 'appimagetool-1.9.1-${{ matrix.arch }}.AppImage' "$workflow" \
+  && grep -Fq 'type2-runtime-20251108-${{ matrix.arch }}' "$workflow" \
+  && grep -Fq '"os/external-assets/cache/linuxdeploy-1-alpha-20251107-1-${arch}.AppImage"' "$workflow" \
   && grep -Fq -- '--runtime-file "$TILO_APPIMAGE_RUNTIME"' \
     "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'implicit runtime downloads are forbidden' \
