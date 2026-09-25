@@ -36,7 +36,7 @@ class ProofTests(unittest.TestCase):
                                boot_partition=Path("/dev/vda6"),
                                root_partition=Path("/dev/vda7"))
         status = {"status": {"booted": {"incompatible": False,
-                  "image": {"imageDigest": DIGEST},
+                  "image": {"imageDigest": DIGEST, "architecture": "arm64"},
                   "composefs": {"verity": COMPOSEFS}}}}
         def command(*argv):
             if argv[:2] == ("bootc", "status"):
@@ -56,6 +56,7 @@ class ProofTests(unittest.TestCase):
             with patch.object(proof, "command", side_effect=command):
                 result = proof.build_proof(args)
             self.assertEqual(result["schema"], "tilo.vm-install-image-proof.v1")
+            self.assertEqual(result["architecture"], "arm64")
             self.assertEqual(result["booted_image_digest"], DIGEST)
             self.assertEqual(result["installed_image_digest"], DIGEST)
             self.assertEqual(result["composefs_digest"], COMPOSEFS)
@@ -88,6 +89,14 @@ class ProofTests(unittest.TestCase):
             args.deploy_etc.mkdir()
             with patch.object(proof, "command", side_effect=command):
                 with self.assertRaises(ValueError):
+                    proof.build_proof(args)
+
+    def test_non_arm64_booted_image_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args, status, _, command = self.fixture(directory)
+            status["status"]["booted"]["image"]["architecture"] = "amd64"
+            with patch.object(proof, "command", side_effect=command):
+                with self.assertRaisesRegex(ValueError, "ARM64"):
                     proof.build_proof(args)
 
     def test_backend_emits_proof_only_after_encrypted_finish(self):
