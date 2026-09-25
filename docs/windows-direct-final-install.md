@@ -70,6 +70,22 @@ python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json
 python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image <repo@sha256:digest> --verify-key keys/cosign.pub --output final-readback.json
 ```
 
+For a guest image built with the VM install-proof helper, the scenario creates
+`/run/tilo-installer/vm-install-proof.enabled` as a root-owned mode-0600 file
+before starting the guided install. After `tilo-install` has closed the LUKS
+target successfully, it emits one `TILO_VM_INSTALL_PROOF_V1=<compact JSON>`
+line to its backend stdout and `/dev/console`. The JSON schema is
+`tilo.vm-install-image-proof.v1`; it contains `booted_image_digest`,
+`installed_image_digest`, `composefs_digest`, `target_uki_sha256`, `disk_guid`,
+and `partuuids` with `efi`, `boot`, and `root` fields. The guest derives those
+from `bootc status`, the installed deployment `.origin`, the promoted target
+UKI, and `blkid`; it refuses any mismatch. The scenario must compare both
+image digests to the separately verified CI OCI digest and the GPT identities
+to the VM source **before** `finalize` rewrites PARTUUIDs. It must also check
+the UKI in the source ESP against this proof and the CI-signed boot binding.
+The line appears only after successful backend completion. No supplied
+`--ci-image` argument alone establishes this connection.
+
 The allocator command above is an authorized physical mutation and must run
 only after the matching BitLocker recovery key has actually been backed up.
 The source raw commands act only on a new disposable VM file.
