@@ -3,6 +3,81 @@
 use crate::{WorkspaceTree, intents::SessionIntent};
 pub use qos_peer_state::desktop_command::*;
 
+/// Room heads also advance for receipts, enrollment and document durability.
+/// Those changes must not invalidate a gesture against an unchanged desktop.
+/// Compare the original admitted desktop with the current one, without
+/// rebinding the command or weakening the current caller/target checks.
+pub fn desktop_source_matches(
+    doc: &automerge::AutoCommit,
+    heads: &[[u8; 32]],
+) -> Result<bool, String> {
+    use automerge::ReadDoc;
+    let heads = heads
+        .iter()
+        .copied()
+        .map(automerge::ChangeHash)
+        .collect::<Vec<_>>();
+    if heads.is_empty()
+        || heads
+            .iter()
+            .any(|head| doc.get_change_by_hash(head).is_none())
+    {
+        return Ok(false);
+    }
+    for key in [
+        "room",
+        "owner",
+        "name",
+        "contents",
+        "contents_owners_v1",
+        // Also prevents an old launch from being reused after its tab closes.
+        "desktop_counter_v1",
+    ] {
+        let previous = doc
+            .get_all_at(automerge::ROOT, key, &heads)
+            .map_err(|e| e.to_string())?;
+        let current = doc
+            .get_all(automerge::ROOT, key)
+            .map_err(|e| e.to_string())?;
+        if previous != current {
+            return Ok(false);
+        }
+        for (value, object) in current {
+            if matches!(value, automerge::Value::Object(_))
+                && doc
+                    .hydrate(&object, Some(&heads))
+                    .map_err(|e| e.to_string())?
+                    != doc.hydrate(&object, None).map_err(|e| e.to_string())?
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Where [`DesktopCommand::OpenApp`] opens: a new group at the end of the last
+/// strip `owns` accepts, or the first strip of an empty workspace. `owns`
+/// lets the owner keep placement inside its own topology namespace.
+pub fn open_app_placement(
+    workspace: &crate::Workspace,
+    owns: impl Fn(u64) -> bool,
+) -> Result<TabPlacement, String> {
+    if workspace.strips.is_empty() {
+        return Ok(TabPlacement::EmptyWorkspace);
+    }
+    workspace
+        .strips
+        .iter()
+        .rev()
+        .find(|strip| owns(strip.id.0))
+        .map(|strip| TabPlacement::NewGroup {
+            strip: strip.id.0,
+            after: None,
+        })
+        .ok_or_else(|| "no desktop strip can receive the opened application".into())
+}
+
 /// Canonical topology reduction. The host checks authority and supplies fresh
 /// identities and a checked record constructor before the tab enters the tree.
 pub fn apply_command(
@@ -148,7 +223,15 @@ pub fn apply_command(
         }
         Ok(value.into())
     }
+    if let DesktopCommand::OpenApp { app } = command {
+        let resolved = DesktopCommand::OpenTab {
+            app: app.clone(),
+            placement: open_app_placement(workspace, |_| true)?,
+        };
+        return apply_command(workspace, &resolved, mint, create);
+    }
     match command {
+        DesktopCommand::OpenApp { .. } => unreachable!("resolved to OpenTab above"),
         DesktopCommand::OpenTab { app, placement } => {
             validate_placement(workspace, placement)?;
             let id = mint()?;

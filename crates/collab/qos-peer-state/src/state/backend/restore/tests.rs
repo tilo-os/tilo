@@ -308,7 +308,7 @@ fn complete_bounded_restore_keeps_original_lazy_checkpoint_bytes_and_historical_
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let mut durable: DurableV4 = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
     let mut room = AutoCommit::load(durable.base.room_bytes.as_ref().unwrap()).unwrap();
-    room.delete(ROOT, crate::coverage::FIELD).unwrap();
+    room.delete(ROOT, crate::coverage::FIELD_V2).unwrap();
     durable.base.room_bytes = Some(room.save());
     let opaque = vec![99; 512];
     durable.base.documents[0].covered_snapshot = Some(opaque.clone());

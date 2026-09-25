@@ -23,6 +23,7 @@ pub use state::{
     VerifiedSecurityMetadataOnly, peer_handle, seed_room,
 };
 pub mod coverage;
+mod governed_routes;
 pub mod transport;
 pub use collab_types::DocumentMutation;
 

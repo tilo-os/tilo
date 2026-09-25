@@ -145,12 +145,12 @@ fn durable_bootstrap_room_history_growth_is_measured_for_one_eight_thirty_two_do
     );
     for measurement in measurements {
         assert_eq!(
-            measurement.first.changes, 2,
-            "a durable bootstrap adds one complete coverage change and one receipt change"
+            measurement.first.changes, 1,
+            "a durable bootstrap adds one change carrying coverage and receipts"
         );
         assert!(measurement.first.bytes > 0);
         assert_eq!(
-            measurement.repeated.changes, 2,
+            measurement.repeated.changes, 1,
             "repeating a durable bootstrap must not add one coverage-map change per document"
         );
         assert!(measurement.repeated.bytes > 0);
@@ -293,4 +293,109 @@ fn nondurable_bootstrap_batches_coverage_into_one_change() {
     let messages = peer.bootstrap_messages(&key, now).unwrap();
     assert_eq!(messages.len(), 9);
     assert_eq!(room_delta(room_stats(&messages[0]), before).changes, 1);
+}
+
+/// Room governance growth per durable generation (lane T): one document
+/// edited per generation among `documents`, each published through
+/// `durable_mutation_messages` exactly as the Cloud owner commits it. The
+/// legacy v1 layout (the whole coverage and receipt maps rewritten as one
+/// scalar each) is replayed alongside on a plain document for comparison.
+fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usize, usize) {
+    use automerge::ScalarValue;
+    let (key, mut peer, now) = fixture_with_documents(documents);
+    peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let start = room_stats(&peer.room_message());
+    let mut legacy = AutoCommit::new();
+    let mut legacy_bytes = 0usize;
+    let mut actors = (0..documents)
+        .map(|index| {
+            AutoCommit::load(&peer.document(APP, &format!("tab-{index:02}")).unwrap())
+                .unwrap()
+                .with_actor(automerge::ActorId::from(
+                    format!("growth-editor-{index:02}").into_bytes(),
+                ))
+        })
+        .collect::<Vec<_>>();
+    for generation in 2..generations + 2 {
+        let index = (generation as usize) % documents;
+        let before = peer.clone();
+        let doc = &mut actors[index];
+        let heads = doc.get_heads();
+        doc.put(ROOT, "value", format!("edit-{generation}"))
+            .unwrap();
+        doc.commit();
+        peer.publish_incremental(
+            APP,
+            &format!("tab-{index:02}"),
+            doc.save_after(&heads),
+            &key,
+            now,
+        )
+        .unwrap();
+        peer.durable_mutation_messages(&before, &key, now, generation)
+            .unwrap();
+        // The v1 layout: both whole maps rewritten as one scalar each.
+        let room = peer.admitted_room().unwrap();
+        let coverage = qos_peer_state::coverage::entries(room).unwrap();
+        let receipts = qos_peer_state::durability::entries(room).unwrap();
+        let heads = legacy.get_heads();
+        legacy
+            .put(
+                ROOT,
+                qos_peer_state::coverage::FIELD,
+                ScalarValue::Bytes(postcard::to_allocvec(&coverage).unwrap()),
+            )
+            .unwrap();
+        legacy.commit();
+        legacy
+            .put(
+                ROOT,
+                qos_peer_state::durability::FIELD,
+                ScalarValue::Bytes(postcard::to_allocvec(&receipts).unwrap()),
+            )
+            .unwrap();
+        legacy.commit();
+        legacy_bytes += legacy
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().len())
+            .sum::<usize>();
+    }
+    let end = room_stats(&peer.room_message());
+    let saved = room_document(&peer.room_message()).save().len();
+    eprintln!(
+        "documents={documents}: {} room changes over {generations} generations",
+        end.changes - start.changes
+    );
+    let room = room_document(&peer.room_message());
+    let mut changes = room
+        .clone()
+        .get_changes(&[])
+        .into_iter()
+        .rev()
+        .take(3)
+        .map(|change| (change.raw_bytes().len(), change.len()))
+        .collect::<Vec<_>>();
+    changes.reverse();
+    eprintln!("last changes (bytes, ops): {changes:?}");
+    (end.bytes - start.bytes, legacy_bytes, saved)
+}
+
+#[test]
+fn durable_generation_room_growth_is_small_per_generation() {
+    let generations = 2000u64;
+    let mut report = Vec::new();
+    for documents in [2usize, 8] {
+        let (bytes, legacy, saved) = durable_generation_growth(documents, generations);
+        let per = bytes / generations as usize;
+        let legacy_per = legacy / generations as usize;
+        report.push(format!(
+            "documents={documents} generations={generations} room_bytes_per_generation={per} legacy_v1_bytes_per_generation={legacy_per} room_history_bytes={bytes} saved_room_bytes={saved}"
+        ));
+        // Only the edited route is rewritten, with compact values: well
+        // below the legacy whole-map rewrite, and flat in the route count.
+        assert!(per * 5 < legacy_per, "{}", report.join("\n"));
+        assert!(per < 400, "{}", report.join("\n"));
+    }
+    eprintln!("{}", report.join("\n"));
 }
