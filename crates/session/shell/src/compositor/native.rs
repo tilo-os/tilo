@@ -230,17 +230,12 @@ fn native_loop_park(
     )
 }
 
-/// Whether the next park must keep the frame deadline. While the bounded
-/// presenter is full, an already-due frame deadline would make every park a
-/// zero timeout and spin the loop until a frame retires; the presenter's
-/// retirement ping wakes calloop as soon as capacity returns instead.
-fn cadence_wait_needed(
-    pipe_ready: bool,
-    content_changed: bool,
-    cadence_due: bool,
-    animating: bool,
-) -> bool {
-    pipe_ready && ((content_changed && !cadence_due) || animating)
+/// Whether the next park must keep the frame deadline for a pending frame.
+/// While the bounded presenter is full, an already-due frame deadline would
+/// make every park a zero timeout and spin the loop until a frame retires;
+/// the presenter's retirement ping wakes calloop as soon as capacity returns.
+fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
+    pipe_ready && frame_pending
 }
 
 /// A widget deadline only matters while the presenter can accept the frame
@@ -6955,7 +6950,7 @@ pub fn run() {
         // deadline could strand that frame. A full presenter is itself the
         // gate: its retirement ping wakes the loop when capacity returns.
         let cadence_needed =
-            cadence_wait_needed(pipe_ready, content_changed, cadence_due, animating);
+            cadence_wait_needed(pipe_ready, (content_changed && !cadence_due) || animating);
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -7786,10 +7781,12 @@ mod tests {
     #[test]
     fn full_presenter_parks_instead_of_spinning_on_overdue_deadlines() {
         let now = Instant::now();
-        let stale = now - Duration::from_millis(1);
+        let stale = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
         // Animation stays dirty and both the frame and widget deadlines are
         // already due, but the presenter has no capacity.
-        let cadence_needed = cadence_wait_needed(false, true, true, true);
+        let cadence_needed = cadence_wait_needed(false, true);
         assert_eq!(
             native_loop_park(
                 now,
@@ -7805,14 +7802,16 @@ mod tests {
     #[test]
     fn available_presenter_keeps_overdue_work_immediate() {
         let now = Instant::now();
-        let stale = now - Duration::from_millis(1);
+        let stale = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
         assert_eq!(
             widget_deadline_for_presenter(true, Some(stale)),
             Some(stale)
         );
         let frame = now + Duration::from_millis(7);
         assert_eq!(
-            native_loop_park(now, cadence_wait_needed(true, true, false, true), frame, []),
+            native_loop_park(now, cadence_wait_needed(true, true), frame, []),
             Some(Duration::from_millis(7)),
             "the back-pressure guard must not weaken normal animation pacing"
         );
@@ -7829,7 +7828,12 @@ mod tests {
             Some(IDLE_BACKEND_POLL)
         );
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(now - Duration::from_millis(1))]),
+            native_loop_park(
+                now,
+                false,
+                frame,
+                [now.checked_sub(Duration::from_millis(1))]
+            ),
             Some(Duration::ZERO)
         );
     }
