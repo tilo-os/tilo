@@ -1,9 +1,15 @@
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
+use wire_frame::Framing;
+
 use crate::webview::Frame;
 
 pub(super) const MAX_PACKET: u32 = 64 * 1024 * 1024;
+
+/// A little-endian `u32` length counting the kind byte and body, then the
+/// kind byte, then the body.
+const FRAMING: Framing = Framing::little_endian(MAX_PACKET as usize).reject_empty();
 
 pub(super) enum Packet {
     Json(serde_json::Value),
@@ -17,29 +23,22 @@ fn invalid(message: &str) -> io::Error {
 
 pub(super) fn write_json(writer: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
     let bytes = serde_json::to_vec(value)?;
-    let len = u32::try_from(bytes.len())
-        .ok()
-        .and_then(|n| n.checked_add(1))
-        .filter(|n| *n <= MAX_PACKET)
+    let prefix = bytes
+        .len()
+        .checked_add(1)
+        .and_then(|len| FRAMING.encode_prefix(len).ok())
         .ok_or_else(|| invalid("Chromium command exceeds packet limit"))?;
-    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(&prefix)?;
     writer.write_all(&[1])?;
     writer.write_all(&bytes)?;
     writer.flush()
 }
 
 pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> {
-    let mut header = [0; 4];
-    match reader.read(&mut header[..1]) {
-        Ok(0) => return Ok(None),
-        Ok(_) => {}
-        Err(error) => return Err(error),
-    }
-    reader.read_exact(&mut header[1..])?;
-    let length = u32::from_le_bytes(header);
-    if length == 0 || length > MAX_PACKET {
-        return Err(invalid("Invalid Chromium packet length"));
-    }
+    let Some(length) = FRAMING.read_len(reader)? else {
+        return Ok(None);
+    };
+    let length = u32::try_from(length).map_err(|_| invalid("Invalid Chromium packet length"))?;
     let mut kind = [0];
     reader.read_exact(&mut kind)?;
     match kind[0] {
@@ -126,6 +125,19 @@ mod tests {
         };
         assert_eq!(value["url"], "https://podesta.ai");
         assert!(read_packet(&mut reader).unwrap().is_none());
+    }
+
+    /// The helper's packets: a little-endian `u32` length that counts the
+    /// kind byte, the kind, then the body.
+    #[test]
+    fn packet_wire_bytes_are_pinned() {
+        let mut bytes = Vec::new();
+        write_json(&mut bytes, &serde_json::json!({"a": 1})).unwrap();
+        assert_eq!(bytes, b"\x08\0\0\0\x01{\"a\":1}");
+        let Some(Packet::Json(value)) = read_packet(&mut Cursor::new(&bytes)).unwrap() else {
+            panic!("expected JSON")
+        };
+        assert_eq!(value["a"], 1);
     }
 
     #[test]
