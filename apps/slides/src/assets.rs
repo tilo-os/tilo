@@ -1,8 +1,9 @@
 //! Background image decode + cache for image elements.
 //!
-//! Image elements store only a content-addressed shared-blob ID in the CRDT
-//! (see [`crate::model::Element::src`]); decoded pixels are a per-peer runtime
-//! cache keyed by that identity. Decoding runs on a worker thread so a large
+//! Image elements store only a content address in the CRDT (see
+//! [`crate::model::Element::src`]); the bytes live in the app's
+//! [`ContentStore`] and decoded pixels are a per-peer runtime cache keyed by
+//! that identity. Decoding runs on a worker thread so a large
 //! JPEG never blocks the UI thread — the slide paints a light "loading" state
 //! until the pixels land, then the real picture appears on the next frame.
 //!
@@ -16,6 +17,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
+use tilo_content::ContentStore;
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 
 /// A slide may refer to a very large source photo, but the editor must never
@@ -37,38 +39,43 @@ pub fn is_asset_id(id: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-/// Store supplied bytes by their BLAKE3 content hash and return the portable
-/// identifier that is safe to place in the collaborative deck. `qdoc`'s
-/// process-wide blobstore is paired with the room transport, so a later peer
-/// can request the bytes by this hash; it is not a private XDG cache.
-pub fn store_asset(bytes: &[u8]) -> Option<String> {
+/// Store supplied bytes in `content` by their BLAKE3 content hash and return
+/// the portable identifier that is safe to place in the collaborative deck. A
+/// later peer can request the bytes by this hash.
+pub fn store_asset(content: &ContentStore, bytes: &[u8]) -> Option<String> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES {
         return None;
     }
-    let hash = qdoc::blobstore::put(bytes)?;
-    // `put` is intentionally fallible at its storage boundary. Do not create
-    // a CRDT reference until the exact bytes are retrievable and re-verified.
-    let stored = qdoc::blobstore::get(&hash)?;
-    (stored == bytes && qdoc::blobstore::verify(&hash, &stored))
-        .then(|| format!("{ASSET_PREFIX}{hash}"))
+    // Do not create a CRDT reference unless the store accepted the bytes.
+    match content.put(bytes) {
+        Ok(hash) => Some(format!("{ASSET_PREFIX}{hash}")),
+        Err(error) => {
+            eprintln!("slides: content store refused an image: {error}");
+            None
+        }
+    }
 }
 
 /// Resolve a deck asset only after checking both its bounded bytes and its
-/// declared hash.  A missing or corrupt blob is an ordinary unavailable asset,
-/// never an instruction to read an arbitrary peer-provided filesystem path.
-pub fn read_asset(id: &str) -> Option<Vec<u8>> {
+/// declared hash (the store verifies every read).  A missing or corrupt blob
+/// is an ordinary unavailable asset, never an instruction to read an arbitrary
+/// peer-provided filesystem path.
+pub fn read_asset(content: &ContentStore, id: &str) -> Option<Vec<u8>> {
+    if !is_asset_id(id) {
+        return None;
+    }
     let hash = id.strip_prefix(ASSET_PREFIX)?;
-    let bytes = qdoc::blobstore::get(hash)?;
-    (bytes.len() <= MAX_IMAGE_FILE_BYTES && qdoc::blobstore::verify(hash, &bytes)).then_some(bytes)
+    let bytes = content.read(hash)?;
+    (bytes.len() <= MAX_IMAGE_FILE_BYTES).then_some(bytes)
 }
 
-pub fn import_asset_file(path: &Path) -> Option<String> {
+pub fn import_asset_file(content: &ContentStore, path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::with_capacity(64 * 1024);
     file.take((MAX_IMAGE_FILE_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .ok()?;
-    store_asset(&bytes)
+    store_asset(content, &bytes)
 }
 
 /// Current decode state of one image path.
@@ -94,6 +101,7 @@ impl ImageLookup for ImageStore {
 
 /// A path-keyed image cache with off-thread decoding.
 pub struct ImageStore {
+    content: ContentStore,
     inner: RefCell<HashMap<String, ImageState>>,
     request_tx: Option<SyncSender<String>>,
     rx: Receiver<(String, ImageState)>,
@@ -102,14 +110,9 @@ pub struct ImageStore {
     access_clock: Cell<u64>,
 }
 
-impl Default for ImageStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ImageStore {
-    pub fn new() -> Self {
+    /// A cache decoding the images `content` holds.
+    pub fn new(content: ContentStore) -> Self {
         let (result_tx, rx) =
             std::sync::mpsc::sync_channel::<(String, ImageState)>(DECODE_RESULT_CAPACITY);
         let (request_tx, request_rx) =
@@ -118,11 +121,12 @@ impl ImageStore {
         // gives the cache an explicit, bounded back-pressure point.  A failed
         // spawn is represented by `None`; callers then receive `Failed`
         // rather than an eternal loading placeholder.
+        let worker_content = content.clone();
         let request_tx = std::thread::Builder::new()
             .name("slides-image-decode".into())
             .spawn(move || {
                 while let Ok(path) = request_rx.recv() {
-                    let state = decode(&path);
+                    let state = decode(&worker_content, &path);
                     if result_tx.send((path, state)).is_err() {
                         break;
                     }
@@ -131,6 +135,7 @@ impl ImageStore {
             .ok()
             .map(|_| request_tx);
         ImageStore {
+            content,
             inner: RefCell::new(HashMap::new()),
             request_tx,
             rx,
@@ -169,7 +174,7 @@ impl ImageStore {
     /// `--shots` path, where the single offscreen frame must have the pixels
     /// ready before it renders. Never called on the live UI thread.
     pub fn load_blocking(&self, path: &str) {
-        let state = decode(path);
+        let state = decode(&self.content, path);
         self.remove_ready_bytes(path);
         self.ready_bytes
             .set(self.ready_bytes.get().saturating_add(state_bytes(&state)));
@@ -252,14 +257,14 @@ fn state_bytes(state: &ImageState) -> usize {
 
 /// Decode an image file into straight-alpha RGBA8 wrapped for Vello. Returns
 /// [`ImageState::Failed`] on any read/decode error.
-fn decode(path: &str) -> ImageState {
+fn decode(content: &ContentStore, path: &str) -> ImageState {
     // This is deliberately categorical. The string arrived through a shared
     // CRDT and must never become a peer-controlled local-path probe. Screenshot
     // fixtures use `store_asset` first, exactly as the real portal does.
     if !is_asset_id(path) {
         return ImageState::Failed;
     }
-    let Some(bytes) = read_asset(path) else {
+    let Some(bytes) = read_asset(content, path) else {
         return ImageState::Failed;
     };
     decode_bytes(&bytes)
@@ -360,7 +365,7 @@ mod tests {
             std::env::temp_dir().join(format!("slides-oversize-{}.bin", uuid::Uuid::new_v4()));
         std::fs::write(&path, vec![0_u8; MAX_IMAGE_FILE_BYTES + 1]).expect("write oversize source");
         assert!(matches!(
-            decode(path.to_str().expect("utf-8 path")),
+            decode(&ContentStore::memory(), path.to_str().expect("utf-8 path")),
             ImageState::Failed
         ));
         let _ = std::fs::remove_file(path);
@@ -369,6 +374,7 @@ mod tests {
     #[test]
     fn image_store_never_leaves_a_failed_worker_request_loading() {
         let store = ImageStore {
+            content: ContentStore::memory(),
             inner: RefCell::new(HashMap::new()),
             request_tx: None,
             rx: std::sync::mpsc::channel().1,

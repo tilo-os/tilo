@@ -14,8 +14,6 @@
 //! layout, rendering and the headless host — and whoever hosts it installs
 //! its own services with [`crate::host::install_default`].
 
-#[cfg(unix)]
-pub mod blobs;
 pub mod capture;
 #[cfg(all(windows, feature = "notifications"))]
 pub mod host_notifications;

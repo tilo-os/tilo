@@ -72,7 +72,7 @@ fn heading_paragraph_bold_run_emits_h1_strong_and_escaped_text() {
         ..empty_snapshot()
     };
 
-    let html = render_html(&snap, HtmlOptions::default());
+    let html = render_html(&snap, HtmlOptions::default(), &tilo_content::NoContent);
 
     assert!(
         html.contains("<h1>Title</h1>"),
@@ -127,6 +127,7 @@ fn three_item_ordered_list_yields_one_ol_with_three_li() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
 
     assert_eq!(count(&html, "<ol"), 1, "exactly one <ol>:\n{html}");
@@ -156,7 +157,6 @@ fn image_block_emits_img_with_data_uri() {
             "A cat",
             &[("blob", AttrVal::Str(hash))],
         )],
-        blobs,
         ..empty_snapshot()
     };
 
@@ -166,6 +166,7 @@ fn image_block_emits_img_with_data_uri() {
             fragment: true,
             ..Default::default()
         },
+        &blobs,
     );
 
     assert!(
@@ -191,6 +192,7 @@ fn script_in_text_is_escaped_no_injection() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
 
     // The literal tag must NOT appear; only its escaped form.
@@ -218,6 +220,7 @@ fn heading_levels_map_to_h1_through_h6() {
                 fragment: true,
                 ..Default::default()
             },
+            &tilo_content::NoContent,
         );
         assert!(
             html.contains(&format!("<h{lvl}>H</h{lvl}>")),
@@ -235,6 +238,7 @@ fn heading_levels_map_to_h1_through_h6() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(html.contains("<h6>X</h6>"), "level 9 clamps to h6:\n{html}");
 }
@@ -251,6 +255,7 @@ fn quote_renders_blockquote() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(html.contains("<blockquote>"), "quote → blockquote:\n{html}");
     assert!(html.contains("To be or not to be"));
@@ -286,6 +291,7 @@ fn bullet_list_uses_ul() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert_eq!(count(&html, "<ul>"), 1);
     assert_eq!(count(&html, "</ul>"), 1);
@@ -339,6 +345,7 @@ fn nested_list_levels_nest_correctly() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     // Two <ul> open (outer + nested), two close — balanced.
     assert_eq!(count(&html, "<ul>"), 2, "outer + nested ul:\n{html}");
@@ -374,6 +381,7 @@ fn ordered_list_num_format_sets_list_style_type() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         html.contains("list-style-type: lower-roman"),
@@ -398,6 +406,7 @@ fn all_boolean_marks_render_their_tags() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(html.contains("<strong>"), "strong:\n{html}");
     assert!(html.contains("<em>"), "em:\n{html}");
@@ -427,6 +436,7 @@ fn partial_bold_run_splits_text_at_mark_boundary() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         html.contains("Hello <strong>world</strong>"),
@@ -453,6 +463,7 @@ fn link_mark_renders_anchor_with_escaped_href() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         html.contains("<a href=\"https://example.com/?a=1&amp;b=2\">"),
@@ -480,6 +491,7 @@ fn javascript_href_is_neutralized() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         !html.contains("javascript:"),
@@ -504,6 +516,7 @@ fn color_and_size_marks_emit_span_style() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         html.contains("<span style=\""),
@@ -533,6 +546,7 @@ fn css_injection_via_color_mark_is_sanitized() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     // Isolate the emitted style attribute value.
     let start = html.find("style=\"").expect("has style attr") + "style=\"".len();
@@ -575,6 +589,7 @@ fn table_renders_tr_td_grid() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert_eq!(count(&html, "<table"), 1);
     assert_eq!(count(&html, "<tr>"), 2);
@@ -598,6 +613,7 @@ fn missing_image_blob_emits_inert_img_without_error() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         html.contains("<img src=\"\""),
@@ -624,7 +640,7 @@ fn styles_map_emits_css_classes_and_blocks_get_tagged() {
         ..empty_snapshot()
     };
     // Full doc so the <style> block is emitted.
-    let html = render_html(&snap, HtmlOptions::default());
+    let html = render_html(&snap, HtmlOptions::default(), &tilo_content::NoContent);
     assert!(html.contains("<style>"), "style block present:\n{html}");
     assert!(
         html.contains(".qdoc-style-Fancy {"),
@@ -647,7 +663,11 @@ fn styles_map_emits_css_classes_and_blocks_get_tagged() {
 
 #[test]
 fn empty_document_is_well_formed() {
-    let html = render_html(&empty_snapshot(), HtmlOptions::default());
+    let html = render_html(
+        &empty_snapshot(),
+        HtmlOptions::default(),
+        &tilo_content::NoContent,
+    );
     assert!(html.starts_with("<!doctype html>"));
     assert!(html.contains("<body>") && html.contains("</body>"));
     assert!(html.trim_end().ends_with("</html>"));
@@ -665,6 +685,7 @@ fn fragment_mode_omits_document_scaffolding() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         !html.contains("<!doctype"),
@@ -690,7 +711,6 @@ fn attribute_value_quotes_are_escaped_in_alt() {
             "a \"quoted\" caption",
             &[("blob", AttrVal::Str("h".into()))],
         )],
-        blobs,
         ..empty_snapshot()
     };
     let html = render_html(
@@ -699,6 +719,7 @@ fn attribute_value_quotes_are_escaped_in_alt() {
             fragment: true,
             ..Default::default()
         },
+        &blobs,
     );
     assert!(
         html.contains("alt=\"a &quot;quoted&quot; caption\""),
@@ -727,6 +748,7 @@ fn multibyte_text_with_marks_splits_on_char_boundaries() {
             fragment: true,
             ..Default::default()
         },
+        &tilo_content::NoContent,
     );
     assert!(
         html.contains("<strong>héll</strong>o"),

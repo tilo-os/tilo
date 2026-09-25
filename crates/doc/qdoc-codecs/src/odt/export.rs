@@ -4,6 +4,7 @@
 
 use super::container::OdtContainer;
 use crate::format::CodecError;
+use crate::resolved::Resolved;
 use qdoc::document::MarkSpan;
 use qdoc::export::InlinePlan;
 use qdoc::model::DocRef;
@@ -13,6 +14,7 @@ use qdoc::schema::{
 };
 use qdoc::snapshot::{AttrVal, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_content::ContentSource;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -32,9 +34,10 @@ const MANIFEST: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
     clippy::needless_pass_by_value,
     reason = "matches FormatProvider::export's by-value DocRef; its one call site (odt/mod.rs) is outside this file-only pass's scope"
 )]
-pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
-    let snap = doc.materialize();
-    let preserved = qdoc::model::preserved_parts(doc.doc, doc.c);
+pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
+    let snapshot = doc.materialize();
+    let snap = &Resolved::new(&snapshot, content);
+    let preserved = qdoc::model::preserved_parts(doc.doc, doc.c, content);
     // Named styles already defined in a preserved `styles.xml` must not be re-emitted into
     // `content.xml` (that would duplicate the definition) — only referenced.
     let existing_style_names = preserved
@@ -42,7 +45,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         .find(|(k, _)| k == "odt/part/styles.xml")
         .map(|(_, b)| style_names_in(b))
         .unwrap_or_default();
-    let content = build_content_xml(&snap, &existing_style_names);
+    let content = build_content_xml(snap, &existing_style_names);
 
     let mut c = OdtContainer { parts: Vec::new() };
     let mut had_mimetype = false;
@@ -84,7 +87,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         c.set("META-INF/manifest.xml", MANIFEST.to_vec());
     }
 
-    let pic_entries = write_image_blobs(&snap, &mut c, had_meta, had_styles);
+    let pic_entries = write_image_blobs(snap, &mut c, had_meta, had_styles);
     if !pic_entries.is_empty() {
         let manifest = c
             .get("META-INF/manifest.xml")
@@ -150,7 +153,7 @@ fn splice_styles_xml(
 /// Write each `image` block's blob into the zip as `Pictures/<hash>.<ext>` and return the
 /// manifest entries it needs, seeded with meta.xml/styles.xml when those were (re)written.
 fn write_image_blobs(
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     c: &mut OdtContainer,
     had_meta: bool,
     had_styles: bool,
@@ -167,11 +170,11 @@ fn write_image_blobs(
             continue;
         }
         if let Some(AttrVal::Str(hash)) = b.attrs.get("blob")
-            && let Some(bytes) = snap.blobs.get(hash)
+            && let Some(bytes) = snap.image(hash)
         {
             let (ext, media) = image_ext_and_media(bytes);
             let path = format!("Pictures/{hash}.{ext}");
-            c.set(&path, bytes.clone());
+            c.set(&path, bytes.to_vec());
             if !pic_entries.iter().any(|(p, _)| p == &path) {
                 pic_entries.push((path, media));
             }
@@ -490,13 +493,13 @@ fn image_wrap(b: &BlockView) -> &str {
 /// `xlink:href` matches the `Pictures/<hash>.<ext>` part `export()` writes for the same blob.
 fn image_frame_xml(
     b: &BlockView,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     graphic_styles: &mut Vec<(String, String)>,
 ) -> Option<String> {
     let Some(AttrVal::Str(hash)) = b.attrs.get("blob") else {
         return None;
     };
-    let bytes = snap.blobs.get(hash)?;
+    let bytes = snap.image(hash)?;
     let href = picture_href(hash, bytes);
     let anchor = image_anchor(b);
     let wrap = image_wrap(b);
@@ -817,7 +820,7 @@ fn named_style_def_xml(id: &str, props: &BTreeMap<String, AttrVal>) -> String {
 use crate::xml_escape::{escape_attr, escape_text, push_text};
 use qdoc::snapshot::BlockView;
 
-fn build_content_xml(snap: &DocSnapshot, existing_style_names: &BTreeSet<String>) -> String {
+fn build_content_xml(snap: &Resolved<'_>, existing_style_names: &BTreeSet<String>) -> String {
     let mut body = String::new();
     let mut used: BTreeMap<String, String> = BTreeMap::new();
     let mut pstyles: Vec<ParaStyleEntry> = Vec::new();
@@ -979,7 +982,7 @@ fn render_paragraph(
     reason = "threads the same per-document render state build_content_xml's other block handlers share"
 )]
 fn render_list_run(
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     i: &mut usize,
     body: &mut String,
     list_styles: &mut Vec<ListStyle>,
@@ -1044,7 +1047,7 @@ fn render_list_run(
     reason = "threads the same per-document render state build_content_xml's other block handlers share"
 )]
 fn render_table_run(
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     i: &mut usize,
     body: &mut String,
     style_attr: &mut impl FnMut(&BlockView) -> String,
@@ -1115,7 +1118,7 @@ fn render_table_run(
     reason = "one style-source parameter per style kind build_content_xml collected; splitting further would just move the coupling"
 )]
 fn render_automatic_styles(
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     existing_style_names: &BTreeSet<String>,
     used: &BTreeMap<String, String>,
     named_refs: &BTreeSet<String>,
@@ -1170,6 +1173,24 @@ mod tests {
     use crate::FormatProvider;
     use qdoc::{AttrVal, DocSnapshot, Document};
     use std::collections::BTreeMap;
+
+    /// Import `bytes` into `doc`, dropping any binary inputs (these tests reference none).
+    fn import_odt(bytes: &[u8], doc: &mut Document) {
+        OdtCodec
+            .import(
+                bytes,
+                &mut doc.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+    }
+
+    /// Export `doc` with no binary content available.
+    fn export_odt(doc: &Document) -> Vec<u8> {
+        OdtCodec
+            .export(doc.as_ref(), &tilo_content::NoContent)
+            .unwrap()
+    }
 
     type Norm = Vec<(
         String,
@@ -1227,16 +1248,16 @@ mod tests {
         let odt = minimal_odt_styled(styles, body);
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        import_odt(&odt, &mut d);
         let m1 = norm(&d.materialize());
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let c = OdtContainer::read(&exported).unwrap();
         assert_eq!(c.parts[0].0, "mimetype", "exported .odt has mimetype first");
         assert!(c.get("content.xml").is_some());
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let m2 = norm(&d2.materialize());
         assert_eq!(m1, m2, "model round-trips through .odt export then import");
     }
@@ -1254,9 +1275,9 @@ mod tests {
             dm.add_mark(&id, 0, 6, "fontFamily", "serif");
         }
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.text, "styled");
@@ -1291,7 +1312,7 @@ mod tests {
             dm.set_attr(&id, "line_spacing", 1.5_f64);
         }
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1308,7 +1329,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.text, "E=mc2");
@@ -1345,9 +1366,9 @@ mod tests {
         d.splice_text(&id, 0, 0, "H2O");
         d.as_mut().add_mark(&id, 1, 2, "sub", true);
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert!(
@@ -1369,7 +1390,7 @@ mod tests {
         d.splice_text(&id, 0, 0, "go home now");
         d.as_mut().add_mark(&id, 3, 7, "link", "https://tilo.so/");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1378,7 +1399,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "go home now");
         let link = b
@@ -1402,7 +1423,7 @@ mod tests {
         d.splice_text(&src, 0, 0, "see above");
         d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1419,7 +1440,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(
             snap.bookmarks.len(),
@@ -1469,7 +1490,7 @@ mod tests {
         d.splice_text(&id, 0, 0, "link");
         d.as_mut().add_mark(&id, 0, 4, "link", "https://x/?a=1&b=2");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let c = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(c.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1478,7 +1499,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let link = d2.materialize().blocks[0]
             .marks
             .iter()
@@ -1500,9 +1521,9 @@ mod tests {
         d.splice_text(&id, 0, 0, "red text");
         d.as_mut().add_mark(&id, 0, 3, "color", "#ff0000");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "red text");
         assert!(
@@ -1528,9 +1549,9 @@ mod tests {
             dm.add_mark(&id, 0, 5, "strong", true);
             dm.add_mark(&id, 0, 5, "color", "#0000ff");
         }
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "click");
         for name in ["link", "strong", "color"] {
@@ -1566,7 +1587,8 @@ mod tests {
         let img = d.insert_block(Some(&p1), "image");
         let p3 = d.insert_block(Some(&img), "paragraph");
         d.splice_text(&p3, 0, 0, "after");
-        let hash = d.put_blob(&TINY_PNG).expect("test fixture fits blob quota");
+        let mut inputs = tilo_content::ContentInputs::new();
+        let hash = d.attach(&TINY_PNG, &mut inputs);
         {
             let mut dm = d.as_mut();
             dm.set_attr(&img, "blob", hash.as_str());
@@ -1575,7 +1597,7 @@ mod tests {
             dm.set_attr(&img, "height", 48_i64);
         }
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec.export(d.as_ref(), &inputs).unwrap();
 
         let cont = OdtContainer::read(&exported).unwrap();
         let pic = cont
@@ -1600,7 +1622,10 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let mut reimported = tilo_content::ContentInputs::new();
+        OdtCodec
+            .import(&exported, &mut d2.as_mut(), &mut reimported)
+            .unwrap();
         let snap = d2.materialize();
         assert_eq!(snap.blocks.len(), 3, "block count preserved: {snap:?}");
         assert_eq!(snap.blocks[0].kind, "paragraph");
@@ -1632,16 +1657,11 @@ mod tests {
             im.attrs
         );
 
-        let bytes = snap
-            .blobs
-            .get(&blob_hash)
-            .expect("blob bytes present after round-trip");
         assert_eq!(
-            bytes.as_slice(),
-            &TINY_PNG[..],
+            reimported.get(&blob_hash),
+            Some(&TINY_PNG[..]),
             "image bytes survive the round-trip"
         );
-        assert_eq!(d2.blob(&blob_hash).as_deref(), Some(&TINY_PNG[..]));
     }
 
     #[test]
@@ -1650,7 +1670,8 @@ mod tests {
         let p1 = d.insert_block(None, "paragraph");
         d.splice_text(&p1, 0, 0, "text");
         let img = d.insert_block(Some(&p1), "image");
-        let hash = d.put_blob(&TINY_PNG).expect("test fixture fits blob quota");
+        let mut inputs = tilo_content::ContentInputs::new();
+        let hash = d.attach(&TINY_PNG, &mut inputs);
         {
             let mut dm = d.as_mut();
             dm.set_attr(&img, "blob", hash.as_str());
@@ -1660,7 +1681,7 @@ mod tests {
             dm.set_attr(&img, "height", 80_i64);
         }
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec.export(d.as_ref(), &inputs).unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1674,7 +1695,10 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let mut reimported = tilo_content::ContentInputs::new();
+        OdtCodec
+            .import(&exported, &mut d2.as_mut(), &mut reimported)
+            .unwrap();
         let snap = d2.materialize();
         let im = snap
             .blocks
@@ -1720,7 +1744,7 @@ mod tests {
         let item_c = d.insert_block(Some(&nested), "list_item");
         d.splice_text(&item_c, 0, 0, "c");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1729,7 +1753,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         let level = |b: &qdoc::snapshot::BlockView| match b.attrs.get("level") {
             Some(AttrVal::Int(n)) => *n,
@@ -1766,7 +1790,7 @@ mod tests {
             dm.add_mark(&p, 0, 6, "fontFamily", "serif");
             dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
         }
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1775,7 +1799,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "styled");
         assert_eq!(
@@ -1826,7 +1850,7 @@ mod tests {
             }
         }
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1839,7 +1863,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         let items: Vec<_> = snap
             .blocks
@@ -1868,9 +1892,9 @@ mod tests {
             );
         }
 
-        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_odt(&d2);
         let mut d3 = Document::new();
-        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_odt(&exported2, &mut d3);
         assert_eq!(
             norm(&d2.materialize()),
             norm(&d3.materialize()),
@@ -1900,7 +1924,7 @@ mod tests {
             dm.set_attr(&p, "style", "Fancy");
         }
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -1918,7 +1942,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.text, "fancy");
@@ -1942,9 +1966,9 @@ mod tests {
         assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
         assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
 
-        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_odt(&d2);
         let mut d3 = Document::new();
-        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_odt(&exported2, &mut d3);
         assert_eq!(
             norm(&d2.materialize()),
             norm(&d3.materialize()),
@@ -1965,7 +1989,7 @@ mod tests {
         d.set_doc_prop("modified", "2021-06-07T08:09:10");
         d.set_doc_prop("generator", "qdoc/1.0");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let meta = std::str::from_utf8(cont.get("meta.xml").expect("meta.xml written")).unwrap();
         assert!(
@@ -2003,7 +2027,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let props = d2.doc_props();
         assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
         assert_eq!(
@@ -2029,9 +2053,9 @@ mod tests {
         assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
         assert_eq!(d2.materialize().blocks[0].text, "body");
 
-        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_odt(&d2);
         let mut d3 = Document::new();
-        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_odt(&exported2, &mut d3);
         assert_eq!(
             d2.doc_props(),
             d3.doc_props(),
@@ -2050,7 +2074,7 @@ mod tests {
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        import_odt(&odt, &mut d);
         assert_eq!(
             d.doc_prop("title").as_deref(),
             Some("Old"),
@@ -2059,7 +2083,7 @@ mod tests {
         d.set_doc_prop("title", "New");
         d.set_doc_prop("keywords", "k");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let out = OdtContainer::read(&exported).unwrap();
         let meta_out = std::str::from_utf8(out.get("meta.xml").unwrap()).unwrap();
         assert!(
@@ -2085,7 +2109,7 @@ mod tests {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "plain");
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         assert!(
             cont.get("meta.xml").is_none(),
@@ -2106,7 +2130,7 @@ mod tests {
         d.splice_footer_text(&f, 0, 0, "Page ");
         d.insert_footer_page_number(&f, 5);
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let styles =
             std::str::from_utf8(cont.get("styles.xml").expect("styles.xml written")).unwrap();
@@ -2129,7 +2153,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         assert_eq!(d2.materialize().blocks[0].text, "body");
         let header = d2.header();
         assert_eq!(header.len(), 1, "header block present: {header:?}");
@@ -2156,9 +2180,9 @@ mod tests {
         assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
         // Idempotent across a second round-trip: block ids are volatile per import, so compare on text + marks, not the full BlockView.
-        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_odt(&d2);
         let mut d3 = Document::new();
-        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_odt(&exported2, &mut d3);
         assert_eq!(
             norm_region(&d2.header()),
             norm_region(&d3.header()),
@@ -2183,12 +2207,12 @@ mod tests {
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        import_odt(&odt, &mut d);
         assert_eq!(d.header()[0].text, "Old Header", "existing header imported");
         let hid = d.header_blocks_in_order()[0].clone();
         d.splice_header_text(&hid, 0, 9, "New Header"); // replace "Old Header"
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let out = OdtContainer::read(&exported).unwrap();
         let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
         assert!(
@@ -2214,7 +2238,7 @@ mod tests {
         );
         let odt = minimal_odt(body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        import_odt(&odt, &mut d);
         let snap = d.materialize();
 
         let p = &snap.blocks[0];
@@ -2267,7 +2291,7 @@ mod tests {
         let enote_block = d.insert_note_block(&enote_id, None, "paragraph").unwrap();
         d.splice_note_text(&enote_id, &enote_block, 0, 0, "an endnote");
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -2284,7 +2308,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(
             snap.blocks[0]
@@ -2318,9 +2342,9 @@ mod tests {
             .expect("endnote present");
         assert_eq!(end.blocks[0].text, "an endnote");
 
-        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_odt(&d2);
         let mut d3 = Document::new();
-        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_odt(&exported2, &mut d3);
         let kinds_texts = |snap: &DocSnapshot| {
             let mut v: Vec<(String, String)> = snap
                 .notes
@@ -2356,7 +2380,7 @@ mod tests {
         );
         let odt = minimal_odt(body);
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        import_odt(&odt, &mut d);
         let snap = d.materialize();
 
         let p = &snap.blocks[0];
@@ -2400,7 +2424,7 @@ mod tests {
         let cid = d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
         let _ = cid;
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -2421,7 +2445,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(snap.blocks[0].text, "please fix this word now");
         let cm = snap.blocks[0]
@@ -2454,9 +2478,9 @@ mod tests {
         assert_eq!(cmt.blocks[0].text, "note: fix");
         assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
 
-        let exported2 = OdtCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_odt(&d2);
         let mut d3 = Document::new();
-        OdtCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_odt(&exported2, &mut d3);
         let authors_texts = |snap: &DocSnapshot| {
             let mut v: Vec<CommentSummary> = snap
                 .comments
@@ -2534,13 +2558,13 @@ mod tests {
         // block + inline change-start/change-end markers, and re-import with kind/author + ranges intact.
         let d = build_tracked_changes_doc();
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert_tracked_changes_xml(content);
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(
             snap.blocks[0].text, "hello there world",
@@ -2622,8 +2646,8 @@ mod tests {
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        import_odt(&odt, &mut d);
+        let exported = export_odt(&d);
 
         let out = OdtContainer::read(&exported).unwrap();
         assert_eq!(
@@ -2643,7 +2667,7 @@ mod tests {
         d.splice_text(&p, 0, 0, "flows across columns");
         d.set_columns(2, Some(48.0)); // 48 px ≈ 1.27 cm
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let out = OdtContainer::read(&exported).unwrap();
         let styles =
             std::str::from_utf8(out.get("styles.xml").expect("styles.xml synthesised")).unwrap();
@@ -2657,7 +2681,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         let (count, gap) = d2.columns();
         assert_eq!(count, 2, "column count survives .odt round-trip");
         // The gap round-trips through px → cm → px; allow a small unit-conversion epsilon.
@@ -2684,11 +2708,11 @@ mod tests {
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        import_odt(&odt, &mut d);
         assert_eq!(d.columns(), (1, None), "no columns initially");
         d.set_columns(3, None);
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let out = OdtContainer::read(&exported).unwrap();
         let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
         assert!(
@@ -2705,7 +2729,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_odt(&exported, &mut d2);
         assert_eq!(
             d2.columns().0,
             3,
@@ -2724,11 +2748,11 @@ mod tests {
         let odt = c.write().unwrap();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
+        import_odt(&odt, &mut d);
         assert_eq!(d.columns().0, 4, "imported 4 columns");
         d.set_columns(2, None);
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = export_odt(&d);
         let out = OdtContainer::read(&exported).unwrap();
         let styles_out = std::str::from_utf8(out.get("styles.xml").unwrap()).unwrap();
         assert_eq!(
@@ -2779,8 +2803,8 @@ mod tests {
             .to_vec();
 
         let mut d = Document::new();
-        OdtCodec.import(&odt, &mut d.as_mut()).unwrap();
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        import_odt(&odt, &mut d);
+        let exported = export_odt(&d);
         let out = OdtContainer::read(&exported).unwrap();
         assert_eq!(
             out.get("styles.xml").unwrap(),
@@ -2804,7 +2828,7 @@ mod tests {
 
         // Replica A imports; replica B forks A (so they share atom ids).
         let mut a = Document::new();
-        OdtCodec.import(&odt, &mut a.as_mut()).unwrap();
+        import_odt(&odt, &mut a);
         let mut b = a.fork();
 
         // The two style atoms have the SAME stable ids on both replicas.
@@ -2846,7 +2870,7 @@ mod tests {
 
         // Both replicas export an identical styles.xml that carries BOTH edits.
         for (d, who) in [(&a, "A"), (&b, "B")] {
-            let exported = OdtCodec.export(d.as_ref()).unwrap();
+            let exported = export_odt(d);
             let out = OdtContainer::read(&exported).unwrap();
             let styles = String::from_utf8(out.get("styles.xml").unwrap().to_vec()).unwrap();
             assert!(
@@ -2868,12 +2892,12 @@ mod tests {
             );
         }
         // Convergence: identical exported styles.xml on both replicas.
-        let sa = OdtContainer::read(&OdtCodec.export(a.as_ref()).unwrap())
+        let sa = OdtContainer::read(&export_odt(&a))
             .unwrap()
             .get("styles.xml")
             .unwrap()
             .to_vec();
-        let sb = OdtContainer::read(&OdtCodec.export(b.as_ref()).unwrap())
+        let sb = OdtContainer::read(&export_odt(&b))
             .unwrap()
             .get("styles.xml")
             .unwrap()

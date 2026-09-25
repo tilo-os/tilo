@@ -119,6 +119,36 @@ the FS daemon on your behalf. Prefer it over raw `std::fs` for anything in
 the workspace: it participates in the P2P projection/hydration flow and
 respects the workspace ACLs.
 
+## App data: resources first, binary content second
+
+Keep what your app owns as versioned resources: the document your widgets
+bind to, changed only through actions, so its history replays, merges and
+undoes. Files in `.docx`, `.odt` or `.md` are projections of such a resource
+(`qdoc-codecs`), not where it is stored.
+
+Some bytes are not a resource: a photograph you imported, an image placed in
+a document, a mail attachment. Treat those as *binary inputs*. Store them in
+a `tilo_content::ContentStore` and let the resource name them by content
+hash. An action carries the hash, never the bytes.
+
+```rust
+let content = tilo_content::ContentStore::for_app(); // once, at startup; pass it down
+let hash = content.put(&bytes)?;                      // or put_reader(..) to stream
+dispatch(InsertImage { content: hash, .. });
+let bytes = content.read(&hash);                      // verified against the hash
+```
+
+The store is a handle, not a global. `ContentStore::memory()` is for tests.
+qdoc documents follow the same rule:
+
+- Importing a file returns the images it embeds as `ContentInputs` for you to
+  `put_inputs`.
+- Exporting reads them back through a `ContentSource`.
+- The document itself only carries descriptors.
+
+Content is never garbage-collected by guesswork. Only a caller that holds
+every live reference may `collect_unreferenced`.
+
 ## `runtime::identity` — local signing
 
 ```rust

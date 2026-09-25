@@ -6,12 +6,13 @@ use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
 use tilo_actions::InvocationId;
+use tilo_content::ContentStore;
 
 use crate::frame::FrameBuf;
 use crate::model::ScannedCode;
 use crate::model::{Facing, PhotoFormat};
 
-/// A bounded thumbnail request. `media_id` is a verified qdoc identity; local
+/// A bounded thumbnail request. `media_id` names verified bytes in the content store; local
 /// paths are admitted only from a portal-selected scan image or the single
 /// recent capture projection.
 pub enum ThumbnailSource {
@@ -33,7 +34,7 @@ pub struct ThumbnailResult {
     pub result: Option<(Vec<u8>, u32, u32)>,
 }
 
-/// Decode an existing local or qdoc-backed image for the offline scanner.
+/// Decode an existing local or content-store image for the offline scanner.
 /// The decode and detector both run away from the UI thread.
 pub struct ScanJob {
     pub generation: u64,
@@ -83,7 +84,7 @@ pub struct VideoJob {
     pub invocation: Option<InvocationId>,
     pub generation: u64,
     /// `Some` writes an optional local projection after verification. `None` is the
-    /// hermetic sample path: it still produces/validates qdoc media bytes but
+    /// hermetic sample path: it still produces/validates stored media bytes but
     /// intentionally has no filesystem projection.
     pub dir: Option<PathBuf>,
     pub facing: Facing,
@@ -150,6 +151,7 @@ struct WorkerLoop {
     video_results: SyncSender<VideoResult>,
     thumbnail_results: SyncSender<ThumbnailResult>,
     scan_results: SyncSender<ScanResult>,
+    content: ContentStore,
 }
 
 impl WorkerLoop {
@@ -179,7 +181,7 @@ impl WorkerLoop {
             .and_then(crate::video::Recorder::finish)
             .ok_or_else(|| "nothing recorded".to_string())
             .and_then(|bytes| {
-                crate::media::store(&bytes)
+                crate::media::store(&self.content, &bytes)
                     .ok_or_else(|| "couldn't verify portable clip bytes".to_string())
                     .and_then(|media_id| {
                         let name = match job.dir.as_ref() {
@@ -219,7 +221,7 @@ impl WorkerLoop {
                     .and_then(|name| {
                         let local_path = job.dir.join(&name);
                         let saved_path = local_path.clone();
-                        crate::media::store_file(&local_path)
+                        crate::media::store_file(&self.content, &local_path)
                             .map(|media_id| PhotoSaved {
                                 name,
                                 local_path: saved_path,
@@ -247,9 +249,11 @@ impl WorkerLoop {
                     ThumbnailSource::Path(path) => {
                         crate::library::load_thumb(&path, job.width, job.height)
                     }
-                    ThumbnailSource::Media(id) => crate::media::read(&id).and_then(|bytes| {
-                        crate::library::load_thumb_bytes(&bytes, job.width, job.height)
-                    }),
+                    ThumbnailSource::Media(id) => {
+                        crate::media::read(&self.content, &id).and_then(|bytes| {
+                            crate::library::load_thumb_bytes(&bytes, job.width, job.height)
+                        })
+                    }
                 };
                 self.thumbnail_results
                     .send(ThumbnailResult {
@@ -262,7 +266,7 @@ impl WorkerLoop {
             WorkerJob::Scan(job) => {
                 let luma = match job.source {
                     ScanSource::Path(path) => crate::library::load_luma(&path, 1024),
-                    ScanSource::Media(id) => crate::media::read(&id)
+                    ScanSource::Media(id) => crate::media::read(&self.content, &id)
                         .and_then(|bytes| crate::library::load_luma_bytes(&bytes, 1024)),
                     ScanSource::Frame(frame) => Some((
                         crate::frame::luma(&frame),
@@ -286,7 +290,7 @@ impl WorkerLoop {
 }
 
 impl CameraWorker {
-    pub fn new() -> Self {
+    pub fn new(content: ContentStore) -> Self {
         // Every ingress and result queue is bounded. One sleeping event loop
         // replaces the former eager per-feature worker set.
         let (tx, jobs) = std::sync::mpsc::sync_channel::<WorkerJob>(1);
@@ -310,6 +314,7 @@ impl CameraWorker {
                     video_results,
                     thumbnail_results,
                     scan_results,
+                    content,
                 };
                 // Inspect recording state before blocking and after all jobs.
                 // A full unified queue can coalesce a recording wake, so this
@@ -408,7 +413,7 @@ impl CameraWorker {
         self.wake_recording()
     }
 
-    /// Request worker-side finish. AVI muxing, qdoc verification, and local
+    /// Request worker-side finish. AVI muxing, content-store verification, and local
     /// projection all remain on the worker; sync owns canonical settlement.
     ///
     /// # Errors
@@ -472,12 +477,6 @@ impl CameraWorker {
 
     pub fn try_recv_scan(&self) -> Option<ScanResult> {
         self.scan_rx.try_recv().ok()
-    }
-}
-
-impl Default for CameraWorker {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

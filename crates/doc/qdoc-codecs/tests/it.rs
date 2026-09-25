@@ -16,6 +16,8 @@ use tilo_automerge::heap;
 #[global_allocator]
 static HEAP: heap::ThreadCounting = heap::ThreadCounting;
 
+#[path = "binary_inputs.rs"]
+mod binary_inputs;
 #[path = "codec_scaling.rs"]
 mod codec_scaling;
 #[path = "convergence.rs"]

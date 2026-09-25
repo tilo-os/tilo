@@ -267,6 +267,10 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOp
 /// producer, so no caller may substitute a later mutable Photos replica for
 /// the output of the admitted export operation.
 ///
+/// The rendering is an output, not the photograph: it is put in `store` and
+/// returned by address, while the photograph itself stays its original content
+/// plus the edits recorded against it.
+///
 /// # Errors
 ///
 /// Returns a user-facing message when the addressed photograph or edit
@@ -277,6 +281,7 @@ pub fn export_edited_content(
     source_content: &str,
     expected_edits: Edits,
     doc: &AutoCommit,
+    store: &tilo_content::ContentStore,
 ) -> Result<tilo_actions::ActionOutput, String> {
     let open = PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
     if resource_id(&open) != expected_resource_id
@@ -285,7 +290,8 @@ pub fn export_edited_content(
     {
         return Err("the addressed photograph or its edit snapshot is no longer current".into());
     }
-    let source = qdoc::blobstore::get(source_content)
+    let source = store
+        .read(source_content)
         .ok_or_else(|| "the addressed photograph bytes are unavailable".to_string())?;
     let original = crate::pixels::decode(&source)
         .ok_or_else(|| "the addressed photograph bytes are not a supported image".to_string())?;
@@ -296,11 +302,10 @@ pub fn export_edited_content(
     );
     let encoded = crate::pixels::encode_png(&rendered)
         .ok_or_else(|| "the edited photograph could not be encoded".to_string())?;
-    let hash = qdoc::blobstore::put(&encoded)
-        .ok_or_else(|| "the edited photograph could not be stored".to_string())?;
-    if qdoc::blobstore::get(&hash).as_deref() != Some(encoded.as_slice()) {
-        return Err("the stored edited photograph is unavailable".into());
-    }
+    let hash = store.put(&encoded).map_err(|error| {
+        tracing::warn!(%error, "photos: could not store an exported rendering");
+        "the edited photograph could not be stored".to_string()
+    })?;
     let address = tilo_actions::content_resource(&hash)
         .ok_or_else(|| "the content provider returned an invalid address".to_string())?;
     Ok(tilo_actions::ActionOutput {
@@ -2255,7 +2260,7 @@ pub(crate) fn place_counts(library: &crate::model::PhotoLibrary) -> Vec<(String,
 pub(crate) fn place_resource_id(place_key: &str) -> String {
     format!(
         "photos.place:{}",
-        qdoc::blobstore::hash_bytes(place_key.as_bytes())
+        tilo_content::hash_bytes(place_key.as_bytes())
     )
 }
 
@@ -2328,32 +2333,32 @@ pub(crate) fn metadata_label_counts(
 pub(crate) fn folder_resource_id(folder: &str) -> String {
     format!(
         "photos.folder:{}",
-        qdoc::blobstore::hash_bytes(folder.as_bytes())
+        tilo_content::hash_bytes(folder.as_bytes())
     )
 }
 
 pub(crate) fn person_resource_id(person: &str) -> String {
     format!(
         "photos.person:{}",
-        qdoc::blobstore::hash_bytes(person.as_bytes())
+        tilo_content::hash_bytes(person.as_bytes())
     )
 }
 
 /// A tag is durable shared metadata, so its derived browse resource must have
 /// the same portable, content-independent identity on every replica.
 pub(crate) fn tag_resource_id(tag: &str) -> String {
-    format!("photos.tag:{}", qdoc::blobstore::hash_bytes(tag.as_bytes()))
+    format!("photos.tag:{}", tilo_content::hash_bytes(tag.as_bytes()))
 }
 
 pub(crate) fn object_resource_id(object: &str) -> String {
     format!(
         "photos.object:{}",
-        qdoc::blobstore::hash_bytes(object.as_bytes())
+        tilo_content::hash_bytes(object.as_bytes())
     )
 }
 
 pub(crate) fn pet_resource_id(pet: &str) -> String {
-    format!("photos.pet:{}", qdoc::blobstore::hash_bytes(pet.as_bytes()))
+    format!("photos.pet:{}", tilo_content::hash_bytes(pet.as_bytes()))
 }
 
 pub(crate) fn folder_resource(folder: &str, count: usize) -> Resource {
@@ -3898,9 +3903,9 @@ const CONTENT_HEX_LEN: usize = 64;
 /// for the path-shaped id a document written before content hashes still
 /// produces. This is what keeps a portable address useful rather than merely
 /// identical everywhere: a session that was handed the picture and never had a
-/// file for it goes from the address to the bytes through
-/// `qdoc::blobstore::get`, the same route [`crate::doc::bytes_of`] takes for
-/// the photograph it is drawing.
+/// file for it goes from the address to the bytes through its content store,
+/// the same route [`crate::doc::bytes_of`] takes for the photograph it is
+/// drawing.
 pub fn content_of(id: &str) -> Option<&str> {
     let tail = id.strip_prefix(IMAGE_KIND)?.strip_prefix(':')?;
     let is_content = tail.len() == CONTENT_HEX_LEN
@@ -3916,7 +3921,7 @@ mod tests {
     use tilo_automerge::ApplyIncoming;
 
     fn portable_photo(path: &str, width: u32, height: u32) -> LibraryPhoto {
-        let hash = qdoc::blobstore::hash_bytes(path.as_bytes());
+        let hash = tilo_content::hash_bytes(path.as_bytes());
         LibraryPhoto::from_image(OpenImage::from_path(path, width, height).with_content(hash))
     }
     use crate::model::OpenImage;

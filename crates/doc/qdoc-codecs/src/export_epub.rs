@@ -1,3 +1,4 @@
+use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr_quotes, escape_text};
 use qdoc::export::{BlockKind, ExportBlock, detect_image_media, walk_blocks};
 use qdoc::snapshot::AttrVal;
@@ -5,6 +6,7 @@ use qdoc::{BlockView, DocSnapshot};
 use std::fmt;
 use std::fmt::Write as _;
 use std::io::{Cursor, Write};
+use tilo_content::ContentSource;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
@@ -42,7 +44,11 @@ const MIMETYPE: &str = "application/epub+zip";
 /// [`DocEpubError::Io`] if writing an entry's bytes fails. Snapshot
 /// content itself never causes an error — degenerate inputs still
 /// produce a valid book.
-pub fn render_epub(snap: &DocSnapshot) -> Result<Vec<u8>, DocEpubError> {
+pub fn render_epub(
+    snap: &DocSnapshot,
+    content: &dyn ContentSource,
+) -> Result<Vec<u8>, DocEpubError> {
+    let snap = &Resolved::new(snap, content);
     // 1. Collect image blobs into packaged resources, mapping blob-hash → item.
     let images = collect_images(snap);
 
@@ -107,7 +113,7 @@ const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 // ---- images -----------------------------------------------------------------
 
-/// A packaged image resource derived from a blob in `snap.blobs`.
+/// A packaged image resource derived from an image the snapshot references.
 struct ImageItem {
     /// Manifest item id (e.g. `img-1`).
     id: String,
@@ -123,14 +129,14 @@ struct ImageItem {
 
 /// Walk every block, collecting the (in-order, de-duplicated) set of
 /// image blobs actually referenced. Blocks whose blob is missing from
-/// `snap.blobs` are skipped (they render as empty `<img/>`).
-fn collect_images(snap: &DocSnapshot) -> Vec<ImageItem> {
+/// content are skipped (they render as empty `<img/>`).
+fn collect_images(snap: &Resolved<'_>) -> Vec<ImageItem> {
     let mut items: Vec<ImageItem> = Vec::new();
     collect_images_in(&snap.blocks, snap, &mut items);
     items
 }
 
-fn collect_images_in(blocks: &[BlockView], snap: &DocSnapshot, items: &mut Vec<ImageItem>) {
+fn collect_images_in(blocks: &[BlockView], snap: &Resolved<'_>, items: &mut Vec<ImageItem>) {
     for b in walk_blocks(blocks) {
         if let Some(item) = image_item_for(b, snap, items.len()) {
             // Skip blobs already packaged (reused images are embedded once);
@@ -145,14 +151,14 @@ fn collect_images_in(blocks: &[BlockView], snap: &DocSnapshot, items: &mut Vec<I
 /// Build a packaged [`ImageItem`] for an `image` block whose blob is
 /// present, using `existing_count` to number the resource. `None` for
 /// non-image blocks or missing blobs.
-fn image_item_for(b: &BlockView, snap: &DocSnapshot, existing_count: usize) -> Option<ImageItem> {
+fn image_item_for(b: &BlockView, snap: &Resolved<'_>, existing_count: usize) -> Option<ImageItem> {
     if ExportBlock::new(b).kind() != BlockKind::Image {
         return None;
     }
     let AttrVal::Str(hash) = b.attrs.get("blob")? else {
         return None;
     };
-    let bytes = snap.blobs.get(hash)?;
+    let bytes = snap.image(hash)?;
     let media = detect_image_media(bytes).unwrap_or(qdoc::export::ImageMedia {
         extension: "png",
         mime: "image/png",
@@ -162,7 +168,7 @@ fn image_item_for(b: &BlockView, snap: &DocSnapshot, existing_count: usize) -> O
         id: format!("img-{n}"),
         href: format!("images/img-{n}.{}", media.extension),
         media_type: media.mime,
-        bytes: bytes.clone(),
+        bytes: bytes.to_vec(),
         blob_hash: hash.clone(),
     })
 }
@@ -192,7 +198,7 @@ struct Heading {
 /// Split the document's top-level blocks into chapters at each
 /// top-level `H1`; everything before the first forms a lead chapter.
 /// Never empty (no blocks → one empty chapter).
-fn build_chapters(snap: &DocSnapshot, images: &[ImageItem]) -> Vec<Chapter> {
+fn build_chapters(snap: &Resolved<'_>, images: &[ImageItem]) -> Vec<Chapter> {
     // Group blocks into runs each beginning at a top-level H1; blocks
     // before the first H1 form the lead group.
     let mut groups: Vec<Vec<&BlockView>> = Vec::new();
@@ -270,7 +276,7 @@ fn is_h1(b: &BlockView) -> bool {
 /// from `export_html` (fragment mode); we then anchor headings, fix void
 /// elements, and re-point image `data:` URIs to packaged hrefs.
 fn render_chapter_xhtml(
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     anchored: &[(String, &BlockView)],
     title: &str,
     images: &[ImageItem],
@@ -287,7 +293,7 @@ fn render_chapter_xhtml(
             title: None,
             indent: "  ".to_string(),
         };
-        let mut frag_html = crate::export_html::render_html(&sub, opts);
+        let mut frag_html = crate::export_html::render_resolved(&snap.with_snapshot(&sub), opts);
 
         // Re-point image data: URIs to packaged file resources.
         frag_html = repoint_images(&frag_html, block, images);
@@ -306,13 +312,12 @@ fn render_chapter_xhtml(
     wrap_xhtml(title, &body)
 }
 
-/// A blank snapshot sharing the source's blobs + styles, so a
+/// A blank snapshot sharing the source's styles, so a
 /// sub-render of one block resolves styles/images identically.
 fn empty_like(snap: &DocSnapshot) -> DocSnapshot {
     DocSnapshot {
         schema: snap.schema.clone(),
         schema_version: snap.schema_version,
-        blobs: snap.blobs.clone(),
         styles: snap.styles.clone(),
         ..Default::default()
     }
@@ -469,7 +474,7 @@ fn wrap_xhtml(title: &str, body: &str) -> String {
 /// Build the EPUB 3 nav document: an `<nav epub:type="toc">` whose
 /// nested `<ol>` mirrors heading levels across chapters, each linking to
 /// its anchor in the owning chapter.
-fn build_nav(snap: &DocSnapshot, chapters: &[Chapter]) -> String {
+fn build_nav(snap: &Resolved<'_>, chapters: &[Chapter]) -> String {
     let title = doc_title(snap);
 
     // Flatten all headings (with their chapter href) into a level/label/link list.
@@ -621,7 +626,7 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
 // ---- OPF package ------------------------------------------------------------
 
 /// Build the OPF package document: metadata (Dublin Core) + manifest + spine.
-fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> String {
+fn build_opf(snap: &Resolved<'_>, chapters: &[Chapter], images: &[ImageItem]) -> String {
     let title = doc_title(snap);
     let author = snap.properties.get("author").cloned();
     let language = snap
@@ -721,7 +726,7 @@ fn build_opf(snap: &DocSnapshot, chapters: &[Chapter], images: &[ImageItem]) -> 
 }
 
 /// Best-effort document title from `properties`, falling back to "Untitled".
-fn doc_title(snap: &DocSnapshot) -> String {
+fn doc_title(snap: &Resolved<'_>) -> String {
     snap.properties
         .get("title")
         .cloned()
@@ -742,7 +747,7 @@ fn normalize_modified(s: &str) -> String {
 
 /// A deterministic pseudo-id derived from title + block count, so two
 /// renders share a `dc:identifier` without a uuid/random dep.
-fn stable_id(snap: &DocSnapshot, title: &str) -> String {
+fn stable_id(snap: &Resolved<'_>, title: &str) -> String {
     // FNV-1a 64-bit over title + block count — cheap, dependency-free, stable.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     let feed = |hash: &mut u64, byte: u8| {

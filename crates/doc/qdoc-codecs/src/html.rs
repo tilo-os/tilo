@@ -19,6 +19,7 @@
 
 use crate::format::{CodecError, Confidence, FormatProvider};
 use qdoc::model::{DocMut, DocRef};
+use tilo_content::{ContentInputs, ContentSource};
 
 pub struct HtmlCodec;
 
@@ -45,15 +46,20 @@ impl FormatProvider for HtmlCodec {
         }
     }
 
-    fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
+    fn import(
+        &self,
+        bytes: &[u8],
+        doc: &mut DocMut,
+        inputs: &mut ContentInputs,
+    ) -> Result<(), CodecError> {
         doc.bulk(|doc| {
             let src = String::from_utf8_lossy(bytes);
-            import_html(&src, doc);
+            import_html(&src, doc, inputs);
             Ok(())
         })
     }
 
-    fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
+    fn export(&self, _doc: DocRef, _content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
         // The HTML writer renders a materialized `DocSnapshot`, not a `DocRef`.
         Err(CodecError::Unsupported(
             "HTML export is provided by qdoc::export_html::render_html, not the qdoc codec"
@@ -533,6 +539,8 @@ struct ListCtx {
 /// All of `import_html`'s parse state, threaded through the per-token handlers.
 #[derive(Default)]
 struct ImportState {
+    // Images carried inline as `data:` URIs, for the caller's content store.
+    inputs: ContentInputs,
     prev_block: Option<String>,
     cur_block: Option<String>,
     cur_len: usize,
@@ -553,7 +561,7 @@ struct ImportState {
     pre_depth: usize,
 }
 
-fn import_html(src: &str, doc: &mut DocMut) {
+fn import_html(src: &str, doc: &mut DocMut, inputs: &mut ContentInputs) {
     let tokens = tokenize(src);
     let mut st = ImportState::default();
 
@@ -580,6 +588,7 @@ fn import_html(src: &str, doc: &mut DocMut) {
 
     // Close any inline wrappers still open at EOF, then apply gathered marks.
     finish_inline_now(&mut st);
+    inputs.append(&mut st.inputs);
     apply_pending_marks(doc, st.pending);
 }
 
@@ -884,9 +893,8 @@ fn insert_image(doc: &mut DocMut, st: &mut ImportState, attrs: &str) {
         doc.splice_text(&id, 0, 0, &alt);
     }
     if let Some(bytes) = decode_data_uri(&src) {
-        if let Some(hash) = doc.put_blob(&bytes) {
-            doc.set_attr(&id, "blob", hash.as_str());
-        }
+        let hash = doc.attach(&bytes, &mut st.inputs);
+        doc.set_attr(&id, "blob", hash.as_str());
     } else if !src.is_empty() {
         // Keep an http/relative src for later resolution; the alt is the fallback.
         doc.set_attr(&id, "src", src.as_str());
@@ -1040,9 +1048,16 @@ mod tests {
     use qdoc::snapshot::DocSnapshot;
 
     fn import(src: &str) -> DocSnapshot {
+        import_with_inputs(src).0
+    }
+
+    fn import_with_inputs(src: &str) -> (DocSnapshot, ContentInputs) {
         let mut d = Document::new();
-        HtmlCodec.import(src.as_bytes(), &mut d.as_mut()).unwrap();
-        d.materialize()
+        let mut inputs = ContentInputs::new();
+        HtmlCodec
+            .import(src.as_bytes(), &mut d.as_mut(), &mut inputs)
+            .unwrap();
+        (d.materialize(), inputs)
     }
 
     #[test]
@@ -1343,7 +1358,8 @@ mod tests {
     #[test]
     fn data_uri_image_becomes_blob() {
         // A 1-byte payload "A" (base64 "QQ==").
-        let snap = import(r#"<p><img src="data:image/png;base64,QQ==" alt="pic"></p>"#);
+        let (snap, inputs) =
+            import_with_inputs(r#"<p><img src="data:image/png;base64,QQ==" alt="pic"></p>"#);
         let img = snap
             .blocks
             .iter()
@@ -1354,12 +1370,7 @@ mod tests {
             Some(qdoc::AttrVal::Str(s)) => s.clone(),
             other => panic!("expected blob attr, got {other:?}"),
         };
-        assert_eq!(
-            snap.blobs.get(&blob).map(std::vec::Vec::as_slice),
-            Some(b"A".as_slice()),
-            "{:?}",
-            snap.blobs
-        );
+        assert_eq!(inputs.get(&blob), Some(b"A".as_slice()), "{inputs:?}");
     }
 
     #[test]
@@ -1403,7 +1414,9 @@ mod tests {
     #[test]
     fn export_is_unsupported() {
         let d = Document::new();
-        let err = HtmlCodec.export(d.as_ref()).unwrap_err();
+        let err = HtmlCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap_err();
         assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
     }
 }

@@ -12,9 +12,10 @@
 //!   passes to whatever needs it; nothing here is process-global. Writes and reads stream
 //!   ([`ContentStore::put_reader`], [`ContentStore::open`]) and every read is verified against the
 //!   hash that named it.
-//! - [`ContentBackend`] is what a store runs on. [`DirBackend`] keeps content in a local
-//!   directory; the device content store behind the filesystem daemon plugs in as another backend,
-//!   which is what makes content reach an app's other devices and collaborators.
+//! - [`ContentBackend`] is what a store runs on. The device content store behind the filesystem
+//!   daemon, reached through the capability the launcher hands the app (`DeviceBackend`), is what
+//!   makes content reach an app's other devices and collaborators; [`DirBackend`] keeps content
+//!   in a local directory for a process started without one.
 //! - [`ContentSource`] is the read side pure code takes (an exporter embedding images), and
 //!   [`ContentInputs`] is what pure code hands back (an importer that found images) for the caller
 //!   to persist. Neither does I/O of its own.
@@ -30,11 +31,15 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(all(unix, feature = "device"))]
+mod device;
 #[cfg(feature = "dir")]
 mod dir;
 mod memory;
 mod sniff;
 
+#[cfg(all(unix, feature = "device"))]
+pub use device::{DeviceBackend, LegacyImport};
 #[cfg(feature = "dir")]
 pub use dir::DirBackend;
 pub use memory::MemoryBackend;
@@ -199,6 +204,14 @@ pub trait ContentBackend: Send + Sync {
         let _ = live;
         Err(ContentError::CollectionUnsupported)
     }
+
+    /// Whether content stored here reaches beyond this device's own copy: the device content
+    /// store serves it to the app's other devices and collaborators. A document may then refer
+    /// to content by address alone; with a store that is not shared, a collaborator would be left
+    /// holding an address nothing can resolve.
+    fn shared(&self) -> bool {
+        false
+    }
 }
 
 /// An app's handle to binary content: cheap to clone, passed to whatever needs it.
@@ -237,12 +250,18 @@ impl ContentStore {
         Self::new(DirBackend::new(root))
     }
 
-    /// The store an app uses unless it is handed another: the session's shared directory when the
-    /// host names one ([`SHARED_STORE_ENV`]), otherwise `tilo/content` in the user's data
-    /// directory. Content an earlier version kept in the cache directory (`tilo/blobs`) still
-    /// reads. With no usable directory at all, content is kept in memory.
+    /// The store an app uses unless it is handed another: the device content store when the
+    /// launcher handed this process its capability ([`ContentStore::device`]), otherwise the
+    /// session's shared directory when the host names one ([`SHARED_STORE_ENV`]), otherwise
+    /// `tilo/content` in the user's data directory. Content an earlier version kept in the cache
+    /// directory (`tilo/blobs`) still reads. With no usable directory at all, content is kept in
+    /// memory.
     #[cfg(feature = "dir")]
     pub fn for_app() -> Self {
+        #[cfg(all(unix, feature = "device"))]
+        if let Some(device) = Self::device() {
+            return device;
+        }
         Self::for_app_with(&|name| std::env::var_os(name))
     }
 
@@ -323,6 +342,12 @@ impl ContentStore {
     /// Where the content at `hash` has got to.
     pub fn state(&self, hash: &str) -> ContentState {
         self.backend.state(hash)
+    }
+
+    /// Whether content stored here reaches the app's other devices and collaborators; see
+    /// [`ContentBackend::shared`].
+    pub fn shared(&self) -> bool {
+        self.backend.shared()
     }
 
     /// Remove every item not named in `live`; see [`ContentBackend::collect_unreferenced`].

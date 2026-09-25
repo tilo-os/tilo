@@ -439,7 +439,8 @@ readers = ["apps/disks/src/probe.rs"]
 [[cargo]]
 package = "qdoc-codecs"
 inputs = ["crates/doc/fixtures/"]
-readers = ["crates/doc/qdoc-codecs/src/bulk_equivalence.rs", "crates/doc/qdoc-codecs/tests/office_roundtrip.rs"]
+readers = ["crates/doc/qdoc-codecs/src/bulk_equivalence.rs", "crates/doc/qdoc-codecs/tests/office_roundtrip.rs",
+           "crates/doc/qdoc-codecs/tests/binary_inputs.rs"]
 
 [[cargo]]
 package = "tilo-pdf"

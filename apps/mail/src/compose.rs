@@ -315,7 +315,7 @@ pub struct ComposeWindow {
     /// Plain-text body (Text mode), backed by a shared multiline [`TextInput`].
     plain_body: TextInput,
 
-    /// Portable qdoc attachment references, never host paths.
+    /// Portable content-addressed attachment references, never host paths.
     attachments: Vec<DraftAttachment>,
     /// The inline URL prompt, when open.
     prompt: Option<ComposePrompt>,

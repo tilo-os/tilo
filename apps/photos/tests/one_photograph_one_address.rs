@@ -71,6 +71,8 @@ struct Session {
     _dir: tempfile::TempDir,
     doc: AutoCommit,
     path: String,
+    /// This session's content store, which its open put the bytes in.
+    content: tilo_content::ContentStore,
 }
 
 impl Session {
@@ -96,7 +98,8 @@ impl Session {
 
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let mut app = PhotosApp::new();
+        let content = tilo_content::ContentStore::memory();
+        let mut app = PhotosApp::with_content(content.clone());
         app.open_path(&mut doc, &path);
         assert!(
             PhotosDoc::image(&doc).is_some(),
@@ -107,13 +110,14 @@ impl Session {
             _dir: dir,
             doc,
             path,
+            content,
         }
     }
 
     /// Staged the way content handed to a room is staged: named by its own
     /// content hash.
     fn handed_the_content(prefix: &str, bytes: &[u8]) -> Self {
-        let name = format!("{}.png", qdoc::blobstore::hash_bytes(bytes));
+        let name = format!("{}.png", tilo_content::hash_bytes(bytes));
         Self::staging(prefix, &name, bytes)
     }
 
@@ -241,7 +245,7 @@ fn a_photograph_asked_for_by_content_is_addressed_by_the_content_asked_for() {
     let bytes = photograph();
     // What the participant names. It has no filesystem of its own and says
     // nothing about anybody else's.
-    let asked_for = qdoc::blobstore::put(&bytes).expect("test fixture fits blob quota");
+    let asked_for = tilo_content::hash_bytes(&bytes);
 
     let staging = ["qlva-", "qlvq-", "qlvx-"];
     let sessions: Vec<Session> = staging
@@ -315,7 +319,9 @@ fn an_address_names_content_this_machine_can_open() {
 
     let content = photos::actions::content_of(&id)
         .expect("an address for an open photograph names its content");
-    let fetched = qdoc::blobstore::get(content)
+    let fetched = session
+        .content
+        .read(content)
         .expect("the content the address names is in this machine's store");
     let decoded = photos::pixels::decode(&fetched).expect("and it decodes to a picture");
     assert_eq!(

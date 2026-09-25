@@ -229,18 +229,17 @@ pub struct User {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Attachment {
-    /// An image addressed by its qdoc content hash. `w`/`h` are the real pixel
-    /// dimensions read at import time; bytes travel through qdoc's shared blob
-    /// transport, never as a path meaningful only on the sending peer.
+    /// An image addressed by its content hash. `w`/`h` are the real pixel
+    /// dimensions read at import time; bytes live in the content store, never as a path meaningful only on the sending peer.
     Image {
         name: String,
         blob: String,
         w: u32,
         h: u32,
     },
-    /// A video addressed by its qdoc content hash. Rendered inline as a
+    /// A video addressed by its content hash. Rendered inline as a
     /// poster/preview card with a play affordance and the real resolution; the
-    /// bytes hydrate from qdoc's shared blob transport on demand (a full
+    /// bytes are read from the content store on demand (a full
     /// frame decode needs the media engine's decoder — see [`crate::media`] —
     /// available only in the `live-media` build), never copied into the CRDT.
     /// `w`/`h` are the pixel dimensions when known (0 when the container header
@@ -261,7 +260,7 @@ pub enum Attachment {
 }
 
 impl Attachment {
-    /// The portable, content-addressed qdoc blob identity backing this
+    /// The portable content hash backing this
     /// attachment. It is safe to replicate and cannot expose a peer-local
     /// filesystem layout.
     pub fn blob(&self) -> &str {

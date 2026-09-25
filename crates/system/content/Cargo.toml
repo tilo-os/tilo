@@ -9,8 +9,11 @@ description = "Content-addressed binary storage for apps: the explicit, secondar
 [features]
 # Content in a local directory (`DirBackend`, `ContentStore::in_dir`, `ContentStore::for_app`).
 # Code that only names content (documents, codecs) turns it off and needs no file system.
-default = ["dir"]
+default = ["dir", "device"]
 dir = ["dep:advisory-lock", "dep:xdg-paths"]
+# The device content store through the launcher's capability (`ContentStore::device`), which
+# `ContentStore::for_app` prefers when the process was handed one. Unix only.
+device = ["dir", "dep:runtime-fs"]
 
 [dependencies]
 advisory-lock = { path = "../advisory-lock", optional = true }
@@ -18,6 +21,7 @@ blake3.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 xdg-paths = { path = "../xdg-paths", optional = true }
+runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

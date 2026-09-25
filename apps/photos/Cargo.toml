@@ -24,7 +24,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 # the toolbar buttons do.
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-content = { path = "../../crates/system/content" }
 tilo-vision = { path = "../../crates/media/vision" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 atomic-file = { path = "../../crates/system/atomic-file" }
@@ -32,6 +32,7 @@ automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

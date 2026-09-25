@@ -263,7 +263,8 @@ fn assets_map(doc: &AutoCommit) -> Result<Option<ObjId>, String> {
 /// bytes inline; they stay readable, and
 /// [`NotesAction::MoveAssetsToContentStore`](crate::actions::NotesAction::MoveAssetsToContentStore)
 /// replaces them with references. A reference is a small map
-/// `{len, mime}` under the content digest; the bytes are in `qdoc::blobstore`.
+/// `{len, mime}` under the content digest; the bytes are in the app's
+/// content store ([`content`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoredAsset {
     Inline(Vec<u8>),
@@ -397,16 +398,31 @@ pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> 
 /// its reference in the notebook. Only the reference reaches collaborators'
 /// replicas; their devices fetch the bytes from the content store.
 ///
-/// A process with no content store behind `qdoc::blobstore` (one started
-/// outside the launcher) keeps the bytes inline instead, as notebooks did
-/// before: a reference to bytes held only in memory would dangle after exit.
-/// [`move_inline_assets`] moves them once a content store is available.
+/// A process whose content store is not shared (one started outside the
+/// launcher) keeps the bytes inline instead, as notebooks did before: a
+/// reference to bytes only this device holds would dangle for collaborators.
+/// [`move_inline_assets`] moves them once a shared content store is available.
 ///
 /// # Errors
 /// Returns an error when validation fails, the content store refuses the
 /// bytes, or the collaborative asset map cannot be updated.
 pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(), String> {
-    put_asset_in(&*qdoc::blobstore::store(), doc, digest, bytes)
+    put_asset_in(content(), doc, digest, bytes)
+}
+
+/// The content store this process keeps notebook images in: the device
+/// content store when the launcher handed the process one. Notebook actions
+/// write images while they apply, where no app handle reaches them, so the
+/// store is the process's own, created on first use.
+pub fn content() -> &'static tilo_content::ContentStore {
+    static CONTENT: std::sync::OnceLock<tilo_content::ContentStore> = std::sync::OnceLock::new();
+    CONTENT.get_or_init(|| {
+        if cfg!(test) {
+            tilo_content::ContentStore::memory()
+        } else {
+            tilo_content::ContentStore::for_app()
+        }
+    })
 }
 
 /// [`put_asset`] against an explicit store.
@@ -414,7 +430,7 @@ pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(),
 /// # Errors
 /// As [`put_asset`].
 pub fn put_asset_in(
-    store: &dyn qdoc::blobstore::BlobStore,
+    store: &tilo_content::ContentStore,
     doc: &mut AutoCommit,
     digest: &str,
     bytes: &[u8],
@@ -454,12 +470,11 @@ pub fn put_asset_in(
 }
 
 fn store_asset_bytes(
-    store: &dyn qdoc::blobstore::BlobStore,
+    store: &tilo_content::ContentStore,
     digest: &str,
     bytes: &[u8],
 ) -> Result<(), String> {
-    let mime = image_mime(bytes).unwrap_or_default();
-    match store.put(bytes, mime) {
+    match store.put(bytes) {
         Ok(stored) if stored == digest => Ok(()),
         Ok(_) => Err("image asset bytes do not match their digest".into()),
         Err(error) => Err(format!("the content store refused the image: {error}")),
@@ -510,7 +525,7 @@ pub fn inline_asset_digests(doc: &AutoCommit) -> Result<Vec<String>, String> {
 /// Returns an error when an inline payload is invalid or the content store
 /// refuses it; nothing is rewritten in that case.
 pub fn move_inline_assets(doc: &mut AutoCommit, digests: &[String]) -> Result<usize, String> {
-    move_inline_assets_in(&*qdoc::blobstore::store(), doc, digests)
+    move_inline_assets_in(content(), doc, digests)
 }
 
 /// [`move_inline_assets`] against an explicit store.
@@ -518,7 +533,7 @@ pub fn move_inline_assets(doc: &mut AutoCommit, digests: &[String]) -> Result<us
 /// # Errors
 /// As [`move_inline_assets`], and when `store` is local to this process.
 pub fn move_inline_assets_in(
-    store: &dyn qdoc::blobstore::BlobStore,
+    store: &tilo_content::ContentStore,
     doc: &mut AutoCommit,
     digests: &[String],
 ) -> Result<usize, String> {
@@ -559,7 +574,7 @@ pub fn move_inline_assets_in(
 /// # Errors
 /// Returns an error when the notebook asset schema or any payload is invalid.
 pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, String> {
-    asset_snapshot_with(doc, qdoc::blobstore::get)
+    asset_snapshot_with(doc, |hash| content().read(hash))
 }
 
 /// [`asset_snapshot`] reading referenced bytes through `read`.
@@ -579,7 +594,7 @@ pub fn asset_snapshot_with(
         let bytes = match stored_asset(doc, &assets, &digest)? {
             StoredAsset::Inline(bytes) => Some(bytes),
             StoredAsset::Reference { .. } => {
-                read(&digest).filter(|bytes| qdoc::blobstore::verify(&digest, bytes))
+                read(&digest).filter(|bytes| tilo_content::verify(&digest, bytes))
             }
         };
         if let Some(bytes) = bytes {
@@ -1004,45 +1019,46 @@ mod tests {
         );
     }
 
-    use qdoc::blobstore::BlobStore as _;
     use tilo_automerge::ApplyIncoming as _;
 
-    /// A content store standing in for the device store behind the launcher's
-    /// capability: shared beyond this process, optionally refusing.
+    /// A content backend standing in for the device store behind the
+    /// launcher's capability: shared beyond this process, optionally refusing.
     #[derive(Default)]
     struct DeviceStore {
-        bytes: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+        local: tilo_content::MemoryBackend,
         refuse: bool,
     }
 
-    impl qdoc::blobstore::BlobStore for DeviceStore {
+    impl tilo_content::ContentBackend for DeviceStore {
         fn put(
             &self,
-            bytes: &[u8],
-            _mime: &str,
-        ) -> Result<String, qdoc::blobstore::BlobStoreError> {
+            reader: &mut dyn std::io::Read,
+            mime: &str,
+        ) -> Result<tilo_content::Stored, tilo_content::ContentError> {
             if self.refuse {
-                return Err(qdoc::blobstore::BlobStoreError::Unavailable("full".into()));
+                return Err(tilo_content::ContentError::Io("full".into()));
             }
-            let hash = qdoc::blobstore::hash_bytes(bytes);
-            self.bytes
-                .lock()
-                .unwrap()
-                .insert(hash.clone(), bytes.to_vec());
-            Ok(hash)
+            self.local.put(reader, mime)
         }
-        fn cached(&self, hash: &str) -> Option<Vec<u8>> {
-            self.bytes.lock().unwrap().get(hash).cloned()
+        fn open(
+            &self,
+            hash: &str,
+        ) -> Result<Option<tilo_content::ContentReader>, tilo_content::ContentError> {
+            self.local.open(hash)
         }
-        fn fetch(&self, hash: &str) -> qdoc::blobstore::Fetch {
-            self.cached(hash).map_or(
-                qdoc::blobstore::Fetch::Unavailable,
-                qdoc::blobstore::Fetch::Ready,
-            )
+        fn has(&self, hash: &str) -> bool {
+            self.local.has(hash)
         }
         fn shared(&self) -> bool {
             true
         }
+    }
+
+    fn device_store(refuse: bool) -> tilo_content::ContentStore {
+        tilo_content::ContentStore::new(DeviceStore {
+            refuse,
+            ..DeviceStore::default()
+        })
     }
 
     fn png(seed: u8) -> Vec<u8> {
@@ -1085,7 +1101,7 @@ mod tests {
             sorted
         });
 
-        let store = DeviceStore::default();
+        let store = device_store(false);
         assert_eq!(
             move_inline_assets_in(&store, &mut doc, &digests).unwrap(),
             2
@@ -1099,7 +1115,7 @@ mod tests {
                     mime: "image/png".into(),
                 }
             );
-            assert_eq!(store.cached(digest).as_ref(), Some(bytes));
+            assert_eq!(store.read(digest).as_ref(), Some(bytes));
         }
         assert!(inline_asset_digests(&doc).unwrap().is_empty());
 
@@ -1107,7 +1123,7 @@ mod tests {
         // image readable through the store.
         let reopened = AutoCommit::load(&doc.save()).unwrap();
         validate(&reopened).unwrap();
-        let snapshot = asset_snapshot_with(&reopened, |hash| store.cached(hash)).unwrap();
+        let snapshot = asset_snapshot_with(&reopened, |hash| store.read(hash)).unwrap();
         for (digest, bytes) in digests.iter().zip(&images) {
             assert_eq!(snapshot.get(&format!("asset:{digest}")), Some(bytes));
         }
@@ -1134,7 +1150,7 @@ mod tests {
         let (mut doc, digests) = inline_notebook(&images);
         let mut a = doc.fork();
         let mut b = doc.fork();
-        let store = DeviceStore::default();
+        let store = device_store(false);
         move_inline_assets_in(&store, &mut a, &digests).unwrap();
         move_inline_assets_in(&store, &mut b, &digests).unwrap();
         a.merge_incoming(&mut b).unwrap();
@@ -1149,17 +1165,14 @@ mod tests {
     fn a_refused_move_leaves_the_images_inline() {
         let images = [png(4)];
         let (mut doc, digests) = inline_notebook(&images);
-        let refusing = DeviceStore {
-            refuse: true,
-            ..DeviceStore::default()
-        };
+        let refusing = device_store(true);
         assert!(move_inline_assets_in(&refusing, &mut doc, &digests).is_err());
         assert_eq!(
             stored(&doc, &digests[0]),
             StoredAsset::Inline(images[0].clone())
         );
         // A process-local store never receives the only copy.
-        let local = qdoc::blobstore::MemoryBlobStore::default();
+        let local = tilo_content::ContentStore::memory();
         assert!(move_inline_assets_in(&local, &mut doc, &digests).is_err());
         assert_eq!(
             stored(&doc, &digests[0]),
@@ -1174,19 +1187,19 @@ mod tests {
 
         let mut shared_doc = AutoCommit::new();
         initialize_empty(&mut shared_doc).unwrap();
-        let store = DeviceStore::default();
+        let store = device_store(false);
         put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
         assert!(matches!(
             stored(&shared_doc, &digest),
             StoredAsset::Reference { .. }
         ));
-        assert_eq!(store.cached(&digest), Some(bytes.clone()));
+        assert_eq!(store.read(&digest), Some(bytes.clone()));
         // Re-adding the same image is a no-op; other bytes under the digest are not.
         put_asset_in(&store, &mut shared_doc, &digest, &bytes).unwrap();
 
         let mut local_doc = AutoCommit::new();
         initialize_empty(&mut local_doc).unwrap();
-        let local = qdoc::blobstore::MemoryBlobStore::default();
+        let local = tilo_content::ContentStore::memory();
         put_asset_in(&local, &mut local_doc, &digest, &bytes).unwrap();
         assert_eq!(stored(&local_doc, &digest), StoredAsset::Inline(bytes));
         validate(&local_doc).unwrap();

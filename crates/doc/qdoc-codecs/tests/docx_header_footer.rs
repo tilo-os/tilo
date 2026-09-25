@@ -66,12 +66,20 @@ fn text_of(parts: &[(String, Vec<u8>)], name: &str) -> String {
 
 fn import(bytes: &[u8]) -> Document {
     let mut d = Document::new();
-    DocxCodec.import(bytes, &mut d.as_mut()).unwrap();
+    DocxCodec
+        .import(
+            bytes,
+            &mut d.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
+        .unwrap();
     d
 }
 
 fn export(d: &Document) -> Vec<u8> {
-    DocxCodec.export(d.as_ref()).unwrap()
+    DocxCodec
+        .export(d.as_ref(), &tilo_content::NoContent)
+        .unwrap()
 }
 
 fn hdr_part(inner: &str) -> String {

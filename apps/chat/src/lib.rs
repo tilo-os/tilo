@@ -4,9 +4,9 @@
 //! convergent state — workspaces, categories, channels, messages, reactions,
 //! edits + edit history, threads, members, and voice membership — lives in an
 //! Automerge document ([`doc`]) that is **persisted to disk** ([`storage`]) so
-//! it survives across runs. Attachments are qdoc content-addressed references:
+//! it survives across runs. Attachments are content-addressed references:
 //! the CRDT stores their identity and bounded metadata, while bytes stay in the
-//! shared blob store. The [`app::ChatApp`] widget is a projection of that
+//! app's content store. The [`app::ChatApp`] widget is a projection of that
 //! document plus an input router.
 //!
 //! ## Layout
