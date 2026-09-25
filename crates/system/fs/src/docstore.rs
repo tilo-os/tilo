@@ -15,6 +15,7 @@ use bytes::Bytes;
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tilo_automerge::ApplyIncoming;
 
 use crate::store::ContentStore;
 
@@ -226,7 +227,7 @@ impl<'a> DocStore<'a> {
             changes.push(ch);
         }
         let mut doc = AutoCommit::new();
-        doc.apply_changes(changes)
+        doc.apply_incoming(changes)
             .map_err(|e| anyhow!("replay changes: {e}"))?;
         Ok(doc)
     }

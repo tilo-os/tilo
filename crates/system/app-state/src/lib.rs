@@ -39,6 +39,7 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tilo_automerge::ApplyIncoming;
 
 use advisory_lock::{FileLock, LockMode, TryLockError};
 use durable_store::{DurableStore, StorageKey, WriteOp};
@@ -64,6 +65,9 @@ pub const ROOMS_DIR: &str = "rooms";
 /// imported into every room that happens to open after an upgrade.
 const LEGACY_PACKAGE_ROOM_CLAIM: &str = ".tilo-legacy-room-index-claim";
 const LEGACY_RECORD_ROOM_CLAIM: &str = ".tilo-legacy-room-record-claim";
+/// Marker in a room record's directory naming the one record that adopted it
+/// under a new identity.
+const RECORD_SUCCESSOR_CLAIM: &str = "successor-claim";
 
 /// Root-map key for the document's layout version. A document from before
 /// this key existed reads as [`SCHEMA_VERSION`] rather than "unknown", so the
@@ -905,7 +909,7 @@ impl DocStore {
             None => self.new_document(),
         };
         current
-            .merge(&mut incoming)
+            .merge_incoming(&mut incoming)
             .map_err(|source| StoreError::Automerge {
                 path: label.to_path_buf(),
                 source: Box::new(source),
@@ -1075,7 +1079,7 @@ fn sync_directory_ancestors(
     // It does not include creating the OS-owned C:\Users or volume root.
     // Query the OS known folder, not USERPROFILE supplied by an environment.
     #[cfg(windows)]
-    let profile_root = dirs::home_dir().and_then(|path| fs::canonicalize(path).ok());
+    let profile_root = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)
@@ -1606,7 +1610,7 @@ mod tests {
             let mut b = a.fork();
             a.put(ROOT, SCHEMA_VERSION_KEY, left).unwrap();
             b.put(ROOT, SCHEMA_VERSION_KEY, right).unwrap();
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             let bytes = a.save();
             if accepted {
                 let loaded = decode_canonical(&bytes, true, Path::new("doc")).unwrap();
@@ -1630,7 +1634,7 @@ mod tests {
                 .unwrap();
             b.put(ROOT, SCHEMA_VERSION_KEY, if swap { 2_u64 } else { 1 })
                 .unwrap();
-            a.merge(&mut b).unwrap();
+            a.merge_incoming(&mut b).unwrap();
             supported_winner_seen |= schema_version_of(&a) == 1;
             let bytes = a.save();
             assert!(matches!(
@@ -1850,7 +1854,9 @@ mod tests {
             "a reopened store must keep the document's actor identity"
         );
 
-        restored.merge(&mut peer).expect("merge with diverged peer");
+        restored
+            .merge_incoming(&mut peer)
+            .expect("merge with diverged peer");
         let list = restored.get(&ROOT, "contacts").unwrap().unwrap().1;
         assert_eq!(
             str_at(&restored, &list, "ada").as_deref(),

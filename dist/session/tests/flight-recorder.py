@@ -27,18 +27,25 @@ def wait_for(path: Path, expected: bytes) -> None:
 def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         log = Path(directory) / "latest.log"
-        process = subprocess.Popen(
-            [sys.executable, str(RECORDER), str(log)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
+        previous_umask = os.umask(0o022)
+        try:
+            process = subprocess.Popen(
+                [sys.executable, str(RECORDER), str(log), "now", "42", "/usr/bin/tilo-shell"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+            )
+        finally:
+            os.umask(previous_umask)
         assert process.stdin is not None
         assert process.stdout is not None
 
+        header = b"tilo-flight-record-v1 start=now pid=42 shell=/usr/bin/tilo-shell\n"
+        wait_for(log, header)
         first = b"startup failed before one buffered block\n"
         process.stdin.write(first)
         process.stdin.flush()
-        wait_for(log, first)
+        wait_for(log, header + first)
+        assert log.stat().st_mode & 0o777 == 0o600
         assert process.poll() is None, "fixture must prove persistence before EOF"
 
         second = os.urandom(4 * 1024 * 1024 + 257)
@@ -52,7 +59,8 @@ def main() -> int:
         relayed.extend(process.stdout.read())
         assert process.wait(timeout=10) == 0
         assert relayed == first + second
-        assert log.read_bytes() == (first + second)[-(4 * 1024 * 1024) :]
+        assert log.read_bytes() == (header + first + second)[-(4 * 1024 * 1024) :]
+        assert log.stat().st_mode & 0o777 == 0o600
 
     print("flight recorder: PASS")
     return 0

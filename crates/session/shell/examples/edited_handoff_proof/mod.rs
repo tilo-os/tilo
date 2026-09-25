@@ -6,6 +6,7 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
+use tilo_automerge::ApplyIncoming;
 use ui::collaboration::{CollabRequest, CollaborationManager};
 
 const CALLER: &str = "dev.qos.edited-handoff-proof";
@@ -426,12 +427,12 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
                 collab_types::RoutedDocumentPayload::Cleartext(
                     collab_types::DocumentMutation::Snapshot(data),
                 ) => {
-                    doc.merge(&mut automerge::AutoCommit::load(&data)?)?;
+                    doc.merge_incoming(&mut automerge::AutoCommit::load(&data)?)?;
                 }
                 collab_types::RoutedDocumentPayload::Cleartext(
                     collab_types::DocumentMutation::Incremental(data),
                 ) => {
-                    doc.load_incremental(&data)?;
+                    doc.load_incoming(&data)?;
                 }
                 _ => return Err("unexpected encrypted proof document".into()),
             }

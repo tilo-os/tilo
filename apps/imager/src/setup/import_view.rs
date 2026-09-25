@@ -1296,7 +1296,7 @@ impl ImportApp {
                         c.select_destination_parent(index, &parent)?;
                         parent
                     } else {
-                        let parent = dirs::data_local_dir()
+                        let parent = xdg_paths::data_local_dir()
                             .ok_or("No local user data directory")?
                             .join("qos/files");
                         super::migration_store::ensure_private_root(&parent)

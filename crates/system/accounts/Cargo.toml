@@ -23,7 +23,7 @@ serde_json.workspace = true
 tracing.workspace = true
 # Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
 # Settings app does, so every app agrees on one directory.
-dirs.workspace = true
+xdg-paths = { path = "../xdg-paths" }
 
 # getrandom's `SysRng` draws generated passwords from the OS CSPRNG;
 # `zeroize` wipes decrypted plaintext from the heap.

@@ -3266,7 +3266,7 @@ impl CapnpBrokerState {
                     })
                 })
                 .ok_or_else(|| "the application no longer publishes that action".to_string())?;
-        let evidence = match &offered.contract.confirmation {
+        let evidence = match &offered.contract.advertised_confirmation() {
             tilo_actions::ConfirmationPolicy::None => {
                 return Err("the action does not require confirmation".into());
             }
@@ -3295,7 +3295,7 @@ impl CapnpBrokerState {
         evidence: Option<&tilo_actions::remote::Confirmation>,
     ) -> Result<Option<String>, tilo_actions::remote::ActionHostError> {
         use tilo_actions::remote::{ActionHostError, Confirmation};
-        match (&offered.contract.confirmation, evidence) {
+        match (&offered.contract.advertised_confirmation(), evidence) {
             (tilo_actions::ConfirmationPolicy::None, _) => return Ok(None),
             (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed)) => {}
             (
@@ -3464,8 +3464,10 @@ impl CapnpBrokerState {
             return Err("the caller is not allowed to invoke that application action".into());
         }
         drop(tree);
+        // The broker sees only the inert contract, so an action whose risk
+        // depends on its arguments is gated as if it needed confirmation.
         if !matches!(
-            offered.1.contract.confirmation,
+            offered.1.contract.advertised_confirmation(),
             tilo_actions::ConfirmationPolicy::None
         ) {
             let token = confirmation_token.ok_or_else(|| {
@@ -3963,7 +3965,7 @@ impl CapnpBrokerState {
             })
             .ok_or_else(|| "the task action is no longer published in this workspace".to_string())?
             .contract
-            .confirmation;
+            .advertised_confirmation();
         if !matches!(
             confirmation_required,
             tilo_actions::ConfirmationPolicy::None
@@ -8466,8 +8468,8 @@ pub async fn dial_capnp_for_test(
     };
     let (r, w) = stream.into_split();
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(r.compat()),
-        futures::io::BufWriter::new(w.compat_write()),
+        futures_util::io::BufReader::new(r.compat()),
+        futures_util::io::BufWriter::new(w.compat_write()),
         rpc_twoparty_capnp::Side::Client,
         capnp::message::ReaderOptions::default(),
     ));
@@ -8644,8 +8646,8 @@ async fn drive_connection(
     let reader = reader.compat();
     let writer = writer.compat_write();
     let network = Box::new(twoparty::VatNetwork::new(
-        futures::io::BufReader::new(reader),
-        futures::io::BufWriter::new(writer),
+        futures_util::io::BufReader::new(reader),
+        futures_util::io::BufWriter::new(writer),
         rpc_twoparty_capnp::Side::Server,
         capnp::message::ReaderOptions::default(),
     ));

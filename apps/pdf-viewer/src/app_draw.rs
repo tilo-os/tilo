@@ -221,7 +221,7 @@ impl PdfApp {
 
         // Swatches sit just right of the tools (on the tools' row), but only
         // when the annotate tools are active and there is genuinely room.
-        let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
+        let annotate = self.tool.annotates();
         let sw = 16.0;
         let sgap = rhythm::RELATED;
         let swatch_span = 5.0 * sw + 4.0 * sgap;
@@ -265,7 +265,7 @@ impl PdfApp {
         for (t, r) in &lay.tools {
             out.push((format!("{}  ({})", t.label(), t.hotkey()), *r));
         }
-        if matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note) {
+        if self.tool.annotates() {
             for (s, r) in &lay.swatches {
                 out.push((format!("{} marker", swatch_label(*s)), *r));
             }
@@ -530,6 +530,7 @@ impl PdfApp {
             // Raster backend: refresh the real `PDFium` text layer for the
             // visible pages so selection + search overlays line up with glyphs.
             self.refresh_raster_text();
+            self.refresh_raster_links();
         } else {
             self.refresh_text_lines(tr, theme);
         }
@@ -564,14 +565,16 @@ impl PdfApp {
         }
 
         // Rasterise the pages + thumbnails on screen once, up front.
-        let (page_imgs, thumb_imgs) = self.rasterize_visible();
+        let (page_imgs, thumb_imgs, page_tiles) = self.rasterize_visible();
 
         // Pages are fixed-layout (see above); the no-document surface is
         // reader chrome and keeps the chrome scale like the toolbar.
         if self.has_document {
             tr.set_text_scale(1.0);
         }
-        self.draw_canvas(scene, base, tr, theme, &page_imgs);
+        self.draw_canvas(scene, base, tr, theme, &page_imgs, &page_tiles);
+        self.draw_field_editor(scene, base, tr, theme);
+        let free_text_edit = self.draw_free_text_editor(scene, base, tr, theme);
         tr.set_text_scale(chrome_text_scale);
 
         // The floating selection HUD over the page (shared `ui` component).
@@ -588,6 +591,9 @@ impl PdfApp {
         let mut edit_rect = Rect::ZERO;
         let hits = self.draw_sidebar(scene, base, tr, theme, &mut edit_rect);
         self.edit_rect = edit_rect;
+        if let Some(rect) = free_text_edit {
+            self.edit_rect = rect;
+        }
         self.draw_toolbar(scene, base, tr, theme);
         if self.search_active {
             let shits = self.draw_search(scene, base, tr, theme);
@@ -628,17 +634,14 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "the draw-time request budget and synchronous compatibility cache share the same visibility pass"
     )]
-    fn rasterize_visible(
-        &mut self,
-    ) -> (
-        std::collections::HashMap<usize, PenikoImage>,
-        std::collections::HashMap<usize, PenikoImage>,
-    ) {
+    fn rasterize_visible(&mut self) -> RasterFrame {
         let mut page_imgs = std::collections::HashMap::new();
         let mut thumb_imgs = std::collections::HashMap::new();
+        let mut page_tiles: std::collections::HashMap<usize, render::PageTiles> =
+            std::collections::HashMap::new();
         self.pending_visuals = false;
         if !self.raster_active() {
-            return (page_imgs, thumb_imgs);
+            return (page_imgs, thumb_imgs, page_tiles);
         }
 
         let canvas = self.canvas_rect;
@@ -648,11 +651,30 @@ impl PdfApp {
         // the compositor scales the surface.
         let page_bucket = ((card_w_px * RASTER_SS).round() as u32).clamp(96, 4096);
         let mut want_pages = Vec::new();
+        // Pages drawn too large for one bitmap are drawn from tiles; each
+        // still gets a lower-resolution whole-page placeholder underneath.
+        let mut tiled: Vec<crate::tiles::PagePlacement> = Vec::new();
         for (i, o) in self.page_origins().iter().enumerate() {
             if o.y > canvas.y1 || o.y + pageh < canvas.y0 {
                 continue;
             }
-            want_pages.push(i);
+            match self.tile_placement(i, *o) {
+                Some(placement) => tiled.push(placement),
+                None => want_pages.push(i),
+            }
+        }
+        let placeholder_bucket =
+            crate::source::Rasterizer::bucket_for(crate::tiles::PLACEHOLDER_PAGE_PX);
+        let wanted_tiles =
+            crate::tiles::wanted_tiles(&tiled, (canvas.x0, canvas.y0, canvas.x1, canvas.y1));
+        for placement in &tiled {
+            page_tiles.insert(
+                placement.page + 1,
+                render::PageTiles {
+                    placement: *placement,
+                    tiles: Vec::new(),
+                },
+            );
         }
 
         let mut want_thumbs: Vec<(usize, u32)> = Vec::new();
@@ -735,12 +757,21 @@ impl PdfApp {
                     }
                 }
             }
+            let document_id = document.id;
+            self.request_tiled_pages(
+                document_id,
+                &tiled,
+                &wanted_tiles,
+                placeholder_bucket,
+                &mut page_imgs,
+                &mut page_tiles,
+            );
             // The worker completion itself marks the widget dirty.  Do not
             // spin an animation frame while it is parsing/rasterising: that
             // wastes a core on a static loading surface and makes a hostile
             // page feel worse rather than more responsive.
             self.pending_raster = false;
-            return (page_imgs, thumb_imgs);
+            return (page_imgs, thumb_imgs, page_tiles);
         }
         #[cfg(test)]
         if let Some(rz) = self.raster.as_mut() {
@@ -785,6 +816,41 @@ impl PdfApp {
                     thumb_imgs.insert(i + 1, img);
                 }
             }
+            // Zoomed pages: the placeholder, then a budget of new tiles in
+            // priority order (visible nearest the centre first).
+            for placement in &tiled {
+                let i = placement.page;
+                if rz.is_page_cached(i, placeholder_bucket) || new_budget > 0 {
+                    if !rz.is_page_cached(i, placeholder_bucket) {
+                        new_budget -= 1;
+                        rendered_new = true;
+                    }
+                    if let Some(img) = rz.render(i, placeholder_bucket) {
+                        page_imgs.insert(i + 1, img);
+                    }
+                } else {
+                    skipped_renderable = true;
+                    self.pending_visuals = true;
+                }
+            }
+            let mut tile_budget = MAX_NEW_TILE_RASTERS_PER_FRAME;
+            for tile in wanted_tiles.iter().filter(|t| t.visible) {
+                let cached = rz.is_tile_cached(tile.page, tile.level, tile.col, tile.row);
+                if !cached {
+                    if tile_budget == 0 {
+                        skipped_renderable = true;
+                        self.pending_visuals = true;
+                        continue;
+                    }
+                    tile_budget -= 1;
+                }
+                if let Some(img) = rz.render_tile(tile.page, tile.level, tile.col, tile.row) {
+                    rendered_new |= !cached;
+                    if let Some(entry) = page_tiles.get_mut(&(tile.page + 1)) {
+                        entry.tiles.push((tile.region, img));
+                    }
+                }
+            }
             rz.prune(page_bucket);
         }
         #[cfg(not(test))]
@@ -793,8 +859,9 @@ impl PdfApp {
             reason = "the test-only fallback is cfg-elided in production"
         )]
         {
+            let _ = (&tiled, &wanted_tiles, placeholder_bucket);
             self.pending_raster = false;
-            return (page_imgs, thumb_imgs);
+            return (page_imgs, thumb_imgs, page_tiles);
         }
         #[cfg(test)]
         // Schedule a follow-up frame to render the pages we skipped this one —
@@ -804,18 +871,158 @@ impl PdfApp {
         #[cfg(test)]
         {
             self.pending_raster = skipped_renderable && rendered_new;
-            (page_imgs, thumb_imgs)
+            (page_imgs, thumb_imgs, page_tiles)
         }
     }
 
-    /// Populate `self.raster_text` with the pdfium text layer of the pages
-    /// currently in view (raster backend only). pdfium's own text-page cache
+    /// Where a visible page's pixels land if it is drawn from tiles: `None`
+    /// when a whole-page bitmap at this zoom stays under
+    /// [`crate::tiles::TILE_MIN_PAGE_PX`]. The placement follows the page's
+    /// card mapping, so tiles line up with text and markup overlays.
+    fn tile_placement(&self, i: usize, origin: Point) -> Option<crate::tiles::PagePlacement> {
+        let size = self.display_page_size(i)?;
+        let map = self.page_map(i + 1);
+        let z = self.zoom();
+        let device = map.scale * z * RASTER_SS;
+        if size.0 * device <= crate::tiles::TILE_MIN_PAGE_PX || !(size.0 * device).is_finite() {
+            return None;
+        }
+        let level = crate::tiles::level_for(device);
+        let scale = f64::from(crate::tiles::level_scale(level));
+        Some(crate::tiles::PagePlacement {
+            page: i,
+            size,
+            level,
+            origin: (origin.x + map.offset.0 * z, origin.y + map.offset.1 * z),
+            screen_per_px: map.scale * z / scale,
+        })
+    }
+
+    /// Displayed size (points, recorded rotation applied) of 0-based page `i`.
+    fn display_page_size(&self, i: usize) -> Option<(f64, f64)> {
+        #[cfg(test)]
+        if let Some(rz) = self.raster.as_ref() {
+            return (i < rz.page_count()).then(|| rz.page_size(i));
+        }
+        self.raster_document.as_ref()?.page_sizes.get(i).copied()
+    }
+
+    /// Worker mode for zoomed pages: draw the tiles already here over the
+    /// best whole-page bitmap available, and hand the worker the missing
+    /// tiles as one batch, most important first. The batch replaces the
+    /// previous one, so tiles that scrolled out of view are never rendered
+    /// ahead of the ones now on screen.
+    fn request_tiled_pages(
+        &mut self,
+        document_id: u64,
+        tiled: &[crate::tiles::PagePlacement],
+        wanted: &[crate::tiles::WantedTile],
+        placeholder_bucket: u32,
+        page_imgs: &mut std::collections::HashMap<usize, PenikoImage>,
+        page_tiles: &mut std::collections::HashMap<usize, render::PageTiles>,
+    ) {
+        for placement in tiled {
+            let i = placement.page;
+            let best = self
+                .raster_images
+                .iter()
+                .filter(|((page, _), _)| *page == i)
+                .max_by_key(|((_, bucket), _)| *bucket)
+                .map(|((_, bucket), image)| (*bucket, image.clone()));
+            let best_bucket = best.as_ref().map_or(0, |(bucket, _)| *bucket);
+            if let Some((_, image)) = best {
+                page_imgs.insert(i + 1, image);
+            }
+            // A thumbnail is only a stopgap; ask for the real placeholder.
+            if best_bucket < placeholder_bucket {
+                let key = (i, placeholder_bucket);
+                if self.raster_render_pending.insert(key)
+                    && !self.raster_handle.as_ref().is_some_and(|handle| {
+                        handle
+                            .request_render(crate::source::RenderRequest {
+                                document_id,
+                                page: i,
+                                target_width: placeholder_bucket,
+                            })
+                            .is_ok()
+                    })
+                {
+                    self.raster_render_pending.remove(&key);
+                }
+                self.pending_visuals = true;
+            }
+        }
+        let mut batch = Vec::new();
+        for tile in wanted {
+            let key = UiTileKey {
+                page: tile.page,
+                level: tile.level,
+                col: tile.col,
+                row: tile.row,
+            };
+            if let Some(image) = self.raster_tiles.get(&key) {
+                if tile.visible
+                    && let Some(entry) = page_tiles.get_mut(&(tile.page + 1))
+                {
+                    entry.tiles.push((tile.region, image));
+                }
+            } else {
+                self.pending_visuals |= tile.visible;
+                if batch.len() < crate::tiles::MAX_TILE_BATCH {
+                    batch.push(crate::source::TileRequest {
+                        document_id,
+                        page: tile.page,
+                        level: tile.level,
+                        col: tile.col,
+                        row: tile.row,
+                    });
+                }
+            }
+        }
+        if batch != self.raster_tile_batch {
+            let submitted = self.raster_handle.as_ref().is_some_and(|handle| {
+                handle
+                    .request_tiles(crate::source::TileBatch {
+                        document_id,
+                        tiles: batch.clone(),
+                    })
+                    .is_ok()
+            });
+            if submitted {
+                self.raster_tile_batch = batch;
+            } else if !batch.is_empty() {
+                self.status_note = Some("PDF render worker is unavailable".to_string());
+            }
+        }
+    }
+
+    /// Ask for the link areas of the pages currently in view (raster backend
+    /// only). Links are cheap to read and must be ready before the pointer
+    /// reaches them, so unlike the text layer they are fetched on idle and
+    /// scroll frames too; each page is read once per document and plan.
+    fn refresh_raster_links(&mut self) {
+        let pageh = self.ph() * self.zoom();
+        let canvas = self.canvas_rect;
+        let visible: Vec<usize> = self
+            .page_origins()
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.y <= canvas.y1 && o.y + pageh >= canvas.y0)
+            .map(|(i, _)| i)
+            .collect();
+        for i in visible {
+            self.ensure_page_links(i + 1);
+        }
+    }
+
+    /// Populate `self.raster_text` with the engine text layer of the pages
+    /// currently in view (raster backend only). The engine's own text-page cache
     /// makes repeated frames cheap; only a page scrolling into view does work.
     fn refresh_raster_text(&mut self) {
         if !self.raster_active() {
             return;
         }
-        // The pdfium text layer only feeds the selection + search-hit overlays
+        // The engine text layer only feeds the selection + search-hit overlays
         // and is expensive to extract (hundreds of ms per page). On an idle or
         // scroll frame — no selection, no search hits — skip it entirely so
         // opening a document and scrolling stay smooth. A selection that starts
@@ -876,6 +1083,7 @@ impl PdfApp {
             for i in want {
                 if let Some(rz) = self.raster.as_mut() {
                     let pt = rz.page_text(i);
+                    let pt = self.text_for_card(i + 1, pt);
                     self.raster_text.insert(i + 1, pt);
                 }
             }
@@ -1138,6 +1346,7 @@ impl PdfApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         page_imgs: &std::collections::HashMap<usize, PenikoImage>,
+        page_tiles: &std::collections::HashMap<usize, render::PageTiles>,
     ) {
         let canvas = self.canvas_rect;
         scene.fill(
@@ -1179,6 +1388,7 @@ impl PdfApp {
                 self.pw(),
                 self.ph(),
                 page_imgs.get(&page_num),
+                page_tiles.get(&page_num),
                 &matched,
                 active,
                 &self.annotations,
@@ -1187,6 +1397,7 @@ impl PdfApp {
             );
 
             self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
+            self.draw_form_fields(scene, base, tr, theme, page_num, *origin);
 
             // Raster backend: draw search-hit + selection bands over the page
             // image, using the real glyph geometry so they land on the text.
@@ -1243,6 +1454,183 @@ impl PdfApp {
         // kernel so they match the other document apps (they appear only when
         // the content overflows the viewport on that axis).
         self.viewport.draw_scrollbars(scene, base, theme);
+    }
+
+    /// Form widgets on a page: a quiet outline so fields are discoverable,
+    /// and any value recorded in the document's record drawn over the PDF's
+    /// own appearance (the export writes the same value into the file).
+    fn draw_form_fields(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        page: usize,
+        origin: Point,
+    ) {
+        let z = self.zoom();
+        for w in self.field_widgets_on(page) {
+            let r = Rect::new(
+                origin.x + w.rect.x * z,
+                origin.y + w.rect.y * z,
+                origin.x + (w.rect.x + w.rect.w) * z,
+                origin.y + (w.rect.y + w.rect.h) * z,
+            );
+            if self.is_editing(&EditTarget::FormField(w.name.clone())) {
+                continue;
+            }
+            scene.stroke(
+                &Stroke::new(1.0),
+                base,
+                render::alpha(theme.accent_primary, 140),
+                None,
+                &r,
+            );
+            if !self.form_values.contains_key(&w.name) {
+                continue;
+            }
+            // Cover the document's own appearance with the recorded value.
+            scene.fill(
+                Fill::NonZero,
+                base,
+                render::paper(theme),
+                None,
+                &r.inflate(-1.0, -1.0),
+            );
+            match w.kind {
+                tilo_pdf::FieldKind::CheckBox | tilo_pdf::FieldKind::RadioButton => {
+                    if self.field_checked(&w) {
+                        let inset = r.inflate(-r.width() * 0.22, -r.height() * 0.22);
+                        let mut tick = BezPath::new();
+                        tick.move_to((inset.x0, inset.center().y));
+                        tick.line_to((inset.x0 + inset.width() * 0.4, inset.y1));
+                        tick.line_to((inset.x1, inset.y0));
+                        scene.stroke(
+                            &Stroke::new((r.height() * 0.12).max(1.2)),
+                            base,
+                            render::ink(),
+                            None,
+                            &tick,
+                        );
+                    }
+                }
+                _ => {
+                    let size = (r.height() * 0.6).clamp(6.0, 14.0 * z.max(1.0)) as f32;
+                    let text = self.field_text(&w);
+                    tr.draw_text(
+                        scene,
+                        &text,
+                        size,
+                        render::ink(),
+                        base * Affine::translate((
+                            r.x0 + 3.0 * z,
+                            r.center().y - f64::from(size) * 0.6,
+                        )),
+                        Some((r.width() - 6.0 * z).max(1.0) as f32),
+                    );
+                }
+            }
+        }
+    }
+
+    /// The inline editor over the free text box being edited, if any: typed
+    /// in place, at the box's position, width and text size.
+    fn draw_free_text_editor(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<Rect> {
+        let Some(EditTarget::FreeText(id)) = self.editing.as_ref().map(|e| e.target.clone()) else {
+            return None;
+        };
+        let (page, rect) =
+            self.annotations
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| match &a.kind {
+                    AnnoKind::FreeText { rect, .. } => Some((a.page, *rect)),
+                    _ => None,
+                })?;
+        let origins = self.page_origins();
+        let origin = page.checked_sub(1).and_then(|i| origins.get(i)).copied()?;
+        let z = self.zoom();
+        let r = Rect::new(
+            origin.x + rect.x * z,
+            origin.y + rect.y * z,
+            origin.x + (rect.x + rect.w) * z,
+            origin.y + (rect.y + rect.h) * z,
+        );
+        scene.fill(Fill::NonZero, base, render::paper(theme), None, &r);
+        scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &r);
+        if let Some(editing) = self.editing.as_mut() {
+            draw_inline_editor(
+                &mut editing.input,
+                scene,
+                base,
+                tr,
+                theme,
+                Point::new(r.x0 + 2.0 * z, r.y0 + 2.0 * z),
+                (
+                    (r.width() - 4.0 * z).max(8.0) as f32,
+                    (r.height() - 4.0 * z).max(8.0),
+                ),
+            );
+        }
+        Some(r)
+    }
+
+    /// The inline editor over the text field being edited, if any.
+    fn draw_field_editor(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(EditTarget::FormField(name)) = self.editing.as_ref().map(|e| e.target.clone())
+        else {
+            return;
+        };
+        let origins = self.page_origins();
+        let z = self.zoom();
+        let Some((origin, widget)) = origins.iter().enumerate().find_map(|(i, o)| {
+            self.field_widgets_on(i + 1)
+                .into_iter()
+                .find(|w| w.name == name)
+                .map(|w| (*o, w))
+        }) else {
+            return;
+        };
+        let r = Rect::new(
+            origin.x + widget.rect.x * z,
+            origin.y + widget.rect.y * z,
+            origin.x + (widget.rect.x + widget.rect.w) * z,
+            origin.y + (widget.rect.y + widget.rect.h) * z,
+        );
+        scene.fill(
+            Fill::NonZero,
+            base,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &r,
+        );
+        scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &r);
+        if let Some(editing) = self.editing.as_mut() {
+            draw_inline_editor(
+                &mut editing.input,
+                scene,
+                base,
+                tr,
+                theme,
+                Point::new(r.x0 + 4.0, r.y0 + 2.0),
+                (
+                    (r.width() - 8.0).max(8.0) as f32,
+                    (r.height() - 4.0).max(8.0),
+                ),
+            );
+        }
     }
 
     /// Cover a page-shaped imported occurrence whose verified blob has not
@@ -1318,7 +1706,7 @@ impl PdfApp {
 
     /// Draw the raster text-layer overlays for one page: every search hit as a
     /// translucent band (the active hit emphasised) and the live selection as
-    /// an accent band. All rectangles come from the real pdfium glyph boxes, so
+    /// an accent band. All rectangles come from the real engine glyph boxes, so
     /// they sit exactly over the printed characters.
     fn draw_text_overlays(
         &self,
@@ -1543,7 +1931,7 @@ impl PdfApp {
         // The shared page rail draws the panel, thumbnails, selection ring,
         // index numbers, drag reflow + ghost, scrollbar, context menu and the
         // "Import…" affordance. It renders the host's page content through this
-        // closure — a real pdfium bitmap when the raster backend has one,
+        // closure — a real engine bitmap when the raster backend has one,
         // otherwise the abstract block sketch. Move the rail out of `self` so
         // the closure can borrow the (immutable) document alongside it.
         let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(1.0));
@@ -1624,8 +2012,8 @@ impl PdfApp {
             },
         );
 
-        // Save annotated PDF (tray/down-arrow). Dimmed until a document with the
-        // pdfium backend is open, since flattening needs pdfium.
+        // Save annotated PDF (tray/down-arrow). Dimmed until a document is open in
+        // the PDF engine, since the export runs there.
         let can_save = self.has_document && self.raster_active();
         Self::icon_button_bg(
             scene,
@@ -1670,7 +2058,7 @@ impl PdfApp {
             draw_tool_icon(scene, base, *t, *r, col);
         }
 
-        let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
+        let annotate = self.tool.annotates();
         if annotate {
             for (s, r) in &lay.swatches {
                 let col = render::swatch_color(theme, *s);
@@ -3523,6 +3911,7 @@ fn swatch_label(s: Swatch) -> &'static str {
         Swatch::Pink => "Pink",
         Swatch::Blue => "Blue",
         Swatch::Purple => "Purple",
+        Swatch::Custom(_) => "Custom",
     }
 }
 
@@ -3587,6 +3976,16 @@ fn draw_tool_icon(scene: &mut Scene, base: Affine, tool: Tool, btn: Rect, color:
                     &Line::new((sq.x0 + 3.0, ly), (sq.x1 - 3.0, ly)),
                 );
             }
+        }
+        Tool::Text => {
+            // A capital T in a text box.
+            let bar = Line::new((r.x0 + 1.0, r.y0 + 2.0), (r.x1 - 1.0, r.y0 + 2.0));
+            let stem = Line::new(
+                (f64::midpoint(r.x0, r.x1), r.y0 + 2.0),
+                (f64::midpoint(r.x0, r.x1), r.y1 - 1.0),
+            );
+            scene.stroke(&Stroke::new(2.2), base, color, None, &bar);
+            scene.stroke(&Stroke::new(2.2), base, color, None, &stem);
         }
         Tool::Sign => {
             let mut p = BezPath::new();

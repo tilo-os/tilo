@@ -25,6 +25,7 @@
 )]
 
 use std::path::{Path, PathBuf};
+use tilo_automerge::ApplyIncoming;
 
 use ui::Widget;
 use word_processor::{WordProcessorWidget, open_document};
@@ -53,7 +54,7 @@ fn sync_full_state(into: &mut ui::State, from: &mut ui::State) {
     let bytes = from.doc.save();
     let mut incoming = ui::State::load(&bytes).expect("a peer's state loads");
     into.doc
-        .merge(&mut incoming.doc)
+        .merge_incoming(&mut incoming.doc)
         .expect("peer states merge");
 }
 

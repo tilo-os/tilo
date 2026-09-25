@@ -141,6 +141,7 @@ pub fn location_rank_action(id: LocationId, rank: f64) -> WeatherAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
 
     fn registry() -> ActionRegistry {
         let mut registry = ActionRegistry::default();
@@ -260,7 +261,7 @@ mod tests {
         left.commit();
         right.commit();
         let right_changes = right.get_changes(&base.get_heads());
-        left.apply_changes(right_changes).unwrap();
+        left.apply_incoming(right_changes).unwrap();
 
         let merged = WeatherDoc::read_model(&left);
         assert!(

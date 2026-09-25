@@ -9,7 +9,7 @@ case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
 for file in bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper \
             libexec/tilo-session libexec/tilo-session-runner \
-            libexec/tilo-flight-recorder; do
+            libexec/tilo-flight-recorder libexec/tilo-session-report; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
 for file in share/applications/tilo-import-folders.desktop etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \

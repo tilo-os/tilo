@@ -45,6 +45,11 @@ SH
 cat >"$work/shell" <<'SH'
 #!/bin/sh
 printf 'shell %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+printf 'frames=1 direct_frames=0 direct_dropped=0 flip_completions=1 unprofiled_frames=1 window_us=17 bridge_us=11 scanout_us=6 readback_bytes=0 output_bytes=0 DRM render phase summary\n' >&2
+if [ -n "${TILO_FRAME_TRACE:-}" ]; then
+    printf 'seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,backpressured,deadline_late_us\n' >"$TILO_FRAME_TRACE"
+    printf '0,0,0,1,2,3,4,5,0,6,7,1,1,8,9,0,10\n' >>"$TILO_FRAME_TRACE"
+fi
 if [ "${TILO_SESSION_TEST_REQUEST_LOGOUT:-0}" = 1 ]; then
     printf 'logout\n' >"$TILO_SESSION_LOGOUT_REQUEST"
     exit 19
@@ -62,13 +67,11 @@ if [ "${2:-}" = --priority=err ]; then
     cat >>"$TILO_SESSION_TEST_LOG"
     exit 0
 fi
-shift 2
-exec "$@"
+# The production invocation supplies no command: it is a byte relay into
+# journald. Drain it so the real flight recorder never hits a broken pipe.
+cat >/dev/null
 SH
-cat >"$work/tilo-flight-recorder" <<'SH'
-#!/bin/sh
-cat >>"$1"
-SH
+cp "$repo_root/dist/session/tilo-flight-recorder.py" "$work/tilo-flight-recorder"
 chmod 0755 "$work/systemctl" "$work/systemd-cat" \
     "$work/dbus-update-activation-environment" "$work/shell" "$work/tilo-flight-recorder"
 sed \
@@ -120,6 +123,8 @@ export XDG_STATE_HOME=$work/state
 mkdir -p "$XDG_STATE_HOME/tilo/session-logs"
 printf 'prior private diagnostic\n' >"$XDG_STATE_HOME/tilo/session-logs/latest.log"
 chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/latest.log"
+printf 'old frame trace\n' >"$XDG_STATE_HOME/tilo/session-logs/frame-trace.csv"
+chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/frame-trace.csv"
 
 set +e
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_STATUS=7 \
@@ -134,6 +139,13 @@ flight_dir=${XDG_STATE_HOME:-$HOME/.local/state}/tilo/session-logs
 test "$(stat -c %a "$flight_dir/latest.log")" = 600
 test "$(stat -c %a "$flight_dir/previous.log")" = 600
 grep -Fqx 'prior private diagnostic' "$flight_dir/previous.log"
+test "$(stat -c %a "$flight_dir/frame-trace.csv")" = 600
+test "$(stat -c %a "$flight_dir/previous-frame-trace.csv")" = 600
+grep -Fqx 'old frame trace' "$flight_dir/previous-frame-trace.csv"
+grep -Fqx '0,0,0,1,2,3,4,5,0,6,7,1,1,8,9,0,10' "$flight_dir/frame-trace.csv"
+grep -Fq 'tilo-flight-record-v1 start=' "$flight_dir/latest.log"
+grep -Fq 'DRM render phase summary' "$flight_dir/latest.log"
+grep -Fq 'tilo-flight-record-v1 end=' "$flight_dir/latest.log"
 cat >"$work/expected" <<EOF
 systemctl --user is-active --quiet tilo-graphical-session.target
 systemctl --user is-active --quiet graphical-session.target

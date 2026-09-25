@@ -100,6 +100,7 @@ wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"
 app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 spellcheck = { path = "../../text/spellcheck" }
 # Grammar-backed highlighting (`widget::code_editor::syntax`): syntect as a
 # tokenizer over two-face's extended syntax set, the packed set Typst already
@@ -110,7 +111,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 rustls.workspace = true
-chacha20poly1305.workspace = true
+# Invite-redemption secrets are sealed at rest through the shared construction.
+tilo-seal = { path = "../../system/tilo-seal" }
 cosmic-text = { workspace = true, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
 # variation-axis order to translate CSS-like axis values for Vello.
@@ -130,7 +132,6 @@ winit.workspace = true
 # `ui::time` clock types. On targets with a native clock it re-exports
 # `std::time` unchanged; it keeps the toolkit buildable where `std` has none.
 web-time = "1"
-dirs.workspace = true
 fluent.workspace = true
 tilo-headless-schema = { path = "../../dev/headless-schema" }
 unic-langid.workspace = true
@@ -208,7 +209,7 @@ qrcode.workspace = true
 # The `tilo://invite/<base32>` URL packs a
 # postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
 # so it stays URL-safe and case-insensitive when read aloud.
-base32.workspace = true
+data-encoding.workspace = true
 # The pairing one-time MAC is derived from the 6-digit code so the
 # host can authenticate the pairer's DKG round-2 reply without a
 # pre-shared long-term key. SHA-512 is already a transitive via
@@ -280,6 +281,7 @@ pkg-config = "0.3"
 
 [dev-dependencies]
 regex.workspace = true
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
 # the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.
 # Inspect Vello scene encodings (draw tags) in widget tests so we can pin
@@ -344,6 +346,11 @@ required-features = ["broker-transport"]
 [[test]]
 name = "hosted-platform"
 path = "tests/hosted_platform.rs"
+
+# Its own binary: it installs a counting global allocator.
+[[test]]
+name = "held-memory"
+path = "tests/held_memory.rs"
 
 [lints]
 workspace = true

@@ -27,8 +27,8 @@ pub fn resolve_dir() -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    let pics = dirs::picture_dir().unwrap_or_else(|| {
-        dirs::home_dir().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
+    let pics = xdg_paths::picture_dir().unwrap_or_else(|| {
+        xdg_paths::home().map_or_else(|| PathBuf::from("."), |h| h.join("Pictures"))
     });
     pics.join("Camera")
 }

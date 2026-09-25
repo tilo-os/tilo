@@ -594,8 +594,8 @@ impl TypstApp {
         if let Some(dir) = std::env::var_os("QOS_TYPST_LIBRARY_DIR") {
             return Some(PathBuf::from(dir));
         }
-        dirs::document_dir()
-            .or_else(dirs::data_dir)
+        xdg_paths::document_dir()
+            .or_else(xdg_paths::data_dir)
             .map(|d| d.join("typst_editor"))
     }
 

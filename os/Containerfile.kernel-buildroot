@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+# Tilo kernel build dependencies and the Fedora kernel SRPM, resolved once
+# against Fedora's signed repos. os/kernel/Containerfile builds FROM this image
+# only through a committed digest pin (os/kernel-buildroot-snapshot.env), so the
+# kernel no longer depends on the OS's frozen RPM snapshot and an OS package
+# change never invalidates the signed kernel.
+ARG BASE_REF
+FROM ${BASE_REF}
+ARG BASE_REF
+
+# The toolchain for a kernel RPM build:
+#   kernel-devel kernel-headers      matched headers for external module ABIs
+#   rpm-build                        rpmbuild(1) for the -bp and -bb targets
+#   make gcc clang lld bc flex bison the kernel build and the UEFI probe
+#   rust cargo                       the native tilo-crypto module signer
+#   elfutils-libelf-devel elfutils-devel dwarves  pahole/BTF
+#   perl perl-generators rsync python3 python3-devel python3-rpm-macros
+#   gzip xz zstd cpio git which findutils          SRPM and Kbuild hooks
+#   createrepo_c                     the published kernel repository metadata
+#
+# The kernel SRPM is downloaded here and its Fedora signature checked, so the
+# kernel build needs no package repository at all. Every repository file is
+# removed afterwards: a kernel build cannot fall back to the network for a
+# missing package.
+RUN test -n "$BASE_REF" \
+ && dnf install -y \
+      kernel-devel kernel-headers \
+      rpm-build make gcc clang lld bc flex bison rust cargo \
+      elfutils-libelf-devel elfutils-devel dwarves \
+      perl perl-generators rsync \
+      python3 python3-devel python3-rpm-macros \
+      gzip xz zstd cpio git which findutils createrepo_c \
+ && install -d -m 0755 /usr/lib/tilo /usr/src/tilo-kernel \
+ && ( dnf download --srpm --destdir=/usr/src/tilo-kernel kernel \
+      || dnf --enablerepo='*-source' download --source --destdir=/usr/src/tilo-kernel kernel ) \
+ && test "$(find /usr/src/tilo-kernel -maxdepth 1 -name 'kernel-*.src.rpm' | wc -l)" -eq 1 \
+ && rpmkeys --import "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$(rpm -E %fedora)-primary" \
+ && rpmkeys --checksig /usr/src/tilo-kernel/kernel-*.src.rpm \
+ && rpmkeys --checksig /usr/src/tilo-kernel/kernel-*.src.rpm | grep -Eq ': digests signatures OK$' \
+ && rpm -qp --qf '%{NAME}-%{VERSION}-%{RELEASE}.src\n' /usr/src/tilo-kernel/kernel-*.src.rpm \
+      > /usr/lib/tilo/kernel-buildroot-srpm.txt \
+ && (cd /usr/src/tilo-kernel && sha256sum kernel-*.src.rpm) >> /usr/lib/tilo/kernel-buildroot-srpm.txt \
+ && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/tilo/kernel-buildroot-packages.txt \
+ && uname -m > /usr/lib/tilo/kernel-buildroot-arch \
+ && printf '%s\n' "$BASE_REF" > /usr/lib/tilo/kernel-buildroot-base \
+ && test -s /usr/lib/tilo/kernel-buildroot-packages.txt \
+ && dnf clean all \
+ && find /etc/yum.repos.d -type f -delete \
+ && rm -rf /var/cache/dnf /var/cache/libdnf5

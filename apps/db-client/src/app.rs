@@ -4388,6 +4388,7 @@ mod behavior_tests {
     use super::*;
     use automerge::ROOT;
     use tilo_actions::Action;
+    use tilo_automerge::ApplyIncoming;
     use ui::a11y::Role;
     use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr};
@@ -5088,7 +5089,7 @@ mod behavior_tests {
             "one char inserted"
         );
 
-        peer.merge(&mut doc).unwrap();
+        peer.merge_incoming(&mut doc).unwrap();
         assert_eq!(
             doc.get_heads(),
             peer.get_heads(),

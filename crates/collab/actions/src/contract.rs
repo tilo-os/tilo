@@ -50,6 +50,27 @@ pub enum RiskLevel {
     Sensitive,
 }
 
+impl RiskLevel {
+    /// Whether a change of this class must be explicitly confirmed before it
+    /// runs: deletions and overwrites, crossings of a security boundary, and
+    /// exports of private data.
+    pub fn requires_confirmation(self) -> bool {
+        matches!(self, Self::Destructive | Self::Privileged | Self::Sensitive)
+    }
+}
+
+/// [`ActionContract::tags`] entry of an action offered only to programmatic
+/// callers — agents, scripts and the controls or surfaces that submit it —
+/// and never listed for a person to pick (the action palette, menus).
+pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
+
+/// [`ActionContract::tags`] entry of an action whose risk, and therefore
+/// whether it needs confirmation, depends on the arguments it is invoked
+/// with (a generic edit that may delete). The publishing host classifies each
+/// invocation; a caller that cannot classify arguments treats the action as
+/// requiring confirmation (see [`ActionContract::advertised_confirmation`]).
+pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
+
 /// Minimum authority required to see and invoke an action. Capability-denied
 /// actions remain absent; this value lets every allowed catalogue use the same
 /// gate instead of inferring authority inconsistently from `OperationKind`.
@@ -231,6 +252,33 @@ impl ActionContract {
         }
     }
 
+    /// Whether the action is offered only to programmatic callers. See
+    /// [`PROGRAMMATIC_TAG`].
+    pub fn is_programmatic(&self) -> bool {
+        self.tags.iter().any(|tag| tag == PROGRAMMATIC_TAG)
+    }
+
+    /// Whether confirmation depends on the invocation's arguments. See
+    /// [`ARGUMENT_RISK_TAG`].
+    pub fn confirmation_depends_on_arguments(&self) -> bool {
+        self.tags.iter().any(|tag| tag == ARGUMENT_RISK_TAG)
+    }
+
+    /// The confirmation a caller that cannot classify arguments must assume:
+    /// the declared policy, or [`ConfirmationPolicy::Confirm`] for an action
+    /// whose risk depends on its arguments. A trust boundary that only sees
+    /// this inert contract (the session broker) gates on it; the publishing
+    /// host, which can classify, asks
+    /// [`ActionSpec::confirmation_for_json`](crate::ActionSpec::confirmation_for_json).
+    pub fn advertised_confirmation(&self) -> ConfirmationPolicy {
+        if self.confirmation == ConfirmationPolicy::None && self.confirmation_depends_on_arguments()
+        {
+            ConfirmationPolicy::Confirm
+        } else {
+            self.confirmation.clone()
+        }
+    }
+
     /// Validate the contract as inert protocol data. This is intentionally
     /// usable at both publication ends: a well-behaved app checks before it
     /// sends, and the broker repeats the check at its trust boundary.
@@ -241,10 +289,8 @@ impl ActionContract {
         {
             errors.push("unavailable action needs a code and reason".into());
         }
-        if matches!(
-            self.risk,
-            RiskLevel::Sensitive | RiskLevel::Destructive | RiskLevel::Privileged
-        ) && matches!(self.confirmation, ConfirmationPolicy::None)
+        if self.risk.requires_confirmation()
+            && matches!(self.confirmation, ConfirmationPolicy::None)
         {
             errors.push("consequential action requires confirmation".into());
         }

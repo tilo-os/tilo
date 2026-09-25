@@ -700,6 +700,7 @@ impl SlidesDoc {
 mod tests {
     use super::*;
     use crate::model::{ElementKind, seed_deck};
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn write_text_append_one_char_is_bounded() {
@@ -856,8 +857,8 @@ mod tests {
             0,
             " + collaboration",
         );
-        a.merge(&mut b).expect("merge into a");
-        b.merge(&mut a).expect("merge into b");
+        a.merge_incoming(&mut b).expect("merge into a");
+        b.merge_incoming(&mut a).expect("merge into b");
 
         let left = SlidesDoc::load(&a).expect("merged deck");
         let right = SlidesDoc::load(&b).expect("merged deck");

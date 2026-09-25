@@ -1814,6 +1814,7 @@ mod tests {
     use super::*;
     use crate::app::MusicApp;
     use tilo_actions::{ActionInput, ArgValue, LocalTransport};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -2708,10 +2709,10 @@ mod tests {
         let b_bytes = b.save();
         let mut left = AutoCommit::load(&a_bytes).unwrap();
         let mut right_for_left = AutoCommit::load(&b_bytes).unwrap();
-        left.merge(&mut right_for_left).unwrap();
+        left.merge_incoming(&mut right_for_left).unwrap();
         let mut right = AutoCommit::load(&b_bytes).unwrap();
         let mut left_for_right = AutoCommit::load(&a_bytes).unwrap();
-        right.merge(&mut left_for_right).unwrap();
+        right.merge_incoming(&mut left_for_right).unwrap();
 
         assert_eq!(left.get_heads(), right.get_heads());
         let left_playlist = crate::doc::load_library(&left)

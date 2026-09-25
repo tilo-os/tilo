@@ -59,6 +59,7 @@ extern crate runtime_dylib;
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
+use tilo_automerge::ApplyIncoming;
 
 use tilo_actions::Action;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
@@ -466,7 +467,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
         qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
-    state.doc.merge(&mut peer)?;
+    state.doc.merge_incoming(&mut peer)?;
 
     // Session three, three hours after that, back to the local author.
     wp.sync(&mut state.doc, &state.root);

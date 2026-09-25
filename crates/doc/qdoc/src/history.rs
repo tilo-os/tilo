@@ -9,6 +9,7 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tilo_automerge::ApplyIncoming;
 
 /// One entry on the timeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,12 +131,6 @@ pub fn prefix_heads(doc: &mut AutoCommit, upto: usize) -> Vec<ChangeHash> {
         .collect()
 }
 
-/// Drop the patch events automerge 0.8 logs for every op it applies, even into the inactive patch
-/// log of a document nobody diffs; replaying a history would otherwise hold one per op of it.
-fn drop_patch_events(doc: &mut AutoCommit) {
-    doc.reset_diff_cursor();
-}
-
 /// Reconstruct the document as of `version` by replaying the first `version + 1` changes into a fresh replica (`get_changes` returns a valid causal order, so any prefix is dependency-closed).
 ///
 /// # Errors
@@ -146,9 +141,8 @@ pub fn materialize_at(doc: &mut AutoCommit, version: usize) -> Result<DocSnapsho
     let take = version.saturating_add(1).min(changes.len());
     let mut rebuilt = AutoCommit::new();
     rebuilt
-        .apply_changes(changes.into_iter().take(take))
+        .apply_incoming(changes.into_iter().take(take))
         .map_err(|e| DocError::Invalid(format!("apply_changes: {e}")))?;
-    drop_patch_events(&mut rebuilt);
     let c = open(&rebuilt, &automerge::ROOT)?;
     Ok(materialize(&rebuilt, &c))
 }
@@ -172,8 +166,7 @@ pub fn materialize_series(doc: &mut AutoCommit, versions: &[usize]) -> Vec<Optio
                     .by_ref()
                     .take(take.saturating_sub(applied))
                     .collect();
-                failed = rebuilt.apply_changes(batch).is_err();
-                drop_patch_events(&mut rebuilt);
+                failed = rebuilt.apply_incoming(batch).is_err();
                 applied = take;
             }
             if failed {

@@ -74,6 +74,14 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// The stored layout of this resource's content, for services that act
+    /// on it generically: History restores a past version through it, field
+    /// by field and item by item. `#[resource]` returns the record's
+    /// [`Model::SHAPE`](crate::Model::SHAPE); the default opts out.
+    fn shape() -> Option<crate::Shape> {
+        None
+    }
+
     /// Register this resource's replay decoder. Override to register an
     /// existing vocabulary under additional type ids.
     fn register(registry: &mut ActionRegistry) {
@@ -85,6 +93,12 @@ pub trait Resource: Sized + 'static {
 /// [`Resource::Action`] given as JSON. It is how a custom surface, an agent or
 /// a script submits an edit that has no named declaration (a drag with its
 /// final geometry) through the same permission-checked, undoable path.
+///
+/// It is programmatic: never offered in the palette or a menu, where a
+/// person picks named actions. Its risk is the value's own
+/// ([`tilo_actions::Action::risk`]), so a destructive value — deleting a clip —
+/// needs the same confirmation a declared destructive action does, while an
+/// ordinary edit applies directly.
 pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
@@ -184,6 +198,15 @@ pub fn encode<R: Resource>(action: &R::Action) -> Result<EncodedAction, ActionEr
     EncodedAction::encode(R::ACTION_TYPE, action)
 }
 
+/// The encoded form of a builder's result: the action, or a refusal that
+/// carries the builder's reason.
+pub(crate) fn encode_built<R: Resource>(built: Result<R::Action, String>) -> EncodedAction {
+    match built {
+        Ok(action) => encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string())),
+        Err(reason) => refused::<R>(&reason),
+    }
+}
+
 /// An action whose payload cannot be decoded, so the host refuses it with
 /// the builder's reason instead of applying anything.
 fn refused<R: Resource>(reason: &str) -> EncodedAction {
@@ -243,18 +266,83 @@ fn apply_spec<R: Resource>() -> ActionSpec {
             }
         },
     )
+    // A typed edit is how a surface, an agent or a script says what should
+    // happen without a named declaration; a person picks named actions.
+    .programmatic()
+    // Each value is classified: deleting is destructive, trimming is not, so
+    // a destructive value gets the confirmation a declared one would.
+    .with_risk(|args| {
+        let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
+            return tilo_actions::RiskLevel::Low;
+        };
+        serde_json::from_value::<R::Action>(serde_json::Value::Object(value.clone()))
+            .map_or(tilo_actions::RiskLevel::Low, |action| {
+                tilo_actions::Action::risk(&action)
+            })
+    })
+}
+
+fn group_spec<R: Resource>() -> ActionSpec {
+    ActionSpec::typed(
+        crate::GROUP,
+        format!("Apply several {} edits as one", R::LABEL),
+        "Invocations as JSON",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            crate::GROUP_PARAM,
+            ParamType::Array,
+            format!(
+                "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
+                R::LABEL
+            ),
+        )],
+        |args| match crate::group::build_group::<R>(&args.to_json(), origin_now_ms()) {
+            Ok(group) => EncodedAction::encode(crate::group::group_type::<R>(), &group)
+                .unwrap_or_else(|error| refused::<R>(&error.to_string())),
+            Err(reason) => refused::<R>(&reason),
+        },
+    )
+    // One group is one undo step, like any other document action.
+    .reversible()
+    // A gesture's edits, from a surface, a script or an agent; a person picks
+    // the named actions it is made of.
+    .programmatic()
+    // As consequential as its most consequential member.
+    .with_risk(|args| {
+        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
+            tilo_actions::RiskLevel::Low,
+            |group| tilo_actions::Action::risk(&group),
+        )
+    })
 }
 
 /// The resource tree published for one open resource: every declared action,
-/// the generic [`APPLY`] action, and the nested resources.
+/// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, and the nested
+/// resources.
+///
+/// An action offered on the items of a collection (see [`crate::items`])
+/// stays published on the record, with its id parameter, for scripts and
+/// agents; a person picks it on the item, so it is not a palette row here.
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
+    let children = R::children(state);
+    let on_items: std::collections::HashSet<&str> = children
+        .iter()
+        .filter(|child| crate::items::item_of_resource::<R>(child.id.as_str()).is_some())
+        .flat_map(|child| child.actions.iter().map(|spec| spec.id.as_str()))
+        .collect();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
-        resource = resource.with_action(spec_from(&decl));
+        let spec = spec_from(&decl);
+        resource = resource.with_action(if on_items.contains(decl.id) {
+            spec.programmatic()
+        } else {
+            spec
+        });
     }
     resource
         .with_action(apply_spec::<R>())
-        .with_children(R::children(state))
+        .with_action(group_spec::<R>())
+        .with_children(children)
 }
 
 /// Build the action a declaration produces for JSON arguments, validating them
@@ -267,6 +355,9 @@ pub fn build_action<R: Resource>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     now_ms: i64,
 ) -> Result<R::Action, String> {
+    if id == crate::GROUP {
+        return Err("a group is several actions; build it with `group::build_group`".into());
+    }
     if id == APPLY {
         let value = arguments
             .get(APPLY_PARAM)

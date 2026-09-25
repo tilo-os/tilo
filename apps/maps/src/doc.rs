@@ -830,6 +830,7 @@ mod tests {
     use super::*;
     use crate::sample;
     use automerge::ActorId;
+    use tilo_automerge::ApplyIncoming;
     #[test]
     fn typed_schema_excludes_window_local_state() {
         let mut d = AutoCommit::new();
@@ -882,7 +883,7 @@ mod tests {
         route.distance_m = 1234.;
         MapsDoc::set_route(&mut a, &route);
         MapsDoc::set_route_context(&mut b, m.origin, "Changed", m.dest, &m.dest_name, m.mode);
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         let out = MapsDoc::load(&a).unwrap();
         assert_eq!(out.route.unwrap().distance_m, 1234.);
         assert_eq!(out.origin_name, "Changed")

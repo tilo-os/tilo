@@ -239,7 +239,7 @@ fn portable_media_file_name(name: &str) -> Option<String> {
 }
 
 fn personal_media_cache_root() -> Option<PathBuf> {
-    let root = dirs::cache_dir()?.join("tilo/personal-media");
+    let root = xdg_paths::cache_dir()?.join("tilo/personal-media");
     // A partial stream is never useful after restart and can never become
     // authorized again because transfer ids/actions are session-local.
     let incoming = root.join("incoming");
@@ -1332,7 +1332,7 @@ fn spawn_lan_discovery_forwarding(
 ) {
     let discovery_tx = cmd_tx.clone();
     runtime.spawn(async move {
-        use futures_lite::StreamExt;
+        use futures_util::StreamExt;
         let mut events = mdns.subscribe().await;
         while let Some(event) = events.next().await {
             if let iroh_mdns_address_lookup::DiscoveryEvent::Discovered { endpoint_info, .. } =

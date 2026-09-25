@@ -55,6 +55,7 @@ warn_slow_podman_storage() { :; }
             "os/dev/cache-github-assets.sh",
             "os/dev/derive-rpm-package-set.py",
             "os/dev/verify-rpm-snapshot-package-set.sh",
+            "os/dev/verify-kernel-provenance.sh",
             "os/tests/containerfile_sources.sh",
             "os/tests/app_store.sh",
         ):

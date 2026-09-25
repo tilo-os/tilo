@@ -67,6 +67,48 @@ pub struct DmabufRef<'a> {
     pub colorimetry: Colorimetry,
 }
 
+/// DRM character-device identities reported by the Vulkan physical device.
+///
+/// `VK_EXT_physical_device_drm` is the authoritative Linux identity for
+/// matching a Vulkan renderer to an open KMS/render node.  Unlike PCI bus
+/// information it is also available for virtual DRM devices such as virgl.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VulkanDrmDeviceIdentity {
+    pub primary: Option<(u32, u32)>,
+    pub render: Option<(u32, u32)>,
+}
+
+/// Query the DRM nodes owned by the exact Vulkan physical device behind
+/// `device`. Returns `None` when the backend is not Vulkan or the driver does
+/// not expose `VK_EXT_physical_device_drm`.
+pub fn vulkan_drm_device_identity(device: &wgpu::Device) -> Option<VulkanDrmDeviceIdentity> {
+    let guard = unsafe { device.as_hal::<vulkan::Api>() }?;
+    let hal_device: &vulkan::Device = &guard;
+    let phys = hal_device.raw_physical_device();
+    let instance = hal_device.shared_instance().raw_instance();
+    let supported = unsafe { instance.enumerate_device_extension_properties(phys).ok()? }
+        .iter()
+        .any(|extension| {
+            extension.extension_name_as_c_str().ok() == Some(ash::ext::physical_device_drm::NAME)
+        });
+    if !supported {
+        return None;
+    }
+
+    let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
+    let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
+    unsafe { instance.get_physical_device_properties2(phys, &mut properties) };
+    let node = |present: u32, major: i64, minor: i64| {
+        (present != 0)
+            .then(|| Some((u32::try_from(major).ok()?, u32::try_from(minor).ok()?)))
+            .flatten()
+    };
+    Some(VulkanDrmDeviceIdentity {
+        primary: node(drm.has_primary, drm.primary_major, drm.primary_minor),
+        render: node(drm.has_render, drm.render_major, drm.render_minor),
+    })
+}
+
 /// Why an import could not happen. Each variant names a real, distinct
 /// condition the caller can act on — all of them mean "use the CPU path".
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -74,7 +74,7 @@ mod native {
     fn directory() -> tempfile::TempDir {
         // No /tmp fallback: native fixtures need the qualified current-user
         // cache filesystem and safe ancestry, just like the production provider.
-        tempfile::tempdir_in(dirs::cache_dir().unwrap()).unwrap()
+        tempfile::tempdir_in(xdg_paths::cache_dir().unwrap()).unwrap()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
         path.join("qos-internal-install").join(s.manifest_sha256())

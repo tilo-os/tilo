@@ -56,6 +56,7 @@ pub struct DrmBackend {
     /// True between a session pause and matching resume, for the inline path. Distinct from
     /// `blanked` ("screen should be off") — `paused` means these CRTCs belong to another session right now; presenting under either is wrong.
     paused: bool,
+    direct_bypass_reported: bool,
 }
 
 impl DrmBackend {
@@ -93,6 +94,7 @@ impl DrmBackend {
             refresh,
             commands,
             paused: false,
+            direct_bypass_reported: false,
         })
     }
 
@@ -125,6 +127,10 @@ impl DrmBackend {
 /// hardware cursor ([`CursorPlanes`](super::scanout::CursorPlanes)) owns its own dup of the card
 /// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint. Card fds are
 /// plain fds usable from any thread; page-flip completions are read only here.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent presenter lifecycle or one-shot diagnostic fact"
+)]
 pub struct DrmPresenter {
     scanouts: Vec<ScanoutEntry>,
     outputs: Vec<Output>,
@@ -150,6 +156,9 @@ pub struct DrmPresenter {
     /// actionable even when its wrapper forgot the opt-in per-frame trace environment: one log
     /// record every two seconds is cheap enough for production and survives a hard reset.
     phase_window: PhaseWindow,
+    /// Emit one durable explanation when direct presentation is bypassed
+    /// before the detailed adapter/scanout eligibility check.
+    direct_bypass_reported: bool,
 }
 
 const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
@@ -169,6 +178,7 @@ struct DirectEligibility<'a> {
     hardware_cursor: bool,
     event_pageflips: bool,
     renderer_pci: &'a str,
+    renderer_drm_matches: bool,
     drm_bus_id: Option<&'a str>,
 }
 
@@ -204,12 +214,10 @@ fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str
     if !input.event_pageflips {
         return Some("event-driven page flips are unavailable");
     }
-    if input.drm_bus_id.is_none() {
-        return Some("DRM device has no PCI identity");
-    }
-    if !input
-        .drm_bus_id
-        .is_some_and(|drm| scanout::renderer_matches_drm_card(input.renderer_pci, drm))
+    if !input.renderer_drm_matches
+        && !input
+            .drm_bus_id
+            .is_some_and(|drm| scanout::renderer_matches_drm_card(input.renderer_pci, drm))
     {
         return Some("renderer and scanout use different GPUs");
     }
@@ -328,6 +336,17 @@ impl PhaseWindow {
         now.saturating_duration_since(self.started) >= PHASE_WINDOW_INTERVAL
     }
 
+    fn has_observations(&self) -> bool {
+        self.frames != 0
+            || self.direct_dropped != 0
+            || self.flip_completions != 0
+            || self.unprofiled_frames != 0
+    }
+
+    fn should_emit(&self, now: Instant, profile_phases: bool) -> bool {
+        self.has_observations() && (profile_phases || self.due(now))
+    }
+
     fn reset(&mut self, now: Instant) {
         *self = Self {
             started: now,
@@ -420,6 +439,30 @@ mod phase_window_tests {
     }
 
     #[test]
+    fn explicit_profiling_flushes_the_first_observation_without_a_later_frame() {
+        let mut window = PhaseWindow::default();
+        let started = Instant::now();
+        window.started = started;
+
+        assert!(!window.should_emit(started + Duration::from_millis(1), true));
+        window.record_legacy_attempt(None, 41, 7);
+        assert!(window.should_emit(started + Duration::from_millis(1), true));
+        assert!(!window.should_emit(started + Duration::from_millis(1), false));
+        assert!(window.should_emit(started + PHASE_WINDOW_INTERVAL, false));
+    }
+
+    #[test]
+    fn profiling_keeps_direct_drops_and_completions_visible_without_a_frame() {
+        let mut window = PhaseWindow::default();
+        let now = Instant::now();
+        window.started = now;
+        window.record_direct_drop();
+        window.record_flip_completions(1);
+
+        assert!(window.should_emit(now, true));
+    }
+
+    #[test]
     fn phase_window_reset_discards_the_previous_sample_without_moving_its_clock() {
         let mut window = PhaseWindow::default();
         window.record(timing(7));
@@ -470,6 +513,7 @@ mod direct_eligibility_tests {
             hardware_cursor: true,
             event_pageflips: true,
             renderer_pci: "0000:66:00.0",
+            renderer_drm_matches: false,
             drm_bus_id: Some("pci:0000:66:00.0"),
         }
     }
@@ -515,13 +559,6 @@ mod direct_eligibility_tests {
             ),
             (
                 DirectEligibility {
-                    drm_bus_id: None,
-                    ..eligible()
-                },
-                "DRM device has no PCI identity",
-            ),
-            (
-                DirectEligibility {
                     drm_bus_id: Some("pci:0000:01:00.0"),
                     ..eligible()
                 },
@@ -530,6 +567,45 @@ mod direct_eligibility_tests {
         ] {
             assert_eq!(direct_scanout_rejection(rejected), Some(reason));
         }
+    }
+
+    #[test]
+    fn drm_node_identity_can_prove_virtual_renderer_without_pci_identity() {
+        assert_eq!(
+            direct_scanout_rejection(DirectEligibility {
+                renderer_pci: "",
+                renderer_drm_matches: true,
+                drm_bus_id: None,
+                ..eligible()
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn matching_drm_node_is_authoritative_when_the_card_has_no_pci_bus_id() {
+        assert_eq!(
+            direct_scanout_rejection(DirectEligibility {
+                renderer_pci: "0000:66:00.0",
+                renderer_drm_matches: true,
+                drm_bus_id: None,
+                ..eligible()
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_renderer_identities_still_fail_closed() {
+        assert_eq!(
+            direct_scanout_rejection(DirectEligibility {
+                renderer_pci: "",
+                renderer_drm_matches: false,
+                drm_bus_id: None,
+                ..eligible()
+            }),
+            Some("renderer and scanout use different GPUs")
+        );
     }
 }
 
@@ -603,6 +679,7 @@ impl DrmPresenter {
             scene,
             None,
             Some(&mut self.phase_window),
+            &mut self.direct_bypass_reported,
         );
         if sample.direct_queued {
             self.retire_direct_flip();
@@ -627,6 +704,7 @@ impl DrmPresenter {
                 regions: frame.damage_regions.as_deref(),
             }),
             Some(&mut self.phase_window),
+            &mut self.direct_bypass_reported,
         );
         if sample.direct_queued {
             self.retire_direct_flip();
@@ -679,34 +757,63 @@ impl DrmPresenter {
                 .record_legacy_attempt(timing, sample.bridge_us, sample.scanout_us);
         }
         let now = Instant::now();
-        if self.phase_window.due(now) {
+        // A production session reports bounded aggregates. Explicit profiling
+        // instead flushes every non-empty window immediately: if rendering
+        // stalls or becomes idle after one expensive frame, there may never be
+        // a later frame available to flush that evidence.
+        if self.phase_window.should_emit(now, self.profile_phases) {
             let frames = self.phase_window.frames.max(1);
             let summary = self.phase_window.summary_fields(now);
-            tracing::info!(
-                target: "tilo::render_phase_summary",
-                frames = summary.frames,
-                direct_frames = summary.direct_frames,
-                direct_dropped = summary.direct_dropped,
-                flip_completions = summary.flip_completions,
-                window_us = summary.window_us,
-                avg_submit_us = self.phase_window.submit_us.checked_div(u128::from(frames)).unwrap_or(0),
-                avg_gpu_readback_map_us = self
-                    .phase_window
+            // The session's default subscriber passes only errors unless
+            // RUST_LOG says otherwise, so an info event never reaches the
+            // flight recorder. The runner captures stderr into that fsyncing
+            // record; keep the line machine-parseable.
+            eprintln!(
+                "frames={} direct_frames={} direct_dropped={} flip_completions={} \
+                 unprofiled_frames={} window_us={} avg_submit_us={} \
+                 avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
+                 readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
+                 direct_scanout_status={} direct_scanout_reason={:?} \
+                 DRM render phase summary",
+                summary.frames,
+                summary.direct_frames,
+                summary.direct_dropped,
+                summary.flip_completions,
+                summary.unprofiled_frames,
+                summary.window_us,
+                self.phase_window
+                    .submit_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
+                self.phase_window
                     .gpu_readback_map_us
                     .checked_div(u128::from(frames))
                     .unwrap_or(0),
-                avg_settle_us = self.phase_window.settle_us.checked_div(u128::from(frames)).unwrap_or(0),
-                avg_cpu_swizzle_us = self
-                    .phase_window
+                self.phase_window
+                    .settle_us
+                    .checked_div(u128::from(frames))
+                    .unwrap_or(0),
+                self.phase_window
                     .cpu_swizzle_us
                     .checked_div(u128::from(frames))
                     .unwrap_or(0),
-                readback_bytes = summary.readback_bytes,
-                output_bytes = summary.output_bytes,
-                bridge_us = summary.bridge_us,
-                scanout_us = summary.scanout_us,
-                unprofiled_frames = summary.unprofiled_frames,
-                "DRM render phase summary"
+                summary.readback_bytes,
+                summary.output_bytes,
+                summary.bridge_us,
+                summary.scanout_us,
+                if self
+                    .scanouts
+                    .iter()
+                    .any(|entry| entry.direct_targets.is_some())
+                {
+                    "enabled"
+                } else {
+                    "unavailable"
+                },
+                self.scanouts
+                    .iter()
+                    .find_map(|entry| entry.direct_unavailable.as_deref())
+                    .unwrap_or("not-initialized"),
             );
             self.phase_window.reset(now);
         }
@@ -721,16 +828,16 @@ impl DrmPresenter {
             return;
         };
         self.profile_seq = self.profile_seq.saturating_add(1);
-        tracing::info!(
-            target: "tilo::render_phase",
-            seq = self.profile_seq,
-            submit_us = timing.submit_us,
-            gpu_readback_map_us = timing.completed_readback_map_us,
-            settle_us = timing.settle_us,
-            cpu_swizzle_us = timing.cpu_copy_swizzle_us,
-            readback_bytes = timing.readback_bytes,
-            output_bytes = timing.cpu_output_bytes,
-            "DRM render frame phases"
+        eprintln!(
+            "seq={} submit_us={} gpu_readback_map_us={} settle_us={} cpu_swizzle_us={} \
+             readback_bytes={} output_bytes={} DRM render frame phases",
+            self.profile_seq,
+            timing.submit_us,
+            timing.completed_readback_map_us,
+            timing.settle_us,
+            timing.cpu_copy_swizzle_us,
+            timing.readback_bytes,
+            timing.cpu_output_bytes,
         );
     }
 
@@ -846,7 +953,8 @@ fn apply_scanout_command(
 /// same painting logic, different owner of the scanouts and the pointer.
 #[allow(
     clippy::too_many_lines,
-    reason = "one dispatcher keeps bridge lifetime, sparse eligibility, and the single versus multi-output presentation boundaries together"
+    clippy::too_many_arguments,
+    reason = "one dispatcher keeps bridge lifetime, sparse eligibility, diagnostics, and the single versus multi-output presentation boundaries together"
 )]
 fn paint_scanouts(
     scanouts: &mut [ScanoutEntry],
@@ -856,6 +964,7 @@ fn paint_scanouts(
     scene: &Scene,
     damage: Option<SceneDamage<'_>>,
     mut phase_window: Option<&mut PhaseWindow>,
+    direct_bypass_reported: &mut bool,
 ) -> PaintScanoutSample {
     if scanouts.is_empty() {
         return PaintScanoutSample::default();
@@ -913,6 +1022,17 @@ fn paint_scanouts(
             s.transform == settings_store::hardware::OutputTransform::Normal
                 && s.color_transform.is_none()
         });
+    if !fast_path && !*direct_bypass_reported {
+        let first = scanouts.first();
+        eprintln!(
+            "tilo compositor: DRM direct scanout bypassed before adapter inspection \
+             (scanouts={}, transform={:?}, color_managed={})",
+            scanouts.len(),
+            first.map(|entry| entry.transform),
+            first.is_some_and(|entry| entry.color_transform.is_some()),
+        );
+        *direct_bypass_reported = true;
+    }
     // Fine damage is in the combined scene's native pixels. The existing fast path can still
     // present scaled/offset logical metadata densely, but sparse repair must not assume that
     // mapping is one-to-one until the renderer owns an explicit transform contract.
@@ -936,9 +1056,8 @@ fn paint_scanouts(
         // GPU implementation. This laptop's normal single-output path avoids
         // all framebuffer readback while every unsupported case remains on
         // the established presenter.
-        if let Ok(adapter) = bridge.adapter_info()
-            && let drm_bus_id = entry.scanout.drm_bus_id()
-        {
+        if let Ok(adapter) = bridge.adapter_info() {
+            let drm_bus_id = entry.scanout.drm_bus_id();
             let eligibility = DirectEligibility {
                 outputs: scanout_count,
                 normal_transform: entry.transform
@@ -947,14 +1066,31 @@ fn paint_scanouts(
                 hardware_cursor: entry.scanout.hardware_cursor_active(),
                 event_pageflips: entry.scanout.event_pageflips_available(),
                 renderer_pci: &adapter.pci_bus_id,
+                renderer_drm_matches: scanout::renderer_drm_node_matches_card(
+                    adapter.drm_device,
+                    entry.scanout.drm_device_id(),
+                ),
                 drm_bus_id: drm_bus_id.as_deref(),
             };
+            let renderer_drm = adapter.drm_device.map_or_else(
+                || "unavailable".to_owned(),
+                |identity| {
+                    format!(
+                        "primary={:?},render={:?}",
+                        identity.primary, identity.render
+                    )
+                },
+            );
             if let Some(reason) = direct_scanout_rejection(eligibility) {
                 if entry.direct_unavailable.is_none() {
+                    // Keep this line machine-parseable and durable.  The
+                    // session flight recorder may start receiving output a
+                    // moment after the render thread, so repeat the stable
+                    // rejection with the periodic phase summary below too.
                     eprintln!(
-                        "tilo compositor: DRM direct scanout unavailable: {reason} \
-                         (renderer_pci={}, drm_bus_id={}, hardware_cursor={}, event_pageflips={})",
+                        "direct_scanout_status=unavailable reason={reason:?} renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} hardware_cursor={} event_pageflips={} DRM direct scanout unavailable",
                         adapter.pci_bus_id,
+                        eligibility.renderer_drm_matches,
                         drm_bus_id.as_deref().unwrap_or("unavailable"),
                         eligibility.hardware_cursor,
                         eligibility.event_pageflips,
@@ -966,13 +1102,15 @@ fn paint_scanouts(
                     match scanout::DirectScanoutTargets::new(&entry.scanout, bridge) {
                         Ok(targets) => {
                             eprintln!(
-                                "tilo compositor: DRM direct scanout enabled \
-                                 (renderer_pci={}, drm_bus_id={})",
+                                "direct_scanout_status=enabled renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} DRM direct scanout enabled",
                                 adapter.pci_bus_id,
+                                eligibility.renderer_drm_matches,
                                 drm_bus_id.as_deref().unwrap_or("unavailable"),
                             );
                             tracing::info!(
                                 renderer_pci = %adapter.pci_bus_id,
+                                renderer_drm = %renderer_drm,
+                                renderer_drm_matches = eligibility.renderer_drm_matches,
                                 drm_bus_id = drm_bus_id.as_deref().unwrap_or("unavailable"),
                                 "DRM direct scanout enabled"
                             );
@@ -1399,6 +1537,7 @@ impl Backend for DrmBackend {
             scene,
             None,
             None,
+            &mut self.direct_bypass_reported,
         );
     }
 
@@ -1419,6 +1558,7 @@ impl Backend for DrmBackend {
                 regions: frame.damage_regions.as_deref(),
             }),
             None,
+            &mut self.direct_bypass_reported,
         );
     }
 
@@ -1494,6 +1634,7 @@ impl Backend for DrmBackend {
             profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some(),
             profile_seq: 0,
             phase_window: PhaseWindow::default(),
+            direct_bypass_reported: false,
         }))
     }
 

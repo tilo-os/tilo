@@ -7,7 +7,8 @@
 //! replay one replica's log into a fresh one to prove determinism.
 
 use automerge::ChangeHash;
-use tilo_actions::{ActionContext, ActionEnvelope, ActionError, ActionRegistry};
+use tilo_actions::{ActionContext, ActionEnvelope, ActionError, ActionRegistry, EncodedAction};
+use tilo_automerge::ApplyIncoming;
 
 use crate::action::Invoke;
 use crate::history::{self, Version};
@@ -52,7 +53,7 @@ impl<R: Resource> Replica<R> {
     #[must_use]
     pub fn from_doc(doc: Doc) -> Self {
         let mut registry = ActionRegistry::new();
-        R::register(&mut registry);
+        crate::group::register::<R>(&mut registry);
         Self {
             doc,
             registry,
@@ -83,6 +84,12 @@ impl<R: Resource> Replica<R> {
     /// Returns a refusal, an argument error or a document error.
     pub fn apply(&mut self, invoke: Invoke<R>) -> Result<&ActionEnvelope, ActionError> {
         let Invoke { id, arguments, .. } = invoke;
+        if id == crate::GROUP {
+            let group = crate::group::build_group::<R>(&arguments, self.now_ms)
+                .map_err(ActionError::Refused)?;
+            let encoded = EncodedAction::encode(crate::group::group_type::<R>(), &group)?;
+            return self.apply_encoded(&group, encoded, id);
+        }
         let action = resource::build_action::<R>(id, &arguments, self.now_ms)
             .map_err(ActionError::Refused)?;
         let label = R::declarations()
@@ -102,6 +109,15 @@ impl<R: Resource> Replica<R> {
         label: &str,
     ) -> Result<&ActionEnvelope, ActionError> {
         let encoded = resource::encode::<R>(action)?;
+        self.apply_encoded(action, encoded, label)
+    }
+
+    fn apply_encoded(
+        &mut self,
+        action: &dyn tilo_actions::Action,
+        encoded: EncodedAction,
+        label: &str,
+    ) -> Result<&ActionEnvelope, ActionError> {
         let context = ActionContext::for_resource(label, R::KIND, R::KIND, R::LABEL);
         let envelope = tilo_actions::apply_local_with_context(
             &mut self.doc,
@@ -148,8 +164,8 @@ impl<R: Resource> Replica<R> {
     /// # Errors
     /// Returns a document error.
     pub fn sync_with(&mut self, other: &mut Self) -> Result<(), ModelError> {
-        self.doc.merge(&mut other.doc)?;
-        other.doc.merge(&mut self.doc)?;
+        self.doc.merge_incoming(&mut other.doc)?;
+        other.doc.merge_incoming(&mut self.doc)?;
         Ok(())
     }
 

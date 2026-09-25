@@ -292,31 +292,11 @@ else
   [[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
     || die "KERNEL_RPMS_REF must pin code.sandbox.example/qos/tilo-kernel by sha256 digest"
   command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
-  cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF" >/dev/null \
-    || die "Tilo kernel signature verification failed"
-  _tilo_kernel_digest="${KERNEL_RPMS_REF##*@}"
-  _tilo_kernel_provenance="$(cosign verify-attestation \
-    --key "$TILO_REPO/keys/cosign.pub" --type slsaprovenance1 "$KERNEL_RPMS_REF")" \
-    || die "Tilo kernel provenance verification failed"
-  printf '%s' "$_tilo_kernel_provenance" | jq -e \
-    --arg digest "$_tilo_kernel_digest" --arg architecture "$(uname -m)" \
-    --arg base "$BASE_REF" --arg rpms "$RPMS_REF" '
-      [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
-      | any(
-          ((.buildDefinition.buildType == "https://tilo.sh/buildtypes/kernel-rpm/v1")
-            or (.buildDefinition.buildType | endswith("/buildtypes/kernel-rpm/v1")))
-          and .buildDefinition.externalParameters.architecture == $architecture
-          and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
-          and any(.buildDefinition.resolvedDependencies[]?;
-            .uri | test("^git\\+ssh://code\\.podesta\\.ai/qos/qos@[0-9a-f]{40}$"))
-          and any(.buildDefinition.resolvedDependencies[]?; .uri == $base)
-          and any(.buildDefinition.resolvedDependencies[]?; .uri == $rpms)
-        )
-    ' >/dev/null || die "Tilo kernel provenance does not bind its source, architecture, digest, base, and RPM inputs"
-  _tilo_kernel_arch="$(skopeo inspect "docker://$KERNEL_RPMS_REF" | jq -er .Architecture)" \
-    || die "could not inspect the signed Tilo kernel architecture"
-  [ "$_tilo_kernel_arch" = "$_tilo_registry_arch" ] \
-    || die "signed Tilo kernel architecture is $_tilo_kernel_arch, expected $_tilo_registry_arch"
+  command -v skopeo >/dev/null || die "building an OS image requires skopeo to inspect the signed Tilo kernel"
+  # The kernel binds its own signed build environment; the OS RPM snapshot
+  # and base are not kernel inputs.
+  "$TILO_OS_DIR/dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" \
+    || die "the Tilo kernel $KERNEL_RPMS_REF is not authenticated for this build"
 fi
 fi # Production provenance; development inputs have independent pinned receipts.
 bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
@@ -607,6 +587,9 @@ rm -rf "$TILO_OUTPUT/qcow2" "$TILO_OUTPUT"/manifest* 2>/dev/null || true
 OUTDIR="$(dirname "$TILO_DISK")"
 INSTALL_LOG="$OUTDIR/.install.log"
 disk_args=(--user "$TILO_ACCOUNT")
+if [ -n "${TILO_DEV_DIRECT_BUNDLE_DIR:-}" ]; then
+  disk_args+=(--direct-boot-bundle "$TILO_DEV_DIRECT_BUNDLE_DIR")
+fi
 if [ -n "${TILO_TARGET_IMGREF:-}" ]; then
   disk_args+=(--target-imgref "$TILO_TARGET_IMGREF")
 fi

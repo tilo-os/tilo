@@ -126,6 +126,11 @@ impl Column {
         self
     }
 
+    /// Update the extra top inset before the next layout pass.
+    pub fn set_extra_top_padding(&mut self, px: f32) {
+        self.extra_top_padding = px;
+    }
+
     /// Extra padding on the bottom, on top of the default
     /// `spacing.s6` inset.
     #[must_use]
@@ -143,6 +148,11 @@ impl Column {
         self
     }
 
+    /// Update the top + bottom inset before the next layout pass.
+    pub fn set_vertical_padding(&mut self, px: f32) {
+        self.vertical_padding_override = Some(px);
+    }
+
     /// Override the column's left + right padding (replacing
     /// `base + extra_left_padding` on the left, `base` on the right).
     #[must_use]
@@ -158,6 +168,11 @@ impl Column {
     pub fn with_gap(mut self, px: f32) -> Self {
         self.gap_override = Some(px);
         self
+    }
+
+    /// Update the inter-child gap before the next layout pass.
+    pub fn set_gap(&mut self, px: f32) {
+        self.gap_override = Some(px);
     }
 
     /// Switch from `height: percent(1.0)` to `flex_grow: 1 + flex_basis: 0`.

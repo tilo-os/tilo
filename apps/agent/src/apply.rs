@@ -17,6 +17,7 @@ use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit};
 use tilo_actions::door::{self, ActionAddress, DoorError};
 use tilo_actions::{ActionRegistry, LocalTransport, Resource};
+use tilo_automerge::ApplyIncoming;
 
 use crate::surface::{AppContract, View};
 
@@ -277,7 +278,7 @@ impl Editor {
         if !has_document_schema(&incoming) {
             return Ok(false);
         }
-        if self.doc.merge(&mut incoming).is_err() {
+        if self.doc.merge_incoming(&mut incoming).is_err() {
             return Ok(false);
         }
         self.drain();
@@ -309,7 +310,7 @@ impl Editor {
         if !(self.contract.recognises)(&incoming) {
             return Ok(false);
         }
-        if let Err(e) = self.doc.merge(&mut incoming) {
+        if let Err(e) = self.doc.merge_incoming(&mut incoming) {
             tracing::warn!(
                 app = self.contract.namespace,
                 bytes = bytes.len(),
@@ -379,7 +380,7 @@ impl Editor {
     /// propagated — see above for why applying it anyway would be wrong.
     pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<bool> {
         let mut incoming = AutoCommit::new();
-        if incoming.load_incremental(bytes).is_err() {
+        if incoming.load_incoming(bytes).is_err() {
             return Ok(false);
         }
         if !incoming
@@ -390,7 +391,7 @@ impl Editor {
             return Ok(false);
         }
         let before = self.doc.get_heads();
-        if self.doc.load_incremental(bytes).is_err() {
+        if self.doc.load_incoming(bytes).is_err() {
             return Ok(false);
         }
         self.drain();
@@ -767,7 +768,7 @@ mod tests {
         {
             let mut probe = AutoCommit::new();
             assert!(
-                probe.load_incremental(&delta).is_ok(),
+                probe.load_incoming(&delta).is_ok(),
                 "automerge must accept this delta, or the trap this guards \
                  against does not exist"
             );
@@ -846,7 +847,7 @@ mod tests {
             .expect("the document changed, so there is a change to send");
 
         let mut peer = AutoCommit::new();
-        peer.load_incremental(&delta).expect("the delta applies");
+        peer.load_incoming(&delta).expect("the delta applies");
         assert_eq!(
             peer.get(&ROOT, "note")
                 .unwrap()
@@ -886,7 +887,7 @@ mod tests {
             .expect("apply")
             .expect("a plain write is a change to send");
         let mut peer = AutoCommit::new();
-        peer.load_incremental(&delta).expect("the delta applies");
+        peer.load_incoming(&delta).expect("the delta applies");
         assert_eq!(
             peer.get(&ROOT, "note")
                 .unwrap()

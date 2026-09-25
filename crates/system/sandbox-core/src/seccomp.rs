@@ -44,6 +44,8 @@ pub enum SeccompError {
     Compile(#[from] BackendError),
     #[error("io error while staging seccomp blob: {0}")]
     Io(#[from] io::Error),
+    #[error("installing the seccomp filter failed: {0}")]
+    Install(String),
 }
 
 /// The architecture a filter is compiled for: the one this binary runs on.
@@ -316,6 +318,51 @@ fn baseline_rules(
 #[cfg(target_os = "linux")]
 pub fn baseline_program(profile: SeccompProfile) -> Result<BpfProgram, SeccompError> {
     deny_list_program(baseline_rules(profile)?)
+}
+
+/// Syscalls a hostile-document parser never needs: it talks only over the
+/// descriptors it inherited or was handed, so it may create no socket of any
+/// family, reach no address, and run no other program.
+#[cfg(target_os = "linux")]
+pub const PARSER_DENIES: &[libc::c_long] = &[
+    libc::SYS_socket,
+    libc::SYS_socketpair,
+    libc::SYS_connect,
+    libc::SYS_bind,
+    libc::SYS_listen,
+    libc::SYS_accept,
+    libc::SYS_accept4,
+    libc::SYS_execve,
+    libc::SYS_execveat,
+];
+
+/// The policy for a helper that parses untrusted documents (PDF engines,
+/// thumbnailers): the [`SeccompProfile::TiloDefault`] baseline, including
+/// write-xor-execute, plus [`PARSER_DENIES`].
+///
+/// # Errors
+///
+/// Returns [`SeccompError`] if the rules or their compilation fail.
+#[cfg(target_os = "linux")]
+pub fn parser_program() -> Result<BpfProgram, SeccompError> {
+    let mut rules = baseline_rules(SeccompProfile::TiloDefault)?;
+    for nr in PARSER_DENIES {
+        // Unconditional: replaces the baseline's AF_PACKET-only socket rule.
+        rules.insert(*nr, Vec::new());
+    }
+    deny_list_program(rules)
+}
+
+/// Install `program` on every thread of the calling process. Sets
+/// `no_new_privs` first, as the kernel requires for an unprivileged filter.
+/// Irreversible.
+///
+/// # Errors
+///
+/// Returns [`SeccompError::Install`] when the kernel refuses the filter.
+#[cfg(target_os = "linux")]
+pub fn install(program: &BpfProgram) -> Result<(), SeccompError> {
+    seccompiler::apply_filter_all_threads(program).map_err(|e| SeccompError::Install(e.to_string()))
 }
 
 /// Compile the baseline policy to a raw BPF blob.
@@ -598,5 +645,49 @@ mod tests {
         unsafe { libc::waitpid(pid, &raw mut status, 0) };
         assert!(libc::WIFEXITED(status));
         assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn parser_program_refuses_sockets_and_exec_in_the_kernel() {
+        let program = parser_program().expect("compile filter");
+        // SAFETY: the child installs a filter, invokes raw syscalls with inert
+        // arguments, and exits without returning into the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            if seccompiler::apply_filter(&program).is_err() {
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(12) };
+            }
+            for family in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6] {
+                // SAFETY: socket(2) with constant arguments.
+                let fd = unsafe { libc::socket(family, libc::SOCK_STREAM, 0) };
+                if fd != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                    // SAFETY: `_exit` does not unwind.
+                    unsafe { libc::_exit(10) };
+                }
+            }
+            let path = c"/bin/true";
+            let argv = [path.as_ptr(), std::ptr::null()];
+            let envp = [std::ptr::null::<libc::c_char>()];
+            // SAFETY: valid NUL-terminated argument vectors.
+            let rc = unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+            if rc != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+                // SAFETY: `_exit` does not unwind.
+                unsafe { libc::_exit(11) };
+            }
+            // SAFETY: `_exit` does not unwind.
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        // SAFETY: waiting on our own child.
+        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "10 = a socket was created, 11 = exec was allowed, 12 = the filter would not install"
+        );
     }
 }

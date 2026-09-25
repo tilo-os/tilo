@@ -180,6 +180,26 @@ case "$command" in
             mv certs/extract-cert.new certs/extract-cert
         fi
         chmod 0755 certs/extract-cert
+        # system_certificates.S embeds the certificate with .incbin, which a
+        # compiler cache does not hash: a cached object from another build
+        # would carry that build's certificate, and this kernel would reject
+        # its own modules ("module with unavailable key"). Put the
+        # certificate's digest into the preprocessed source, in a section
+        # the linker discards, so the cached object follows the certificate.
+        cert_sha256=$(sha256sum /work/module-signing/signing-cert.der | cut -d' ' -f1)
+        case "$cert_sha256" in *[!0-9a-f]*|'') echo "cannot hash the module signing certificate" >&2; exit 1 ;; esac
+        grep -v 'tilo-module-cert' certs/system_certificates.S > certs/system_certificates.S.new
+        printf '%s\n' \
+            '	.pushsection .discard.tilo_module_cert, "a" /* tilo-module-cert */' \
+            "	.ascii \"$cert_sha256\" /* tilo-module-cert */" \
+            '	.popsection /* tilo-module-cert */' >> certs/system_certificates.S.new
+        # Rewrite only on change, so an unchanged dev tree rebuilds nothing.
+        if cmp -s certs/system_certificates.S.new certs/system_certificates.S; then
+            rm -f certs/system_certificates.S.new
+        else
+            mv certs/system_certificates.S.new certs/system_certificates.S
+        fi
+        grep -Fq "$cert_sha256" certs/system_certificates.S
         # `rpmbuild -bp` runs %prep which extracts + patches, but does NOT drop
         # the target .config into the source tree — Fedora's kernel spec does
         # that inside %build. Copy the right config manually:
@@ -332,10 +352,12 @@ case "$command" in
         positive_jobs "$jobs"
         cd "$ksrc"
         # An optional compiler launcher (sccache in CI) wraps the target and
-        # host compiler for both the tree and the out-of-tree module.
+        # host compiler for both the tree and the out-of-tree module. Bypass it
+        # for system_certificates.S, whose .incbin input changes with each
+        # ephemeral signing key and is not reliably part of a cache key.
         if [ -n "${TILO_KERNEL_CC_LAUNCHER:-}" ]; then
-            make -j"$jobs" CC="$TILO_KERNEL_CC_LAUNCHER gcc" HOSTCC="$TILO_KERNEL_CC_LAUNCHER gcc" all
-            make -C "$ksrc" M="$extmod" -j"$jobs" CC="$TILO_KERNEL_CC_LAUNCHER gcc" HOSTCC="$TILO_KERNEL_CC_LAUNCHER gcc" modules
+            make -j"$jobs" CC="sh /work/kernel-cc-wrapper.sh gcc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" all
+            make -C "$ksrc" M="$extmod" -j"$jobs" CC="sh /work/kernel-cc-wrapper.sh gcc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" modules
         else
             make -j"$jobs" all
             make -C "$ksrc" M="$extmod" -j"$jobs" modules
@@ -353,6 +375,11 @@ case "$command" in
         jobs=${8:?expected a job count}
         positive_jobs "$jobs"
         case "$stage" in /*) ;; *) echo "kernel staging directory must be absolute" >&2; exit 1 ;; esac
+        # A module's cryptographic self-check alone cannot prove that the
+        # kernel was linked with the same per-build signer. Check the exact
+        # certificate bytes in vmlinux before packaging or deleting the key.
+        python3 /work/check-signing-identity.py "$ksrc/vmlinux" \
+          "$ksrc/certs/signing_key.x509" "$signing/signing-cert.der"
         rm -rf "$stage"
         mkdir -p "$stage/lib/modules/$kver"
         # bootc / ostree find the boot artifacts alongside the modules,
@@ -362,6 +389,14 @@ case "$command" in
         # deploy time from these files.
         sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"
         cd "$ksrc"
+        # The kernel must trust the certificate the modules are signed with
+        # below; a stale embedded certificate boots a kernel that rejects
+        # every module.
+        python3 -c 'import sys; sys.exit(open(sys.argv[2], "rb").read() not in open(sys.argv[1], "rb").read())' \
+            vmlinux "$signing/signing-cert.der" || {
+            echo "vmlinux does not embed this build's module signing certificate" >&2
+            exit 1
+        }
         # Install and strip before signing. Automatic Kbuild signing is disabled
         # because its host utility links libcrypto.
         make -j"$jobs" INSTALL_MOD_PATH="$stage" INSTALL_MOD_STRIP=1 modules_install

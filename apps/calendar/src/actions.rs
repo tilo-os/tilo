@@ -3219,6 +3219,7 @@ mod tests {
     use crate::app::CalendarApp;
     use automerge::ROOT;
     use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -4178,7 +4179,9 @@ mod tests {
         .expect("colour applies");
         first.commit();
         second.commit();
-        first.merge(&mut second).expect("concurrent changes merge");
+        first
+            .merge_incoming(&mut second)
+            .expect("concurrent changes merge");
 
         let merged_model = CalDoc::read_model(&first);
         let merged = merged_model
@@ -4253,10 +4256,10 @@ mod tests {
         let mut first_peer = AutoCommit::load(&first.save()).expect("first peer");
         let mut second_peer = AutoCommit::load(&second.save()).expect("second peer");
         first
-            .merge(&mut second_peer)
+            .merge_incoming(&mut second_peer)
             .expect("merge second into first");
         second
-            .merge(&mut first_peer)
+            .merge_incoming(&mut first_peer)
             .expect("merge first into second");
 
         let left = CalDoc::read_model(&first).event(event_id).cloned().unwrap();
@@ -4308,7 +4311,7 @@ mod tests {
         .unwrap();
         first.commit();
         second.commit();
-        first.merge(&mut second).unwrap();
+        first.merge_incoming(&mut second).unwrap();
         assert!(
             CalDoc::read_model(&first)
                 .event(event_id)

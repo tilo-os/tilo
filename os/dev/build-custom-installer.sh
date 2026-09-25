@@ -56,6 +56,13 @@ done
 [ "$COMPACT_EXT4" = 0 ] || [ "$IMAGE_ONLY" = 0 ] \
   || die "--compact-ext4 requires disk creation; remove --image-only"
 
+OFFLINE_TARGET_DIR="${TILO_INSTALLER_OFFLINE_TARGET_DIR:-}"
+if [ -n "$OFFLINE_TARGET_DIR" ]; then
+  [ "$COMPACT_EXT4" = 0 ] || die "--compact-ext4 cannot hold an offline target image"
+  python3 "$TILO_OS_DIR/dev/installer-offline-target.py" verify "$OFFLINE_TARGET_DIR" >/dev/null \
+    || die "TILO_INSTALLER_OFFLINE_TARGET_DIR is not a verified OCI transport"
+fi
+
 if [ "$DEV_LOGIN" = 1 ] && [ -z "${TILO_INSTALLER_DEV_PASSWORD:-}" ]; then
   die "--dev-login requires a non-empty TILO_INSTALLER_DEV_PASSWORD"
 fi
@@ -118,6 +125,20 @@ install -Dm0644 "$TILO_OS_DIR/etc/greetd/config.toml" \
   "$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"
 install -Dm0644 "$TILO_OS_DIR/etc/greetd/config.installer.toml" \
   "$INSTALLER_CONTEXT/rootfs/etc/greetd/config.toml"
+if [ -n "$OFFLINE_TARGET_DIR" ]; then
+  # The guest verifies the signed target without network access. This is the
+  # architecture-pinned Cosign binary already authenticated by the CI asset
+  # manifest, copied into the sealed installer layer (never from host PATH).
+  cosign_asset="$TILO_REPO/os/external-assets/cache/cosign-v2.5.2-linux-arm64"
+  [ -f "$cosign_asset" ] && [ ! -L "$cosign_asset" ] \
+    || die "offline target requires the pinned ARM64 Cosign asset"
+  printf '%s  %s\n' \
+    2cbcea1873ad76274c3f241ef175d204654e3aac3e73e6ec4504e5227015cb0 "$cosign_asset" \
+    | sha256sum -c - >/dev/null \
+    || die "offline target Cosign asset checksum differs"
+  install -Dm0755 "$cosign_asset" \
+    "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-cosign"
+fi
 podman build \
   --build-arg "TILO_BASE_IMAGE=$TILO_IMAGE" \
   --build-arg "TILO_INSTALLER_DEV_SSH=$DEV_LOGIN" \
@@ -146,6 +167,15 @@ image_bytes="$(podman image inspect "$TILO_INSTALLER_IMAGE" --format '{{.Size}}'
 gib=$((1024 * 1024 * 1024))
 root_gib=$(((image_bytes * 3 + gib - 1) / gib))
 [ "$root_gib" -ge 40 ] || root_gib=40
+if [ -n "$OFFLINE_TARGET_DIR" ]; then
+  # The target OCI archive lives in /var of the live medium, and podman load
+  # materializes a second copy into container storage during installation.
+  # Reserve both from the actual transported bytes before partitioning.
+  offline_bytes="$(du -sb "$OFFLINE_TARGET_DIR" | awk '{print $1}')"
+  offline_gib=$(((offline_bytes + gib - 1) / gib))
+  root_gib=$((root_gib + offline_gib * 2 + 4))
+  msg "   reserving 2x ${offline_gib}G for OCI target transport/import plus 4G slack in live /var"
+fi
 rootfs=btrfs
 if [ "$COMPACT_EXT4" = 1 ]; then
   [ "$image_bytes" -le $((18 * gib)) ] \
@@ -163,6 +193,7 @@ DISK_ARGS=(
   --root-min "${root_gib}G"
   --rootfs "$rootfs"
 )
+[ -z "$OFFLINE_TARGET_DIR" ] || DISK_ARGS+=(--offline-target-dir "$OFFLINE_TARGET_DIR")
 [ "$COMPACT_EXT4" = 0 ] || DISK_ARGS+=(--root-max 40G)
 if [ "$DEV_LOGIN" = 1 ]; then
   DISK_ARGS+=(--user "tester:${TILO_INSTALLER_DEV_PASSWORD}:wheel")

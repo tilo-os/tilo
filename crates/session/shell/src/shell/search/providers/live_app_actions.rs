@@ -536,8 +536,11 @@ impl LiveAppActionsProvider {
                 // memory, cloning before this map turns a large source into
                 // quadratic worker work.
                 let actions = std::mem::take(&mut surface.actions);
+                // Programmatic actions (a generic typed edit) are for agents
+                // and scripts, never a row a person picks.
                 actions
                     .into_iter()
+                    .filter(|action| !action.contract.is_programmatic())
                     .map(move |action| (surface.clone(), action))
             })
             .collect::<Vec<_>>();
@@ -1439,7 +1442,7 @@ impl LiveAppActionsProvider {
         } else {
             action.params.clone()
         };
-        push_confirmation_params(&mut params, &action.contract.confirmation);
+        push_confirmation_params(&mut params, &action.contract.advertised_confirmation());
         params
     }
 
@@ -1452,6 +1455,9 @@ impl LiveAppActionsProvider {
         actor: &str,
         cursor: &[u8],
     ) -> Option<SearchResult> {
+        if descriptor.contract.is_programmatic() {
+            return None;
+        }
         let searchable = format!(
             "{} {} {} {}",
             descriptor.action_label,
@@ -1471,7 +1477,7 @@ impl LiveAppActionsProvider {
         };
         let contract = descriptor.contract.clone();
         let mut params = descriptor.params.clone();
-        push_confirmation_params(&mut params, &contract.confirmation);
+        push_confirmation_params(&mut params, &contract.advertised_confirmation());
         let host = self.host.clone();
         let peer_id = root.peer_id;
         let cluster_id = root.cluster_id.clone();
@@ -1931,7 +1937,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     }
                 );
                 let typed_arguments = !action.params.is_empty();
-                let confirmation = action.contract.confirmation.clone();
+                let confirmation = action.contract.advertised_confirmation();
                 let surface_live = surface.live;
                 let app_id = surface.app_id.clone();
                 let cluster_id = surface.route.cluster_id.clone();

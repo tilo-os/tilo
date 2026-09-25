@@ -18,6 +18,7 @@
 )]
 
 use std::time::{Duration, Instant};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 use tilo_actions::{Resource, ResourceProvider};
@@ -208,7 +209,7 @@ fn run(
                     continue;
                 };
                 replica
-                    .load_incremental(&data)
+                    .load_incoming(&data)
                     .expect("apply the agent's change");
                 done = poll(&replica);
             }
@@ -571,7 +572,7 @@ fn drive_photo_peer(
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
                     continue;
                 };
-                let _ = photo_replica.load_incremental(&data);
+                let _ = photo_replica.load_incoming(&data);
             }
             _ => {}
         }
@@ -616,7 +617,7 @@ fn drive_word_processor_peer(
                 let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
                     continue;
                 };
-                if wp_replica.load_incremental(&data).is_err() {
+                if wp_replica.load_incoming(&data).is_err() {
                     continue;
                 }
                 done = blocks(&wp_replica)

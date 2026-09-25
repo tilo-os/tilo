@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tilo_automerge::ApplyIncoming;
 
 use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
@@ -326,7 +327,7 @@ impl WorkspaceRuntime {
         // Apply to a clone so a malformed / non-Automerge payload cannot
         // half-apply and corrupt the authoritative doc.
         let mut candidate = current.clone();
-        match candidate.load_incremental(delta_bytes) {
+        match candidate.load_incoming(delta_bytes) {
             Ok(n) if n > 0 => {
                 let saved = candidate.save();
                 self.doc = Some(candidate);
@@ -653,7 +654,7 @@ mod tests {
         let delta_since = rt.changes_since(&[]);
         assert!(!delta_since.is_empty());
         let mut doc_peer = AutoCommit::new();
-        doc_peer.load_incremental(&delta_since).unwrap();
+        doc_peer.load_incoming(&delta_since).unwrap();
         assert_eq!(doc_peer.get_heads(), doc_a.get_heads());
     }
 
@@ -751,7 +752,7 @@ mod tests {
             !delta_since.is_empty(),
             "host serves the lost change from its materialized doc"
         );
-        doc_b.load_incremental(&delta_since).unwrap();
+        doc_b.load_incoming(&delta_since).unwrap();
 
         assert_eq!(
             doc_b.get_heads(),

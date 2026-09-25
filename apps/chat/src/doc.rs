@@ -2388,6 +2388,7 @@ impl ChatDoc {
 mod tests {
     use super::*;
     use crate::model;
+    use tilo_automerge::ApplyIncoming;
 
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -2949,7 +2950,7 @@ mod tests {
         ChatDoc::voice_set_ticket(&mut b, "c_lounge", "u_bob", "iroh://bob");
         // Merge both ways.
         let mut b2 = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b2).unwrap();
+        a.merge_incoming(&mut b2).unwrap();
         let members = ChatDoc::list_voice_members(&a, "c_lounge");
         assert_eq!(
             members.len(),
@@ -3152,7 +3153,7 @@ mod tests {
         ChatDoc::toggle_reaction(&mut a, "c_crit", "m_me1", "👍", "u_aria");
         ChatDoc::toggle_reaction(&mut b, "c_crit", "m_me1", "👍", "u_milo");
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         let msgs = ChatDoc::list_messages(&a, "c_crit");
         let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
         let thumbs = m.reactions.iter().find(|r| r.emoji == "👍").unwrap();
@@ -3223,7 +3224,7 @@ mod tests {
         ));
 
         let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_changes).unwrap();
+        a.merge_incoming(&mut b_changes).unwrap();
         let merged = ChatDoc::list_messages(&a, "c_crit")
             .into_iter()
             .find(|row| row.id == message)
@@ -3270,7 +3271,7 @@ mod tests {
         ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_work, None);
 
         let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_changes).unwrap();
+        a.merge_incoming(&mut b_changes).unwrap();
         let trace = ChatDoc::list_messages(&a, "c_crit")
             .into_iter()
             .find(|row| row.id == message)
@@ -3324,7 +3325,7 @@ mod tests {
         let b_payload = base.with_trace(vec![from_b.clone()]);
         ChatDoc::set_message_work(&mut b, "c_crit", &message, &b_payload, None);
         let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_changes).unwrap();
+        a.merge_incoming(&mut b_changes).unwrap();
         ChatDoc::set_message_work(&mut a, "c_crit", &message, &stale_a_payload, None);
 
         let trace = ChatDoc::list_messages(&a, "c_crit")
@@ -3372,7 +3373,7 @@ mod tests {
         ChatDoc::set_message_work(&mut a, "c_crit", &message, &left, None);
         ChatDoc::set_message_work(&mut b, "c_crit", &message, &right, None);
         let mut b_changes = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_changes).unwrap();
+        a.merge_incoming(&mut b_changes).unwrap();
 
         let merged = ChatDoc::list_messages(&a, "c_crit")
             .into_iter()

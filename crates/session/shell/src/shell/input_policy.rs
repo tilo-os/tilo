@@ -1701,7 +1701,7 @@ mod tests {
         let _ = fb.paint_settled();
 
         fb.host_mut()
-            .note_pointer(vello::kurbo::Point::new(1210.0, 109.0));
+            .note_pointer(vello::kurbo::Point::new(1210.0, 70.0));
         assert!(
             chrome_captures_input(&fb),
             "the visible Restore/Close pills must receive their own click"

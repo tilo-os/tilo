@@ -250,6 +250,8 @@ impl std::fmt::Display for DoorError {
     }
 }
 
+impl std::error::Error for DoorError {}
+
 /// Walk a resource forest and describe every operation it exports.
 /// Depth-first, parents before children, matching
 /// [`flatten`](crate::resource::flatten)'s order. Borrows the tree,
@@ -502,7 +504,9 @@ fn invoke_with_context_consent(
     transport: &mut dyn ActionTransport,
     confirmed: bool,
 ) -> Result<Dispatched, DoorError> {
-    ensure_confirmation(resources, address, confirmed)?;
+    ensure_confirmation(resources, address, confirmed, |spec| {
+        spec.confirmation_for_argument(argument)
+    })?;
     let encoded = encode(resources, address, argument)?;
     dispatch_encoded_with_context(
         doc, resources, address, encoded, provenance, registry, transport,
@@ -574,7 +578,9 @@ fn invoke_json_with_consent(
     transport: &mut dyn ActionTransport,
     confirmed: bool,
 ) -> Result<Dispatched, DoorError> {
-    ensure_confirmation(resources, address, confirmed)?;
+    ensure_confirmation(resources, address, confirmed, |spec| {
+        spec.confirmation_for_json(arguments)
+    })?;
     let encoded = encode_json(resources, address, arguments)?;
     dispatch_encoded_with_context(
         doc,
@@ -590,13 +596,16 @@ fn invoke_json_with_consent(
     )
 }
 
+/// Refuse an unconfirmed invocation whose effective confirmation — for these
+/// exact arguments — is not [`None`](crate::ConfirmationPolicy::None).
 fn ensure_confirmation(
     resources: &[Resource],
     address: &ActionAddress,
     confirmed: bool,
+    policy: impl FnOnce(&ActionSpec) -> crate::ConfirmationPolicy,
 ) -> Result<(), DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
-    if !matches!(spec.contract.confirmation, crate::ConfirmationPolicy::None) && !confirmed {
+    if !matches!(policy(spec), crate::ConfirmationPolicy::None) && !confirmed {
         return Err(DoorError::ConfirmationRequired);
     }
     Ok(())
@@ -1099,6 +1108,130 @@ mod tests {
             doc.get(&ROOT, "starred").unwrap().unwrap().0.as_bool(),
             Some(true)
         );
+    }
+
+    /// A generic edit whose value decides its risk: clearing the title is
+    /// destructive, renaming is not.
+    fn edit_by_value() -> Vec<Resource> {
+        vec![
+            Resource::new("notes.note:1", "notes.note", "Harbour").with_action(
+                ActionSpec::typed(
+                    "edit",
+                    "Edit",
+                    "title",
+                    ExecutionLocus::ClientLocal,
+                    vec![ActionParam::required(
+                        "title",
+                        crate::ParamType::Text,
+                        "Title",
+                    )],
+                    |args| encoded(&Note::Retitle(args.text("title").unwrap_or("").to_owned())),
+                )
+                .programmatic()
+                .with_risk(|args| {
+                    if args.text("title").is_some_and(str::is_empty) {
+                        crate::RiskLevel::Destructive
+                    } else {
+                        crate::RiskLevel::Low
+                    }
+                }),
+            ),
+        ]
+    }
+
+    fn edit() -> ActionAddress {
+        ActionAddress::new("notes.note:1", "edit")
+    }
+
+    fn title(value: &str) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::Map::from_iter([("title".to_owned(), serde_json::json!(value))])
+    }
+
+    fn stored_title(doc: &AutoCommit) -> Option<String> {
+        doc.get(&ROOT, "title")
+            .unwrap()
+            .and_then(|(value, _)| value.into_string().ok())
+    }
+
+    #[test]
+    fn a_value_classified_as_destructive_needs_the_same_consent() {
+        let resources = edit_by_value();
+        let mut doc = AutoCommit::new();
+        let mut transport = LocalTransport::new();
+        let registry = registry();
+        let mut run = |doc: &mut AutoCommit, value: &str, confirmed: bool| {
+            let door = if confirmed {
+                invoke_json_confirmed
+            } else {
+                invoke_json
+            };
+            door(
+                doc,
+                &resources,
+                &edit(),
+                &title(value),
+                b"caller-key",
+                &registry,
+                &mut transport,
+            )
+            .map(|_| ())
+        };
+
+        run(&mut doc, "Harbour", false).expect("an ordinary value runs");
+        assert_eq!(
+            run(&mut doc, "", false).unwrap_err(),
+            DoorError::ConfirmationRequired
+        );
+        assert_eq!(
+            stored_title(&doc).as_deref(),
+            Some("Harbour"),
+            "the refused value changed nothing"
+        );
+        run(&mut doc, "", true).expect("a confirmed destructive value runs");
+        assert_eq!(stored_title(&doc).as_deref(), Some(""));
+
+        // The legacy text door classifies the same value the same way.
+        let mut transport = LocalTransport::new();
+        assert_eq!(
+            invoke(
+                &mut doc,
+                &resources,
+                &edit(),
+                Some(""),
+                b"caller-key",
+                &registry,
+                &mut transport,
+            )
+            .unwrap_err(),
+            DoorError::ConfirmationRequired
+        );
+    }
+
+    #[test]
+    fn effective_confirmation_reads_every_argument_form() {
+        let resources = edit_by_value();
+        let spec = resolve(&resources, &edit()).unwrap();
+        let none = crate::ConfirmationPolicy::None;
+        let confirm = crate::ConfirmationPolicy::Confirm;
+        assert_eq!(spec.confirmation_for_json(&title("x")), none);
+        assert_eq!(spec.confirmation_for_json(&title("")), confirm);
+        assert_eq!(spec.confirmation_for_argument(Some("x")), none);
+        assert_eq!(spec.confirmation_for_argument(Some("")), confirm);
+        let typed = format!("{}{{\"title\":\"\"}}", crate::ARGUMENTS_JSON_PREFIX);
+        assert_eq!(spec.confirmation_for_argument(Some(&typed)), confirm);
+        // Arguments that cannot bind build nothing, so they get the declared policy.
+        assert_eq!(spec.confirmation_for_json(&serde_json::Map::new()), none);
+
+        // The inert contract carries both properties across every boundary.
+        assert!(spec.is_programmatic() && spec.contract.is_programmatic());
+        assert!(spec.contract.confirmation_depends_on_arguments());
+        assert_eq!(spec.contract.confirmation, none);
+        assert_eq!(spec.contract.advertised_confirmation(), confirm);
+        assert!(spec.contract.validate_declaration().is_empty());
+
+        // A declared policy is never weakened by a classifier.
+        let declared = spec.clone().destructive();
+        assert_eq!(declared.confirmation_for_json(&title("x")), confirm);
     }
 
     /// Resource ids carry colons, so the address separator has to be something

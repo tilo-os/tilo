@@ -806,6 +806,10 @@ struct PendingPlacement {
     /// that already exited after daemonising, while this deadline prevents a
     /// still-running but windowless process from pinning "Opening…" forever.
     present_before: Instant,
+    /// Opaque id in the small startup-metrics crate. Placement remains the
+    /// authoritative FIFO; metrics never guesses by app id during failures.
+    launch_metric_id: u64,
+    metric_spawned: bool,
 }
 
 impl PendingPlacement {
@@ -2230,6 +2234,7 @@ pub fn spawn_launch(
             workspace_id,
             command.service_identity.is_some(),
         );
+        mark_launch_spawned(&app.package_id, child.id());
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
         let _ = launch_gate.write_all(&[1]);
@@ -2322,6 +2327,31 @@ pub fn spawn_launch(
 
 pub(crate) fn push_event(event: LaunchEvent) {
     lock(&EVENTS).push(event);
+}
+
+fn mark_launch_spawned(package_id: &str, pid: u32) {
+    let mut pending = lock(&PENDING_PLACEMENT);
+    if let Some(note) = pending
+        .iter_mut()
+        .find(|note| note.key == package_id && !note.metric_spawned)
+    {
+        note.metric_spawned = true;
+        tilo_startup_metrics::launch_spawned(note.launch_metric_id, pid);
+    }
+}
+
+/// Finish every launch-bound surface that has captured its first frame.
+/// The compositor calls this once per tick; `frame_seq` reads the capture
+/// store, and the scan is over launches still waiting for a first frame.
+pub(crate) fn record_presented_launches(frame_seq: impl Fn(u64) -> u64) {
+    for surface_id in tilo_startup_metrics::launches_awaiting_first_present() {
+        record_first_present(surface_id, frame_seq(surface_id));
+    }
+}
+
+/// Record the first captured frame for a launch-bound surface exactly once.
+pub(crate) fn record_first_present(surface_id: u64, frame_seq: u64) {
+    tilo_startup_metrics::launch_first_present(surface_id, frame_seq);
 }
 
 /// Take every launch event queued since the last call. Called once per
@@ -2476,6 +2506,8 @@ pub fn set_pending_placement_for_identities(
         claimed_by: None,
         retire_after: None,
         present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
+        launch_metric_id: tilo_startup_metrics::launch_requested(key),
+        metric_spawned: false,
     });
 }
 
@@ -2513,6 +2545,7 @@ pub fn placement_and_instance_for_toplevel(
             None => {
                 if let Some(entry) = pending.get_mut(idx) {
                     entry.claimed_by = Some(surface_id);
+                    tilo_startup_metrics::launch_mapped(entry.launch_metric_id, surface_id);
                     // Both compositor trees ask for the same launch note,
                     // so keep a claimed answer briefly rather than consume
                     // it on the first lookup. Bound that duplication window
@@ -2559,6 +2592,8 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
             claimed_by: None,
             retire_after: None,
             present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
+            launch_metric_id: tilo_startup_metrics::launch_requested(package_id),
+            metric_spawned: false,
         });
     }
 }
@@ -2614,11 +2649,13 @@ pub(crate) fn take_staged_resume_for_package(
 /// created without destroying older concurrent launches' destinations.
 pub fn clear_pending_placement(package_id: &str) {
     let mut pending = lock(&PENDING_PLACEMENT);
-    if let Some(index) = pending
+    let note = pending
         .iter()
         .rposition(|p| p.key == package_id && p.claimed_by.is_none())
-    {
-        pending.remove(index);
+        .map(|index| pending.remove(index));
+    drop(pending);
+    if let Some(note) = note {
+        tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
 }
 
@@ -2639,12 +2676,13 @@ pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> O
         .filter(|(_, note)| note.key == package_id)
         .map(|(index, _)| index)
         .collect();
-    if matching.len() != 1 {
+    let [index] = matching[..] else {
         return None;
-    }
-    let index = matching[0];
+    };
     let surface_id = pending.get(index)?.claimed_by?;
-    pending.remove(index);
+    let note = pending.remove(index);
+    drop(pending);
+    tilo_startup_metrics::launch_failed(note.launch_metric_id);
     Some(surface_id)
 }
 
@@ -2692,6 +2730,9 @@ fn expire_pending_placements_at(now: Instant) -> Vec<String> {
         if presentation_timed_out {
             expired.push(note.key.clone());
         }
+        if !keep {
+            tilo_startup_metrics::launch_failed(note.launch_metric_id);
+        }
         keep
     });
     expired
@@ -2713,7 +2754,10 @@ const PENDING_PLACEMENT_CLAIM_GRACE: Duration = Duration::from_secs(10);
 /// Drop every placement note. Used by tests, which share this
 /// process-wide state.
 pub fn clear_pending_placements() {
-    lock(&PENDING_PLACEMENT).clear();
+    let mut pending = lock(&PENDING_PLACEMENT);
+    for note in pending.drain(..) {
+        tilo_startup_metrics::launch_failed(note.launch_metric_id);
+    }
 }
 
 /// Test hook: publish a socket path directly (production goes through
@@ -2870,6 +2914,31 @@ mod tests {
 
     #[test]
     #[serial_test::serial(pending_placement)]
+    fn launch_latency_tracks_fifo_surface_until_first_frame_once() {
+        clear_pending_placements();
+        set_pending_placement(
+            "dev.tilo.timed",
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        mark_launch_spawned("dev.tilo.timed", 4242);
+        assert_eq!(
+            placement_for_toplevel("timed", 909),
+            Some(crate::shell::tab_binding::Placement::NewGroup)
+        );
+        let metrics = tilo_startup_metrics::launch_snapshot();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].1, "dev.tilo.timed");
+        assert!(metrics[0].2);
+        assert_eq!(metrics[0].3, Some(909));
+        record_first_present(909, 1);
+        assert!(tilo_startup_metrics::launch_snapshot().is_empty());
+        record_first_present(909, 2);
+        assert!(tilo_startup_metrics::launch_snapshot().is_empty());
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
     fn failed_newest_same_app_launch_keeps_older_destination() {
         clear_pending_placements();
         set_pending_placement(
@@ -2880,7 +2949,15 @@ mod tests {
             "so.tilo.same-app",
             crate::shell::tab_binding::Placement::IntoTab(22),
         );
+        let metrics = tilo_startup_metrics::launch_snapshot();
+        assert_eq!(metrics.len(), 2);
+        let older_metric = metrics[0].0;
+        let newer_metric = metrics[1].0;
         clear_pending_placement("so.tilo.same-app");
+        let metrics = tilo_startup_metrics::launch_snapshot();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].0, older_metric);
+        assert_ne!(metrics[0].0, newer_metric);
 
         assert_eq!(
             placement_for_toplevel("same-app", 101),

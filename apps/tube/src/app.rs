@@ -63,7 +63,7 @@ fn resolve_history_owner() -> String {
         }
         return format!("user:{public_key}");
     }
-    let path = dirs::data_local_dir()
+    let path = xdg_paths::data_local_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo")
         .join("tube")

@@ -32,6 +32,7 @@ settings-store = { path = "../../crates/system/settings-store" }
 media = { path = "../../crates/media/core" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

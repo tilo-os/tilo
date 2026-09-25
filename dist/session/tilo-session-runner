@@ -248,14 +248,32 @@ fi
 flight_log=$flight_dir/latest.log
 : >"$flight_log"
 chmod 0600 "$flight_log"
-printf 'tilo-flight-record-v1 start=%s pid=%s shell=%s\n' \
-    "$(date --iso-8601=seconds)" "$$" "$TILO_SHELL" >>"$flight_log"
+flight_started=$(date --iso-8601=seconds)
+# Keep the structured per-tick frame trace separate from the human/app stream.
+# It is buffered but flushed by the compositor once per second, so an abrupt
+# reset loses at most the final second rather than all timing evidence. The
+# previous trace is retained alongside the previous flight record.
+if [ -f "$flight_dir/frame-trace.csv" ]; then
+    # The live trace is already bounded. Copy the complete CSV rather than
+    # using `tail -c`, which can start in the middle of a record and turn the
+    # previous login's evidence into an unparseable file.
+    cp -- "$flight_dir/frame-trace.csv" "$flight_dir/previous-frame-trace.csv.tmp"
+    chmod 0600 "$flight_dir/previous-frame-trace.csv.tmp"
+    mv -f -- "$flight_dir/previous-frame-trace.csv.tmp" "$flight_dir/previous-frame-trace.csv"
+fi
+frame_trace=$flight_dir/frame-trace.csv
+: >"$frame_trace"
+chmod 0600 "$frame_trace"
+TILO_FRAME_TRACE=$frame_trace
+export TILO_FRAME_TRACE
 export TILO_PAINT_STATS=1
 export TILO_LOOP_TIMING=1
 flight_pipe=$session_runtime/flight-record-$$.pipe
 rm -f -- "$flight_pipe"
 mkfifo -m 0600 -- "$flight_pipe"
-"$FLIGHT_RECORDER" "$flight_log" <"$flight_pipe" |
+# The recorder writes the start header itself: it replaces the log atomically
+# on every chunk, so a header appended here beforehand would be overwritten.
+"$FLIGHT_RECORDER" "$flight_log" "$flight_started" "$$" "$TILO_SHELL" <"$flight_pipe" |
     "$SYSTEMD_CAT" --identifier=tilo-session --level-prefix=false &
 flight_relay_pid=$!
 

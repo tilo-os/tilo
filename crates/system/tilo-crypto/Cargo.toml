@@ -25,13 +25,16 @@ cms = "0.2"
 const-oid = { version = "0.9", features = ["db"] }
 der = { version = "0.7", features = ["alloc", "pem"] }
 ed25519-dalek.workspace = true
-# RSA key generation takes a rand_core 0.10 RNG; read it straight from the OS.
+# The crate's one randomness source: RSA key generation takes a rand_core
+# 0.10 RNG over it, and seeds and identifiers are filled from it directly.
 getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 object = { version = "0.39", default-features = false, features = ["pe", "read_core", "unaligned"] }
 p256 = { version = "0.14", features = ["pem"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Only for its blinded RSA PKCS#1 signer (see `sign_rsa_pkcs1_ring`):
+# RustCrypto's private RSA operation is affected by RUSTSEC-2023-0071.
 ring = "0.17"
 rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
 sha-crypt = { version = "0.6", features = ["getrandom"] }

@@ -955,6 +955,7 @@ fn time_style_code(s: TimeStyle) -> &'static str {
 mod tests {
     use super::*;
     use automerge::ActorId;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn seed_and_snapshot_round_trip() {
@@ -1179,7 +1180,8 @@ mod tests {
                 body: "Approved".into(),
             },
         );
-        a.merge(&mut b).expect("merge concurrent first writes");
+        a.merge_incoming(&mut b)
+            .expect("merge concurrent first writes");
         let reloaded = AutoCommit::load(&a.save()).expect("final reload");
         let mut reloaded = reloaded;
         assert_eq!(SheetsDoc::charts(&mut reloaded, sheet).len(), 2);
@@ -1225,7 +1227,7 @@ mod tests {
                 body: "Too late".into(),
             },
         );
-        a.merge(&mut b).expect("merge");
+        a.merge_incoming(&mut b).expect("merge");
         let mut reloaded = AutoCommit::load(&a.save()).expect("reload");
         assert!(
             SheetsDoc::comments(&mut reloaded, sheet).is_empty(),

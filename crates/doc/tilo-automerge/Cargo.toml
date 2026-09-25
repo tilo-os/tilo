@@ -1,0 +1,24 @@
+[package]
+name = "tilo-automerge"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Apply incoming Automerge changes to an AutoCommit without keeping patch events nothing reads."
+
+[lib]
+name = "tilo_automerge"
+path = "src/lib.rs"
+
+[features]
+# A per-thread counting allocator for tests that pin what a document holds.
+heap-probe = []
+
+[dependencies]
+automerge.workspace = true
+
+[dev-dependencies]
+tilo-automerge = { path = ".", features = ["heap-probe"] }
+
+[lints]
+workspace = true

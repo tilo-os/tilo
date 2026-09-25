@@ -13,8 +13,9 @@
 //! [`run`] hosts that on the toolkit's component runtime, so without writing
 //! any of it the app gets persistence and sync of its record, collaboration
 //! and presence, versioned history (a History mode that renders past versions
-//! with the app's own view), per-author undo, permissions enforced on every
-//! action (controls of forbidden actions disable themselves), the action
+//! with the app's own view and restores any of them), per-author undo,
+//! permissions enforced on every action (controls of forbidden actions disable
+//! themselves, and a role change takes effect while the app runs), the action
 //! palette and agent/script door, and search indexing.
 //!
 //! ```ignore
@@ -58,21 +59,30 @@
 //!   resource's state, submit edits through its [`Dispatcher`], and report
 //!   where its user is with [`ResourceSelection`]. Built from a `ViewCx`, the
 //!   same surface renders past versions read-only in History mode.
+//! * **Extending an existing widget** — adding one hook to a toolkit widget,
+//!   a view or a surface — implements
+//!   [`Decorator`](crate::widget::Decorator) instead of `Widget`: name the
+//!   wrapped widget and override only the hooks that change; every other
+//!   `Widget` method, including the ones containers must forward, reaches
+//!   the wrapped widget by default.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
 
 mod app;
+mod controls;
 mod dispatch;
 mod each;
 mod live;
 mod preview;
 mod root;
 mod surface;
+mod switch;
 pub mod testing;
 mod view;
 
 pub use app::{ResourceApp, definition, launch_spec, run};
-pub use dispatch::Dispatcher;
+pub use controls::{ActionControl, Actions};
+pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
 pub use live::Live;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};

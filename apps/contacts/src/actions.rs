@@ -1875,6 +1875,7 @@ mod tests {
     use crate::app::ContactsApp;
     use automerge::ROOT;
     use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -2401,7 +2402,7 @@ mod tests {
             .unwrap();
         b.commit();
 
-        a.merge(&mut b).unwrap();
+        a.merge_incoming(&mut b).unwrap();
         let merged = ContactsDoc::list_contacts(&a)
             .into_iter()
             .find(|contact| contact.id == base.id)
