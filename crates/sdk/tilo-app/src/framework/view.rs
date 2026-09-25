@@ -266,7 +266,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 
     /// One row per item of a collection, kept in collection order. A row is
     /// built once per item and retained while the item exists, so focus and
-    /// caret inside it survive other items changing.
+    /// caret inside it survive other items changing. A row's context menu
+    /// (right-click, the Menu key or Shift+F10) offers the actions the
+    /// resource publishes on its item, with the item already bound.
     pub fn each<I: 'static>(
         &self,
         items: fn(&T) -> &Collection<I>,
@@ -285,6 +287,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         Each::new(
             self.live.clone(),
+            self.dispatch.clone(),
             Box::new(ids),
             Box::new(move |id: &Id, alive: &Rc<()>| {
                 let parent = Rc::clone(&parent_focus);
