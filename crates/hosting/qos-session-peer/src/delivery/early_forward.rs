@@ -11,9 +11,8 @@
 //! forwarder publishes on another task), so publication runs in parallel with
 //! the barrier. An item that fails any check never reaches [`fire`]; an item
 //! whose barrier then fails was forwarded but is not durable, and receivers
-//! reconcile it against durable state (Cloud spec
-//! `docs/superpowers/specs/2026-09-23-live-v1-design.md`, "Lane C", and the
-//! browser overlay `qos-browser-runtime/src/peer_live/speculation.rs`).
+//! reconcile it against durable state (see the browser overlay
+//! `qos-browser-runtime/src/peer_live/speculation.rs`).
 use std::{cell::RefCell, sync::Arc};
 
 /// `(author device, exact canonical item)`; must never block.

@@ -4,7 +4,7 @@
 //! on every relay observation, validates live frames with the canonical wire
 //! codec, and forwards admitted signed changes to `ops/<record>` tracks.
 //!
-//! Decisions (see `docs/superpowers/specs/2026-09-23-live-v1-design.md`):
+//! Decisions:
 //! * A grant is bound to `(device, participation_id)`. Renewal is a new grant
 //!   for the same pair; it extends the relay-side lease of a connected session
 //!   without reconnecting. Grants of a previous host boot never verify.
