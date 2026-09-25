@@ -54,8 +54,10 @@ class ImportTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def command(self, *args):
-        self.calls.append(args)
+    def command(self, *args, storage):
+        self.assertTrue(storage.is_absolute())
+        self.assertTrue(storage.is_dir())
+        self.calls.append((args, storage))
         if args[0] == 'pull': return ''
         if args[:2] == ('image', 'inspect'): return json.dumps([self.info])
         if args[:2] == ('image', 'mount'): return str(self.root)
@@ -77,22 +79,26 @@ class ImportTests(unittest.TestCase):
         self.assertEqual((self.destination / 'radio.bin').read_bytes(), b'firmware')
         self.assertEqual(receipt['manifest_sha256'], self.args.manifest_sha256)
         self.assertEqual(self.execute(), receipt)
-        self.assertEqual(self.calls[-1][:2], ('image', 'unmount'))
-        self.assertTrue(all(call[0] in ('pull', 'image') for call in self.calls))
+        self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
+        self.assertTrue(all(call[0][0] in ('pull', 'image') for call in self.calls))
+        self.assertEqual(len({storage for _, storage in self.calls[:4]}), 1)
+        self.assertEqual(len({storage for _, storage in self.calls[4:]}), 1)
+        self.assertNotEqual(self.calls[0][1], self.calls[4][1])
+        self.assertTrue(all(not storage.exists() for _, storage in self.calls))
 
     def test_independent_manifest_mismatch_unmounts_without_staging(self):
         self.args.manifest_sha256 = '0' * 64
         with self.assertRaisesRegex(ValueError, 'independent digest'):
             self.execute()
         self.assertFalse(self.destination.exists())
-        self.assertEqual(self.calls[-1][:2], ('image', 'unmount'))
+        self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
 
     def test_blob_corruption_unmounts_without_staging(self):
         (self.firmware / 'radio.bin').write_bytes(b'corrupt')
         with self.assertRaisesRegex(ValueError, 'hash differs'):
             self.execute()
         self.assertFalse(self.destination.exists())
-        self.assertEqual(self.calls[-1][:2], ('image', 'unmount'))
+        self.assertEqual(self.calls[-1][0][:2], ('image', 'unmount'))
 
     def test_unknown_file_rejected(self):
         (self.firmware / 'extra').write_text('extra')
@@ -127,13 +133,25 @@ class ImportTests(unittest.TestCase):
                 self.calls.clear()
                 with self.assertRaisesRegex(ValueError, 'identity or architecture'):
                     self.execute()
-                self.assertFalse(any(call[:2] == ('image', 'mount') for call in self.calls))
+                self.assertFalse(any(call[0][:2] == ('image', 'mount') for call in self.calls))
 
     def test_mutable_reference_rejected_before_tools(self):
         self.args.reference = 'code.sandbox.example/qos/firmware:latest'
         with self.assertRaisesRegex(ValueError, 'immutable'):
             self.execute()
         self.assertEqual(self.calls, [])
+
+    def test_nested_podman_uses_private_vfs_store(self):
+        store = self.base / 'private-store'
+        with patch.object(artifact.subprocess, 'run') as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = b''
+            artifact.command('pull', self.args.reference, storage=store)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:5], ['podman', '--remote=false', '--storage-driver=vfs',
+                                    f'--root={store / "graph"}', f'--runroot={store / "run"}'])
+        self.assertEqual(argv[5:], ['pull', self.args.reference])
+        self.assertNotIn('REGISTRY_TOKEN', run.call_args.kwargs['env'])
 
 
 if __name__ == '__main__':
