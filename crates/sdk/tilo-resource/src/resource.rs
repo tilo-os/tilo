@@ -273,8 +273,43 @@ fn apply_spec<R: Resource>() -> ActionSpec {
     })
 }
 
+fn group_spec<R: Resource>() -> ActionSpec {
+    ActionSpec::typed(
+        crate::GROUP,
+        format!("Apply several {} edits as one", R::LABEL),
+        "Invocations as JSON",
+        ExecutionLocus::ClientLocal,
+        vec![ActionParam::required_owned(
+            crate::GROUP_PARAM,
+            ParamType::Array,
+            format!(
+                "{} actions to apply in order as one step, each {{\"action\": id, \"args\": {{..}}}}",
+                R::LABEL
+            ),
+        )],
+        |args| match crate::group::build_group::<R>(&args.to_json(), origin_now_ms()) {
+            Ok(group) => EncodedAction::encode(crate::group::group_type::<R>(), &group)
+                .unwrap_or_else(|error| refused::<R>(&error.to_string())),
+            Err(reason) => refused::<R>(&reason),
+        },
+    )
+    // One group is one undo step, like any other document action.
+    .reversible()
+    // A gesture's edits, from a surface, a script or an agent; a person picks
+    // the named actions it is made of.
+    .programmatic()
+    // As consequential as its most consequential member.
+    .with_risk(|args| {
+        crate::group::build_group::<R>(&args.to_json(), 0).map_or(
+            tilo_actions::RiskLevel::Low,
+            |group| tilo_actions::Action::risk(&group),
+        )
+    })
+}
+
 /// The resource tree published for one open resource: every declared action,
-/// the generic [`APPLY`] action, and the nested resources.
+/// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, and the nested
+/// resources.
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
@@ -282,6 +317,7 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
     }
     resource
         .with_action(apply_spec::<R>())
+        .with_action(group_spec::<R>())
         .with_children(R::children(state))
 }
 
@@ -295,6 +331,9 @@ pub fn build_action<R: Resource>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     now_ms: i64,
 ) -> Result<R::Action, String> {
+    if id == crate::GROUP {
+        return Err("a group is several actions; build it with `group::build_group`".into());
+    }
     if id == APPLY {
         let value = arguments
             .get(APPLY_PARAM)
