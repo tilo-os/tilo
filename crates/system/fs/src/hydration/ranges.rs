@@ -467,11 +467,11 @@ impl Hydrator {
                     Ok::<_, std::io::Error>(dest_generation)
                 })
                 .await?;
-                if let Ok(generation) = copy {
-                    if *dest_generation.get_or_insert(generation) == generation {
-                        copied.push(range);
-                        continue;
-                    }
+                if let Ok(generation) = copy
+                    && *dest_generation.get_or_insert(generation) == generation
+                {
+                    copied.push(range);
+                    continue;
                 }
             }
             if let Ok(bytes) = self
@@ -843,7 +843,7 @@ mod tests {
             reader.await.unwrap();
         }
         let all = hydrator.read(id, 0, len).await.unwrap();
-        assert!(all == *data);
+        assert!(all.as_slice() == data.as_slice(), "the whole file");
     }
 
     #[tokio::test]
