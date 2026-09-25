@@ -336,6 +336,10 @@ suite = "os/tests/test_installer_target_cmdline.py"
 by = "os/tests/installer_target_invariants.sh"
 
 [[covered]]
+suite = "os/tests/test_installer_selinux_bridge.py"
+by = "os/tests/installer_target_invariants.sh"
+
+[[covered]]
 suite = "os/tests/test_public_trust_install.py"
 by = "os/tests/installer_target_invariants.sh"
 
