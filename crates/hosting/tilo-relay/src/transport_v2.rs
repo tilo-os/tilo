@@ -9,6 +9,8 @@ use uuid::Uuid;
 
 /// Current Tilo v2 transport.
 pub const ALPN_V2: &[u8] = b"tilo-relay/2";
+/// Negotiated agent-read extension; the frozen envelope codec remains unchanged.
+pub const ALPN_AGENT_READS_V1: &[u8] = b"tilo-relay/3";
 /// Frozen v2 ALPN used by already-deployed qOS peers.
 pub const LEGACY_ALPN_V2: &[u8] = b"qos-relay/2";
 

@@ -40,10 +40,14 @@ pub enum ExecutionLocus {
 pub enum OperationKind {
     /// Deterministic shared-document mutation, decoded by `ActionRegistry`.
     #[default]
+    #[serde(alias = "document")]
     Document,
     /// Local or host-owned side effect (launch, filesystem, network, media).
+    // Hosts that hand-write JSON descriptors have sent the lowercase form.
+    #[serde(alias = "effect")]
     Effect,
     /// Local presentation/navigation change (selection, route, focused view).
+    #[serde(alias = "view")]
     View,
 }
 
@@ -175,5 +179,29 @@ impl EncodedAction {
             type_id: type_id.into(),
             payload: serde_json::to_vec(payload).map_err(ActionError::Encode)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod operation_kind_tests {
+    use super::OperationKind;
+
+    /// Canonical form out; the lowercase form some hosts wrote is accepted.
+    #[test]
+    fn operation_kind_accepts_canonical_and_lowercase() {
+        for (kind, canonical, lower) in [
+            (OperationKind::Document, "Document", "document"),
+            (OperationKind::Effect, "Effect", "effect"),
+            (OperationKind::View, "View", "view"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), canonical);
+            for text in [canonical, lower] {
+                assert_eq!(
+                    serde_json::from_value::<OperationKind>(serde_json::json!(text)).unwrap(),
+                    kind
+                );
+            }
+        }
+        assert!(serde_json::from_value::<OperationKind>(serde_json::json!("EFFECT")).is_err());
     }
 }

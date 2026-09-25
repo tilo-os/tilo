@@ -56,7 +56,10 @@ pub fn bind_group_records(group: &mut UiGroup, store: &RecordStore) {
 /// Checked package records preserve tab identity; Chat is the room package-primary record.
 pub fn component_record(app_id: &str, tab: u64, kind: RecordKind) -> RecordCheckout {
     RecordCheckout::new(
-        if app_id == "dev.qos.chat" {
+        if collab_types::first_party_app_ids::lookup_compatible_first_party_app_ids(
+            app_id,
+            "so.tilo.chat",
+        ) {
             RecordId::package_primary()
         } else {
             RecordId::for_tab(tab)

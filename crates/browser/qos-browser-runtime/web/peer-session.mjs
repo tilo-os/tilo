@@ -1,8 +1,18 @@
+import {firstPartyApp} from './first-party-app.mjs';
+import {createActionStorage} from './action-storage.mjs';
+import {createPeerDelivery} from './peer-delivery.mjs';
+import {createPeerMedia} from './peer-media.mjs';
+import {createLiveClient} from './live-client.mjs';
+import {createInvitedPeerSource} from './invited-peer-source.mjs';
+import {createCloudPeerSource} from './cloud-peer-source.mjs';
 import {createActionClient,actionError} from './action-client.mjs';
+import {createAgentReadsClient} from './agent-reads-client.mjs';
 import {commitPeerWrites,commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createRecoveryCoordinator} from './peer-recovery.mjs';
 import {retryableMemo} from './asset-recovery.mjs';
 const recoveryOwners=new Set();
+// Host 503 during native (re)subscription: ~8 attempts span roughly 10 s.
+const ENROLLMENT_503_RETRIES=8;
 function samePublicValue(left,right){
  if(Object.is(left,right))return true;
  if(!left||!right||typeof left!=='object'||typeof right!=='object'||Array.isArray(left)!==Array.isArray(right))return false;
@@ -11,16 +21,29 @@ function samePublicValue(left,right){
 }
 export const pendingPeerRecoveryCount=()=>recoveryOwners.size;
 export async function retryPendingPeerRecovery(){const results=await Promise.allSettled([...recoveryOwners].map(close=>close()));const failure=results.find(result=>result.status==='rejected');if(failure)throw failure.reason;}
-export function createConnectPeer({init,runtime,mountDesktop,acquireStorage,acquireIdentity,fetchEnrollment=fetch,session=globalThis.sessionStorage,recoveryClock={},events=globalThis}){
+export function createConnectPeer({init,runtime,createMedia=createPeerMedia,createLive=createLiveClient,createDelivery=createPeerDelivery,mountDesktop,acquireStorage,acquireIdentity,acquireInvitedIdentity,acquireCloudIdentity,fetchEnrollment=fetch,session=globalThis.sessionStorage,recoveryClock={},events=globalThis}){
 const initialize=retryableMemo(init);
 return async function connectPeer(options={}){
   const {enrollmentBaseUrl='/qos-peer/enrollment',signal}=options;
-  let lease,actionsV1,actionRevision=0n,actionRecovery=false,actionTimer=null,actionPolling=false;
+  let liveClient;// LIVE_V1 (optional, ephemeral; durable delivery is unaffected)
+  let lease,invitedSource,invitedPrepared,actionsV1,agentReadsV1,mediaClient,deliveryClient,actionRecovery=false,actionTimer=null,actionPolling=false;
+  const invitedRefreshes=new Set();
+  // Invited guest or Cloud owner: both are closed Rust sources with the same
+  // prepare/connect/reconnect/refresh contract.
+  let createSource;
+  const localContexts=new Set();let localContext;
+  let authorizationRefresh,authorizationController,authorizationNeedsRefresh=false;
+  // Cloud owner or invited guest: a transport reconnect resumes the admitted
+  // owner without a
+  // membership refresh (no host commits) until a refresh is required: a
+  // refused session (401/403), a failed resumed attempt, or authorization
+  // renewal (which refreshes through performSharedRefresh).
+  let membershipRefreshRequired=false;
   let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),queuedPersist,failed=false,generation=0;
   const desktopCommitListeners=new Set(),actionResponseListeners=new Set();
   const subscribeDesktopCommits=listener=>{desktopCommitListeners.add(listener);return()=>desktopCommitListeners.delete(listener);};
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
-  let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0,outgoingTimer=null,outgoingExpiryTimer=null,outgoingExpiryAtMs=null,outgoingExpiryChecked=null,outgoingBlocked=0,outgoingRevision=0;
+  let initialConnectSettled=false,enrollmentGeneration=0,reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0,outgoingTimer=null,outgoingExpiryTimer=null,outgoingExpiryAtMs=null,outgoingExpiryChecked=null,outgoingBlocked=0,outgoingRevision=0;
   const admissionWaiters=new Set(),admissionFailures=new Map();let admissionEpisode,admissionEpoch=0;
   const outgoingWaiters=new Set();let outgoingEpisode,outgoingEpoch=0;
   const operations=new Map(),surfaces=new Map(),surfaceWaiters=new Map(),surfaceAttempts=new Map(),surfaceTargets=new WeakMap();
@@ -31,6 +54,8 @@ return async function connectPeer(options={}){
   // a light report between commit boundaries then costs no deep comparison.
   let publishedHealth;
   const report=(next,force=false)=>{
+    // `errorCode` (typed reason of `error`) never outlives the error it names.
+    if(snapshot.errorCode!=null&&Object.hasOwn(next,'error')&&!Object.hasOwn(next,'errorCode'))next={...next,errorCode:null};
     if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}
     for(const waiter of admissionWaiters)waiter.check();reconcileAdmission();
     const base=health,projected={...base,generation:snapshot.health?.generation??base.generation,admission:{...base.admission,deadlineAtMs:admissionDeadline}};
@@ -43,8 +68,33 @@ return async function connectPeer(options={}){
   // `force` publishes (peer_committed: outbox send plus a fresh health report)
   // even when this run committed nothing. Presented frames pass false: without a
   // commit there is nothing new to send, and the health report would be unchanged.
+  let busyTimer=null;
+  // Local storage failure recovery. A failed transaction is retried on a bounded
+  // backoff; the first success clears the failure. While the device cannot save,
+  // delivery reconnects are paused: every delivery cut needs an exact atomic
+  // storage acknowledgement, so reconnecting could only loop.
+  const STORAGE_RETRY_BASE_MS=1000,STORAGE_RETRY_MAX_MS=30000;
+  let storageRetryTimer=null,storageRetryAttempt=0,storageFaultShown=false,reconnectDeferred=false;
+  const storagePaused=()=>failed&&!closed&&!closing;
+  // Only errors raised by the storage transaction itself are storage failures.
+  const storageCommit=(operation)=>{try{return Promise.resolve(operation()).catch(error=>{throw markStorageError(error);});}catch(error){return Promise.reject(markStorageError(error));}};
+  const descriptorRenewed=error=>/^(?:Error: )?descriptor-renewed:/.test(String(error?.message??error));
+  function markStorageError(error){if(error&&typeof error==='object')try{error.storageFailure=true;}catch{}return error;}
+  const storageBlocked=()=>Object.assign(Error(`Local storage is unavailable; saving retries automatically${snapshot.error?` (${snapshot.error})`:''}`),{name:'StorageUnavailableError',storageBlocked:true,terminal:true});
+  function stopStorageRetry(){if(storageRetryTimer!==null)timerClear(storageRetryTimer);storageRetryTimer=null;}
+  function scheduleStorageRetry(){
+    if(closed||closing||storageRetryTimer!==null)return;
+    const delay=Math.min(STORAGE_RETRY_MAX_MS,STORAGE_RETRY_BASE_MS*2**Math.min(storageRetryAttempt,5));storageRetryAttempt++;
+    storageRetryTimer=timerSet(()=>{storageRetryTimer=null;if(closed||closing)return;failed=false;void persist().catch(()=>{});},delay);
+  }
+  function storageRecovered(){
+    stopStorageRetry();storageRetryAttempt=0;
+    if(storageFaultShown){storageFaultShown=false;report({error:null,persistence:'committed'});try{if(id!==undefined)runtime.peer_refresh_status?.(id);}catch{}}
+    if(reconnectDeferred&&!closed&&!closing){reconnectDeferred=false;queueMicrotask(()=>{if(!closed&&!closing)void reconnect().catch(()=>{});});}
+  }
   async function persist(publish=true,force=true){
-    if(id===undefined||!storage||closed||failed)return;
+    if(id===undefined||!storage||closed)return;
+    if(failed)throw storageBlocked();
     // Coalesce only work that has not started and is still the queue tail.
     // A running drain or an intervening private-action write needs its own
     // following barrier, so new writes can never join an already-settling run.
@@ -52,19 +102,28 @@ return async function connectPeer(options={}){
     const request={publish,force};
     request.promise=flush.catch(()=>{}).then(async()=>{
       if(queuedPersist===request)queuedPersist=undefined;
-      if(closed||failed)return;
+      if(closed)return;
+      if(failed)throw storageBlocked();
       let committed=0;
       const publication=()=>{if(request.publish&&(request.force||committed>0))runtime.peer_committed(id);};
       try{
         // The journal (including replay floors/outbox) and all canonical records
         // share this one strict IDB transaction. Network publication follows ack.
         const result=runtime.peer_pending_batch_bytes||runtime.peer_pending_batch
-          ?await commitPeerBatches({pending:()=>readPeerBatch(runtime,id),commit:writes=>storage.commit(writes),acknowledge:value=>{if(value.result.ok)committed++;runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value));},epoch:storage.epoch,publish:publication})
-          :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storage.commit(writes),acknowledge:write=>{committed++;runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined);},publish:publication});
-        clearFailure('storage');
+          ?await commitPeerBatches({pending:()=>readPeerBatch(runtime,id),commit:(writes,batch)=>deliveryClient?deliveryClient.commitBatch(writes,batch):batch.transferId===undefined?storageCommit(()=>storage.commit(writes)):Promise.reject(Error('Transfer custody unavailable')),acknowledge:value=>{if(value.result.ok)committed++;runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value));},epoch:storage.epoch,publish:publication})
+          :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storageCommit(()=>storage.commit(writes)),acknowledge:write=>{committed++;runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined);},publish:publication});
+        // Another persister's capture is still settling: nothing was captured, retry shortly.
+        if(result.busy){if(busyTimer===null&&!closed)busyTimer=timerSet(()=>{busyTimer=null;void persist(request.publish,request.force).catch(()=>{});},25);return;}
+        clearFailure('storage');storageRecovered();
         if(result.publicationError){connectionFailure(result.publicationError);coordinator.schedule();}
 
-      }catch(error){failed=true;setFailure('storage',error);report({error:String(error),persistence:'failed'});throw error;}
+      }catch(error){
+        // A real storage transaction failure (quota, denied, aborted transaction)
+        // pauses saving and shows the banner; custody/runtime errors do not. Both
+        // retry on the bounded backoff so pending work is never stranded.
+        if(error?.storageFailure){failed=true;storageFaultShown=true;setFailure('storage',error);report({error:String(error),persistence:'failed'});}
+        scheduleStorageRetry();throw error;
+      }
     });
     queuedPersist=request;flush=request.promise;
     return flush;
@@ -80,36 +139,133 @@ return async function connectPeer(options={}){
   function pollActions(){
     if(!actionsV1||closed||closing||actionPolling)return;
     if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;actionPolling=true;
-    void actionsV1.recover().catch(()=>{}).finally(()=>{actionPolling=false;if(!closed&&!closing)actionTimer=timerSet(pollActions,1000);});
+    void actionsV1.recover({background:true}).catch(()=>{}).finally(()=>{actionPolling=false;if(!closed&&!closing)actionTimer=timerSet(pollActions,1000);});
   }
   // `persistenceNeeded` asks this host to commit pending writes now. It is a
   // trigger, not snapshot state: the runtime's light report between commit
   // boundaries (phase plus trigger) publishes nothing to subscribers.
-  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}const {persistenceNeeded,committedDesktop,actionResponseReady,outgoingExpiryAtMs:expiry,...parsed}=JSON.parse(value);if(actionResponseReady){for(const listener of [...actionResponseListeners])listener();if(!Object.keys(parsed).length&&!persistenceNeeded&&!committedDesktop)return;}if(committedDesktop){for(const listener of desktopCommitListeners){try{listener(committedDesktop);}catch{}}if(!Object.keys(parsed).length&&!persistenceNeeded)return;}const outgoingReport=Number.isSafeInteger(parsed.outgoingBlocked)&&parsed.outgoingBlocked>=0;if(outgoingReport){outgoingBlocked=parsed.outgoingBlocked;outgoingRevision++;outgoingExpiryAtMs=expiry===null||(Number.isSafeInteger(expiry)&&expiry>=0)?expiry:null;if(outgoingExpiryAtMs===null)outgoingExpiryChecked=null;}let next=parsed;if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(outgoingReport){scheduleOutgoingExpiry();reconcileOutgoing();}for(const waiter of outgoingWaiters)waiter.check();for(const listener of [...actionResponseListeners])listener();if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(persistenceNeeded)void persist().catch(()=>{});};
+  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');agentReadsV1?.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}const {mediaAuthorizationExpired,deliveryReady,persistenceNeeded,committedDesktop,actionResponseReady,outgoingExpiryAtMs:expiry,...parsed}=JSON.parse(value);if(mediaAuthorizationExpired){authorizationNeedsRefresh=true;coordinator.schedule();if(mediaClient)void mediaClient.expireAuthorization().catch(error=>options.onMediaError?.(error));if(!Object.keys(parsed).length&&!deliveryReady&&!persistenceNeeded&&!committedDesktop&&!actionResponseReady)return;}if(deliveryReady){deliveryClient?.wake();if(!Object.keys(parsed).length&&!persistenceNeeded&&!committedDesktop&&!actionResponseReady)return;}if(actionResponseReady){for(const listener of [...actionResponseListeners])listener();if(!Object.keys(parsed).length&&!persistenceNeeded&&!committedDesktop)return;}if(committedDesktop){for(const listener of desktopCommitListeners){try{listener(committedDesktop);}catch{}}if(!Object.keys(parsed).length&&!persistenceNeeded)return;}const outgoingReport=Number.isSafeInteger(parsed.outgoingBlocked)&&parsed.outgoingBlocked>=0;if(outgoingReport){outgoingBlocked=parsed.outgoingBlocked;outgoingRevision++;outgoingExpiryAtMs=expiry===null||(Number.isSafeInteger(expiry)&&expiry>=0)?expiry:null;if(outgoingExpiryAtMs===null)outgoingExpiryChecked=null;}let next=parsed;if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(outgoingReport){scheduleOutgoingExpiry();reconcileOutgoing();}for(const waiter of outgoingWaiters)waiter.check();for(const listener of [...actionResponseListeners])listener();if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(persistenceNeeded)void persist().catch(()=>{});};
   async function post(route,body){
-    const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin'});
-    const text=await response.text();
+    const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin',redirect:'error'});
+    signal?.throwIfAborted();if(closed||closing)throw Error('Enrollment custody closed');
+    const reader=response.body?.getReader();if(!reader)throw Error('Enrollment response body missing');
+    const buffer=new Uint8Array(1048576);let length=0;
+    try{for(;;){const chunk=await reader.read();signal?.throwIfAborted();if(closed||closing)throw Error('Enrollment custody closed');if(chunk.done)break;if(!(chunk.value instanceof Uint8Array)||length+chunk.value.byteLength>buffer.byteLength)throw Error('Enrollment response exceeds bounds');buffer.set(chunk.value,length);length+=chunk.value.byteLength;}}finally{try{await reader.cancel();}catch{}}
+    const text=new TextDecoder('utf-8',{fatal:true}).decode(buffer.subarray(0,length));
     if(!response.ok){let reason;try{const value=JSON.parse(text);reason=typeof value.error==='string'?value.error:undefined;}catch{}throw Error(`Enrollment HTTP ${response.status}${reason?`: ${reason}`:''}`);}
     return text;
   }
   async function refreshEnrollment(){
-    const challenge=await post('challenge',runtime.identity_request(lease.material));
-    const next=await post('complete',runtime.identity_complete(lease.material,challenge));
+    enrollmentGeneration++;
+    if(invitedSource){
+      invitedPrepared=await invitedSource.prepare({signal});
+      const nextNamespace=invitedPrepared.namespace;
+      if(namespace&&!samePublicValue(namespace,nextNamespace))throw Error('Invited workspace changed; retained owner requires explicit migration');
+      namespace=nextNamespace;
+      if(!storage){storage=await acquireStorage(namespace.profile,namespace.device);if(storage.fresh){runtime.refresh_storage_lease(namespace.profile,namespace.device);storage.fresh=false;}}
+      return;
+    }
+    // A host that is (re)establishing its native subscription answers 503
+    // ("retry enrollment with the same identity"). Enrollment is idempotent for
+    // one identity, so retry the whole challenge/complete pair promptly with a
+    // short jittered backoff instead of failing the session open or waiting for
+    // the slower transport recovery schedule.
+    let challenge,next;
+    for(let attempt=0;;attempt++){
+      try{challenge=await post('challenge',runtime.identity_request(lease.material));next=await post('complete',runtime.identity_complete(lease.material,challenge));break;}
+      catch(error){
+        if(!/^Enrollment HTTP 503\b/.test(String(error?.message))||attempt>=ENROLLMENT_503_RETRIES||closed||closing)throw error;
+        await new Promise(resolve=>timerSet(resolve,Math.round(Math.min(2000,200*2**attempt)*(0.5+Math.random()*0.5))));
+        signal?.throwIfAborted();if(closed||closing)throw Error('Enrollment custody closed');
+      }
+    }
     // Opaque signed timestamps go directly to Rust. Pin authority before dial.
-    const bound=runtime.bind_identity(lease.material,challenge,next);
+    let bound;
+    if(typeof runtime.bind_identity_for_peer==='function'){
+      const binding=JSON.parse(runtime.bind_identity_for_peer(lease.material,challenge,next,id));
+      if(!Number.isSafeInteger(binding.context)||binding.context<=0||binding.context>0xffffffff||!Array.isArray(binding.material)||binding.material.length>4096||binding.material.some(value=>!Number.isInteger(value)||value<0||value>255))throw Error('Invalid local onboarding custody');
+      localContext=binding.context;localContexts.add(localContext);bound=Uint8Array.from(binding.material);
+    }else bound=runtime.bind_identity(lease.material,challenge,next);
     const nextNamespace=JSON.parse(runtime.peer_enrollment(next));
     if(namespace&&JSON.stringify(namespace)!==JSON.stringify(nextNamespace))throw Error('Enrolled workspace changed; retained owner requires explicit migration');
     await lease.save(bound);raw=next;namespace=nextNamespace;
     if(!storage){storage=await acquireStorage(namespace.profile,namespace.device);if(storage.fresh){runtime.refresh_storage_lease(namespace.profile,namespace.device);storage.fresh=false;}}
   }
+  async function refreshSharedAuthorization(check){
+    check();actionRecovery=false;actionsV1?.invalidate('shared-authorization-refresh');agentReadsV1?.invalidate('shared-authorization-refresh');
+    await persist(false);check();
+    if(!deliveryClient)throw Error('Shared delivery authorization unavailable');
+    await deliveryClient.refreshAuthorization();check();
+  }
+  // Shared session expiry renews authorization on the same Peer/key/storage owner.
+  function refreshMediaHint(mediaSignal){
+    mediaSignal?.throwIfAborted();
+    if(closed||closing)return Promise.reject(Error('Shared authorization custody closed'));
+    if(!authorizationRefresh){
+      authorizationController=new AbortController();
+      const controller=authorizationController;
+      // A completed refresh re-established delivery on the renewed authorization:
+      // clear the connection failure its expiry reported (as a reconnect does).
+      const raw=performSharedRefresh(controller.signal).then(value=>{authorizationNeedsRefresh=false;if(!closed&&!closing){clearFailure('connection');report({});}return value;});
+      authorizationRefresh=raw.finally(()=>{if(authorizationController===controller){authorizationController=undefined;authorizationRefresh=undefined;}});
+      authorizationRefresh.catch(()=>{});
+    }
+    const shared=authorizationRefresh;
+    if(!mediaSignal)return shared;
+    return new Promise((resolve,reject)=>{
+      const abort=()=>{mediaSignal.removeEventListener('abort',abort);reject(mediaSignal.reason??Error('Media refresh cancelled'));};
+      mediaSignal.addEventListener('abort',abort,{once:true});
+      shared.then(value=>{mediaSignal.removeEventListener('abort',abort);if(mediaSignal.aborted)abort();else resolve(value);},error=>{mediaSignal.removeEventListener('abort',abort);reject(error);});
+    });
+  }
+  async function performSharedRefresh(mediaSignal){
+    const owner=id,epoch=enrollmentGeneration,material=lease.material;
+    const check=()=>{mediaSignal.throwIfAborted();if(closed||closing||id!==owner||enrollmentGeneration!==epoch)throw Error('Media enrollment custody changed');};
+    if(invitedSource){
+      check();const refresh=createSource(check);invitedRefreshes.add(refresh);
+      try{await refresh.refresh(owner,mediaSignal);check();await persist();check();await refreshSharedAuthorization(check);}
+      finally{await refresh.close();invitedRefreshes.delete(refresh);}
+      return;
+    }
+    async function boundedPost(route,body,extraHeaders={}){
+      check();const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json',...extraHeaders},body,signal:mediaSignal,cache:'no-store',credentials:'same-origin',redirect:'error'});
+      check();if(!response.ok)throw Error(`Enrollment HTTP ${response.status}`);
+      const reader=response.body?.getReader();if(!reader)throw Error('Enrollment response body missing');
+      const bytes=new Uint8Array(1048576);let length=0;
+      try{for(;;){const chunk=await reader.read();check();if(chunk.done)break;if(length+chunk.value.byteLength>bytes.length)throw Error('Enrollment response exceeds bounds');bytes.set(chunk.value,length);length+=chunk.value.byteLength;}}
+      finally{try{await reader.cancel();}catch{}}
+      return new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,length));
+    }
+    check();const challenge=await boundedPost('challenge',runtime.identity_request(material));check();
+    // Renewal keeps this Peer's admitted history and needs only a fresh
+    // certificate binding and delivery hint: ask the host to omit governance.
+    // Hosts that predate the header ignore it and send the full reply.
+    const next=await boundedPost('complete',runtime.identity_complete(material,challenge),{'X-Tilo-Enrollment-Governance':'omit'});check();
+    const bound=runtime.bind_identity(material,challenge,next);
+    if(bound.length!==material.length||bound.some((value,index)=>value!==material[index]))throw Error('Media enrollment identity changed');
+    const nextNamespace=JSON.parse(runtime.peer_enrollment(next));
+    if(!samePublicValue(namespace,nextNamespace))throw Error('Media enrollment namespace changed');
+    check();runtime.peer_media_update_hint(owner,next);await refreshSharedAuthorization(check);
+  }
   function clearFailure(scope){health={...health,failures:health.failures.filter(f=>f.scope.kind!==scope)};}
+  // A busy host on read-only routes (catalogue, agent reads) is retried in
+  // place by delivery: a non-blocking notice, never a transport failure.
+  function clearServiceNotice(){if(health.failures.some(f=>f.scope.kind==='service'))clearFailure('service');}
+  function serviceAvailability(value){
+    if(closed||closing)return;
+    if(value?.available){if(!health.failures.some(f=>f.scope.kind==='service'))return;clearFailure('service');report({});return;}
+    const route=['reads','snapshot'].includes(value?.route)?value.route:'catalogue';
+    health={...health,failures:[...health.failures.filter(f=>f.scope.kind!=='service'),{id:'session:service',code:'service-unavailable',scope:{kind:'service',route},severity:'notice',message:'Workspace services are temporarily unavailable. Retrying automatically.',recovery:[],occurredAtMs:now()}]};report({});
+  }
   function setFailure(scope,error){
     const text=String(error);let code=scope==='storage'?'storage-transaction-failed':'transport-unavailable';
-    if(/revoked/i.test(text))code='identity-revoked';else if(/certificate|signature|root mismatch|binding mismatch|HTTP 40[13]/i.test(text))code='certificate-rejected';else if(error?.name==='QuotaExceededError')code='storage-quota';else if(error?.name==='SecurityError')code='storage-denied';
+    // A signed in-band onboarding refusal (removed member, expired grant) is the
+    // host's authoritative answer: stop retrying instead of looping every few seconds.
+    if(/revoked/i.test(text)||/Workspace join rejected \(40[13]\)/.test(text)||error?.code==='membership-refused')code='identity-revoked';else if(['claimed-elsewhere','identity-lost'].includes(error?.code))code='certificate-rejected';else if(/certificate|signature|root mismatch|binding mismatch|HTTP 40[13]/i.test(text))code='certificate-rejected';else if(error?.name==='QuotaExceededError')code='storage-quota';else if(error?.name==='SecurityError')code='storage-denied';
     const terminal=['identity-revoked','certificate-rejected'].includes(code);if(terminal&&error&&typeof error==='object')error.terminal=true;
-    clearFailure(scope);health={...health,failures:[...health.failures,{id:`session:${scope}`,code,scope:{kind:scope},severity:'error',message:scope==='storage'?'Changes could not be saved on this device.':terminal?'This device needs authorization to reconnect.':'Connection is unavailable. Your saved work is retained.',recovery:[{kind:scope==='storage'?'retry-saving':terminal?'reauthenticate':'retry-connection'}],occurredAtMs:Date.now()}]};return terminal;
+    clearFailure(scope);health={...health,failures:[...health.failures,{id:`session:${scope}`,code,scope:{kind:scope},severity:'error',message:scope==='storage'?'Changes could not be saved on this device. Saving retries automatically.':terminal?'This device needs authorization to reconnect.':'Connection is unavailable. Your saved work is retained.',recovery:[{kind:scope==='storage'?'retry-saving':terminal?'reauthenticate':'retry-connection'}],occurredAtMs:Date.now()}]};return terminal;
   }
-  function connectionFailure(error){const terminal=setFailure('connection',error);health={...health,transport:{...health.transport,phase:terminal?'failed':'offline',authenticated:false}};report({error:String(error)});}
+  function connectionFailure(error){const terminal=setFailure('connection',error);health={...health,transport:{...health.transport,phase:terminal?'failed':'offline',authenticated:false}};report({error:String(error),...(typeof error?.code==='string'?{errorCode:error.code}:{})});}
   const readyRecord=record=>{const row=health.records.find(row=>sameRecord(row.record,record));return row?.admission==='admitted'&&row.current&&row.editing.mode!=='blocked';};
   const admitted=()=>health.admission.phase==='ready'&&health.admission.pendingPrerequisites===0&&health.admission.requiredRecords.every(readyRecord);
   const terminalAdmission=()=>health.failures.find(f=>f.severity==='error'&&(f.scope.kind==='storage'||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','permission-required','crypto-unavailable','record-install-failed'].includes(f.code)));
@@ -199,35 +355,62 @@ return async function connectPeer(options={}){
     await persist();
   }
   const connect=async(old)=>{
-    actionRecovery=false;actionsV1?.invalidate("reconnecting");await refreshEnrollment();
+    try {
+    if(typeof runtime.peer_delivery_begin!=='function')throw Object.assign(Error('Runtime HTTPS delivery is unavailable'),{terminal:true});
+    await deliveryClient?.close();await persist(false);deliveryClient=undefined;clearServiceNotice();
+    actionRecovery=false;agentReadsV1?.invalidate("reconnecting");actionsV1?.invalidate("reconnecting");
+    let resumed=false;
+    if(old!==undefined&&!membershipRefreshRequired&&typeof invitedSource?.resume==='function'){
+      try{connection=invitedSource.resume(old);await connection;resumed=true;}
+      catch(error){if(closed||closing)throw error;membershipRefreshRequired=true;}
+      if(closed||closing)return;
+    }
+    if(!resumed){
+    await refreshEnrollment();
     if(closed||closing)throw Error('Session disposed during enrollment');
     if(old===undefined){
       const current=generation;
-      connection=runtime.connect_peer(raw,lease.material,await storage.hydrate(),value=>queueMicrotask(()=>{if(current===generation)update(value);}));
+      const hydrated=await storage.hydrate(),status=value=>queueMicrotask(()=>{if(current===generation)update(value);});
+      connection=invitedSource?invitedSource.connect(invitedPrepared,hydrated,status):runtime.connect_peer(raw,lease.material,hydrated,status,localContext);
       const next=await connection;
       if(closed||closing){await runtime.close_peer(next);return;}
       id=next;
+      // Bind the held lease before a queued persistence drain can capture work.
+      // Older v1/v2 runtimes keep their original acknowledgement contract.
+      runtime.peer_bind_storage_epoch?.(id,storage.epoch);
     }else{
-      if(typeof runtime.reconnect_peer!=='function')throw Object.assign(Error('Runtime cannot retain the state owner during reconnect'),{terminal:true});
-      connection=runtime.reconnect_peer(old,raw,lease.material);await connection;
+      if(!invitedSource&&typeof runtime.reconnect_peer!=='function')throw Object.assign(Error('Runtime cannot retain the state owner during reconnect'),{terminal:true});
+      connection=invitedSource?invitedSource.reconnect(invitedPrepared,old):runtime.reconnect_peer(old,raw,lease.material,localContext);await connection;
       if(closed||closing)return;
     }
+    invitedPrepared=undefined;
+    }
     clearFailure('connection');await persist();
+    if(closed||closing)return;
+    deliveryClient=createDelivery({runtime,peerId:id,clock:recoveryClock,persist:()=>persist(),fetch:fetchEnrollment,transfers:storage.transfers,commit:(writes,options)=>storageCommit(()=>storage.commit(writes,options)),onError:error=>{
+      if(closed||closing)return;
+      // The host renewed its delivery descriptor during our handshake: a fresh
+      // enrollment (reconnect) picks up the new descriptor. Not a failure to show.
+      if(descriptorRenewed(error)){health={...health,transport:{...health.transport,phase:'reconnecting',authenticated:false}};report({});queueMicrotask(()=>{if(!closed&&!closing)void coordinator.retry().catch(()=>{});});return;}
+      // Delivery stopped because this device cannot save: resume once storage recovers.
+      if(storagePaused()){reconnectDeferred=true;health={...health,transport:{...health.transport,phase:'offline',authenticated:false}};report({});return;}
+      if(error?.terminal||error?.sessionRefused)membershipRefreshRequired=true;
+      connectionFailure(error);coordinator.schedule();},onReadAvailability:serviceAvailability});
+    try{await deliveryClient.start();}catch(error){if(resumed)membershipRefreshRequired=true;throw error;}
+    if(closed||closing)return;
+    if(!resumed)membershipRefreshRequired=false;
     if(typeof runtime.peer_action_request==='function'){
       if(!actionsV1){
         const key=JSON.stringify({type:'privateActions',workspace:namespace.room});
-        actionsV1=await createActionClient({
+        actionsV1=await createActionClient({version:options.actionsVersion??2,
           clock:recoveryClock,
           context:()=>{if(closed||closing||!health.transport.authenticated)throw actionError('transport-disconnected','discovery','Action transport disconnected',true);return JSON.parse(actionRuntime(()=>runtime.peer_action_context(id),'discovery'));},
-          load:async()=>{const rows=await storage.hydrate();const saved=rows.find(row=>{const storedKey=JSON.parse(row.key);return storedKey.type==='privateActions'&&storedKey.workspace===namespace.room;});if(saved)actionRevision=BigInt(saved.revision);return saved?JSON.parse(new TextDecoder().decode(saved.bytes)):undefined;},
-          commit:(value,control,options)=>{
-            const write={key,revision:String(++actionRevision),bytes:new TextEncoder().encode(JSON.stringify(value)),actor:null};
-            // A terminal broker observation belongs to an already durable intent.
-            // Post it to the same worker FIFO so it follows the transaction already
-            // in flight without waiting for every later peer batch in that drain.
-            if(options?.kind==='terminal-observation'){control?.check();return storage.commit([write]);}
-            const task=flush.catch(()=>{}).then(()=>{control?.check();return storage.commit([write]);});flush=task;return task;
-          },
+          ...createActionStorage({storage,key,beforeCommit:(control,options)=>{
+            // Retain the same worker FIFO. Terminal observations may join at its
+            // next transaction boundary; ordinary admissions follow peer flush.
+            if(options?.kind==='terminal-observation'){control?.check();return;}
+            const task=flush.catch(()=>{}).then(()=>control?.check());flush=task;return task;
+          }}),
           request:(message,control)=>{
             const discovery=message.type==='catalogue_refresh',stage=discovery?'discovery':'observation';
             const disconnected=()=>actionError('transport-disconnected',stage,'Action transport disconnected',discovery);
@@ -250,13 +433,58 @@ return async function connectPeer(options={}){
           },
         });
       }
+      if(!agentReadsV1&&typeof runtime.peer_agent_read_request==='function'){
+        agentReadsV1=createAgentReadsClient({actions:actionsV1,clock:recoveryClock,
+          context:()=>JSON.parse(runtime.peer_action_context(id)),
+          supported:()=>!closed&&!closing&&id!==undefined&&health.transport.authenticated&&runtime.peer_agent_reads_supported?.(id)===true,
+          request:(message,control)=>{
+            if(closed||closing||id===undefined||!health.transport.authenticated)throw Error('Agent read transport disconnected');
+            const owner=id,transport=health.transport.generation;
+            const request=runtime.peer_agent_read_request(owner,JSON.stringify(message));
+            return new Promise((resolve,reject)=>{
+              let timer,settled=false;
+              const finish=(error,response)=>{if(settled)return;settled=true;timerClear(timer);actionResponseListeners.delete(poll);control.signal.removeEventListener('abort',abort);runtime.peer_agent_read_forget(owner,request);error?reject(error):resolve(response);};
+              const abort=()=>finish(control.signal.reason??Error('Agent read cancelled'));
+              const poll=()=>{if(settled)return;timerClear(timer);try{
+                if(control.signal.aborted)throw control.signal.reason;
+                if(closed||closing||owner!==id||transport!==health.transport.generation||!health.transport.authenticated)throw Error('Agent read transport disconnected');
+                const response=runtime.peer_agent_read_response(owner,request);if(response){finish(null,JSON.parse(response));return;}
+                if(now()>=control.deadlineAtMs)throw Error('Agent read deadline exceeded');
+                timer=timerSet(poll,runtime.peer_action_notifications?.()===true?control.deadlineAtMs-now():Math.min(25,control.deadlineAtMs-now()));
+              }catch(error){finish(error);}};
+              control.signal.addEventListener('abort',abort,{once:true});actionResponseListeners.add(poll);poll();
+            });
+          },
+        });
+      }
       // Recovery observes retained IDs only. It never submits an old effect again.
       pollActions();
     }
+    if(!mediaClient&&typeof runtime.peer_media_bootstrap==='function'){
+      mediaClient=createMedia({runtime,peerId:id,persist:()=>persist(),refreshHint:refreshMediaHint,onError:error=>options.onMediaError?.(error)});
+      void mediaClient.initialize().then(()=>{if(!closed&&!closing)report({},true);}).catch(error=>options.onMediaError?.(error));
+    }
+    if(!liveClient&&typeof runtime.peer_live_grant==='function'){liveClient=createLive({runtime,peerId:id,fetch:fetchEnrollment,onError:error=>options.onLiveError?.(error)});liveClient.start();}
+    } catch(error) {
+      // A prepared invited/Cloud attempt that never reached connect/reconnect.
+      if(invitedPrepared){const prepared=invitedPrepared;invitedPrepared=undefined;void invitedSource?.discard?.(prepared)?.catch?.(()=>{});}
+      throw error;
+    } finally {
+      if(localContext!==undefined){const context=localContext;localContext=undefined;if(localContexts.delete(context))runtime.cancel_local_onboarding(context);}
+    }
   };
-  const coordinator=createRecoveryCoordinator({...recoveryClock,attempt:async()=>{
-    try{health={...health,transport:{...health.transport,phase:'reconnecting',authenticated:false}};report({});await connect(id);}catch(error){connectionFailure(error);throw error;}
+  const recoveryCoordinator=createRecoveryCoordinator({...recoveryClock,attempt:async()=>{
+    // No reconnect while local storage cannot save: it would loop on the same
+    // unacknowledged cut. The storage retry resumes delivery on success.
+    if(storagePaused()){reconnectDeferred=true;throw storageBlocked();}
+    // The runtime reports its transport offline until the first handshake
+    // completes. On a high-latency link that handshake outlasts the first
+    // backoff delay; a recovery attempt must not close the initial connection
+    // mid-handshake. It waits for it and becomes a no-op if it succeeded.
+    if(!initialConnectSettled&&setup){await setup.catch(()=>{});if(closed||closing)throw Error('Session closed');if(health.transport.authenticated)return;}
+    try{health={...health,transport:{...health.transport,phase:'reconnecting',authenticated:false}};report({});if(authorizationNeedsRefresh||authorizationRefresh)await refreshMediaHint();else await connect(id);}catch(error){if(storagePaused()){reconnectDeferred=true;throw storageBlocked();}if(!descriptorRenewed(error))connectionFailure(error);throw error;}
   },onState:retry=>{health={...health,transport:{...health.transport,phase:!health.transport.authenticated&&(retry.inFlight||retry.nextAttemptAtMs!==null)?'reconnecting':health.transport.phase,retry}};report({});}});
+  const coordinator={schedule(){if(storagePaused()){reconnectDeferred=true;return;}recoveryCoordinator.schedule();},retry:()=>recoveryCoordinator.retry(),reset:()=>recoveryCoordinator.reset(),dispose:()=>recoveryCoordinator.dispose()};
   const online=()=>{if(!closed&&!closing)void reconnect().catch(()=>{});};events?.addEventListener?.('online',online);
   function surfaceStatus(surface,status){
     const prior=health.surfaces.find(row=>row.id===surface);if(!prior)return;
@@ -285,7 +513,7 @@ return async function connectPeer(options={}){
   function close(){
     if(closed)return Promise.resolve();
     if(closePromise)return closePromise;
-    closing=true;desktopCommitListeners.clear();const actionClose=actionsV1?.close();if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;stopOutgoing();stopOutgoingExpiry();coordinator.dispose();events?.removeEventListener?.('online',online);
+    closing=true;for(const context of localContexts)runtime.cancel_local_onboarding(context);localContexts.clear();authorizationController?.abort(Error('Media enrollment custody changed: Session closed'));const authorizationClose=authorizationRefresh;const invitedClose=invitedSource?.close(),invitedRefreshClose=[...invitedRefreshes].map(refresh=>refresh.close());liveClient?.close();const mediaClose=mediaClient?.dispose(),deliveryClose=deliveryClient?.close();agentReadsV1?.close();desktopCommitListeners.clear();const actionClose=actionsV1?.close();if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;stopOutgoing();stopOutgoingExpiry();stopStorageRetry();coordinator.dispose();events?.removeEventListener?.('online',online);
     closePromise=(async()=>{
       for(const waiter of admissionWaiters)waiter.reject(Error('Session closed'));
       for(const waiter of outgoingWaiters)waiter.reject(Error('Session closed'));
@@ -296,9 +524,15 @@ return async function connectPeer(options={}){
       await reconnecting?.catch(()=>{});
       await setup?.catch(()=>{});
       await connection?.catch(()=>{});
+      await invitedClose;
+      await Promise.all(invitedRefreshClose);
+      await authorizationClose?.catch(()=>{});
       // Stop the replaceable endpoint even when component settlement retains
       // custody. Keep its durable owner addressable for the next retry.
       if(id!==undefined)await runtime.disconnect_peer(id);
+      await mediaClose;
+      await deliveryClose;
+      await deliveryClient?.detach?.();
       await actionClose;
       await settleMounts(mounts);
       failed=false;await persist(false);
@@ -420,18 +654,31 @@ return async function connectPeer(options={}){
   }
   try{
     await initialize();
-    lease=await acquireIdentity(enrollmentBaseUrl,session,signal);
+    if(options.invitation&&options.cloud)throw TypeError('Choose either an invitation or a Cloud owner');
+    if(options.cloud){
+      if(typeof acquireCloudIdentity!=='function')throw Error('Cloud owner identity runtime unavailable');
+      const cloud=options.cloud;
+      if(typeof cloud.enrollment?.inspect!=='function'||typeof cloud.enrollment?.apply!=='function')throw TypeError('Cloud owner enrollment adapter requires inspect and apply');
+      lease=await acquireCloudIdentity(cloud,session,signal);
+      createSource=guard=>createCloudPeerSource({runtime,lease,cloud,fetchImpl:fetchEnrollment,guard});
+      invitedSource=createSource();
+    }else if(options.invitation){
+      if(typeof acquireInvitedIdentity!=='function')throw Error('Invited identity runtime unavailable');
+      lease=await acquireInvitedIdentity(options.invitation,session,signal);
+      createSource=guard=>createInvitedPeerSource({runtime,lease,fetchImpl:fetchEnrollment,guard});
+      invitedSource=createSource();
+    }else{lease=await acquireIdentity(enrollmentBaseUrl,session,signal);}
     signal?.addEventListener('abort',()=>{void close().catch(error=>report({phase:'incomplete',error:String(error)}));},{once:true});
     if(signal?.aborted)throw signal.reason??Error('Session aborted');
-    setup=connect();await setup;
+    setup=connect();try{await setup;}finally{initialConnectSettled=true;}
     if(closed||closing)throw signal?.reason??Error('Session disposed during connection');
-    return {get actionsV1(){return actionsV1;},getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},
+    return {get mediaV1(){return mediaClient?.supported()?mediaClient.mediaV1:undefined;},get liveV1(){return liveClient?.api;},get actionsV1(){return actionsV1;},get actionsV2(){return actionsV1?.actionsV2;},get agentReadsV1(){return runtime.peer_agent_reads_supported?.(id)===true?agentReadsV1:undefined;},get invitedIdentity(){return options.invitation&&typeof lease?.scope==='string'?{scope:lease.scope}:undefined;},getSnapshot:()=>snapshot,subscribe(listener){subscribers.add(listener);return()=>subscribers.delete(listener);},
       async mountDesktop(target,mountOptions={}){
         if(closed||closing)throw Error('Session closed');
         if(snapshot.phase!=='ready')throw Error('Certified record hydration is incomplete');
         const sessionDesktop=snapshot.desktop?.version===1&&snapshot.desktop.mode==='session'&&!mountOptions.app;
         const app=sessionDesktop?'desktop':(mountOptions.app??'writer');
-        const record=sessionDesktop?undefined:snapshot.records.find(row=>row.app_id===(app==='writer'?'dev.qos.word-processor':'dev.qos.chat'));
+        const record=sessionDesktop?undefined:snapshot.records.find(row=>firstPartyApp(row.app_id,app==='writer'?'so.tilo.word-processor':'so.tilo.chat'));
         if(!sessionDesktop&&!record)throw Error('Canonical record missing');
         surfaceAttempts.get(surfaceTargets.get(target))?.cancel();
         const controller=new AbortController();mountControllers.add(controller);
@@ -454,7 +701,7 @@ return async function connectPeer(options={}){
             if(entry.cancelled||closed||closing||surfaceTargets.get(target)!==surface)throw Error('Desktop attempt cancelled');
             const current=++allocation;let admissionRejected=false;
             try{
-              return await mountDesktop(target,{...mountOptions,...namespace,actionsV1,subscribeDesktopCommits,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
+              return await mountDesktop(target,{...mountOptions,...namespace,actionsV1,actionsV2:actionsV1?.actionsV2,subscribeDesktopCommits,live:()=>liveClient?.api,liveMembers:()=>typeof runtime.peer_live_members==='function'?runtime.peer_live_members(id):'[]',signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
                 if(entry.cancelled||current!==allocation||closed||closing||surfaceTargets.get(target)!==surface)return;
                 // Only this exact initial guard failure is temporary. Allocation
                 // cleanup must finish before retry; all security/GPU errors pass through.

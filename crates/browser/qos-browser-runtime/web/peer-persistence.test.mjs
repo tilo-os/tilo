@@ -35,3 +35,18 @@ test('aborted batch is reported as failed without publication or advancing ident
  await assert.rejects(commitPeerBatches({pending:()=>({id:'retained-1',writes:[{revision:'5'}]}),commit:async()=>{throw Object.assign(Error('quota'),{name:'QuotaExceededError'});},acknowledge:value=>settlement=value,epoch:'lease-1',now:()=>234,publish:()=>published=true}),/quota/);
  assert.equal(settlement.batchId,'retained-1');assert.equal(settlement.result.code,'storage-quota');assert.equal(published,false);
 });
+
+test('a running drain forwards the exact later cut batch to the atomic storage transaction',async()=>{
+ let index=0;const first={id:'old',writes:[{revision:'1'}]},cut={id:'cut',transferId:'0123456789abcdef0123456789abcdef',writes:[{revision:'2'}]};const seen=[];
+ await persistence.commitPeerBatches({pending:()=>index===0?first:index===1?cut:{id:'0',writes:[]},commit:async(writes,batch)=>{assert.equal(writes,batch.writes);seen.push(batch);await Promise.resolve();},acknowledge:()=>index++,epoch:'epoch',publish:()=>{}});
+ assert.deepEqual(seen,[first,cut]);
+});
+test('capture backpressure retries instead of failing the storage transaction',async()=>{
+ const {commitPeerBatches,storageBusy}=await import('./peer-persistence.mjs');const acknowledged=[];let published=false;
+ const result=await commitPeerBatches({pending:()=>{throw Error('storage-pressure: settle the captured transfer cut before another capture');},commit:async()=>{throw Error('must not commit');},acknowledge:value=>acknowledged.push(value),epoch:'e',publish:async()=>{published=true;}});
+ assert.deepEqual(result,{localDurable:false,busy:true,publicationError:null});
+ assert.equal(acknowledged.length,0,'no failed settlement is reported for a refused capture');
+ assert.equal(published,false);
+ assert.equal(storageBusy(Error('storage-pressure: x')),true);assert.equal(storageBusy(Error('QuotaExceededError')),false);
+ await assert.rejects(commitPeerBatches({pending:()=>{throw Error('storage lease must be bound before batch capture');},commit:async()=>{},acknowledge:()=>{},epoch:'e',publish:async()=>{}}),/lease must be bound/,'other capture errors still fail');
+});

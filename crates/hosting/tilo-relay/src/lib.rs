@@ -69,6 +69,7 @@
     )
 )]
 
+pub mod agent_reads;
 pub mod antientropy;
 pub mod auth;
 pub mod client;
@@ -86,6 +87,7 @@ pub mod compute_worker;
 pub mod config;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
+pub mod delivery_v3;
 pub mod framing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod home_peer;
@@ -100,6 +102,7 @@ mod persistence;
 pub mod policy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process_lease;
+mod session_carrier;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 pub mod transport;
@@ -108,6 +111,7 @@ pub mod transport_v2;
 pub mod workspace;
 #[cfg(not(target_arch = "wasm32"))]
 mod workspace_io;
+pub mod workspace_join;
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use auth::PeerRole;
@@ -162,7 +166,11 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Returns an error if `room` is not a valid UUID string.
 pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
     let room = uuid::Uuid::parse_str(room)?;
-    let hash = blake3::derive_key("tilo-room-transport-v1", room.to_string().as_bytes());
+    let mut canonical = [0u8; 36];
+    let hash = blake3::derive_key(
+        "tilo-room-transport-v1",
+        room.hyphenated().encode_lower(&mut canonical).as_bytes(),
+    );
     let mut first8 = [0u8; 8];
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);

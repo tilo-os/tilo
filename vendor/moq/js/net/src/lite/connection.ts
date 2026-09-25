@@ -1,0 +1,343 @@
+import { type Getter, Signal } from "@moq/signals";
+import * as announce from "../announced.ts";
+import type * as broadcast from "../broadcast.ts";
+import type { Established } from "../connection/established.ts";
+import { type Probe, type Stats, transportStats } from "../connection/stats.ts";
+import { type Transport, transportOf } from "../connection/transport.ts";
+import { type Origin, randomOrigin } from "../origin.ts";
+import * as Path from "../path.ts";
+import { type Reader, Readers, Stream, Writer } from "../stream.ts";
+import { AnnounceRequest } from "./announce.ts";
+import { Fetch } from "./fetch.ts";
+import { Goaway } from "./goaway.ts";
+import { Group } from "./group.ts";
+import { Publisher } from "./publisher.ts";
+import { SessionInfo } from "./session.ts";
+import { ProbeLevel, type Role, Setup } from "./setup.ts";
+import { DataType, StreamId } from "./stream.ts";
+import { Subscribe } from "./subscribe.ts";
+import { Subscriber } from "./subscriber.ts";
+import { Track as TrackMessage } from "./track.ts";
+import { hasDatagrams, hasProbeRtt, hasSetupStream, type Version, versionName } from "./version.ts";
+
+/**
+ * Constructor options for {@link Connection}.
+ *
+ * @internal
+ */
+export interface ConnectionProps {
+	/** The URL of the connection. */
+	url: URL;
+	/** The established WebTransport session. */
+	quic: WebTransport;
+	/** The negotiated wire version. */
+	version: Version;
+	/** The session stream, absent on drafts that have none. */
+	session?: Stream;
+	/** Whether the relay supports broadcast discovery. Defaults to true. */
+	discovery?: boolean;
+}
+
+/**
+ * Represents a connection to a MoQ server.
+ *
+ * @public
+ */
+export class Connection implements Established {
+	// The URL of the connection.
+	readonly url: URL;
+
+	// The version of the connection as a human-readable string.
+	readonly version: string;
+
+	// The wire transport this session runs over.
+	readonly transport: Transport;
+
+	/** Whether the relay supports broadcast discovery; see {@link Established.discovery}. */
+	readonly discovery: boolean;
+
+	// The version used for encoding/decoding.
+	#version: Version;
+
+	// The established WebTransport session.
+	#quic: WebTransport;
+
+	// Use to receive/send session messages.
+	#session?: Stream;
+
+	// Module for contributing tracks.
+	#publisher: Publisher;
+
+	// Module for distributing tracks.
+	#subscriber: Subscriber;
+
+	/** The peer's PROBE estimates; see {@link Established.probe}. */
+	readonly probe: Getter<Probe>;
+
+	/** Random per-connection origin id. Shared by Publisher (for outbound hop
+	 * chains) and Subscriber (available for optional self-filtering on announces). */
+	readonly origin: Origin;
+
+	// The peer's SETUP, recorded once its Setup stream is read (lite-05+). Streams whose
+	// encoding depends on a negotiated capability (e.g. PROBE) wait on this. undefined
+	// until the peer's SETUP arrives; stays undefined forever on older drafts.
+	#peerSetup = new Signal<Setup | undefined>(undefined);
+
+	// Mirrors the role out of #peerSetup, so the public surface exposes the peer's declared
+	// direction without handing out the whole SETUP (whose probe level gates our own streams).
+	#peerRole = new Signal<Role | undefined>(undefined);
+
+	// Written by the Subscriber as PROBE messages arrive.
+	#probe = new Signal<Probe>({});
+
+	/**
+	 * The {@link Role} the peer advertised in its SETUP, for a server deciding whether the
+	 * peer's authorization grants the direction it intends to use.
+	 *
+	 * `undefined` until the peer's SETUP arrives, and forever on pre-lite-05 versions, which
+	 * carry no in-band role. {@link Role.Both} is the absence of the parameter, so it is what
+	 * a peer reports when it declines to declare a direction, sends a value we don't
+	 * recognize, or is a server (which never sends one).
+	 */
+	get peerRole(): Getter<Role | undefined> {
+		return this.#peerRole;
+	}
+
+	/**
+	 * Creates a new Connection instance.
+	 *
+	 * @internal
+	 */
+	constructor({ url, quic, version, session, discovery = true }: ConnectionProps) {
+		this.url = url;
+		this.#quic = quic;
+		this.#session = session;
+		this.version = versionName(version);
+		this.#version = version;
+		this.transport = transportOf(quic);
+		this.discovery = discovery;
+
+		this.probe = this.#probe;
+
+		this.origin = randomOrigin();
+		this.#publisher = new Publisher(this.#quic, this.#version, this.origin);
+		this.#subscriber = new Subscriber(this.#quic, this.#version, this.origin, this.#probe, this.#peerSetup);
+
+		void this.#run();
+	}
+
+	/**
+	 * Closes the connection.
+	 */
+	close() {
+		this.#publisher.close();
+		this.#subscriber.close();
+
+		try {
+			// TODO: For whatever reason, this try/catch doesn't seem to work..?
+			this.#quic.close();
+		} catch {
+			// ignore
+		}
+	}
+
+	async #run(): Promise<void> {
+		const tasks: Promise<void>[] = [this.#runSession(), this.#runBidis(), this.#runUnis()];
+
+		if (hasSetupStream(this.#version)) {
+			tasks.push(this.#sendSetup());
+		}
+
+		tasks.push(this.#subscriber.runProbe());
+
+		// Route incoming QUIC datagrams into their subscriptions (lite-05+; runDatagrams
+		// no-ops on a transport that doesn't carry them).
+		if (hasDatagrams(this.#version)) {
+			tasks.push(this.#subscriber.runDatagrams());
+		}
+
+		try {
+			await Promise.all(tasks);
+		} catch (err) {
+			console.error("fatal error running connection", err);
+		} finally {
+			this.close();
+		}
+	}
+
+	publish(path: Path.Valid, producer: broadcast.Producer) {
+		this.#publisher.publish(path, producer);
+	}
+
+	announced(prefix = Path.empty()): announce.Consumer {
+		return this.#subscriber.announced(prefix);
+	}
+
+	consume(path: Path.Valid): broadcast.Consumer {
+		return this.#subscriber.consume(path);
+	}
+
+	/**
+	 * Watches a broadcast, live only while it is announced.
+	 *
+	 * @param path - The path of the broadcast to watch
+	 * @returns A reactive handle to the broadcast
+	 */
+	announcedBroadcast(path: Path.Valid): announce.Broadcast {
+		return new announce.Broadcast({ connection: this, path });
+	}
+
+	async #runSession() {
+		if (!this.#session) {
+			return;
+		}
+
+		try {
+			for (;;) {
+				const msg = await SessionInfo.decodeMaybe(this.#session.reader, this.#version);
+				if (!msg) break;
+			}
+		} finally {
+			console.debug("session stream closed");
+		}
+	}
+
+	// Open the unidirectional Setup Stream, send our single SETUP, and FIN (lite-05+).
+	// The browser uses WebTransport, which carries the request URI, so we advertise no
+	// path and leave routing to the URL. The probe level reflects what this transport
+	// can actually measure; we never pad, so we never advertise Increase.
+	// Role stays Both: publish/consume are called after this point, so there is nothing
+	// to narrow yet. The origin declares our session identity so the peer can filter
+	// reflected announcements (lite-06 removed ANNOUNCE_REQUEST's exclude_hop for it).
+	async #sendSetup(): Promise<void> {
+		const writer = await Writer.open(this.#quic);
+		try {
+			await writer.u53(DataType.Setup);
+			const probe = await probeLevel(this.#quic, this.#version);
+			await new Setup({ probe, origin: this.origin }).encode(writer, this.#version);
+			writer.close();
+		} catch (err: unknown) {
+			writer.reset(err);
+			throw err;
+		}
+	}
+
+	async #runBidis() {
+		for (;;) {
+			const stream = await Stream.accept(this.#quic);
+			if (!stream) break;
+
+			this.#runBidi(stream)
+				.catch((err: unknown) => {
+					stream.writer.reset(err);
+				})
+				.finally(() => {
+					stream.writer.close();
+				});
+		}
+	}
+
+	async #runBidi(stream: Stream) {
+		const typ = await stream.reader.u53();
+
+		if (typ === StreamId.Session) {
+			throw new Error("duplicate session stream");
+		} else if (typ === StreamId.Announce) {
+			const msg = await AnnounceRequest.decode(stream.reader, this.#version);
+			await this.#publisher.runAnnounce(msg, stream);
+		} else if (typ === StreamId.Subscribe) {
+			const msg = await Subscribe.decode(stream.reader, this.#version);
+			await this.#publisher.runSubscribe(msg, stream);
+		} else if (typ === StreamId.Fetch) {
+			const msg = await Fetch.decode(stream.reader, this.#version);
+			await this.#publisher.runFetch(msg, stream);
+		} else if (typ === StreamId.Track) {
+			const msg = await TrackMessage.decode(stream.reader, this.#version);
+			await this.#publisher.runTrackInfo(msg, stream);
+		} else if (typ === StreamId.Probe) {
+			await this.#publisher.runProbe(stream);
+		} else if (typ === StreamId.Goaway) {
+			const msg = await Goaway.decode(stream.reader, this.#version);
+			console.info("received goaway:", msg.uri);
+		} else {
+			throw new Error(`unknown stream type: ${typ.toString()}`);
+		}
+	}
+
+	async #runUnis() {
+		const readers = new Readers(this.#quic);
+
+		for (;;) {
+			const stream = await readers.next();
+			if (!stream) break;
+
+			this.#runUni(stream)
+				.then(() => {
+					stream.stop(new Error("cancel"));
+				})
+				.catch((err: unknown) => {
+					stream.stop(err);
+				});
+		}
+	}
+
+	async #runUni(stream: Reader) {
+		const typ = await stream.u53();
+		if (typ === DataType.Group) {
+			const msg = await Group.decode(stream);
+			await this.#subscriber.runGroup(msg, stream);
+		} else if (typ === DataType.Setup) {
+			// The peer sends exactly one SETUP, then FINs. Record it so capability-gated
+			// streams (e.g. PROBE) can react, then drain to the FIN.
+			const setup = await Setup.decode(stream, this.#version);
+			this.#peerSetup.set(setup);
+			this.#peerRole.set(setup.role);
+		} else {
+			throw new Error(`unknown stream type: ${typ.toString()}`);
+		}
+	}
+
+	/** Snapshot the transport's counters; see {@link Established.stats}. */
+	async stats(): Promise<Stats> {
+		return transportStats(this.#quic);
+	}
+
+	get closed(): Promise<void> {
+		return this.#quic.closed.then(() => undefined);
+	}
+}
+
+/**
+ * The probe level to advertise in SETUP, from what the transport can measure.
+ *
+ * `Report` claims we can measure and periodically report, so it is only truthful
+ * when a metric this version can carry actually exists. The qmux/WebSocket fallback
+ * implements no `getStats()` at all, and even a transport that has one may report
+ * neither figure. Advertising `Report` and then holding the subscriber's PROBE
+ * stream open with nothing to send is the state this avoids; the subscriber's own
+ * gate then skips a stream it could not use.
+ *
+ * Mirrors `ProbeLevel::detect` in `moq-net`, including its limitation: a metric
+ * that only appears after SETUP reads as unsupported here.
+ *
+ * @internal
+ */
+export async function probeLevel(quic: WebTransport, version: Version): Promise<ProbeLevel> {
+	const getStats = (
+		quic as unknown as {
+			getStats?: () => Promise<{ estimatedSendRate: number | null; smoothedRtt?: number | null }>;
+		}
+	).getStats;
+	if (typeof getStats !== "function") return ProbeLevel.None;
+
+	// A transport that can't answer tells us nothing, which is itself an answer.
+	let stats: { estimatedSendRate: number | null; smoothedRtt?: number | null };
+	try {
+		stats = await getStats.call(quic);
+	} catch {
+		return ProbeLevel.None;
+	}
+
+	const rtt = hasProbeRtt(version) ? stats.smoothedRtt : undefined;
+	return stats.estimatedSendRate != null || rtt != null ? ProbeLevel.Report : ProbeLevel.None;
+}

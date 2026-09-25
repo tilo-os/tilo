@@ -15,6 +15,7 @@ use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
+mod native_identity;
 mod text_insert;
 
 /// What `record.bring` must be told.
@@ -817,7 +818,10 @@ impl Action {
                 crate::device_fleet::DeviceFleetStore::at(store.identity_dir(), identity_paths)
                     .register_current_device(&profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
-                let delegated = {
+                let enrolled = st.tree().requires_native_owner(room);
+                let delegated = if enrolled {
+                    Some(())
+                } else {
                     let mut tree = st.tree_mut();
                     tree.grant_in_workspace(
                         workspace_id,
@@ -828,6 +832,7 @@ impl Action {
                             crate::shell::state::Verb::Admin,
                         ),
                     )
+                    .map(|_| ())
                 };
                 if delegated.is_none() {
                     return Err(ActionError::Refused(
@@ -838,6 +843,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), &profile.id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -860,7 +866,7 @@ impl Action {
                 let profile = registry.identities.get(identity_id).ok_or_else(|| {
                     ActionError::Refused("that identity is not connected to this device".into())
                 })?;
-                {
+                if !st.tree().requires_native_owner(room) {
                     let mut tree = st.tree_mut();
                     if tree
                         .grant_in_workspace(
@@ -882,6 +888,7 @@ impl Action {
                 store
                     .bind_workspace(&room.to_string(), identity_id)
                     .map_err(|error| ActionError::Refused(error.to_string()))?;
+                fence_native_selection(st, workspace_id, room, &profile.user_public_key)?;
                 st.tree().export_fs_capabilities();
                 st.bump();
                 Ok(())
@@ -3850,3 +3857,26 @@ mod tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+
+/// Called only after the existing identity registry accepted the selection.
+fn fence_native_selection(
+    st: &ChromeState,
+    local: crate::shell::state::WorkspaceId,
+    room: crate::shell::state::RoomId,
+    root: &[u8; 32],
+) -> Result<(), ActionError> {
+    let owner = st.tree().installed_native_owner();
+    let Some(owner) = owner else { return Ok(()) };
+    let paths = crate::firstboot::collaboration_identity_paths();
+    let selected =
+        tilo_user_identity::persist::read_device_cert(&paths.device_cert_for_user(root)).ok();
+    native_identity::fence(&owner, room, selected.as_ref()).map_err(ActionError::Refused)?;
+    if let Some(pending) = owner
+        .pending_enrollment_for_slot(local)
+        .map_err(ActionError::Refused)?
+    {
+        native_identity::fence(&owner, pending.id().room(), selected.as_ref())
+            .map_err(ActionError::Refused)?;
+    }
+    Ok(())
+}

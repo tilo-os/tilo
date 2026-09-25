@@ -7,6 +7,8 @@ license.workspace = true
 
 [features]
 default = []
+# Opus voice capture/playback without the video decoder stack.
+voice = ["dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer decode: `playbin` diverts video through
 # `videoconvert ! appsink(RGBA)` and routes audio to `autoaudiosink`. Off by
 # default so hermetic builds, `--shots`, and CI do not require GStreamer.

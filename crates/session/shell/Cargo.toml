@@ -65,6 +65,8 @@ dev-session = []
 qos-action-broker = { path = "../../collab/qos-action-broker" }
 qos-desktop = { path = "../qos-desktop" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
+qos-moq = { path = "../../hosting/qos-moq", features = ["relay"] }
+reqwest = { workspace = true, features = ["rustls-tls-native-roots"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
@@ -131,7 +133,7 @@ mime_guess = "2.0.5"
 os-actions = { path = "../../system/os-actions" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
 # persists intent; the compositor is the single long-lived actuator.
-media = { path = "../../media/core" }
+media = { path = "../../media/core", features = ["voice"] }
 hex.workspace = true
 sha2.workspace = true
 xattr = "1.6.1"
@@ -251,6 +253,8 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+qos-session-peer = { path = "../../hosting/qos-session-peer", default-features = false, features = ["test-support"] }
 qos-action-broker = { path = "../../collab/qos-action-broker", features = ["test-support"] }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in

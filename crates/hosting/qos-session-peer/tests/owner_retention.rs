@@ -110,19 +110,64 @@ async fn observer(
     )
     .unwrap()
 }
-async fn replay(session: &RelayCoeditSession, peers: &mut [&mut StatePeer]) -> (usize, usize) {
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Route {
+    Room(String),
+    Document(String, String, String),
+}
+#[derive(Default)]
+struct Output {
+    frames: usize,
+    bytes: usize,
+    routes: BTreeMap<Route, usize>,
+}
+impl Output {
+    fn observe(&mut self, data: &[u8]) {
+        let route = match postcard::from_bytes::<qos_peer_state::NeighbourMsg>(data).unwrap() {
+            qos_peer_state::NeighbourMsg::SyncResp { room, .. } => Route::Room(room),
+            qos_peer_state::NeighbourMsg::AppDocument {
+                cluster_id: room,
+                app_id,
+                record_id,
+                ..
+            } => Route::Document(room, app_id, record_id),
+            message => panic!("unexpected owner publication: {message:?}"),
+        };
+        self.frames += 1;
+        self.bytes += data.len();
+        *self.routes.entry(route).or_default() += 1;
+    }
+    fn assert_full_basis(&self, owner: &SessionOwner) {
+        // Independent canonical state, not outgoing publication metadata.
+        let mut expected = BTreeMap::from([(Route::Room(owner.peer().room().into()), 1)]);
+        for row in owner.peer().rows() {
+            assert!(
+                expected
+                    .insert(
+                        Route::Document(owner.peer().room().into(), row.app_id, row.record_id),
+                        1
+                    )
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            self.routes, expected,
+            "every canonical route appears exactly once"
+        );
+    }
+}
+async fn replay(session: &RelayCoeditSession, peers: &mut [&mut StatePeer]) -> Output {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let (mut frames, mut bytes) = (0, 0);
+        let mut output = Output::default();
         loop {
             match session.recv().await.expect("observer Ready") {
                 Inbound::Delta { author, data } => {
-                    frames += 1;
-                    bytes += data.len();
+                    output.observe(&data);
                     for peer in peers.iter_mut() {
                         apply(peer, author, &data);
                     }
                 }
-                Inbound::Ready { .. } => return (frames, bytes),
+                Inbound::Ready { .. } => return output,
                 Inbound::Presence { .. } => panic!("unexpected presence"),
             }
         }
@@ -134,20 +179,19 @@ async fn converge(
     session: &RelayCoeditSession,
     peer: &mut StatePeer,
     owner: &SessionOwner,
-) -> (usize, usize) {
+) -> Output {
     tokio::time::timeout(Duration::from_secs(30), async {
-        let (mut frames, mut bytes) = (0, 0);
+        let mut output = Output::default();
         while !exact(peer, owner.peer()) {
             match session.recv().await.expect("live selected activation") {
                 Inbound::Delta { author, data } => {
-                    frames += 1;
-                    bytes += data.len();
+                    output.observe(&data);
                     apply(peer, author, &data);
                 }
                 _ => panic!("unexpected event while waiting for exact receipts"),
             }
         }
-        (frames, bytes)
+        output
     })
     .await
     .unwrap()
@@ -214,7 +258,7 @@ fn report(
     owner: &SessionOwner,
     offline: usize,
     cut: &str,
-    output: (usize, usize),
+    output: &Output,
 ) -> (usize, u64, usize, u64) {
     let workspace = owner.root().join("relay/workspaces").join(
         tilo_relay::room_workspace_id(owner.peer().room())
@@ -231,7 +275,7 @@ fn report(
         .sum::<usize>();
     println!(
         "owner_growth {}",
-        serde_json::json!({"offline":offline,"cut":cut,"owner_generation":owner.status().generation,"owner_outgoing_frames":owner.outgoing().len(),"owner_outgoing_body_bytes":owner.outgoing().iter().map(Vec::len).sum::<usize>(),"retained_all_files":retained.0+selected.0,"retained_all_logical_bytes":retained.1+selected.1,"workspace_all_files":workspace_totals.0,"workspace_all_logical_bytes":workspace_totals.1,"retained_delta_paths":files.0,"retained_logical_bytes":files.1,"retained_unique_inodes":files.2,"retained_unique_inode_bytes":files.3,"pending_files":pending,"observed_body_frames":output.0,"observed_body_bytes":output.1,"process_peak_rss_bytes":peak_rss_bytes()})
+        serde_json::json!({"offline":offline,"cut":cut,"owner_generation":owner.status().generation,"owner_outgoing_frames":owner.outgoing().len(),"owner_outgoing_body_bytes":owner.outgoing().iter().map(|p| p.bytes.len()).sum::<usize>(),"retained_all_files":retained.0+selected.0,"retained_all_logical_bytes":retained.1+selected.1,"workspace_all_files":workspace_totals.0,"workspace_all_logical_bytes":workspace_totals.1,"retained_delta_paths":files.0,"retained_logical_bytes":files.1,"retained_unique_inodes":files.2,"retained_unique_inode_bytes":files.3,"pending_files":pending,"observed_body_frames":output.frames,"observed_body_bytes":output.bytes,"process_peak_rss_bytes":peak_rss_bytes()})
     );
     assert_eq!(
         pending, 0,
@@ -247,7 +291,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("owner");
         let mut owner = SessionOwner::initialize(&path).unwrap();
-        let paths = IdentityPaths::under(path.join("identity"));
+        let paths = IdentityPaths::under(owner.root().canonicalize().unwrap().join("identity"));
         let key = persist::read_device_key(&paths.device_privkey).unwrap();
         let root = persist::read_signing_key(&paths.user_privkey).unwrap();
         let observer_key = SigningKey::from_bytes(&[90; 32]);
@@ -288,13 +332,13 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
         replay(&session, &mut [&mut receiver]).await;
         publish(&owner, &native).unwrap();
         let output = converge(&session, &mut receiver, &owner).await;
-        assert_eq!(output.0, 4);
-        report(&owner, offline, "baseline", output);
+        output.assert_full_basis(&owner);
+        report(&owner, offline, "baseline", &output);
         let mut offline_peer = receiver.clone();
         let mut full_counts = BTreeSet::new();
         for round in 0..6 {
             let before_rows = owner.peer().rows();
-            let before_receipt = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+            let before_receipt = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
             owner.refresh_checkpoint().unwrap();
             assert_eq!(
                 owner.peer().rows(),
@@ -302,19 +346,23 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 "same-head re-signing changed documents"
             );
             assert_ne!(
-                owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+                owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
                 before_receipt,
                 "same-head receipt must advance exactly"
             );
             publish(&owner, &native).unwrap();
             let output = converge(&session, &mut receiver, &owner).await;
-            assert_eq!(output.0, 4, "full owner refresh output");
-            let files = report(&owner, offline, &format!("refresh-{round}"), output);
+            output.assert_full_basis(&owner);
+            let files = report(&owner, offline, &format!("refresh-{round}"), &output);
             full_counts.insert(files.2);
-            assert_eq!(files.2, 4, "retain exactly one full owner checkpoint basis");
-            let untouched = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+            assert_eq!(
+                files.2,
+                owner.peer().rows().len() + 1,
+                "retain exactly one full owner checkpoint basis"
+            );
+            let untouched = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
             let mut candidate = owner.peer().clone();
-            let app = "dev.qos.word-processor";
+            let app = "so.tilo.word-processor";
             let record = "tab:0000000000000001";
             let mut doc = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
             doc.put(ROOT, "qualification_commit", round as i64).unwrap();
@@ -326,16 +374,16 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 .commit_mutation_candidate(candidate, owner.directory().to_vec())
                 .unwrap();
             assert_eq!(
-                owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+                owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
                 untouched
             );
             publish(&owner, &native).unwrap();
             let output = converge(&session, &mut receiver, &owner).await;
             assert_eq!(
-                output.0, 2,
+                output.frames, 2,
                 "small commit output must be room plus touched app"
             );
-            report(&owner, offline, &format!("commit-{round}"), output);
+            report(&owner, offline, &format!("commit-{round}"), &output);
             if round == 2 {
                 native.into_client().close().await;
                 native = host.connect(&owner).await.unwrap();
@@ -348,7 +396,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 let mut new_peer = fresh(&owner);
                 let output = replay(&session, &mut [&mut receiver, &mut new_peer]).await;
                 assert!(exact(&receiver, owner.peer()) && exact(&new_peer, owner.peer()));
-                report(&owner, offline, "reconnect", output);
+                report(&owner, offline, "reconnect", &output);
             }
         }
         population_counts.push(full_counts);
@@ -372,17 +420,14 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
             &mut [&mut receiver, &mut new_peer, &mut offline_peer],
         )
         .await;
-        assert_eq!(
-            output.0, 4,
-            "restart must replay one full current owner basis"
-        );
+        output.assert_full_basis(&owner);
         for peer in [&receiver, &new_peer, &offline_peer] {
             assert!(
                 exact(peer, &expected),
                 "final heads, room heads or exact receipts differ"
             );
         }
-        report(&owner, offline, "restart-final", output);
+        report(&owner, offline, "restart-final", &output);
         println!(
             "owner_growth_final {}",
             serde_json::json!({"offline":offline,"replay_ms":start.elapsed().as_millis(),"heads":owner.peer().rows(),"exact_receipts":owner.peer().rows().iter().map(|row| owner.peer().durable_coverage(&row.app_id,&row.record_id).unwrap()).collect::<Vec<_>>()})

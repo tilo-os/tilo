@@ -69,6 +69,7 @@ pub struct HostContext {
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
+    retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
@@ -98,6 +99,26 @@ pub struct PreparedComponentInputs {
 }
 
 impl HostContext {
+    fn retire_semantic_mount(&self) {
+        if let Some(retirement) = &self.retirement {
+            retirement.retire();
+        }
+    }
+    pub(crate) fn bind_retirement(
+        &mut self,
+        retirement: crate::semantic_document_read::retirement::MountRetirement,
+    ) -> Result<(), LaunchError> {
+        if self.retirement.is_some() || self.closing.get() {
+            return Err(LaunchError::BindingMismatch);
+        }
+        self.retirement = Some(retirement);
+        Ok(())
+    }
+    pub(crate) fn require_invocation_provenance(&self) -> Result<(), crate::launch::LaunchError> {
+        self.records
+            .require_invocation_provenance(&self.record)
+            .map_err(crate::launch::LaunchError::Operation)
+    }
     /// Reserve New or open Existing before the factory, using only supplied identities.
     ///
     /// # Errors
@@ -258,6 +279,7 @@ impl HostContext {
             queued_controls: Rc::default(),
             control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
+            retirement: None,
         })
     }
     /// Explicit owner-bound producer capability, available before factory work.
@@ -375,303 +397,13 @@ impl HostContext {
     }
 }
 
-/// First-party package ids renamed when qOS became Tilo.
-///
-/// This table is deliberately finite. It is used only when resolving an
-/// installed application definition or its persisted record namespace; it is
-/// never consulted by capability, signature, or document-route validation.
-#[derive(Clone, Copy)]
-struct FirstPartyAppIdFamily {
-    qos: &'static str,
-    tilo: &'static str,
-    current: &'static str,
-}
-
-impl FirstPartyAppIdFamily {
-    fn contains(self, app_id: &str) -> bool {
-        app_id == self.qos || app_id == self.tilo || app_id == self.current
-    }
-
-    fn ids(self) -> [&'static str; 3] {
-        [self.current, self.tilo, self.qos]
-    }
-}
-
-const RENAMED_FIRST_PARTY_APP_IDS: &[FirstPartyAppIdFamily] = &[
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.agent",
-        tilo: "dev.tilo.agent",
-        current: "so.tilo.agent",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.api-tester",
-        tilo: "dev.tilo.api-tester",
-        current: "so.tilo.api-tester",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.backups",
-        tilo: "dev.tilo.backups",
-        current: "so.tilo.backups",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.browser",
-        tilo: "dev.tilo.browser",
-        current: "so.tilo.browser",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.calculator",
-        tilo: "dev.tilo.calculator",
-        current: "so.tilo.calculator",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.calendar",
-        tilo: "dev.tilo.calendar",
-        current: "so.tilo.calendar",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.camera",
-        tilo: "dev.tilo.camera",
-        current: "so.tilo.camera",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.chat",
-        tilo: "dev.tilo.chat",
-        current: "so.tilo.chat",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.code-editor",
-        tilo: "dev.tilo.code-editor",
-        current: "so.tilo.code-editor",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.contacts",
-        tilo: "dev.tilo.contacts",
-        current: "so.tilo.contacts",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.containers",
-        tilo: "dev.tilo.containers",
-        current: "so.tilo.containers",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.db-client",
-        tilo: "dev.tilo.db-client",
-        current: "so.tilo.db-client",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.diffmerge",
-        tilo: "dev.tilo.diffmerge",
-        current: "so.tilo.diffmerge",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.disks",
-        tilo: "dev.tilo.disks",
-        current: "so.tilo.disks",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.ebook",
-        tilo: "dev.tilo.ebook",
-        current: "so.tilo.ebook",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.feeds",
-        tilo: "dev.tilo.feeds",
-        current: "so.tilo.feeds",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.file-explorer",
-        tilo: "dev.tilo.file-explorer",
-        current: "so.tilo.file-explorer",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.firewall",
-        tilo: "dev.tilo.firewall",
-        current: "so.tilo.firewall",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.git-client",
-        tilo: "dev.tilo.git-client",
-        current: "so.tilo.git-client",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.hex-editor",
-        tilo: "dev.tilo.hex-editor",
-        current: "so.tilo.hex-editor",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.imager",
-        tilo: "dev.tilo.imager",
-        current: "so.tilo.imager",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.logs",
-        tilo: "dev.tilo.logs",
-        current: "so.tilo.logs",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.mail",
-        tilo: "dev.tilo.mail",
-        current: "so.tilo.mail",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.maps",
-        tilo: "dev.tilo.maps",
-        current: "so.tilo.maps",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.monitor",
-        tilo: "dev.tilo.monitor",
-        current: "so.tilo.monitor",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.music",
-        tilo: "dev.tilo.music",
-        current: "so.tilo.music",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.notes",
-        tilo: "dev.tilo.notes",
-        current: "so.tilo.notes",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.osk",
-        tilo: "dev.tilo.osk",
-        current: "so.tilo.osk",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.pdf-viewer",
-        tilo: "dev.tilo.pdf-viewer",
-        current: "so.tilo.pdf-viewer",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.photos",
-        tilo: "dev.tilo.photos",
-        current: "so.tilo.photos",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.remote",
-        tilo: "dev.tilo.remote",
-        current: "so.tilo.remote",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.scratchpad",
-        tilo: "dev.tilo.scratchpad",
-        current: "so.tilo.scratchpad",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.settings",
-        tilo: "dev.tilo.settings",
-        current: "so.tilo.settings",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.sheets",
-        tilo: "dev.tilo.sheets",
-        current: "so.tilo.sheets",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.slides",
-        tilo: "dev.tilo.slides",
-        current: "so.tilo.slides",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.snippets",
-        tilo: "dev.tilo.snippets",
-        current: "so.tilo.snippets",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.store",
-        tilo: "dev.tilo.store",
-        current: "so.tilo.store",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.terminal",
-        tilo: "dev.tilo.terminal",
-        current: "so.tilo.terminal",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.themes",
-        tilo: "dev.tilo.themes",
-        current: "so.tilo.themes",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.totp",
-        tilo: "dev.tilo.totp",
-        current: "so.tilo.totp",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.tube",
-        tilo: "dev.tilo.tube",
-        current: "so.tilo.tube",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.typst-editor",
-        tilo: "dev.tilo.typst-editor",
-        current: "so.tilo.typst-editor",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.video-editor",
-        tilo: "dev.tilo.video-editor",
-        current: "so.tilo.video-editor",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.video-player",
-        tilo: "dev.tilo.video-player",
-        current: "so.tilo.video-player",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.vpn",
-        tilo: "dev.tilo.vpn",
-        current: "so.tilo.vpn",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.weather",
-        tilo: "dev.tilo.weather",
-        current: "so.tilo.weather",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.windows",
-        tilo: "dev.tilo.windows",
-        current: "so.tilo.windows",
-    },
-    FirstPartyAppIdFamily {
-        qos: "dev.qos.word-processor",
-        tilo: "dev.tilo.word-processor",
-        current: "so.tilo.word-processor",
-    },
-];
-
-/// Current package registration for a deployed first-party durable id.
-///
-/// Lookup compatibility only: callers must keep the original id on persisted
-/// tabs, record routes, capabilities, and cryptographic domains.
-#[must_use]
-pub fn current_package_id_for_legacy(app_id: &str) -> Option<&'static str> {
-    RENAMED_FIRST_PARTY_APP_IDS.iter().find_map(|family| {
-        (app_id == family.qos || app_id == family.tilo).then_some(family.current)
-    })
-}
-
-/// The exact finite family used for definition/catalogue lookup.
-#[must_use]
-pub fn first_party_app_id_lookup_candidates(app_id: &str) -> impl Iterator<Item = &'static str> {
-    RENAMED_FIRST_PARTY_APP_IDS
-        .iter()
-        .find(|family| family.contains(app_id))
-        .into_iter()
-        .flat_map(|family| family.ids())
-}
-
-/// Whether two ids name the same explicitly renamed first-party app for
-/// definition or persisted-record lookup.
-#[must_use]
-pub fn lookup_compatible_first_party_app_ids(left: &str, right: &str) -> bool {
-    left == right
-        || RENAMED_FIRST_PARTY_APP_IDS
-            .iter()
-            .any(|family| family.contains(left) && family.contains(right))
-}
+pub use collab_types::first_party_app_ids::{
+    current_package_id_for_legacy, first_party_app_id_lookup_candidates,
+    lookup_compatible_first_party_app_ids,
+};
 impl Drop for HostContext {
     fn drop(&mut self) {
+        self.retire_semantic_mount();
         self.control_domain.close();
         self.wake_scope.close();
     }
@@ -792,6 +524,14 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    pub(crate) fn take_root_retirement(
+        &mut self,
+    ) -> Option<crate::semantic_document_read::retirement::RootRetirementPrelude> {
+        self.context
+            .retirement
+            .as_mut()
+            .and_then(|retirement| retirement.take_app())
+    }
     /// Register presentation for this component's actual document custody. Every
     /// domain scope reads that record; external scopes retain their stated reason.
     /// This metadata carries no new authority and follows native/headless/tile mounts.
@@ -902,12 +642,19 @@ impl AppComponent {
         mut root: Box<dyn AppWidget>,
         registry: tilo_actions::ActionRegistry,
     ) -> Self {
+        // The actual root already exists. Retire before its destructor if its
+        // first SDK control-install callback unwinds, even before Self exists.
+        let construction =
+            crate::semantic_document_read::retirement::MountConstructionRetirement::new(
+                context.retirement.as_ref(),
+            );
         root.install_control_custody(
             &context.control_domain(),
             crate::control_custody::CustodyAttachment::Initial,
         );
         context.control_domain().finish_initial_installation();
         let registry_owner = context.construction.clone();
+        construction.disarm();
         Self {
             history: None,
             context,
@@ -1150,6 +897,7 @@ impl AppComponent {
     /// Finalization after a successful host checkpoint. No second fallible
     /// write is introduced after the host has committed to destroying the tree.
     pub(crate) fn finish_admitted_close(&mut self) {
+        self.context.retire_semantic_mount();
         if self.close_report.is_some() {
             return;
         }
@@ -1192,6 +940,7 @@ impl AppComponent {
         CloseComponentOnExit(self).0.close_owned()
     }
     fn close_owned(&mut self) -> ComponentCloseReport {
+        self.context.retire_semantic_mount();
         let mut report = ComponentCloseReport {
             recovery: None,
             view_error: None,
@@ -1265,6 +1014,7 @@ impl AppComponent {
         self.close_report.as_ref()
     }
     fn teardown(&mut self) -> Result<(), String> {
+        self.context.retire_semantic_mount();
         self.context.control_domain.close();
         self.context.closing.set(true);
         self.context.wake_scope.close();
@@ -1338,6 +1088,11 @@ impl crate::search::SearchProvider for ComponentProvider {
     fn action_directory_generation(&self) -> Option<u64> {
         self.invoke(|provider| provider.action_directory_generation())
             .flatten()
+    }
+
+    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
+        self.invoke(|provider| provider.action_directory_invocation_domain())
+            .unwrap_or_default()
     }
     fn action_directory_cursor_is_current(&self, cursor: &crate::search::SearchCursor) -> bool {
         self.invoke(|provider| provider.action_directory_cursor_is_current(cursor))

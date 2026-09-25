@@ -238,7 +238,8 @@ fn semantic_component_harness(
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
     let checkout = component.record().clone();
-    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts");
+    let font_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/sdk/ui-core/assets/fonts");
     let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
     let frame = ui::headless::FrameHarness::from_component(
         component,
@@ -568,5 +569,119 @@ fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path()
             .unwrap(),
         ""
     );
+    frame.close_components();
+}
+
+/// The composer's exported value, as a browser bridge or screen reader sees it.
+fn semantic_value(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
+    fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<Option<String>> {
+        if node.action_target.as_deref() == Some(target) {
+            return Some(node.value.clone());
+        }
+        node.children.iter().find_map(|child| find(child, target))
+    }
+    node.semantics
+        .as_ref()
+        .and_then(|semantic| find(semantic, target))
+        .or_else(|| {
+            node.children
+                .iter()
+                .find_map(|child| semantic_value(child, target).map(Some))
+        })
+        .flatten()
+}
+
+/// Regression: the product workload sends message after message through the
+/// real composer; the second send found a non-empty composer.
+#[test]
+fn consecutive_semantic_sends_leave_an_empty_composer_each_time() {
+    let (mut frame, records, checkout) = semantic_component_harness("chat-consecutive-sends");
+    let owner = semantic_owner_path(&frame.inspection().root, "chat.composer").unwrap();
+    let before = records
+        .read(&checkout.id, |doc| {
+            ChatDoc::top_level_count(doc, "c_general")
+        })
+        .unwrap();
+    for (n, text) in ["first message", "second message", "third message"]
+        .into_iter()
+        .enumerate()
+    {
+        frame
+            .perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::Focus)
+            .unwrap();
+        frame
+            .perform_semantic_named(
+                &owner,
+                Some("chat.composer"),
+                &ui::a11y::Action::SetValue(text.into()),
+            )
+            .unwrap();
+        frame
+            .perform_semantic_named(&owner, Some("chat.send"), &ui::a11y::Action::Activate)
+            .unwrap();
+        let (count, draft, last) = records
+            .read(&checkout.id, |doc| {
+                (
+                    ChatDoc::top_level_count(doc, "c_general"),
+                    ChatDoc::draft_text(doc, "c_general"),
+                    ChatDoc::list_messages(doc, "c_general")
+                        .last()
+                        .map(|m| m.text.clone()),
+                )
+            })
+            .unwrap();
+        assert_eq!(count, before + n + 1, "send {n}");
+        assert_eq!(draft, "", "send {n} consumes the draft");
+        assert_eq!(last.as_deref(), Some(text));
+        let shown = semantic_value(&frame.inspection().root, "chat.composer").unwrap_or_default();
+        assert_eq!(shown, "", "send {n} leaves an empty composer");
+    }
+    frame.close_components();
+}
+
+/// The same through typing and a pointer click on Send (the browser bridge's
+/// route), with the typed text arriving as keyboard input.
+#[test]
+fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
+    let (mut frame, records, checkout) = semantic_component_harness("chat-consecutive-typed");
+    let inspection = frame.inspection();
+    let composer = semantic_target_rect(&inspection.root, "chat.composer")
+        .unwrap()
+        .center();
+    let send = semantic_target_rect(&inspection.root, "chat.send")
+        .unwrap()
+        .center();
+    let before = records
+        .read(&checkout.id, |doc| {
+            ChatDoc::top_level_count(doc, "c_general")
+        })
+        .unwrap();
+    for (n, text) in ["first typed", "second typed", "third typed"]
+        .into_iter()
+        .enumerate()
+    {
+        frame.click_at(composer.x, composer.y);
+        frame.type_text(text);
+        assert_eq!(
+            records
+                .read(&checkout.id, |doc| ChatDoc::draft_text(doc, "c_general"))
+                .unwrap(),
+            text,
+            "typing {n} lands in the draft"
+        );
+        frame.click_at(send.x, send.y);
+        let (count, draft) = records
+            .read(&checkout.id, |doc| {
+                (
+                    ChatDoc::top_level_count(doc, "c_general"),
+                    ChatDoc::draft_text(doc, "c_general"),
+                )
+            })
+            .unwrap();
+        assert_eq!(count, before + n + 1, "send {n}");
+        assert_eq!(draft, "", "send {n} consumes the draft");
+        let shown = semantic_value(&frame.inspection().root, "chat.composer").unwrap_or_default();
+        assert_eq!(shown, "", "send {n} leaves an empty composer");
+    }
     frame.close_components();
 }

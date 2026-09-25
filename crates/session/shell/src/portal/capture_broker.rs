@@ -181,6 +181,7 @@ struct Lease {
     source_id: String,
     kind: CaptureKind,
     expires_at: Instant,
+    stop: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -316,6 +317,22 @@ impl CaptureBroker {
             .collect()
     }
 
+    /// Observed local nodes only; symbolic defaults and unpaired descriptors
+    /// are not concrete native microphone inputs.
+    pub(crate) fn enumerate_local_nodes(&self, kind: CaptureKind) -> Vec<CaptureSourceView> {
+        if self.is_disabled(kind) {
+            return Vec::new();
+        }
+        self.sources
+            .values()
+            .filter(|source| {
+                source.view.kind == kind
+                    && matches!(source.handle, LocalCaptureHandle::PipeWireNode(_))
+            })
+            .map(|source| source.view.clone())
+            .collect()
+    }
+
     /// Mint one short-lived, one-shot proof of fresh target-local consent.
     ///
     /// # Errors
@@ -439,6 +456,7 @@ impl CaptureBroker {
         self.leases.insert(
             id,
             Lease {
+                stop: None,
                 binding: binding.clone(),
                 source_id: source_id.to_string(),
                 kind,
@@ -523,6 +541,7 @@ impl CaptureBroker {
             self.leases.insert(
                 lease_id,
                 Lease {
+                    stop: None,
                     binding: binding.clone(),
                     source_id: source_id.clone(),
                     kind,
@@ -579,6 +598,25 @@ impl CaptureBroker {
 
     pub fn release(&mut self, lease_id: CaptureLeaseId) -> bool {
         self.revoke_one(lease_id, CaptureRevocation::Released)
+    }
+
+    /// Install a local synchronous device stop hook for this exact live lease.
+    /// The hook must never call back into this broker; it runs while revocation
+    /// owns the lease registry and fences the backend before returning.
+    pub(crate) fn stop_on_revoke(
+        &mut self,
+        lease_id: CaptureLeaseId,
+        binding: &CaptureSessionBinding,
+        now: Instant,
+        stop: std::sync::Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), CaptureBrokerError> {
+        self.resolve(lease_id, binding, now)?;
+        let lease = self
+            .leases
+            .get_mut(&lease_id)
+            .ok_or(CaptureBrokerError::InvalidLease)?;
+        lease.stop = Some(stop);
+        Ok(())
     }
 
     /// Revoke an exact set of unconsumed authorizations minted by one failed
@@ -663,6 +701,9 @@ impl CaptureBroker {
         let Some(lease) = self.leases.remove(&id) else {
             return false;
         };
+        if let Some(stop) = lease.stop.as_ref() {
+            stop();
+        }
         self.queue_event(stopped_event(id, lease, reason));
         true
     }

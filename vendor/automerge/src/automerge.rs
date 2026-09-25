@@ -206,6 +206,8 @@ pub struct Automerge {
     pub(crate) change_graph: ChangeGraph,
     /// Current dependencies of this document (heads hashes).
     deps: HashSet<ChangeHash>,
+    // RawTable allocation history survives deletions; never serialized.
+    deps_capacity_high_water: usize,
     /// The set of operations that form this document.
     pub(crate) ops: OpSet,
     /// The current actor.
@@ -213,6 +215,42 @@ pub struct Automerge {
 }
 
 impl Automerge {
+    pub(crate) fn native_incoming_dependencies_plan(
+        &self,
+        additional: usize,
+        budget: &mut crate::resource_limits::reconstruct::Budget,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        // update_deps removes hashes as well as inserting. Its observed high
+        // water survives tombstones; current logical length alone is unsafe.
+        let entries = crate::resource_limits::reconstruct::sum(
+            self.deps_capacity_high_water.max(self.deps.len()),
+            additional,
+        )?;
+        budget.hash::<ChangeHash, ()>(entries)
+    }
+
+    pub(crate) fn native_save(
+        &self,
+        allowance: &crate::resource_limits::NativeAllowance,
+        options: SaveOptions,
+        maximum_output_bytes: usize,
+    ) -> Result<
+        crate::resource_limits::retained::NativeSaved,
+        crate::resource_limits::NativeResourceError,
+    > {
+        if self.ops.actors.len() != self.change_graph.actor_ids().count() {
+            return Err(crate::resource_limits::NativeResourceError::Unaccounted);
+        }
+        crate::resource_limits::retained::save::document(
+            &self.ops,
+            &self.change_graph,
+            &self.queue,
+            allowance,
+            options,
+            maximum_output_bytes,
+        )
+    }
+
     /// Create a new document with a random actor id.
     pub fn new() -> Self {
         Automerge {
@@ -220,6 +258,7 @@ impl Automerge {
             change_graph: ChangeGraph::new(0),
             ops: OpSet::new(TextEncoding::platform_default()),
             deps: Default::default(),
+            deps_capacity_high_water: 0,
             actor: Actor::Unused(ActorId::random()),
         }
     }
@@ -241,16 +280,18 @@ impl Automerge {
             change_graph: ChangeGraph::new(0),
             ops: OpSet::new(encoding),
             deps: Default::default(),
+            deps_capacity_high_water: 0,
             actor: Actor::Unused(ActorId::random()),
         }
     }
 
     pub(crate) fn from_parts(ops: OpSet, change_graph: ChangeGraph) -> Self {
-        let deps = change_graph.heads().collect();
+        let deps: HashSet<_> = change_graph.heads().collect();
         let mut doc = Automerge {
             queue: ChangeQueue::new(),
             change_graph,
             ops,
+            deps_capacity_high_water: deps.capacity(),
             deps,
             actor: Actor::Unused(ActorId::random()),
         };
@@ -701,7 +742,7 @@ impl Automerge {
     /// * `patch_log` - A [`PatchLog`] to log the changes required to materialize the current state of
     ///                 the document once loaded
     #[deprecated(since = "0.5.2", note = "Use `load_with_options` instead")]
-    #[tracing::instrument(skip(data), err)]
+    #[tracing::instrument(skip(data), err(level = "debug"))]
     pub fn load_with(
         data: &[u8],
         on_error: OnPartialLoad,
@@ -722,7 +763,7 @@ impl Automerge {
     /// # Arguments
     /// * `data` - The data to load
     /// * `options` - The options to use when loading
-    #[tracing::instrument(skip(data), err)]
+    #[tracing::instrument(skip(data), err(level = "debug"))]
     pub fn load_with_options(
         data: &[u8],
         options: LoadOptions<'_>,
@@ -805,6 +846,55 @@ impl Automerge {
             }
         }
         Ok(am)
+    }
+
+    pub(crate) fn load_checked_native(
+        data: &[u8],
+        permit: &crate::resource_limits::reconstruct::Permit<'_>,
+    ) -> Result<Self, crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::NativeResourceError as Error;
+        if data.is_empty() {
+            return Ok(Self::new());
+        }
+        let (remaining, chunk) =
+            storage::Chunk::parse(storage::parse::Input::new(data)).map_err(|_| Error::Invalid)?;
+        if !chunk.checksum_valid() {
+            return Err(Error::Invalid);
+        }
+        let first_document = matches!(&chunk, storage::Chunk::Document(_));
+        let encoding = TextEncoding::platform_default();
+        let mut changes = Vec::new();
+        let mut document = match chunk {
+            storage::Chunk::Document(document) => document.reconstruct_bounded(encoding, permit)?,
+            storage::Chunk::Change(change) => {
+                changes.push(
+                    Change::new_from_unverified(change.into_owned(), None)
+                        .map_err(|_| Error::Invalid)?,
+                );
+                Self::new()
+            }
+            storage::Chunk::Bundle(bundle) => {
+                let bundle =
+                    Bundle::new_from_unverified(bundle.into_owned()).map_err(|_| Error::Invalid)?;
+                changes.extend(bundle.to_changes_bounded(permit)?);
+                Self::new()
+            }
+            storage::Chunk::CompressedChange(..) => return Err(Error::Invalid),
+        };
+        let tail = load::load_changes_bounded(
+            remaining.reset(),
+            encoding,
+            &document.change_graph,
+            permit,
+        )?;
+        document
+            .apply_changes(changes.into_iter().chain(tail))
+            .map_err(|_| Error::Invalid)?;
+        if !first_document && !document.queue.is_empty() {
+            return Err(Error::Invalid);
+        }
+        document.change_graph.check_native_clock_bound(permit)?;
+        Ok(document)
     }
 
     /// Create the patches from a [`PatchLog`]
@@ -1119,6 +1209,7 @@ impl Automerge {
             self.deps.remove(d);
         }
         self.deps.insert(change.hash());
+        self.deps_capacity_high_water = self.deps_capacity_high_water.max(self.deps.capacity());
     }
 
     #[doc(hidden)]
@@ -2046,4 +2137,38 @@ pub(crate) struct Isolation {
     actor_index: usize,
     seq: u64,
     clock: Clock,
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Automerge {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            queue,
+            change_graph,
+            deps,
+            deps_capacity_high_water,
+            ops,
+            actor,
+        } = self;
+        queue.native_visit(visitor)?;
+        change_graph.native_visit(visitor)?;
+        visitor.hash_set(deps, *deps_capacity_high_water)?;
+        ops.native_visit(visitor)?;
+        actor.native_visit(visitor)
+    }
+}
+impl NativeVisit for Actor {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Unused(value) => value.native_visit(visitor),
+            Self::Cached(_) => Ok(()),
+        }
+    }
 }

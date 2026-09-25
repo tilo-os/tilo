@@ -27,6 +27,12 @@ pub struct ActionContext {
     pub group: Option<ActionGroup>,
     /// Browseable dimensions that do not fit the resource hierarchy.
     pub facets: Vec<ActionFacet>,
+    /// Who invoked the action and whose view it resolves against. `None`
+    /// keeps the historical meaning: the local user acting in this window.
+    /// Omitted from the encoded change message when absent, so existing
+    /// history bytes are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invoker: Option<ActionInvoker>,
 }
 
 impl ActionContext {
@@ -48,6 +54,9 @@ impl ActionContext {
         }
         if self.group.is_none() {
             self.group.clone_from(&ambient.group);
+        }
+        if self.invoker.is_none() {
+            self.invoker.clone_from(&ambient.invoker);
         }
         for facet in &ambient.facets {
             if !self.facets.contains(facet) {
@@ -168,6 +177,28 @@ impl ActionContext {
     }
 
     #[must_use]
+    pub fn with_invoker(mut self, invoker: ActionInvoker) -> Self {
+        self.invoker = Some(invoker);
+        self
+    }
+
+    /// Host-side rewrite of a caller-supplied context: the invoker becomes
+    /// exactly the authenticated `actor` and the host-derived `participant`,
+    /// discarding whatever invoker the caller put in the envelope.
+    #[must_use]
+    pub fn with_host_invoker(
+        mut self,
+        actor: impl Into<String>,
+        participant: Option<ParticipantId>,
+    ) -> Self {
+        self.invoker = Some(ActionInvoker {
+            actor: actor.into(),
+            participant,
+        });
+        self
+    }
+
+    #[must_use]
     pub fn with_facet(mut self, facet: ActionFacet) -> Self {
         self.facets.push(facet);
         self
@@ -249,6 +280,123 @@ fn nonempty_ref(value: &str) -> Option<&str> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+/// Upper bound on a [`ParticipantId`] in bytes. Participants key bounded
+/// per-view maps in app workers; they are never free text.
+pub const MAX_PARTICIPANT_ID_BYTES: usize = 128;
+
+/// One participant in a shared record: a person's window or an agent task.
+/// Each participant owns its own view state (caret, selection, Find), and the
+/// app builds that participant's resource tree from it
+/// ([`crate::ResourceProvider::resources_for`]).
+///
+/// Opaque, non-empty, ASCII-printable and at most
+/// [`MAX_PARTICIPANT_ID_BYTES`] bytes. It is a routing key for view state,
+/// never authority: the authenticated principal is [`ActionInvoker::actor`].
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ParticipantId(String);
+
+impl ParticipantId {
+    /// Validate and wrap a participant id.
+    pub fn new(id: impl Into<String>) -> Result<Self, String> {
+        let id = id.into();
+        if id.is_empty()
+            || id.len() > MAX_PARTICIPANT_ID_BYTES
+            || !id.bytes().all(|b| b.is_ascii_graphic())
+        {
+            return Err(format!(
+                "participant id must be 1..={MAX_PARTICIPANT_ID_BYTES} printable ASCII bytes"
+            ));
+        }
+        Ok(Self(id))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The participant of one agent task. Only the host derives it, from
+    /// the task it admitted (never from anything the agent sends), so an
+    /// agent can address only the view of the task it runs.
+    pub fn for_agent_task(task_id: &str) -> Result<Self, String> {
+        Self::new(format!("{AGENT_TASK_PARTICIPANT_PREFIX}{task_id}"))
+    }
+
+    /// The task id of a host-derived agent task participant.
+    pub fn agent_task(&self) -> Option<&str> {
+        self.0.strip_prefix(AGENT_TASK_PARTICIPANT_PREFIX)
+    }
+}
+
+/// Reserved namespace of [`ParticipantId::for_agent_task`].
+pub const AGENT_TASK_PARTICIPANT_PREFIX: &str = "agent-task:";
+
+impl TryFrom<String> for ParticipantId {
+    type Error = String;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ParticipantId> for String {
+    fn from(value: ParticipantId) -> Self {
+        value.0
+    }
+}
+
+impl std::fmt::Display for ParticipantId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The invoker of one action: the authenticated actor plus, optionally, the
+/// participant whose view the invocation resolves against.
+///
+/// `participant: None` means the actor's single/default view (the local
+/// window for a person; the only view of a single-view app).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ActionInvoker {
+    /// Authenticated principal, the same string the host admitted
+    /// (`PublishedInvocationRequest::actor` in ui-core).
+    pub actor: String,
+    pub participant: Option<ParticipantId>,
+}
+
+impl ActionInvoker {
+    pub fn actor(actor: impl Into<String>) -> Self {
+        Self {
+            actor: actor.into(),
+            participant: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_participant(mut self, participant: ParticipantId) -> Self {
+        self.participant = Some(participant);
+        self
+    }
+
+    /// The invoker an application worker may act on for one delivered
+    /// invocation. `actor` is the identity the host authenticated and put on
+    /// the delivery; `context` is the host-built provenance of the same
+    /// delivery. The participant is kept only when the context names this
+    /// exact actor. A context the host did not rewrite for this actor
+    /// therefore never routes to anybody's view, and the actor always comes
+    /// from the delivery, never from the context.
+    pub fn delivered(actor: &str, context: Option<&ActionContext>) -> Self {
+        let participant = context
+            .and_then(|context| context.invoker.as_ref())
+            .filter(|invoker| invoker.actor == actor)
+            .and_then(|invoker| invoker.participant.clone());
+        Self {
+            actor: actor.to_owned(),
+            participant,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionApp {
     /// Stable package/application id.
@@ -293,6 +441,81 @@ impl ActionFacet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_invoker_keeps_change_message_bytes() {
+        let context = ActionContext::for_resource("Rename", "r", "k", "l");
+        let message = context.change_message().unwrap();
+        assert!(!message.contains("invoker"));
+        assert_eq!(ActionContext::from_change_message(&message), Some(context));
+    }
+
+    #[test]
+    fn invoker_round_trips_and_is_enriched_from_ambient() {
+        let invoker = ActionInvoker::actor("agent:alpha")
+            .with_participant(ParticipantId::new("task-7").unwrap());
+        let context =
+            ActionContext::for_resource("Type", "r", "k", "l").with_invoker(invoker.clone());
+        let message = context.change_message().unwrap();
+        assert_eq!(
+            ActionContext::from_change_message(&message),
+            Some(context.clone())
+        );
+        let enriched = ActionContext::default().enriched_by(&context);
+        assert_eq!(enriched.invoker, Some(invoker));
+    }
+
+    #[test]
+    fn host_invoker_overwrites_a_forged_envelope_invoker() {
+        let forged = ActionContext::for_resource("Type", "r", "k", "l").with_invoker(
+            ActionInvoker::actor("person:owner")
+                .with_participant(ParticipantId::new("owner-window").unwrap()),
+        );
+        let task = ParticipantId::for_agent_task("11111111-1111-4111-8111-111111111111").unwrap();
+        let rewritten = forged.with_host_invoker("agent:alpha", Some(task.clone()));
+        assert_eq!(
+            rewritten.invoker,
+            Some(ActionInvoker::actor("agent:alpha").with_participant(task.clone()))
+        );
+        assert_eq!(
+            task.agent_task(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+        assert_eq!(
+            ParticipantId::new("owner-window").unwrap().agent_task(),
+            None
+        );
+    }
+
+    #[test]
+    fn delivered_invoker_keeps_the_participant_only_for_the_delivered_actor() {
+        let participant = ParticipantId::for_agent_task("t").unwrap();
+        let context =
+            ActionContext::default().with_host_invoker("agent:a", Some(participant.clone()));
+        assert_eq!(
+            ActionInvoker::delivered("agent:a", Some(&context)),
+            ActionInvoker::actor("agent:a").with_participant(participant)
+        );
+        // A context naming another actor never routes to a view, and the
+        // actor always comes from the delivery.
+        assert_eq!(
+            ActionInvoker::delivered("person:b", Some(&context)),
+            ActionInvoker::actor("person:b")
+        );
+        assert_eq!(
+            ActionInvoker::delivered("person:b", None),
+            ActionInvoker::actor("person:b")
+        );
+    }
+
+    #[test]
+    fn participant_ids_are_bounded() {
+        assert!(ParticipantId::new("").is_err());
+        assert!(ParticipantId::new("has space").is_err());
+        assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES + 1)).is_err());
+        assert!(ParticipantId::new("x".repeat(MAX_PARTICIPANT_ID_BYTES)).is_ok());
+        assert!(serde_json::from_str::<ParticipantId>("\"\"").is_err());
+    }
 
     #[test]
     fn change_message_round_trips_context() {

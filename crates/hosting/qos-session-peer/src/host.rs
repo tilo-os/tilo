@@ -1,9 +1,12 @@
 //! Existing packet relay + authenticated qOS relay, with a replaceable native subscription.
+mod refresh;
 use crate::SessionOwner;
 use anyhow::{Context, Result, bail};
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
+#[cfg(feature = "test-support")]
+pub use refresh::CheckpointRefreshTestOwner;
 use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
@@ -287,12 +290,12 @@ fn dispatch_committed_publication(
                     .replacement_pending
                     .then(|| PublicationDispatch::DeferredBaseline {
                         entries: owner.outgoing().len(),
-                        bytes: owner.outgoing().iter().map(Vec::len).sum(),
+                        bytes: owner.outgoing().iter().map(|p| p.bytes.len()).sum(),
                     });
             let published = if cadence.replacement_pending {
                 PublicationDispatch::PublishedBaseline {
                     entries: owner.outgoing().len(),
-                    bytes: owner.outgoing().iter().map(Vec::len).sum(),
+                    bytes: owner.outgoing().iter().map(|p| p.bytes.len()).sum(),
                 }
             } else {
                 PublicationDispatch::PublishedSelective { entries, bytes }
@@ -435,13 +438,16 @@ impl NativeSubscription {
             .unwrap_or_else(|_| panic!("active session attachment must be closed asynchronously"))
             .into_client()
     }
-    async fn close(mut self) {
+    async fn detach_actions(&mut self) {
         if let Some(mut attached) = self.actions.take() {
             if let Some(task) = attached.task.take() {
                 task.abort();
                 let _ = task.await;
             }
         }
+    }
+    async fn close(mut self) {
+        self.detach_actions().await;
         // Each native attempt owns its endpoint. After joining the only
         // attachment, consume the client and flush CONNECTION_CLOSE before
         // dropping that endpoint, so the relay retires its subscriber.
@@ -471,6 +477,9 @@ impl NativeSubscription {
             .context("broker unavailable")?
             .peer_action_attachment()
             .map_err(anyhow::Error::msg)?;
+        // Relay-delivered actions reach a broker that registered this owner's
+        // policy clock, which refuses requests without that time origin.
+        let queue = queue.with_policy_time(actions.policy_time());
         let session = self.session.clone();
         let (acknowledged, readiness) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(async move {
@@ -548,6 +557,14 @@ fn revocations(owner: &SessionOwner) -> Result<RevocationList> {
 }
 impl LocalHost {
     pub async fn start(owner: &SessionOwner) -> Result<Self> {
+        let (join, _commands) = crate::collaboration::CollaborationHandle::bounded(1);
+        Self::start_with_collaboration(owner, join).await
+    }
+
+    pub(crate) async fn start_with_collaboration(
+        owner: &SessionOwner,
+        join: crate::collaboration::CollaborationHandle,
+    ) -> Result<Self> {
         let mut config = ServerConfig::default();
         config.relay = Some(PacketConfig::new((Ipv4Addr::LOCALHOST, 0)));
         let packet = Server::spawn(config).await?;
@@ -592,7 +609,7 @@ impl LocalHost {
             }],
             ..Default::default()
         };
-        let relay = Relay::start_with_relay_mode(
+        let relay = Relay::start_with_relay_mode_and_protocol(
             config,
             RelayIdentity {
                 user_public_key: owner.identity.root.verifying_key().to_bytes(),
@@ -601,6 +618,8 @@ impl LocalHost {
                 revocations: revocations(owner)?,
             },
             mode.clone(),
+            tilo_relay::workspace_join::WORKSPACE_JOIN_ALPN,
+            tilo_relay::workspace_join::WorkspaceJoinProtocol::new(join),
         )
         .await?;
         let this = Self {
@@ -617,25 +636,15 @@ impl LocalHost {
         Ok(this)
     }
     pub async fn update_membership(&self, owner: &SessionOwner) -> Result<()> {
-        let revoked = revocations(owner)?;
-        let members = owner
+        let access = owner
             .peer()
-            .certificates()
-            .into_iter()
-            .filter(|cert| {
-                !revoked.is_revoked(&cert.device_public_key)
-                    && owner
-                        .peer()
-                        .permissions(cert.device_public_key, web_time::SystemTime::now())
-                        .is_ok()
-            })
-            .map(|cert| cert.device_public_key)
-            .collect();
+            .governed_access(web_time::SystemTime::now())
+            .map_err(anyhow::Error::msg)?;
         self.relay
-            .set_workspace_membership(
+            .replace_governed_workspace_access(
                 owner.workspace_id(),
                 true,
-                members,
+                access,
                 owner.root().join("relay"),
             )
             .await?;
@@ -722,6 +731,9 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
         .map_err(|_| anyhow::anyhow!("publication cursor unavailable"))?
         .send(owner, |bytes, kind| {
             let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
+            if !relay_publishable(owner, &message) {
+                return Ok(());
+            }
             match retention(&message, kind == Retention::Checkpoint) {
                 Some((channel, Retention::Checkpoint)) => {
                     session.publish_checkpoint(channel, bytes.to_vec())?
@@ -735,6 +747,21 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
         })
 }
 
+/// Delivery commits publish uploaded items as their authors' original signed
+/// bytes (see `owner/retention.rs`). The relay co-edit carrier attributes
+/// every delta to this host's device, and its receivers admit a document only
+/// from its transport author, so foreign-authored items stay on the delivery
+/// carrier (which keeps original signer provenance). Relay subscribers
+/// converge on the next certified checkpoint, which this host signs.
+fn relay_publishable(owner: &SessionOwner, message: &qos_peer_state::NeighbourMsg) -> bool {
+    match message {
+        qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
+            envelope.author.as_bytes() == &owner.peer().authority().device_public_key
+        }
+        _ => true,
+    }
+}
+
 fn publish_committed(owner: &SessionOwner, session: &NativeSubscription) -> Result<()> {
     if !session.is_ready() {
         bail!("native subscription has not finished its initial replay");
@@ -746,6 +773,9 @@ fn publish_committed(owner: &SessionOwner, session: &NativeSubscription) -> Resu
         .map_err(|_| anyhow::anyhow!("publication cursor unavailable"))?
         .send_committed(owner, |bytes, kind| {
             let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
+            if !relay_publishable(owner, &message) {
+                return Ok(());
+            }
             match retention(&message, kind == Retention::Checkpoint) {
                 Some((channel, Retention::Checkpoint)) => {
                     session.publish_checkpoint(channel, bytes.to_vec())?
@@ -766,11 +796,19 @@ fn committed_transition_ready(owner: &SessionOwner, session: Option<&NativeSubsc
         .is_some_and(|cursor| cursor.can_send_committed(owner))
 }
 
-fn prepare_ready_publication(owner: &SessionOwner) -> Result<()> {
-    if !owner.permits_publication() || owner.outgoing().is_empty() {
+fn prepare_ready_publication(owner: &SessionOwner) -> Result<bool> {
+    if !owner.durability_healthy() {
+        bail!("native owner durability unavailable");
+    }
+    // A replay-ready receive stream remains useful while prerequisites are
+    // missing. It must not publish an incomplete owner's outgoing state.
+    if !owner.permits_publication() {
+        return Ok(false);
+    }
+    if owner.outgoing().is_empty() {
         bail!("native owner has no committed publication evidence");
     }
-    Ok(())
+    Ok(true)
 }
 /// Variant name for diagnostics; never inspects payloads.
 pub fn message_kind(message: &qos_peer_state::NeighbourMsg) -> &'static str {
@@ -865,7 +903,9 @@ fn public_status(
     } else {
         "disconnected"
     });
-    value["application_state"] = json!(if owner.permits_publication() {
+    value["application_state"] = json!(if owner.schema_read_only_reason().is_some() {
+        "read_only"
+    } else if owner.permits_publication() {
         "admitted"
     } else {
         "incomplete"
@@ -874,6 +914,7 @@ fn public_status(
         error
             .as_ref()
             .cloned()
+            .or_else(|| owner.schema_read_only_reason().map(str::to_owned))
             .or_else(|| owner.peer().incomplete_reason())
     );
     value
@@ -899,6 +940,586 @@ fn console_lines() -> Result<tokio::sync::mpsc::Receiver<std::io::Result<String>
     Ok(receiver)
 }
 
+async fn handle_collaboration_exchange(
+    owner: &mut SessionOwner,
+    committed: &crate::committed_authority::CommittedAuthority,
+    host: &LocalHost,
+    service: &crate::collaboration::CollaborationService,
+    remote_endpoint: [u8; 32],
+    request: qos_peer_state::join::JoinTransportRequest,
+) -> qos_peer_state::join::JoinTransportResponse {
+    use qos_peer_state::join::{JoinInspection, JoinTransportRequest, JoinTransportResponse};
+
+    let now = tilo_relay::clock::now_ns();
+    let request_id = match &request {
+        JoinTransportRequest::Inspect { signed_invitation } => {
+            *blake3::hash(signed_invitation).as_bytes()
+        }
+        JoinTransportRequest::Challenge(request) => request.request_id,
+        JoinTransportRequest::Complete(request) => request.proof.challenge.request_id,
+        JoinTransportRequest::MembershipChallenge(request) => request.request_id,
+        JoinTransportRequest::MembershipComplete(request) => request.proof.challenge.request_id,
+    };
+    // All service mutations finish and publish committed authority before the
+    // asynchronous relay reconciliation. A relay failure cannot undo admission.
+    let mut reconcile = false;
+    let result = committed
+        .with_owner(owner, |owner| {
+            let result: Result<_, (u16, crate::collaboration::CollaborationError)> = match request {
+                JoinTransportRequest::Inspect { signed_invitation } => service
+                    .inspect(owner, &signed_invitation, now)
+                    .map(|verified| {
+                        JoinTransportResponse::Inspection(JoinInspection {
+                            invite_id: verified.invite_id(),
+                            grant: verified.grant().clone(),
+                        })
+                    })
+                    .map_err(|error| (403, error)),
+                JoinTransportRequest::Challenge(request) => service
+                    .challenge(owner, remote_endpoint, request, now)
+                    .map(JoinTransportResponse::Challenge)
+                    .map_err(|error| (403, error)),
+                JoinTransportRequest::Complete(request) => service
+                    .complete(owner, remote_endpoint, request, now)
+                    .map(|completion| {
+                        reconcile = true;
+                        JoinTransportResponse::Complete(completion.bootstrap)
+                    })
+                    .map_err(|error| (403, error)),
+                JoinTransportRequest::MembershipChallenge(request) => service
+                    .membership_challenge(owner, remote_endpoint, request, now)
+                    .map(JoinTransportResponse::MembershipChallenge)
+                    .map_err(|error| (403, error)),
+                JoinTransportRequest::MembershipComplete(request) => service
+                    .membership_complete(owner, remote_endpoint, request, now)
+                    .map(|completion| {
+                        reconcile = true;
+                        JoinTransportResponse::MembershipComplete(completion.bootstrap)
+                    })
+                    .map_err(|error| (403, error)),
+            };
+            result
+        })
+        .unwrap_or_else(|error| {
+            Err((
+                503,
+                crate::collaboration::CollaborationError::new(error.to_string()),
+            ))
+        });
+    let result = if reconcile {
+        match host.update_membership(owner).await {
+            Ok(()) => result,
+            Err(error) => Err((
+                503,
+                crate::collaboration::CollaborationError::new(format!(
+                    "membership is durable and awaits relay reconciliation: {error}"
+                )),
+            )),
+        }
+    } else {
+        result
+    };
+    match result {
+        Ok(response) => response,
+        Err((code, error)) => {
+            tracing::warn!(
+                room = %owner.peer().room(),
+                request_id = %hex::encode(request_id),
+                device = %hex::encode(remote_endpoint),
+                outcome = "denied",
+                reason = %error,
+                "workspace collaboration exchange denied"
+            );
+            JoinTransportResponse::Error {
+                code,
+                message: error.to_string(),
+            }
+        }
+    }
+}
+
+async fn handle_collaboration_admin(
+    owner: &mut SessionOwner,
+    committed: &crate::committed_authority::CommittedAuthority,
+    host: &LocalHost,
+    service: &crate::collaboration::CollaborationService,
+    request: qos_action_broker::collaboration_admin::CollaborationAdminRequest,
+) -> Result<serde_json::Value, qos_action_broker::collaboration_admin::CollaborationAdminError> {
+    use qos_action_broker::collaboration_admin::{
+        CollaborationAdminError, CollaborationAdminOperation, CollaborationRole,
+    };
+    use qos_peer_state::join::MemberRole;
+
+    let rejected = |message: String| CollaborationAdminError::Rejected(message);
+    if request.room != owner.peer().room() {
+        return Err(rejected(
+            "collaboration action is not bound to this workspace".into(),
+        ));
+    }
+    let mut request_material = Vec::with_capacity(32 + request.room.len());
+    request_material.extend_from_slice(b"tilo/workspace-collaboration-action/v1\0");
+    request_material.extend_from_slice(request.invocation.0.as_bytes());
+    request_material.extend_from_slice(request.room.as_bytes());
+    let request_id = *blake3::hash(&request_material).as_bytes();
+    let now = tilo_relay::clock::now_ns();
+    let caller = request.caller.device_public_key;
+    let role = |role| match role {
+        CollaborationRole::Viewer => MemberRole::Viewer,
+        CollaborationRole::Commenter => MemberRole::Commenter,
+        CollaborationRole::Editor => MemberRole::Editor,
+    };
+    let participant = |value: &str| -> Result<[u8; 32], CollaborationAdminError> {
+        let bytes = hex::decode(value).map_err(|_| rejected("participant ID is invalid".into()))?;
+        bytes
+            .try_into()
+            .map_err(|_| rejected("participant ID is invalid".into()))
+    };
+    let invite_id = |value: &str| -> Result<[u8; 32], CollaborationAdminError> {
+        let bytes = hex::decode(value).map_err(|_| rejected("invitation ID is invalid".into()))?;
+        bytes
+            .try_into()
+            .map_err(|_| rejected("invitation ID is invalid".into()))
+    };
+    let mut reconcile = false;
+    let result = committed.with_owner(owner, |owner| {
+    let result = match request.operation.clone() {
+        CollaborationAdminOperation::Issue(input) => {
+            let completion = service
+                .issue_from_action(
+                    owner,
+                    caller,
+                    request_id,
+                    role(input.role),
+                    input.invitee_name,
+                    input.expires_in_seconds,
+                    now,
+                )
+                .map_err(|error| rejected(error.to_string()))?;
+            reconcile = true;
+            serde_json::json!({
+                "invite": qos_peer_state::join::encode_invitation_text(&completion.issued.signed_invitation),
+                "invite_id": hex::encode(completion.issued.invite_id),
+                "expires_at_ms": completion.expires_at_ns / 1_000_000,
+            })
+        }
+        CollaborationAdminOperation::Cancel(input) => {
+            service
+                .cancel(
+                    owner,
+                    caller,
+                    crate::collaboration::CancelInvitationRequest {
+                        request_id,
+                        invite_id: invite_id(&input.invite_id)?,
+                    },
+                )
+                .map_err(|error| rejected(error.to_string()))?;
+            serde_json::json!({})
+        }
+        CollaborationAdminOperation::List => service
+            .invitation_inventory(owner, caller, now)
+            .map_err(|error| rejected(error.to_string()))?,
+        CollaborationAdminOperation::SetRole(input) => {
+            let completion = service
+                .set_member_role(
+                    owner,
+                    caller,
+                    crate::collaboration::SetMemberRoleRequest {
+                        request_id,
+                        user_public_key: participant(&input.participant_id)?,
+                        role: role(input.role),
+                    },
+                    now,
+                )
+                .map_err(|error| rejected(error.to_string()))?;
+            reconcile = true;
+            serde_json::json!({"generation": completion.generation.to_string()})
+        }
+        CollaborationAdminOperation::Remove(input) => {
+            let completion = service
+                .remove_member(
+                    owner,
+                    caller,
+                    crate::collaboration::RemoveMemberRequest {
+                        request_id,
+                        user_public_key: participant(&input.participant_id)?,
+                    },
+                    now,
+                )
+                .map_err(|error| rejected(error.to_string()))?;
+            reconcile = true;
+            serde_json::json!({"generation": completion.generation.to_string()})
+        }
+        CollaborationAdminOperation::MediaCreate(_)
+        | CollaborationAdminOperation::MediaEnd(_)
+        | CollaborationAdminOperation::MediaRestart(_)
+        | CollaborationAdminOperation::MediaSetDirections(_)
+        | CollaborationAdminOperation::MediaSetParticipantDenial(_) => {
+            serde_json::to_value(service.media_from_action(owner, &request, now)?)
+                .map_err(|error| CollaborationAdminError::Uncertain(error.to_string()))?
+        }
+    };
+    Ok::<_, CollaborationAdminError>(result)
+    }).map_err(|error| CollaborationAdminError::Uncertain(error.to_string()))??;
+    if reconcile {
+        host.update_membership(owner)
+            .await
+            .map_err(|error| CollaborationAdminError::Uncertain(error.to_string()))?;
+    }
+    Ok(result)
+}
+
+#[derive(Default)]
+struct InboundPostCommit {
+    action_error: Option<String>,
+    relay_error: Option<String>,
+}
+async fn post_inbound_commit(
+    owner: &SessionOwner,
+    runtime: Option<&crate::action_host::ActionHost>,
+    host: &LocalHost,
+) -> Result<InboundPostCommit> {
+    if !owner.durability_healthy() {
+        bail!("native owner durability unavailable");
+    }
+    // Authority was already published at the owner's durable barrier. Action
+    // fanout and relay projection failures are secondary service failures.
+    let action_error = if owner.permits_publication() {
+        runtime.and_then(|runtime| runtime.committed(owner).err())
+    } else {
+        None
+    };
+    let relay_error = host
+        .update_membership(owner)
+        .await
+        .err()
+        .map(|error| error.to_string());
+    Ok(InboundPostCommit {
+        action_error,
+        relay_error,
+    })
+}
+/// Routes that only move committed data (or renew a live-relay grant); they
+/// never feed hosted action models directly, so they do not hold the action
+/// pump at its active cadence. Live grants renew every few seconds while a
+/// page is open and previously kept the pump at 10 ms most of the time.
+#[cfg(feature = "media")]
+pub(crate) fn data_plane_route(route: &crate::https::Route) -> bool {
+    use crate::https::Route;
+    matches!(
+        route,
+        Route::State
+            | Route::EventsPoll
+            | Route::Acks
+            | Route::Snapshot
+            | Route::SnapshotChunk
+            | Route::Detach
+            | Route::LiveGrant
+    )
+}
+fn pump_ready_actions(
+    owner: &SessionOwner,
+    runtime: &mut crate::action_host::ActionHost,
+) -> Result<(), String> {
+    if !owner.durability_healthy() {
+        return Err("native owner durability unavailable".into());
+    }
+    if owner.permits_publication() {
+        runtime.pump(owner)
+    } else {
+        Ok(())
+    }
+}
+/// The committed enrollment's public reply. An HTTPS local-owner completion on
+/// an installed ingress gets inline governance when the whole reply fits and a
+/// signed bounded chunked handoff otherwise, so a long history never makes the
+/// owner unable to reconnect. A renewal that asked to omit governance (it
+/// already holds the history and only needs fresh delivery discovery) gets
+/// none. Other callers keep the bounded inline reply.
+fn enrollment_reply(
+    owner: &mut SessionOwner,
+    certificate: &tilo_user_identity::DeviceCert,
+    local_proof: Option<crate::enrollment::LocalOnboardingProof>,
+    omit_governance: bool,
+    host: &LocalHost,
+    #[cfg(feature = "media")] delivery_ingress: Option<&mut crate::media_ingress::InstalledIngress>,
+) -> Result<Vec<u8>, crate::enrollment::EnrollmentError> {
+    use crate::enrollment::EnrollmentError;
+    let relay = serde_json::to_value(&host.address)
+        .map_err(|error| EnrollmentError::new(503, error.to_string()))?;
+    let packet = host.packet_url.to_string();
+    let now = tilo_relay::clock::now_ns();
+    #[cfg(feature = "media")]
+    match (delivery_ingress, local_proof) {
+        (Some(installed), Some(proof)) => {
+            let mut metadata =
+                crate::enrollment::bootstrap_metadata(owner, certificate, relay, &packet, now)?;
+            crate::enrollment::append_delivery_hint(&mut metadata, owner, installed)?;
+            if omit_governance {
+                drop(proof);
+                let mut bytes = serde_json::to_vec(&metadata)
+                    .map_err(|error| EnrollmentError::new(503, error.to_string()))?;
+                bytes.shrink_to_fit();
+                // The local HTTPS gateway's frozen full-reply bound.
+                if bytes.len() > 1024 * 1024 {
+                    return Err(EnrollmentError::new(
+                        503,
+                        "enrollment metadata exceeds bound",
+                    ));
+                }
+                return Ok(bytes);
+            }
+            installed
+                .local_enrollment_reply(owner, certificate, proof, metadata)
+                .map_err(|error| {
+                    EnrollmentError::new(
+                        503,
+                        format!("local enrollment handoff unavailable: {error}"),
+                    )
+                })
+        }
+        (installed, _) => {
+            let mut value =
+                crate::enrollment::public_bootstrap(owner, certificate, relay, &packet, now)?;
+            if let Some(installed) = installed {
+                crate::enrollment::append_delivery_hint(&mut value, owner, installed)?;
+            }
+            serde_json::to_vec(&value).map_err(|error| EnrollmentError::new(503, error.to_string()))
+        }
+    }
+    #[cfg(not(feature = "media"))]
+    {
+        let _ = (local_proof, omit_governance);
+        let value = crate::enrollment::public_bootstrap(owner, certificate, relay, &packet, now)?;
+        serde_json::to_vec(&value).map_err(|error| EnrollmentError::new(503, error.to_string()))
+    }
+}
+
+/// A failed Store barrier cannot publish any authority or successful reply.
+/// Dropping its update permanently denies the committed view. For a healthy
+/// Store, authority identity/generation errors remain fatal internal errors.
+fn publish_owner_authority(
+    update: crate::committed_authority::OwnerUpdate<'_>,
+    owner: &SessionOwner,
+) -> Result<bool> {
+    if !owner.durability_healthy() {
+        drop(update);
+        return Ok(false);
+    }
+    update.publish(owner)?;
+    Ok(true)
+}
+
+fn reconnect_for_owner(
+    owner: &SessionOwner,
+    host: &LocalHost,
+    delay: Duration,
+    action_error: &Option<String>,
+) -> Result<Option<Reconnect>> {
+    if action_error.is_some() {
+        return Ok(None);
+    }
+    if !owner.durability_healthy() {
+        bail!("native owner durability unavailable");
+    }
+    host.begin_connection(owner, delay).map(Some)
+}
+
+/// All action queues belong to one worker runtime and its registered authority.
+struct ActionRuntime {
+    committed: crate::committed_authority::CommittedAuthority,
+    authority: crate::action_host::Authority,
+    signing: crate::host_signing::HostSigning,
+    signatures: crate::host_signing::SignatureMailbox,
+    commits: crate::owner_commit::OwnerCommitMailbox,
+    network_sender: tokio::sync::mpsc::Sender<qos_peer_state::NeighbourMsg>,
+    network: tokio::sync::mpsc::Receiver<qos_peer_state::NeighbourMsg>,
+    actions: Option<crate::action_host::ActionHost>,
+    policy_time: Option<qos_action_broker::peer_actions::PolicyTime>,
+    retired: bool,
+}
+impl ActionRuntime {
+    fn new(committed: crate::committed_authority::CommittedAuthority) -> Self {
+        let authority = crate::action_host::Authority::new(committed.clone());
+        let (commit, commits) = crate::owner_commit::OwnerCommitMailbox::bounded(32);
+        let (signing, signatures) = crate::host_signing::HostSigning::new(commit);
+        let (network_sender, network) = tokio::sync::mpsc::channel(64);
+        Self {
+            committed,
+            authority,
+            signing,
+            signatures,
+            commits,
+            network_sender,
+            network,
+            actions: None,
+            policy_time: None,
+            retired: false,
+        }
+    }
+
+    fn needs_retirement(&self) -> bool {
+        !self.retired
+            && self
+                .policy_time
+                .as_ref()
+                .is_some_and(|time| time.now_ns().is_err())
+    }
+
+    fn current_actions(&self) -> Option<&crate::action_host::ActionHost> {
+        if self.retired {
+            return None;
+        }
+        let time = self.policy_time.as_ref()?;
+        self.committed
+            .read()
+            .ok()?
+            .view()
+            .check_policy_time(time)
+            .ok()?;
+        self.actions.as_ref()
+    }
+
+    fn retire(&mut self) -> Result<(), String> {
+        use qos_peer_state::owner_commit::OwnerCommitService;
+        if self.retired {
+            return Ok(());
+        }
+        self.authority.set_ready(false);
+        self.retired = true;
+        // Record intrinsic failure before orderly refusal; a replacement must
+        // never erase a previously failed signing/owner handoff.
+        let mut failure = self.signing.health().err();
+        // Close producer admission atomically with each queue's final send
+        // before consuming queued custody. This does not poison receipt ACKs.
+        if let Err(problem) = self.signing.close_admission() {
+            failure.get_or_insert(problem);
+        }
+        if let Err(problem) = self.commits.close_admission() {
+            failure.get_or_insert(problem);
+        }
+        if let Some(runtime) = self.actions.as_mut() {
+            runtime.retire();
+        }
+        let reason = "action runtime authority retired before owner execution";
+        while let Ok(pending) = self.signatures.try_recv() {
+            if let Err(problem) = pending.reject_unstarted(reason.into()) {
+                failure.get_or_insert(problem);
+            }
+        }
+        while let Ok(pending) = self.commits.try_recv() {
+            if let Err(problem) = pending.reject_unstarted(reason.into()) {
+                failure.get_or_insert(problem);
+            }
+        }
+        while self.network.try_recv().is_ok() {}
+        failure.map_or(Ok(()), Err)
+    }
+
+    fn start_current(
+        &mut self,
+        owner: &mut SessionOwner,
+        collaboration_admin: Option<crate::collaboration::CollaborationAdminHandle>,
+        pool: Option<&crate::host_bytes::HostBytes>,
+    ) -> Result<()> {
+        // A healthy owner alone is insufficient: recovery must have published
+        // an actual new Current view on this same owner clock.
+        self.committed
+            .read()
+            .map_err(anyhow::Error::msg)?
+            .view()
+            .policy_time()
+            .map_err(anyhow::Error::msg)?;
+        if self.needs_retirement() {
+            self.retire().map_err(anyhow::Error::msg)?;
+        }
+        if self.retired {
+            anyhow::ensure!(
+                self.signing
+                    .retirement_ready()
+                    .map_err(anyhow::Error::msg)?,
+                "retired action runtime retains unresolved signing custody"
+            );
+            if let Some(runtime) = self.actions.as_mut() {
+                // Only the recovered committed owner may settle pending record
+                // heads. Dirty or uncertain close custody remains terminal.
+                runtime.close(owner).map_err(anyhow::Error::msg)?;
+            }
+            let committed = self.committed.clone();
+            let old = std::mem::replace(self, Self::new(committed));
+            // Drop joins the old broker before reopening its exact journal.
+            drop(old);
+        }
+        if self.actions.is_none() {
+            // Only a new/replacement worker runtime requires a fresh baseline.
+            // The normal owner barrier and Current publication precede factories.
+            refresh::before_action_mount(owner, &self.committed, pool)
+                .map_err(anyhow::Error::msg)?;
+            self.authority.set_ready(true);
+            let runtime = crate::action_host::ActionHost::start_with_collaboration(
+                owner,
+                self.authority.clone(),
+                self.signing.clone(),
+                self.network_sender.clone(),
+                collaboration_admin,
+            )?;
+            self.policy_time = Some(runtime.registered_policy_time().clone());
+            self.actions = Some(runtime);
+        }
+        self.authority.set_ready(true);
+        Ok(())
+    }
+}
+
+async fn refresh_actions(
+    owner: &mut SessionOwner,
+    runtime: &mut ActionRuntime,
+    session: &mut Option<NativeSubscription>,
+    collaboration_admin: Option<crate::collaboration::CollaborationAdminHandle>,
+    action_error: &mut Option<String>,
+    pool: Option<&crate::host_bytes::HostBytes>,
+    cadence: &mut CheckpointCadence,
+) {
+    if runtime.needs_retirement() {
+        runtime.authority.set_ready(false);
+        if let Some(session) = session.as_mut() {
+            session.detach_actions().await;
+        }
+        if let Err(problem) = runtime.retire() {
+            action_error.get_or_insert(problem);
+        }
+    }
+    if action_error.is_none()
+        && owner.permits_publication()
+        && session.as_ref().is_some_and(NativeSubscription::is_ready)
+        && matches!(
+            runtime.committed.observe(),
+            crate::committed_authority::Observation::Current(_)
+        )
+    {
+        let publication_before = owner.publication_revision();
+        if let Err(problem) = runtime.start_current(owner, collaboration_admin, pool) {
+            action_error.get_or_insert_with(|| runtime.signing.fail(problem.to_string()));
+            runtime.authority.set_ready(false);
+        }
+        // Ready publishes immediately; replacement runtimes can start while
+        // that same subscription is already Ready. Preserve their actual new
+        // baseline in the existing idle/reconnect publication path as well.
+        let _ = cadence.publication_due(
+            owner.publication_advance(publication_before),
+            std::time::Instant::now(),
+            false,
+            false,
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "host/action_lifecycle_tests.rs"]
+mod action_lifecycle_tests;
+
+/// Longest a peer that cannot reach readiness withholds its ready file.
+const READY_FALLBACK: Duration = Duration::from_secs(30);
+
 pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let mut interrupt = Box::pin(tokio::signal::ctrl_c());
     let interrupted = std::future::poll_fn(|context| match interrupt.as_mut().poll(context) {
@@ -910,7 +1531,50 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     if interrupted {
         return Ok(());
     }
-    let host = LocalHost::start(&owner).await?;
+    #[cfg(not(feature = "media"))]
+    anyhow::ensure!(
+        std::env::var_os("QOS_SESSION_HTTPS_CONFIG").is_none(),
+        "configured HTTPS ingress requires the media feature"
+    );
+    #[cfg(feature = "media")]
+    let prepared_ingress = crate::media_ingress::PreparedIngress::from_env().await?;
+    #[cfg(feature = "media")]
+    if let Some(prepared) = prepared_ingress.as_ref() {
+        prepared.activate_owner(&mut owner)?;
+        // Data routes reserve turns on the ingress pool; attach it before the
+        // committed view is captured so views carry the same retained credit.
+        owner
+            .attach_data_resources(&prepared.host_bytes()?)
+            .map_err(anyhow::Error::from)?;
+        owner.permit_unscoped_legacy_commits()?;
+    }
+    let (collaboration_handle, mut collaboration_commands) =
+        crate::collaboration::CollaborationHandle::bounded(64);
+    let host = LocalHost::start_with_collaboration(&owner, collaboration_handle).await?;
+    let (refresh_mailbox, mut refresh_requests) =
+        tilo_relay::peer::sync_refresh::Mailbox::bounded();
+    host.relay
+        .install_sync_refresh(owner.workspace_id(), refresh_mailbox)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let host_descriptor = tilo_relay::workspace_join::IrohWorkspaceHostHintV1 {
+        version: 1,
+        mode: tilo_relay::workspace_join::WorkspaceHostMode::CertifiedHost,
+        room: owner.peer().room().into(),
+        workspace_id: owner.workspace_id(),
+        governing_authority: owner.peer().authority().clone(),
+        endpoint_addr: host.address.clone(),
+        host_user_public_key: owner.host_certificate().user_public_key,
+        host_device_certificate: owner.host_certificate().clone(),
+        packet_relay_url: host.packet_url.to_string(),
+    };
+    let collaboration_hint = owner.sign_workspace_host_hint(&host_descriptor)?;
+    let (collaboration_admin, mut collaboration_admin_commands) =
+        crate::collaboration::CollaborationAdminHandle::bounded(
+            owner.peer().room().into(),
+            64,
+            owner.supports_media_governance(),
+        );
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let authorization = std::sync::Arc::new(crate::enrollment_http::Authorization::local(
         owner.root(),
@@ -920,12 +1584,48 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
         tokio::sync::mpsc::channel::<crate::enrollment_http::EnrollmentCommand>(64);
     let mut enrollment = crate::enrollment::EnrollmentAuthority::default();
     let mut session: Option<NativeSubscription> = None;
-    let authority = crate::action_host::Authority::default();
-    let (commit_handle, mut commits) = crate::owner_commit::OwnerCommitMailbox::bounded(32);
-    let (signing, mut signatures) = crate::host_signing::HostSigning::new(commit_handle);
-    let (network_sender, mut network) =
-        tokio::sync::mpsc::channel::<qos_peer_state::NeighbourMsg>(64);
-    let mut actions: Option<crate::action_host::ActionHost> = None;
+    let committed = crate::committed_authority::CommittedAuthority::new(&owner);
+    #[cfg(feature = "media")]
+    let mut delivery_ingress = match prepared_ingress {
+        Some(prepared) => match prepared
+            .start(
+                &mut owner,
+                committed.clone(),
+                Some((authorization.clone(), enrollment_commands.clone())),
+            )
+            .await
+        {
+            Ok(installed) => Some(installed),
+            Err(error) => {
+                host.shutdown().await?;
+                return Err(error);
+            }
+        },
+        None => None,
+    };
+    let mut invitation_transports = vec![collaboration_hint.clone()];
+    #[cfg(feature = "media")]
+    if let Some(installed) = delivery_ingress.as_ref() {
+        match owner.sign_delivery_origin_hint(installed) {
+            Ok(locator) => invitation_transports.push(locator),
+            Err(error) => {
+                host.shutdown().await?;
+                return Err(error);
+            }
+        }
+    }
+    #[cfg(feature = "media")]
+    if let Some(installed) = delivery_ingress.as_mut() {
+        // Onboarding over HTTPS uses the same stateless invitation service.
+        let service =
+            crate::collaboration::CollaborationService::new(invitation_transports.clone());
+        if let Err(error) = installed.install_onboarding(service) {
+            host.shutdown().await?;
+            return Err(error);
+        }
+    }
+    let collaboration = crate::collaboration::CollaborationService::new(invitation_transports);
+    let mut action_runtime = ActionRuntime::new(committed.clone());
     let mut pump = tokio::time::interval(Duration::from_millis(10));
     let mut action_error: Option<String> = None;
     let mut subscription_generation = 0u64;
@@ -938,28 +1638,229 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     #[cfg(feature = "test-support")]
     let mut qualification = QualificationHold::default();
     let mut stdin_open = true;
-    let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"room":owner.peer().room(),"workspace_id":owner.workspace_id().to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
-    atomic_file::write_with_mode(ready_path, &serde_json::to_vec_pretty(&metadata)?, 0o600)?;
-    crate::store::sync_dir(
-        ready_path
-            .parent()
-            .context("ready file requires parent directory")?,
-    )?;
+    let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"workspace_join_alpn":String::from_utf8_lossy(tilo_relay::workspace_join::WORKSPACE_JOIN_ALPN),"workspace_join_transport":collaboration_hint,"room":owner.peer().room(),"workspace_id":owner.workspace_id().to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
+    #[cfg(feature = "media")]
+    let mut metadata = {
+        let mut metadata = metadata;
+        if let Some(installed) = delivery_ingress.as_ref() {
+            metadata["delivery_version"] = json!(3);
+            metadata["delivery_bootstrap_path"] = json!("/peer/v3/bootstrap");
+            metadata["delivery_hint"] = serde_json::to_value(installed.discovery_hint(&owner)?)?;
+        }
+        metadata
+    };
+    // The ready file announces a peer that accepts enrollment: it is written
+    // once the native subscription is ready and the owner permits publication
+    // (the same gate enrollment uses), or after a bounded deadline so an
+    // operator can still reach the status route of a peer that cannot connect.
+    let ready_deadline = std::time::Instant::now() + READY_FALLBACK;
+    let mut ready_published = false;
+    #[cfg(feature = "media")]
+    let mut ingress_maintenance = tokio::time::interval(Duration::from_secs(1));
+    let mut action_pump =
+        crate::action_pump_cadence::ActionPumpCadence::new(std::time::Instant::now());
+    let mut woke_by_pump = false;
     let run_result: Result<()> = async {
     loop {
-        reconnect_policy.observe_session(session.is_some(), std::time::Instant::now());
-        if session.is_none()
-            && reconnect.is_none()
-            && owner.permits_publication()
-            && action_error.is_none()
+        if !std::mem::take(&mut woke_by_pump) {
+            action_pump.activity(std::time::Instant::now());
+        }
+        if !ready_published
+            && ((owner.permits_publication() && session.as_ref().is_some_and(|current| current.is_ready()))
+                || std::time::Instant::now() >= ready_deadline)
         {
+            atomic_file::write_with_mode(ready_path, &serde_json::to_vec_pretty(&metadata)?, 0o600)?;
+            crate::store::sync_dir(ready_path.parent().context("ready file requires parent directory")?)?;
+            ready_published = true;
+        }
+        // Terminal owner custody remains inspectable, but cannot publish,
+        // execute queued mutations, or reconnect until an explicit reopen.
+        if !owner.durability_healthy() {
+            committed.invalidate();
+            action_error.get_or_insert_with(|| action_runtime.signing.fail("native owner durability unavailable"));
+            if let Some(attempt) = reconnect.take() { attempt.cancel().await; }
+            if let Some(old) = session.take() { close_session(old, "native owner durability unavailable").await; }
+        }
+        // Held polls observe every owner commit made by any arm below.
+        #[cfg(feature = "media")]
+        if let Some(installed) = delivery_ingress.as_mut() {
+            let before = owner.committed_generation();
+            installed.maintain(&mut owner);
+            // Completed staged uploads commit here, outside any request arm.
+            if owner.committed_generation() != before && owner.permits_publication() {
+                if let Some(runtime) = action_runtime.current_actions() {
+                    if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
+                }
+                if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                    if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
+                }
+            }
+        }
+        #[cfg(feature = "media")]
+        let action_pool = delivery_ingress.as_ref().map(|installed| installed.host_bytes());
+        #[cfg(not(feature = "media"))]
+        let action_pool: Option<crate::host_bytes::HostBytes> = None;
+        refresh_actions(&mut owner, &mut action_runtime, &mut session, Some(collaboration_admin.clone()), &mut action_error, action_pool.as_ref(), &mut cadence).await;
+        // Private HTTPS routes follow the current action runtime, if any.
+        #[cfg(feature = "media")]
+        if let Some(installed) = delivery_ingress.as_mut() {
+            installed.sync_actions(action_runtime.current_actions());
+        }
+        // Local workers still need current committed authority to consume exact
+        // precommitted receipts while the remote subscription is reconnecting.
+        // New owner work and remote attachments retain their session-ready gates.
+        action_runtime.authority.set_ready(!action_runtime.retired && owner.permits_publication() && action_error.is_none());
+        reconnect_policy.observe_session(session.is_some(), std::time::Instant::now());
+        if session.is_none() && reconnect.is_none() {
             let _timing = crate::action_timing::Timing::new("subscription_connecting");
-            tracing::info!(delay_ms = reconnect_policy.delay().as_millis() as u64, "native reconnect starting");
-            reconnect = Some(host.begin_connection(&owner, reconnect_policy.delay())?);
+            reconnect = reconnect_for_owner(&owner, &host, reconnect_policy.delay(), &action_error)?;
         }
         tokio::select! {
             _ = &mut interrupt => break,
-            _ = pump.tick() => {
+            request = async {
+                #[cfg(feature="media")]
+                if let Some(installed)=delivery_ingress.as_mut(){return installed.recv().await;}
+                std::future::pending::<Option<crate::https::BufferedRequest>>().await
+            } => {
+                #[cfg(feature="media")]
+                if let Some(installed)=delivery_ingress.as_mut(){
+                    // Data-plane requests reach hosted models only through the
+                    // committed generation they change (see action_pump_cadence).
+                    if request.as_ref().is_some_and(|request| data_plane_route(&request.route())) {
+                        woke_by_pump = true;
+                        action_pump.data_request(std::time::Instant::now());
+                    }
+                    let before = owner.committed_generation();
+                    match request{
+                        Some(request) if matches!(request.route(), crate::https::Route::Onboarding(_) | crate::https::Route::OnboardingChunk) => installed.onboard(&mut owner, &host, request).await,
+                        Some(request)=>installed.handle(&mut owner,request),
+                        None=>bail!("installed HTTPS ingress stopped"),
+                    }
+                    // HTTPS data, onboarding and staged admissions commit on the
+                    // owner; follow up exactly as other inbound commits do.
+                    if owner.committed_generation() != before && owner.permits_publication() {
+                        if let Some(runtime) = action_runtime.current_actions() {
+                            if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
+                        }
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                            if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
+                        }
+                    }
+                }
+                #[cfg(not(feature="media"))]
+                let _=request;
+            }
+            _ = async {
+                #[cfg(feature="media")]
+                { ingress_maintenance.tick().await; }
+                #[cfg(not(feature="media"))]
+                std::future::pending::<()>().await;
+            } => {
+                // A periodic timer, not activity: it must not hold the action pump at 10 ms.
+                woke_by_pump = true;
+                #[cfg(feature="media")]
+                if let Some(installed)=delivery_ingress.as_mut(){
+                    // A refused descriptor renewal (e.g. disk capacity below the
+                    // store's headroom) must not terminate the host: keep serving,
+                    // and retry on the next tick once the condition clears.
+                    let refreshed = match installed.refresh_current(&mut owner) {
+                        Ok(refreshed) => refreshed,
+                        Err(problem) => {
+                            tracing::warn!(%problem, "delivery descriptor renewal refused; retrying");
+                            error = Some(format!("delivery descriptor renewal refused: {problem}"));
+                            false
+                        }
+                    };
+                    if refreshed {
+                        metadata["delivery_hint"] = serde_json::to_value(installed.discovery_hint(&owner)?)?;
+                        if ready_published {
+                            atomic_file::write_with_mode(ready_path,&serde_json::to_vec_pretty(&metadata)?,0o600)?;
+                            crate::store::sync_dir(ready_path.parent().context("ready file requires parent directory")?)?;
+                        }
+                        if let Some(runtime)=action_runtime.current_actions(){
+                            if let Err(problem)=runtime.committed(&owner){ action_error=Some(action_runtime.signing.fail(problem)); }
+                        }
+                    }
+                }
+            }
+            request = refresh_requests.recv() => {
+                if let Some(request) = request {
+                    let before = owner.committed_generation();
+                    #[cfg(feature = "media")]
+                    let refresh_pool = delivery_ingress.as_ref().map(|installed| installed.host_bytes());
+                    #[cfg(not(feature = "media"))]
+                    let refresh_pool: Option<crate::host_bytes::HostBytes> = None;
+                    if let Err(problem) = refresh::execute(&mut owner, &committed, request, refresh_pool.as_ref()).await {
+                        tracing::debug!(%problem, "authenticated checkpoint refresh refused");
+                    }
+                    // Even a source closing during the barrier cannot discard a
+                    // completed owner generation. It grants that old source no reply.
+                    if owner.committed_generation() != before && owner.permits_publication() {
+                        let followup = post_inbound_commit(&owner, action_runtime.current_actions(), &host).await?;
+                        if let Some(problem) = followup.action_error {
+                            action_error = Some(action_runtime.signing.fail(problem));
+                            action_runtime.authority.set_ready(false);
+                        }
+                        if let Some(problem) = followup.relay_error { error = Some(problem); }
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                            if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
+                        }
+                    }
+                }
+            }
+            command = collaboration_commands.recv() => {
+                if let Some(command) = command {
+                    let before = owner.committed_generation();
+                    let response = handle_collaboration_exchange(
+                        &mut owner,
+                        &committed,
+                        &host,
+                        &collaboration,
+                        command.remote_endpoint,
+                        command.request,
+                    ).await;
+                    if owner.committed_generation() != before && owner.permits_publication() {
+                        if let Some(runtime) = action_runtime.current_actions() {
+                            if let Err(problem) = runtime.committed(&owner) {
+                                action_error = Some(action_runtime.signing.fail(problem));
+                            }
+                        }
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                            if let Err(problem) = publish(&owner, current) {
+                                error = Some(problem.to_string());
+                            }
+                        }
+                    }
+                    let _ = command.reply.send(response);
+                }
+            }
+            command = collaboration_admin_commands.recv() => {
+                if let Some(command) = command {
+                    let before = owner.committed_generation();
+                    let response = handle_collaboration_admin(
+                        &mut owner,
+                        &committed,
+                        &host,
+                        &collaboration,
+                        command.request,
+                    ).await;
+                    if owner.committed_generation() != before && owner.permits_publication() {
+                        if let Some(runtime) = action_runtime.current_actions() {
+                            if let Err(problem) = runtime.committed(&owner) {
+                                action_error = Some(action_runtime.signing.fail(problem));
+                            }
+                        }
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                            if let Err(problem) = publish(&owner, current) {
+                                error = Some(problem.to_string());
+                            }
+                        }
+                    }
+                    let _ = command.reply.send(response);
+                }
+            }
+            _ = pump.tick(), if owner.durability_healthy() => {
+                woke_by_pump = true;
                 let _timing = crate::action_timing::Timing::slow("owner_pump");
                 #[cfg(feature = "test-support")]
                 if qualification.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
@@ -968,7 +1869,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 // A recovery-basis replacement and every following tail stay
                 // ordered behind this idle flush. Ordinary selective tails do
                 // not reach this path because they publish in their commit turn.
-                if cadence.due_on_idle(std::time::Instant::now()) {
+                if owner.permits_publication() && cadence.due_on_idle(std::time::Instant::now()) {
                     if let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
                         tracing::debug!(site = "idle_flush", "publish site");
                         match publish(&owner, current) {
@@ -977,14 +1878,14 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                 error = Some(problem.to_string());
                                 if let Some(old) = session.take() { close_session(old, &format!("idle checkpoint flush failed: {problem}")).await; }
                             },
-                            Err(problem) => action_error = Some(signing.fail(problem.to_string())),
+                            Err(problem) => action_error = Some(action_runtime.signing.fail(problem.to_string())),
                         }
                     }
                 }
 
-                if let Some(runtime) = actions.as_mut() {
-                    if let Err(problem) = runtime.pump(&owner) { action_error.get_or_insert(problem); }
-                    if action_error.is_none() && runtime.ready() {
+                if let Some(runtime) = action_runtime.actions.as_mut().filter(|_| !action_runtime.retired && action_pump.due(std::time::Instant::now(), owner.committed_generation())) {
+                    if let Err(problem) = pump_ready_actions(&owner, runtime) { action_error.get_or_insert(problem); }
+                    if owner.permits_publication() && action_error.is_none() && runtime.ready() {
                         if let Some(current) = session.as_mut().filter(|s| s.is_ready()) {
                             if current.actions.is_none() {
                                 #[cfg(feature = "test-support")]
@@ -1018,18 +1919,25 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     None => {}
                 }
                 if action_error.is_some() {
-                    *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = None;
+                    action_runtime.authority.set_ready(false);
                     if let Some(old) = session.take() { close_session(old, &format!("action attachment failed: {}", action_error.as_deref().unwrap_or(""))).await; }
                 }
             }
             // Replacement keeps bounded durable work pending until its exact
             // retained session can publish before any completion is exposed.
-            pending = commits.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
+            pending = action_runtime.commits.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() && owner.permits_publication() && session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
                 let _timing = crate::action_timing::Timing::slow("owner_commit");
-                let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                let update = committed.begin(&owner)?;
                 let desktop = pending.is_desktop();
                 let publication_before = owner.publication_revision();
-                let result = if desktop { pending.apply_desktop(&mut owner) } else { pending.apply(&mut owner).map(|_| None) };
+                let complete = pending.apply_deferred(&mut owner);
+                if !publish_owner_authority(update, &owner)? {
+                    // This opaque completion may contain a receipt. Withhold it;
+                    // its existing drop path retains the request's uncertainty.
+                    drop(complete);
+                    continue;
+                }
+                let result = complete();
                 if let Ok(Some(delivery)) = &result {
                     if let Some(session) = session.as_ref() {
                         if let Err(problem) = session.send_action(delivery.clone()) {
@@ -1037,7 +1945,6 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         }
                     }
                 }
-                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                 let published = dispatch_owner_commit_publication(
                     &mut cadence,
                     &owner,
@@ -1058,7 +1965,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             .and_then(|s| if transition_ready { publish_committed(&owner, s) } else { publish(&owner, s) })
                     },
                 );
-                if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
+                if let Some(runtime) = action_runtime.current_actions() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); } }
                 if let Err(problem) = result { action_error = Some(problem); }
                 let reconnect_publication = match published {
                     Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => {
@@ -1066,27 +1973,34 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         Some(problem.to_string())
                     }
                     Err(problem) => {
-                        action_error = Some(signing.fail(problem.to_string()));
+                        action_error = Some(action_runtime.signing.fail(problem.to_string()));
                         None
                     }
                     Ok(_) => None,
                 };
-                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
-                drop(current);
+                action_runtime.authority.set_ready(action_error.is_none());
                 if let Some(problem) = reconnect_publication {
                     if let Some(old) = session.take() { close_session(old, &format!("owner publication transport failed: {problem}")).await; }
                 }
             },
-            pending = signatures.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
+            pending = action_runtime.signatures.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() && owner.permits_publication() && session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
                 let timing = pending.diagnostic_timing();
                 #[cfg(feature = "test-support")]
                 let hold = qualification.route.as_ref().is_some_and(|(app, record)| pending.matches_route(app, record));
-                let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                let update = committed.begin(&owner)?;
                 timing.mark("apply_start");
                 let publication_before = owner.publication_revision();
                 let (complete, result) = pending.apply(&mut owner);
                 timing.mark("apply_end");
-                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                if !publish_owner_authority(update, &owner)? {
+                    // Only the already-known failure may cross the denied
+                    // authority boundary; never release a successful signature.
+                    if let Err(problem) = result {
+                        action_error.get_or_insert_with(|| action_runtime.signing.fail(problem));
+                        complete();
+                    }
+                    continue;
+                }
                 timing.mark("publication_start");
                 let transition_ready = committed_transition_ready(&owner, session.as_ref());
                 let published = dispatch_committed_publication(
@@ -1111,7 +2025,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 );
                 timing.mark("publication_end");
                 timing.mark("runtime_committed_start");
-                if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
+                if let Some(runtime) = action_runtime.current_actions() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); } }
                 timing.mark("runtime_committed_end");
                 if let Err(problem) = result { action_error = Some(problem); }
                 let reconnect_publication = match published {
@@ -1120,12 +2034,12 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         Some(problem.to_string())
                     }
                     Err(problem) => {
-                        action_error = Some(signing.fail(problem.to_string()));
+                        action_error = Some(action_runtime.signing.fail(problem.to_string()));
                         None
                     }
                     Ok(_) => None,
                 };
-                *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                action_runtime.authority.set_ready(action_error.is_none());
                 #[cfg(feature = "test-support")]
                 if hold {
                     qualification.route = None;
@@ -1134,14 +2048,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 } else { complete(); }
                 #[cfg(not(feature = "test-support"))]
                 complete();
-                drop(current);
                 if let Some(problem) = reconnect_publication {
                     if let Some(old) = session.take() { close_session(old, &format!("signed publication transport failed: {problem}")).await; }
                 }
             },
-            message = network.recv() => if let Some(message) = message {
-                if let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
-                    if let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { action_error = Some(signing.fail(problem.to_string())); }
+            message = action_runtime.network.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() => if let Some(message) = message {
+                if let Some(current) = session.as_ref().filter(|s| owner.permits_publication() && s.is_ready()) {
+                    if let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { action_error = Some(action_runtime.signing.fail(problem.to_string())); }
                 }
             },
             connection = async { match reconnect.as_mut() {Some(attempt)=>(&mut attempt.task).await.context("native reconnect task failed")?,None=>std::future::pending().await} }, if reconnect.is_some() => {
@@ -1162,22 +2075,20 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         let _timing = crate::action_timing::Timing::new("subscription_ready_work");
                         subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;
                         tracing::info!(replayed = pending, generation = subscription_generation, "native subscription ready after relay replay");
-                        prepare_ready_publication(&owner)?;
+                        if !prepare_ready_publication(&owner)? {
+                            error = owner.peer().incomplete_reason();
+                            action_runtime.authority.set_ready(false);
+                            continue;
+                        }
                         if action_error.is_none() {
-                            *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = Some(owner.peer().clone());
-                            if actions.is_none() {
-                                match crate::action_host::ActionHost::start(&owner, authority.clone(), signing.clone(), network_sender.clone()) {
-                                    Ok(runtime) => actions = Some(runtime),
-                                    Err(problem) => { action_error = Some(signing.fail(problem.to_string())); *authority.0.lock().unwrap() = None; }
-                                }
-                            }
+                            refresh_actions(&mut owner, &mut action_runtime, &mut session, Some(collaboration_admin.clone()), &mut action_error, action_pool.as_ref(), &mut cadence).await;
                         }
                         if let Some(current)=session.as_ref() {
                             tracing::debug!(site = "ready", "publish site");
                             match publish(&owner,current) {
                                 Ok(())=>{error=None; cadence.mark_published(std::time::Instant::now());}
                                 Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => {error=Some(problem.to_string());if let Some(old)=session.take(){close_session(old, &format!("initial publication failed: {problem}")).await;}},
-                                Err(problem)=>{action_error=Some(signing.fail(problem.to_string()));*authority.0.lock().map_err(|_|anyhow::anyhow!("authority unavailable"))?=None;if let Some(old)=session.take(){close_session(old, &format!("initial publication invalid: {problem}")).await;}}
+                                Err(problem)=>{action_error=Some(action_runtime.signing.fail(problem.to_string()));action_runtime.authority.set_ready(false);if let Some(old)=session.take(){close_session(old, &format!("initial publication invalid: {problem}")).await;}}
                             }
                         }
                     },
@@ -1198,19 +2109,23 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         let started = std::time::Instant::now();
                         let publication_before = owner.publication_revision();
                         let received = {
-                            let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
+                            let update = committed.begin(&owner)?;
                             let received = decoded.and_then(|message|owner.receive(origin,message));
-                            *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                            if !publish_owner_authority(update, &owner)? { continue; }
                             received
                         };
                         match &received {
                             Ok(receipt) => tracing::debug!(kind, bytes = inbound_bytes, committed = receipt.is_some(), elapsed_us = started.elapsed().as_micros() as u64, "inbound applied"),
                             Err(problem) => tracing::warn!(kind, bytes = inbound_bytes, %problem, "inbound rejected"),
                         }
-                        if received.as_ref().is_ok_and(|receipt| receipt.is_some()) { if let Some(runtime) = actions.as_ref() { runtime.committed(&owner).map_err(anyhow::Error::msg)?; } host.update_membership(&owner).await?; }
+                        if received.as_ref().is_ok_and(|receipt| receipt.is_some()) {
+                            let followup = post_inbound_commit(&owner, action_runtime.current_actions(), &host).await?;
+                            if let Some(problem) = followup.action_error { action_error = Some(action_runtime.signing.fail(problem)); action_runtime.authority.set_ready(false); }
+                            if let Some(problem) = followup.relay_error { error = Some(problem); }
+                        }
                         match received {
                             Ok(receipt) => {
-                                if !owner.permits_publication() {error=owner.peer().incomplete_reason();if let Some(old)=session.take(){close_session(old, "owner incomplete after inbound").await;}}
+                                if !owner.permits_publication() { error=owner.peer().incomplete_reason(); action_runtime.authority.set_ready(false); }
                                 else if receipt.is_some() {
                                     let now = std::time::Instant::now();
                                     let force = kind != "AppDocument";
@@ -1233,12 +2148,12 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                     );
                                     match published {
                                         Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => { error = Some(problem.to_string()); if let Some(old)=session.take(){ close_session(old, &format!("publication failed after receipt: {problem}")).await; } },
-                                        Err(problem) => { action_error=Some(signing.fail(problem.to_string())); *authority.0.lock().map_err(|_|anyhow::anyhow!("authority unavailable"))?=None; if let Some(old)=session.take(){close_session(old, &format!("publication invalid after receipt: {problem}")).await;} },
+                                        Err(problem) => { action_error=Some(action_runtime.signing.fail(problem.to_string())); action_runtime.authority.set_ready(false); if let Some(old)=session.take(){close_session(old, &format!("publication invalid after receipt: {problem}")).await;} },
                                         Ok(_) => {},
                                     }
                                 }
                             },
-                            Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { if let Some(old)=session.take(){close_session(old, "inbound rejected and owner incomplete").await;} } }
+                            Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { action_runtime.authority.set_ready(false); } }
                         }
                     }
                     None => { let _timing = crate::action_timing::Timing::new("subscription_disconnected"); error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){close_session(old, "relay stream ended").await;} }
@@ -1246,7 +2161,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             }
             command = enrollments.recv() => {
                 if let Some(command)=command {
-                    let result=if !session.as_ref().is_some_and(|current|current.is_ready()) {
+                    if command.is_cancelled() { continue; }
+                    let local_https = command.is_https();
+                    let omit_governance = command.omits_governance();
+                    let result=if !owner.permits_publication() || !session.as_ref().is_some_and(|current|current.is_ready()) {
                         Err(crate::enrollment::EnrollmentError::new(503,"native peer is reconnecting; retry enrollment with the same identity"))
                     } else {
                         match command.request {
@@ -1254,14 +2172,23 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             crate::enrollment_http::EnrollmentRequest::Complete(request)=>{
                                 let publication_before = owner.publication_revision();
                                 let enrolled = {
-                                    let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
-                                    let enrolled = enrollment.complete(&mut owner,request,tilo_relay::clock::now_ns());
-                                    *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
+                                    let update = committed.begin(&owner)?;
+                                    // HTTPS local-owner completions keep the receipt that binds a
+                                    // bounded governance handoff to this exact request.
+                                    let enrolled = if local_https {
+                                        enrollment.complete_for_https(&mut owner,request,tilo_relay::clock::now_ns()).map(|(certificate,proof)|(certificate,Some(proof)))
+                                    } else {
+                                        enrollment.complete(&mut owner,request,tilo_relay::clock::now_ns()).map(|certificate|(certificate,None))
+                                    };
+                                    if !publish_owner_authority(update, &owner)? {
+                                        let _ = command.reply.send(Err(crate::enrollment::EnrollmentError::new(503,"native owner durability unavailable")));
+                                        continue;
+                                    }
                                     enrolled
                                 };
                                 match enrolled {
                                     Err(error)=>Err(error),
-                                    Ok(certificate)=>{
+                                    Ok((certificate,local_proof))=>{
                                         // Enrollment durably replaces the recovery basis before
                                         // membership reconciliation or transport publication can
                                         // fail. Arm that cut now; a later forced dispatch observes
@@ -1273,9 +2200,15 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                         Ok(())=>{
                                             let published=dispatch_committed_publication(&mut cadence,&owner,publication_after,std::time::Instant::now(),false,true,||session.as_ref().filter(|current|current.is_ready()).ok_or_else(||anyhow::anyhow!("native subscription unavailable")).and_then(|current|publish(&owner,current)));
                                             match published {
-                                                Ok(_) => crate::enrollment::public_bootstrap(&owner,&certificate,serde_json::to_value(&host.address).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))?,&host.packet_url.to_string(),tilo_relay::clock::now_ns()).and_then(|value|serde_json::to_vec(&value).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
+                                                Ok(_) => {
+                                                    #[cfg(feature="media")]
+                                                    let reply=enrollment_reply(&mut owner,&certificate,local_proof,omit_governance,&host,delivery_ingress.as_mut());
+                                                    #[cfg(not(feature="media"))]
+                                                    let reply=enrollment_reply(&mut owner,&certificate,local_proof,omit_governance,&host);
+                                                    reply
+                                                },
                                                 Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => { error=Some(problem.to_string()); if let Some(old)=session.take(){close_session(old,&format!("enrollment publication failed: {problem}")).await;} Err(crate::enrollment::EnrollmentError::new(503,problem.to_string())) },
-                                                Err(problem) => { action_error=Some(signing.fail(problem.to_string())); *authority.0.lock().map_err(|_|anyhow::anyhow!("authority unavailable"))?=None; if let Some(old)=session.take(){close_session(old,&format!("enrollment publication invalid: {problem}")).await;} Err(crate::enrollment::EnrollmentError::new(503,problem.to_string())) },
+                                                Err(problem) => { action_error=Some(action_runtime.signing.fail(problem.to_string())); action_runtime.authority.set_ready(false); if let Some(old)=session.take(){close_session(old,&format!("enrollment publication invalid: {problem}")).await;} Err(crate::enrollment::EnrollmentError::new(503,problem.to_string())) },
                                             }
                                         }
                                     }}
@@ -1288,13 +2221,13 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             }
             result = listener.accept() => {
                 let (socket,_)=result?; let mut status=public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error);
-                status["actions"] = json!(if action_error.is_some() { "unavailable" } else if actions.as_ref().is_some_and(|runtime| runtime.ready()) && session.as_ref().is_some_and(|s| s.actions.as_ref().is_some_and(AttachedActions::is_ready)) { "ready" } else { "starting" });
+                status["actions"] = json!(if action_error.is_some() { "unavailable" } else if action_runtime.actions.as_ref().is_some_and(|runtime| runtime.ready()) && session.as_ref().is_some_and(|s| s.actions.as_ref().is_some_and(AttachedActions::is_ready)) { "ready" } else { "starting" });
                 status["action_error"] = json!(action_error);
                 #[cfg(feature = "test-support")]
                 {
                     status["qualification"] = json!({"armed": qualification.route.is_some(), "held": qualification.completion.is_some(), "expired": qualification.expired,
-                        "signing": signing.qualification_signing(),
-                        "workers": actions.as_mut().map(|runtime| runtime.qualification_heads(owner.peer().room())),
+                        "signing": action_runtime.signing.qualification_signing(),
+                        "workers": action_runtime.actions.as_mut().map(|runtime| runtime.qualification_heads(owner.peer().room())),
                         "action_registration": qualification.action_registration.as_ref().map(|hold| json!({
                             "armed": hold.barrier.is_some(),
                             "reached": hold.reached.load(std::sync::atomic::Ordering::Acquire),
@@ -1319,23 +2252,69 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     Some(line) if line == "shutdown" => break,
                     Some(line) if line == "reconnect" => { if let Some(old)=session.take(){close_session(old, "operator reconnect").await;} reconnect_policy.operator_reconnect(); },
                     Some(line) if line == "status" => println!("{}",public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error)),
-                    Some(line) if line == "flush" => println!("{}",serde_json::to_string(&owner.flush()?)?),
-                    Some(line) if line.starts_with("export ") => { match owner.export(Path::new(&line[7..])) {Ok(())=>println!("Export committed"),Err(problem)=>eprintln!("Export failed: {problem}")} },
-                    Some(_) => eprintln!("Use status, flush, reconnect, export /absolute/path, or shutdown"),
+                    Some(line) if (line == "flush" || line.starts_with("export ")) && !owner.durability_healthy() => eprintln!("Native owner durability unavailable; reopen required"),
+                    Some(line) if line == "flush" => {
+                        let update = committed.begin(&owner)?;
+                        let flushed = owner.flush();
+                        if publish_owner_authority(update, &owner)? {
+                            match flushed { Ok(receipt) => println!("{}", serde_json::to_string(&receipt)?), Err(problem) => eprintln!("Flush failed: {problem}") }
+                        } else { eprintln!("Native owner durability unavailable; reopen required"); }
+                    },
+                    Some(line) if line.starts_with("export ") => {
+                        let update = committed.begin(&owner)?;
+                        let exported = owner.export(Path::new(&line[7..]));
+                        if publish_owner_authority(update, &owner)? {
+                            match exported { Ok(()) => println!("Export committed"), Err(problem) => eprintln!("Export failed: {problem}") }
+                        } else { eprintln!("Native owner durability unavailable; reopen required"); }
+                    },
+                    // Operator membership administration as the governing native authority
+                    // (browser owner devices may only administer invitations).
+                    Some(line) if line.starts_with("admin ") => {
+                        let mut parts = line[6..].splitn(2, ' ');
+                        let (action, argument) = (parts.next().unwrap_or(""), parts.next());
+                        let reply = match qos_action_broker::collaboration_admin::parse_operation(action, argument) {
+                            Ok(operation) if matches!(action, "member.remove" | "member.role.set") => {
+                                let before = owner.committed_generation();
+                                let request = qos_action_broker::collaboration_admin::CollaborationAdminRequest {
+                                    room: owner.peer().room().into(),
+                                    invocation: tilo_actions::InvocationId::new(),
+                                    caller: owner.peer().authority().clone(),
+                                    operation,
+                                };
+                                let response = handle_collaboration_admin(&mut owner, &committed, &host, &collaboration, request).await;
+                                if owner.committed_generation() != before && owner.permits_publication() {
+                                    if let Some(runtime) = action_runtime.current_actions() {
+                                        if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
+                                    }
+                                    if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
+                                        if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
+                                    }
+                                }
+                                match response { Ok(value) => json!({"ok": true, "result": value}), Err(problem) => json!({"ok": false, "error": format!("{problem:?}")}) }
+                            }
+                            Ok(_) => json!({"ok": false, "error": "only member.remove and member.role.set are operator actions"}),
+                            Err(problem) => json!({"ok": false, "error": problem}),
+                        };
+                        println!("{reply}");
+                    },
+                    Some(_) => eprintln!("Use status, flush, reconnect, export /absolute/path, admin ACTION JSON, or shutdown"),
                 }
             }
         }
     }
         Ok(())
     }.await;
+    action_runtime.authority.set_ready(false);
+    #[cfg(feature = "media")]
+    if let Some(installed) = delivery_ingress.take() {
+        installed.shutdown().await?;
+    }
+    committed.invalidate();
     if let Some(attempt) = reconnect.take() {
         attempt.cancel().await;
     }
-    *authority
-        .0
-        .lock()
-        .map_err(|_| anyhow::anyhow!("authority unavailable"))? = None;
-    let workers_closed = actions
+    let workers_closed = action_runtime
+        .actions
         .as_mut()
         .map(|runtime| runtime.close(&owner))
         .transpose();
@@ -1344,7 +2323,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
         current.close().await;
     }
     host.shutdown().await?;
-    std::fs::remove_file(ready_path)?;
+    match std::fs::remove_file(ready_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        other => other?,
+    }
     workers_closed.map_err(anyhow::Error::msg)?;
     run_result?;
     flushed?;
@@ -1363,20 +2345,20 @@ mod tests {
         let owner = SessionOwner::initialize(&root).unwrap();
         let generation = owner.status().generation;
         let baseline = owner.publication_baseline();
-        let outgoing = owner.outgoing().to_vec();
-        let kinds = owner.outgoing_kinds().to_vec();
+        let outgoing = outgoing_bytes(&owner).to_vec();
+        let kinds = outgoing_kinds(&owner).to_vec();
         drop(owner);
 
         let owner = SessionOwner::open(&root).unwrap();
         assert_eq!(owner.status().generation, generation);
         assert_eq!(owner.publication_baseline(), baseline);
-        assert_eq!(owner.outgoing(), outgoing);
+        assert_eq!(outgoing_bytes(&owner), outgoing);
 
-        prepare_ready_publication(&owner).unwrap();
+        assert!(prepare_ready_publication(&owner).unwrap());
 
         assert_eq!(owner.status().generation, generation);
         assert_eq!(owner.publication_baseline(), baseline);
-        assert_eq!(owner.outgoing(), outgoing);
+        assert_eq!(outgoing_bytes(&owner), outgoing);
         let mut delivered = Vec::new();
         let mut cursor = crate::publication::PublicationCursor::default();
         cursor
@@ -1389,6 +2371,219 @@ mod tests {
             delivered,
             outgoing.into_iter().zip(kinds).collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn committed_authority_publishes_collaboration_before_failed_relay_reconciliation() {
+        use crate::committed_authority::{CommittedAuthority, Observation};
+        use qos_action_broker::collaboration_admin::{
+            CollaborationAdminOperation, CollaborationAdminRequest, CollaborationRole,
+            IssueInvitationInput,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
+        let host = LocalHost::start(&owner).await.unwrap();
+        let committed = CommittedAuthority::new(&owner);
+        let service = crate::collaboration::CollaborationService::new(vec![]);
+        let request = CollaborationAdminRequest {
+            room: owner.peer().room().into(),
+            invocation: tilo_actions::InvocationId::new(),
+            caller: owner.peer().authority().clone(),
+            operation: CollaborationAdminOperation::Issue(IssueInvitationInput {
+                role: CollaborationRole::Viewer,
+                expires_in_seconds: 60,
+                invitee_name: None,
+            }),
+        };
+        // Fail only the relay's separate projection file; the owner barrier
+        // still succeeds and its current committed authority must stay usable.
+        let relay_access = owner
+            .root()
+            .join("relay/workspaces")
+            .join(owner.workspace_id().to_string())
+            .join(tilo_relay::store::GOVERNED_ACCESS_FILE);
+        std::fs::remove_file(&relay_access).unwrap();
+        std::fs::create_dir(&relay_access).unwrap();
+        let before = owner.committed_generation();
+        let mut operation = Box::pin(handle_collaboration_admin(
+            &mut owner, &committed, &host, &service, request,
+        ));
+        let first = std::future::poll_fn(|cx| Poll::Ready(operation.as_mut().poll(cx))).await;
+        let published_before_completion = match committed.observe() {
+            Observation::Current(view) => view.generation() > before,
+            _ => false,
+        };
+        let result = match first {
+            Poll::Ready(result) => {
+                drop(operation);
+                result
+            }
+            Poll::Pending => tokio::time::timeout(Duration::from_secs(5), operation)
+                .await
+                .unwrap(),
+        };
+        host.shutdown().await.unwrap();
+        assert!(
+            published_before_completion,
+            "authority was held or stale at asynchronous reconciliation"
+        );
+        assert!(
+            result.is_err(),
+            "real relay projection failure must reach the caller"
+        );
+        assert!(owner.permits_publication());
+        let Observation::Current(view) = committed.observe() else {
+            panic!("transport failure erased committed membership")
+        };
+        assert_eq!(view.generation(), owner.committed_generation());
+        assert!(view.generation() > before);
+    }
+
+    async fn inbound_followup_case(incomplete: bool) {
+        use crate::committed_authority::{CommittedAuthority, Observation};
+        use qos_peer_state::{NeighbourMsg, TransportOrigin};
+        let temp = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+        let host = LocalHost::start(&owner).await.unwrap();
+        let committed = CommittedAuthority::new(&owner);
+        let authority = crate::action_host::Authority::new(committed.clone());
+        authority.set_ready(true);
+        let (commit, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(32);
+        let (signing, _signatures) = crate::host_signing::HostSigning::new(commit);
+        let (network, _messages) = tokio::sync::mpsc::channel(64);
+        let mut runtime =
+            crate::action_host::ActionHost::start(&owner, authority, signing, network).unwrap();
+        use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
+        let mut candidate = owner.peer().clone();
+        let app = "so.tilo.word-processor";
+        let record = "tab:0000000000000001";
+        let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
+        let before = document.get_heads();
+        document.put(ROOT, "inbound-authority-test", true).unwrap();
+        document.commit();
+        let mut message = candidate
+            .publish_incremental(
+                app,
+                record,
+                document.save_after(&before),
+                &owner.identity.native,
+                web_time::SystemTime::now(),
+            )
+            .unwrap();
+        let NeighbourMsg::AppDocument {
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+            ..
+        } = &mut message
+        else {
+            panic!("signed snapshot")
+        };
+        envelope.seq += 1;
+        if incomplete {
+            envelope.encryption = Some(collab_types::EncryptionMetadata {
+                epoch: 1,
+                channel: collab_types::document_channel_id(app_id, cluster_id, record_id),
+            });
+            envelope.payload = vec![1, 2, 3];
+        }
+        collab_types::sign_op(envelope, &owner.identity.native).unwrap();
+        let author = owner.identity.native.verifying_key().to_bytes();
+        committed
+            .with_owner(&mut owner, |owner| {
+                owner.receive(TransportOrigin::RelayDelta(author), message)
+            })
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let evidence = owner.peer().durable().unwrap();
+        if !incomplete {
+            let path = owner
+                .root()
+                .join("relay/workspaces")
+                .join(owner.workspace_id().to_string())
+                .join(tilo_relay::store::GOVERNED_ACCESS_FILE);
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(path).unwrap();
+        }
+        let followup = post_inbound_commit(&owner, Some(&runtime), &host).await;
+        let ready = prepare_ready_publication(&owner);
+        let tick = if incomplete {
+            Some(pump_ready_actions(&owner, &mut runtime))
+        } else {
+            None
+        };
+        let mut reconnect = if incomplete {
+            reconnect_for_owner(&owner, &host, Duration::ZERO, &None).unwrap()
+        } else {
+            None
+        };
+        let could_reconnect = reconnect.is_some();
+        if let Some(attempt) = reconnect.as_mut() {
+            let mut session = (&mut attempt.task).await.unwrap().unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if matches!(
+                        session.recv().await.expect("live prerequisite stream"),
+                        Inbound::Ready { .. }
+                    ) {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            assert!(session.is_ready());
+            assert_eq!(prepare_ready_publication(&owner).unwrap(), !incomplete);
+            if incomplete {
+                pump_ready_actions(&owner, &mut runtime).unwrap();
+            }
+            session.close().await;
+        }
+        let _ = runtime.close(&owner);
+        host.shutdown().await.unwrap();
+        let followup = followup.expect("secondary publication failure must not end the host loop");
+        assert!(owner.durability_healthy());
+        assert_eq!(owner.peer().durable().unwrap(), evidence);
+        if incomplete {
+            assert!(
+                followup.action_error.is_none(),
+                "incomplete state pauses actions without poisoning the signer"
+            );
+            assert!(
+                !ready.unwrap(),
+                "ready stream must pause publication while retaining receive"
+            );
+            assert!(
+                tick.unwrap().is_ok(),
+                "subsequent pump must keep prerequisite receive alive"
+            );
+            assert!(
+                could_reconnect,
+                "incomplete state must retain the real receive/reconnect path"
+            );
+            assert!(matches!(committed.observe(), Observation::Denied));
+            committed
+                .with_owner(&mut owner, SessionOwner::flush)
+                .unwrap()
+                .unwrap();
+            assert_eq!(owner.peer().durable().unwrap(), evidence);
+        } else {
+            assert!(
+                followup.relay_error.is_some(),
+                "real relay projection failure must remain observable"
+            );
+            assert!(matches!(committed.observe(), Observation::Current(_)));
+        }
+    }
+    #[tokio::test]
+    async fn committed_authority_inbound_incomplete_keeps_tick_and_receive_alive() {
+        inbound_followup_case(true).await;
+    }
+    #[tokio::test]
+    async fn committed_authority_inbound_relay_failure_preserves_healthy_owner() {
+        inbound_followup_case(false).await;
     }
 
     #[tokio::test]
@@ -1484,6 +2679,7 @@ mod cadence_tests {
         committed_publication_failure, dispatch_committed_publication,
         dispatch_owner_commit_publication,
     };
+    use super::{outgoing_bytes, outgoing_kinds};
     use crate::{SessionOwner, owner::PublicationAdvance, publication::PublicationCursor};
     use qos_peer_state::desktop_command::*;
     use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
@@ -1492,7 +2688,7 @@ mod cadence_tests {
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     fn commit_small_changed_record(owner: &mut SessionOwner, value: u64) {
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut candidate = owner.peer().clone();
         let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
@@ -1643,7 +2839,7 @@ mod cadence_tests {
                 .skip(1)
                 .map(|(bytes, _)| bytes)
                 .collect::<Vec<_>>(),
-            owner.outgoing().iter().skip(1).collect::<Vec<_>>(),
+            outgoing_bytes(&owner).iter().skip(1).collect::<Vec<_>>(),
             "the live transition reuses the persisted fresh snapshot frames"
         );
         let transition_bytes = expected.iter().map(|(bytes, _)| bytes.len()).sum::<usize>();
@@ -1653,8 +2849,8 @@ mod cadence_tests {
             "compaction_transition_entries={} bytes={} persisted_entries={} persisted_bytes={}",
             expected.len(),
             transition_bytes,
-            owner.outgoing().len(),
-            owner.outgoing().iter().map(Vec::len).sum::<usize>()
+            outgoing_bytes(&owner).len(),
+            outgoing_bytes(&owner).iter().map(Vec::len).sum::<usize>()
         );
         let mut delivered = Vec::new();
         let compacted = dispatch_committed_publication(
@@ -1781,11 +2977,10 @@ mod cadence_tests {
         ));
         assert_eq!(
             mismatch_delivered,
-            owner
-                .outgoing()
+            outgoing_bytes(&owner)
                 .iter()
                 .cloned()
-                .zip(owner.outgoing_kinds().iter().copied())
+                .zip(outgoing_kinds(&owner).iter().copied())
                 .collect::<Vec<_>>()
         );
     }
@@ -1904,3 +3099,16 @@ mod cadence_tests {
         assert!(!cadence.due_on_idle(gesture + CheckpointCadence::IDLE));
     }
 }
+
+#[cfg(test)]
+fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+#[cfg(test)]
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
+}
+
+#[cfg(all(test, feature = "media"))]
+#[path = "host/media_action_tests.rs"]
+mod room_media_broker_tests;

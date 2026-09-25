@@ -21,5 +21,7 @@ mod e2e_odt;
 mod two_sessions_one_document;
 
 mod canonical_component;
+#[path = "concurrent_paragraph_edits.rs"]
+mod concurrent_paragraph_edits;
 #[path = "headless_launch.rs"]
 mod headless_launch;

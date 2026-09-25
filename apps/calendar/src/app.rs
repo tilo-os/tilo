@@ -9336,7 +9336,9 @@ mod local_layout_tests {
         fn prompted(spec: &tilo_actions::ActionSpec, value: &str) -> tilo_actions::EncodedAction {
             match &spec.input {
                 ActionInput::Prompted { build, .. } => build(value),
-                ActionInput::Immediate(_) => panic!("{} must prompt for a choice", spec.id),
+                ActionInput::Immediate(_) | ActionInput::Deferred { .. } => {
+                    panic!("{} must prompt for a choice", spec.id)
+                }
             }
         }
 

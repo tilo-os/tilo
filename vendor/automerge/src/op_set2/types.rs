@@ -768,3 +768,56 @@ impl ChangeMetadata<'_> {
         }
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for MarkData<'_> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { name, value } = self;
+
+        name.native_visit(visitor)?;
+        value.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for ActorIdx {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let _ = visitor;
+        Ok(())
+    }
+}
+impl NativeVisit for ScalarValue<'_> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Bytes(value) | Self::Unknown { bytes: value, .. } => value.native_visit(visitor),
+            Self::Str(value) => value.native_visit(visitor),
+            Self::Int(_)
+            | Self::Uint(_)
+            | Self::F64(_)
+            | Self::Counter(_)
+            | Self::Timestamp(_)
+            | Self::Boolean(_)
+            | Self::Null => Ok(()),
+        }
+    }
+}
+impl NativeVisit for KeyRef<'_> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Map(value) => value.native_visit(visitor),
+            Self::Seq(_) => Ok(()),
+        }
+    }
+}

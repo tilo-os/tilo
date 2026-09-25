@@ -1,3 +1,6 @@
+mod action_directory_identity;
+pub use action_directory_identity::ActionDirectoryInvocationDomain;
+
 use crate::dnd::DragPayload;
 use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
@@ -660,6 +663,20 @@ impl EventCtx<'_> {
     }
 }
 
+/// One remote participant's live presence (caret/selection), published by a
+/// multi-participant widget under that participant's identity. Same key and
+/// payload shape as the local window's own presence (Writer: `wp_block` key,
+/// byte offsets into the caret block).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParticipantPresence {
+    pub participant: tilo_actions::ParticipantId,
+    /// Name to show beside the caret, when the host set one
+    /// ([`Widget::set_participant_label`]).
+    pub label: Option<String>,
+    pub key: PresenceKey,
+    pub payload: crate::collaboration::PresencePayload,
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -1152,6 +1169,13 @@ pub trait Widget {
             .iter()
             .map(|handler| (*handler).to_string())
             .collect::<HashSet<_>>();
+        // The actual widget's registered readers also declare their selectors.
+        // Descriptor availability and qualified owner admission remain separate.
+        handlers.extend(
+            self.semantic_readers()
+                .iter()
+                .map(|reader| reader.operation_type().to_string()),
+        );
         self.for_each_child(&mut |child| handlers.extend(child.resource_operation_handlers()));
         handlers
     }
@@ -1729,10 +1753,99 @@ pub trait Widget {
         None
     }
 
+    /// Continuity coverage for this owning subtree's effective invocation domain.
+    /// Independent component/provider owners are checked separately. Returning a
+    /// value is a semantic promise, not authority; unknown coverage stays closed.
+    fn action_directory_invocation_domain(
+        &self,
+        _doc: &AutoCommit,
+    ) -> ActionDirectoryInvocationDomain {
+        ActionDirectoryInvocationDomain::Unsupported
+    }
+
     /// Resolve an addressable resource omitted from the contextual snapshot.
     /// Large apps override this through their `ResourceProvider` index.
     fn resource(&self, _doc: &AutoCommit, _id: &str) -> Option<tilo_actions::Resource> {
         None
+    }
+
+    /// The tree as one participant (an agent task) sees it, built from that
+    /// participant's own view state (caret, selection, Find). A delivered
+    /// invocation resolves against this, rebuilt at invoke time, for the
+    /// host-set invoker ([`crate::invocation_scope::current_participant`]).
+    ///
+    /// `None` is this widget's own view. Single-view widgets keep the
+    /// default, which is the same tree for everybody. Multi-participant
+    /// widgets (Writer) override this and [`Self::resource_for`], and must
+    /// never put one participant's selection or Find text into another's
+    /// tree.
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        let _ = participant;
+        self.resources(doc)
+    }
+
+    /// [`Self::resource`] in `participant`'s tree.
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        let _ = participant;
+        self.resource(doc, id)
+    }
+
+    /// A participant (an agent task) joined the record this tree serves. A
+    /// multi-participant widget creates that participant's own view here
+    /// (Writer: caret at the document end) and publishes it as presence.
+    /// Idempotent. The default reaches retained descendants; returns whether
+    /// a view was newly created (so the host drops resource caches only then).
+    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
+        let mut joined = false;
+        for child in self.collaboration_children_mut() {
+            joined |= child.join_participant(participant);
+        }
+        joined
+    }
+
+    /// Drop a participant's view (its task ended). Idempotent.
+    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
+        for child in self.collaboration_children_mut() {
+            child.leave_participant(participant);
+        }
+    }
+
+    /// Name shown beside a participant's caret (the agent's display name).
+    /// The default reaches retained descendants.
+    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
+        for child in self.collaboration_children_mut() {
+            child.set_participant_label(participant, label);
+        }
+    }
+
+    /// Current presence of every remote participant this tree holds a view
+    /// for, derived from that participant's own view exactly as the local
+    /// window derives its own presence. The default collects descendants.
+    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
+        let mut out = Vec::new();
+        self.for_each_child(&mut |child| out.extend(child.participant_presence(doc)));
+        out
+    }
+
+    /// The host serves only remote participants and has no local person (a
+    /// headless host worker). A multi-participant widget then publishes its
+    /// participant-independent catalogue schema
+    /// ([`tilo_actions::ResourceProvider::catalogue_schema`]) as its own
+    /// view's tree instead of one caret's snapshot, so the publication and
+    /// its revision do not change when a caret moves.
+    fn set_participant_host(&mut self, host: bool) {
+        for child in self.collaboration_children_mut() {
+            child.set_participant_host(host);
+        }
     }
 
     /// Explicit disclosure authority for an actionless resource container in
@@ -1941,6 +2054,43 @@ pub trait Widget {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+    }
+
+    /// Inert immutable-reader registrations owned by this actual widget.
+    /// Registration alone supplies no qualified owner frame or disclosure.
+    fn semantic_readers(
+        &self,
+    ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
+        &[]
+    }
+
+    /// Required hosted operations enter here with immutable original-caller
+    /// custody. Async implementations must retain `scope` with their own job
+    /// and use its checked callbacks at each later effect or document mutation.
+    /// The default never calls an unscoped handler, even speculatively.
+    fn start_resource_operation_scoped(
+        &mut self,
+        scope: &crate::invocation_scope::ResourceInvocationScope,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        scope.check()?;
+        for child in self.children_mut() {
+            // A nested canonical owner is an independent destination. Its
+            // handler must be selected by that owner's checked dispatch frame.
+            if child.has_separate_document_owner() {
+                continue;
+            }
+            if let Some(started) =
+                child.start_resource_operation_scoped(scope, kind, type_id, payload, doc, path)?
+            {
+                return Ok(Some(started));
+            }
+        }
+        Ok(None)
     }
 
     /// Poll one admitted operation without blocking the UI thread.

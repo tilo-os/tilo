@@ -476,3 +476,58 @@ impl UpdateSpansConfig {
         self
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Mark {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            name,
+            value,
+            start,
+            end,
+        } = self;
+        let _ = start;
+        let _ = end;
+        name.native_visit(visitor)?;
+        value.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for MarkAccItem {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { value, index, len } = self;
+        let _ = index;
+        let _ = len;
+        value.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for MarkAccumulator {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { marks } = self;
+
+        marks.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for MarkSet {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { marks } = self;
+
+        marks.native_visit(visitor)?;
+        Ok(())
+    }
+}

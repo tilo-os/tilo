@@ -2923,6 +2923,38 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_scrollbar_draw_survives_short_startup_viewports() {
+        let mut workspace = Workspace::new();
+        for _ in 0..8 {
+            workspace.create_page(None);
+        }
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/sdk/ui-core/assets/fonts"),
+            "en-US",
+        );
+        let mut text = TextRenderer::with_font_catalog(&catalog).unwrap();
+        for scale in [1.0, 2.0] {
+            for viewport in [1.0, 8.0, 16.0] {
+                let mut tree = NoteTreeView::new();
+                tree.sync_from_workspace(&workspace);
+                tree.text_scale = scale;
+                tree.rect = Rect::new(0.0, 0.0, 240.0, tree.header_height() + viewport);
+                tree.max_scroll_y = 600.0;
+                let mut scene = Scene::new();
+                Widget::draw(
+                    &mut tree,
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &Theme::dark(),
+                    &PresenceCtx::empty(),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn populated_sidebar_draws_when_scroll_track_is_shorter_than_minimum_thumb() {
         let mut workspace = Workspace::new();
         for _ in 0..12 {

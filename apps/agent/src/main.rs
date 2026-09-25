@@ -81,8 +81,11 @@ struct Cli {
     /// made again with a short backoff, carved out of this deadline rather
     /// than added to it, so shortening this also shortens how long the agent
     /// will wait out a busy service.
-    #[arg(long, default_value_t = 9000)]
-    model_timeout_ms: u64,
+    ///
+    /// Default 9000 ms; a managed (launcher-started) agent defaults to
+    /// 30000 ms, the whole budget of a multi-turn action decision.
+    #[arg(long)]
+    model_timeout_ms: Option<u64>,
     /// How long to wait for the room to answer with the document before
     /// giving up and naming the address nobody answered on. `0` waits
     /// forever, which is right when the document may not be open yet and
@@ -96,6 +99,10 @@ struct Cli {
     settle_ms: u64,
 }
 
+/// The total model budget of one managed action decision (all its turns).
+/// The launcher passes no `--model-timeout-ms`, so this is the default there.
+const MANAGED_MODEL_TIMEOUT_MS: u64 = 30_000;
+
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
@@ -107,7 +114,20 @@ fn main() -> anyhow::Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    let managed = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some();
+    let model_timeout_ms = cli.model_timeout_ms.unwrap_or(if managed {
+        MANAGED_MODEL_TIMEOUT_MS
+    } else {
+        9000
+    });
+    if managed {
+        anyhow::ensure!(
+            cli.task_runs && !cli.no_model && cli.endpoint.is_none() && cli.record.is_none(),
+            "managed agent requires task mode and inherited services"
+        );
+        cli.app = "so.tilo.agent".into();
+    }
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
     // decision, not something a headless participant grants itself.
@@ -137,7 +157,7 @@ fn main() -> anyhow::Result<()> {
         pace: Duration::from_millis(cli.pace_ms),
         once: cli.once,
         model: !cli.no_model,
-        model_timeout: Duration::from_millis(cli.model_timeout_ms),
+        model_timeout: Duration::from_millis(model_timeout_ms),
         await_document: Duration::from_millis(cli.await_document_ms),
         settle: Duration::from_millis(cli.settle_ms),
         directory: None,

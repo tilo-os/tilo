@@ -217,7 +217,7 @@ test('closing during background network work prevents late persistence',async()=
   return{type:'observation',host,invocation:id,update:null,uncertain:false};
  }});
  await c.invoke({...route,invocation:id});const recovery=c.recover();await entered.promise;
- await c.close();const before=writes;gate.resolve();await recovery;assert.equal(writes,before);
+ let closed=false;const closing=c.close().then(()=>closed=true);const before=writes;await drain();assert.equal(closed,false);gate.resolve();await closing;await recovery;assert.equal(writes,before);
 });
 
 test('background discovery cannot send status after a subscriber replaces the identity',async()=>{
@@ -228,4 +228,150 @@ test('background discovery cannot send status after a subscriber replaces the id
  await c.invoke({...route,invocation:id});sent.length=0;replace=true;
  await c.recover().catch(()=>{});
  assert.deepEqual(sent,['catalogue_refresh']);await c.close();
+});
+
+test('live retained drive resends original after correlated absence, never after admission or reopen',async()=>{
+ const sent=[];let disk, admitted=false,drop=true;
+ const cat=structuredClone(catalogue);cat.surfaces[0].actions[0].revision='exact-v1';
+ const open=()=>createActionClient({context:()=>context,load:async()=>disk,commit:async v=>disk=structuredClone(v),request:async m=>{
+  sent.push(structuredClone(m));if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:cat};
+  if(m.type==='invoke_bound'){if(drop){drop=false;throw Error('before receiver');}admitted=true;}
+  return{type:'observation',host,invocation:id,update:admitted?{state:'accepted',invocation:id}:null,uncertain:false,cancellation_requested:false};
+ }});
+ const c=await open();await assert.rejects(c.invoke({...route,revision:'exact-v1',invocation:id,argument:{original:1}}),/before receiver/);
+ const original=structuredClone(disk.entries[0].intent);
+ assert.equal(typeof c.driveRetained,'function');
+ await Promise.all([c.driveRetained(id),c.driveRetained(id)]);
+ assert.deepEqual(sent.filter(m=>m.type==='invoke_bound'),[original,original]);
+ await c.driveRetained(id);assert.equal(sent.filter(m=>m.type==='invoke_bound').length,2);
+ await c.close();admitted=false;const reopened=await open();await reopened.driveRetained(id);
+ assert.equal(sent.filter(m=>m.type==='invoke_bound').length,2);await reopened.close();
+});
+
+test('ambiguous persistence latches all RPCs until the attempted write reconciles',async()=>{
+ let saved,blocked=true,first=true;const calls=[];
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async v=>{saved=structuredClone(v);if(first){first=false;throw Object.assign(Error('lost acknowledgement'),{name:'StorageWorkerError'});}},reconcile:async()=>{if(blocked)throw Error('unresolved storage');return 'committed';},request:async m=>{calls.push(m);return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation:id,update:null,uncertain:false,cancellation_requested:false};}});
+ await assert.rejects(c.invoke({...route,invocation:id}),/lost acknowledgement/);const before=calls.length;
+ await assert.rejects(c.catalogue(),/storage/i);assert.equal(calls.length,before);
+ blocked=false;await c.catalogue();assert.deepEqual(c.getSnapshot().entries,saved.entries);await c.close();
+});
+
+test('close joins raw detached catalogue and recovery requests',async()=>{
+ const hold=deferred(),entered=deferred();let closed=false;
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async()=>{},request:async()=>{entered.resolve();await hold.promise;return{type:'broker_catalogue',host,catalogue};}});
+ const pending=c.refreshCatalogue();await entered.promise;const rejected=assert.rejects(pending,/cancel|abort/i);
+ const closing=c.close().then(()=>closed=true);await drain();assert.equal(closed,false);
+ hold.resolve();await rejected;await closing;
+});
+
+test('business cancel synchronously fences an already-running retained drive',async()=>{
+ const gate=deferred(),entered=deferred();let phase='first',disk;const sent=[];
+ const cat=structuredClone(catalogue);cat.surfaces[0].actions[0].revision='v1';
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async v=>disk=v,request:async m=>{
+  sent.push(structuredClone(m));if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:cat};
+  if(m.type==='invoke_bound')throw Error('not delivered');
+  if(phase==='drive'&&m.type==='status'){entered.resolve();await gate.promise;}
+  if(m.type==='cancel')throw Error('cancel reply lost');
+  return{type:'observation',host,invocation:id,update:null,uncertain:false,cancellation_requested:false};
+ }});
+ await assert.rejects(c.invoke({...route,revision:'v1',invocation:id}),/not delivered/);phase='drive';
+ const driving=c.driveRetained(id);await entered.promise;const cancel=assert.rejects(c.cancel(id),/cancel reply lost/);gate.resolve();await driving;await cancel;
+ phase='after';await c.driveRetained(id);assert.equal(sent.filter(m=>m.type==='invoke_bound').length,1);assert.equal(disk.entries.length,1);await c.close();
+});
+
+test('retained drive refuses changed route, missing rows, malformed absence and confirmation',async()=>{
+ for(const kind of ['route','rejected','uncertain','missing-flag','confirmation','host','identity']){
+  let changed=false;const sent=[];const cat=structuredClone(catalogue);cat.surfaces[0].actions[0].revision='v1';
+  const c=await createActionClient({context:()=>changed&&kind==='identity'?{...context,certificate:'other'}:context,load:async()=>undefined,commit:async()=>{},request:async m=>{
+   sent.push(m);if(m.type==='catalogue_refresh'){const current=structuredClone(cat);if(changed&&kind==='route')current.surfaces[0].actions[0].revision='v2';if(changed&&kind==='confirmation')current.surfaces[0].actions[0].contract.confirmation={mode:'confirm'};return{type:'broker_catalogue',host:changed&&kind==='host'?id:host,catalogue:current};}
+   if(m.type==='invoke_bound')throw Error('lost');
+   if(kind==='rejected')return{type:'rejected',code:'unknown_invocation'};
+   const answer={type:'observation',host,invocation:id,update:null,uncertain:kind==='uncertain',cancellation_requested:false};if(kind==='missing-flag')delete answer.cancellation_requested;return answer;
+  }});
+  await assert.rejects(c.invoke({...route,revision:'v1',invocation:id}),/lost/);changed=true;
+  await c.driveRetained(id).catch(()=>{});const before=sent.length;await assert.rejects(c.driveRetained('ffffffff-ffff-4fff-8fff-ffffffffffff'),/Unknown local/);
+  assert.equal(sent.length,before);assert.equal(sent.filter(m=>m.type==='invoke_bound').length,1,kind);await c.close();
+ }
+});
+
+test('detached catalogue reply cannot restore ready while storage is ambiguous',async()=>{
+ const entered=deferred(),held=deferred();let palette=false;
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async()=>{throw Object.assign(Error('lost acknowledgement'),{name:'StorageWorkerError'});},request:async m=>{
+  if(!m.scope&&palette){entered.resolve();await held.promise;}
+  return{type:'broker_catalogue',host,catalogue};
+ }});
+ palette=true;const refresh=c.refreshCatalogue();await entered.promise;
+ await assert.rejects(c.invoke({...route,invocation:id}),/lost acknowledgement/);held.resolve();
+ await assert.rejects(refresh,/reconciliation/);assert.equal(c.getSnapshot().capability.state,'unavailable');await c.close();
+});
+
+test('cancel fences the live attempted row before ambiguous admission is reconciled',async()=>{
+ let first=true;const sent=[];const cat=structuredClone(catalogue);cat.surfaces[0].actions[0].revision='v1';
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async()=>{if(first){first=false;throw Object.assign(Error('lost acknowledgement'),{name:'StorageWorkerError'});}},reconcile:async()=> 'committed',request:async m=>{
+  sent.push(m);if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:cat};if(m.type==='cancel')throw Error('cancel reply lost');return{type:'observation',host,invocation:id,update:null,uncertain:false,cancellation_requested:false};
+ }});
+ await assert.rejects(c.invoke({...route,revision:'v1',invocation:id}),/lost acknowledgement/);
+ await assert.rejects(c.cancel(id),/cancel reply lost/);await c.driveRetained(id);
+ assert.equal(sent.filter(m=>m.type==='invoke_bound').length,0);await c.close();
+});
+
+test('business cancel fences an accepted invoke while queued or discovering without unknown-ID tombstones',async()=>{
+ for(const phase of ['queued','discovering']){
+  const gate=deferred(),entered=deferred();let held=true,writes=0;const sent=[];
+  const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async()=>{writes++;},request:async m=>{
+   sent.push(m);if(held&&m.type==='catalogue_refresh'){entered.resolve();await gate.promise;}
+   return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation:m.invocation,update:null,uncertain:false,cancellation_requested:false};
+  }});
+  let first;if(phase==='queued'){first=c.catalogue();await entered.promise;}
+  const invoke=c.invoke({...route,invocation:id});if(phase==='discovering')await entered.promise;
+  const rejected=assert.rejects(invoke,/cancel/i);const cancel=c.cancel(id).catch(e=>e);held=false;gate.resolve();await first;await rejected;await cancel;
+  assert.equal(sent.filter(m=>m.type==='invoke_bound').length,0,phase);assert.equal(writes,0,phase);
+  // An unknown ID must not leave a tombstone that blocks a future deliberate command.
+  await c.cancel('ffffffff-ffff-4fff-8fff-ffffffffffff').catch(()=>{});
+  await c.invoke({...route,invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff'});assert.equal(sent.filter(m=>m.type==='invoke_bound').length,1);await c.close();
+ }
+});
+test('a fresh v2 ticket dispatches at once; a stale or reopened one probes status against a new discovery first',async()=>{
+ let t=0;const consumer=parent=>({kind:'interactive',parent,slot:'test'});
+ for(const [delay,expected] of [[0,['catalogue_refresh','invoke_bound']],[6000,['catalogue_refresh','catalogue_refresh','status','invoke_bound']]]){
+  const calls=[];let disk;
+  const c=await createActionClient({version:2,clock:{now:()=>t},context:()=>context,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async message=>{
+   calls.push(message.type);
+   if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+   return{type:'observation',host,invocation:message.invocation,update:message.type==='invoke_bound'?{state:'succeeded',invocation:message.invocation,output:{}}:null,uncertain:false,cancellation_requested:false};
+  }});
+  const {invocation:_none,...input}={...route,argument:null,confirmation:null};
+  const ticket=await c.actionsV2.beginNew(input,{consumer:consumer(crypto.randomUUID())});
+  t+=delay;const row=await c.actionsV2.drive(ticket,{dispatchFresh:true});
+  assert.equal(row.state,'succeeded');assert.deepEqual(calls,expected);
+  await c.close();
+ }
+});
+test('background recovery backs off an unchanged row to 16 s, reuses its discovery for 30 s, and resets on change',async()=>{
+ let t=0,disk,update=null;const calls=[];const second='dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+ const c=await createActionClient({clock:{now:()=>t},context:()=>context,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async message=>{
+  calls.push(message.type);
+  if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  return{type:'observation',host,invocation:message.invocation,update:message.type==='status'&&update?{...update,invocation:message.invocation}:{state:'accepted',invocation:message.invocation},uncertain:false,cancellation_requested:false};
+ }});
+ await c.invoke({...route,invocation:id});await c.invoke({...route,invocation:second});
+ const pass=async ms=>{t+=ms;calls.length=0;await c.recover({background:true});return [...calls];};
+ const both=['status','status'];
+ // Two retained rows of one scope: one discovery, two status probes.
+ assert.deepEqual(await pass(0),['catalogue_refresh',...both]);
+ assert.deepEqual(await pass(1000),both,'unchanged: next probe after 1 s, discovery reused');
+ assert.deepEqual(await pass(1000),[],'backed off to 2 s');
+ assert.deepEqual(await pass(1000),both);
+ assert.deepEqual(await pass(4000),both);
+ assert.deepEqual(await pass(8000),both);
+ assert.deepEqual(await pass(16000),['catalogue_refresh',...both],'discovery renewed after 30 s');
+ assert.deepEqual(await pass(8000),[],'capped at 16 s');
+ assert.deepEqual(await pass(8000),both);
+ update={state:'progress',sequence:'1',phase:'working'};
+ assert.deepEqual(await pass(16000),['catalogue_refresh',...both],'32 s after the last discovery');
+ assert.deepEqual(await pass(1000),both,'a changed observation resets to 1 s');
+ // A continuous caller cannot turn this into a status loop.
+ calls.length=0;for(let i=0;i<50;i++)await c.recover({background:true});assert.equal(calls.length,0);
+ t+=1000;calls.length=0;await c.recover();assert.deepEqual(calls,['catalogue_refresh','status','status'],'an explicit recover probes at once');
+ await c.close();
 });

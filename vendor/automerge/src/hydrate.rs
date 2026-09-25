@@ -366,3 +366,19 @@ impl From<&Value> for wasm_bindgen::JsValue {
         }
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Value {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Scalar(value) => value.native_visit(visitor),
+            Self::Map(value) => value.native_visit(visitor),
+            Self::List(value) => value.native_visit(visitor),
+            Self::Text(value) => value.native_visit(visitor),
+        }
+    }
+}

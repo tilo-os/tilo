@@ -8,25 +8,40 @@ use ui::record::{RecordCheckout, RecordId};
 
 pub(crate) fn installed_applications() -> [(&'static str, &'static ApplicationDefinition); 4] {
     [
-        ("dev.qos.word-processor", word_processor::definition()),
-        ("dev.qos.chat", chat::definition()),
-        ("dev.qos.notes", notes::definition()),
-        ("dev.qos.calculator", calculator::definition()),
+        word_processor::definition(),
+        chat::definition(),
+        notes::definition(),
+        calculator::definition(),
     ]
+    .map(|definition| (definition.app_id, definition))
 }
-#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn definitions() -> [&'static ApplicationDefinition; 4] {
     installed_applications().map(|(_, definition)| definition)
 }
+/// Resolve a persisted app id to its installed definition.
+///
+/// The returned durable id is the persisted spelling itself: tabs, record
+/// routes and admitted rows written before the `so.tilo.*` rename keep their
+/// original id, and only the definition lookup goes through the shared
+/// first-party rename table.
 pub(crate) fn installed_application(
     app: &str,
 ) -> Option<(&'static str, &'static ApplicationDefinition)> {
     installed_applications()
         .into_iter()
-        .find(|(durable_app_id, definition)| {
-            *durable_app_id == app
-                || ui::application::lookup_compatible_first_party_app_ids(definition.app_id, app)
+        .find_map(|(current, definition)| {
+            std::iter::once(current)
+                .chain(ui::application::first_party_app_id_lookup_candidates(
+                    current,
+                ))
+                .find(|candidate| *candidate == app)
+                .map(|durable| (durable, definition))
         })
+}
+/// Whether a persisted app id names the Chat package, whose room record is
+/// its package-primary route.
+pub(crate) fn is_chat(app: &str) -> bool {
+    ui::application::lookup_compatible_first_party_app_ids(app, chat::definition().app_id)
 }
 #[cfg(any(target_arch = "wasm32", test))]
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
@@ -65,16 +80,17 @@ pub(crate) fn checkout(
 ) -> Result<RecordCheckout, String> {
     let (durable_app_id, _) = installed_application(definition.app_id)
         .ok_or("application is not in the installed durable catalog")?;
+    let chat = is_chat(durable_app_id);
     match routes.get(&tab) {
         None => Ok(qos_desktop::records::component_record(
             durable_app_id,
             tab,
             definition.record_kind.clone(),
         )),
-        Some(record) if record.is_empty() && durable_app_id == "dev.qos.chat" => Ok(
-            RecordCheckout::package_primary(definition.record_kind.clone()),
-        ),
-        Some(record) if durable_app_id != "dev.qos.chat" => Ok(RecordCheckout::new(
+        Some(record) if record.is_empty() && chat => Ok(RecordCheckout::package_primary(
+            definition.record_kind.clone(),
+        )),
+        Some(record) if !chat => Ok(RecordCheckout::new(
             RecordId::parse(record).ok_or("invalid canonical ordinary record route")?,
             definition.record_kind.clone(),
         )),
@@ -233,7 +249,7 @@ mod tests {
                         id: (5 << 48) | 3,
                         title: "Renamed Writer".into(),
                         tile: TileContent::AppPlaceholder {
-                            kind: AppKind::Other("dev.qos.word-processor".into()),
+                            kind: AppKind::Other("so.tilo.word-processor".into()),
                             label: "Anything".into(),
                         },
                     },
@@ -241,7 +257,7 @@ mod tests {
                         id: (5 << 48) | 4,
                         title: "Notes".into(),
                         tile: TileContent::AppPlaceholder {
-                            kind: AppKind::Other("dev.qos.notes".into()),
+                            kind: AppKind::Other("so.tilo.notes".into()),
                             label: "Notes".into(),
                         },
                     },
@@ -261,7 +277,7 @@ mod tests {
         let admission = super::admission(&peer).unwrap();
         assert_eq!(admission.required.len(), 2);
         assert_eq!(admission.missing.len(), 1);
-        assert_eq!(admission.missing[0].app_id, "dev.qos.notes");
+        assert_eq!(admission.missing[0].app_id, "so.tilo.notes");
         assert!(!admission.complete());
         let mut strips = strips;
         strips[0].window_groups[0].tabs.pop();
@@ -271,6 +287,95 @@ mod tests {
         assert!(admission.complete());
         assert_eq!(admission.required.len(), 1);
         assert_eq!(admission.required[0].record_id, "tab:0000000000000001");
+    }
+    #[test]
+    fn pre_rename_workspace_keeps_its_persisted_ids_and_stays_admitted() {
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
+        };
+        let root = SigningKey::from_bytes(&[63; 32]);
+        let key = SigningKey::from_bytes(&[64; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "legacy owner".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let room = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        // Rows written before the rename keep their retired `dev.qos.*` ids.
+        let mut seed = crate::fixture_seed(room, &cert, &[cert.clone()]).unwrap();
+        for document in &mut seed.documents {
+            document.app_id = document.app_id.replacen("so.tilo.", "dev.qos.", 1);
+        }
+        let mut peer = StatePeer::new(
+            room,
+            cert.clone(),
+            vec![cert],
+            RevocationList::new(),
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
+        peer.install_seed(seed, &key, web_time::SystemTime::now())
+            .unwrap();
+        let mut doc = peer.admitted_room().unwrap().clone();
+        let tab = |id, app: &str| Tab {
+            id,
+            title: app.into(),
+            tile: TileContent::AppPlaceholder {
+                kind: AppKind::Other(app.into()),
+                label: app.into(),
+            },
+        };
+        let strips = vec![Strip {
+            id: StripId((6 << 48) | 1),
+            name: "Legacy".into(),
+            window_groups: vec![WindowGroup {
+                id: (6 << 48) | 2,
+                active_tab: (6 << 48) | 3,
+                width: WindowWidth::Normal,
+                maximized: false,
+                tabs: vec![
+                    tab((6 << 48) | 3, "dev.qos.word-processor"),
+                    tab((6 << 48) | 4, "dev.qos.chat"),
+                ],
+            }],
+        }];
+        RoomProjection::project_owned_contents(&mut doc, &strips, 6, None);
+        RoomProjection::bind_record(
+            &mut doc,
+            (6 << 48) | 1,
+            (6 << 48) | 2,
+            (6 << 48) | 3,
+            "tab:0000000000000001",
+        )
+        .unwrap();
+        RoomProjection::bind_record(&mut doc, (6 << 48) | 1, (6 << 48) | 2, (6 << 48) | 4, "")
+            .unwrap();
+        install(&mut peer, &key, &mut doc);
+        let admission = super::admission(&peer).unwrap();
+        assert!(admission.complete(), "{:?}", admission.missing);
+        let mut required = admission
+            .required
+            .iter()
+            .map(|row| (row.app_id.as_str(), row.record_id.as_str()))
+            .collect::<Vec<_>>();
+        required.sort_unstable();
+        assert_eq!(
+            required,
+            [
+                ("dev.qos.chat", ""),
+                ("dev.qos.word-processor", "tab:0000000000000001")
+            ]
+        );
+        assert_eq!(
+            super::installed_application("dev.qos.chat").map(|(id, _)| id),
+            Some("dev.qos.chat")
+        );
+        assert!(super::installed_application("dev.qos.desktop").is_none());
     }
     #[test]
     fn empty_admitted_desktop_is_ready_but_unprojected_room_is_waiting() {

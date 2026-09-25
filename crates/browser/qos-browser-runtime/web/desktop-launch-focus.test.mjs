@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createDesktopLaunchFocus} from './desktop-launch-focus.mjs';
 const route={workspace:'1',strip:'9007199254740993',group:'9007199254740994',tab:'9007199254740995'};
-const pending={invocation:'launch',command:JSON.stringify({source:{room:'room'},command:{OpenTab:{app:'dev.qos.notes'}}})};
+const pending={invocation:'launch',command:JSON.stringify({source:{room:'room'},command:{OpenTab:{app:'so.tilo.notes'}}})};
 function fixture(){let generation='mount',epoch=0,time=0,entries=[];const selected=[];const f=createDesktopLaunchFocus({snapshot:()=>({generation,entries,workspaces:[{id:"1",room:"room"}]}),capture:()=>epoch,select:route=>selected.push(route),now:()=>time});return{f,selected,admit(){entries=[{route}];},navigate(){epoch++;},replace(){generation='replacement';},expire(){time=30001;}};}
 const committed={invocation:'launch',room:'room',opened:{strip:route.strip,group:route.group,tab:route.tab}};
 test('exact committed launch selects only after its canonical route is admitted',()=>{const x=fixture();x.f.pending(pending);x.f.committed(committed);assert.deepEqual(x.selected,[]);x.admit();x.f.refresh();assert.deepEqual(x.selected,[route]);x.f.committed(committed);assert.equal(x.selected.length,1);});

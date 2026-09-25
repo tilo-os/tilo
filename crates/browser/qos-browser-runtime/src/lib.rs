@@ -40,7 +40,32 @@ mod revision_wire_tests {
 mod identity;
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod peer_cloud;
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_invitation;
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_onboarding;
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_onboarding_custody;
+
+#[cfg(any(target_arch = "wasm32", test))]
 mod peer_journal;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_delivery;
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_delivery_auth;
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_delivery_cursor;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_storage_batch;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_media;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod peer_live;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod post_ready_repair;
@@ -54,10 +79,13 @@ mod desktop_host;
 #[cfg(any(target_arch = "wasm32", test))]
 mod desktop_navigation;
 #[cfg(any(target_arch = "wasm32", test))]
+mod live_view;
+#[cfg(any(target_arch = "wasm32", test))]
 mod system_search;
 
 /// Private browser action correlation, also exercised by the ordinary host harness.
 pub mod action_client;
+pub mod agent_reads;
 pub mod committed_desktop;
 
 #[cfg(any(target_arch = "wasm32", test))]

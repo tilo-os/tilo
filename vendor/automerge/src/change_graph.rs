@@ -1,3 +1,7 @@
+mod native_growth;
+mod native_mutation_columns;
+mod native_history;
+
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
@@ -84,6 +88,86 @@ struct Edge {
 }
 
 impl ChangeGraph {
+    pub(crate) fn native_reconstruction_plan(
+        shape: &crate::resource_limits::reconstruct::Shape,
+        budget: &mut crate::resource_limits::reconstruct::Budget,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::reconstruct::{product, sum};
+        budget.growing_vec::<Edge>(shape.edges)?;
+        budget.growing_vec::<ChangeHash>(shape.changes)?;
+        budget.growing_vec::<ActorIdx>(shape.changes)?;
+        budget.growing_vec::<Option<EdgeIdx>>(shape.changes)?;
+        budget.growing_vec::<u32>(shape.changes)?; // seq
+        budget.growing_vec::<u32>(shape.changes)?; // max_ops
+        budget.growing_vec::<u64>(shape.changes)?; // temporary num_ops
+        budget.growing_vec::<Vec<NodeIdx>>(shape.actors)?;
+        budget.growing_vec::<NodeIdx>(shape.changes)?;
+        budget.array::<NodeIdx>(product(shape.actors, 4)?)?; // inner Vec minima
+        budget.tree::<ChangeHash, ()>(shape.changes)?;
+        budget.hash::<ChangeHash, NodeIdx>(shape.changes)?;
+        // Periodic callers are only the starting points: cache_clock also
+        // caches every recursive frontier node. The cache has at most one
+        // entry for each represented graph node, regardless of call cadence.
+        let clocks = shape.changes;
+        budget.clock_cache_nodes = clocks;
+        budget.hash::<NodeIdx, SeqClock>(clocks)?;
+        // All parents precede their child (checked during load and batch
+        // admission). calculate_clock_inner pops descending indexes and only
+        // leaves a recursive frontier after >2*CACHE_STEP visits. Each descent
+        // therefore reduces the start index by at least 2*CACHE_STEP+1.
+        let visited_before_recursion = CACHE_STEP as usize * 2 + 1;
+        let frames = if clocks == 0 {
+            0
+        } else {
+            (clocks - 1) / visited_before_recursion + 1
+        };
+        // Each suspended call retains its SeqClock and a BTreeSet::IntoIter
+        // frontier. The current call additionally owns its visited BTreeSet;
+        // its returned/inserted clone can overlap the live frame clocks.
+        let live_clocks = sum(clocks, sum(frames, usize::from(clocks != 0))?)?;
+        budget.growing_vec_forest::<Option<NonZeroU32>>(
+            product(live_clocks, shape.actors)?,
+            live_clocks,
+        )?;
+        if frames != 0 {
+            budget.trees::<NodeIdx, ()>(sum(frames, 1)?, shape.changes)?;
+        }
+        // Nonrecursive ancestor queries have a current clock, an edge queue,
+        // and a visited set independently of the retained cache above.
+        budget.growing_vec::<Option<NonZeroU32>>(shape.actors)?;
+        budget.growing_vec::<NodeIdx>(sum(shape.changes, shape.edges)?)?;
+        budget.tree::<NodeIdx, ()>(shape.changes)?;
+        let rows = product(shape.changes, 4)?;
+        let encoded = sum(product(rows, 20)?, shape.values)?;
+        budget.columns::<StrCursor>(product(shape.documents.max(1), 4)?, rows, encoded)?;
+        budget.growing_vec::<u8>(sum(shape.raw_column_bytes, shape.extra_bytes)?)?;
+        budget.add(shape.values)?; // message ownership during native iteration
+        Ok(())
+    }
+
+    pub(crate) fn check_native_clock_bound(
+        &self,
+        permit: &crate::resource_limits::reconstruct::Permit<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        permit.check_clock_cache(self.clock_cache.len())
+    }
+
+    pub(crate) fn native_export(
+        &self,
+        pass: &mut crate::resource_limits::retained::save_columns::Pass<'_, '_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        use ids::*;
+        pass.values::<ActorCursor, _, _>(ACTOR_COL_SPEC, || self.actors.iter().map(as_actor))?;
+        pass.values::<DeltaCursor, _, _>(SEQ_COL_SPEC, || self.seq.iter().map(as_seq))?;
+        pass.values::<DeltaCursor, _, _>(MAX_OP_COL_SPEC, || self.max_ops.iter().map(as_max_op))?;
+        pass.column(TIME_COL_SPEC, &self.timestamps, false)?;
+        pass.column(MESSAGE_COL_SPEC, &self.messages, false)?;
+        pass.values::<UIntCursor, _, _>(DEPS_COUNT_COL_SPEC, || self.num_deps().map(as_num_deps))?;
+        pass.values::<DeltaCursor, _, _>(DEPS_VAL_COL_SPEC, || self.deps_iter().map(as_deps))?;
+        pass.column(EXTRA_META_COL_SPEC, &self.extra_bytes_meta, false)?;
+        pass.raw(EXTRA_VAL_COL_SPEC, &self.extra_bytes_raw)
+    }
+
     pub(crate) fn new(num_actors: usize) -> Self {
         Self {
             edges: Vec::new(),
@@ -824,9 +908,12 @@ impl ChangeGraphCols {
 
         let mut num_ops = Vec::with_capacity(len);
         for (i, d) in deps_count.enumerate() {
+            let max_op = *max_ops
+                .get(i)
+                .ok_or(LoadError::InvalidColumnLength(DEPS_COUNT_COL_SPEC))?;
             let d = d? as usize;
             if d == 0 {
-                num_ops.push(max_ops[i] as u64);
+                num_ops.push(max_op as u64);
                 parents.push(None);
                 continue;
             }
@@ -836,16 +923,27 @@ impl ChangeGraphCols {
             for e in 0..d {
                 let dep = deps_val.next();
                 let dep = dep.ok_or(LoadError::InvalidColumnLength(DEPS_VAL_COL_SPEC))??;
+                // Dependencies must name an already preceding change. Check
+                // before indexing, including self and forward references.
+                if dep as usize >= i {
+                    return Err(LoadError::InvalidColumnLength(DEPS_VAL_COL_SPEC));
+                }
+                let dependency_max_op = *max_ops
+                    .get(dep as usize)
+                    .ok_or(LoadError::InvalidColumnLength(DEPS_VAL_COL_SPEC))?;
                 let target = NodeIdx(dep);
                 let next = EdgeIdx::new(edges.len() + 1);
                 let next = if e + 1 == d { None } else { Some(next) };
-                last_max_op = std::cmp::max(last_max_op, max_ops[dep as usize]);
+                last_max_op = std::cmp::max(last_max_op, dependency_max_op);
                 edges.push(Edge { target, next })
             }
-            if last_max_op > max_ops[i] {
+            if last_max_op > max_op {
                 return Err(LoadError::InvalidMaxOp);
             }
-            num_ops.push(max_ops[i] as u64 - last_max_op as u64);
+            num_ops.push(max_op as u64 - last_max_op as u64);
+        }
+        if deps_val.next().is_some() {
+            return Err(LoadError::InvalidColumnLength(DEPS_VAL_COL_SPEC));
         }
         let num_ops = num_ops.into_iter().collect();
 
@@ -1212,4 +1310,76 @@ pub(crate) mod ids {
     pub(super) const DEPS_VAL_COL_SPEC:   ColumnSpec = ColumnSpec::new_delta(DEPS_COL_ID);
     pub(super) const EXTRA_META_COL_SPEC: ColumnSpec = ColumnSpec::new_value_metadata(EXTRA_COL_ID);
     pub(super) const EXTRA_VAL_COL_SPEC:  ColumnSpec = ColumnSpec::new_value(EXTRA_COL_ID);
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for ChangeGraph {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            edges,
+            hashes,
+            actors,
+            parents,
+            seq,
+            max_ops,
+            max_op: _,
+            num_ops,
+            timestamps,
+            messages,
+            extra_bytes_meta,
+            extra_bytes_raw,
+            heads,
+            nodes_by_hash,
+            clock_cache,
+            seq_index,
+        } = self;
+        edges.native_visit(visitor)?;
+        hashes.native_visit(visitor)?;
+        actors.native_visit(visitor)?;
+        parents.native_visit(visitor)?;
+        seq.native_visit(visitor)?;
+        max_ops.native_visit(visitor)?;
+        num_ops.native_visit(visitor)?;
+        timestamps.native_visit(visitor)?;
+        messages.native_visit(visitor)?;
+        extra_bytes_meta.native_visit(visitor)?;
+        extra_bytes_raw.native_visit(visitor)?;
+        heads.native_visit(visitor)?;
+        // Both maps are insert-only; actor rewrites modify values only.
+        visitor.hash_map(nodes_by_hash, nodes_by_hash.capacity())?;
+        visitor.hash_map(clock_cache, clock_cache.capacity())?;
+        seq_index.native_visit(visitor)
+    }
+}
+impl NativeVisit for Edge {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { target: _, next: _ } = self;
+        let _ = visitor;
+        Ok(())
+    }
+}
+impl NativeVisit for NodeIdx {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let _ = visitor;
+        Ok(())
+    }
+}
+impl NativeVisit for EdgeIdx {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let _ = visitor;
+        Ok(())
+    }
 }

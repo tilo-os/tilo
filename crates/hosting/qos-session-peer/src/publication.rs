@@ -30,7 +30,11 @@ impl PublicationCursor {
             self.generation = None;
         }
         for index in self.sent..owner.outgoing().len() {
-            if let Err(error) = send(&owner.outgoing()[index], owner.outgoing_kinds()[index]) {
+            let publication = owner
+                .outgoing()
+                .get(index)
+                .expect("bounded publication index");
+            if let Err(error) = send(publication.bytes, publication.kind) {
                 // Failure is uncertain. Retry the complete committed basis; duplicates
                 // are handled by normal admission, never by retiring persisted bytes.
                 *self = Self::default();
@@ -94,7 +98,7 @@ mod tests {
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     fn commit_small_changed_record(owner: &mut SessionOwner, value: u64) {
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut candidate = owner.peer().clone();
         let mut document = AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
@@ -171,7 +175,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("owner");
         let mut owner = SessionOwner::initialize(&root).unwrap();
-        let original = owner.outgoing().to_vec();
+        let original = outgoing_bytes(&owner).to_vec();
         let mut cursor = PublicationCursor::default();
         let mut calls = 0;
         assert!(
@@ -196,7 +200,7 @@ mod tests {
         cursor
             .send(&owner, |_, _| panic!("history retransmitted"))
             .unwrap();
-        assert_eq!(owner.outgoing(), original);
+        assert_eq!(outgoing_bytes(&owner), original);
         let generation = owner.status().generation;
         owner
             .queue_pending("pending", b"original invocation", true)
@@ -215,12 +219,12 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert_eq!(delivered, owner.outgoing());
+        assert_eq!(delivered, outgoing_bytes(&owner));
         assert!(owner.status().generation > generation);
-        let persisted = owner.outgoing().to_vec();
+        let persisted = outgoing_bytes(&owner).to_vec();
         drop(owner);
         let owner = SessionOwner::open(&root).unwrap();
-        assert_eq!(owner.outgoing(), persisted);
+        assert_eq!(outgoing_bytes(&owner), persisted);
         let mut reconnect = PublicationCursor::default();
         delivered.clear();
         reconnect
@@ -286,11 +290,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             native_retry,
-            owner
-                .outgoing()
+            outgoing_bytes(&owner)
                 .iter()
                 .cloned()
-                .zip(owner.outgoing_kinds().iter().copied())
+                .zip(outgoing_kinds(&owner).iter().copied())
                 .collect::<Vec<_>>(),
             "only the failed native cursor falls back to the full durable basis"
         );
@@ -352,11 +355,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             delivered,
-            owner
-                .outgoing()
+            outgoing_bytes(&owner)
                 .iter()
                 .cloned()
-                .zip(owner.outgoing_kinds().iter().copied())
+                .zip(outgoing_kinds(&owner).iter().copied())
                 .collect::<Vec<_>>()
         );
     }
@@ -390,12 +392,20 @@ mod tests {
             .unwrap();
         assert_eq!(
             delivered,
-            owner
-                .outgoing()
+            outgoing_bytes(&owner)
                 .iter()
                 .cloned()
-                .zip(owner.outgoing_kinds().iter().copied())
+                .zip(outgoing_kinds(&owner).iter().copied())
                 .collect::<Vec<_>>()
         );
     }
+}
+
+#[cfg(test)]
+fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+#[cfg(test)]
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
 }

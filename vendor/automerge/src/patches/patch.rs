@@ -93,3 +93,42 @@ impl fmt::Display for PatchAction {
         write!(f, "{:?}", self)
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Patch {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { obj, path, action } = self;
+
+        obj.native_visit(visitor)?;
+        path.native_visit(visitor)?;
+        action.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for PatchAction {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::PutMap { key, value, .. } => {
+                key.native_visit(visitor)?;
+                value.native_visit(visitor)
+            }
+            Self::PutSeq { value, .. } => value.native_visit(visitor),
+            Self::Insert { values, .. } => values.native_visit(visitor),
+            Self::SpliceText { value, marks, .. } => {
+                value.native_visit(visitor)?;
+                marks.native_visit(visitor)
+            }
+            Self::Increment { prop, .. } | Self::Conflict { prop } => prop.native_visit(visitor),
+            Self::DeleteMap { key } => key.native_visit(visitor),
+            Self::Mark { marks } => marks.native_visit(visitor),
+            Self::DeleteSeq { .. } => Ok(()),
+        }
+    }
+}

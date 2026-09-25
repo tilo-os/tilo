@@ -440,8 +440,14 @@ mod tests {
         assert!(
             app.invoke_resource_operation(
                 operation.kind,
-                &operation.encoded.type_id,
-                &operation.encoded.payload,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .type_id,
+                &operation
+                    .encoded()
+                    .expect("test requires prepared encoding")
+                    .payload,
                 &doc,
                 &ROOT,
             )

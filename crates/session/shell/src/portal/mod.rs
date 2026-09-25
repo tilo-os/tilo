@@ -74,7 +74,7 @@ pub mod inhibit;
 #[cfg(any(test, target_os = "linux"))]
 pub mod input_capture;
 pub mod lifecycle;
-#[cfg(any(test, target_os = "linux"))]
+// Native media observes this policy on every supported shell host.
 pub mod lockdown;
 #[cfg(any(test, target_os = "linux"))]
 pub mod notification;
@@ -747,6 +747,21 @@ impl PromptQueueHandle {
             // The request may be between lifecycle registration and prompt
             // enqueue; retain the key so that race resolves as Deny instead.
             true
+        }
+    }
+
+    /// Cancel a request that this in-process owner already enqueued. Unlike a
+    /// D-Bus close-before-enqueue race, it needs no retained cancellation key.
+    pub(crate) fn cancel_enqueued_request(&self, request_key: &str) {
+        let removed = self.state.lock().ok().and_then(|mut state| {
+            state
+                .pending
+                .iter()
+                .position(|pending| pending.request_key.as_deref() == Some(request_key))
+                .map(|index| state.pending.remove(index))
+        });
+        if let Some(pending) = removed {
+            let _ = pending.reply.send(PromptOutcome::Deny);
         }
     }
 

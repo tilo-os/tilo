@@ -6,7 +6,10 @@
 // that the session settled; the counter is cleared at the next `schedule` and
 // only if it held for at least STABLE_MS.
 const STABLE_MS=30000;
-const MAX_DELAY_MS=15000;
+// Regaining connectivity must be noticed within a few seconds even when the
+// browser reports no 'online' event (TCP path loss, host restart): a failed
+// attempt against an unreachable host costs one refused connection.
+const MAX_DELAY_MS=5000;
 export function createRecoveryCoordinator({attempt,onState=()=>{},now=Date.now,random=Math.random,setTimeout=globalThis.setTimeout,clearTimeout=globalThis.clearTimeout}){
  let counter=0,timer=null,active=null,disposed=false,generation=0,nextAttemptAtMs=null,requested=false,settledAt=null;
  const emit=()=>{if(!disposed)onState({attempt:counter,nextAttemptAtMs,inFlight:active!==null});};

@@ -50,6 +50,7 @@ pub mod host;
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
+pub mod managed;
 pub mod manifest;
 pub mod netgate;
 pub mod performance;
@@ -61,3 +62,6 @@ pub mod run;
 pub mod sandbox;
 pub mod seccomp;
 pub mod services;
+
+#[cfg(test)]
+mod managed_tests;

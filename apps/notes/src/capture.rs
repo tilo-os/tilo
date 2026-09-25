@@ -372,6 +372,38 @@ fn chord(driver: &mut FrameHarness, modifiers: &[&str], key: &str) {
     driver.set_modifiers(&[]);
 }
 
+/// Stable block ids of the rendered blocks, top to bottom (presence keys
+/// name blocks by id).
+fn visible_block_ids(driver: &FrameHarness) -> Vec<String> {
+    fn access(node: &ui::a11y::AccessNode, out: &mut Vec<(f64, String)>) {
+        if let Some(id) = node
+            .semantic_key
+            .as_deref()
+            .and_then(|key| key.strip_prefix("notes.block:"))
+            .filter(|suffix| !suffix.contains(':'))
+            && let Some(bounds) = node.bounds
+        {
+            out.push((bounds.to_rect().y0, id.to_owned()));
+        }
+        for child in &node.children {
+            access(child, out);
+        }
+    }
+    fn retained(node: &ui::headless::InspectionNode, out: &mut Vec<(f64, String)>) {
+        if let Some(semantics) = &node.semantics {
+            access(semantics, out);
+        }
+        for child in &node.children {
+            retained(child, out);
+        }
+    }
+    let mut rows = Vec::new();
+    retained(&driver.inspection().root, &mut rows);
+    rows.sort_by(|a, b| a.0.total_cmp(&b.0));
+    rows.dedup_by(|a, b| a.1 == b.1);
+    rows.into_iter().map(|(_, id)| id).collect()
+}
+
 fn visible_block_rects(driver: &FrameHarness) -> Vec<vello::kurbo::Rect> {
     fn access(node: &ui::a11y::AccessNode, rects: &mut Vec<vello::kurbo::Rect>) {
         if node.semantic_key.as_deref().is_some_and(|key| {
@@ -836,18 +868,19 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
         Some("presence") => {
             use ui::permissions::UserId;
-            use ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+            use ui::presence::{PresenceCtx, PresenceKey, SelectionRange};
             let mut presence = PresenceCtx::empty();
             let alice = UserId("alice".into());
             let bob = UserId("bob".into());
             presence.set_display_name(alice.clone(), "Alice");
             presence.set_display_name(bob, "Bob");
-            let block = PresenceKey::Widget {
-                path: vec![
-                    PathSegment::Field("notes_block".into()),
-                    PathSegment::Index(4),
-                ],
-            };
+            let fifth = visible_block_ids(driver)
+                .into_iter()
+                .nth(4)
+                .ok_or_else(|| {
+                    LaunchError::Operation("presence capture needs five blocks".into())
+                })?;
+            let block = ui::widget::block_editor::block_presence_key(&fifth);
             presence.set_caret(&block, alice.clone(), 18);
             presence.record_peer_typing(
                 alice,

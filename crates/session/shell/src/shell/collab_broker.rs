@@ -130,6 +130,7 @@ pub use qos_action_broker::collab_broker::{
 pub struct BrokerHandle {
     inner: qos_action_broker::collab_broker::BrokerHandle,
     local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
+    native_media: Option<super::native_media::NativeMediaService>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -156,6 +157,10 @@ impl std::ops::Deref for BrokerHandle {
 }
 
 impl BrokerHandle {
+    pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
+        self.native_media.clone()
+    }
+
     pub(crate) fn local_session_lifecycle(
         &self,
     ) -> crate::shell::collab_broker_capnp::LocalSessionLifecycle {
@@ -236,7 +241,16 @@ pub fn spawn_native(
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
-    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    let owner = Arc::new(super::broker_services::NativeOwnerCommitService::new(
+        membership.clone(),
+        peer_sync.clone(),
+    ));
+    let publisher = PeerPublisher::with_optional_owner_commit(
+        peer_sync
+            .clone()
+            .map(|network| network as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>),
+        owner,
+    );
     spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
@@ -715,6 +729,7 @@ fn spawn_inner(
             .ok()
     });
 
+    let local_session = crate::shell::collab_broker_capnp::LocalSessionAuthority::new();
     let mut services = if config.is_none() {
         super::broker_services::native_services(membership.clone(), peer_sync.cloned())
     } else {
@@ -730,6 +745,36 @@ fn spawn_inner(
     };
     if let Some((service, _)) = realtime_fabric.as_ref() {
         services.realtime = Some(Arc::clone(service));
+    }
+    let native_media = peer_sync.and_then(|network| {
+        let (device, _) = network.local_device_fabric_identity()?;
+        let (_, bridge) = realtime_fabric.as_ref()?;
+        Some(super::native_media::NativeMediaService::new(
+            local_session.lifecycle(),
+            bridge.realtime_capture_broker()?,
+            device,
+        ))
+    });
+    if let Some(service) = native_media.as_ref() {
+        if let Some(network) = peer_sync {
+            let installed = network.native_owner().and_then(|owner| {
+                crate::network::native_media::Factory::new(
+                    network.cmd_tx.clone(),
+                    owner,
+                    service.capture_broker(),
+                    network.runtime_handle()?,
+                )
+            });
+            match installed {
+                Ok(factory) => {
+                    service.install_factory(Arc::new(factory));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "native media factory prerequisites unavailable")
+                }
+            }
+        }
+        services.native_media = Some(Arc::new(service.clone()));
     }
     let authority = membership.as_ref().map(|tree| {
         Arc::new(super::broker_services::NativeWorkspaceAuthority(
@@ -782,7 +827,8 @@ fn spawn_inner(
     }
     Ok(BrokerHandle {
         inner,
-        local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority::new(),
+        local_session,
+        native_media,
         realtime_fabric: realtime_fabric.map(|(_, bridge)| bridge),
         drain_thread,
         drain_quit,

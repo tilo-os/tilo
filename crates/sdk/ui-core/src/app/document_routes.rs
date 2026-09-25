@@ -60,7 +60,9 @@ impl App {
         // A mutable widget callback is not a read-only notification boundary.
         if !matches!(
             event,
-            CollabEvent::Document { .. } | CollabEvent::ScrollbackBatch { .. }
+            CollabEvent::Document { .. }
+                | CollabEvent::ScrollbackBatch { .. }
+                | CollabEvent::CommittedDocument { .. }
         ) {
             crate::widget::handle_collab_event(self.root_widget.as_mut(), event);
         }
@@ -113,7 +115,37 @@ impl App {
                 }
             }))
     }
+    /// Queue acceptance may have advanced producer heads before a later
+    /// worker failure. Restore history obligations before observing another
+    /// route or attempting publication; the real broker still authorizes retry.
+    pub(super) fn restore_failed_document_publications(&mut self) {
+        let primary_failed = self.collaboration.manager.document_publication_failed();
+        let room_failed = self
+            .collaboration
+            .room_manager
+            .as_ref()
+            .is_some_and(CollaborationManager::document_publication_failed);
+        if primary_failed {
+            self.restore_primary_publication_obligations();
+        }
+        if (primary_failed || room_failed)
+            && let Some(room) = self.persistence.room_index.as_mut()
+        {
+            room.advance_outbound(Vec::new());
+        }
+    }
+
+    fn restore_primary_publication_obligations(&mut self) {
+        self.state.advance_outbound(Vec::new());
+        self.actions.bound_record_sync = None;
+        for owner in &mut self.document_routes.owners {
+            owner.sent_heads.clear();
+            owner.needs_snapshot = true;
+        }
+    }
+
     pub(super) fn refresh_document_routes(&mut self) {
+        self.restore_failed_document_publications();
         #[cfg(test)]
         DOCUMENT_ROUTE_REFRESHES.set(DOCUMENT_ROUTE_REFRESHES.get() + 1);
         let before = self.document_sync_status().map(str::to_owned);
@@ -207,7 +239,7 @@ impl App {
                 entry.needs_snapshot,
                 entry.pending.failure.is_some(),
             );
-            let (mut document, heads) = match publication {
+            let (mutation, authorization, heads) = match publication {
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
                     blocked.get_or_insert("an owned document has unfinished changes");
@@ -218,20 +250,18 @@ impl App {
                     continue;
                 }
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
-                    document,
+                    mutation,
+                    authorization,
                     heads,
-                }) => (document, heads),
+                }) => (mutation, authorization, heads),
                 Err(_) => {
                     blocked.get_or_insert("an owned document is unreadable");
                     continue;
                 }
             };
-            // Clone serialization leaves the canonical writer and every other
-            // subscriber's incremental save cursor intact.
-            let request = if entry.needs_snapshot {
-                CollabRequest::document_snapshot(document.save())
-            } else {
-                CollabRequest::document_incremental(document.save_after(&entry.sent_heads))
+            let request = CollabRequest::Document {
+                mutation,
+                authorization,
             };
             sends.push((entry.route.clone(), request, heads));
         }
@@ -265,6 +295,10 @@ impl App {
                 self.action_publication_failure = Some(format!(
                     "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
                 ));
+                self.restore_primary_publication_obligations();
+                if let Some(room) = self.persistence.room_index.as_mut() {
+                    room.advance_outbound(Vec::new());
+                }
                 self.collaboration.manager.stop_after_publication_failure();
                 self.layout.layout_dirty = true;
                 false
@@ -288,13 +322,34 @@ impl App {
                 continue;
             }
             while let Some(mutation) = entry.pending.front() {
+                // Remote history is already held by its sender and the owner;
+                // republishing it as our Incremental is a pure echo. When every
+                // local change had already been queued before this merge, the
+                // merged frontier counts as published. Otherwise unsent local
+                // changes interleave and the next publication keeps them.
+                use automerge::transaction::Transactable as _;
+                let (store, checkout) = owner.store_checkout();
+                let fully_sent = !entry.needs_snapshot
+                    && store
+                        .read_checked(&checkout.id, |doc| {
+                            doc.pending_ops() == 0
+                                && crate::history_mode::sorted_heads(doc.base_heads())
+                                    == entry.sent_heads
+                        })
+                        .unwrap_or(false);
                 match owner.merge_remote(mutation) {
                     Ok(Some(applied)) => {
                         entry.pending.pop_applied();
                         changed |= applied;
                         if applied {
-                            let (store, checkout) = owner.store_checkout();
                             store.schedule_committed_history(&checkout.id);
+                            if fully_sent
+                                && let Ok(heads) = store.read_checked(&checkout.id, |doc| {
+                                    crate::history_mode::sorted_heads(doc.base_heads())
+                                })
+                            {
+                                entry.sent_heads = heads;
+                            }
                         }
                     }
                     Ok(None) => break,
@@ -353,7 +408,10 @@ impl App {
     ) {
         // Before the first record checkout the launcher's unqualified route
         // carries room-index discovery, never the editable record document.
-        if self.persistence.records.is_some() && self.collaboration.room_manager.is_none() {
+        if self.persistence.records.is_some()
+            && self.collaboration.room_manager.is_none()
+            && self.native_room_route.is_none()
+        {
             if let Some(route) = self
                 .collaboration
                 .manager

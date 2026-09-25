@@ -251,6 +251,7 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 pkg-config = "0.3"
 
 [dev-dependencies]
+atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 regex.workspace = true
 # The `diag!` tests reproduce the crash they prevent: they need `dup2` to point
 # the process's stderr at a pipe, and the child's exit signal to assert SIGABRT.

@@ -815,7 +815,7 @@ impl FrameHarness {
         let mut scratch = vello::Scene::new();
         for _ in 0..3 {
             let (desired, height) = overlay.palette.desired_size();
-            let width = desired.min((f64::from(self.viewport.0) - 32.0).max(1.0));
+            let width = (desired * 1.5).min((f64::from(self.viewport.0) - 32.0).max(1.0));
             overlay.palette.set_rect(Rect::new(
                 (f64::from(self.viewport.0) - width) / 2.0,
                 24.0,

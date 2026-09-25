@@ -77,9 +77,11 @@
 pub mod approval;
 pub mod canonical;
 pub mod cert;
+pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
 pub mod image;
+pub mod machine_mesh;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;

@@ -6,6 +6,87 @@ use ui::{
     record::{RecordCheckout, RecordId, RecordOwners},
 };
 
+/// A new workspace has governance and topology custody, but no app records.
+pub(crate) fn empty_workspace(
+    room: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    name: &str,
+) -> Result<SeedState, String> {
+    use ui::automerge::{AutoCommit, Change, ObjType, ROOT, transaction::Transactable};
+
+    let mut doc = AutoCommit::new().with_actor(ui::automerge::ActorId::from(
+        authority.device_public_key.to_vec(),
+    ));
+    let changes = qos_peer_state::seed_room(room, authority, roster)?
+        .into_iter()
+        .map(Change::from_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    doc.apply_changes(changes).map_err(|e| e.to_string())?;
+    doc.put(ROOT, "name", name).map_err(|e| e.to_string())?;
+    doc.put_object(ROOT, "contents", ObjType::Map)
+        .map_err(|e| e.to_string())?;
+    let owners = doc
+        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+        .map_err(|e| e.to_string())?;
+    let salt = rand::random::<u16>().max(1);
+    doc.put(
+        owners,
+        format!("{salt:04x}"),
+        hex::encode(authority.device_public_key),
+    )
+    .map_err(|e| e.to_string())?;
+    doc.put(ROOT, "desktop_counter_v1", 1_u64)
+        .map_err(|e| e.to_string())?;
+    // This is current topology, so legacy app migrations must never seed it.
+    doc.put(ROOT, "writer_notes_split_v1", 1_u64)
+        .map_err(|e| e.to_string())?;
+    doc.commit();
+    Ok(SeedState {
+        room_changes: doc
+            .get_changes(&[])
+            .iter()
+            .map(|c| c.raw_bytes().to_vec())
+            .collect(),
+        documents: vec![],
+    })
+}
+
+/// Recordless sessions are complete only with initialized native custody and
+/// no app tabs that would require missing records. Empty named strips are valid.
+pub(crate) fn recordless_desktop_is_initialized(peer: &qos_peer_state::StatePeer) -> bool {
+    use qos_desktop::projection::RoomProjection;
+    use ui::automerge::{ObjType, ROOT, ReadDoc, Value};
+
+    let Some(doc) = peer.admitted_room() else {
+        return false;
+    };
+    if !matches!(
+        doc.get(ROOT, "contents"),
+        Ok(Some((Value::Object(ObjType::Map), _)))
+    ) {
+        return false;
+    }
+    let Ok(Some((Value::Object(ObjType::Map), owners))) = doc.get(ROOT, "contents_owners_v1")
+    else {
+        return false;
+    };
+    let authority = hex::encode(peer.authority().device_public_key);
+    let owns_namespace = doc.keys(&owners).any(|key| {
+        u16::from_str_radix(&key, 16).is_ok_and(|salt| salt != 0)
+            && doc
+                .get(&owners, key)
+                .ok()
+                .flatten()
+                .is_some_and(|(value, _)| value.to_str() == Some(authority.as_str()))
+    });
+    owns_namespace
+        && RoomProjection::contents_of(doc)
+            .iter()
+            .all(|strip| strip.groups.iter().all(|group| group.tabs.is_empty()))
+}
+
 struct LegacyWriterNotesSplit {
     strips: Vec<qos_desktop::Strip>,
     salt: u16,
@@ -59,11 +140,11 @@ fn legacy_writer_notes_split(
             let writer = group
                 .tabs
                 .iter()
-                .position(|tab| app_is(&tab.tile, "dev.qos.word-processor"));
+                .position(|tab| app_is(&tab.tile, "so.tilo.word-processor"));
             let notes = group
                 .tabs
                 .iter()
-                .position(|tab| app_is(&tab.tile, "dev.qos.notes"));
+                .position(|tab| app_is(&tab.tile, "so.tilo.notes"));
             if writer.is_some() && notes.is_some() {
                 if matched.is_some() {
                     return Err("multiple legacy Writer and Notes groups".into());
@@ -117,7 +198,7 @@ fn legacy_writer_notes_split(
     let old_notes_tab = notes.id;
     let notes_record = routes.get(&old_notes_tab).cloned().unwrap_or_else(|| {
         qos_desktop::records::component_record(
-            "dev.qos.notes",
+            "so.tilo.notes",
             old_notes_tab,
             notes::definition().record_kind.clone(),
         )
@@ -158,7 +239,7 @@ pub(crate) fn seed(
     let mut documents = vec![];
     for (durable_app_id, definition, checkout) in [
         (
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             word_processor::definition(),
             RecordCheckout::new(
                 RecordId::for_tab(1),
@@ -166,7 +247,7 @@ pub(crate) fn seed(
             ),
         ),
         (
-            "dev.qos.chat",
+            "so.tilo.chat",
             chat::definition(),
             RecordCheckout::package_primary(chat::definition().record_kind.clone()),
         ),
@@ -244,10 +325,10 @@ pub(crate) fn bootstrap_desktop(
             return Ok(false);
         };
         if peer
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .is_none()
             || peer
-                .document("dev.qos.notes", &split.notes_record)
+                .document("so.tilo.notes", &split.notes_record)
                 .is_none()
         {
             return Err("legacy Writer or Notes record missing during topology migration".into());
@@ -281,9 +362,9 @@ pub(crate) fn bootstrap_desktop(
         return Ok(true);
     }
     if peer
-        .document("dev.qos.word-processor", "tab:0000000000000001")
+        .document("so.tilo.word-processor", "tab:0000000000000001")
         .is_none()
-        || peer.document("dev.qos.chat", "").is_none()
+        || peer.document("so.tilo.chat", "").is_none()
     {
         return Err(
             "legacy canonical records missing; desktop migration cannot replace them".into(),
@@ -316,7 +397,7 @@ pub(crate) fn bootstrap_desktop(
     let chat_group = mint()?;
     let chat = mint()?;
     let definition = notes::definition();
-    let durable_app_id = "dev.qos.notes";
+    let durable_app_id = "so.tilo.notes";
     let checkout = qos_desktop::records::component_record(
         durable_app_id,
         notes,
@@ -349,21 +430,21 @@ pub(crate) fn bootstrap_desktop(
         window_groups: vec![
             WindowGroup {
                 id: writer_group,
-                tabs: vec![tile(writer, "Writer", "dev.qos.word-processor")],
+                tabs: vec![tile(writer, "Writer", "so.tilo.word-processor")],
                 active_tab: writer,
                 width: WindowWidth::Normal,
                 maximized: false,
             },
             WindowGroup {
                 id: notes_group,
-                tabs: vec![tile(notes, "Notes", "dev.qos.notes")],
+                tabs: vec![tile(notes, "Notes", "so.tilo.notes")],
                 active_tab: notes,
                 width: WindowWidth::Normal,
                 maximized: false,
             },
             WindowGroup {
                 id: chat_group,
-                tabs: vec![tile(chat, "Chat", "dev.qos.chat")],
+                tabs: vec![tile(chat, "Chat", "so.tilo.chat")],
                 active_tab: chat,
                 width: WindowWidth::Normal,
                 maximized: false,

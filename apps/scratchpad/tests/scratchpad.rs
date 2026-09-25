@@ -189,3 +189,33 @@ fn independent_edits_merge_without_replacing_the_text_object() {
     assert_eq!(left.get(ROOT, "body").unwrap().unwrap().1, object);
     assert_eq!(note_text(&left), "hello brave world!");
 }
+
+/// Two replicas of a freshly opened note each type first: the body must be
+/// one shared `Text` from the start, not two lazily created ones of which a
+/// merge shows only the winner.
+#[test]
+fn concurrent_first_edits_on_two_replicas_both_survive() {
+    use tilo_actions::Action;
+    for _ in 0..16 {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut state, _root) = scratchpad::open(directory.path()).unwrap();
+        let mut left = state.doc.fork();
+        let mut right = state.doc.fork();
+        scratchpad::actions::EditNote {
+            text: "left".into(),
+        }
+        .apply(&mut left)
+        .unwrap();
+        scratchpad::actions::EditNote {
+            text: "right".into(),
+        }
+        .apply(&mut right)
+        .unwrap();
+        left.merge(&mut right).unwrap();
+        let text = note_text(&left);
+        assert!(
+            text.contains("left") && text.contains("right"),
+            "both replicas' first edits survive; got {text:?}"
+        );
+    }
+}

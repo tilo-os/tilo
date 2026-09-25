@@ -2691,7 +2691,9 @@ mod tests {
             .expect("delete spec");
         let from_spec = match &spec.input {
             ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => {
+                panic!("delete is an immediate action")
+            }
         };
 
         assert_eq!(from_affordance.type_id, from_spec.type_id);

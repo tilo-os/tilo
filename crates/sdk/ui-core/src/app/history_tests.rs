@@ -1074,6 +1074,7 @@ fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_
     for (route, request) in &fixture.app.document_routes.sent {
         let CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(data),
+            ..
         } = request
         else {
             panic!("initial publication is a snapshot")
@@ -1163,6 +1164,120 @@ fn native_owned_routes_isolate_two_documents_and_outer_for_snapshot_incremental_
         crate::history_mode::owner::OWNED_DOCUMENT_CLONES.get(),
         clones,
         "the unchanged pump path does not clone owned documents"
+    );
+}
+#[test]
+fn native_owned_remote_merge_is_not_republished_as_an_echo() {
+    let mut fixture = RoutedOwners::new();
+    let id = fixture.bindings[0].checkout.id.clone();
+    let route = fixture.bindings[0].broker_route().unwrap();
+    // Only the first owner is under test; the second may publish its own
+    // initial snapshot whenever its asynchronous route join completes.
+    let sent = |fixture: &RoutedOwners| {
+        fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .filter(|(sent, _)| *sent == route)
+            .map(|(_, request)| request.clone())
+            .collect::<Vec<_>>()
+    };
+    let heads = |fixture: &RoutedOwners| {
+        fixture
+            .records
+            .read_checked(&id, |doc| doc.base_heads())
+            .unwrap()
+    };
+    let published = |fixture: &RoutedOwners| match &sent(fixture)[..] {
+        [request] => match request {
+            CollabRequest::Document {
+                mutation: collab_types::DocumentMutation::Incremental(bytes),
+                ..
+            } => bytes.clone(),
+            other => panic!("expected an incremental publication, got {other:?}"),
+        },
+        other => panic!("expected exactly one publication, got {}", other.len()),
+    };
+    let commit_local = |fixture: &RoutedOwners, value: &str| {
+        fixture
+            .records
+            .with_history(&id, |doc, history| {
+                doc.put(ROOT, "local", value).unwrap();
+                history.commit_action_authored(
+                    doc,
+                    None,
+                    None,
+                    Some(fixture.bindings[0].author.clone()),
+                );
+            })
+            .unwrap();
+    };
+
+    // The initial snapshot carries an authored change (the bare factory
+    // record has no publishable provenance).
+    commit_local(&fixture, "initial");
+    // The fake broker admits the route join asynchronously; publication is
+    // refused (and retried) until the route is publishable.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while sent(&fixture).is_empty() {
+        fixture.app.publish_owned_documents();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "route never became publishable"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(sent(&fixture).len(), 1, "initial snapshot");
+    fixture.app.document_routes.sent.clear();
+
+    // Fully published before the merge: the merged remote history is held by
+    // its sender and owner, so it is not echoed back as our Incremental.
+    for incremental in [true, false] {
+        let incoming = fixture.remote(0, &format!("remote-{incremental}"), incremental);
+        fixture.app.apply_signed_document_envelope(&incoming, None);
+        assert_eq!(
+            fixture
+                .value(0, &format!("remote-{incremental}"))
+                .as_deref(),
+            Some("remote")
+        );
+        fixture.app.publish_owned_documents();
+        assert!(
+            sent(&fixture).is_empty(),
+            "a merged remote change must not be republished"
+        );
+    }
+
+    // A later local edit publishes exactly its own change.
+    let before = heads(&fixture);
+    commit_local(&fixture, "after merge");
+    fixture.app.publish_owned_documents();
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
+    assert_eq!(published(&fixture), expected);
+    fixture.app.document_routes.sent.clear();
+
+    // Unsent local history interleaved with a merge is still published.
+    let before = heads(&fixture);
+    commit_local(&fixture, "unsent before merge");
+    let incoming = fixture.remote(0, "interleaved-remote", true);
+    fixture.app.apply_signed_document_envelope(&incoming, None);
+    assert_eq!(
+        fixture.value(0, "interleaved-remote").as_deref(),
+        Some("remote")
+    );
+    fixture.app.publish_owned_documents();
+    let expected = fixture
+        .records
+        .read_checked(&id, |doc| doc.clone().save_after(&before))
+        .unwrap();
+    assert_eq!(
+        published(&fixture),
+        expected,
+        "unsent local changes survive the merge into the next publication"
     );
 }
 #[test]
@@ -1258,7 +1373,26 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
             epoch: uuid::Uuid::new_v4(),
         });
     fixture.app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-    fixture.app.publish_owned_documents();
+    // Resolve the broker's document mode on the new secondary route before
+    // any document is eligible for publication. Production retries each frame.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        fixture.app.publish_owned_documents();
+        if fixture
+            .app
+            .document_routes
+            .sent
+            .iter()
+            .any(|(route, _)| Some(route) == fixture.bindings[0].broker_route().as_ref())
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reconnected route did not become publishable"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let (_, request) = fixture
         .app
         .document_routes
@@ -1268,6 +1402,7 @@ fn native_owned_committed_offline_change_is_in_first_reconnected_snapshot() {
         .unwrap();
     let CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Snapshot(data),
+        ..
     } = request
     else {
         panic!("reconnect needs fresh snapshot")
@@ -1409,6 +1544,7 @@ fn native_owned_review_restore_enqueues_one_target_delta_and_preserves_other_own
     );
     let CollabRequest::Document {
         mutation: collab_types::DocumentMutation::Incremental(data),
+        ..
     } = &fixture.app.document_routes.sent[0].1
     else {
         panic!("restore follows initial snapshot with exact-route delta")
@@ -4978,6 +5114,7 @@ fn round2_deferred_recovery_keeps_later_traffic(owned: bool, later_snapshot: boo
         );
         let CollabRequest::Document {
             mutation: collab_types::DocumentMutation::Snapshot(data),
+            ..
         } = &sent[0].1
         else {
             panic!("first owned publication is snapshot");
@@ -7936,4 +8073,91 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         assert!(b.drain_live().is_empty());
         assert_eq!(a.coverage().unsafe_late_attachments, 0);
     }
+}
+
+#[test]
+fn committed_queued_publication_failure_restores_all_producer_frontiers() {
+    let mut fixture = RoutedOwners::new();
+    // Actually enqueue each owner snapshot, which clears its replay obligation.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        fixture.app.publish_owned_documents();
+        if fixture
+            .app
+            .document_routes
+            .owners
+            .iter()
+            .all(|owner| !owner.needs_snapshot)
+        {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    fixture
+        .app
+        .state
+        .doc
+        .put(ROOT, "primary_accepted", "keep")
+        .unwrap();
+    let (_, heads) = fixture.app.state.pending_outbound_delta();
+    fixture.app.state.advance_outbound(heads);
+    let mut index = automerge::AutoCommit::new();
+    index.put(ROOT, "index_accepted", "keep").unwrap();
+    fixture.app.persistence.room_index = Some(crate::state::DocumentReplica::new(index));
+    fixture
+        .app
+        .collaboration
+        .manager
+        .fail_publication_for_test();
+    fixture.app.refresh_document_routes();
+    assert!(
+        fixture
+            .app
+            .document_routes
+            .owners
+            .iter()
+            .all(|owner| owner.needs_snapshot),
+        "accepted owner snapshots must be replayable after terminal worker loss"
+    );
+    assert!(
+        !fixture.app.state.pending_outbound_delta().0.is_empty(),
+        "primary frontier must replay"
+    );
+    assert!(
+        !fixture
+            .app
+            .persistence
+            .room_index
+            .as_mut()
+            .unwrap()
+            .pending_outbound_delta()
+            .0
+            .is_empty(),
+        "index frontier must replay"
+    );
+
+    let mut bound = RoutedPrimary::new(PrimaryMetadataShape::None);
+    let (delta, heads) = bound.app.pending_primary_document_delta().unwrap();
+    assert!(!delta.is_empty());
+    bound.app.advance_primary_document(heads);
+    assert!(
+        bound
+            .app
+            .pending_primary_document_delta()
+            .unwrap()
+            .0
+            .is_empty()
+    );
+    bound.app.collaboration.manager.fail_publication_for_test();
+    bound.app.refresh_document_routes();
+    assert!(
+        !bound
+            .app
+            .pending_primary_document_delta()
+            .unwrap()
+            .0
+            .is_empty(),
+        "canonical primary owner must replay its accepted history too"
+    );
 }

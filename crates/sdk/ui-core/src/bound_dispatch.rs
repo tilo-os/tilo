@@ -1,6 +1,10 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
 pub(crate) mod legacy_document;
 
+mod deferred_intent;
+use deferred_intent::validate_deferred_arguments;
+pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
+
 use crate::permissions::{PermissionContext, UserId};
 use crate::record::{RecordCheckout, RecordOpenError, RecordStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
@@ -663,19 +667,38 @@ pub(crate) fn activate_bound_search(
 pub(crate) struct BoundDirectoryWitness {
     owner: uuid::Uuid,
     pub(crate) generation: Option<u64>,
-    permissions: PermissionContext,
+    permissions: crate::permissions::DirectoryPermissionWitness,
     revisions: Vec<Option<String>>,
+    domains: Vec<crate::widget::ActionDirectoryInvocationDomain>,
+}
+impl BoundDirectoryWitness {
+    pub(crate) fn supports_model_refresh(&self) -> bool {
+        self.generation.is_some_and(|value| value != u64::MAX)
+            && !self.domains.is_empty()
+            && self.domains.iter().all(|domain| domain.is_supported())
+    }
+    /// Only used after fresh full declaration/effective-domain equality in one
+    /// hosted model pass. Generation is bookkeeping, never document authority.
+    pub(crate) fn same_model_owner_after(&self, before: &Self) -> bool {
+        self.supports_model_refresh()
+            && before.supports_model_refresh()
+            && self.owner == before.owner
+            && self.permissions == before.permissions
+            && self.revisions == before.revisions
+            && self.domains == before.domains
+            && matches!((before.generation, self.generation), (Some(old), Some(new)) if new >= old)
+    }
 }
 pub(crate) fn directory_witness(
     root: &dyn Widget,
     doc: &AutoCommit,
-) -> Result<Vec<BoundDirectoryWitness>, BoundDispatchError> {
+) -> Result<Vec<BoundDirectoryWitness>, String> {
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
         inherited: Option<CallbackBinding>,
         witnesses: &mut Vec<BoundDirectoryWitness>,
-    ) -> Result<(), BoundDispatchError> {
+    ) -> Result<(), String> {
         let boundary = widget.callback_binding();
         let binding = boundary.clone().or(inherited);
         if binding
@@ -684,8 +707,13 @@ pub(crate) fn directory_witness(
         {
             return Ok(());
         }
-        let _entry = binding.as_ref().map(CallbackBinding::enter).transpose()?;
+        let _entry = binding
+            .as_ref()
+            .map(CallbackBinding::enter)
+            .transpose()
+            .map_err(|error| format!("{error:?}"))?;
         if let Some(binding) = &binding {
+            let permissions = binding.permissions.borrow().directory_witness()?;
             let index = witnesses
                 .iter()
                 .position(|witness| witness.owner == binding.lifetime_id)
@@ -693,18 +721,31 @@ pub(crate) fn directory_witness(
                     witnesses.push(BoundDirectoryWitness {
                         owner: binding.lifetime_id,
                         generation: None,
-                        permissions: binding.permissions.borrow().clone(),
+                        permissions: permissions.clone(),
                         revisions: Vec::new(),
+                        domains: Vec::new(),
                     });
                     witnesses.len().saturating_sub(1)
                 });
             let witness = witnesses
                 .get_mut(index)
-                .ok_or(BoundDispatchError::MissingNode)?;
-            witness.generation = binding.generation()?;
+                .ok_or_else(|| "directory owner disappeared".to_string())?;
+            if witness.permissions != permissions {
+                return Err("directory owner policy changed during traversal".into());
+            }
+            witness.generation = binding.generation().map_err(|error| format!("{error:?}"))?;
+            if boundary.is_some() {
+                witness.domains.push(
+                    binding
+                        .read_document(doc, |doc, _| widget.action_directory_invocation_domain(doc))
+                        .map_err(|error| format!("{error:?}"))?,
+                );
+            }
             if boundary.is_none() {
                 witness.revisions.push(
-                    binding.read_document(doc, |doc, _| widget.action_directory_revision(doc))?,
+                    binding
+                        .read_document(doc, |doc, _| widget.action_directory_revision(doc))
+                        .map_err(|error| format!("{error:?}"))?,
                 );
             }
         }
@@ -727,7 +768,7 @@ struct CachedBoundResources {
     snapshot: BoundResourceSnapshot,
     generation: u64,
     local_generation: u64,
-    permissions: PermissionContext,
+    permissions: crate::permissions::DirectoryPermissionWitness,
     revisions: Vec<Option<String>>,
 }
 
@@ -740,7 +781,7 @@ pub(crate) fn discover_cached_bound_resources(
     doc: &AutoCommit,
     cache: &BoundResourceCache,
     local_generation: u64,
-) -> Result<Vec<BoundResourceSnapshot>, BoundDispatchError> {
+) -> Result<Vec<BoundResourceSnapshot>, String> {
     fn owned(
         widget: &dyn Widget,
         doc: &AutoCommit,
@@ -772,7 +813,7 @@ pub(crate) fn discover_cached_bound_resources(
         cache: &BoundResourceCache,
         local_generation: u64,
         snapshots: &mut Vec<BoundResourceSnapshot>,
-    ) -> Result<(), BoundDispatchError> {
+    ) -> Result<(), String> {
         let binding = widget.callback_binding();
         if binding
             .as_ref()
@@ -780,19 +821,34 @@ pub(crate) fn discover_cached_bound_resources(
         {
             return Ok(());
         }
-        let _entry = binding.as_ref().map(CallbackBinding::enter).transpose()?;
+        let _entry = binding
+            .as_ref()
+            .map(CallbackBinding::enter)
+            .transpose()
+            .map_err(|error| format!("{error:?}"))?;
         if let Some(binding) = &binding
             && !snapshots
                 .iter()
                 .any(|snapshot| snapshot.binding.same_component(binding))
         {
-            let generation = binding.generation()?;
-            let permissions = binding.permissions.borrow().clone();
-            let revisions = binding.read_document(doc, |doc, _| {
-                let mut revisions = Vec::new();
-                owned(widget, doc, binding, &mut Vec::new(), &mut revisions, false);
-                revisions
-            })?;
+            let generation = binding.generation().map_err(|error| format!("{error:?}"))?;
+            let permissions = match binding.permissions.borrow().directory_witness() {
+                Ok(permissions) => permissions,
+                Err(error) => {
+                    cache
+                        .0
+                        .borrow_mut()
+                        .retain(|entry| !entry.snapshot.binding.same_component(binding));
+                    return Err(error);
+                }
+            };
+            let revisions = binding
+                .read_document(doc, |doc, _| {
+                    let mut revisions = Vec::new();
+                    owned(widget, doc, binding, &mut Vec::new(), &mut revisions, false);
+                    revisions
+                })
+                .map_err(|error| format!("{error:?}"))?;
             let cached = cache
                 .0
                 .borrow()
@@ -808,14 +864,22 @@ pub(crate) fn discover_cached_bound_resources(
             let snapshot = if let Some(cached) = cached {
                 cached
             } else {
-                let resources = binding.read_document(doc, |doc, _| {
-                    let mut resources = Vec::new();
-                    owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
-                    resources
-                        .into_iter()
-                        .filter_map(|resource| filter_resource(binding, resource))
-                        .collect()
-                })?;
+                let resources = binding
+                    .read_document(doc, |doc, _| {
+                        let mut resources = Vec::new();
+                        owned(widget, doc, binding, &mut resources, &mut Vec::new(), true);
+                        resources
+                            .into_iter()
+                            .filter_map(|resource| filter_resource(binding, resource))
+                            .collect()
+                    })
+                    .map_err(|error| format!("{error:?}"))?;
+                // Each row was filtered using current permission checks. Do
+                // not cache a mixed projection if time/policy changed while
+                // those checks were running.
+                if binding.permissions.borrow().directory_witness()? != permissions {
+                    return Err("owner policy changed while filtering resources".into());
+                }
                 let snapshot = BoundResourceSnapshot {
                     binding: binding.clone(),
                     resources,
@@ -935,11 +999,13 @@ fn discover_bound_resources_with_filter(
             }
             if boundary.is_none() {
                 let resources = binding.read_document(doc, |doc, _| {
-                    let mut resources = widget.resources(doc);
+                    // A delivered invocation resolves in its invoker's own tree.
+                    let participant = crate::invocation_scope::current_participant();
+                    let mut resources = widget.resources_for(participant.as_ref(), doc);
                     if let Some(address) = address
                         && tilo_actions::door::resolve(&resources, address).is_none()
                         && let Some(resource) = widget
-                            .resource(doc, &address.resource)
+                            .resource_for(participant.as_ref(), doc, &address.resource)
                             .or_else(|| provider_resource(widget, binding, address))
                     {
                         resources.push(resource);
@@ -1100,7 +1166,7 @@ struct OrdinaryConfirmationSnapshot {
     contract: tilo_actions::ActionContract,
     params: Vec<tilo_actions::ActionParam>,
     input: ControlInputSurface,
-    encoded: tilo_actions::EncodedAction,
+    intent: PreparedActionIntent,
     continuation: Option<tilo_actions::ContinuationEvidence>,
 }
 
@@ -1151,7 +1217,14 @@ impl OrdinaryConfirmation {
     ) -> Result<OrdinaryConfirmationSnapshot, tilo_actions::DoorError> {
         let (resource, spec) = unique_control_spec(resources, address)?;
         let (argument, json) = arguments.as_door_arguments();
-        let encoded = encode_resource_action(resources, address, json, argument)?;
+        let intent = if matches!(spec.input, tilo_actions::ActionInput::Deferred { .. }) {
+            validate_deferred_arguments(spec, json, argument)?;
+            PreparedActionIntent::Deferred(DeferredIntent::capture(spec)?)
+        } else {
+            PreparedActionIntent::Encoded(encode_resource_action(
+                resources, address, json, argument,
+            )?)
+        };
         Ok(OrdinaryConfirmationSnapshot {
             resource_id: resource.id.as_str().to_owned(),
             resource_kind: resource.kind.clone(),
@@ -1164,9 +1237,13 @@ impl OrdinaryConfirmation {
             contract: spec.contract.clone(),
             params: spec.params().to_vec(),
             input: control_input_surface(spec),
-            encoded,
-            continuation: spec
-                .continuation_identity(tilo_actions::ContinuationQuery::Exact(arguments.query())),
+            continuation: match &intent {
+                PreparedActionIntent::Deferred(intent) => Some(intent.draft().clone()),
+                PreparedActionIntent::Encoded(_) => spec.continuation_identity(
+                    tilo_actions::ContinuationQuery::Exact(arguments.query()),
+                ),
+            },
+            intent,
         })
     }
     pub(crate) fn validate_owner(
@@ -1203,8 +1280,8 @@ impl OrdinaryConfirmation {
             reason: "The original confirmation request is no longer valid".into(),
         }
     }
-    pub(crate) fn encoded(&self) -> &tilo_actions::EncodedAction {
-        &self.snapshot.encoded
+    pub(crate) fn intent(&self) -> &PreparedActionIntent {
+        &self.snapshot.intent
     }
     pub(crate) fn kind(&self) -> tilo_actions::OperationKind {
         self.snapshot.kind
@@ -1217,6 +1294,9 @@ impl OrdinaryConfirmation {
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
     match &spec.input {
         tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
+        tilo_actions::ActionInput::Deferred { type_id, .. } => ControlInputSurface::Deferred {
+            type_id: type_id.clone(),
+        },
         tilo_actions::ActionInput::Prompted {
             prompt,
             placeholder,
@@ -1233,14 +1313,16 @@ fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface
 #[derive(Clone, PartialEq)]
 pub(crate) struct ControlWitness {
     identity: ControlIdentity,
-    type_id: String,
-    payload: Vec<u8>,
+    intent: PreparedActionIntent,
     confirmation: tilo_actions::ConfirmationPolicy,
 }
 
 #[derive(Clone, PartialEq, Eq)]
 enum ControlInputSurface {
     Immediate,
+    Deferred {
+        type_id: String,
+    },
     Prompted {
         prompt: String,
         placeholder: String,
@@ -1334,20 +1416,28 @@ pub(crate) fn control_witness_with_arguments(
         ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
         ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
     };
-    let encoded = encode_resource_action(&resources, &invocation.address, arguments, argument)?;
-    let continuation = spec
-        .continuation_identity(tilo_actions::ContinuationQuery::Exact(
-            original_arguments.query(),
-        ))
-        .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-            code: "unsupported_continuation_identity".into(),
-            reason: "The action provider cannot prove the original target and handler identity"
-                .into(),
-        })?;
+    let (intent, continuation) = if matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
+    {
+        validate_deferred_arguments(spec, arguments, argument)?;
+        let intent = DeferredIntent::capture(spec)?;
+        let continuation = intent.draft().clone();
+        (PreparedActionIntent::Deferred(intent), continuation)
+    } else {
+        let encoded = encode_resource_action(&resources, &invocation.address, arguments, argument)?;
+        let continuation = spec
+            .continuation_identity(tilo_actions::ContinuationQuery::Exact(
+                original_arguments.query(),
+            ))
+            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                code: "unsupported_continuation_identity".into(),
+                reason: "The action provider cannot prove the original target and handler identity"
+                    .into(),
+            })?;
+        (PreparedActionIntent::Encoded(encoded), continuation)
+    };
     Ok(ControlWitness {
         identity: control_identity_from_spec(resource, spec, continuation),
-        type_id: encoded.type_id,
-        payload: encoded.payload,
+        intent,
         confirmation: spec.contract.confirmation.clone(),
     })
 }
@@ -1548,13 +1638,56 @@ pub(crate) fn execute_resource_operation(
     invocation: tilo_actions::InvocationId,
     ambient: Option<&tilo_actions::ActionContext>,
 ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-    if spec.kind == tilo_actions::OperationKind::View && actor != local_author {
+    execute_resource_operation_scoped(
+        widget,
+        doc,
+        path,
+        registry,
+        transport,
+        address,
+        resource,
+        spec,
+        encoded,
+        actor,
+        local_author,
+        broker_admitted,
+        invocation,
+        ambient,
+        None,
+    )
+}
+
+pub(crate) fn execute_resource_operation_scoped(
+    widget: &mut dyn Widget,
+    doc: &mut AutoCommit,
+    path: &ObjId,
+    registry: &tilo_actions::ActionRegistry,
+    transport: &mut dyn tilo_actions::ActionTransport,
+    address: &tilo_actions::ActionAddress,
+    resource: &tilo_actions::Resource,
+    spec: &tilo_actions::ActionSpec,
+    encoded: tilo_actions::EncodedAction,
+    actor: &str,
+    local_author: &str,
+    broker_admitted: bool,
+    invocation: tilo_actions::InvocationId,
+    ambient: Option<&tilo_actions::ActionContext>,
+    scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
+) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+    if spec.kind == tilo_actions::OperationKind::View
+        && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
+    {
         return Err(tilo_actions::DoorError::Unavailable { code: "private_view".into(), reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
     }
     let started = if spec.kind == tilo_actions::OperationKind::Document {
         let action = registry
             .decode(&encoded)
             .map_err(|_| tilo_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
+        if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
+            return Err(tilo_actions::DoorError::Failed(
+                "Deferred action locus differs from its declaration".into(),
+            ));
+        }
         let mut context = tilo_actions::ActionContext::for_resource(
             &spec.label,
             resource.id.as_str(),
@@ -1588,8 +1721,17 @@ pub(crate) fn execute_resource_operation(
         }
         crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
     } else {
-        widget
-            .start_resource_operation_with_document(
+        let result = if let Some(scope) = scope {
+            widget.start_resource_operation_scoped(
+                scope,
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                doc,
+                path,
+            )
+        } else {
+            widget.start_resource_operation_with_document(
                 invocation,
                 spec.kind,
                 &encoded.type_id,
@@ -1597,6 +1739,8 @@ pub(crate) fn execute_resource_operation(
                 doc,
                 path,
             )
+        };
+        result
             .map_err(tilo_actions::DoorError::Failed)?
             .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?
     };
@@ -1641,6 +1785,36 @@ pub(crate) fn invoke_resource_action(
     invocation: tilo_actions::InvocationId,
     ambient: Option<&tilo_actions::ActionContext>,
 ) -> Result<crate::widget::ResourceOperationStart, BoundActionError> {
+    invoke_resource_action_scoped(
+        root,
+        document,
+        target,
+        transport,
+        argument,
+        arguments,
+        actor,
+        confirmed,
+        broker_admitted,
+        invocation,
+        ambient,
+        None,
+    )
+}
+
+pub(crate) fn invoke_resource_action_scoped(
+    root: &mut dyn Widget,
+    document: &mut AutoCommit,
+    target: &BoundActionTarget,
+    transport: &mut dyn tilo_actions::ActionTransport,
+    argument: Option<&str>,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+    actor: &str,
+    confirmed: bool,
+    broker_admitted: bool,
+    invocation: tilo_actions::InvocationId,
+    ambient: Option<&tilo_actions::ActionContext>,
+    scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
+) -> Result<crate::widget::ResourceOperationStart, BoundActionError> {
     let _entry = target.binding.enter()?;
     let mut result = None;
     let mut accepted = false;
@@ -1653,7 +1827,16 @@ pub(crate) fn invoke_resource_action(
                     let mut resources = Vec::new();
                     // The loan's root belongs to this component. Nested boundaries are
                     // independent destinations and cannot donate declarations here.
-                    collect_component_resources(widget, doc, &mut resources);
+                    // A delivered invocation resolves in its invoker's own tree.
+                    match crate::invocation_scope::current_participant() {
+                        Some(participant) => collect_participant_resources(
+                            widget,
+                            doc,
+                            &participant,
+                            &mut resources,
+                        ),
+                        None => collect_component_resources(widget, doc, &mut resources),
+                    }
                     if tilo_actions::door::resolve(&resources, &target.address.address).is_none()
                         && let Some(resource) =
                             resolve_unbound_resource(widget, doc, &target.address.address.resource)
@@ -1674,6 +1857,23 @@ pub(crate) fn invoke_resource_action(
                         arguments,
                         confirmed,
                     )?;
+                    if let Some(scope) = scope {
+                        scope.check_dispatch_spec(spec)?;
+                    }
+                    // A refused private View must not invoke a Deferred encoder.
+                    // The execution guard below remains an independent boundary.
+                    if spec.kind == tilo_actions::OperationKind::View
+                        && !crate::invocation_scope::view_operation_permitted(
+                            actor,
+                            binding.author.0.as_str(),
+                            &spec.contract,
+                        )
+                    {
+                        return Err(tilo_actions::DoorError::Unavailable {
+                            code: "private_view".into(),
+                            reason: "A collaborator cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
+                        }.into());
+                    }
                     let encoded = encode_resource_action(
                         &resources,
                         &target.address.address,
@@ -1681,7 +1881,7 @@ pub(crate) fn invoke_resource_action(
                         argument,
                     )?;
                     let execute = |widget: &mut dyn Widget, doc: &mut AutoCommit, path: &ObjId| {
-                        execute_resource_operation(
+                        execute_resource_operation_scoped(
                             widget,
                             doc,
                             path,
@@ -1696,8 +1896,10 @@ pub(crate) fn invoke_resource_action(
                             broker_admitted,
                             invocation,
                             ambient.or(Some(&binding.operation_context)),
+                            scope,
                         )
                     };
+                    let run = |doc: &mut AutoCommit| {
                     let mut operation = BoundOperation::enter(binding, doc, spec.kind)?;
                     let started = execute(widget, operation.doc, path);
                     accepted = matches!(started, Ok(crate::widget::ResourceOperationStart::Accepted));
@@ -1711,6 +1913,12 @@ pub(crate) fn invoke_resource_action(
                         }));
                     }
                     started.map_err(BoundActionError::Door)
+                    };
+                    match scope {
+                        Some(scope) => scope.with_document_mutation(doc, |doc| Ok(run(doc)))
+                            .map_err(|error| BoundActionError::Door(tilo_actions::DoorError::Failed(error)))?,
+                        None => run(doc),
+                    }
                 })
                 .map_err(BoundActionError::Dispatch)
                 .and_then(std::convert::identity),
@@ -1749,6 +1957,23 @@ pub(crate) fn collect_unbound_resources(
     collect_component_resources(widget, doc, resources);
 }
 
+/// [`collect_unbound_resources`] rebuilt for one participant's own view.
+/// Never cached: it is the invoker's tree at invoke time.
+pub(crate) fn collect_participant_resources(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    participant: &tilo_actions::ParticipantId,
+    resources: &mut Vec<tilo_actions::Resource>,
+) {
+    if widget.has_separate_document_owner() {
+        return;
+    }
+    resources.extend(widget.resources_for(Some(participant), doc));
+    widget.for_each_child(&mut |child| {
+        collect_participant_resources(child, doc, participant, resources);
+    });
+}
+
 pub(crate) fn resolve_unbound_resource(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -1757,7 +1982,8 @@ pub(crate) fn resolve_unbound_resource(
     if widget.has_separate_document_owner() {
         return None;
     }
-    let mut found = widget.resource(doc, id);
+    let participant = crate::invocation_scope::current_participant();
+    let mut found = widget.resource_for(participant.as_ref(), doc, id);
     widget.for_each_child(&mut |child| {
         if found.is_none() {
             found = resolve_unbound_resource(child, doc, id);
@@ -1831,6 +2057,7 @@ pub(crate) struct PendingRecordAction {
 }
 
 pub(crate) struct RecordActionState {
+    pub(crate) invocation_provenance: Rc<RefCell<crate::invocation_scope::InvocationProvenance>>,
     pending: Option<PendingRecordAction>,
     pub(crate) generation: Option<u64>,
     statuses: HashMap<(UserId, crate::application::InstanceId), crate::undo::UndoStatus>,
@@ -1838,6 +2065,7 @@ pub(crate) struct RecordActionState {
 impl Default for RecordActionState {
     fn default() -> Self {
         Self {
+            invocation_provenance: Rc::default(),
             pending: None,
             generation: Some(0),
             statuses: HashMap::new(),
@@ -2786,6 +3014,7 @@ impl CallbackBinding {
 
 struct BoundNode {
     pointer: *mut dyn Widget,
+    semantic_name: String,
     binding: Option<CallbackBinding>,
     legacy: Option<crate::history_mode::HistoryOwner>,
     inactive: bool,
@@ -2992,6 +3221,7 @@ impl BoundNodeMap {
                     node,
                     BoundNode {
                         pointer,
+                        semantic_name: widget.name().to_owned(),
                         binding: binding.clone(),
                         legacy: legacy.clone(),
                         inactive,
@@ -3227,11 +3457,30 @@ pub(crate) fn merge_remote_owned_document(
                     RemoteApplyError::Unavailable("document generation exhausted".into())
                 })?;
             let mut candidate = doc.clone();
+            let observed_before = state
+                .invocation_provenance
+                .borrow()
+                .is_required()
+                .then(|| doc.base_heads());
             let changed = crate::history_mode::routes::merge_committed(&mut candidate, mutation)?;
             identity
                 .validate(&candidate)
                 .map_err(RemoteApplyError::InvalidMutation)?;
             if changed {
+                if let Some(before) = observed_before {
+                    let applied = candidate
+                        .get_changes(&before)
+                        .into_iter()
+                        .map(|change| change.hash())
+                        .collect::<Vec<_>>();
+                    // Observe only the actual newly merged range. Existing
+                    // unscoped local edits cannot acquire another caller or
+                    // become trusted merely because remote data arrived.
+                    state
+                        .invocation_provenance
+                        .borrow_mut()
+                        .observe_admitted(&applied);
+                }
                 *doc = candidate;
                 // A clean continuation marker is not unfinished typing. Retire it
                 // after the merge so a later local burst starts at the remote heads.
@@ -3343,11 +3592,7 @@ fn authorize_legacy_owner(
     let (_, app, _) = store
         .history_namespace(&checkout.id)
         .map_err(|error| error.to_string())?;
-    let now = crate::clock::SystemTime::now()
-        .duration_since(crate::clock::UNIX_EPOCH)
-        .map_err(|_| "execution time unavailable")?
-        .as_secs();
-    let current = authority.clone().at_unix_time(now);
+    let current = authority.at_current_time()?;
     let mapped = current.actor().principals.contains(&author.principal())
         || current
             .actor()

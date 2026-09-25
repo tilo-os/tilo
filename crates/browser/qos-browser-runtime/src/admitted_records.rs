@@ -34,7 +34,8 @@ pub(crate) fn install(
         let Some(definition) = crate::desktop::definition(&row.app_id) else {
             continue;
         };
-        let checkout = if row.app_id == "dev.qos.chat" && row.record_id.is_empty() {
+        let chat = crate::desktop::is_chat(&row.app_id);
+        let checkout = if chat && row.record_id.is_empty() {
             RecordCheckout::package_primary(definition.record_kind.clone())
         } else {
             RecordCheckout::new(
@@ -42,7 +43,7 @@ pub(crate) fn install(
                 definition.record_kind.clone(),
             )
         };
-        if row.app_id == "dev.qos.chat" && !checkout.id.is_package_primary() {
+        if chat && !checkout.id.is_package_primary() {
             return Err("Chat requires its package-primary route".into());
         }
         let bytes = state
@@ -87,6 +88,116 @@ pub(crate) fn install(
     Ok(())
 }
 
+/// Initial projection for a fresh owner. Complete state (restored journal or
+/// governance handoff) may already satisfy desktop admission before any
+/// delivery cut installs through the ordinary candidate path; incomplete state
+/// installs nothing, exactly as that path does.
+pub(crate) fn install_initial(
+    cache: &PortableStorage,
+    state: &StatePeer,
+    actor: [u8; 32],
+) -> Result<(), String> {
+    if state.incomplete_reason().is_some() {
+        return Ok(());
+    }
+    install(cache, state, actor)
+}
+
+/// Boot repair for a canonical record committed ahead of its cursor journal:
+/// an older runtime could commit a record-only batch inside the publication
+/// window, leaving record H1 durable beside journal H0, which every later
+/// cursor-journal capture refuses. The committed record is loaded and must
+/// contain the admitted heads (a descendant); its delta is then published
+/// exactly as `local_owned_document` does, so the journal is staged at the
+/// record's heads. Any other mismatch is refused explicitly and nothing is
+/// changed, so retained storage stays available for recovery. Runs before
+/// `install_initial`, whose merge would otherwise leave H1 unpublished.
+/// Returns the number of repaired records.
+pub(crate) fn repair_record_basis(
+    cache: &PortableStorage,
+    state: &mut StatePeer,
+    outbox: &mut Vec<qos_peer_state::NeighbourMsg>,
+    signer: &ed25519_dalek::SigningKey,
+    include: impl Fn(&str) -> bool,
+    now: web_time::SystemTime,
+) -> Result<usize, String> {
+    let mut candidate: Option<StatePeer> = None;
+    let mut published = vec![];
+    for row in state.rows() {
+        if !include(&row.app_id) {
+            continue;
+        }
+        let route = if row.record_id.is_empty() {
+            row.app_id.clone()
+        } else {
+            format!("{}/{}", row.app_id, row.record_id)
+        };
+        let storage_key = key(state.room(), &row.app_id, &row.record_id);
+        // No committed record yet: `install_initial` projects the admitted one.
+        let Some(committed) = cache.committed_document_heads(&storage_key) else {
+            continue;
+        };
+        let mut committed = committed.map_err(|_| {
+            format!("retained record {route} is unreadable; local storage is kept for recovery")
+        })?;
+        let mut admitted = state
+            .document_heads(&row.app_id, &row.record_id)
+            .ok_or("admitted record basis missing")?;
+        committed.sort();
+        admitted.sort();
+        if committed == admitted {
+            continue;
+        }
+        let bytes = cache
+            .status(&storage_key)
+            .and_then(|status| status.committed)
+            .ok_or("retained record bytes missing")?
+            .1
+            .bytes;
+        let mut doc = automerge::AutoCommit::load(&bytes).map_err(|_| {
+            format!("retained record {route} is unreadable; local storage is kept for recovery")
+        })?;
+        if admitted
+            .iter()
+            .any(|head| doc.get_change_by_hash(head).is_none())
+        {
+            return Err(format!(
+                "retained record {route} does not descend from its admitted journal; local storage is kept for recovery"
+            ));
+        }
+        let next = candidate.get_or_insert_with(|| state.clone());
+        let message = next
+            .publish_incremental(
+                &row.app_id,
+                &row.record_id,
+                doc.save_after(&admitted),
+                signer,
+                now,
+            )
+            .map_err(|error| {
+                format!(
+                    "retained edit in {route} could not be republished ({error}); local storage is kept for recovery"
+                )
+            })?;
+        let mut repaired = next
+            .document_heads(&row.app_id, &row.record_id)
+            .ok_or("repaired record basis missing")?;
+        repaired.sort();
+        if repaired != committed {
+            return Err(format!(
+                "retained record {route} did not reach its committed heads; local storage is kept for recovery"
+            ));
+        }
+        published.push(message);
+    }
+    let count = published.len();
+    if let Some(next) = candidate {
+        *state = next;
+        outbox.extend(published);
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +225,37 @@ mod tests {
             StatePeer::new(room, cert.clone(), vec![cert], RevocationList::new(), now).unwrap();
         state.install_seed(seed, &key, now).unwrap();
         (state, key, now)
+    }
+    #[test]
+    fn fresh_owner_initial_state_is_openable_before_any_delivery_cut() {
+        // A fresh browser owner can reach complete desktop admission from its
+        // restored/handoff state alone. The desktop's record owners read the
+        // same portable cache, so every admitted row must already be there.
+        let (state, _, _) = state();
+        assert!(state.incomplete_reason().is_none());
+        let app = word_processor::definition();
+        let checkout = RecordCheckout::new(RecordId::for_tab(1), app.record_kind.clone());
+        let cache = PortableStorage::new("certified:test", "fresh").unwrap();
+        let before = RecordOwners::portable(cache.clone())
+            .open(app.app_id, state.room())
+            .unwrap();
+        assert!(matches!(
+            before.try_open_record(&checkout),
+            Err(ui::record::RecordOpenError::MissingRecord)
+        ));
+        install_initial(&cache, &state, [13; 32]).unwrap();
+        let after = RecordOwners::portable(cache.clone())
+            .open(app.app_id, state.room())
+            .unwrap();
+        after.try_open_record(&checkout).unwrap();
+        assert_eq!(
+            after
+                .read(&checkout.id, |doc| doc.get_actor().to_bytes().to_vec())
+                .unwrap(),
+            vec![13; 32]
+        );
+        // Re-projection of the same state is an idempotent merge.
+        install_initial(&cache, &state, [13; 32]).unwrap();
     }
     #[test]
     fn concurrent_writer_snapshots_preserve_distinct_local_actor_custody() {
@@ -194,7 +336,7 @@ mod tests {
         let record = RecordId::for_tab(1);
         let mut writer = automerge::AutoCommit::load(
             &state
-                .document("dev.qos.word-processor", record.as_str())
+                .document("so.tilo.word-processor", record.as_str())
                 .unwrap(),
         )
         .unwrap();
@@ -204,7 +346,7 @@ mod tests {
         writer.commit();
         state
             .publish_document(
-                "dev.qos.word-processor",
+                "so.tilo.word-processor",
                 record.as_str(),
                 writer.save(),
                 &key,
@@ -430,6 +572,9 @@ pub(crate) fn prepare_remote_owned(
 /// publishes every changed frame.
 pub(crate) struct PublicationSchedule {
     window: std::time::Duration,
+    /// Configured window; `window` is shorter while [`Self::set_live_window`]
+    /// applies (live collaborators receive each publication at once).
+    configured: std::time::Duration,
     last: Option<ui::clock::Instant>,
     due: Option<ui::clock::Instant>,
 }
@@ -442,8 +587,22 @@ impl PublicationSchedule {
     pub(crate) fn new(window: std::time::Duration) -> Self {
         Self {
             window,
+            configured: window,
             last: None,
             due: None,
+        }
+    }
+    /// LIVE_V1: while other members are present, publications forward to them
+    /// immediately (the author's own ops track), so a long window would be
+    /// visible typing latency. `Some(window)` shortens the configured window
+    /// (never lengthens it); `None` restores it. A pending deadline moves with
+    /// the window.
+    pub(crate) fn set_live_window(&mut self, window: Option<std::time::Duration>) {
+        self.window = window.map_or(self.configured, |window| window.min(self.configured));
+        if self.due.is_some()
+            && let Some(last) = self.last
+        {
+            self.due = last.checked_add(self.window);
         }
     }
     /// Called when at least one owned record has unpublished changes.
@@ -688,6 +847,41 @@ mod schedule_tests {
         assert_eq!(schedule.due(), None);
         schedule.reset();
         assert_eq!(schedule.decide(ms(201)), PublicationDecision::Now);
+    }
+    #[test]
+    fn live_collaboration_shortens_the_window_and_moves_the_pending_deadline() {
+        let t0 = ui::clock::Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut schedule = PublicationSchedule::new(Duration::from_millis(100));
+        assert_eq!(schedule.decide(ms(0)), PublicationDecision::Now);
+        assert_eq!(
+            schedule.decide(ms(5)),
+            PublicationDecision::Deferred(ms(100))
+        );
+        // A collaborator arrives: the pending edit is due one live window after
+        // the last publication instead of the configured window.
+        schedule.set_live_window(Some(Duration::from_millis(16)));
+        assert_eq!(schedule.due(), Some(ms(16)));
+        assert_eq!(schedule.decide(ms(16)), PublicationDecision::Now);
+        assert_eq!(
+            schedule.decide(ms(20)),
+            PublicationDecision::Deferred(ms(32))
+        );
+        // Never longer than configured.
+        schedule.set_live_window(Some(Duration::from_secs(5)));
+        assert_eq!(schedule.due(), Some(ms(116)));
+        // Alone again: the configured window applies.
+        schedule.set_live_window(Some(Duration::from_millis(16)));
+        schedule.set_live_window(None);
+        assert_eq!(schedule.due(), Some(ms(116)));
+        assert_eq!(
+            schedule.decide(ms(40)),
+            PublicationDecision::Deferred(ms(116))
+        );
+        // Nothing pending: no deadline is invented.
+        schedule.clear_due();
+        schedule.set_live_window(Some(Duration::from_millis(16)));
+        assert_eq!(schedule.due(), None);
     }
     #[test]
     fn a_zero_window_publishes_every_changed_frame() {

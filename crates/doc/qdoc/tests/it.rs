@@ -16,6 +16,10 @@ mod blob_reference;
 mod blob_state;
 #[path = "blobstore_fixture.rs"]
 mod blobstore_fixture;
+#[path = "concurrent_block_text.rs"]
+mod concurrent_block_text;
+#[path = "concurrent_regions.rs"]
+mod concurrent_regions;
 #[path = "convergence.rs"]
 mod convergence;
 #[path = "independent_documents.rs"]

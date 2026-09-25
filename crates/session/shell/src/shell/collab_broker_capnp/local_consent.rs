@@ -9,13 +9,13 @@ pub(crate) enum LocalSessionLiveness {
     Closed,
 }
 
-#[derive(Debug)]
 struct LocalSessionState {
     _epoch: Uuid,
     generation: u64,
     liveness: LocalSessionLiveness,
     locked: Option<bool>,
     onboarding_active: Option<bool>,
+    listeners: Vec<Weak<dyn Fn() + Send + Sync>>,
 }
 
 pub(crate) struct LocalSessionAuthority {
@@ -25,6 +25,30 @@ pub(crate) struct LocalSessionAuthority {
 #[derive(Clone)]
 pub(crate) struct LocalSessionLifecycle {
     state: Weak<Mutex<LocalSessionState>>,
+}
+
+/// A private live generation borrowed from the actual compositor owner.
+#[derive(Clone)]
+pub(crate) struct LocalSessionPermit {
+    state: Weak<Mutex<LocalSessionState>>,
+    epoch: Uuid,
+    generation: u64,
+}
+
+impl LocalSessionPermit {
+    /// Hold the lifecycle generation stable while installing a device. A lock
+    /// transition releases its mutex before synchronously invoking listeners.
+    pub(crate) fn while_current<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
+        let state = self.state.upgrade()?;
+        let state = state.lock().ok()?;
+        (state._epoch == self.epoch
+            && state.generation == self.generation
+            && state.liveness == LocalSessionLiveness::Active)
+            .then(action)
+    }
+    pub(crate) fn is_current(&self) -> bool {
+        self.while_current(|| ()).is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +77,7 @@ impl LocalSessionAuthority {
                 liveness: LocalSessionLiveness::Inactive,
                 locked: None,
                 onboarding_active: None,
+                listeners: Vec::new(),
             })),
         }
     }
@@ -80,6 +105,28 @@ impl Drop for LocalSessionAuthority {
 }
 
 impl LocalSessionLifecycle {
+    pub(crate) fn acquire(&self) -> Option<LocalSessionPermit> {
+        let state = self.state.upgrade()?;
+        let state = state.lock().ok()?;
+        (state.liveness == LocalSessionLiveness::Active).then(|| LocalSessionPermit {
+            state: self.state.clone(),
+            epoch: state._epoch,
+            generation: state.generation,
+        })
+    }
+
+    pub(crate) fn watch(&self, callback: &Arc<dyn Fn() + Send + Sync>) {
+        if let Some(state) = self.state.upgrade() {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state
+                .listeners
+                .retain(|listener| listener.strong_count() != 0);
+            state.listeners.push(Arc::downgrade(callback));
+        }
+    }
+
     pub(crate) fn publish_native_state(&self, locked: bool, onboarding_active: bool) {
         self.update(|state| {
             state.locked = Some(locked);
@@ -117,6 +164,11 @@ impl LocalSessionLifecycle {
             return;
         }
         reconcile(&mut state);
+        let listeners: Vec<_> = state.listeners.iter().filter_map(Weak::upgrade).collect();
+        drop(state);
+        for listener in listeners {
+            listener();
+        }
     }
 
     #[cfg(test)]
@@ -156,6 +208,11 @@ fn close_state(state: &Mutex<LocalSessionState>) {
     }
     let _ = advance_generation(&mut state);
     state.liveness = LocalSessionLiveness::Closed;
+    let listeners: Vec<_> = state.listeners.iter().filter_map(Weak::upgrade).collect();
+    drop(state);
+    for listener in listeners {
+        listener();
+    }
 }
 
 fn advance_generation(state: &mut LocalSessionState) -> bool {

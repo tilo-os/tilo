@@ -29,14 +29,44 @@ use winit::event::{Modifiers, WindowEvent};
 const SAVE: &str = "so.tilo.scratchpad.save";
 
 fn body(doc: &AutoCommit) -> String {
-    doc.get(ROOT, "body")
-        .ok()
-        .flatten()
-        .and_then(|(value, id)| match value {
-            Value::Object(ObjType::Text) => doc.text(id).ok(),
-            value => value.to_str().map(str::to_owned),
-        })
-        .unwrap_or_default()
+    actions::joined_body(doc)
+}
+
+/// The actor of the note's schema change. Nobody edits as it; it exists so
+/// the op creating `body` is the *same* op on every machine (same actor, same
+/// counter, no dependencies), therefore the same object and change hash.
+const BODY_GENESIS_ACTOR: &[u8] = b"so.tilo.scratchpad.body.genesis.v1";
+
+/// The canonical change creating the note's `body` Text, built once per
+/// process: byte-identical everywhere, so replicas that each adopt it share
+/// one body instead of each minting one on first edit and losing a side.
+fn body_genesis() -> &'static [u8] {
+    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    GENESIS.get_or_init(|| {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(BODY_GENESIS_ACTOR));
+        let created =
+            automerge::transaction::Transactable::put_object(&mut doc, ROOT, "body", ObjType::Text)
+                .is_ok();
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        if created { doc.save() } else { Vec::new() }
+    })
+}
+
+/// Give a note document its shared `body` Text when it has no body yet (a
+/// new note, or one saved before the body came with the document).
+///
+/// A note that already has a body, including a legacy plain string, is left
+/// as it stands: the body is only ever adopted, never minted per replica.
+/// Must run outside any open transaction (it applies a foreign change).
+pub fn init_document(doc: &mut AutoCommit) {
+    let has_body = doc
+        .get_all(ROOT, "body")
+        .is_ok_and(|values| !values.is_empty());
+    let genesis = body_genesis();
+    if !has_body && !genesis.is_empty() {
+        let _ = doc.load_incremental(genesis);
+    }
 }
 
 #[expect(
@@ -61,7 +91,8 @@ fn edit_spec() -> ActionSpec {
 /// # Errors
 /// Returns storage, locking, malformed-document or action-binding errors.
 pub fn open(directory: &Path) -> anyhow::Result<(ui::State, Box<dyn Widget>)> {
-    let (store, doc) = storage::NoteStore::open(directory)?;
+    let (store, mut doc) = storage::NoteStore::open(directory)?;
+    init_document(&mut doc);
     if let Some((value, _)) = doc.get(ROOT, "body")? {
         anyhow::ensure!(
             value.to_str().is_some() || matches!(value, Value::Object(ObjType::Text)),

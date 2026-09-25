@@ -202,8 +202,14 @@ fn search_provider_row_invokes_the_exported_open_action() {
         Widget::invoke_resource_operation(
             &mut app,
             operation.kind,
-            &operation.encoded.type_id,
-            &operation.encoded.payload,
+            &operation
+                .encoded()
+                .expect("test requires prepared encoding")
+                .type_id,
+            &operation
+                .encoded()
+                .expect("test requires prepared encoding")
+                .payload,
             &doc,
             &ROOT,
         )
@@ -249,7 +255,9 @@ fn search_activation_reveals_a_contact_hidden_by_the_group_filter() {
         .expect("the search address resolves in the agent-visible tree");
     let encoded = match &spec.input {
         tilo_actions::ActionInput::Immediate(encoded) => encoded,
-        tilo_actions::ActionInput::Prompted { .. } => panic!("open takes no arguments"),
+        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
+            panic!("open takes no arguments")
+        }
     };
     assert!(
         Widget::invoke_resource_operation(

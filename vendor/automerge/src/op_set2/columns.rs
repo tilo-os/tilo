@@ -98,6 +98,37 @@ fn debug_cmp<I: Debug + PartialEq>(tag: &str, a: Vec<I>, b: Vec<I>) -> bool {
 }
 
 impl Columns {
+    pub(crate) fn native_export(
+        &self,
+        pass: &mut crate::resource_limits::retained::save_columns::Pass<'_, '_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let mut specs = ALL_COLUMN_SPECS;
+        specs.sort();
+        for spec in specs {
+            let required = spec.id() == ColumnId::new(3);
+            match spec {
+                ID_ACTOR_COL_SPEC => pass.column(spec, &self.id_actor, required)?,
+                ID_COUNTER_COL_SPEC => pass.column(spec, &self.id_ctr, required)?,
+                OBJ_ID_ACTOR_COL_SPEC => pass.column(spec, &self.obj_actor, required)?,
+                OBJ_ID_COUNTER_COL_SPEC => pass.column(spec, &self.obj_ctr, required)?,
+                KEY_ACTOR_COL_SPEC => pass.column(spec, &self.key_actor, required)?,
+                KEY_COUNTER_COL_SPEC => pass.column(spec, &self.key_ctr, required)?,
+                KEY_STR_COL_SPEC => pass.column(spec, &self.key_str, required)?,
+                INSERT_COL_SPEC => pass.column(spec, &self.insert, required)?,
+                ACTION_COL_SPEC => pass.column(spec, &self.action, required)?,
+                MARK_NAME_COL_SPEC => pass.column(spec, &self.mark_name, required)?,
+                EXPAND_COL_SPEC => pass.column(spec, &self.expand, required)?,
+                SUCC_COUNT_COL_SPEC => pass.column(spec, &self.succ_count, required)?,
+                SUCC_ACTOR_COL_SPEC => pass.column(spec, &self.succ_actor, required)?,
+                SUCC_COUNTER_COL_SPEC => pass.column(spec, &self.succ_ctr, required)?,
+                VALUE_META_COL_SPEC => pass.column(spec, &self.value_meta, required)?,
+                VALUE_COL_SPEC => pass.column(spec, &self.value, required)?,
+                _ => return Err(crate::resource_limits::NativeResourceError::Unaccounted),
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(super) fn debug_cmp(&self, other: &Self) {
         let mut ok = true;
@@ -712,3 +743,72 @@ pub(crate) mod ids {
 }
 
 pub(super) use ids::*;
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Columns {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            id_actor,
+            id_ctr,
+            obj_actor,
+            obj_ctr,
+            key_actor,
+            key_ctr,
+            key_str,
+            succ_count,
+            succ_actor,
+            succ_ctr,
+            insert,
+            action,
+            value_meta,
+            value,
+            mark_name,
+            expand,
+            index,
+        } = self;
+
+        id_actor.native_visit(visitor)?;
+        id_ctr.native_visit(visitor)?;
+        obj_actor.native_visit(visitor)?;
+        obj_ctr.native_visit(visitor)?;
+        key_actor.native_visit(visitor)?;
+        key_ctr.native_visit(visitor)?;
+        key_str.native_visit(visitor)?;
+        succ_count.native_visit(visitor)?;
+        succ_actor.native_visit(visitor)?;
+        succ_ctr.native_visit(visitor)?;
+        insert.native_visit(visitor)?;
+        action.native_visit(visitor)?;
+        value_meta.native_visit(visitor)?;
+        value.native_visit(visitor)?;
+        mark_name.native_visit(visitor)?;
+        expand.native_visit(visitor)?;
+        index.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for Indexes {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            text,
+            top,
+            visible,
+            inc,
+            mark,
+        } = self;
+
+        text.native_visit(visitor)?;
+        top.native_visit(visitor)?;
+        visible.native_visit(visitor)?;
+        inc.native_visit(visitor)?;
+        mark.native_visit(visitor)?;
+        Ok(())
+    }
+}

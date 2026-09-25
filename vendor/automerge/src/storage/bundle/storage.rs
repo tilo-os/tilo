@@ -118,6 +118,22 @@ impl<'a> BundleStorage<'a, Unverified> {
 }
 
 impl BundleStorage<'_, Verified> {
+    pub(crate) fn to_changes_bounded(
+        &self,
+        _permit: &crate::resource_limits::reconstruct::Permit<'_>,
+    ) -> Result<Vec<Change>, crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::NativeResourceError as Error;
+        let changes = self.iter_change_meta().map(Into::into).collect();
+        let mut collector = ChangeCollector::try_from_change_meta_dense(changes, &self.actors)
+            .map_err(|_| Error::WorkBytes)?;
+        for op in self.iter_ops() {
+            collector.add(op);
+        }
+        collector
+            .unbundle(&self.actors, &self.deps)
+            .map_err(|_| Error::Invalid)
+    }
+
     pub(crate) fn to_changes(&self) -> Result<Vec<Change>, ParseError> {
         let change_meta = self.iter_change_meta().collect();
         let mut collector = ChangeCollector::from_bundle_changes(change_meta, &self.actors);

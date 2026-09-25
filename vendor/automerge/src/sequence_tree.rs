@@ -660,3 +660,28 @@ mod tests {
 
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl<T: NativeVisit> NativeVisit for SequenceTreeInternal<T> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        self.root_node.native_visit(visitor)
+    }
+}
+impl<T: NativeVisit> NativeVisit for SequenceTreeNode<T> {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            elements,
+            children,
+            length: _,
+        } = self;
+        elements.native_visit(visitor)?;
+        children.native_visit(visitor)
+    }
+}

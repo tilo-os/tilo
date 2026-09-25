@@ -34,7 +34,7 @@ impl ChangeQueue {
         self.hashes.contains(hash)
     }
 
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Change> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Change> + Clone {
         self.changes.iter()
     }
 
@@ -42,5 +42,18 @@ impl ChangeQueue {
     pub(crate) fn take(&mut self) -> Vec<Change> {
         self.hashes.clear();
         std::mem::take(&mut self.changes)
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for ChangeQueue {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self { changes, hashes } = self;
+        changes.native_visit(visitor)?;
+        visitor.hash_set(hashes, hashes.capacity())
     }
 }

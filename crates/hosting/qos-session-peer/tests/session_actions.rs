@@ -250,7 +250,7 @@ async fn retained_session_with_more_than_thirty_two_records_reaches_stable_actio
                     command: BoundCommand {
                         source,
                         command: DesktopCommand::OpenTab {
-                            app: "dev.qos.calculator".into(),
+                            app: "so.tilo.calculator".into(),
                             placement: TabPlacement::NewGroup { strip, after: None },
                         },
                     },
@@ -282,7 +282,7 @@ async fn retained_session_with_more_than_thirty_two_records_reaches_stable_actio
     assert_eq!(
         expected
             .keys()
-            .filter(|(app, _)| app == "dev.qos.calculator")
+            .filter(|(app, _)| app == "so.tilo.calculator")
             .count(),
         CALCULATOR_RECORDS
     );
@@ -711,7 +711,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
     let ready = temp.path().join("ready.json");
     let mut owner = SessionOwner::initialize(&state).unwrap();
     let state = state.canonicalize().unwrap();
-    let identity = persist::IdentityPaths::under(state.join("identity"));
+    let identity = persist::IdentityPaths::under(state.canonicalize().unwrap().join("identity"));
     let native_key = persist::read_device_key(&identity.device_privkey).unwrap();
     let root_key = persist::read_signing_key(&identity.user_privkey).unwrap();
     let observer_key = SigningKey::from_bytes(&[73; 32]);
@@ -756,10 +756,9 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         )
         .unwrap();
     let mut checkpoints = 0;
-    for (index, (bytes, kind)) in owner
-        .outgoing()
+    for (index, (bytes, kind)) in outgoing_bytes(&owner)
         .iter()
-        .zip(owner.outgoing_kinds())
+        .zip(&outgoing_kinds(&owner))
         .enumerate()
     {
         let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
@@ -840,7 +839,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         web_time::SystemTime::now(),
     )
     .unwrap();
-    for expected_bytes in owner.outgoing() {
+    for expected_bytes in &outgoing_bytes(&owner) {
         let index = retained
             .iter()
             .position(|(_, body)| body == expected_bytes)
@@ -1073,7 +1072,7 @@ async fn checked_application_catalogue(
                         .collect(),
                 },
                 command: DesktopCommand::OpenTab {
-                    app: "dev.qos.word-processor".into(),
+                    app: "so.tilo.word-processor".into(),
                     placement: TabPlacement::NewGroup { strip, after: None },
                 },
             };
@@ -1092,11 +1091,14 @@ async fn checked_application_catalogue(
     // Persist a floor far ahead of any SDK wall-clock allocator, then reopen
     // through the ordinary executable before its actual checked workers sign.
     let key = tilo_user_identity::persist::read_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(state.join("identity")).device_privkey,
+        &tilo_user_identity::persist::IdentityPaths::under(
+            state.canonicalize().unwrap().join("identity"),
+        )
+        .device_privkey,
     )
     .unwrap();
     let mut candidate = owner.peer().clone();
-    let app = "dev.qos.word-processor";
+    let app = "so.tilo.word-processor";
     let record = "tab:0000000000000001";
     let mut envelope = collab_types::SignedOp::new_unsigned(
         collab_types::DocumentMutation::Snapshot(candidate.document(app, record).unwrap())
@@ -1228,7 +1230,7 @@ async fn checked_application_catalogue(
         {
             if catalogue["surfaces"].as_array().is_some_and(|s| {
                 s.iter()
-                    .filter(|s| s["app_id"] == "dev.qos.word-processor")
+                    .filter(|s| s["app_id"] == "so.tilo.word-processor")
                     .count()
                     >= if multiple_writers { 5 } else { 1 }
             }) {
@@ -1250,7 +1252,7 @@ async fn checked_application_catalogue(
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|s| s["app_id"] == "dev.qos.word-processor")
+                .filter(|s| s["app_id"] == "so.tilo.word-processor")
                 .count()
                 >= 5
         );
@@ -1267,7 +1269,7 @@ async fn checked_application_catalogue(
         client.close().await;
         return;
     }
-    for app in ["dev.qos.word-processor", "dev.qos.chat", "dev.qos.notes"] {
+    for app in ["so.tilo.word-processor", "so.tilo.chat", "so.tilo.notes"] {
         assert!(
             catalogue["surfaces"]
                 .as_array()
@@ -1281,7 +1283,7 @@ async fn checked_application_catalogue(
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["app_id"] == "dev.qos.word-processor")
+        .find(|s| s["app_id"] == "so.tilo.word-processor")
         .unwrap();
     let action = surface["actions"]
         .as_array()
@@ -1303,6 +1305,30 @@ async fn checked_application_catalogue(
         revision: None,
     };
     assert_eq!(table_cells(&remote), 0);
+    if publication_failure == PublicationFailureFixture::None {
+        // A relay-invoked Writer operation runs in the host worker under its
+        // original caller's custody. The native owner keeps final publication
+        // of such original-invocation contributors closed until their bounded
+        // witness exists (see owner/exact_startup_replay.rs and
+        // action_host::production_authorizer_tests). No witness exists on the
+        // native host yet, so the documented outcome is a definite refusal:
+        // the operation is admitted, never reported as succeeded, and no
+        // document change is committed or replicated.
+        invoke_and_expect_closed_publication(
+            &client,
+            &mut remote,
+            room,
+            &cert,
+            &native,
+            broker_host,
+            invocation,
+            operation,
+            origin,
+        )
+        .await;
+        client.close().await;
+        return;
+    }
     #[cfg(feature = "test-support")]
     let client = if publication_failure != PublicationFailureFixture::None {
         client
@@ -1448,7 +1474,7 @@ async fn checked_application_catalogue(
     let heads = remote
         .rows()
         .into_iter()
-        .find(|r| r.app_id == "dev.qos.word-processor")
+        .find(|r| r.app_id == "so.tilo.word-processor")
         .unwrap()
         .heads;
     invoke_and_observe(
@@ -1510,7 +1536,7 @@ async fn checked_application_catalogue(
             .peer()
             .rows()
             .into_iter()
-            .find(|r| r.app_id == "dev.qos.word-processor")
+            .find(|r| r.app_id == "so.tilo.word-processor")
             .unwrap()
             .heads,
         heads
@@ -1677,7 +1703,7 @@ async fn checked_application_catalogue(
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["app_id"] == "dev.qos.word-processor")
+        .find(|s| s["app_id"] == "so.tilo.word-processor")
         .unwrap();
     let action = surface["actions"]
         .as_array()
@@ -1798,7 +1824,7 @@ fn apply_state(peer: &mut qos_peer_state::StatePeer, event: tilo_relay::transpor
 fn table_cells(peer: &qos_peer_state::StatePeer) -> usize {
     let doc = ui::automerge::AutoCommit::load(
         &peer
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .unwrap(),
     )
     .unwrap();
@@ -1809,6 +1835,94 @@ fn table_cells(peer: &qos_peer_state::StatePeer) -> usize {
         .filter(|b| b.kind == "cell")
         .count()
 }
+/// Invoke on the actual relay/broker path and prove that the native owner
+/// refuses the invocation's final document publication: the invocation is
+/// admitted but never succeeds, and neither the owner's Writer record nor the
+/// replicated remote copy changes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors invoke_and_observe on the same certified relay path"
+)]
+async fn invoke_and_expect_closed_publication(
+    client: &tilo_relay::RelayClient,
+    remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid,
+    cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
+    host: uuid::Uuid,
+    invocation: tilo_actions::InvocationId,
+    operation: tilo_relay::peer_actions::ActionMessage,
+    origin: &str,
+) {
+    use tilo_relay::{
+        peer_actions::{ActionMessage, DirectedAction},
+        transport_v2::EnvelopeV2,
+    };
+    let writer_heads = |status: &serde_json::Value| {
+        status["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["app_id"] == "so.tilo.word-processor")
+            .map(|row| row["heads"].clone())
+            .unwrap()
+    };
+    let before = writer_heads(&request(origin, "/status", None, None).await.1);
+    let mut pending = qos_browser_runtime::action_client::PendingActions::default();
+    let mut request_id = uuid::Uuid::new_v4();
+    let directed = DirectedAction {
+        room,
+        request_id,
+        source: cert.device_public_key,
+        target: native.device_public_key,
+        message: operation,
+    };
+    pending.insert(directed.clone()).unwrap();
+    client.send_action(EnvelopeV2::Directed(directed)).unwrap();
+    let mut admitted = false;
+    let window = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < window {
+        tokio::select! {
+            state = client.recv() => apply_state(remote, state.unwrap()),
+            event = client.recv_action() => {
+                if !pending.receive(event.unwrap(), native.user_public_key) {
+                    continue;
+                }
+                match pending.take(request_id).unwrap() {
+                    ActionMessage::Observation { host: got, invocation: id, update, .. } => {
+                        assert_eq!(got, host);
+                        assert_eq!(id, invocation);
+                        assert!(
+                            !matches!(update, Some(tilo_actions::InvocationUpdate::Succeeded { .. })),
+                            "a closed native publication must never report success"
+                        );
+                        admitted |= update.is_some();
+                        request_id = uuid::Uuid::new_v4();
+                        let status = DirectedAction {
+                            room,
+                            request_id,
+                            source: cert.device_public_key,
+                            target: native.device_public_key,
+                            message: ActionMessage::Status { invocation },
+                        };
+                        pending.insert(status.clone()).unwrap();
+                        client.send_action(EnvelopeV2::Directed(status)).unwrap();
+                    }
+                    other => panic!("actual browser action response: {other:?}"),
+                }
+            }
+            () = tokio::time::sleep_until(window) => {}
+        }
+    }
+    assert!(admitted, "the certified invocation was never admitted");
+    assert_eq!(table_cells(remote), 0, "no refused change may replicate");
+    assert_eq!(
+        writer_heads(&request(origin, "/status", None, None).await.1),
+        before,
+        "the owner committed a refused contributor publication"
+    );
+}
+
 async fn invoke_and_observe(
     client: &tilo_relay::RelayClient,
     remote: &mut qos_peer_state::StatePeer,
@@ -1915,15 +2029,16 @@ fn active_replacement_state_delta_is_a_provable_retained_tail() {
     let temp = tempfile::tempdir().unwrap();
     let owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let key = tilo_user_identity::persist::read_device_key(
-        &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
-            .device_privkey,
+        &tilo_user_identity::persist::IdentityPaths::under(
+            owner.root().canonicalize().unwrap().join("identity"),
+        )
+        .device_privkey,
     )
     .unwrap();
     let source = key.verifying_key().to_bytes();
     let authority =
         RetentionAuthority::new(owner.peer().room(), owner.peer().authority().clone()).unwrap();
-    let messages = owner
-        .outgoing()
+    let messages = outgoing_bytes(&owner)
         .iter()
         .map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).unwrap())
         .collect::<Vec<_>>();
@@ -1940,7 +2055,7 @@ fn active_replacement_state_delta_is_a_provable_retained_tail() {
         None,
     )
     .unwrap();
-    let snapshot_message = messages.iter().find(|msg| matches!(msg, NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.notes")).unwrap();
+    let snapshot_message = messages.iter().find(|msg| matches!(msg, NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.notes")).unwrap();
     let snapshot = verify_snapshot(
         &room,
         source,
@@ -2111,7 +2226,8 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
 
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
-    let paths = persist::IdentityPaths::under(owner.root().join("identity"));
+    let paths =
+        persist::IdentityPaths::under(owner.root().canonicalize().unwrap().join("identity"));
     let native_key = persist::read_device_key(&paths.device_privkey).unwrap();
     let root_key = persist::read_signing_key(&paths.user_privkey).unwrap();
     let key = SigningKey::from_bytes(&[92; 32]);
@@ -2189,7 +2305,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         // Leave one actual checkpoint unadmitted so recovery must do more than
         // count replay frames: it must fill the missing document in this peer.
         let mut omitted_chat = false;
-        for _ in 0..owner.outgoing().len() {
+        for _ in 0..outgoing_bytes(&owner).len() {
             let event = client.recv().await.unwrap();
             let tilo_relay::transport::Envelope::Delta { delta, .. } = &event else {
                 panic!("expected the owner's retained publication");
@@ -2199,14 +2315,14 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
                     panic!("expected the initial checkpoint basis");
                 };
             if matches!(postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&body).unwrap(),
-                qos_peer_state::NeighbourMsg::AppDocument { app_id, .. } if app_id == "dev.qos.chat") {
+                qos_peer_state::NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.chat") {
                 omitted_chat = true;
             } else {
                 apply_state(&mut remote, event);
             }
         }
         assert!(omitted_chat);
-        assert!(remote.document("dev.qos.chat", "").is_none());
+        assert!(remote.document("so.tilo.chat", "").is_none());
     })
     .await
     .unwrap();
@@ -2214,7 +2330,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
     let row = remote
         .rows()
         .into_iter()
-        .find(|r| r.app_id == "dev.qos.notes")
+        .find(|r| r.app_id == "so.tilo.notes")
         .unwrap();
     let mut doc = AutoCommit::load(&remote.document(&row.app_id, &row.record_id).unwrap()).unwrap();
     doc.set_actor(ui::automerge::ActorId::from(
@@ -2280,10 +2396,10 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         expected_rows,
         "replay must fill Chat and preserve the local Notes mutation"
     );
-    assert!(remote.document("dev.qos.chat", "").is_some());
+    assert!(remote.document("so.tilo.chat", "").is_some());
     assert_eq!(
-        remote.durable_coverage("dev.qos.chat", "").unwrap(),
-        owner.peer().durable_coverage("dev.qos.chat", "").unwrap()
+        remote.durable_coverage("so.tilo.chat", "").unwrap(),
+        owner.peer().durable_coverage("so.tilo.chat", "").unwrap()
     );
     assert_eq!(remote.certificates(), certificates);
     assert_ne!(
@@ -2334,7 +2450,7 @@ async fn active_replacement(
     use ui::automerge::transaction::Transactable;
     writeln!(
         host.0.stdin.as_mut().unwrap(),
-        "qualification hold dev.qos.word-processor tab:0000000000000001"
+        "qualification hold so.tilo.word-processor tab:0000000000000001"
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -2388,7 +2504,7 @@ async fn active_replacement(
     let row = remote
         .rows()
         .into_iter()
-        .find(|row| row.app_id == "dev.qos.notes")
+        .find(|row| row.app_id == "so.tilo.notes")
         .unwrap();
     let mut doc =
         ui::automerge::AutoCommit::load(&remote.document(&row.app_id, &row.record_id).unwrap())
@@ -2792,7 +2908,7 @@ async fn selective_publication_failure_after_commit(
         .as_array()
         .unwrap()
         .iter()
-        .find(|surface| surface["app_id"] == "dev.qos.word-processor")
+        .find(|surface| surface["app_id"] == "so.tilo.word-processor")
         .unwrap();
     let action = surface["actions"]
         .as_array()
@@ -2980,7 +3096,7 @@ async fn desktop_open_through_broker(
                 .collect(),
         },
         command: DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     };
@@ -3167,4 +3283,15 @@ async fn desktop_close_through_broker(
         "Confirmed desktop removal in {} ms",
         started.elapsed().as_millis()
     );
+}
+
+#[cfg(feature = "test-support")]
+fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+#[cfg(feature = "test-support")]
+fn outgoing_kinds(
+    owner: &qos_session_peer::SessionOwner,
+) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
 }

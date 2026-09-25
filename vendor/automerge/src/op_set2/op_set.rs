@@ -1,3 +1,6 @@
+mod native_history;
+mod native_mutation;
+
 use super::parents::Parents;
 use crate::clock::{Clock, ClockRange};
 use crate::exid::ExId;
@@ -66,6 +69,73 @@ pub(crate) struct OpSet {
 pub(crate) struct OpSetCheckpoint(OpSet);
 
 impl OpSet {
+    /// One search stack can overlap the live bounded-read workspace. All
+    /// range/iterator constructors and successor seeks run these searches
+    /// serially. Restrict every participating column to the inline SlabWeight
+    /// implementation, whose weight operations allocate no nested payloads.
+    pub(crate) fn native_read_search_bytes(&self) -> Option<usize> {
+        fn slabs<C: hexane::ColumnCursor<SlabIndex = hexane::SlabWeight>>(
+            column: &hexane::ColumnData<C>,
+        ) -> usize {
+            column.slabs.len()
+        }
+        let largest_tree = [
+            slabs(&self.cols.id_actor),
+            slabs(&self.cols.id_ctr),
+            slabs(&self.cols.obj_actor),
+            slabs(&self.cols.obj_ctr),
+            slabs(&self.cols.key_actor),
+            slabs(&self.cols.key_ctr),
+            slabs(&self.cols.key_str),
+            slabs(&self.cols.succ_count),
+            slabs(&self.cols.succ_actor),
+            slabs(&self.cols.succ_ctr),
+            slabs(&self.cols.insert),
+            slabs(&self.cols.action),
+            slabs(&self.cols.value_meta),
+            slabs(&self.cols.value),
+            slabs(&self.cols.mark_name),
+            slabs(&self.cols.expand),
+            slabs(&self.cols.index.inc),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+        hexane::SlabTree::<hexane::SlabWeight>::search_stack_allocation_bound(largest_tree)
+    }
+
+    pub(crate) fn native_reconstruction_plan(
+        shape: &crate::resource_limits::reconstruct::Shape,
+        budget: &mut crate::resource_limits::reconstruct::Budget,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        use crate::resource_limits::reconstruct::{product, sum};
+        budget.growing_vec::<ActorId>(shape.actors)?;
+        budget.add(shape.actor_bytes)?;
+        budget.tree::<ColumnSpec, Range<usize>>(shape.columns)?;
+        // The checked document stores 16 native columns. Unknown metadata
+        // columns are included in these aggregate source event/byte totals,
+        // even when Columns::load does not retain them.
+        // Even an empty stream or a change-first stream constructs the
+        // detached OpSet's default operation columns before any batch runs.
+        budget.columns::<StrCursor>(
+            product(shape.documents.max(1), 15)?,
+            shape.column_events,
+            sum(shape.column_bytes, product(shape.column_events, 20)?)?,
+        )?;
+        budget.raw_columns(shape.documents.max(1), shape.raw_column_bytes)?;
+        // Columns::load retains five default index columns until set_indexes
+        // replaces them. Their buffers overlap the real index builder/output.
+        budget.columns::<UIntCursor>(product(shape.documents.max(1), 5)?, 0, 0)?;
+        IndexBuilder::native_reconstruction_plan(shape, budget)
+    }
+
+    pub(crate) fn native_export(
+        &self,
+        pass: &mut crate::resource_limits::retained::save_columns::Pass<'_, '_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        self.cols.native_export(pass)
+    }
+
     #[cfg(test)]
     pub(crate) fn debug_cmp(&self, other: &Self) {
         self.cols.debug_cmp(&other.cols)
@@ -1789,5 +1859,34 @@ mod tests {
             assert_eq!(&test_ops[7], &ops[2]);
             assert_eq!(3, ops.len());
         });
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for OpSet {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        let Self {
+            actors,
+            obj_info,
+            cols,
+            text_encoding,
+        } = self;
+        let _ = text_encoding;
+        actors.native_visit(visitor)?;
+        obj_info.native_visit(visitor)?;
+        cols.native_visit(visitor)?;
+        Ok(())
+    }
+}
+impl NativeVisit for OpSetCheckpoint {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        self.0.native_visit(visitor)
     }
 }

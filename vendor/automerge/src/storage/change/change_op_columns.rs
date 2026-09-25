@@ -1,3 +1,5 @@
+mod native_mutation;
+
 use std::{borrow::Cow, convert::TryFrom, ops::Range};
 
 use crate::{

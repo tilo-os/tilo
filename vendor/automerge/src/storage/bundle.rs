@@ -102,6 +102,13 @@ impl Bundle {
             .map_err(|e| AutomergeError::Unbundle(Box::new(e)))
     }
 
+    pub(crate) fn to_changes_bounded(
+        &self,
+        permit: &crate::resource_limits::reconstruct::Permit<'_>,
+    ) -> Result<Vec<Change>, crate::resource_limits::NativeResourceError> {
+        self.storage.to_changes_bounded(permit)
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.storage.bytes
     }

@@ -754,7 +754,9 @@ fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::Encoded
         .unwrap_or_else(|| panic!("spec {id}"));
     match &spec.input {
         tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } => panic!("{id} is immediate"),
+        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
+            panic!("{id} is immediate")
+        }
     }
 }
 
@@ -3939,6 +3941,9 @@ fn menu_ux_host_undo_cannot_edit_behind_an_open_menu() {
             _ => wp.style_menu.open("body", Point::new(300.0, 300.0)),
         }
         let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+        // Ctrl+Z is the host undo binding under these conventions; on a macOS
+        // build host the default conventions bind undo to Cmd instead.
+        driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
         driver.set_modifiers(&["ctrl".into()]);
         driver.key("z");
         assert_eq!(
@@ -4062,6 +4067,19 @@ fn right_click_suggestion_replaces_the_word() {
         );
     };
     wp.dispatch_context_action(idx, &mut state.doc);
+    // The replacement is one replayable envelope through the executor, not a
+    // direct CRDT write (parity review D10).
+    let dispatched = wp
+        .last_dispatched_for_test()
+        .expect("the suggestion dispatched an action");
+    assert_eq!(
+        dispatched.type_id,
+        crate::actions::WORD_PROCESSOR_ACTION_TYPE
+    );
+    assert!(matches!(
+        serde_json::from_slice::<crate::actions::WordProcessorAction>(&dispatched.payload),
+        Ok(crate::actions::WordProcessorAction::SpliceText { at: 0, del: 3, ref ins, .. }) if ins == "the"
+    ));
     // The block text now reads "the end".
     let id = wp.blocks[0].id.clone();
     let text = wp.model().block_texts(&state.doc);
@@ -6266,6 +6284,36 @@ fn a_named_peers_caret_is_labelled_with_their_name() {
         carets[0].user.0, peer,
         "the id stays the identity — it is what the caret is coloured by",
     );
+}
+
+/// A LIVE_V1 caret whose block id is too long for the 64-byte anchor arrives
+/// under the digest stand-in key; the widget resolves it to its own block, so
+/// agent-written (130-byte id) paragraphs still show carets and selections.
+#[test]
+fn a_digest_addressed_remote_caret_resolves_to_its_block() {
+    let (_state, wp) = drawn_focused();
+    let block_id = first_block_id(&wp);
+    let digest = block_presence_key(&block_id).digest_form().unwrap();
+    assert!(is_scope_digest_key(&digest));
+    let peer = "agent-publisher";
+    let mut presence = PresenceCtx::empty();
+    presence.set_remote_caret(peer.into(), digest.clone(), 3);
+    presence.set_selection(
+        &digest,
+        UserId(peer.into()),
+        SelectionRange { start: 0, end: 2 },
+    );
+    let (carets, selections) = wp.remote_presence_overlays(&presence);
+    assert_eq!(carets.len(), 1, "digest caret drawn once, in its block");
+    assert_eq!(selections.len(), 1);
+    // A digest naming no block of this document draws nothing.
+    let mut stray = PresenceCtx::empty();
+    stray.set_remote_caret(
+        peer.into(),
+        ui::presence::PresenceKey::from_scope_digest([7; 16]),
+        1,
+    );
+    assert!(wp.remote_presence_overlays(&stray).0.is_empty());
 }
 
 /// And a peer nobody named keeps its id on the pill: not blank, and

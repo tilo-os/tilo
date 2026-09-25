@@ -1,0 +1,93 @@
+[package]
+name = "moq-native"
+description = "Media over QUIC - Helper library for native applications"
+authors = ["Luke Curley"]
+repository = "https://github.com/moq-dev/moq"
+license = "MIT OR Apache-2.0"
+
+version = "0.19.19"
+edition = "2024"
+rust-version = "1.91"
+
+keywords = ["quic", "http3", "webtransport", "media", "live"]
+categories = ["multimedia", "network-programming", "web-programming"]
+
+[features]
+default = ["quinn", "ring"]
+quinn = ["dep:quinn", "dep:web-transport-quinn", "dep:rcgen", "dep:reqwest", "dep:rustls-webpki", "watch", "dep:dns-lookup"]
+# Filesystem watcher for hot-reloading on-disk TLS certs, keys, and root CAs.
+watch = ["dep:notify"]
+# Optional Quinn qlog trace support.
+qlog = ["quinn?/qlog"]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+# The supported native cryptography provider.
+ring = ["rustls/ring", "rcgen?/ring", "quinn?/rustls-ring"]
+android-logcat = ["dep:tracing-android"]
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+# Family-restricted `getaddrinfo`, so the AAAA and A queries can be issued separately
+# (RFC 8305 section 3) while still going through the system resolver.
+dns-lookup = { version = "4", optional = true }
+futures = { version = "0.3" }
+hex = { version = "0.4" }
+humantime = { version = "2.3" }
+humantime-serde = { version = "1.1" }
+
+moq-net = { version = "0.2.22", path = "../moq-net" }
+notify = { version = "8", optional = true }
+quinn = { version = "0.11", default-features = false, features = ["platform-verifier", "runtime-tokio", "bloom"], optional = true }
+rand = { version = "0.10.1" }
+rcgen = { version = "0.14", default-features = false, optional = true }
+reqwest = { version = "0.13", default-features = false, optional = true }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+# OS-native server-cert verifier for the rustls backends. Version matched to the
+# copy quinn-proto already pulls in, to avoid duplication.
+rustls-platform-verifier = "0.7"
+rustls-webpki = { version = "0.103", features = ["ring"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_with = { version = "3", features = ["hex"] }
+socket2 = { version = "0.6" }
+thiserror = { version = "2" }
+tikv-jemalloc-ctl = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"], optional = true }
+time = "0.3"
+tokio = { version = "1.48", features = ["full"] }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2", features = ["serde"] }
+web-transport-quinn = { version = "0.12", default-features = false, features = ["ring"], optional = true }
+web-transport-trait = { version = "0.4.0" }
+x509-parser = "0.18"
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Android's platform verifier needs a JNI handle to the app Context (see
+# `tls::init_android`); jni is the bridge. Until init runs, verification falls
+# back to the bundled Mozilla roots.
+jni = "0.22"
+tracing-android = { version = "0.2", optional = true }
+webpki-roots = "1"
+
+[target.'cfg(unix)'.dependencies]
+# Errno constants for classifying an `accept(2)` failure (`accept::Failure`).
+# Their numeric values differ across unix platforms, so they can't be spelled out.
+libc = { version = "0.2" }
+
+[dev-dependencies]
+anyhow = { version = "1" }
+bytes = { version = "1" }
+chrono = "0.4"
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+tempfile = { version = "3" }
+# test-util adds tokio::time::pause/auto-advance for the time-dependent tests.
+tokio = { version = "1.48", features = ["test-util"] }
+tokio-rustls = { version = "0.26", default-features = false }
+toml = { version = "=1.0.6" }
+# no-env-filter: traced_test's default filter scopes to the test binary's own
+# crate name, which never matches log lines from a dependency crate (e.g.
+# moq-net's), so a test asserting on those needs this to see them at all.
+tracing-test = { version = "0.2", features = ["no-env-filter"] }
+
+# Source for excluded upstream backends remains for provenance, not compilation.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("aws-lc-rs", "noq", "quiche", "iroh", "websocket", "tcp", "uds"))'] }

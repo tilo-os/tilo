@@ -12,7 +12,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use iroh::endpoint::{Connection, Endpoint};
+use iroh::endpoint::Endpoint;
 use iroh_base::EndpointAddr;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
@@ -26,6 +26,7 @@ use crate::transport::{
     LEGACY_DISCOVERY_ALPN, LEGACY_MANAGEMENT_ALPN, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 
+use crate::session_carrier::{CarrierHandle, LegacyIrohCarrier, SessionChannels};
 use crate::transport_v2::{EnvelopeV2, SessionReader};
 
 /// Authenticated relay delivery, never constructible from application payloads.
@@ -66,25 +67,51 @@ pub struct RelayClient {
     /// explicit unsubscribe for each one before gracefully finishing the
     /// stream, so the host can begin offline delivery without a QUIC timeout.
     subscriptions: Mutex<HashSet<u64>>,
+    /// Present only for the opaque signed interactive-owner trust path.
+    workspace_scope: Option<InteractiveWorkspaceScope>,
     own_device: [u8; 32],
     action_outbound: Option<mpsc::Sender<EnvelopeV2>>,
+    agent_reads_v1: bool,
     action_inbound: Arc<AsyncMutex<mpsc::Receiver<EnvelopeV2>>>,
-    /// Kept alive so the connection is not dropped.
-    connection: Connection,
-    /// Kept alive for the same reason. A `Connection` does **not** keep
-    /// its endpoint open: when the last `Endpoint` handle drops, the
-    /// socket it owns goes with it and every connection dialled from it
-    /// dies mid-flight. `connect` takes the endpoint by value, so
-    /// without this field a caller that hands over its only handle gets
-    /// a session that completes the handshake (those bytes are already
-    /// on the wire) and then loses the connection before the first
-    /// envelope — a failure that surfaces as an unexplained silence on
-    /// `recv`, not as a dial error.
-    endpoint: Endpoint,
-    /// The task driving the send/recv split. Dropping this handle detaches the
-    /// task, which owns the endpoint until it can finish the stream cleanly.
-    /// A `Connection` alone does not keep its endpoint socket open.
-    _pump: n0_future::task::JoinHandle<()>,
+    /// Owns the authenticated pump's transport lifetime, independently of the
+    /// canonical state/private channels and their certification rules.
+    carrier: CarrierHandle,
+}
+
+#[derive(Clone, Debug)]
+struct InteractiveWorkspaceScope {
+    workspace_id: u64,
+    room: uuid::Uuid,
+    authority: DeviceCert,
+}
+
+fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> bool {
+    match envelope {
+        Envelope::Subscribe { workspace_id }
+        | Envelope::Unsubscribe { workspace_id }
+        | Envelope::Delta { workspace_id, .. }
+        | Envelope::Presence { workspace_id, .. }
+        | Envelope::Ready { workspace_id, .. }
+        | Envelope::NotAuthorised { workspace_id, .. }
+        | Envelope::SyncRequest { workspace_id, .. }
+        | Envelope::SyncResponse { workspace_id, .. } => *workspace_id == scope.workspace_id,
+        Envelope::Ping | Envelope::Pong => true,
+        Envelope::PeerRelayHello { .. } => false,
+    }
+}
+
+fn action_in_scope(scope: &InteractiveWorkspaceScope, envelope: &EnvelopeV2) -> bool {
+    match envelope {
+        EnvelopeV2::State(state) => state_in_scope(scope, state),
+        EnvelopeV2::EnableActions { room }
+        | EnvelopeV2::ActionsReady { room, .. }
+        | EnvelopeV2::Unavailable { room, .. }
+        | EnvelopeV2::EnableBrokerClient { room }
+        | EnvelopeV2::RegisterBroker { room, .. } => *room == scope.room,
+        EnvelopeV2::Directed(action)
+        | EnvelopeV2::Delivered { action, .. }
+        | EnvelopeV2::CertifiedDelivered { action, .. } => action.room == scope.room,
+    }
 }
 
 impl Drop for RelayClient {
@@ -105,8 +132,7 @@ impl Drop for RelayClient {
             graceful = false;
         }
         if !graceful {
-            self.connection
-                .close(0u32.into(), b"client cleanup queue saturated");
+            self.carrier.abort(b"client cleanup queue saturated");
         }
     }
 }
@@ -193,6 +219,7 @@ impl CompatibilityGeneration {
 
 #[derive(Clone, Copy)]
 enum RelayWireProtocol {
+    TiloAgentReadsV1,
     TiloV1,
     TiloV2,
     LegacyQosV1,
@@ -202,6 +229,7 @@ enum RelayWireProtocol {
 impl RelayWireProtocol {
     fn alpn(self) -> &'static [u8] {
         match self {
+            Self::TiloAgentReadsV1 => crate::transport_v2::ALPN_AGENT_READS_V1,
             Self::TiloV1 => ALPN,
             Self::TiloV2 => crate::transport_v2::ALPN_V2,
             Self::LegacyQosV1 => LEGACY_ALPN,
@@ -211,13 +239,16 @@ impl RelayWireProtocol {
 
     fn auth_domain(self) -> AuthDomain {
         match self {
-            Self::TiloV1 | Self::TiloV2 => AuthDomain::Tilo,
+            Self::TiloV1 | Self::TiloV2 | Self::TiloAgentReadsV1 => AuthDomain::Tilo,
             Self::LegacyQosV1 | Self::LegacyQosV2 => AuthDomain::LegacyQos,
         }
     }
 
     fn is_v2(self) -> bool {
-        matches!(self, Self::TiloV2 | Self::LegacyQosV2)
+        matches!(
+            self,
+            Self::TiloV2 | Self::LegacyQosV2 | Self::TiloAgentReadsV1
+        )
     }
 }
 
@@ -690,6 +721,7 @@ impl RelayClient {
             own_cert.clone(),
             own_sk.clone(),
             revocations.clone(),
+            None,
             RelayWireProtocol::TiloV1,
         )
         .await;
@@ -704,6 +736,7 @@ impl RelayClient {
             own_cert,
             own_sk,
             revocations,
+            None,
             RelayWireProtocol::LegacyQosV1,
         )
         .await
@@ -733,6 +766,22 @@ impl RelayClient {
             own_cert.clone(),
             own_sk.clone(),
             revocations.clone(),
+            None,
+            RelayWireProtocol::TiloAgentReadsV1,
+        )
+        .await;
+        if !matches!(current, Err(ClientError::UnsupportedProtocol)) {
+            return current;
+        }
+        let current = Self::connect_version(
+            endpoint.clone(),
+            relay_addr.clone(),
+            Some(expected_server_user),
+            Some(expected_server_device),
+            own_cert.clone(),
+            own_sk.clone(),
+            revocations.clone(),
+            None,
             RelayWireProtocol::TiloV2,
         )
         .await;
@@ -747,6 +796,78 @@ impl RelayClient {
             own_cert,
             own_sk,
             revocations,
+            None,
+            RelayWireProtocol::LegacyQosV2,
+        )
+        .await
+    }
+
+    /// Connect to the exact primary device authorized by a verified signed
+    /// interactive-owner hint. The opaque trust token binds the service key,
+    /// governing certificate, room, and workspace; the resulting client
+    /// rejects every state or action frame outside that scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError`] for a mismatched endpoint pin, invalid or
+    /// non-exact governor ACK, unsupported protocol, or transport failure.
+    pub async fn connect_v2_to_interactive_workspace_owner(
+        endpoint: Endpoint,
+        relay_addr: EndpointAddr,
+        trust: crate::workspace_join::InteractiveOwnerTrust,
+        own_cert: DeviceCert,
+        own_sk: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> Result<Self, ClientError> {
+        if *relay_addr.id.as_bytes() != trust.service_public_key() {
+            return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+        }
+        let room = uuid::Uuid::parse_str(trust.room())
+            .map_err(|_| ClientError::Auth(crate::auth::AuthError::PolicyReject))?;
+        let scope = InteractiveWorkspaceScope {
+            workspace_id: trust.workspace_id(),
+            room,
+            authority: trust.authority().clone(),
+        };
+        let current = Self::connect_version(
+            endpoint.clone(),
+            relay_addr.clone(),
+            None,
+            None,
+            own_cert.clone(),
+            own_sk.clone(),
+            revocations.clone(),
+            Some(scope.clone()),
+            RelayWireProtocol::TiloAgentReadsV1,
+        )
+        .await;
+        if !matches!(current, Err(ClientError::UnsupportedProtocol)) {
+            return current;
+        }
+        let current = Self::connect_version(
+            endpoint.clone(),
+            relay_addr.clone(),
+            None,
+            None,
+            own_cert.clone(),
+            own_sk.clone(),
+            revocations.clone(),
+            Some(scope.clone()),
+            RelayWireProtocol::TiloV2,
+        )
+        .await;
+        if !matches!(current, Err(ClientError::UnsupportedProtocol)) {
+            return current;
+        }
+        Self::connect_version(
+            endpoint,
+            relay_addr,
+            None,
+            None,
+            own_cert,
+            own_sk,
+            revocations,
+            Some(scope),
             RelayWireProtocol::LegacyQosV2,
         )
         .await
@@ -760,6 +881,7 @@ impl RelayClient {
         own_cert: DeviceCert,
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
+        interactive_scope: Option<InteractiveWorkspaceScope>,
         protocol: RelayWireProtocol,
     ) -> Result<Self, ClientError> {
         let v2 = protocol.is_v2();
@@ -790,30 +912,41 @@ impl RelayClient {
         let ack: HelloAck =
             postcard::from_bytes(&ack_bytes).map_err(|e| ClientError::Codec(e.to_string()))?;
         let now_ns = crate::clock::now_ns();
-        let relay_peer = match expected_server_user.as_ref() {
-            Some(expected_user) => {
-                let relay_peer = auth::verify_hello_ack(
-                    protocol.auth_domain(),
-                    &ack,
-                    expected_user,
-                    &revocations,
-                    now_ns,
-                    &client_nonce,
-                )?;
-                if expected_server_device.is_some_and(|expected_device| {
-                    relay_peer.cert.device_public_key != expected_device
-                }) {
-                    return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
-                }
-                relay_peer
-            }
-            None => auth::verify_pinned_host_ack(
+        let relay_peer = if let Some(scope) = interactive_scope.as_ref() {
+            auth::verify_interactive_owner_ack(
                 protocol.auth_domain(),
                 &ack,
+                &scope.authority,
                 &revocations,
                 now_ns,
                 &client_nonce,
-            )?,
+            )?
+        } else {
+            match expected_server_user.as_ref() {
+                Some(expected_user) => {
+                    let relay_peer = auth::verify_hello_ack(
+                        protocol.auth_domain(),
+                        &ack,
+                        expected_user,
+                        &revocations,
+                        now_ns,
+                        &client_nonce,
+                    )?;
+                    if expected_server_device.is_some_and(|expected_device| {
+                        relay_peer.cert.device_public_key != expected_device
+                    }) {
+                        return Err(ClientError::Auth(crate::auth::AuthError::PolicyReject));
+                    }
+                    relay_peer
+                }
+                None => auth::verify_pinned_host_ack(
+                    protocol.auth_domain(),
+                    &ack,
+                    &revocations,
+                    now_ns,
+                    &client_nonce,
+                )?,
+            }
         };
 
         let ack2 = auth::build_hello_ack2(protocol.auth_domain(), &own_sk, &ack.server_nonce);
@@ -828,6 +961,7 @@ impl RelayClient {
         let (action_inbound_tx, action_inbound_rx) = mpsc::channel::<EnvelopeV2>(32);
         let mut reader = SessionReader::new(recv, v2);
         let pump_connection = conn.clone();
+        let pump_scope = interactive_scope.clone();
         let pump = n0_future::task::spawn(async move {
             // Keep the socket alive through the final queued Unsubscribe and
             // FIN even if the caller handed this client its only Endpoint.
@@ -840,6 +974,7 @@ impl RelayClient {
                     &mut action_rx,
                     &inbound_tx,
                     &action_inbound_tx,
+                    pump_scope.as_ref(),
                 )
                 .await
                 {
@@ -922,18 +1057,48 @@ impl RelayClient {
             pump_connection.close(0u32.into(), b"relay pump ended");
         });
 
-        Ok(Self {
+        let mut client = Self::from_authenticated_session(
             relay_peer,
-            outbound: outbound_tx,
-            inbound: Arc::new(AsyncMutex::new(inbound_rx)),
+            own_cert.device_public_key,
+            SessionChannels {
+                outbound: outbound_tx,
+                inbound: inbound_rx,
+                action_outbound: v2.then_some(action_tx),
+                action_inbound: action_inbound_rx,
+            },
+            Box::new(LegacyIrohCarrier::new(conn, endpoint, pump)),
+        );
+        // Install the verified legacy interactive scope before exposing the client.
+        // Keep the carrier assembly boundary independent of legacy trust DTOs.
+        client.workspace_scope = interactive_scope;
+        client.agent_reads_v1 = matches!(protocol, RelayWireProtocol::TiloAgentReadsV1);
+        Ok(client)
+    }
+
+    /// Internal assembly boundary after successful protocol authentication.
+    ///
+    /// The caller must have verified the peer's mutual proof and required host
+    /// pin, and bind every channel to that exact session. This is deliberately
+    /// crate-private: applications cannot turn payload DTOs into a certified
+    /// transport. A future v3 verifier must satisfy the same trust boundary.
+    pub(crate) fn from_authenticated_session(
+        relay_peer: AuthenticatedPeer,
+        own_device: [u8; 32],
+        channels: SessionChannels,
+        carrier: CarrierHandle,
+    ) -> Self {
+        Self {
+            relay_peer,
+            outbound: channels.outbound,
+            inbound: Arc::new(AsyncMutex::new(channels.inbound)),
             subscriptions: Mutex::new(HashSet::new()),
-            own_device: own_cert.device_public_key,
-            action_outbound: v2.then_some(action_tx),
-            action_inbound: Arc::new(AsyncMutex::new(action_inbound_rx)),
-            connection: conn,
-            endpoint,
-            _pump: pump,
-        })
+            workspace_scope: None,
+            own_device,
+            action_outbound: channels.action_outbound,
+            agent_reads_v1: false,
+            action_inbound: Arc::new(AsyncMutex::new(channels.action_inbound)),
+            carrier,
+        }
     }
 
     /// Convenience: send an envelope.
@@ -943,6 +1108,13 @@ impl RelayClient {
     /// Returns the envelope back to the caller, boxed, if the outbound
     /// channel to the pump task is closed (the connection is gone).
     pub fn send(&self, env: Envelope) -> Result<(), Box<Envelope>> {
+        if self
+            .workspace_scope
+            .as_ref()
+            .is_some_and(|scope| !state_in_scope(scope, &env))
+        {
+            return Err(Box::new(env));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if crate::persistence::correlated_diagnostics()
             && let Envelope::Delta {
@@ -973,18 +1145,39 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Whether this exact authenticated carrier negotiated disposable agent reads.
+    pub fn supports_agent_reads_v1(&self) -> bool {
+        self.agent_reads_v1
+    }
+
     /// Queue one private v2 frame. A v1 session reports unavailable explicitly.
     /// State continues to use `send` and `recv`, sharing a single wire reader.
     ///
     /// # Errors
     /// Returns an error on v1, invalid/oversized frames, or bounded backpressure.
     pub fn send_action(&self, frame: EnvelopeV2) -> Result<(), ClientError> {
+        if !self.agent_reads_v1
+            && matches!(&frame, EnvelopeV2::Directed(action) if matches!(action.message, crate::peer_actions::ActionMessage::AgentReadV1 {..} | crate::peer_actions::ActionMessage::AgentReadResultV1 {..}))
+        {
+            return Err(ClientError::Codec(
+                "agent reads protocol not negotiated".into(),
+            ));
+        }
         let tx = self
             .action_outbound
             .as_ref()
             .ok_or_else(|| ClientError::Codec("peer lacks relay-v2 action capability".into()))?;
         if matches!(frame, EnvelopeV2::State(_)) {
             return Err(ClientError::Codec("state uses send".into()));
+        }
+        if self
+            .workspace_scope
+            .as_ref()
+            .is_some_and(|scope| !action_in_scope(scope, &frame))
+        {
+            return Err(ClientError::Codec(
+                "interactive owner trust does not cover this action room".into(),
+            ));
         }
         crate::transport_v2::encode(&frame).map_err(|e| ClientError::Codec(e.to_string()))?;
         tx.try_send(frame).map_err(private_send_error)
@@ -1030,9 +1223,7 @@ impl RelayClient {
 
     /// Disconnect this session without closing an endpoint shared with state peers.
     pub(crate) async fn disconnect(&self) {
-        self.connection
-            .close(0u32.into(), b"broker lane disconnected");
-        self.connection.closed().await;
+        self.carrier.disconnect().await;
     }
 
     /// Disconnect, waiting until the relay has been told.
@@ -1052,9 +1243,7 @@ impl RelayClient {
     /// drop the handle instead.
     /// Close this connection and its owned endpoint. Do not use with a shared endpoint.
     pub async fn close(self) {
-        self.connection.close(0u32.into(), b"client closed");
-        self.connection.closed().await;
-        self.endpoint.close().await;
+        self.carrier.close_owned().await;
     }
 }
 
@@ -1076,13 +1265,14 @@ async fn run_v2_pump<R, W>(
     actions: &mut mpsc::Receiver<EnvelopeV2>,
     state_sink: &mpsc::Sender<Envelope>,
     action_sink: &mpsc::Sender<EnvelopeV2>,
+    scope: Option<&InteractiveWorkspaceScope>,
 ) -> bool
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let writing = run_v2_writer(send, states, actions);
-    let reading = run_v2_reader(reader, state_sink, action_sink);
+    let writing = run_v2_writer(send, states, actions, scope);
+    let reading = run_v2_reader(reader, state_sink, action_sink, scope);
     tokio::pin!(writing);
     tokio::pin!(reading);
     tokio::select! {
@@ -1095,6 +1285,7 @@ async fn run_v2_writer<W>(
     send: &mut W,
     states: &mut mpsc::Receiver<Envelope>,
     actions: &mut mpsc::Receiver<EnvelopeV2>,
+    scope: Option<&InteractiveWorkspaceScope>,
 ) -> bool
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -1103,6 +1294,9 @@ where
     loop {
         match next_v2_outbound_event(states, actions, &mut schedule).await {
             ClientEvent::State(Some(env)) => {
+                if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
+                    return false;
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 if crate::persistence::correlated_diagnostics()
                     && let Envelope::Delta {
@@ -1125,6 +1319,9 @@ where
             }
             ClientEvent::State(None) => return true,
             ClientEvent::Action(Some(action)) => {
+                if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
+                    return false;
+                }
                 let Ok(bytes) = crate::transport_v2::encode(&action) else {
                     return false;
                 };
@@ -1147,6 +1344,7 @@ async fn run_v2_reader<R>(
     reader: &mut SessionReader<R>,
     state_sink: &mpsc::Sender<Envelope>,
     action_sink: &mpsc::Sender<EnvelopeV2>,
+    scope: Option<&InteractiveWorkspaceScope>,
 ) where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -1155,6 +1353,9 @@ async fn run_v2_reader<R>(
         cooperative_yield(&mut events_since_yield).await;
         match reader.read_next().await {
             Ok(Some(EnvelopeV2::State(env))) => {
+                if scope.is_some_and(|scope| !state_in_scope(scope, &env)) {
+                    return;
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 if crate::persistence::correlated_diagnostics()
                     && let Envelope::Delta {
@@ -1173,6 +1374,9 @@ async fn run_v2_reader<R>(
                 }
             }
             Ok(Some(action)) => {
+                if scope.is_some_and(|scope| !action_in_scope(scope, &action)) {
+                    return;
+                }
                 // Closing on bounded receiver overflow makes loss explicit;
                 // the future journal owner can recover status on reconnect.
                 if action_sink.try_send(action).is_err() {
@@ -1436,6 +1640,7 @@ mod scheduling_tests {
                 &mut actions,
                 &state_sink,
                 &action_sink,
+                None,
             )
             .await
         });
@@ -1515,6 +1720,7 @@ mod scheduling_tests {
                 &mut actions,
                 &state_sink,
                 &action_sink,
+                None,
             )
             .await
         });
@@ -1588,6 +1794,7 @@ mod scheduling_tests {
                 &mut actions,
                 &state_sink,
                 &action_sink,
+                None,
             )
             .await
         });
@@ -1630,6 +1837,7 @@ mod scheduling_tests {
                 &mut actions,
                 &state_sink,
                 &action_sink,
+                None,
             )
             .await
         });
@@ -1748,7 +1956,7 @@ mod scheduling_tests {
         }
         let task = tokio::spawn(async move {
             let mut reader = SessionReader::new(reader, true);
-            run_v2_reader(&mut reader, &incoming, &actions).await;
+            run_v2_reader(&mut reader, &incoming, &actions, None).await;
         });
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -1789,7 +1997,7 @@ mod scheduling_tests {
             .unwrap()
             .repeat(1024);
         let mut reader = SessionReader::new(std::io::Cursor::new(bytes), true);
-        run_v2_reader(&mut reader, &incoming, &actions).await;
+        run_v2_reader(&mut reader, &incoming, &actions, None).await;
         drop(incoming);
         assert_eq!(consumer.await.unwrap(), 1024);
     }
@@ -1888,6 +2096,7 @@ mod scheduling_tests {
                 &mut actions,
                 &state_sink,
                 &action_sink,
+                None,
             )
             .await,
             "private overflow must close instead of dropping a response"
@@ -1897,3 +2106,316 @@ mod scheduling_tests {
         drop(action_tx);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod session_carrier_tests {
+    use super::*;
+    use crate::session_carrier::{SessionCarrier, SessionChannels};
+    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+
+    struct TestCarrier {
+        events: Arc<Mutex<Vec<&'static str>>>,
+        finished: Arc<tokio::sync::Notify>,
+    }
+
+    impl SessionCarrier for TestCarrier {
+        fn abort(&self, reason: &'static [u8]) {
+            assert_eq!(reason, b"client cleanup queue saturated");
+            self.events.lock().unwrap().push("abort");
+        }
+
+        fn disconnect(&self) -> n0_future::boxed::BoxFuture<()> {
+            let events = self.events.clone();
+            let finished = self.finished.clone();
+            Box::pin(async move {
+                events.lock().unwrap().push("disconnect");
+                finished.notified().await;
+            })
+        }
+
+        fn close_owned(&self) -> n0_future::boxed::BoxFuture<()> {
+            let events = self.events.clone();
+            let finished = self.finished.clone();
+            Box::pin(async move {
+                events.lock().unwrap().push("close-owned");
+                finished.notified().await;
+            })
+        }
+    }
+
+    struct Fixture {
+        client: RelayClient,
+        states: mpsc::Receiver<Envelope>,
+        actions: mpsc::Receiver<EnvelopeV2>,
+        incoming: mpsc::Sender<EnvelopeV2>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+        finished: Arc<tokio::sync::Notify>,
+    }
+
+    fn certificate(device: u8, capabilities: DeviceCapabilities) -> DeviceCert {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[10; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "session-carrier-test".into(),
+            capabilities,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        cert
+    }
+
+    fn fixture(private: bool) -> Fixture {
+        let host_key = ed25519_dalek::SigningKey::from_bytes(&[20; 32]);
+        let host_cert = certificate(20, DeviceCapabilities::host());
+        let ack = auth::build_hello_ack(
+            AuthDomain::Tilo,
+            host_cert.clone(),
+            &host_key,
+            [2; 32],
+            &[1; 32],
+        );
+        let peer = auth::verify_hello_ack(
+            AuthDomain::Tilo,
+            &ack,
+            &host_cert.user_public_key,
+            &RevocationList::new(),
+            crate::clock::now_ns(),
+            &[1; 32],
+        )
+        .unwrap();
+        let (outbound, states) = mpsc::channel(1);
+        let (_state_incoming, inbound) = mpsc::channel(1);
+        let (action_outbound, actions) = mpsc::channel(1);
+        let (incoming, action_inbound) = mpsc::channel(1);
+        let events = Arc::new(Mutex::new(vec![]));
+        let finished = Arc::new(tokio::sync::Notify::new());
+        let carrier = Box::new(TestCarrier {
+            events: events.clone(),
+            finished: finished.clone(),
+        });
+        let client = RelayClient::from_authenticated_session(
+            peer,
+            [30; 32],
+            SessionChannels {
+                outbound,
+                inbound,
+                action_outbound: private.then_some(action_outbound),
+                action_inbound,
+            },
+            carrier,
+        );
+        Fixture {
+            client,
+            states,
+            actions,
+            incoming,
+            events,
+            finished,
+        }
+    }
+
+    #[tokio::test]
+    async fn drop_unsubscribes_without_aborting_a_draining_session() {
+        let Fixture {
+            client,
+            mut states,
+            events,
+            ..
+        } = fixture(true);
+        client
+            .send(Envelope::Subscribe { workspace_id: 7 })
+            .unwrap();
+        assert!(matches!(
+            states.recv().await,
+            Some(Envelope::Subscribe { workspace_id: 7 })
+        ));
+        drop(client);
+        assert!(matches!(
+            states.recv().await,
+            Some(Envelope::Unsubscribe { workspace_id: 7 })
+        ));
+        assert!(states.recv().await.is_none());
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn saturated_unsubscribe_aborts_the_carrier() {
+        let Fixture {
+            client,
+            mut states,
+            events,
+            ..
+        } = fixture(true);
+        client
+            .send(Envelope::Subscribe { workspace_id: 7 })
+            .unwrap();
+        states.recv().await.unwrap();
+        client.send(Envelope::Ping).unwrap();
+        drop(client);
+        assert_eq!(*events.lock().unwrap(), ["abort"]);
+        assert!(matches!(states.recv().await, Some(Envelope::Ping)));
+        assert!(states.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_subscribe_does_not_create_a_cleanup_subscription() {
+        let Fixture {
+            client,
+            mut states,
+            events,
+            ..
+        } = fixture(true);
+        client.send(Envelope::Ping).unwrap();
+        assert!(matches!(
+            *client
+                .send(Envelope::Subscribe { workspace_id: 7 })
+                .unwrap_err(),
+            Envelope::Subscribe { workspace_id: 7 }
+        ));
+        states.recv().await.unwrap();
+        drop(client);
+        assert!(states.recv().await.is_none());
+        assert!(events.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn disconnect_waits_without_releasing_owned_resources() {
+        let Fixture {
+            client,
+            events,
+            finished,
+            ..
+        } = fixture(true);
+        let closing = client.disconnect();
+        tokio::pin!(closing);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut closing)
+                .await
+                .is_err()
+        );
+        assert_eq!(*events.lock().unwrap(), ["disconnect"]);
+        finished.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut closing)
+            .await
+            .unwrap();
+        assert_eq!(*events.lock().unwrap(), ["disconnect"]);
+    }
+
+    #[tokio::test]
+    async fn close_waits_for_owned_resource_shutdown() {
+        let Fixture {
+            client,
+            events,
+            finished,
+            ..
+        } = fixture(true);
+        let closing = client.close();
+        tokio::pin!(closing);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut closing)
+                .await
+                .is_err()
+        );
+        assert_eq!(*events.lock().unwrap(), ["close-owned"]);
+        finished.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), &mut closing)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn private_backpressure_and_legacy_unavailability_remain_explicit() {
+        let Fixture {
+            client, actions, ..
+        } = fixture(true);
+        let room = uuid::Uuid::from_u128(1);
+        client
+            .send_action(EnvelopeV2::EnableActions { room })
+            .unwrap();
+        assert!(matches!(
+            client.send_action(EnvelopeV2::EnableActions { room }),
+            Err(ClientError::Codec(_))
+        ));
+        drop(actions);
+        assert!(matches!(
+            client.send_action(EnvelopeV2::EnableActions { room }),
+            Err(ClientError::PrivateTransportClosed)
+        ));
+        let legacy = fixture(false);
+        assert!(matches!(
+            legacy
+                .client
+                .send_action(EnvelopeV2::EnableActions { room }),
+            Err(ClientError::Codec(_))
+        ));
+        assert!(legacy.client.recv_action().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn agent_read_cannot_enter_a_session_without_negotiated_support() {
+        let fixture = fixture(true);
+        let frame = EnvelopeV2::Directed(crate::peer_actions::DirectedAction {
+            room: uuid::Uuid::from_u128(1),
+            request_id: uuid::Uuid::from_u128(2),
+            source: [30; 32],
+            target: [40; 32],
+            message: crate::peer_actions::ActionMessage::AgentReadV1 {
+                host: uuid::Uuid::from_u128(3),
+                invocation: uuid::Uuid::from_u128(4),
+                request: qos_agent_control_protocol::AgentRequest::Capabilities { version: 1 },
+            },
+        });
+        assert!(
+            fixture.client.send_action(frame).is_err(),
+            "legacy private routing is not read negotiation"
+        );
+    }
+
+    #[tokio::test]
+    async fn private_evidence_still_binds_source_certificate_and_recipient() {
+        let fixture = fixture(true);
+        let cert = certificate(40, DeviceCapabilities::primary());
+        let action = crate::peer_actions::DirectedAction {
+            room: uuid::Uuid::from_u128(1),
+            request_id: uuid::Uuid::from_u128(2),
+            source: cert.device_public_key,
+            target: [30; 32],
+            message: crate::peer_actions::ActionMessage::CatalogueRefresh { scope: None },
+        };
+        let frame = |action| EnvelopeV2::CertifiedDelivered {
+            action,
+            source_certificate: serde_json::to_vec(&cert).unwrap(),
+        };
+        fixture.incoming.send(frame(action.clone())).await.unwrap();
+        let Some(CertifiedActionEvent::Delivered(evidence)) =
+            fixture.client.recv_certified_action().await
+        else {
+            panic!("verified delivery missing");
+        };
+        assert_eq!(evidence.action(), &action);
+        assert_eq!(
+            evidence.certificate().device_public_key,
+            cert.device_public_key
+        );
+        let mut wrong_source = action.clone();
+        wrong_source.source = [41; 32];
+        fixture.incoming.send(frame(wrong_source)).await.unwrap();
+        assert!(fixture.client.recv_certified_action().await.is_none());
+        let mut wrong_target = action;
+        wrong_target.target = [31; 32];
+        fixture.incoming.send(frame(wrong_target)).await.unwrap();
+        assert!(fixture.client.recv_certified_action().await.is_none());
+    }
+
+    #[test]
+    fn native_client_retains_spawn_compatibility() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<RelayClient>();
+    }
+}
+
+mod http_actions;

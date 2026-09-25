@@ -1,6 +1,6 @@
+use crate::ActorId;
 use crate::storage::parse;
 use crate::types::{ObjId, OpId};
-use crate::ActorId;
 use serde::Serialize;
 use serde::Serializer;
 use std::cmp::{Ord, Ordering};
@@ -50,21 +50,23 @@ impl ExId {
         // integers. The actor ID bytes is just an array of bytes.
         //
         match self {
-            ExId::Root => {
-                let val: u8 = SERIALIZATION_VERSION_TAG | (TYPE_ROOT << 4);
-                vec![val]
-            }
-            ExId::Id(id, actor, counter) => {
-                let actor_bytes = actor.to_bytes();
-                let mut bytes = Vec::with_capacity(actor_bytes.len() + 4 + 4);
-                let tag = SERIALIZATION_VERSION_TAG | (TYPE_ID << 4);
-                bytes.push(tag);
-                leb128::write::unsigned(&mut bytes, actor_bytes.len() as u64).unwrap();
-                bytes.extend_from_slice(actor_bytes);
-                leb128::write::unsigned(&mut bytes, *counter as u64).unwrap();
-                leb128::write::unsigned(&mut bytes, *id).unwrap();
+            ExId::Root => vec![SERIALIZATION_VERSION_TAG | (TYPE_ROOT << 4)],
+            ExId::Id(_, actor, _) => {
+                let mut bytes = Vec::with_capacity(actor.to_bytes().len() + 4 + 4);
+                self.borrowed_encoding().write(&mut bytes).unwrap();
                 bytes
             }
+        }
+    }
+
+    fn borrowed_encoding(&self) -> BorrowedExId<'_> {
+        match self {
+            Self::Root => BorrowedExId::Root,
+            Self::Id(counter, actor, index) => BorrowedExId::Id {
+                counter: *counter,
+                actor: actor.to_bytes(),
+                index: *index,
+            },
         }
     }
 
@@ -73,6 +75,55 @@ impl ExId {
             ExId::Root => ObjId::root(),
             ExId::Id(ctr, _, actor) => ObjId(OpId::new(*ctr, *actor)),
         }
+    }
+}
+
+/// The one existing ExId codec, borrowing actor bytes rather than cloning IDs.
+/// The actor-index hint remains part of this binary format; semantic identity
+/// consumers deliberately use counter + actor without that hint.
+pub(crate) enum BorrowedExId<'a> {
+    Root,
+    Id {
+        counter: u64,
+        actor: &'a [u8],
+        index: usize,
+    },
+}
+impl BorrowedExId<'_> {
+    pub(crate) fn write(&self, mut sink: impl std::io::Write) -> std::io::Result<()> {
+        match self {
+            Self::Root => sink.write_all(&[SERIALIZATION_VERSION_TAG | (TYPE_ROOT << 4)]),
+            Self::Id {
+                counter,
+                actor,
+                index,
+            } => {
+                sink.write_all(&[SERIALIZATION_VERSION_TAG | (TYPE_ID << 4)])?;
+                leb128::write::unsigned(&mut sink, actor.len() as u64)?;
+                sink.write_all(actor)?;
+                leb128::write::unsigned(&mut sink, *index as u64)?;
+                leb128::write::unsigned(&mut sink, *counter)?;
+                Ok(())
+            }
+        }
+    }
+    pub(crate) fn encoded_len(&self) -> Option<usize> {
+        struct Count(usize);
+        impl std::io::Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_add(bytes.len())
+                    .ok_or(std::io::ErrorKind::InvalidInput)?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Count(0);
+        self.write(&mut count).ok()?;
+        Some(count.0)
     }
 }
 
@@ -234,5 +285,19 @@ mod tests {
         let bytes = ExId::Root.to_bytes();
         let objid2 = ExId::try_from(&bytes[..]).unwrap();
         assert_eq!(ExId::Root, objid2);
+    }
+}
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for ExId {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Root => Ok(()),
+            Self::Id(_, actor, _) => actor.native_visit(visitor),
+        }
     }
 }

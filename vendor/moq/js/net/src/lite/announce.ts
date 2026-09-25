@@ -1,0 +1,357 @@
+import { MAX_HOPS, type Origin, OriginSchema, UNKNOWN_ORIGIN } from "../origin.ts";
+import * as Path from "../path.ts";
+import type { Reader, Writer } from "../stream.ts";
+import * as Message from "./message.ts";
+import { hasAnnounceId, hasAnnounceOk, hasExcludeHop, hasRouteCost, Version } from "./version.ts";
+
+// Pre-lite-06 inner status values, carried inside the single ANNOUNCE_BROADCAST body.
+const STATUS_ENDED = 0;
+const STATUS_ACTIVE = 1;
+const STATUS_RESTART = 2;
+
+// lite-06 announce message types: an outer discriminator carried before the length
+// prefix, so each announcement is an independently-typed, length-delimited message
+// (mirroring SUBSCRIBE_START/END/DROP on the subscribe stream).
+const ANNOUNCE_START = 0;
+const ANNOUNCE_END = 1;
+const ANNOUNCE_RESTART = 2;
+
+/**
+ * An announcement on the Announce Stream, advertising or retracting a broadcast.
+ *
+ * On lite-06+ these are three independently-typed messages (`ANNOUNCE_START`,
+ * `ANNOUNCE_END`, `ANNOUNCE_RESTART`), each framed as `Type | Length | Body` like the
+ * subscribe stream's responses. Each `active` (ANNOUNCE_START) implicitly assigns the
+ * next announce id (a per-stream ordinal starting at 0); `endedId`/`restart` reference
+ * that id instead of repeating the path. Older versions send a single ANNOUNCE_BROADCAST
+ * message that retracts by path (`ended`).
+ */
+export type AnnounceBroadcast =
+	/** A broadcast is now available, carrying the path suffix, the hop chain, and
+	 * (lite-06+) the route cost. An absent cost encodes as zero. */
+	| { status: "active"; suffix: Path.Valid; hops: Origin[]; cost?: bigint }
+	/** Pre-lite-06: a broadcast is no longer available, retracted by path. */
+	| { status: "ended"; suffix: Path.Valid }
+	/** Lite06+: a broadcast is no longer available, retracted by announce id.
+	 * The id is retired; referencing it again is a protocol violation. */
+	| { status: "endedId"; id: bigint }
+	/** Lite06+: atomically replace the announcement with this id (e.g. a new hop
+	 * chain after a relay failover, or a route whose cost moved). The id stays live. */
+	| { status: "restart"; id: bigint; hops: Origin[]; cost?: bigint };
+
+function checkHops(hops: Origin[]) {
+	if (hops.length > MAX_HOPS) {
+		throw new Error(`hop count ${hops.length} exceeds maximum ${MAX_HOPS}`);
+	}
+}
+
+async function encodeHops(w: Writer, version: Version, hops: Origin[]) {
+	checkHops(hops);
+	switch (version) {
+		case Version.DRAFT_01:
+		case Version.DRAFT_02:
+			break;
+		case Version.DRAFT_03:
+			await w.u53(hops.length);
+			break;
+		default:
+			// Lite04+: hop count + individual Origin varints.
+			await w.u53(hops.length);
+			for (const origin of hops) {
+				await w.u62(origin);
+			}
+			break;
+	}
+}
+
+async function decodeHops(r: Reader, version: Version): Promise<Origin[]> {
+	switch (version) {
+		case Version.DRAFT_01:
+		case Version.DRAFT_02:
+			return [];
+		case Version.DRAFT_03: {
+			const count = await r.u53();
+			if (count > MAX_HOPS) throw new Error(`hop count ${count} exceeds maximum ${MAX_HOPS}`);
+			// Lite03 carries only a hop count, not individual ids, so every entry is
+			// the reserved "no identity" id.
+			return new Array<Origin>(count).fill(UNKNOWN_ORIGIN);
+		}
+		default: {
+			// Lite04+: hop count + individual Origin varints.
+			const count = await r.u53();
+			if (count > MAX_HOPS) throw new Error(`hop count ${count} exceeds maximum ${MAX_HOPS}`);
+			const hops: Origin[] = [];
+			for (let i = 0; i < count; i++) {
+				hops.push(OriginSchema.parse(await r.u62()));
+			}
+			return hops;
+		}
+	}
+}
+
+// The route cost rides lite-06+ announcements as a single varint; older
+// versions carry nothing and decode as zero.
+async function encodeRouteCost(w: Writer, version: Version, cost: bigint | undefined) {
+	if (!hasRouteCost(version)) return;
+	await w.u62(cost ?? 0n);
+}
+
+async function decodeRouteCost(r: Reader, version: Version): Promise<bigint> {
+	if (!hasRouteCost(version)) return 0n;
+	return await r.u62();
+}
+
+// lite-06 message body (no discriminator; the type is carried outside the length prefix).
+async function encodeAnnounce06Body(w: Writer, msg: AnnounceBroadcast, version: Version) {
+	switch (msg.status) {
+		case "active":
+			await w.string(Path.encode(msg.suffix));
+			await encodeHops(w, version, msg.hops);
+			await encodeRouteCost(w, version, msg.cost);
+			break;
+		case "endedId":
+			await w.u62(msg.id);
+			break;
+		case "restart":
+			await w.u62(msg.id);
+			await encodeHops(w, version, msg.hops);
+			await encodeRouteCost(w, version, msg.cost);
+			break;
+		case "ended":
+			// The pre-lite-06 path-form retraction has no place on lite-06.
+			throw new Error("ended-by-path not supported for this version");
+	}
+}
+
+// lite-06 outer message type for a given announcement.
+function announce06Type(msg: AnnounceBroadcast): number {
+	switch (msg.status) {
+		case "active":
+			return ANNOUNCE_START;
+		case "endedId":
+			return ANNOUNCE_END;
+		case "restart":
+			return ANNOUNCE_RESTART;
+		case "ended":
+			throw new Error("ended-by-path not supported for this version");
+	}
+}
+
+async function decodeAnnounce06Body(r: Reader, typ: number, version: Version): Promise<AnnounceBroadcast> {
+	switch (typ) {
+		case ANNOUNCE_START: {
+			const suffix = Path.decode(await r.string());
+			const hops = await decodeHops(r, version);
+			return { status: "active", suffix, hops, cost: await decodeRouteCost(r, version) };
+		}
+		case ANNOUNCE_END:
+			return { status: "endedId", id: await r.u62() };
+		case ANNOUNCE_RESTART: {
+			const id = await r.u62();
+			const hops = await decodeHops(r, version);
+			return { status: "restart", id, hops, cost: await decodeRouteCost(r, version) };
+		}
+		default:
+			throw new Error(`unknown announce message type: ${typ}`);
+	}
+}
+
+// Pre-lite-06 single ANNOUNCE_BROADCAST body: an inner status byte, then path + hops.
+async function encodeLegacyBody(w: Writer, msg: AnnounceBroadcast, version: Version) {
+	switch (msg.status) {
+		case "active":
+			await w.u8(STATUS_ACTIVE);
+			await w.string(Path.encode(msg.suffix));
+			await encodeHops(w, version, msg.hops);
+			break;
+		case "ended":
+			await w.u8(STATUS_ENDED);
+			await w.string(Path.encode(msg.suffix));
+			await encodeHops(w, version, []);
+			break;
+		case "endedId":
+		case "restart":
+			// The id-referencing forms only exist on lite-06+.
+			throw new Error("announce ids not supported for this version");
+	}
+}
+
+async function decodeLegacyBody(r: Reader, version: Version): Promise<AnnounceBroadcast> {
+	const status = await r.u8();
+	// On lite-05 a restart travels as a duplicate `active`, but the explicit restart
+	// status is accepted on decode and treated the same. Older versions never defined it.
+	const active = status === STATUS_ACTIVE || (status === STATUS_RESTART && hasAnnounceOk(version));
+	if (status !== STATUS_ENDED && !active) {
+		throw new Error("invalid announce status");
+	}
+	const suffix = Path.decode(await r.string());
+	const hops = await decodeHops(r, version);
+	return active ? { status: "active", suffix, hops } : { status: "ended", suffix };
+}
+
+/** Encode one announcement, including its type discriminator (lite-06+) and length prefix. */
+export async function encodeAnnounceBroadcast(w: Writer, msg: AnnounceBroadcast, version: Version): Promise<void> {
+	if (hasAnnounceId(version)) {
+		// lite-06+: outer type discriminator, then a size-prefixed body (like the subscribe stream).
+		await w.u53(announce06Type(msg));
+		return Message.encode(w, (w) => encodeAnnounce06Body(w, msg, version));
+	}
+	return Message.encode(w, (w) => encodeLegacyBody(w, msg, version));
+}
+
+/** Decode one announcement, including its type discriminator (lite-06+) and length prefix. */
+export async function decodeAnnounceBroadcast(r: Reader, version: Version): Promise<AnnounceBroadcast> {
+	if (hasAnnounceId(version)) {
+		const typ = await r.u53();
+		return Message.decode(r, (r) => decodeAnnounce06Body(r, typ, version));
+	}
+	return Message.decode(r, (r) => decodeLegacyBody(r, version));
+}
+
+/** Like {@link decodeAnnounceBroadcast} but resolves `undefined` on a clean FIN. */
+export async function decodeAnnounceBroadcastMaybe(
+	r: Reader,
+	version: Version,
+): Promise<AnnounceBroadcast | undefined> {
+	if (hasAnnounceId(version)) {
+		if (await r.done()) return undefined;
+		const typ = await r.u53();
+		return Message.decode(r, (r) => decodeAnnounce06Body(r, typ, version));
+	}
+	return Message.decodeMaybe(r, (r) => decodeLegacyBody(r, version));
+}
+
+/**
+ * ANNOUNCE_REQUEST: sent by the subscriber to request ANNOUNCE_BROADCAST messages
+ * for a path prefix. Renamed from `AnnounceInterest` in lite-05.
+ */
+export class AnnounceRequest {
+	prefix: Path.Valid;
+	/** Lite04/05 only: the 62-bit Origin id of the peer asking for announces, which the
+	 * publisher uses to skip announces that already passed through it. Zero means "no
+	 * exclusion". Not on the wire elsewhere, so a value set here is ignored when encoding
+	 * for another version and decodes as zero.
+	 *
+	 * Must be a bigint: peer origins are up to 62 bits and overflow u53. */
+	excludeHop: bigint;
+
+	constructor(prefix: Path.Valid, excludeHop: bigint = 0n) {
+		this.prefix = prefix;
+		this.excludeHop = excludeHop;
+	}
+
+	async #encode(w: Writer, version: Version) {
+		await w.string(Path.encode(this.prefix));
+		if (hasExcludeHop(version)) {
+			await w.u62(this.excludeHop);
+		}
+	}
+
+	static async #decode(r: Reader, version: Version): Promise<AnnounceRequest> {
+		const prefix = Path.decode(await r.string());
+		const excludeHop = hasExcludeHop(version) ? await r.u62() : 0n;
+		return new AnnounceRequest(prefix, excludeHop);
+	}
+
+	async encode(w: Writer, version: Version): Promise<void> {
+		return Message.encode(w, (w) => this.#encode(w, version));
+	}
+
+	static async decode(r: Reader, version: Version): Promise<AnnounceRequest> {
+		return Message.decode(r, (r) => AnnounceRequest.#decode(r, version));
+	}
+}
+
+/// Sent after setup to communicate the initially announced paths.
+///
+/// Used by Draft01/Draft02 only. Draft03+ uses individual Announce messages instead.
+export class AnnounceInit {
+	suffixes: Path.Valid[];
+
+	constructor(paths: Path.Valid[]) {
+		this.suffixes = paths;
+	}
+
+	static #guard(version: Version) {
+		switch (version) {
+			case Version.DRAFT_01:
+			case Version.DRAFT_02:
+				break;
+			default:
+				throw new Error("announce init not supported for this version");
+		}
+	}
+
+	async #encode(w: Writer) {
+		await w.u53(this.suffixes.length);
+		for (const path of this.suffixes) {
+			await w.string(Path.encode(path));
+		}
+	}
+
+	static async #decode(r: Reader): Promise<AnnounceInit> {
+		const count = await r.u53();
+		const suffixes: Path.Valid[] = [];
+		for (let i = 0; i < count; i++) {
+			suffixes.push(Path.decode(await r.string()));
+		}
+		return new AnnounceInit(suffixes);
+	}
+
+	async encode(w: Writer, version: Version): Promise<void> {
+		AnnounceInit.#guard(version);
+		return Message.encode(w, this.#encode.bind(this));
+	}
+
+	static async decode(r: Reader, version: Version): Promise<AnnounceInit> {
+		AnnounceInit.#guard(version);
+		return Message.decode(r, AnnounceInit.#decode);
+	}
+}
+
+/// Sent by the publisher as the first message on an announce stream, before any
+/// individual Announce messages. Lite05+ only; the successor to AnnounceInit.
+///
+/// `origin` is the responder's origin id, which the subscriber stamps onto each
+/// announce's hop chain (the publisher no longer stamps itself), or the reserved
+/// {@link UNKNOWN_ORIGIN} when the responder has no identity to give. `active` is
+/// the number of initial Announce messages that follow immediately.
+export class AnnounceOk {
+	origin: Origin;
+	active: number;
+
+	constructor(origin: Origin, active: number) {
+		this.origin = origin;
+		this.active = active;
+	}
+
+	static #guard(version: Version) {
+		if (!hasAnnounceOk(version)) {
+			throw new Error("announce ok not supported for this version");
+		}
+	}
+
+	async #encode(w: Writer) {
+		await w.u62(this.origin);
+		await w.u53(this.active);
+	}
+
+	static async #decode(r: Reader): Promise<AnnounceOk> {
+		// The draft reserves 0 for "unknown": the responder was never assigned an id, or
+		// withholds it to obscure its routing. It names nobody, so callers must not stamp
+		// it onto a hop chain, but it is a legal message and not grounds to drop the stream.
+		const origin = OriginSchema.parse(await r.u62());
+		const active = await r.u53();
+		return new AnnounceOk(origin, active);
+	}
+
+	async encode(w: Writer, version: Version): Promise<void> {
+		AnnounceOk.#guard(version);
+		return Message.encode(w, this.#encode.bind(this));
+	}
+
+	static async decode(r: Reader, version: Version): Promise<AnnounceOk> {
+		AnnounceOk.#guard(version);
+		return Message.decode(r, AnnounceOk.#decode);
+	}
+}

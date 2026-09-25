@@ -7,16 +7,76 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::io::{Read, Seek, SeekFrom, Write};
+#[path = "invocation_journal/guarded.rs"]
+mod guarded;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use tilo_actions::{InvocationId, InvocationUpdate};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) enum InvocationOwner {
-    Local { actor: String },
-    Certified { root: [u8; 32], device: [u8; 32] },
+    Local {
+        actor: String,
+    },
+    Certified {
+        root: [u8; 32],
+        device: [u8; 32],
+    },
+    /// Exact admitted local-channel identity, distinct from actor-only legacy
+    /// ownership and from certified peer callers. This is retained data only.
+    AuthenticatedLocal {
+        root: [u8; 32],
+        device: [u8; 32],
+        #[serde(deserialize_with = "required_agent")]
+        agent: Option<String>,
+    },
+    /// Retained ownership data only; observation still requires live task authority.
+    Enrolled {
+        root: [u8; 32],
+        device: [u8; 32],
+        task: String,
+        run: String,
+        channel: String,
+    },
+}
+
+// Unlike serde's implicit Option default, an omitted field must not silently
+// turn a delegated-agent owner into an ordinary person owner.
+fn required_agent<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+}
+
+impl InvocationOwner {
+    pub(super) fn validate(&self) -> Result<(), String> {
+        if let Self::AuthenticatedLocal {
+            agent: Some(agent), ..
+        } = self
+        {
+            if agent.is_empty()
+                || agent.len() > 512
+                || agent.bytes().any(|byte| byte.is_ascii_control())
+            {
+                return Err("invalid authenticated local invocation agent".into());
+            }
+        }
+        if let Self::Enrolled {
+            task, run, channel, ..
+        } = self
+        {
+            for value in [task, run, channel] {
+                let id = uuid::Uuid::parse_str(value)
+                    .map_err(|_| "invalid enrolled invocation owner")?;
+                if value.len() != 36 || id.is_nil() || id.to_string() != *value {
+                    return Err("noncanonical enrolled invocation owner".into());
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -28,8 +88,7 @@ pub(super) struct InvocationKey {
     pub invocation: InvocationId,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DurableInvocation {
     pub(super) key: InvocationKey,
     pub(super) intent: serde_json::Value,
@@ -37,6 +96,7 @@ pub(crate) struct DurableInvocation {
     pub update: InvocationUpdate,
     pub uncertain: bool,
     pub cancellation_requested: bool,
+    guarded: Option<guarded::State>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,6 +138,17 @@ impl InvocationJournal {
         root: &Path,
         parent_barrier: impl FnOnce(&Path) -> std::io::Result<()>,
     ) -> Result<Self, String> {
+        Self::open_with_barriers(root, parent_barrier, |file, directory| {
+            file.sync_all()?;
+            directory.sync_all()
+        })
+    }
+
+    fn open_with_barriers(
+        root: &Path,
+        parent_barrier: impl FnOnce(&Path) -> std::io::Result<()>,
+        guarded_barrier: impl FnOnce(&File, &File) -> std::io::Result<()>,
+    ) -> Result<Self, String> {
         let created = match std::fs::DirBuilder::new().mode(0o700).create(root) {
             Ok(()) => true,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
@@ -87,6 +158,19 @@ impl InvocationJournal {
             .map_err(|_| "invocation journal directory unreadable")?;
         if !metadata.is_dir() || metadata.permissions().mode() & 0o777 != 0o700 {
             return Err("invocation journal requires a private directory".into());
+        }
+        // Retain the directory actually opened for this snapshot's guarded
+        // reconciliation, rather than reopening its pathname after decoding.
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(root)
+            .map_err(|_| "invocation journal directory unavailable")?;
+        let actual_directory = directory
+            .metadata()
+            .map_err(|_| "invocation journal directory metadata unavailable")?;
+        if actual_directory.dev() != metadata.dev() || actual_directory.ino() != metadata.ino() {
+            return Err("invocation journal directory changed during open".into());
         }
         let lock = OpenOptions::new()
             .read(true)
@@ -100,6 +184,7 @@ impl InvocationJournal {
         private_file(&lock)?;
         lock.try_lock()
             .map_err(|_| "invocation journal already has a writer")?;
+        let mut observed_snapshot = None;
         let snapshot = if created {
             Snapshot {
                 version: 1,
@@ -107,7 +192,7 @@ impl InvocationJournal {
                 records: Vec::new(),
             }
         } else {
-            let file = OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(root.join("records.json"))
@@ -121,16 +206,35 @@ impl InvocationJournal {
             {
                 return Err("invocation journal exceeds storage limit".into());
             }
-            serde_json::from_reader(file.take(Self::MAX_BYTES))
-                .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?
+            guarded::preflight(&mut file)?;
+            file.seek(SeekFrom::Start(0))
+                .map_err(|_| "invocation journal rewind failed")?;
+            let snapshot =
+                serde_json::from_reader(std::io::BufReader::new((&mut file).take(Self::MAX_BYTES)))
+                    .map_err(|_| "invocation journal snapshot is corrupt or unsupported")?;
+            observed_snapshot = Some(file);
+            snapshot
         };
-        if snapshot.version != 1 || snapshot.host.is_nil() {
+        if !matches!(snapshot.version, 1 | 2 | 3 | 4) || snapshot.host.is_nil() {
             return Err("invocation journal version or host unsupported".into());
         }
         let mut keys = HashSet::new();
         let mut handles = HashSet::new();
         let mut invocations = HashSet::new();
         for record in &snapshot.records {
+            record.key.owner.validate()?;
+            if record.guarded.is_some() && snapshot.version < 3 {
+                return Err("guarded read requires journal version 3".into());
+            }
+            if snapshot.version < 4
+                && matches!(record.key.owner, InvocationOwner::AuthenticatedLocal { .. })
+            {
+                return Err("authenticated local ownership requires journal version 4".into());
+            }
+            if snapshot.version == 1 && matches!(record.key.owner, InvocationOwner::Enrolled { .. })
+            {
+                return Err("private invocation ownership requires journal version 2".into());
+            }
             if record.key.host != snapshot.host
                 || record.key.invocation != record.update.invocation()
                 || record.wire_id == 0
@@ -159,6 +263,22 @@ impl InvocationJournal {
         }
         if created || recovered {
             journal.persist()?;
+        } else if journal
+            .snapshot
+            .records
+            .iter()
+            .any(|record| record.guarded.is_some())
+        {
+            // A visible terminal marker may be the result of a failed rename
+            // directory barrier. Reconcile the exact decoded file, not a
+            // freshly reopened name, before exposing even sanitized status.
+            guarded_barrier(
+                observed_snapshot
+                    .as_ref()
+                    .ok_or("guarded snapshot unavailable")?,
+                &directory,
+            )
+            .map_err(|_| "guarded invocation snapshot reconciliation failed")?;
         }
         // A failed initialization may leave a valid snapshot. Its existence
         // does not prove the directory entry was durable: retry on every open.
@@ -199,6 +319,7 @@ impl InvocationJournal {
         wire_id: u64,
     ) -> Result<bool, String> {
         self.check()?;
+        key.owner.validate()?;
         if let Some(existing) = self.lookup(&key)? {
             if existing.intent != intent {
                 return Err("invocation identity reused with different intent".into());
@@ -225,6 +346,12 @@ impl InvocationJournal {
         let update = InvocationUpdate::Accepted {
             invocation: key.invocation,
         };
+        if matches!(key.owner, InvocationOwner::Enrolled { .. }) {
+            self.snapshot.version = self.snapshot.version.max(2);
+        }
+        if matches!(key.owner, InvocationOwner::AuthenticatedLocal { .. }) {
+            self.snapshot.version = self.snapshot.version.max(4);
+        }
         self.snapshot.records.push(DurableInvocation {
             key,
             intent,
@@ -232,6 +359,7 @@ impl InvocationJournal {
             update,
             uncertain: false,
             cancellation_requested: false,
+            guarded: None,
         });
         self.persist()?;
         #[cfg(test)]
@@ -258,8 +386,84 @@ impl InvocationJournal {
         if record.update.is_terminal() || update.invocation() != key.invocation {
             return Err("invocation journal transition rejected".into());
         }
+        if record.guarded.is_some() && !guarded::allowed_failure(&update, uncertain) {
+            return Err(
+                "guarded invocation requires a sanitized failure or private terminal".into(),
+            );
+        }
+        let settled = update.is_terminal() && matches!(key.owner, InvocationOwner::Enrolled { .. });
         record.update = update;
         record.uncertain = uncertain;
+        self.persist()?;
+        if settled {
+            // Wake the host's step owner: the parent can commit now.
+            crate::enrolled_dispatch::CHILD_SETTLED.notify_one();
+        }
+        Ok(())
+    }
+
+    // Storage prerequisites only. No production caller is wired until the
+    // genuine selected worker/owner capsule protocol is installed.
+    #[cfg(test)]
+    fn require_guarded_read(
+        &mut self,
+        key: &InvocationKey,
+        selection: [u8; 32],
+    ) -> Result<(), String> {
+        self.check()?;
+        let record = self
+            .snapshot
+            .records
+            .iter_mut()
+            .find(|r| &r.key == key)
+            .ok_or("unknown invocation journal identity")?;
+        if let Some(guarded) = &record.guarded {
+            return if guarded.selection() == &selection {
+                Ok(())
+            } else {
+                Err("changed guarded selection".into())
+            };
+        }
+        if !matches!(record.update, InvocationUpdate::Accepted { .. })
+            || record.uncertain
+            || record.cancellation_requested
+        {
+            return Err("guarded selection requires fresh accepted invocation".into());
+        }
+        record.guarded = Some(guarded::State::selected(selection));
+        self.snapshot.version = self.snapshot.version.max(3);
+        self.persist()
+    }
+
+    #[cfg(test)]
+    fn complete_guarded_read(
+        &mut self,
+        key: &InvocationKey,
+        selection: [u8; 32],
+        output: [u8; 32],
+        basis: [u8; 32],
+        bytes: u32,
+    ) -> Result<(), String> {
+        self.check()?;
+        let record = self
+            .snapshot
+            .records
+            .iter_mut()
+            .find(|r| &r.key == key)
+            .ok_or("unknown invocation journal identity")?;
+        if !matches!(record.update, InvocationUpdate::Accepted { .. })
+            || record.uncertain
+            || record.cancellation_requested
+        {
+            return Err("guarded terminal requires live accepted invocation".into());
+        }
+        let guarded = record.guarded.as_mut().ok_or("guarded selection absent")?;
+        if guarded.selection() != &selection {
+            return Err("changed guarded selection".into());
+        }
+        guarded.complete(key.invocation, output, basis, bytes)?;
+        record.update = guarded::unavailable(key.invocation);
+        record.uncertain = false;
         self.persist()
     }
 
@@ -273,6 +477,9 @@ impl InvocationJournal {
             .ok_or("unknown invocation journal identity")?;
         if record.update.is_terminal() {
             return Err("invocation is no longer running".into());
+        }
+        if record.guarded.is_some() {
+            return Err("guarded reads are noncancellable".into());
         }
         record.cancellation_requested = true;
         self.persist()
@@ -360,6 +567,152 @@ pub(super) fn unknown(invocation: InvocationId) -> InvocationUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LEGACY_SNAPSHOT: &str = r#"{"version":1,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Local":{"actor":"person"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"legacy"}},"uncertain":false,"cancellation_requested":false}]}"#;
+    const ENROLLED_SNAPSHOT: &str = r#"{"version":2,"host":"00000000-0000-0000-0000-000000000063","records":[{"key":{"room":"00000000-0000-0000-0000-000000000001","host":"00000000-0000-0000-0000-000000000063","owner":{"Enrolled":{"root":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"device":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"task":"00000000-0000-0000-0000-000000000005","run":"00000000-0000-0000-0000-000000000006","channel":"00000000-0000-0000-0000-000000000007"}},"invocation":"00000000-0000-0000-0000-000000000004"},"intent":{},"wire_id":1,"update":{"state":"succeeded","invocation":"00000000-0000-0000-0000-000000000004","output":{"value":"private result"}},"uncertain":false,"cancellation_requested":false}]}"#;
+
+    #[test]
+    fn enrolled_journal_literal_versions_retain_owner_and_writer_floor() {
+        for (literal, version) in [(LEGACY_SNAPSHOT, 1), (ENROLLED_SNAPSHOT, 2)] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            drop(InvocationJournal::open(&root).unwrap());
+            std::fs::write(root.join("records.json"), literal).unwrap();
+            let mut journal = InvocationJournal::open(&root).expect("supported private ownership");
+            let before: serde_json::Value = serde_json::from_str(literal).unwrap();
+            assert_eq!(serde_json::to_value(&journal.snapshot).unwrap(), before);
+            let mut local = key();
+            local.host = journal.host();
+            local.owner = InvocationOwner::Local {
+                actor: "person".into(),
+            };
+            journal.admit(local, serde_json::json!({}), 2).unwrap();
+            assert_eq!(
+                journal.snapshot.version, version,
+                "legacy writes never downgrade a private store"
+            );
+            drop(journal);
+            let recovered = InvocationJournal::open(&root).unwrap();
+            assert_eq!(
+                serde_json::to_value(&recovered.snapshot.records[0]).unwrap(),
+                before["records"][0]
+            );
+            if version == 2 {
+                let mut foreign = recovered.snapshot.records[0].key.clone();
+                for owner in [
+                    InvocationOwner::Local {
+                        actor: "person".into(),
+                    },
+                    InvocationOwner::Certified {
+                        root: [1; 32],
+                        device: [2; 32],
+                    },
+                    InvocationOwner::Certified {
+                        root: [1; 32],
+                        device: [3; 32],
+                    },
+                ] {
+                    foreign.owner = owner;
+                    assert!(
+                        recovered.lookup(&foreign).unwrap().is_none(),
+                        "private recovered result cannot alias a public owner"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn enrolled_journal_old_owner_decoder_rejects_private_rows() {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        enum VersionOneOwner {
+            Local { actor: String },
+            Certified { root: [u8; 32], device: [u8; 32] },
+        }
+        let legacy: serde_json::Value = serde_json::from_str(LEGACY_SNAPSHOT).unwrap();
+        let old =
+            serde_json::from_value::<VersionOneOwner>(legacy["records"][0]["key"]["owner"].clone())
+                .unwrap();
+        assert!(matches!(old, VersionOneOwner::Local { actor } if actor == "person"));
+        let certified: VersionOneOwner = serde_json::from_value(
+            serde_json::to_value(InvocationOwner::Certified {
+                root: [1; 32],
+                device: [2; 32],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            matches!(certified, VersionOneOwner::Certified { root, device } if root == [1;32] && device == [2;32])
+        );
+        let private: serde_json::Value = serde_json::from_str(ENROLLED_SNAPSHOT).unwrap();
+        assert_ne!(private["version"], 1, "old snapshot gate fails explicitly");
+        assert!(
+            serde_json::from_value::<VersionOneOwner>(
+                private["records"][0]["key"]["owner"].clone()
+            )
+            .is_err(),
+            "old enum never silently classifies private ownership as Local"
+        );
+    }
+
+    #[test]
+    fn enrolled_journal_upgrade_barrier_never_returns_effect_permission_on_failure() {
+        let private: Snapshot =
+            serde_json::from_str(ENROLLED_SNAPSHOT).expect("private owner data");
+        for failure in [BarrierFailure::File, BarrierFailure::Directory] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            let mut journal = InvocationJournal::open(&root).unwrap();
+            let mut key = private.records[0].key.clone();
+            key.host = journal.host();
+            journal.fail_at = Some(failure);
+            assert!(
+                journal
+                    .admit(key.clone(), serde_json::json!({}), 1)
+                    .is_err()
+            );
+            assert!(
+                journal
+                    .admit(key.clone(), serde_json::json!({}), 2)
+                    .is_err()
+            );
+            drop(journal);
+            let reopened = InvocationJournal::open(&root).unwrap();
+            if failure == BarrierFailure::Directory {
+                assert_eq!(reopened.snapshot.version, 2);
+                let retained = reopened.lookup(&key).unwrap().unwrap();
+                assert!(retained.uncertain);
+                assert_eq!(retained.key.owner, key.owner);
+            } else {
+                assert_eq!(reopened.snapshot.version, 1);
+                assert!(reopened.lookup(&key).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn enrolled_journal_rejects_private_downgrade_and_noncanonical_ownership() {
+        for literal in [
+            ENROLLED_SNAPSHOT.replace("\"version\":2", "\"version\":1"),
+            ENROLLED_SNAPSHOT.replace(
+                "00000000-0000-0000-0000-000000000005",
+                "00000000000000000000000000000005",
+            ),
+            ENROLLED_SNAPSHOT.replace(
+                "00000000-0000-0000-0000-000000000006",
+                "00000000-0000-0000-0000-000000000000",
+            ),
+            ENROLLED_SNAPSHOT.replace("00000000-0000-0000-0000-000000000007", &"x".repeat(200)),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("journal");
+            drop(InvocationJournal::open(&root).unwrap());
+            std::fs::write(root.join("records.json"), literal).unwrap();
+            assert!(InvocationJournal::open(&root).is_err());
+        }
+    }
 
     fn key() -> InvocationKey {
         InvocationKey {
@@ -566,3 +919,11 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "invocation_journal/guarded_tests.rs"]
+mod guarded_tests;
+
+#[cfg(test)]
+#[path = "invocation_journal/authenticated_local_tests.rs"]
+mod authenticated_local_tests;

@@ -5,6 +5,10 @@
 //! Ed25519 verification key, so no transport-specific PeerId/public-key pair is
 //! duplicated in the token.
 
+mod certified;
+pub(crate) mod enrollment_driver;
+pub(crate) use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
@@ -445,7 +449,10 @@ pub fn make_invite_token_with_identity_and_role(
 ///
 /// Returns an error if the workspace, endpoint, device certificate, or
 /// serialized signed token is invalid.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit protocol inputs stay separate parameters"
+)]
 pub fn make_invite_token_with_recipient(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -521,7 +528,10 @@ pub fn make_invite_token_with_recipient(
 /// expiry, an invalid or unminted room id, a device-certificate/endpoint
 /// mismatch, or a signature that verifies against neither the current nor
 /// the legacy signing payload.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential routine kept together for review"
+)]
 pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String> {
     let json = B64
         .decode(token_str)

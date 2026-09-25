@@ -2541,8 +2541,7 @@ impl WordProcessor {
         // `DocMut::remove_mark`, which uses `unmark(.., ExpandMark::After)`).
         if let Some(container) = self.region_container_obj(state)
             && let Some(obj) = region_block_obj(state, &container, block)
-            && let Ok(Some((automerge::Value::Object(automerge::ObjType::Text), tid))) =
-                state.get(&obj, qdoc::schema::BLOCK_TEXT)
+            && let Some(tid) = qdoc::model::ensure_block_text(state, &obj)
         {
             let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
         }

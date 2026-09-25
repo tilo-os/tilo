@@ -127,7 +127,7 @@ pub fn pump(relay: &mut MemoryRelay) {
     let peer_ids: Vec<String> = inboxes.keys().cloned().collect();
     for (from, req) in pending {
         match req {
-            CollabRequest::Document { mutation } => {
+            CollabRequest::Document { mutation, .. } => {
                 let mutation = match mutation {
                     tilo_ui::collaboration::DocumentMutation::Incremental(data) => {
                         collab_types::DocumentMutation::Incremental(data)
@@ -201,6 +201,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             CollabRequest::WorkspaceControlInput { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
             | CollabRequest::NearbyTransferCommand { .. }
+            | CollabRequest::NativeMediaCommand { .. }
             | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
@@ -211,11 +212,18 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::UpdateInvocation { .. }
             | CollabRequest::RecordLocalEffect { .. }
             | CollabRequest::InvokePublishedAction { .. }
+            | CollabRequest::QueryActionDirectory { .. }
+            | CollabRequest::ResolvePublishedAction { .. }
+            | CollabRequest::InvokeResolvedPublishedAction { .. }
             | CollabRequest::PublishedInvocationStatus { .. }
             | CollabRequest::CancelPublishedInvocation { .. }
             | CollabRequest::LaunchPublishedApplication { .. }
+            | CollabRequest::SubscribeEnrolledTasks { .. }
+            | CollabRequest::AcceptEnrolledTask { .. }
+            | CollabRequest::ReportEnrolledTask { .. }
             | CollabRequest::ReportTaskRun { .. }
             | CollabRequest::InvokeTaskAction { .. }
+            | CollabRequest::ManagedInvocationAttempt { .. }
             | CollabRequest::TaskRunCancellation { .. } => {
                 // Session-local and shell-owned control-plane commands never
                 // fan out through another application's document channel.

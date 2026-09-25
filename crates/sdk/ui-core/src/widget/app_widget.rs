@@ -903,6 +903,25 @@ mod component_adapter {
                 visitor(root);
             }
         }
+        /// Participant views (agent carets) live against the component's own
+        /// record document, the one `sync` hands the app, never the outer
+        /// App document: resolved against the outer document a Writer caret
+        /// finds no block, and no participant presence is produced at all.
+        fn participant_presence(
+            &self,
+            state: &AutoCommit,
+        ) -> Vec<crate::widget::ParticipantPresence> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(state, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| root.participant_presence(document))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             self.component
                 .root
@@ -1383,12 +1402,60 @@ mod component_adapter {
                 })
                 .unwrap_or(None)
         }
+
+        fn action_directory_invocation_domain(
+            &self,
+            doc: &AutoCommit,
+        ) -> crate::widget::ActionDirectoryInvocationDomain {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    self.component
+                        .root
+                        .as_deref()
+                        .map(|root| root.action_directory_invocation_domain(document))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        }
         fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(doc, |document, _record_root| {
                     let root = self.component.root.as_deref()?;
                     root.resource(document, id)
+                })
+                .unwrap_or(None)
+        }
+        /// A participant's tree is built against the component's own record
+        /// document, like [`Self::resources`]; the default would fall back to
+        /// this boundary's own view (the published schema) on the outer doc.
+        fn resources_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+        ) -> Vec<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let Some(root) = self.component.root.as_deref() else {
+                        return Vec::new();
+                    };
+                    root.resources_for(participant, document)
+                })
+                .unwrap_or_else(|_| Vec::new())
+        }
+        fn resource_for(
+            &self,
+            participant: Option<&tilo_actions::ParticipantId>,
+            doc: &AutoCommit,
+            id: &str,
+        ) -> Option<tilo_actions::Resource> {
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(doc, |document, _record_root| {
+                    let root = self.component.root.as_deref()?;
+                    root.resource_for(participant, document, id)
                 })
                 .unwrap_or(None)
         }

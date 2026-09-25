@@ -1,6 +1,6 @@
 use super::*;
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use ed25519_dalek::SigningKey;
+use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
+use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
@@ -300,7 +300,7 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     );
     assert!(receiver.rows().is_empty());
 }
-fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
+pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
     let (a, ac, b, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut native = StatePeer::new(
@@ -330,6 +330,758 @@ fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
         )
         .unwrap();
     (native, a, b, bc, now)
+}
+
+#[test]
+fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access() {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, issue_invitation, sign_join_proof,
+        verify_join_proof,
+    };
+
+    let (mut peer, authority_key, other_owner_device, _, now) = seeded();
+    let now_ns = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let guest_root = SigningKey::from_bytes(&[41; 32]);
+    let guest_key = SigningKey::from_bytes(&[42; 32]);
+    let mut guest_cert = DeviceCert {
+        user_public_key: guest_root.verifying_key().to_bytes(),
+        device_public_key: guest_key.verifying_key().to_bytes(),
+        device_label: "Independent guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 7,
+            room: peer.room().into(),
+            authority: peer.authority().clone(),
+            issuer: peer.authority().clone(),
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [43; 16],
+            recipient_user_public_key: Some(guest_cert.user_public_key),
+            invitee_name: Some("Independent guest".into()),
+            expires_at_ns: now_ns + 10_000_000_000,
+            transport: vec![],
+        },
+        &authority_key,
+    )
+    .unwrap();
+    let join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(guest_cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &guest_cert,
+        [44; 32],
+        [45; 32],
+        now_ns + 1_000_000_000,
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
+    let redemption = verify_join_proof(
+        &proof,
+        &challenge,
+        &guest_cert,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+
+    assert!(
+        peer.admit_invited_member(&redemption, &other_owner_device, now)
+            .is_err(),
+        "only the pinned authority device may mutate governance"
+    );
+    assert!(
+        peer.admit_invited_member(&redemption, &authority_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(guest_cert.device_public_key, now)
+            .unwrap()
+            .0,
+        collab_types::Role::Editor
+    );
+    let access = peer.governed_access(now).unwrap();
+    assert!(
+        access
+            .member_devices
+            .contains(&guest_cert.device_public_key)
+    );
+    assert!(
+        access
+            .member_devices
+            .contains(&peer.authority().device_public_key)
+    );
+    assert!(
+        access
+            .member_user_roots
+            .contains(&guest_cert.user_public_key)
+    );
+    assert!(
+        access
+            .member_user_roots
+            .contains(&peer.authority().user_public_key)
+    );
+    assert!(
+        !peer
+            .admit_invited_member(&redemption, &authority_key, now)
+            .unwrap()
+    );
+    let mut second_grant = redemption.join().grant().clone();
+    second_grant.nonce = [46; 16];
+    let second_signed = issue_invitation(second_grant, &authority_key).unwrap();
+    let second_join = crate::join::decode_and_verify_invitation(
+        &second_signed,
+        Some(guest_cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let second_challenge = JoinChallenge::new(
+        &second_join,
+        &guest_cert,
+        [47; 32],
+        [48; 32],
+        now_ns + 1_000_000_000,
+        now_ns,
+    )
+    .unwrap();
+    let second_proof = sign_join_proof(second_challenge.clone(), &guest_key).unwrap();
+    let second_redemption = verify_join_proof(
+        &second_proof,
+        &second_challenge,
+        &guest_cert,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    assert!(
+        peer.admit_invited_member(&second_redemption, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        !peer
+            .admit_invited_member(&redemption, &authority_key, now)
+            .unwrap(),
+        "a later invite for the same device must not overwrite the first receipt"
+    );
+
+    let mut restored = StatePeer::restore(
+        &peer.durable().unwrap(),
+        peer.room(),
+        peer.authority().clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    assert!(
+        !restored
+            .admit_invited_member(&redemption, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        !restored
+            .admit_invited_member(&second_redemption, &authority_key, now)
+            .unwrap()
+    );
+    let replay_key = SigningKey::from_bytes(&[54; 32]);
+    let mut replay_cert = DeviceCert {
+        user_public_key: guest_root.verifying_key().to_bytes(),
+        device_public_key: replay_key.verifying_key().to_bytes(),
+        device_label: "Replay device".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut replay_cert, &guest_root).unwrap();
+    let replay_join = crate::join::decode_and_verify_invitation(
+        &signed,
+        Some(replay_cert.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let replay_challenge = JoinChallenge::new(
+        &replay_join,
+        &replay_cert,
+        [55; 32],
+        [56; 32],
+        now_ns + 1_000_000_000,
+        now_ns,
+    )
+    .unwrap();
+    let replay_proof = sign_join_proof(replay_challenge.clone(), &replay_key).unwrap();
+    let replay_redemption = verify_join_proof(
+        &replay_proof,
+        &replay_challenge,
+        &replay_cert,
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    assert!(
+        restored
+            .admit_invited_member(&replay_redemption, &authority_key, now)
+            .unwrap_err()
+            .contains("already redeemed"),
+        "invite A remains spent after invite B updates the same original device"
+    );
+
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    let NeighbourMsg::SyncResp { changes, room } = restored.room_message() else {
+        unreachable!()
+    };
+    let mut room_doc = crate::room::candidate(None, &changes).unwrap();
+    use automerge::ReadDoc;
+    let capabilities = room_doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let before = room_doc.get_heads();
+    room_doc.set_actor(automerge::ActorId::from(
+        authority_key.verifying_key().to_bytes().to_vec(),
+    ));
+    let shadowing = CapOverride::grant(
+        Subject::User(collab_types::Ed25519PublicKey::from_bytes(
+            guest_cert.user_public_key,
+        )),
+        Scope::Workspace,
+        Verb::Admin,
+    )
+    .with_id("legacy-strong-membership");
+    room_doc
+        .put(
+            &capabilities,
+            "legacy-strong-membership",
+            automerge::ScalarValue::Bytes(serde_json::to_vec(&shadowing).unwrap()),
+        )
+        .unwrap();
+    room_doc.commit();
+    restored
+        .receive_from(
+            TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp {
+                changes: room_doc
+                    .get_changes(&before)
+                    .into_iter()
+                    .map(|change| change.raw_bytes().to_vec())
+                    .collect(),
+                room,
+            },
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        restored
+            .permissions(guest_cert.device_public_key, now)
+            .unwrap()
+            .0,
+        collab_types::Role::Owner
+    );
+    assert!(
+        restored
+            .set_member_role(
+                guest_cert.user_public_key,
+                MemberRole::Viewer,
+                &authority_key,
+                now
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        restored
+            .permissions(guest_cert.device_public_key, now)
+            .unwrap()
+            .0,
+        collab_types::Role::Viewer
+    );
+    restored
+        .membership_challenge(
+            7,
+            &guest_cert,
+            [49; 32],
+            [50; 32],
+            now_ns + 1_000_000_000,
+            now,
+        )
+        .unwrap();
+    assert!(
+        restored
+            .remove_member(guest_cert.user_public_key, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        restored
+            .permissions(guest_cert.device_public_key, now)
+            .is_err()
+    );
+    assert_eq!(
+        restored
+            .membership_challenge(
+                7,
+                &guest_cert,
+                [51; 32],
+                [52; 32],
+                now_ns + 1_000_000_000,
+                now,
+            )
+            .unwrap_err(),
+        "member has been removed"
+    );
+    assert!(
+        !restored
+            .admit_invited_member(&redemption, &authority_key, now)
+            .unwrap()
+    );
+    let access = restored.governed_access(now).unwrap();
+    assert!(
+        !access
+            .member_devices
+            .contains(&guest_cert.device_public_key)
+    );
+    assert!(
+        !access
+            .member_user_roots
+            .contains(&guest_cert.user_public_key)
+    );
+    assert!(
+        restored
+            .remove_member(peer.authority().user_public_key, &authority_key, now)
+            .is_err(),
+        "the owner cannot be removed through member governance"
+    );
+}
+
+#[test]
+fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, WorkspaceDelegationPermissions,
+        decode_and_verify_invitation, issue_invitation, sign_join_proof, sign_workspace_delegation,
+        verify_join_proof,
+    };
+    let (mut peer, authority_key, host_key, _, now) = seeded();
+    let now_ns = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let host = peer
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == host_key.verifying_key().to_bytes())
+        .unwrap();
+    assert!(!host.capabilities.can_admit_devices);
+    let delegation = sign_workspace_delegation(
+        peer.room(),
+        9,
+        peer.authority(),
+        host.clone(),
+        WorkspaceDelegationPermissions {
+            issue_invitations: true,
+            admit_invited_members: true,
+        },
+        [61; 16],
+        Some(now_ns + 20_000_000_000),
+        &authority_key,
+    )
+    .unwrap();
+    assert!(
+        peer.install_workspace_delegation(delegation.clone(), &authority_key, now)
+            .unwrap()
+    );
+
+    let guest_root = SigningKey::from_bytes(&[62; 32]);
+    let guest_key = SigningKey::from_bytes(&[63; 32]);
+    let mut guest = DeviceCert {
+        user_public_key: guest_root.verifying_key().to_bytes(),
+        device_public_key: guest_key.verifying_key().to_bytes(),
+        device_label: "Delegated guest".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut guest, &guest_root).unwrap();
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 9,
+            room: peer.room().into(),
+            authority: peer.authority().clone(),
+            issuer: host.clone(),
+            delegation: Some(delegation),
+            role: MemberRole::Commenter,
+            nonce: [64; 16],
+            recipient_user_public_key: Some(guest.user_public_key),
+            invitee_name: None,
+            expires_at_ns: now_ns + 10_000_000_000,
+            transport: vec![],
+        },
+        &host_key,
+    )
+    .unwrap();
+    let join = decode_and_verify_invitation(
+        &signed,
+        Some(guest.user_public_key),
+        &RevocationList::new(),
+        now_ns,
+    )
+    .unwrap();
+    let challenge = JoinChallenge::new(
+        &join,
+        &guest,
+        [65; 32],
+        [66; 32],
+        now_ns + 1_000_000_000,
+        now_ns,
+    )
+    .unwrap();
+    let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
+    let redemption =
+        verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns).unwrap();
+    assert!(
+        peer.admit_invited_member(&redemption, &host_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(guest.device_public_key, now).unwrap().0,
+        collab_types::Role::Commenter
+    );
+}
+
+#[test]
+fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, decode_and_verify_invitation, issue_invitation,
+        sign_join_proof, verify_join_proof,
+    };
+    let (base, authority_key, _, _, now) = seeded();
+    let now_ns = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let signed = issue_invitation(
+        InviteGrant {
+            workspace_id: 10,
+            room: base.room().into(),
+            authority: base.authority().clone(),
+            issuer: base.authority().clone(),
+            delegation: None,
+            role: MemberRole::Editor,
+            nonce: [70; 16],
+            recipient_user_public_key: None,
+            invitee_name: None,
+            expires_at_ns: now_ns + 10_000_000_000,
+            transport: vec![],
+        },
+        &authority_key,
+    )
+    .unwrap();
+    let redeem = |root_seed: u8, device_seed: u8, request: u8, challenge_nonce: u8| {
+        let root = SigningKey::from_bytes(&[root_seed; 32]);
+        let device = SigningKey::from_bytes(&[device_seed; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: format!("concurrent-{device_seed}"),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        let join = decode_and_verify_invitation(
+            &signed,
+            Some(cert.user_public_key),
+            &RevocationList::new(),
+            now_ns,
+        )
+        .unwrap();
+        let challenge = JoinChallenge::new(
+            &join,
+            &cert,
+            [request; 32],
+            [challenge_nonce; 32],
+            now_ns + 1_000_000_000,
+            now_ns,
+        )
+        .unwrap();
+        let proof = sign_join_proof(challenge.clone(), &device).unwrap();
+        verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap()
+    };
+    let first = redeem(71, 72, 73, 74);
+    let second = redeem(75, 76, 77, 78);
+    let mut left = base.clone();
+    let mut right = base.clone();
+    assert!(
+        left.admit_invited_member(&first, &authority_key, now)
+            .unwrap()
+    );
+    assert!(
+        right
+            .admit_invited_member(&second, &authority_key, now)
+            .unwrap()
+    );
+
+    let authority = base.authority().device_public_key;
+    let mut receiver = base;
+    receiver
+        .receive_from(
+            TransportOrigin::RelayDelta(authority),
+            left.room_message(),
+            now,
+        )
+        .unwrap();
+    let accepted = receiver.durable().unwrap();
+    let error = receiver
+        .receive_from(
+            TransportOrigin::RelayDelta(authority),
+            right.room_message(),
+            now,
+        )
+        .unwrap_err();
+    assert!(
+        error.contains("conflicting redemption") || error.contains("duplicate seq"),
+        "concurrent redemption must fail before two receipts merge: {error}"
+    );
+    assert_eq!(receiver.durable().unwrap(), accepted);
+}
+
+#[test]
+fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore() {
+    use crate::join::{
+        InviteGrant, JoinChallenge, MemberRole, WorkspaceDelegationPermissions,
+        decode_and_verify_invitation, issue_invitation, sign_join_proof, sign_workspace_delegation,
+        verify_join_proof,
+    };
+    let (mut base, authority_key, delegate_key, _, now) = seeded();
+    let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
+        unreachable!()
+    };
+    let mut legacy = crate::room::candidate(None, &changes).unwrap();
+    let before = legacy.get_heads();
+    legacy.set_actor(automerge::ActorId::from(
+        authority_key.verifying_key().to_bytes().to_vec(),
+    ));
+    legacy.delete(ROOT, "invitation_receipts_v1").unwrap();
+    legacy.commit();
+    base.receive_from(
+        TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+        NeighbourMsg::SyncResp {
+            changes: legacy
+                .get_changes(&before)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+            room,
+        },
+        now,
+    )
+    .unwrap();
+    let now_ns = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let delegate = base
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == delegate_key.verifying_key().to_bytes())
+        .unwrap();
+    let delegation = sign_workspace_delegation(
+        base.room(),
+        11,
+        base.authority(),
+        delegate.clone(),
+        WorkspaceDelegationPermissions {
+            issue_invitations: true,
+            admit_invited_members: true,
+        },
+        [80; 16],
+        Some(now_ns + 20_000_000_000),
+        &authority_key,
+    )
+    .unwrap();
+    base.install_workspace_delegation(delegation.clone(), &authority_key, now)
+        .unwrap();
+
+    let guest_root = SigningKey::from_bytes(&[81; 32]);
+    let guest_key = SigningKey::from_bytes(&[82; 32]);
+    let mut guest = DeviceCert {
+        user_public_key: guest_root.verifying_key().to_bytes(),
+        device_public_key: guest_key.verifying_key().to_bytes(),
+        device_label: "same concurrent device".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut guest, &guest_root).unwrap();
+    let grant = |nonce, issuer, delegation| InviteGrant {
+        workspace_id: 11,
+        room: base.room().into(),
+        authority: base.authority().clone(),
+        issuer,
+        delegation,
+        role: MemberRole::Editor,
+        nonce: [nonce; 16],
+        recipient_user_public_key: Some(guest.user_public_key),
+        invitee_name: None,
+        expires_at_ns: now_ns + 10_000_000_000,
+        transport: vec![],
+    };
+    let signed_a =
+        issue_invitation(grant(83, base.authority().clone(), None), &authority_key).unwrap();
+    let signed_b =
+        issue_invitation(grant(84, delegate.clone(), Some(delegation)), &delegate_key).unwrap();
+    let redeem = |signed: &[u8], request: u8, nonce: u8, cert: &DeviceCert, key: &SigningKey| {
+        let join = decode_and_verify_invitation(
+            signed,
+            Some(cert.user_public_key),
+            &RevocationList::new(),
+            now_ns,
+        )
+        .unwrap();
+        let challenge = JoinChallenge::new(
+            &join,
+            cert,
+            [request; 32],
+            [nonce; 32],
+            now_ns + 1_000_000_000,
+            now_ns,
+        )
+        .unwrap();
+        let proof = sign_join_proof(challenge.clone(), key).unwrap();
+        verify_join_proof(&proof, &challenge, cert, &RevocationList::new(), now_ns).unwrap()
+    };
+    let redemption_a = redeem(&signed_a, 85, 86, &guest, &guest_key);
+    let redemption_b = redeem(&signed_b, 87, 88, &guest, &guest_key);
+    let mut left = base.clone();
+    let mut right = base.clone();
+    left.admit_invited_member(&redemption_a, &authority_key, now)
+        .unwrap();
+    right
+        .admit_invited_member(&redemption_b, &delegate_key, now)
+        .unwrap();
+
+    let authority = base.authority().device_public_key;
+    let mut merged = base;
+    merged
+        .receive_from(
+            TransportOrigin::RelayDelta(authority),
+            left.room_message(),
+            now,
+        )
+        .unwrap();
+    merged
+        .receive_from(
+            TransportOrigin::RelayDelta(authority),
+            right.room_message(),
+            now,
+        )
+        .unwrap();
+    let mut restored = StatePeer::restore(
+        &merged.durable().unwrap(),
+        merged.room(),
+        merged.authority().clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+
+    let replay_key = SigningKey::from_bytes(&[89; 32]);
+    let mut replay = guest.clone();
+    replay.device_public_key = replay_key.verifying_key().to_bytes();
+    replay.device_label = "different replay device".into();
+    sign_device_cert(&mut replay, &guest_root).unwrap();
+    let replay_a = redeem(&signed_a, 90, 91, &replay, &replay_key);
+    let replay_b = redeem(&signed_b, 92, 93, &replay, &replay_key);
+    for (redemption, issuer) in [(&replay_a, &authority_key), (&replay_b, &delegate_key)] {
+        assert!(
+            restored
+                .admit_invited_member(redemption, issuer, now)
+                .unwrap_err()
+                .contains("already redeemed")
+        );
+    }
+}
+
+#[test]
+fn conflicting_crdt_values_for_one_invite_fail_closed() {
+    let (base, authority_key, _, _, now) = seeded();
+    let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
+        unreachable!()
+    };
+    let mut document = crate::room::candidate(None, &changes).unwrap();
+    let base_heads = document.get_heads();
+    let mut left = document.fork();
+    let mut right = document.fork();
+    let invitation_receipts = left.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
+    let invite_id = [97; 32];
+    let receipt = |device_public_key, request_id| crate::state::RedemptionReceipt {
+        invite_id,
+        user_public_key: [98; 32],
+        device_public_key,
+        request_id,
+        role: crate::join::MemberRole::Viewer,
+    };
+    left.set_actor(automerge::ActorId::from(vec![98; 32]));
+    left.put(
+        &invitation_receipts,
+        hex::encode(invite_id),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&receipt([99; 32], [100; 32])).unwrap()),
+    )
+    .unwrap();
+    left.commit();
+    right.set_actor(automerge::ActorId::from(vec![101; 32]));
+    right
+        .put(
+            &invitation_receipts,
+            hex::encode(invite_id),
+            automerge::ScalarValue::Bytes(
+                serde_json::to_vec(&receipt([102; 32], [103; 32])).unwrap(),
+            ),
+        )
+        .unwrap();
+    right.commit();
+    let message = |mut branch: AutoCommit| NeighbourMsg::SyncResp {
+        changes: branch
+            .get_changes(&base_heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+        room: room.clone(),
+    };
+    let mut receiver = base;
+    receiver
+        .receive_from(
+            TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+            message(left),
+            now,
+        )
+        .unwrap();
+    let durable = receiver.durable().unwrap();
+    assert!(
+        receiver
+            .receive_from(
+                TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
+                message(right),
+                now,
+            )
+            .unwrap_err()
+            .contains("conflicting redemption")
+    );
+    assert_eq!(receiver.durable().unwrap(), durable);
 }
 
 #[test]
@@ -539,7 +1291,7 @@ fn legacy_checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regre
         unreachable!()
     };
     let mut doc = room::candidate(None, &changes).unwrap();
-    doc.delete(ROOT, coverage::FIELD).unwrap();
+    doc.delete(ROOT, coverage::FIELD_V2).unwrap();
     doc.commit();
     let legacy = NeighbourMsg::SyncResp {
         room: room.clone(),
@@ -579,14 +1331,8 @@ fn legacy_checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regre
     let mut rows = coverage::entries(&candidate).unwrap();
     let entry = rows.values_mut().next().unwrap();
     entry.sequence = 0;
-    candidate
-        .put(
-            ROOT,
-            coverage::FIELD,
-            automerge::ScalarValue::Bytes(postcard::to_allocvec(&rows).unwrap()),
-        )
-        .unwrap();
-    candidate.commit();
+    let regressed = entry.clone();
+    coverage::put(&mut candidate, regressed).unwrap();
     assert!(
         coverage::monotonic(Some(&room::candidate(None, &changes).unwrap()), &candidate).is_err()
     );
@@ -1270,6 +2016,55 @@ fn higher_governor_floor_without_causal_changes_does_not_acknowledge_outbox() {
 }
 
 #[test]
+fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
+    let (receiver, _, author_key, author_cert, now) = seeded();
+    let mut author = receiver.clone();
+    let app = "test.app";
+    let record = "tab:1";
+    let mut document = AutoCommit::load(&author.document(app, record).unwrap()).unwrap();
+    document.set_actor(automerge::ActorId::from(
+        author_key.verifying_key().to_bytes().to_vec(),
+    ));
+
+    let before = document.get_heads();
+    document.put(ROOT, "first", "A").unwrap();
+    document.commit();
+    let first = author
+        .publish_incremental(app, record, document.save_after(&before), &author_key, now)
+        .unwrap();
+    let before = document.get_heads();
+    document.put(ROOT, "second", "B").unwrap();
+    document.commit();
+    let second = author
+        .publish_incremental(app, record, document.save_after(&before), &author_key, now)
+        .unwrap();
+
+    let origin = TransportOrigin::RelayDelta(author_key.verifying_key().to_bytes());
+    let mut receiver = receiver;
+    let outcome = receiver.receive_from(origin, second.clone(), now).unwrap();
+    assert!(outcome.deferred);
+    assert_eq!(receiver.pending_count(), 1);
+    assert!(!receiver.covers(&second));
+
+    let mut receiver = StatePeer::restore(
+        &receiver.durable().unwrap(),
+        receiver.room(),
+        receiver.authority().clone(),
+        vec![author_cert],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    assert_eq!(receiver.pending_count(), 1);
+    receiver.receive_from(origin, first.clone(), now).unwrap();
+    assert_eq!(receiver.pending_count(), 0);
+    assert_eq!(
+        receiver.document_heads(app, record),
+        Some(document.base_heads())
+    );
+}
+
+#[test]
 fn expired_predecessor_and_fresh_dependent_converge_without_waiting_for_expiry() {
     let (mut governor, a, b, bc, now) = seeded();
     let origin = TransportOrigin::RelayDelta(a.verifying_key().to_bytes());
@@ -1475,6 +2270,22 @@ fn expired_known_identity_does_not_block_governed_join() {
             .contains("expired")
     );
     assert!(existing.permissions(next.device_public_key, later).is_ok());
+    let restored = StatePeer::restore(
+        &existing.durable().unwrap(),
+        existing.room(),
+        existing.authority().clone(),
+        vec![],
+        RevocationList::new(),
+        later,
+    )
+    .unwrap();
+    assert!(
+        restored
+            .permissions(cert.device_public_key, later)
+            .unwrap_err()
+            .contains("expired"),
+        "expired historical certificates restore but never regain current access"
+    );
     let mut empty = StatePeer::new(
         governor.room(),
         governor.authority().clone(),
@@ -1488,6 +2299,118 @@ fn expired_known_identity_does_not_block_governed_join() {
             .receive(a.verifying_key().to_bytes(), governor.room_message(), later)
             .is_err(),
         "previously unknown expired certificate cannot be imported"
+    );
+}
+
+#[test]
+fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_history() {
+    let (peer, _, _, _, now) = seeded();
+    let now_ns = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let root = SigningKey::from_bytes(&[94; 32]);
+    let make = |device_seed: u8, issued_at_ns: u64, expires_at_ns: Option<u64>| {
+        let device = SigningKey::from_bytes(&[device_seed; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: format!("fresh-{device_seed}"),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns,
+            expires_at_ns,
+            signature: [0; 64],
+        };
+        if expires_at_ns.is_some_and(|expiry| expiry <= issued_at_ns) {
+            let digest = tilo_user_identity::device_cert_signing_digest(&cert).unwrap();
+            cert.signature = root.sign(&digest).to_bytes();
+        } else {
+            sign_device_cert(&mut cert, &root).unwrap();
+        }
+        cert
+    };
+    let future = make(95, now_ns + 1_000_000_000, None);
+    let error = StatePeer::restore(
+        &peer.durable().unwrap(),
+        peer.room(),
+        peer.authority().clone(),
+        vec![future],
+        RevocationList::new(),
+        now,
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("not yet valid"), "{error}");
+
+    let backwards = make(96, now_ns, Some(now_ns));
+    let error = StatePeer::restore(
+        &peer.durable().unwrap(),
+        peer.room(),
+        peer.authority().clone(),
+        vec![backwards],
+        RevocationList::new(),
+        now,
+    )
+    .err()
+    .unwrap();
+    assert!(error.contains("invalid validity"), "{error}");
+}
+
+#[test]
+fn expired_pinned_authority_restores_as_history_but_cannot_authorize() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(4_000);
+    let later = now + Duration::from_secs(2);
+    let root = SigningKey::from_bytes(&[104; 32]);
+    let authority_key = SigningKey::from_bytes(&[105; 32]);
+    let mut authority = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: authority_key.verifying_key().to_bytes(),
+        device_label: "historical authority".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: Some(
+            (now + Duration::from_secs(1))
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        ),
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut authority, &root).unwrap();
+    let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let mut peer = StatePeer::new(
+        room,
+        authority.clone(),
+        vec![authority.clone()],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    peer.install_seed(
+        SeedState {
+            room_changes: seed_room(room, &authority, &[authority.clone()]).unwrap(),
+            documents: vec![],
+        },
+        &authority_key,
+        now,
+    )
+    .unwrap();
+
+    let restored = StatePeer::restore(
+        &peer.durable().unwrap(),
+        room,
+        authority.clone(),
+        vec![],
+        RevocationList::new(),
+        later,
+    )
+    .unwrap();
+    assert!(restored.certificates().contains(&authority));
+    assert!(
+        restored
+            .permissions(authority.device_public_key, later)
+            .unwrap_err()
+            .contains("expired")
     );
 }
 #[test]
@@ -2263,23 +3186,19 @@ fn selective_room_only_publication_rechecks_current_governor_authority() {
     tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
     let mut revocations = RevocationList::new();
     revocations.insert(revoked).unwrap();
-    let mut candidate = StatePeer::restore(
-        &governor.durable().unwrap(),
-        governor.room(),
-        governor.authority().clone(),
-        governor.certificates(),
-        revocations,
-        now,
-    )
-    .unwrap();
-    let exact = candidate.durable().unwrap();
     assert!(
-        candidate
-            .durable_mutation_messages(&governor, &key, now, 2)
-            .is_err(),
-        "room-only/no-op publication cannot skip current membership validation"
+        StatePeer::restore(
+            &governor.durable().unwrap(),
+            governor.room(),
+            governor.authority().clone(),
+            governor.certificates(),
+            revocations,
+            now,
+        )
+        .err()
+        .unwrap()
+        .contains("authority device is revoked")
     );
-    assert_eq!(candidate.durable().unwrap(), exact);
 }
 
 #[test]
@@ -2305,3 +3224,6 @@ fn selective_publication_cannot_discard_prior_document_basis() {
         "publication must preserve the prior record basis"
     );
 }
+
+#[path = "delivery_admission_tests.rs"]
+mod delivery_admission;

@@ -59,6 +59,8 @@ pub mod input_policy;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;
+pub(crate) mod native_media;
+pub(crate) mod native_workspace_owner;
 pub mod nearby_transfer;
 pub mod network;
 pub mod notes_app;

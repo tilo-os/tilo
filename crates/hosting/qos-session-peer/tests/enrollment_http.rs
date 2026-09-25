@@ -155,7 +155,7 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
     let membership = state
         .join("relay/workspaces")
         .join(metadata["workspace_id"].as_str().unwrap())
-        .join("membership.json");
+        .join(tilo_relay::store::GOVERNED_ACCESS_FILE);
     let saved = membership.with_extension("saved");
     fs::rename(&membership, &saved).unwrap();
     fs::create_dir(&membership).unwrap();
@@ -171,7 +171,8 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
         body["error"]
             .as_str()
             .unwrap()
-            .contains("membership reconciliation")
+            .contains("membership reconciliation"),
+        "{body}"
     );
     assert!(body.get("certificate").is_none());
     fs::remove_dir(&membership).unwrap();

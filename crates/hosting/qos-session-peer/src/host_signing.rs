@@ -1,51 +1,123 @@
-//! Exact bounded precommit handoffs for owner-bound application signers.
-//! No sequence reservation escapes the serialized durable owner turn.
+//! Native adapter for the shared bounded document precommit handoff.
+//! SessionOwner retains keys, mutation admission and the durable barrier.
 use crate::{SessionOwner, action_timing::Timing, owner_commit::OwnerCommitHandle};
+#[cfg(test)]
 use collab_types::{DocumentMutation, SignedOp};
+use qos_action_broker::host_documents::{
+    HostDocumentTurnError, HostDocuments, PendingHostDocument,
+};
+use qos_action_broker::peer_actions::PolicyTime;
 use qos_peer_state::{
     NeighbourMsg,
     owner_commit::{
         CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
     },
 };
-use std::sync::{Arc, Mutex};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot as response};
-use ui::collaboration::{HostDocumentCommit, HostDocumentCommitter, RouteSpec};
+use std::sync::{Arc, OnceLock};
+use tokio::sync::mpsc;
+use ui::collaboration::{HostDocumentCommitter, RouteSpec};
 
-const LIMIT: usize = 32;
-struct Handoff {
-    bytes: Vec<u8>,
-    receipt: OwnerCommitReceipt,
-    _permit: OwnedSemaphorePermit,
-}
-#[derive(Default)]
-struct State {
-    pending: Vec<Handoff>,
-    failure: Option<String>,
-}
+#[cfg(all(test, feature = "test-support"))]
+mod committed_echo_tests;
+#[cfg(all(test, feature = "test-support"))]
+mod exact_startup_tests;
+
 #[derive(Clone)]
 pub(crate) struct HostSigning {
-    sender: mpsc::Sender<PendingSignature>,
-    state: Arc<Mutex<State>>,
-    permits: Arc<Semaphore>,
+    shared: HostDocuments,
     ordinary: OwnerCommitHandle,
+    policy_time: Arc<OnceLock<Option<PolicyTime>>>,
 }
-pub(crate) struct PendingSignature {
-    route: RouteSpec,
-    certificate: tilo_user_identity::DeviceCert,
-    mutation: DocumentMutation,
-    started: response::Sender<std::time::Instant>,
-    reply: response::Sender<Result<SignedOp, String>>,
-    service: HostSigning,
-    permit: OwnedSemaphorePermit,
-    timing: Timing,
+pub(crate) struct SignatureMailbox(
+    mpsc::Receiver<PendingHostDocument>,
+    Arc<OnceLock<Option<PolicyTime>>>,
+);
+impl SignatureMailbox {
+    pub(crate) fn try_recv(&mut self) -> Result<PendingSignature, mpsc::error::TryRecvError> {
+        self.0.try_recv().map(|pending| {
+            PendingSignature(
+                pending,
+                Timing::new("signing_queue_to_reply"),
+                self.1.get().cloned().flatten(),
+            )
+        })
+    }
+    pub async fn recv(&mut self) -> Option<PendingSignature> {
+        self.0.recv().await.map(|pending| {
+            PendingSignature(
+                pending,
+                Timing::new("signing_queue_to_reply"),
+                self.1.get().cloned().flatten(),
+            )
+        })
+    }
 }
-struct BoundSigner {
-    service: HostSigning,
-    route: RouteSpec,
+pub(crate) struct PendingSignature(PendingHostDocument, Timing, Option<PolicyTime>);
+/// Exact signed candidate and worker custody; only the serialized signing turn
+/// constructs this final pre-store fence.
+pub(crate) struct HostSigningPolicyFence {
+    time: PolicyTime,
+    request: OwnerCommitRequest,
     certificate: tilo_user_identity::DeviceCert,
+}
+impl HostSigningPolicyFence {
+    pub(crate) fn policy_time(&self) -> &PolicyTime {
+        &self.time
+    }
+    pub(crate) fn revalidate(&self, owner: &SessionOwner) -> Result<(), String> {
+        let now = web_time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_nanos(
+                self.time.now_ns().map_err(|error| error.to_string())?,
+            );
+        if !owner.permits_publication()
+            || self.request.room != owner.peer().room()
+            || self.certificate != owner.identity.native_cert
+        {
+            return Err("original signing owner custody changed".into());
+        }
+        owner
+            .peer()
+            .permissions(self.certificate.device_public_key, now)?;
+        let CommitOperation::Document {
+            app,
+            record,
+            envelope,
+        } = &self.request.operation
+        else {
+            return Err("signing fence requires exact document".into());
+        };
+        let outcome =
+            owner
+                .peer()
+                .clone()
+                .admit_local_app_document(app, record, *envelope.clone(), now)?;
+        if outcome.deferred || outcome.incomplete.is_some() {
+            return Err("original signed document current admission incomplete".into());
+        }
+        Ok(())
+    }
 }
 impl HostSigning {
+    pub(crate) fn register_policy_time(&self, time: PolicyTime) -> Result<(), String> {
+        time.now_ns().map_err(|error| error.to_string())?;
+        if self.policy_time.get().is_some_and(|registered| {
+            registered
+                .as_ref()
+                .is_none_or(|registered| !registered.same_origin(&time))
+        }) {
+            return Err("host signer already belongs to another policy lifetime".into());
+        }
+        self.ordinary.register_policy_time(time.clone())?;
+        self.shared.register_policy_time(time.clone())?;
+        let registered = self.policy_time.get_or_init(|| Some(time.clone()));
+        if registered
+            .as_ref()
+            .is_none_or(|registered| !registered.same_origin(&time))
+        {
+            return Err("host signer policy registration changed".into());
+        }
+        Ok(())
+    }
     pub fn desktop_commands(
         &self,
         room: String,
@@ -66,22 +138,32 @@ impl HostSigning {
                 self.owner
                     .desktop_command_with_delivery(request, direct_delivery)
             }
+            fn openable_applications(&self) -> Vec<(String, String)> {
+                crate::canonical_records::installed()
+                    .map(|entry| {
+                        (
+                            entry.app_id().to_owned(),
+                            entry.definition().title.to_owned(),
+                        )
+                    })
+                    .collect()
+            }
         }
         Arc::new(Commands {
             room,
             owner: self.ordinary.clone(),
         })
     }
-    pub fn new(ordinary: OwnerCommitHandle) -> (Self, mpsc::Receiver<PendingSignature>) {
-        let (sender, receiver) = mpsc::channel(LIMIT);
+    pub fn new(ordinary: OwnerCommitHandle) -> (Self, SignatureMailbox) {
+        let (shared, receiver) = HostDocuments::new(Arc::new(ordinary.clone()));
+        let policy_time = Arc::new(OnceLock::new());
         (
             Self {
-                sender,
-                state: Arc::default(),
-                permits: Arc::new(Semaphore::new(LIMIT)),
+                shared,
                 ordinary,
+                policy_time: policy_time.clone(),
             },
-            receiver,
+            SignatureMailbox(receiver, policy_time),
         )
     }
     pub fn bind(
@@ -89,252 +171,146 @@ impl HostSigning {
         route: RouteSpec,
         certificate: tilo_user_identity::DeviceCert,
     ) -> Arc<dyn HostDocumentCommitter> {
-        Arc::new(BoundSigner {
-            service: self.clone(),
-            route,
-            certificate,
-        })
+        self.policy_time.get_or_init(|| None);
+        self.shared.bind(route, certificate)
     }
     pub fn fail(&self, reason: impl Into<String>) -> String {
-        let reason = reason.into();
-        if let Ok(mut state) = self.state.lock() {
-            state.failure.get_or_insert(reason.clone());
-        }
-        self.permits.close();
-        reason
+        self.shared.fail(reason)
+    }
+    pub(crate) fn close_admission(&self) -> Result<(), String> {
+        self.shared.close_admission()
+    }
+    /// Quiescence never clears a terminal signing failure or consumes a receipt.
+    pub(crate) fn retirement_ready(&self) -> Result<bool, String> {
+        self.shared.health()?;
+        Ok(self.shared.pending_exact_receipts()? == 0 && self.shared.outstanding_handoffs() == 0)
     }
     #[cfg(feature = "test-support")]
     pub(crate) fn qualification_signing(&self) -> serde_json::Value {
-        let pending_exact_receipts = self
-            .state
-            .lock()
-            .map_or(usize::MAX, |state| state.pending.len());
         serde_json::json!({
-            "outstanding_handoffs": LIMIT.saturating_sub(self.permits.available_permits()),
-            "pending_exact_receipts": pending_exact_receipts,
+            "outstanding_handoffs": self.shared.outstanding_handoffs(),
+            "pending_exact_receipts": self.shared.pending_exact_receipts().unwrap_or(usize::MAX),
         })
     }
 }
-impl HostDocumentCommitter for BoundSigner {
-    fn commit(&self, route: &RouteSpec, mutation: DocumentMutation) -> HostDocumentCommit {
-        let service = self.service.clone();
-        let expected_route = self.route.clone();
-        let certificate = self.certificate.clone();
-        let route = route.clone();
-        Box::pin(async move {
-            service.health()?;
-            if route != expected_route {
-                return Err(service.fail("worker attempted a different owner route"));
-            }
-            if mutation.encode().map_err(|e| e.to_string())?.len() > 4 * 1024 * 1024 {
-                return Err(service.fail("host mutation exceeds bounded payload"));
-            }
-            let permit = service.permits.clone().acquire_owned().await.map_err(|_| {
-                service.health().err().unwrap_or_else(|| {
-                    service.fail("host signing handoff unavailable; outcome unknown")
-                })
-            })?;
-            // A previous in-flight request may have retired the service while this
-            // request was waiting for exact receipt capacity.
-            service.health()?;
-            let (reply, receiver) = response::channel();
-            let (started, start) = response::channel();
-            let timing = Timing::new("signing_wait");
-            service
-                .sender
-                .send(PendingSignature {
-                    route,
-                    certificate,
-                    mutation,
-                    started,
-                    reply,
-                    service: service.clone(),
-                    permit,
-                    timing: timing.child("signing_queue_to_reply"),
-                })
-                .await
-                .map_err(|_| service.fail("host signer unavailable; outcome unknown"))?;
-            timing.mark("enqueued");
-            // Reconnect/replay may leave this bounded request queued indefinitely.
-            // Only the ready serialized owner turn starts its execution deadline.
-            let deadline = start
-                .await
-                .map_err(|_| service.fail("host signing reply lost; outcome unknown"))?;
-            timing.mark("owner_started");
-            let response = tokio::time::timeout(
-                deadline.saturating_duration_since(std::time::Instant::now()),
-                receiver,
-            )
-            .await;
-            match response {
-                Ok(Ok(result)) => {
-                    timing.mark(if result.is_ok() {
-                        "reply_ok"
-                    } else {
-                        "reply_error"
-                    });
-                    result
-                }
-                Ok(Err(_)) => {
-                    timing.mark("disconnected");
-                    Err(service.fail("host signing reply lost; outcome unknown"))
-                }
-                Err(_) => {
-                    timing.mark("timeout");
-                    Err(service.fail("host signing reply lost; outcome unknown"))
-                }
-            }
-        })
-    }
-}
-
 impl OwnerCommitService for HostSigning {
     fn health(&self) -> Result<(), String> {
-        self.ordinary.health()?;
-        if self.sender.is_closed() {
-            return Err(self.fail("host signing mailbox closed; outcome unknown"));
-        }
-        let state = self.state.lock().map_err(|_| "host handoff unavailable")?;
-        match &state.failure {
-            Some(reason) => Err(reason.clone()),
-            None => Ok(()),
-        }
+        self.shared.health()
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
-        let this = self.clone();
-        Box::pin(async move {
-            this.health()?;
-            let bytes = postcard::to_stdvec(&request).map_err(|e| this.fail(e.to_string()))?;
-            let matched = {
-                let mut state = this.state.lock().map_err(|_| "host handoff unavailable")?;
-                state
-                    .pending
-                    .iter()
-                    .position(|entry| entry.bytes == bytes)
-                    .map(|i| state.pending.remove(i))
-            };
-            if let Some(handoff) = matched {
-                handoff
-                    .receipt
-                    .validate_for(&request)
-                    .map_err(|e| this.fail(e))?;
-                return Ok(handoff.receipt);
-            }
-            // Every standalone local document comes from its bound host
-            // committer. Unknown, altered and consumed handoffs never enter
-            // ordinary admission or allocate another checkpoint sequence.
-            if matches!(request.operation, CommitOperation::Document { .. }) {
-                return Err(
-                    this.fail("document has no pending exact owner receipt; prior outcome unknown")
-                );
-            }
-            this.ordinary.commit(request).await
-        })
+        self.shared.commit(request)
     }
 }
 impl PendingSignature {
+    pub(crate) fn reject_unstarted(self, reason: String) -> Result<(), String> {
+        self.0
+            .reject_unstarted(crate::owner_commit::execution_deadline(), reason)
+    }
     pub(crate) fn diagnostic_timing(&self) -> Timing {
-        self.timing.child("owner_signature")
+        self.1.child("owner_signature")
     }
     #[cfg(feature = "test-support")]
     pub fn matches_route(&self, app: &str, record: &str) -> bool {
-        self.route.app_id == app && self.route.record.as_deref().unwrap_or("") == record
+        self.0.matches_route(app, record)
     }
-    /// Caller holds committed-authority visibility, refreshes policy and
-    /// publishes outgoing state before invoking the returned completion.
     pub fn apply(self, owner: &mut SessionOwner) -> (impl FnOnce() + use<>, Result<(), String>) {
-        let Self {
-            route,
-            certificate,
-            mutation,
-            started,
-            reply,
-            service,
-            permit,
-            timing,
-        } = self;
+        let timing = self.1;
+        let policy_time = self.2;
         timing.mark("owner_dequeued");
-        // Notification only: losing the caller does not cancel this owner turn.
-        let _ = started.send(crate::owner_commit::execution_deadline());
-        let result: Result<SignedOp, String> = (|| {
-            service.health()?;
-            let record = route.record.as_deref().unwrap_or("");
-            if owner.peer().room() != route.cluster_id.to_string()
-                || certificate != owner.identity.native_cert
-                || !owner.peer().certificates().contains(&certificate)
-                || owner.peer().document(&route.app_id, record).is_none()
-                || !owner.permits_publication()
-            {
-                return Err("host signer route/certificate is no longer admitted".into());
-            }
-            owner
-                .peer()
-                .permissions(certificate.device_public_key, web_time::SystemTime::now())?;
-            let mut candidate = owner.peer().clone();
-            let NeighbourMsg::AppDocument { envelope, .. } = candidate.signed_mutation(
-                &route.app_id,
-                record,
-                mutation,
-                &owner.identity.native,
-                web_time::SystemTime::now(),
-            )?
-            else {
-                return Err("owner did not sign an application document".into());
-            };
-            let request = OwnerCommitRequest {
-                room: owner.peer().room().into(),
-                operation: CommitOperation::Document {
-                    app: route.app_id,
-                    record: record.into(),
-                    envelope: envelope.clone(),
-                },
-            };
-            timing.mark("admission_start");
-            let committed = owner
-                .commit_mutation_candidate(candidate, owner.directory().to_vec())
-                .map_err(|e| e.to_string())?;
-            timing.mark("admission_end");
-            let receipt = OwnerCommitReceipt {
-                binding: request.binding()?,
-                generation: committed.generation,
-                aggregate_hash: hex::decode(committed.aggregate_hash)
-                    .map_err(|e| e.to_string())?
-                    .try_into()
-                    .map_err(|_| "invalid aggregate hash")?,
-            };
-            receipt.validate_for(&request)?;
-            let bytes = postcard::to_stdvec(&request).map_err(|e| e.to_string())?;
-            service
-                .state
-                .lock()
-                .map_err(|_| "host handoff unavailable")?
-                .pending
-                .push(Handoff {
-                    bytes,
-                    receipt,
-                    _permit: permit,
-                });
-            Ok(*envelope)
-        })();
-        if let Err(reason) = &result {
-            service.fail(reason.clone());
-        }
-        let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
-        timing.mark(if result.is_ok() {
-            "apply_ok"
-        } else {
-            "apply_error"
-        });
-        let complete = move || {
-            timing.mark("reply_start");
-            if reply.send(result).is_err() {
-                service.fail("host signer response dropped after admission; outcome unknown");
-                timing.mark("reply_dropped");
-            } else {
-                timing.mark("reply_sent");
-            }
-        };
-        (complete, outcome)
+        self.0.apply_scoped_fenced(
+            crate::owner_commit::execution_deadline(),
+            |route, certificate, mutation, authorization| {
+                if let Some(authorization) = authorization {
+                    let time = policy_time.as_ref().ok_or_else(|| HostDocumentTurnError::Refused("startup replay requires original registered owner time".into()))?;
+                    match owner.replay_exact_startup_document(route, certificate, &mutation, authorization, time) {
+                        Ok(replayed) => return Ok(replayed),
+                        // A mounted worker republishes merged remote history
+                        // (browser/relay uploads) under required custody. With
+                        // no contributor and only already-committed changes it
+                        // is no invocation effect: sign it through the ordinary
+                        // owner door below. Every other body keeps its refusal.
+                        Err(replay_error) => {
+                            if let Err(echo_error) = owner.validate_committed_echo(route, &mutation, authorization) {
+                                tracing::debug!(%replay_error, %echo_error, "scoped host document refused");
+                                return Err(HostDocumentTurnError::Refused(replay_error));
+                            }
+                        }
+                    }
+                }
+                let now = match &policy_time {
+                    Some(time) => web_time::SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(time.now_ns().map_err(|error| HostDocumentTurnError::Refused(error.to_string()))?),
+                    None => web_time::SystemTime::now(),
+                };
+                owner
+                    .require_owner_resource_scope()
+                    .map_err(|e| e.to_string())?;
+                let record = route.record.as_deref().unwrap_or("");
+                if owner.peer().room() != route.cluster_id.to_string()
+                    || certificate != &owner.identity.native_cert
+                    || !owner.peer().certificates().contains(certificate)
+                    || owner.peer().document(&route.app_id, record).is_none()
+                    || !owner.permits_publication()
+                {
+                    return Err("host signer route/certificate is no longer admitted".into());
+                }
+                owner
+                    .peer()
+                    .permissions(certificate.device_public_key, now)?;
+                let mut candidate = owner.peer().clone();
+                let NeighbourMsg::AppDocument { envelope, .. } = candidate.signed_mutation(
+                    &route.app_id,
+                    record,
+                    mutation,
+                    &owner.identity.native,
+                    now,
+                )?
+                else {
+                    return Err("owner did not sign an application document".into());
+                };
+                let request = OwnerCommitRequest {
+                    room: owner.peer().room().into(),
+                    operation: CommitOperation::Document {
+                        app: route.app_id.clone(),
+                        record: record.into(),
+                        envelope: envelope.clone(),
+                    },
+                };
+                timing.mark("admission_start");
+                if let Some(time) = &policy_time {
+                    let now = web_time::SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(time.now_ns().map_err(|error| HostDocumentTurnError::Refused(error.to_string()))?);
+                    // Revalidate the unchanged signed envelope against the
+                    // genuine pre-commit owner. Legacy owners need not have a
+                    // V5 exact index; the normal local door owns these checks.
+                    let outcome = owner.peer().clone().admit_local_app_document(
+                        &route.app_id, record, *envelope.clone(), now,
+                    )?;
+                    if outcome.deferred || outcome.incomplete.is_some() {
+                        return Err("signed owner mutation lost current admission".into());
+                    }
+                }
+                let committed = match &policy_time {
+                    Some(time) => owner.commit_mutation_candidate_with_policy(candidate, owner.directory().to_vec(), crate::owner::OwnerPolicyFence::HostSigning(HostSigningPolicyFence {
+                        time: time.clone(), request: request.clone(), certificate: certificate.clone(),
+                    })),
+                    None => owner.commit_mutation_candidate(candidate, owner.directory().to_vec()),
+                }.map_err(|error| {
+                    if error.downcast_ref::<crate::owner::OwnerPolicyRefused>().is_some() {
+                        HostDocumentTurnError::Refused(error.to_string())
+                    } else { HostDocumentTurnError::Uncertain(error.to_string()) }
+                })?;
+                timing.mark("admission_end");
+                let receipt = OwnerCommitReceipt {
+                    binding: request.binding()?,
+                    generation: committed.generation,
+                    aggregate_hash: hex::decode(committed.aggregate_hash)
+                        .map_err(|e| e.to_string())?
+                        .try_into()
+                        .map_err(|_| "invalid aggregate hash")?,
+                };
+                receipt.validate_for(&request)?;
+                Ok((*envelope, receipt))
+            },
+        )
     }
 }
 
@@ -342,6 +318,259 @@ impl PendingSignature {
 mod tests {
     use super::*;
     use crate::owner_commit::OwnerCommitMailbox;
+    use qos_action_broker::host_documents::LIMIT;
+    #[tokio::test]
+    async fn retained_policy_signing_final_refusal_is_zero_document_change_not_uncertainty() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let before = owner.status();
+        let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
+        let (service, mut signatures) = HostSigning::new(ordinary);
+        let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
+        let origin = clock.new_origin();
+        service
+            .register_policy_time(origin.capture().unwrap())
+            .unwrap();
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation =
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+        let waiting = tokio::spawn(signer.commit(&route, mutation));
+        let pending = signatures.recv().await.unwrap();
+        let (complete, outcome) = crate::owner::policy_fence::with_before_check(
+            move || origin.invalidate(),
+            || pending.apply(&mut owner),
+        );
+        assert!(outcome.is_err());
+        complete();
+        assert!(waiting.await.unwrap().is_err());
+        assert_eq!(owner.status(), before);
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 0);
+        assert!(service.retirement_ready().unwrap());
+    }
+    #[tokio::test]
+    async fn retained_policy_signing_failed_write_remains_uncertain() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let before = owner.status();
+        let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
+        let (service, mut signatures) = HostSigning::new(ordinary);
+        let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
+        let origin = clock.new_origin();
+        service
+            .register_policy_time(origin.capture().unwrap())
+            .unwrap();
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation =
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+        let waiting = tokio::spawn(signer.commit(&route, mutation));
+        let pending = signatures.recv().await.unwrap();
+        let (complete, outcome) = crate::store::test_fault::with_fault(
+            &path,
+            crate::store::test_fault::Point::AfterAtomicWrite,
+            || pending.apply(&mut owner),
+        );
+        assert!(outcome.is_err());
+        // Retiring the source after Store was called cannot reclassify I/O as
+        // a definite pre-write refusal or clear the intrinsic failure latch.
+        origin.invalidate();
+        complete();
+        assert!(waiting.await.unwrap().is_err());
+        assert!(!owner.durability_healthy());
+        assert!(service.retirement_ready().is_err());
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 0);
+        drop(owner);
+        let reopened = SessionOwner::open(&path).unwrap();
+        assert_eq!(
+            reopened.status().generation,
+            before.generation + 1,
+            "complete new state may exist despite no acknowledged signing receipt"
+        );
+        assert!(service.retirement_ready().is_err());
+    }
+    #[tokio::test]
+    async fn policy_retirement_invalid_origin_refuses_waiting_and_late_signers() {
+        async fn case(close: bool) {
+            let root = tempfile::tempdir().unwrap();
+            let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            let before = owner.status();
+            let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
+            let (service, mut signatures) = HostSigning::new(ordinary);
+            let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
+            let origin = clock.new_origin();
+            service
+                .register_policy_time(origin.capture().unwrap())
+                .unwrap();
+            let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+            let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+            let mutation =
+                DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+            let mut queued = Vec::new();
+            let mut replies = Vec::new();
+            for _ in 0..LIMIT {
+                let mut reply = Box::pin(tokio::task::unconstrained(
+                    signer.commit(&route, mutation.clone()),
+                ));
+                assert!(
+                    std::future::Future::poll(
+                        reply.as_mut(),
+                        &mut std::task::Context::from_waker(std::task::Waker::noop())
+                    )
+                    .is_pending()
+                );
+                queued.push(signatures.try_recv().unwrap());
+                replies.push(reply);
+            }
+            let mut blocked = Box::pin(tokio::task::unconstrained(
+                signer.commit(&route, mutation.clone()),
+            ));
+            assert!(
+                std::future::Future::poll(
+                    blocked.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop())
+                )
+                .is_pending()
+            );
+            if close {
+                service.close_admission().unwrap();
+            } else {
+                origin.invalidate();
+            }
+            for pending in queued {
+                pending
+                    .reject_unstarted("old source retired".into())
+                    .unwrap();
+            }
+            for reply in replies {
+                assert!(reply.await.is_err());
+            }
+            let result = std::future::Future::poll(
+                blocked.as_mut(),
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
+            );
+            let clean = matches!(result, std::task::Poll::Ready(Err(_)));
+            if let Ok(pending) = signatures.try_recv() {
+                pending
+                    .reject_unstarted("cleanup unexpected late queue".into())
+                    .unwrap();
+            }
+            assert!(
+                clean,
+                "signer waiting on capacity must refuse before entering retired source queue"
+            );
+            assert!(signer.commit(&route, mutation).await.is_err());
+            assert!(signatures.try_recv().is_err());
+            assert!(service.retirement_ready().unwrap());
+            assert_eq!(owner.status(), before);
+        }
+        case(false).await;
+        case(true).await;
+    }
+    #[tokio::test]
+    async fn policy_retirement_rejects_queued_document_without_owner_effect_or_health_reset() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let before = owner.status();
+        let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
+        let (service, mut signatures) = HostSigning::new(ordinary);
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation =
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+        let waiting = tokio::spawn(signer.commit(&route, mutation.clone()));
+        signatures
+            .recv()
+            .await
+            .unwrap()
+            .reject_unstarted("old policy origin".into())
+            .unwrap();
+        assert_eq!(waiting.await.unwrap().unwrap_err(), "old policy origin");
+        assert!(service.retirement_ready().unwrap());
+        assert_eq!(owner.status(), before);
+
+        let waiting = tokio::spawn(signer.commit(&route, mutation));
+        let pending = signatures.recv().await.unwrap();
+        service.fail("preexisting signing failure");
+        assert!(pending.reject_unstarted("old origin".into()).is_err());
+        assert!(waiting.await.unwrap().is_err());
+        assert_eq!(service.health().unwrap_err(), "preexisting signing failure");
+        assert_eq!(owner.status(), before);
+    }
+    // This catches a shared adapter that acknowledges before the durable owner
+    // barrier, drops the exact binding, or admits the same document twice.
+    #[tokio::test]
+    async fn owner_neutral_handoff_uses_actual_native_barrier() {
+        use qos_action_broker::host_documents::HostDocuments;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("owner");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
+        let (service, mut pending) = HostDocuments::new(Arc::new(ordinary));
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation =
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+        let waiting = tokio::spawn(signer.commit(&route, mutation));
+        let request = pending.recv().await.unwrap();
+        let before = owner.status().generation;
+        let (complete, outcome) = request.apply(
+            crate::owner_commit::execution_deadline(),
+            |route, cert, mutation| {
+                assert_eq!(cert, &owner.identity.native_cert);
+                let mut candidate = owner.peer().clone();
+                let NeighbourMsg::AppDocument { envelope, .. } = candidate.signed_mutation(
+                    &route.app_id,
+                    "",
+                    mutation,
+                    &owner.identity.native,
+                    web_time::SystemTime::now(),
+                )?
+                else {
+                    return Err("expected signed document".into());
+                };
+                let request = OwnerCommitRequest {
+                    room: owner.peer().room().into(),
+                    operation: CommitOperation::Document {
+                        app: route.app_id.clone(),
+                        record: "".into(),
+                        envelope: envelope.clone(),
+                    },
+                };
+                let committed = owner
+                    .commit_mutation_candidate(candidate, owner.directory().to_vec())
+                    .map_err(|e| e.to_string())?;
+                Ok((
+                    *envelope,
+                    OwnerCommitReceipt {
+                        binding: request.binding()?,
+                        generation: committed.generation,
+                        aggregate_hash: hex::decode(committed.aggregate_hash)
+                            .unwrap()
+                            .try_into()
+                            .unwrap(),
+                    },
+                ))
+            },
+        );
+        outcome.unwrap();
+        assert!(
+            !waiting.is_finished(),
+            "durability alone cannot release the deferred response"
+        );
+        assert_eq!(owner.status().generation, before + 1);
+        complete();
+        let op = waiting.await.unwrap().unwrap();
+        let request = super::tests::request(&owner, "so.tilo.chat", "", op);
+        let receipt = service.commit(request.clone()).await.unwrap();
+        assert_eq!(receipt.generation, before + 1);
+        let committed = owner.status();
+        assert!(service.commit(request).await.is_err());
+        assert_eq!(owner.status(), committed);
+        drop(owner);
+        assert_eq!(SessionOwner::open(&path).unwrap().status(), committed);
+    }
     fn request(
         owner: &SessionOwner,
         app: &str,
@@ -359,7 +588,7 @@ mod tests {
     }
     async fn precommit(
         service: &HostSigning,
-        receiver: &mut mpsc::Receiver<PendingSignature>,
+        receiver: &mut SignatureMailbox,
         owner: &mut SessionOwner,
         app: &str,
         record: &str,
@@ -378,34 +607,64 @@ mod tests {
         complete();
         waiting.await.unwrap().unwrap()
     }
+    #[tokio::test]
+    async fn policy_retirement_cannot_discard_a_committed_exact_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let (ordinary, _mailbox) = OwnerCommitMailbox::bounded(8);
+        let (service, mut signatures) = HostSigning::new(ordinary);
+        let envelope = precommit(&service, &mut signatures, &mut owner, "so.tilo.chat", "").await;
+        let committed = owner.status();
+        assert!(!service.retirement_ready().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation =
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+        let waiting = tokio::spawn(signer.commit(&route, mutation));
+        signatures
+            .recv()
+            .await
+            .unwrap()
+            .reject_unstarted("old policy origin".into())
+            .unwrap();
+        assert!(waiting.await.unwrap().is_err());
+        assert_eq!(owner.status(), committed);
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
+        assert!(!service.retirement_ready().unwrap());
+        service
+            .commit(request(&owner, "so.tilo.chat", "", envelope))
+            .await
+            .unwrap();
+        assert!(service.retirement_ready().unwrap());
+    }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn host_signing_interleaved_exact_receipts_preserve_floor_and_no_replay_exception() {
         let root = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let baseline = owner.outgoing().to_vec();
-        let chat_receipt = owner.peer().durable_coverage("dev.qos.chat", "").unwrap();
+        let baseline = outgoing_bytes(&owner).to_vec();
+        let chat_receipt = owner.peer().durable_coverage("so.tilo.chat", "").unwrap();
         let writer = precommit(
             &service,
             &mut receiver,
             &mut owner,
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             "tab:0000000000000001",
         )
         .await;
-        assert!(owner.outgoing().starts_with(&baseline));
+        assert!(outgoing_bytes(&owner).starts_with(&baseline));
         assert_eq!(
-            owner.outgoing().len() - baseline.len(),
+            outgoing_bytes(&owner).len() - baseline.len(),
             2,
             "signer path publishes only its touched route"
         );
         assert_eq!(
-            owner.peer().durable_coverage("dev.qos.chat", "").unwrap(),
+            owner.peer().durable_coverage("so.tilo.chat", "").unwrap(),
             chat_receipt
         );
         assert_eq!(
-            &owner.outgoing_kinds()[baseline.len()..],
+            &outgoing_kinds(&owner)[baseline.len()..],
             &[
                 qos_peer_state::transport::Retention::Delta,
                 qos_peer_state::transport::Retention::Checkpoint
@@ -413,19 +672,19 @@ mod tests {
         );
         let request_writer = request(
             &owner,
-            "dev.qos.word-processor",
+            "so.tilo.word-processor",
             "tab:0000000000000001",
             writer.clone(),
         );
         let first_generation = owner.status().generation;
-        let chat = precommit(&service, &mut receiver, &mut owner, "dev.qos.chat", "").await;
+        let chat = precommit(&service, &mut receiver, &mut owner, "so.tilo.chat", "").await;
         owner.refresh_checkpoint().unwrap();
         let current = owner.status();
         assert!(
             current
                 .replay_floors
                 .iter()
-                .any(|(app, _, author, floor)| app == "dev.qos.word-processor"
+                .any(|(app, _, author, floor)| app == "so.tilo.word-processor"
                     && author == writer.author.as_bytes()
                     && *floor > writer.seq)
         );
@@ -438,14 +697,14 @@ mod tests {
             "receipt handoff cannot recommit or allocate another sequence"
         );
         service
-            .commit(request(&owner, "dev.qos.chat", "", chat))
+            .commit(request(&owner, "so.tilo.chat", "", chat))
             .await
             .unwrap();
-        assert_eq!(service.permits.available_permits(), LIMIT);
+        assert_eq!(LIMIT - service.shared.outstanding_handoffs(), LIMIT);
         // Consumed receipt never creates a replay exemption on another call.
-        let outgoing = owner.outgoing().to_vec();
+        let outgoing = outgoing_bytes(&owner).to_vec();
         assert!(service.commit(request_writer).await.is_err());
-        assert_eq!(owner.outgoing(), outgoing);
+        assert_eq!(outgoing_bytes(&owner), outgoing);
         assert_eq!(owner.status(), current);
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -454,22 +713,22 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let mut op = precommit(&service, &mut receiver, &mut owner, "dev.qos.chat", "").await;
+        let mut op = precommit(&service, &mut receiver, &mut owner, "so.tilo.chat", "").await;
         let generation = owner.status().generation;
         op.seq += 1;
-        let outgoing = owner.outgoing().to_vec();
+        let outgoing = outgoing_bytes(&owner).to_vec();
         let status = owner.status();
         assert!(
             service
-                .commit(request(&owner, "dev.qos.chat", "", op))
+                .commit(request(&owner, "so.tilo.chat", "", op))
                 .await
                 .is_err()
         );
-        assert_eq!(owner.outgoing(), outgoing);
+        assert_eq!(outgoing_bytes(&owner), outgoing);
         assert_eq!(owner.status(), status);
         assert_eq!(owner.status().generation, generation);
         assert_eq!(
-            service.state.lock().unwrap().pending.len(),
+            service.shared.pending_exact_receipts().unwrap(),
             1,
             "unresolved exact handoff must not be evicted"
         );
@@ -481,29 +740,23 @@ mod tests {
         let state = root.path().join("owner");
         let mut owner = SessionOwner::initialize(&state).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
-        let (service, receiver) = HostSigning::new(handle);
-        let (reply, lost) = response::channel();
-        let (started, lost_start) = response::channel();
-        drop((lost, lost_start));
-        let pending = PendingSignature {
-            route: RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap()),
-            certificate: owner.identity.native_cert.clone(),
-            mutation: DocumentMutation::Snapshot(
-                owner.peer().document("dev.qos.chat", "").unwrap(),
-            ),
-            started,
-            reply,
-            service: service.clone(),
-            permit: service.permits.clone().try_acquire_owned().unwrap(),
-            timing: Timing::new("signing_queue_to_reply"),
-        };
+        let (service, mut receiver) = HostSigning::new(handle);
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let waiting = tokio::spawn(signer.commit(
+            &route,
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap()),
+        ));
+        let pending = receiver.recv().await.unwrap();
+        waiting.abort();
+        assert!(waiting.await.unwrap_err().is_cancelled());
         let before = owner.status().generation;
         let (complete, result) = pending.apply(&mut owner);
         result.unwrap();
         complete();
         assert!(owner.status().generation > before);
         assert!(service.health().unwrap_err().contains("outcome unknown"));
-        assert_eq!(service.state.lock().unwrap().pending.len(), 1);
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         let committed = owner.status();
         drop(owner);
         assert_eq!(SessionOwner::open(&state).unwrap().status(), committed);
@@ -525,10 +778,10 @@ mod tests {
         let before = owner.status();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         // A disconnected/replaying host cannot enter PendingSignature::apply.
         // Holding the real queued request models that ready-gated owner turn.
@@ -544,7 +797,7 @@ mod tests {
         result.unwrap();
         complete();
         let signed = waiting.await.unwrap().unwrap();
-        let request = request(&owner, "dev.qos.chat", "", signed);
+        let request = request(&owner, "so.tilo.chat", "", signed);
         let committed = owner.status();
         assert_eq!(committed.generation, before.generation + 1);
         let receipt = service.commit(request.clone()).await.unwrap();
@@ -563,10 +816,10 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         let before = owner.status().generation;
@@ -581,9 +834,9 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("outcome unknown"));
         assert!(service.health().is_err());
-        assert_eq!(service.state.lock().unwrap().pending.len(), 1);
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         complete();
-        assert_eq!(service.state.lock().unwrap().pending.len(), 1);
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         assert_eq!(owner.status().generation, before + 1);
     }
 
@@ -593,10 +846,10 @@ mod tests {
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         drop(pending);
@@ -617,17 +870,17 @@ mod tests {
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         // Deliver an owner deadline already elapsed, representing late observation.
-        pending
-            .started
-            .send(std::time::Instant::now() - std::time::Duration::from_millis(1))
-            .unwrap();
+        let (_complete, _) = pending.0.apply(
+            std::time::Instant::now() - std::time::Duration::from_millis(1),
+            |_, _, _| Err("elapsed owner turn".into()),
+        );
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(250), waiting)
                 .await
@@ -645,9 +898,9 @@ mod tests {
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
 
         let mut waiting = Vec::with_capacity(LIMIT);
         for _ in 0..LIMIT {
@@ -665,7 +918,7 @@ mod tests {
                     .expect("owner queue remains open"),
             );
         }
-        assert_eq!(service.permits.available_permits(), 0);
+        assert_eq!(LIMIT - service.shared.outstanding_handoffs(), 0);
         assert!(service.health().is_ok());
 
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
@@ -703,9 +956,9 @@ mod tests {
                     .expect("queued signer receives its exact operation"),
             );
         }
-        assert_eq!(service.permits.available_permits(), 0);
+        assert_eq!(LIMIT - service.shared.outstanding_handoffs(), 0);
 
-        let first = request(&owner, "dev.qos.chat", "", signed.remove(0));
+        let first = request(&owner, "so.tilo.chat", "", signed.remove(0));
         service
             .commit(first)
             .await
@@ -725,15 +978,15 @@ mod tests {
 
         for op in signed {
             service
-                .commit(request(&owner, "dev.qos.chat", "", op))
+                .commit(request(&owner, "so.tilo.chat", "", op))
                 .await
                 .expect("remaining exact receipt");
         }
         service
-            .commit(request(&owner, "dev.qos.chat", "", overflow_op))
+            .commit(request(&owner, "so.tilo.chat", "", overflow_op))
             .await
             .expect("advanced exact receipt");
-        assert_eq!(service.permits.available_permits(), LIMIT);
+        assert_eq!(LIMIT - service.shared.outstanding_handoffs(), LIMIT);
         assert!(service.health().is_ok());
     }
 
@@ -742,14 +995,18 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
-        let (service, _receiver) = HostSigning::new(handle);
-        let held = (0..LIMIT)
-            .map(|_| service.permits.clone().try_acquire_owned().unwrap())
-            .collect::<Vec<_>>();
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
-        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let (service, mut receiver) = HostSigning::new(handle);
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+        let mut held = Vec::new();
+        let mut queued = Vec::new();
+        for _ in 0..LIMIT {
+            let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+            queued.push(tokio::spawn(signer.commit(&route, mutation.clone())));
+            held.push(receiver.recv().await.unwrap());
+        }
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
@@ -762,6 +1019,9 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, "owner authority retired while signing waited");
         drop(held);
+        for task in queued {
+            assert!(task.await.unwrap().is_err());
+        }
     }
 
     #[tokio::test]
@@ -771,10 +1031,10 @@ mod tests {
         let mut owner = SessionOwner::initialize(&state).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
         let (service, mut receiver) = HostSigning::new(handle);
-        let route = RouteSpec::app("dev.qos.chat", owner.peer().room().parse().unwrap());
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
         let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
         let mutation =
-            DocumentMutation::Snapshot(owner.peer().document("dev.qos.chat", "").unwrap());
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
         waiting.abort();
@@ -786,9 +1046,18 @@ mod tests {
         complete();
         assert!(owner.status().generation > before);
         assert!(service.health().unwrap_err().contains("outcome unknown"));
-        assert_eq!(service.state.lock().unwrap().pending.len(), 1);
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         let committed = owner.status();
         drop(owner);
         assert_eq!(SessionOwner::open(&state).unwrap().status(), committed);
     }
+}
+
+#[cfg(test)]
+fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+#[cfg(test)]
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
 }

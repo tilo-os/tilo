@@ -307,7 +307,8 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
                 "room checkpoint not attributed to pinned governor"
             );
             certificate_at(&b.directory_author, &auth.root_public_key, &revoked, row.at)?;
-            let candidate = room::candidate(room_doc.as_ref(), changes)?;
+            let candidate =
+                room::candidate(room_doc.as_ref(), changes).map_err(anyhow::Error::msg)?;
             complete(&candidate)?;
             ensure!(
                 candidate
@@ -323,7 +324,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
     }
     let room_doc = room_doc.ok_or_else(|| anyhow::anyhow!("missing governed room checkpoint"))?;
     let coverages = coverage::entries(&room_doc).map_err(anyhow::Error::msg)?;
-    let (_, _, _, identities, _) = room::governance_of(Some(&room_doc));
+    let identities = room::governance_of(Some(&room_doc)).3;
     let (_, owner, caps) = room::extract_governed_fields(&room_doc);
     let mut docs = BTreeMap::new();
     let mut checks = vec![];

@@ -99,6 +99,9 @@ impl WorkspaceTreeReplica {
         let rooms = tree.rooms();
         let mut msgs = Vec::with_capacity(rooms.len());
         for room in rooms {
+            if tree.requires_native_owner(room) {
+                continue;
+            }
             let heads = tree.room_heads(room);
             // Structurally infallible (`ChangeHash` has no enum/float to fail on);
             // `unwrap_or_default()`'s `vec![]` fallback reads as "send everything in
@@ -159,6 +162,12 @@ impl WorkspaceTreeReplica {
     /// calls this with the peer's own identity ([`PeerOrigin::peer`]).
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
+        if let NeighbourMsg::SyncReq { room, .. } | NeighbourMsg::SyncResp { room, .. } = msg {
+            if RoomId::parse(room).is_some_and(|room| self.tree.read().requires_native_owner(room))
+            {
+                return;
+            }
+        }
         match msg {
             NeighbourMsg::SyncReq { since, room, .. } => {
                 // A roomless request is the transport's peer-join kick, not a request for
@@ -1143,3 +1152,39 @@ mod tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+
+#[cfg(test)]
+mod native_owner_gate_tests {
+    use super::*;
+    #[test]
+    fn native_enrolled_replica_never_exports_or_applies_legacy_governance() {
+        let (directory, owner, room, _, _) =
+            crate::shell::native_workspace_owner::test_enrolled_owner();
+        let path = directory.path().join("state.json");
+        let before = std::fs::read(&path).unwrap();
+        let mut loaded = crate::shell::persist::load_tree_from(&path).unwrap();
+        loaded.persist_path = Some(path.clone());
+        let mut replica = WorkspaceTreeReplica::new(13, loaded.shared());
+        replica.handle_from(
+            &PeerOrigin::hub(17),
+            &NeighbourMsg::SyncReq {
+                since: vec![],
+                room: room.to_string(),
+                invite_id: None,
+            },
+        );
+        assert!(
+            replica.drain_outgoing().is_empty(),
+            "enrolled room cannot export a synthetic legacy checkpoint"
+        );
+        replica.handle_from(
+            &PeerOrigin::hub(17),
+            &NeighbourMsg::SyncResp {
+                changes: vec![vec![1, 2, 3]],
+                room: room.to_string(),
+            },
+        );
+        assert_eq!(std::fs::read(path).unwrap(), before);
+        assert!(owner.with_current(room, |_| Ok(())).is_ok());
+    }
+}

@@ -161,6 +161,11 @@ test('beforeinput covers soft-keyboard edits without duplicating composition or 
   assert.deepEqual(route({inputType:'insertText',data:'x',isComposing:true},true),{kind:'ignore'});
   assert.deepEqual(route({inputType:'insertCompositionText',data:'東京'},false),{kind:'handled-elsewhere'});
   assert.deepEqual(route({inputType:'insertFromPaste'},false),{kind:'handled-elsewhere'});
+  const limit=hostCore.MAX_TEXT_INSERT;
+  assert.deepEqual(route({inputType:'insertText',data:'x'.repeat(limit)},false),{kind:'commit',text:'x'.repeat(limit)});
+  assert.deepEqual(route({inputType:'insertText',data:'x'.repeat(limit+1)},false),{kind:'refuse',length:limit+1});
+  assert.equal(hostCore.oversizedInsert('x'.repeat(limit+1)),true);
+  assert.equal(hostCore.oversizedInsert(''),false);
 });
 
 test('focused application command K reaches the shared frame palette',()=>{

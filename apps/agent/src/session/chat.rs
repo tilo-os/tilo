@@ -338,7 +338,7 @@ impl Session {
                     let _ = self.absorb_document_event(&event)?;
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.broker_surfaces = surfaces;
+                    self.set_broker_surfaces(surfaces);
                 }
                 Some(event) => deferred.push(event),
                 None => {}

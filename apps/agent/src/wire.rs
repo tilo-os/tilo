@@ -5,7 +5,7 @@
 //! explicit Cap'n Proto endpoint.
 
 use std::collections::VecDeque;
-use std::os::fd::IntoRawFd;
+use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
@@ -52,8 +52,33 @@ impl Link {
         handle: Option<String>,
     ) -> Result<Self> {
         let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
-        let manager = CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id)
-            .context("connect through TILO_SVC_COLLAB_FD")?;
+        let manager = if std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some() {
+            static CLAIMED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            let raw: i32 = std::env::var("TILO_SVC_COLLAB_FD")?.parse()?;
+            anyhow::ensure!(raw >= 3, "invalid managed collaboration descriptor");
+            CLAIMED
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .map_err(|_| anyhow::anyhow!("managed descriptor already consumed"))?;
+            // The managed launcher transfers this sole descriptor owner once.
+            let mut stream = unsafe { UnixStream::from_raw_fd(raw) };
+            complete_managed_handshake(&mut stream)?;
+            CollaborationManager::for_agent_route_fd(
+                stream.into_raw_fd(),
+                app_id,
+                cluster_id,
+                record,
+                agent_id,
+            )
+        } else {
+            CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id)
+        }
+        .context("connect through TILO_SVC_COLLAB_FD")?;
         Ok(Self {
             manager,
             pending: VecDeque::new(),
@@ -223,6 +248,7 @@ impl Link {
     /// (a dead broker currently surfaces as an indefinite empty poll, not an
     /// `Err`).
     pub fn recv(&mut self, timeout: Duration) -> Result<Option<CollabEvent>> {
+        const RECV_POLL: Duration = Duration::from_millis(1);
         let deadline = std::time::Instant::now() + timeout;
         loop {
             if let Some(event) = take_next_polled(&mut self.pending, self.manager.poll()) {
@@ -232,7 +258,9 @@ impl Link {
             if now >= deadline {
                 return Ok(None);
             }
-            std::thread::sleep((deadline - now).min(Duration::from_millis(5)));
+            // A short poll: a correlated step reply is on the critical path of
+            // every streamed chunk, so it is noticed within ~1 ms, not 5.
+            std::thread::sleep((deadline - now).min(RECV_POLL));
         }
     }
 
@@ -326,5 +354,91 @@ mod tests {
             Some(CollabEvent::RemoteCursorMoved { x: 3.0, .. })
         ));
         assert!(take_next_polled(&mut pending, Vec::new()).is_none());
+    }
+}
+
+/// Finish launcher kernel-credential attestation before starting Cap'n Proto.
+fn complete_managed_handshake(stream: &mut UnixStream) -> Result<()> {
+    use std::io::{Read, Write};
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    let mut challenge = [0; 32];
+    stream.read_exact(&mut challenge)?;
+    stream.write_all(&challenge)?;
+    let mut ack = [0];
+    stream.read_exact(&mut ack)?;
+    anyhow::ensure!(ack == [1], "managed process binding refused");
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok(())
+}
+
+impl Link {
+    /// Queueing is not acceptance. Wait for the actual correlated RPC result.
+    pub fn wait_enrolled_reply(&mut self, request_id: u64) -> Result<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut deferred = Vec::new();
+        let result = loop {
+            if std::time::Instant::now() >= deadline {
+                break Err(anyhow::anyhow!("enrolled RPC acknowledgement uncertain"));
+            }
+            match self.recv(Duration::from_millis(20))? {
+                Some(CollabEvent::EnrolledTaskReply {
+                    request_id: received,
+                    result,
+                }) if received == request_id => break result.map_err(anyhow::Error::msg),
+                Some(CollabEvent::EnrolledTaskDisconnected { detail }) => {
+                    break Err(anyhow::anyhow!(detail));
+                }
+                Some(event) => {
+                    if deferred.len() >= 128 {
+                        break Err(anyhow::anyhow!("enrolled reply queue exhausted"));
+                    }
+                    deferred.push(event);
+                }
+                None => {}
+            }
+        };
+        self.defer(deferred);
+        result
+    }
+}
+
+#[cfg(test)]
+mod managed_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    #[test]
+    fn managed_connection_requires_exact_ready_ack_before_rpc() {
+        for acknowledgement in [0, 1] {
+            let (mut host, mut app) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                host.write_all(&[37; 32]).unwrap();
+                let mut answer = [0; 32];
+                host.read_exact(&mut answer).unwrap();
+                assert_eq!(answer, [37; 32]);
+                host.write_all(&[acknowledgement]).unwrap();
+                if acknowledgement == 1 {
+                    let mut value = [0];
+                    host.read_exact(&mut value).unwrap();
+                    assert_eq!(value, [9]);
+                }
+            });
+            let result = complete_managed_handshake(&mut app);
+            assert_eq!(result.is_ok(), acknowledgement == 1);
+            if result.is_ok() {
+                app.write_all(&[9]).unwrap();
+            }
+            worker.join().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_link(transport: impl ui::collaboration::PeerTransport + 'static) -> Link {
+    Link {
+        manager: CollaborationManager::with_peer_transport(transport),
+        pending: VecDeque::new(),
+        last_publication: LastPublication::None,
     }
 }

@@ -8,6 +8,8 @@
 //! the connection closes; the reader stops on EOF / decode error;
 //! either termination cancels the other via drop.
 
+pub mod sync_refresh;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -204,6 +206,10 @@ pub struct PeerContext {
     pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// The user pubkey this relay itself chains to.
     pub own_user_public_key: [u8; 32],
+    /// Exact certified device running this relay. Private actions may use this
+    /// identity for a local durable-broker self-connection even though its
+    /// host capability classifies it as a peer relay.
+    pub own_device_cert: tilo_user_identity::DeviceCert,
     /// Metrics — cheap counters.
     pub metrics: Arc<crate::metrics::Metrics>,
 }
@@ -219,10 +225,12 @@ struct SessionCtx<'a> {
     state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
     connection_live: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     own_user_public_key: &'a [u8; 32],
+    own_device_cert: &'a tilo_user_identity::DeviceCert,
     metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
     v2: bool,
+    agent_reads_v1: bool,
     private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
 }
@@ -250,7 +258,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_version(peer, connection, read, write, ctx, false).await
+    run_peer_version(peer, connection, read, write, ctx, false, false).await
 }
 
 pub(crate) async fn run_peer_version<R, W>(
@@ -260,12 +268,22 @@ pub(crate) async fn run_peer_version<R, W>(
     write: W,
     ctx: PeerContext,
     v2: bool,
+    agent_reads_v1: bool,
 ) -> Result<(), PeerError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, v2, connection.closed()).await
+    run_peer_stream(
+        peer,
+        read,
+        write,
+        ctx,
+        v2,
+        agent_reads_v1,
+        connection.closed(),
+    )
+    .await
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
@@ -275,6 +293,7 @@ async fn run_peer_stream<R, W>(
     mut write: W,
     ctx: PeerContext,
     v2: bool,
+    agent_reads_v1: bool,
     closed: impl std::future::Future,
 ) -> Result<(), PeerError>
 where
@@ -288,6 +307,7 @@ where
         revocations,
         trust_policy,
         own_user_public_key,
+        own_device_cert,
         metrics,
     } = ctx;
 
@@ -312,10 +332,12 @@ where
         state_outbound: Some(&state_tx),
         connection_live: Some(&connection_live.0),
         own_user_public_key: &own_user_public_key,
+        own_device_cert: &own_device_cert,
         metrics: &metrics,
         trust_policy: &trust_policy,
         disconnect: &disconnect_tx,
         v2,
+        agent_reads_v1,
         private_tx: &private_tx,
         revocations: &revocations,
     };
@@ -842,6 +864,7 @@ fn retention_publication_kind(
     match publication {
         crate::store::shell_selection::Publication::Suppress => "suppress",
         crate::store::shell_selection::Publication::Activate(_) => "activate",
+        crate::store::shell_selection::Publication::ReplayRequired(_) => "recovery",
         crate::store::shell_selection::Publication::Original => "original",
     }
 }
@@ -1321,6 +1344,13 @@ async fn audit_subscriber_access(
             continue;
         };
         let workspace = crate::workspace_io::fresh_membership(&workspace).await?;
+        if peer.role == crate::auth::PeerRole::PeerRelay
+            && peer.user_public_key != *session.own_user_public_key
+        {
+            return Err(PeerError::Protocol(
+                "cross-user certificates cannot federate relay rooms".into(),
+            ));
+        }
         if !session_peer_authorized(peer, session)
             || !current_session(&workspace, peer, session.outbound)
         {
@@ -1440,11 +1470,17 @@ async fn handle_subscribe(
             "subscriber authorization changed".into(),
         ));
     }
-    // Membership gates DEVICE subscribers. Peer-relay subscribers are
-    // already gated by cross-user auth (they must chain to the same
-    // user root, same handshake as any device) plus the
-    // `can_act_as_host` capability — they don't need to appear in the
-    // workspace membership list to legitimately federate.
+    if peer.role == crate::auth::PeerRole::PeerRelay
+        && peer.user_public_key != *session.own_user_public_key
+    {
+        return Ok(Some(Envelope::NotAuthorised {
+            workspace_id,
+            reason: "cross-user certificates cannot federate relay rooms".into(),
+        }));
+    }
+    // Membership gates DEVICE subscribers. Same-owner peer relays are
+    // separately gated by their active federation lease, so they don't need
+    // to appear in the workspace membership list.
     let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
         && peer.user_public_key == *session.own_user_public_key
         && wr.known_peer_relays.contains(&peer.device_public_key);
@@ -1786,21 +1822,77 @@ impl StateDelivery {
     }
 }
 
+#[derive(Clone)]
+enum SelectedPublication {
+    Activation(std::path::PathBuf),
+    Recovery(std::path::PathBuf),
+}
+impl SelectedPublication {
+    fn open(&self) -> Result<crate::store::replay::PublicationCursor, crate::store::StoreError> {
+        match self {
+            Self::Activation(path) => crate::store::replay::PublicationCursor::open(path),
+            Self::Recovery(path) => crate::store::replay::PublicationCursor::open_recovery(path),
+        }
+    }
+}
+#[derive(Clone)]
+struct SessionLease {
+    device: [u8; 32],
+    outbound: mpsc::Sender<Envelope>,
+    live: Arc<std::sync::atomic::AtomicBool>,
+}
+type SessionLives = Vec<SessionLease>;
+fn captured_live_current(
+    lives: &SessionLives,
+    runtime: &crate::workspace::WorkspaceRuntime,
+    device: &[u8; 32],
+    outbound: &mpsc::Sender<Envelope>,
+) -> bool {
+    lives.iter().any(|lease| {
+        lease.device == *device
+            && lease.outbound.same_channel(outbound)
+            && lease.live.load(std::sync::atomic::Ordering::SeqCst)
+            && runtime
+                .state_sessions
+                .get(device)
+                .is_some_and(|session| Arc::ptr_eq(&lease.live, &session.live))
+    })
+}
+fn union_session_lives<'a>(
+    prepared: impl IntoIterator<Item = &'a PreparedRecipients>,
+) -> SessionLives {
+    let mut result: SessionLives = Vec::new();
+    for item in prepared {
+        for lease in &item.session_lives {
+            if !result.iter().any(|current| {
+                current.device == lease.device
+                    && current.outbound.same_channel(&lease.outbound)
+                    && Arc::ptr_eq(&current.live, &lease.live)
+            }) {
+                result.push(lease.clone());
+            }
+        }
+    }
+    result
+}
 struct StateCommit {
     continuity: Option<crate::store::continuity::Receipt>,
     envelope: Arc<Envelope>,
     pending: HashMap<[u8; 32], std::path::PathBuf>,
     persisted_bytes: u64,
     sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
+    session_lives: SessionLives,
     logical_offline_bytes: u64,
     publish: bool,
-    activation: Option<std::path::PathBuf>,
+    selected: Option<SelectedPublication>,
+    recovery_scope: bool,
     activation_error: Option<crate::store::StoreError>,
     replay_targets: Vec<ReplayPendingTarget>,
     accepted_deltas: u64,
 }
 
 struct PreparedRecipients {
+    session_lives: SessionLives,
     sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
     replay_targets: Vec<ReplayPendingTarget>,
     logical_offline_bytes: u64,
@@ -1845,6 +1937,19 @@ async fn prepare_recipients(
         })
         .map(|(key, sub)| (*key, sub.tx.clone()))
         .collect::<Vec<_>>();
+    let session_lives = sessions
+        .iter()
+        .filter_map(|(device, tx)| {
+            runtime
+                .state_sessions
+                .get(device)
+                .map(|session| SessionLease {
+                    device: *device,
+                    outbound: tx.clone(),
+                    live: session.live.clone(),
+                })
+        })
+        .collect();
     let replay_targets = sessions
         .iter()
         .filter_map(|(device, _)| {
@@ -1870,6 +1975,7 @@ async fn prepare_recipients(
             .count() as u64,
     );
     Ok(PreparedRecipients {
+        session_lives,
         sessions,
         replay_targets,
         logical_offline_bytes,
@@ -1933,14 +2039,12 @@ impl ReplayPendingWork {
         }
     }
     fn selected(
-        generation: &std::path::Path,
+        publication: &SelectedPublication,
         targets: Vec<ReplayPendingTarget>,
     ) -> Result<Self, crate::store::StoreError> {
         Ok(Self {
             continuity: None,
-            publication: ReplayPendingPublication::Selected(
-                crate::store::replay::PublicationCursor::open(generation)?,
-            ),
+            publication: ReplayPendingPublication::Selected(publication.open()?),
             targets,
             frame: None,
             written: 0,
@@ -2248,9 +2352,14 @@ fn state_commit_for(
         .prepared
         .take()
         .ok_or_else(|| crate::persistence::error("checkpoint recipients were not prepared"))?;
-    let (publish, activation) = match publication {
+    let (publish, selected) = match publication {
         crate::store::shell_selection::Publication::Suppress => (false, None),
-        crate::store::shell_selection::Publication::Activate(path) => (true, Some(path)),
+        crate::store::shell_selection::Publication::Activate(path) => {
+            (true, Some(SelectedPublication::Activation(path)))
+        }
+        crate::store::shell_selection::Publication::ReplayRequired(path) => {
+            (true, Some(SelectedPublication::Recovery(path)))
+        }
         crate::store::shell_selection::Publication::Original => (true, None),
     };
     Ok(StateCommit {
@@ -2258,10 +2367,12 @@ fn state_commit_for(
         envelope: input.envelope.clone(),
         pending: HashMap::new(),
         persisted_bytes: input.stage.as_ref().map_or(0, |stage| stage.written()),
+        session_lives: prepared.session_lives,
         sessions: prepared.sessions,
         logical_offline_bytes: prepared.logical_offline_bytes,
         publish,
-        activation,
+        selected,
+        recovery_scope: false,
         activation_error: None,
         replay_targets: prepared.replay_targets,
         accepted_deltas: 1,
@@ -2430,6 +2541,8 @@ struct ProjectedCheckpointCommit {
     publication_index: usize,
     emission_done: bool,
     full_fence: Option<CheckpointCommitFence>,
+    recovery_fence: Option<CheckpointCommitFence>,
+    supplemental_recovery: Option<std::path::PathBuf>,
 }
 
 impl ProjectedCheckpointCommit {
@@ -2442,12 +2555,33 @@ impl ProjectedCheckpointCommit {
                     .filter_map(|input| input.prepared.as_ref()),
             );
             CheckpointCommitFence {
+                recovery_lives: None,
                 activating: true,
                 sessions,
                 replay_targets,
             }
         });
+        let supplemental_recovery = (mode == CheckpointBatchMode::AllOriginal)
+            .then(|| {
+                batch
+                    .projected
+                    .as_ref()
+                    .and_then(|p| p.supplemental_recovery.clone())
+            })
+            .flatten();
+        let recovery_fence = supplemental_recovery.as_ref().map(|_| {
+            let mut fence = full_fence.as_ref().expect("all-original fence").clone();
+            fence.recovery_lives = Some(union_session_lives(
+                batch
+                    .inputs
+                    .iter()
+                    .filter_map(|input| input.prepared.as_ref()),
+            ));
+            fence
+        });
         Self {
+            recovery_fence,
+            supplemental_recovery,
             mode,
             selected_committed: false,
             publication: None,
@@ -2474,6 +2608,7 @@ impl ProjectedCheckpointCommit {
             {
                 Step::More => return Ok(ProjectedCheckpointStep::More),
                 Step::Done(crate::store::shell_selection::SelectionOutcome::BatchPublished {
+                    supplemental_recovery,
                     publication,
                     dispositions,
                 }) => {
@@ -2484,7 +2619,9 @@ impl ProjectedCheckpointCommit {
                     let expected = batch.projected.as_ref().ok_or_else(|| {
                         crate::persistence::error("projected checkpoint outcome disappeared")
                     })?;
-                    if publication != expected.publication || dispositions != expected.dispositions
+                    if publication != expected.publication
+                        || dispositions != expected.dispositions
+                        || supplemental_recovery != expected.supplemental_recovery
                     {
                         return Err(crate::persistence::error(
                             "checkpoint projection changed while committing",
@@ -2515,6 +2652,56 @@ impl ProjectedCheckpointCommit {
                 }
             }
         }
+        // A previous serial prefix may still be held. Deliver its safe full
+        // fallback before any current Original checkpoint can advance a floor.
+        // This is publication only: every input keeps its original disposition.
+        if let Some(path) = &self.supplemental_recovery {
+            if self.commit.is_none() {
+                let prepared = || {
+                    batch
+                        .inputs
+                        .iter()
+                        .filter_map(|input| input.prepared.as_ref())
+                };
+                let (sessions, replay_targets) = union_sessions(prepared());
+                let selected = SelectedPublication::Recovery(path.clone());
+                self.replay = (!replay_targets.is_empty())
+                    .then(|| ReplayPendingWork::selected(&selected, replay_targets.clone()))
+                    .transpose()?;
+                self.commit = Some(StateCommit {
+                    continuity: None,
+                    envelope: batch
+                        .inputs
+                        .last()
+                        .expect("admitted prefix")
+                        .envelope
+                        .clone(),
+                    pending: HashMap::new(),
+                    persisted_bytes: 0,
+                    sessions,
+                    session_lives: union_session_lives(prepared()),
+                    logical_offline_bytes: 0,
+                    publish: true,
+                    selected: Some(selected),
+                    recovery_scope: false,
+                    activation_error: None,
+                    replay_targets,
+                    accepted_deltas: 0,
+                });
+                return Ok(ProjectedCheckpointStep::More);
+            }
+            if let Some(replay) = &mut self.replay {
+                match replay.step(state, crate::persistence::output_budget())? {
+                    Step::More => return Ok(ProjectedCheckpointStep::More),
+                    Step::Done(written) => {
+                        self.commit.as_mut().unwrap().persisted_bytes = written;
+                        self.replay = None;
+                    }
+                }
+            }
+            self.supplemental_recovery = None;
+            return Ok(ProjectedCheckpointStep::Commit(self.commit.take().unwrap()));
+        }
         if self.mode == CheckpointBatchMode::AllOriginal {
             #[cfg(test)]
             if self.publication_index == 1 {
@@ -2532,10 +2719,11 @@ impl ProjectedCheckpointCommit {
                 return Ok(ProjectedCheckpointStep::Done);
             }
             if self.commit.is_none() {
-                let commit = state_commit_for(
+                let mut commit = state_commit_for(
                     &mut batch.inputs[self.publication_index],
                     crate::store::shell_selection::Publication::Original,
                 )?;
+                commit.recovery_scope = self.recovery_fence.is_some();
                 self.replay = (!commit.replay_targets.is_empty()).then(|| {
                     ReplayPendingWork::original(
                         commit.envelope.clone(),
@@ -2573,14 +2761,17 @@ impl ProjectedCheckpointCommit {
                 .map(|input| input.prepared.take().expect("prepared checkpoint input"))
                 .collect::<Vec<_>>();
             let (sessions, replay_targets) = union_sessions(&prepared);
-            let (publish, activation) = match self
+            let (publish, selected) = match self
                 .publication
                 .take()
                 .expect("represented checkpoint publication")
             {
                 crate::store::shell_selection::Publication::Suppress => (false, None),
-                crate::store::shell_selection::Publication::Activate(path) => (true, Some(path)),
-                crate::store::shell_selection::Publication::Original => {
+                crate::store::shell_selection::Publication::Activate(path) => {
+                    (true, Some(SelectedPublication::Activation(path)))
+                }
+                crate::store::shell_selection::Publication::ReplayRequired(_)
+                | crate::store::shell_selection::Publication::Original => {
                     return Err(crate::persistence::error(
                         "represented checkpoint batch returned original publication",
                     ));
@@ -2595,17 +2786,19 @@ impl ProjectedCheckpointCommit {
                     .iter()
                     .map(|input| input.stage.as_ref().unwrap().written())
                     .sum(),
+                session_lives: Vec::new(),
                 sessions,
                 logical_offline_bytes: prepared.iter().map(|item| item.logical_offline_bytes).sum(),
                 publish,
-                activation,
+                selected,
+                recovery_scope: false,
                 activation_error: None,
                 replay_targets,
                 accepted_deltas: batch.inputs.len() as u64,
             };
             self.commit = Some(commit);
             let commit = self.commit.as_ref().unwrap();
-            self.replay = if let Some(path) = &commit.activation {
+            self.replay = if let Some(path) = &commit.selected {
                 (!commit.replay_targets.is_empty())
                     .then(|| ReplayPendingWork::selected(path, commit.replay_targets.clone()))
                     .transpose()?
@@ -2636,7 +2829,15 @@ impl ProjectedCheckpointCommit {
                     .as_ref()
                     .is_some_and(|selector| selector.current_switch_attempted()))
         {
-            return self.full_fence.clone();
+            return self
+                .recovery_fence
+                .clone()
+                .or_else(|| self.full_fence.clone());
+        }
+        // The represented commit now owns these recipients. Reconstructing a
+        // fence from consumed inputs would hide the publisher's captured fence.
+        if self.emission_done {
+            return None;
         }
         if let Some(commit) = &self.commit {
             return Some(CheckpointCommitFence::capture(commit));
@@ -2644,7 +2845,7 @@ impl ProjectedCheckpointCommit {
         let activating = batch
             .selector
             .as_ref()
-            .is_some_and(|selector| selector.activation_on_error().is_some());
+            .is_some_and(|selector| selector.publication_on_error().is_some());
         if !activating {
             return None;
         }
@@ -2676,6 +2877,7 @@ impl ProjectedCheckpointCommit {
             }
         }
         Some(CheckpointCommitFence {
+            recovery_lives: None,
             activating: true,
             sessions,
             replay_targets,
@@ -2771,12 +2973,18 @@ impl SerialCheckpointCommit {
                     if matches!(
                         publication,
                         crate::store::shell_selection::Publication::Activate(_)
+                            | crate::store::shell_selection::Publication::ReplayRequired(_)
                     ) {
                         let prepared = batch.inputs[self.index]
                             .prepared
                             .as_ref()
                             .expect("prepared checkpoint input");
                         self.post_cut_fence = Some(CheckpointCommitFence {
+                            recovery_lives: matches!(
+                                publication,
+                                crate::store::shell_selection::Publication::ReplayRequired(_)
+                            )
+                            .then(|| prepared.session_lives.clone()),
                             activating: true,
                             sessions: prepared.sessions.clone(),
                             replay_targets: prepared.replay_targets.clone(),
@@ -2810,7 +3018,7 @@ impl SerialCheckpointCommit {
             commit.persisted_bytes = commit.persisted_bytes.max(self.retained_written);
             self.commit = Some(commit);
             let commit = self.commit.as_ref().unwrap();
-            self.replay = if let Some(path) = &commit.activation {
+            self.replay = if let Some(path) = &commit.selected {
                 (!commit.replay_targets.is_empty())
                     .then(|| ReplayPendingWork::selected(path, commit.replay_targets.clone()))
                     .transpose()?
@@ -2849,19 +3057,22 @@ impl SerialCheckpointCommit {
         if let Some(fence) = &self.post_cut_fence {
             return Some(fence.clone());
         }
-        let activating = self
+        let publication = self
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.activation_on_error().is_some())
-            || self
-                .retain
-                .as_ref()
-                .is_some_and(|retain| retain.activation_on_error().is_some());
-        if !activating {
-            return None;
-        }
+            .and_then(|selection| selection.publication_on_error())
+            .or_else(|| {
+                self.retain
+                    .as_ref()
+                    .and_then(|retain| retain.publication_on_error())
+            })?;
         let prepared = batch.inputs[self.index].prepared.as_ref()?;
         Some(CheckpointCommitFence {
+            recovery_lives: matches!(
+                publication,
+                crate::store::shell_selection::Publication::ReplayRequired(_)
+            )
+            .then(|| prepared.session_lives.clone()),
             activating: true,
             sessions: prepared.sessions.clone(),
             replay_targets: prepared.replay_targets.clone(),
@@ -2882,14 +3093,11 @@ async fn publish_checkpoint_commit(
     for _ in 0..commit.accepted_deltas {
         metrics.inc_deltas_received();
     }
-    let activating = commit.activation.is_some();
-    let mut cursor = if let Some(path) = commit.activation.take() {
-        Some(
-            crate::persistence::blocking(workers.clone(), move || {
-                crate::store::replay::PublicationCursor::open(&path)
-            })
-            .await??,
-        )
+    let activating = commit.selected.is_some() || commit.recovery_scope;
+    let recovering =
+        commit.recovery_scope || matches!(commit.selected, Some(SelectedPublication::Recovery(_)));
+    let mut cursor = if let Some(path) = commit.selected.take() {
+        Some(crate::persistence::blocking(workers.clone(), move || path.open()).await??)
     } else {
         None
     };
@@ -2932,6 +3140,11 @@ async fn publish_checkpoint_commit(
         }
         let checkpoint_channel = gated_checkpoint_channel(&envelope, Some(source));
         for (recipient, original) in &commit.sessions {
+            if recovering
+                && !captured_live_current(&commit.session_lives, &runtime, recipient, original)
+            {
+                continue;
+            }
             let Some(sub) = runtime.subscribers.get(recipient) else {
                 continue;
             };
@@ -3018,6 +3231,7 @@ async fn publish_checkpoint_commit(
 
 #[derive(Clone)]
 struct CheckpointCommitFence {
+    recovery_lives: Option<SessionLives>,
     activating: bool,
     sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
     replay_targets: Vec<ReplayPendingTarget>,
@@ -3026,7 +3240,10 @@ struct CheckpointCommitFence {
 impl CheckpointCommitFence {
     fn capture(commit: &StateCommit) -> Self {
         Self {
-            activating: commit.activation.is_some(),
+            recovery_lives: (commit.recovery_scope
+                || matches!(commit.selected, Some(SelectedPublication::Recovery(_))))
+            .then(|| commit.session_lives.clone()),
+            activating: commit.selected.is_some() || commit.recovery_scope,
             sessions: commit.sessions.clone(),
             replay_targets: commit.replay_targets.clone(),
         }
@@ -3036,6 +3253,11 @@ impl CheckpointCommitFence {
         let mut runtime = workspace.lock().await;
         if self.activating {
             for (recipient, original) in &self.sessions {
+                if self.recovery_lives.as_ref().is_some_and(|lives| {
+                    !captured_live_current(lives, &runtime, recipient, original)
+                }) {
+                    continue;
+                }
                 if let Some(sub) = runtime.subscribers.get(recipient)
                     && sub.tx.same_channel(original)
                 {
@@ -3156,6 +3378,7 @@ async fn enqueue_checkpoint_prefix(
                                 Publication::Original => "original",
                                 Publication::Suppress => "suppress",
                                 Publication::Activate(_) => "activate",
+                                Publication::ReplayRequired(_) => "recovery",
                             };
                             let reason = match outcome.reason {
                                 BatchProjectionReason::Represented => "represented",
@@ -3318,7 +3541,10 @@ async fn enqueue_checkpoint_prefix(
                         // promotions. A worker acquisition/join error cannot
                         // prove whether the selected CURRENT switched, so the
                         // immutable exact-session fence is conservative here.
-                        let worker_fence = work.full_fence.clone();
+                        let worker_fence = work
+                            .recovery_fence
+                            .clone()
+                            .or_else(|| work.full_fence.clone());
                         let operation_state = state.clone();
                         let blocking = crate::persistence::blocking(workers.clone(), move || {
                             let mut state = operation_state
@@ -3537,6 +3763,7 @@ async fn enqueue_state_inner(
                 })
                 .map(|(key, sub)| (*key, sub.tx.clone()))
                 .collect::<Vec<_>>();
+            let session_lives = sessions.iter().filter_map(|(device,tx)| runtime.state_sessions.get(device).map(|session| SessionLease {device:*device,outbound:tx.clone(),live:session.live.clone()})).collect();
             let replay_targets = sessions
                 .iter()
                 .filter_map(|(device, _)| {
@@ -3567,13 +3794,14 @@ async fn enqueue_state_inner(
             Ok((
                 recipients,
                 sessions,
+                session_lives,
                 replay_targets,
                 logical_offline_bytes,
             ))
         },
         move |state, prepared| {
             if commit.is_none() {
-                let (recipients, sessions, replay_targets, logical_offline_bytes) =
+                let (recipients, sessions, session_lives, replay_targets, logical_offline_bytes) =
                     prepared.take().expect("ordered recipients");
                 let envelope = envelope.take().expect("admitted envelope");
                 let Envelope::Delta { delta, .. } = &envelope else {
@@ -3587,10 +3815,12 @@ async fn enqueue_state_inner(
                         pending: HashMap::new(),
                         persisted_bytes: 0,
                         sessions,
+                        session_lives,
                         logical_offline_bytes,
                         publish,
-                        activation: None,
-                        activation_error: None,
+                        selected: None,
+                        recovery_scope: false,
+        activation_error: None,
                         replay_targets,
                         accepted_deltas: 1,
                     }));
@@ -3622,10 +3852,12 @@ async fn enqueue_state_inner(
                     pending: HashMap::new(),
                     persisted_bytes: 0,
                     sessions,
+                    session_lives,
                     logical_offline_bytes,
                     publish,
-                    activation: None,
-                    activation_error: None,
+                    selected: None,
+                    recovery_scope: false,
+        activation_error: None,
                     replay_targets,
                     accepted_deltas: 1,
                 });
@@ -3636,10 +3868,14 @@ async fn enqueue_state_inner(
                 let result = match build.step(Default::default()) {
                     Ok(result) => result,
                     Err(error) => {
-                        let Some(activation) = build.activation_on_error() else { return Err(error); };
+                        let Some(activation) = build.publication_on_error() else { return Err(error); };
                         // Keep the captured sessions and uncertain/committed cut
                         // across the worker error so completion fences them.
-                        current.activation = Some(activation);
+                        current.selected = Some(match activation {
+                            crate::store::shell_selection::Publication::Activate(path) => SelectedPublication::Activation(path),
+                            crate::store::shell_selection::Publication::ReplayRequired(path) => SelectedPublication::Recovery(path),
+                            _ => unreachable!("uncertain selected publication"),
+                        });
                         current.activation_error = Some(error);
                         return Ok(Step::Done(commit.take().unwrap()));
                     }
@@ -3654,11 +3890,17 @@ async fn enqueue_state_inner(
                                 current.publish = false;
                                 current.replay_targets.clear();
                             }
-                            crate::store::shell_selection::Publication::Activate(path) => {
-                                current.activation = Some(path.clone());
+                            publication @ (crate::store::shell_selection::Publication::Activate(_)
+                                | crate::store::shell_selection::Publication::ReplayRequired(_)) => {
+                                let selected = match publication {
+                                    crate::store::shell_selection::Publication::Activate(path) => SelectedPublication::Activation(path),
+                                    crate::store::shell_selection::Publication::ReplayRequired(path) => SelectedPublication::Recovery(path),
+                                    _ => unreachable!(),
+                                };
+                                current.selected = Some(selected.clone());
                                 if !current.replay_targets.is_empty() {
                                     match ReplayPendingWork::selected(
-                                        &path,
+                                        &selected,
                                         current.replay_targets.clone(),
                                     ) {
                                         Ok(work) => replay_pending_work = Some(work),
@@ -3759,13 +4001,14 @@ async fn enqueue_state_inner(
                 if crate::persistence::diagnostics() {
                     tracing::info!(phase="state_commit", persisted_envelope_bytes=commit.persisted_bytes, logical_offline_bytes=commit.logical_offline_bytes);
                 }
-                let activating = commit.activation.is_some();
+                let activating = commit.selected.is_some() || commit.recovery_scope;
+                let recovering = commit.recovery_scope || matches!(commit.selected, Some(SelectedPublication::Recovery(_)));
                 let replay_targets = commit.replay_targets.clone();
                 let mut delivered = 0u64;
                 let publication_result: Result<(), crate::store::StoreError> = async {
                 if let Some(error) = commit.activation_error.take() { return Err(error); }
-                let mut cursor = if let Some(path) = commit.activation.take() {
-                    Some(crate::persistence::blocking(workers.clone(), move || crate::store::replay::PublicationCursor::open(&path)).await??)
+                let mut cursor = if let Some(path) = commit.selected.take() {
+                    Some(crate::persistence::blocking(workers.clone(), move || path.open()).await??)
                 } else { None };
                 let mut original = cursor.is_none();
                 loop {
@@ -3804,6 +4047,7 @@ async fn enqueue_state_inner(
                     }
                     let checkpoint_channel = gated_checkpoint_channel(&envelope, source.as_ref());
                     for (recipient, original) in &commit.sessions {
+                        if recovering && !captured_live_current(&commit.session_lives, &runtime, recipient, original) { continue; }
                         let Some(sub) = runtime.subscribers.get(recipient) else { continue };
                         if !sub.tx.same_channel(original) { continue; }
                         let Some(target) = runtime.state_sessions.get(recipient) else { continue };
@@ -3888,6 +4132,7 @@ async fn enqueue_state_inner(
                         let mut runtime = workspace.lock().await;
                         if activating {
                             for (recipient, original) in &commit.sessions {
+                                if recovering && !captured_live_current(&commit.session_lives, &runtime, recipient, original) { continue; }
                                 if let Some(sub) = runtime.subscribers.get(recipient)
                                     && sub.tx.same_channel(original) {
                                     let _ = sub.disconnect.try_send(());
@@ -4051,7 +4296,12 @@ async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
-    let source = StateSource::new(peer, session);
+    let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        return Ok(Some(Envelope::NotAuthorised {
+            workspace_id,
+            reason: "workspace membership changed".into(),
+        }));
+    };
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
 
     Ok(None)
@@ -4092,7 +4342,12 @@ async fn handle_delta_prefix(
             "author does not match authenticated device".into(),
         ));
     }
-    let source = StateSource::new(peer, session);
+    let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
+        return Ok(Some(Envelope::NotAuthorised {
+            workspace_id: *workspace_id,
+            reason: "workspace membership changed".into(),
+        }));
+    };
     let governed_source = {
         let runtime = workspace.lock().await;
         checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source)
@@ -4121,6 +4376,16 @@ async fn handle_delta_prefix(
     )
     .await?;
     Ok(None)
+}
+
+async fn authorized_state_source(
+    workspace: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Option<StateSource>, PeerError> {
+    let source = StateSource::new(peer, session);
+    let runtime = crate::workspace_io::fresh_membership(workspace).await?;
+    Ok(source.authorized(&runtime).then_some(source))
 }
 
 fn checkpoint_prefix_recovery_allowed(
@@ -4241,9 +4506,18 @@ async fn handle_sync_request(
         .subscribers
         .get(&peer.device_public_key)
         .map(|sub| sub.tx.clone());
+    let source = StateSource::new(peer, session);
+    if let Some(mailbox) = &wr.sync_refresh
+        && session.connection_live.is_some()
+        && expected
+            .as_ref()
+            .is_some_and(|tx| tx.same_channel(session.outbound))
+        && source.authorized(&wr)
+    {
+        mailbox.enqueue(workspace_id, ws.clone(), source.clone());
+    }
     drop(wr);
     let owner = crate::persistence::handle(&ws).await;
-    let source = StateSource::new(peer, session);
     owner
         .submit_prepared_wait(
             have_heads.len().saturating_mul(32),
@@ -4363,6 +4637,7 @@ mod autobind_tests {
 pub(crate) struct ActionTarget {
     broker_host: Option<uuid::Uuid>,
     broker_protocol: bool,
+    agent_reads_v1: bool,
     room: uuid::Uuid,
     peer: AuthenticatedPeer,
     state_tx: mpsc::Sender<Envelope>,
@@ -4386,8 +4661,9 @@ pub(crate) struct PrivateDelivery {
     source_disconnect: mpsc::Sender<()>,
 }
 
-fn current_cert(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
-    peer.role == crate::auth::PeerRole::Device && session_peer_authorized(peer, session)
+fn current_action_peer(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
+    session_peer_authorized(peer, session)
+        && (peer.role == crate::auth::PeerRole::Device || &peer.cert == session.own_device_cert)
 }
 
 fn session_peer_authorized(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> bool {
@@ -4472,7 +4748,7 @@ async fn private_membership<'a>(
     failure: &str,
 ) -> Result<tokio::sync::MutexGuard<'a, crate::workspace::WorkspaceRuntime>, PeerError> {
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    if !current_cert(peer, session)
+    if !current_action_peer(peer, session)
         || !current_member(&runtime, peer)
         || !current_session(&runtime, peer, session.outbound)
     {
@@ -4488,7 +4764,7 @@ async fn handle_private(
 ) -> Result<Option<EnvelopeV2>, PeerError> {
     match frame {
         EnvelopeV2::EnableActions { room } => {
-            if room.is_nil() || !current_cert(peer, session) {
+            if room.is_nil() || !current_action_peer(peer, session) {
                 return Err(PeerError::Protocol(
                     "private capability not authorised".into(),
                 ));
@@ -4503,6 +4779,7 @@ async fn handle_private(
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
+                    agent_reads_v1: session.agent_reads_v1,
                     room,
                     peer: peer.clone(),
                     state_tx: session.outbound.clone(),
@@ -4516,7 +4793,7 @@ async fn handle_private(
             }))
         }
         EnvelopeV2::EnableBrokerClient { room } => {
-            if !current_cert(peer, session) {
+            if !current_action_peer(peer, session) {
                 return Err(PeerError::Protocol("broker protocol not authorised".into()));
             }
             let ws = private_workspace(room, peer, session)
@@ -4534,7 +4811,7 @@ async fn handle_private(
             Ok(None)
         }
         EnvelopeV2::RegisterBroker { room, host } => {
-            if host.is_nil() || !current_cert(peer, session) {
+            if host.is_nil() || !current_action_peer(peer, session) {
                 return Err(PeerError::Protocol("broker not authorised".into()));
             }
             let ws = private_workspace(room, peer, session)
@@ -4633,6 +4910,32 @@ impl Drop for DeliveryAuthorizationTrace<'_> {
     }
 }
 
+fn agent_read_route_allowed(
+    action: &DirectedAction,
+    source: &ActionTarget,
+    target: &ActionTarget,
+) -> bool {
+    match &action.message {
+        ActionMessage::AgentReadV1 { host, .. } => {
+            source.agent_reads_v1
+                && target.agent_reads_v1
+                && source.broker_protocol
+                && target.broker_protocol
+                && target.broker_host == Some(*host)
+        }
+        ActionMessage::AgentReadResultV1 { host, binding, .. } => {
+            source.agent_reads_v1
+                && target.agent_reads_v1
+                && source.broker_protocol
+                && target.broker_protocol
+                && source.broker_host == Some(*host)
+                && binding.agent.room == action.room.to_string()
+                && binding.agent.device == hex::encode(action.target)
+        }
+        _ => true,
+    }
+}
+
 async fn route_private(
     action: &DirectedAction,
     peer: &AuthenticatedPeer,
@@ -4640,7 +4943,7 @@ async fn route_private(
 ) -> Result<Option<UnavailableReason>, PeerError> {
     use UnavailableReason as U;
     private_phase(action, "route_enter");
-    if action.source != peer.device_public_key || !current_cert(peer, session) {
+    if action.source != peer.device_public_key || !current_action_peer(peer, session) {
         private_phase(action, "route_rejected_source");
         return Ok(Some(U::NotAuthorised));
     }
@@ -4662,7 +4965,7 @@ async fn route_private(
     }
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
     private_phase(action, "route_lock_acquired");
-    if !current_cert(peer, session)
+    if !current_action_peer(peer, session)
         || !current_member(&wr, peer)
         || !current_session(&wr, peer, session.outbound)
         || !wr
@@ -4680,7 +4983,7 @@ async fn route_private(
     let Some(target) = wr.action_targets.get(&action.target) else {
         return Ok(Some(U::UnsupportedPeer));
     };
-    if !current_cert(&target.peer, session)
+    if !current_action_peer(&target.peer, session)
         || !current_member(&wr, &target.peer)
         || target.room != action.room
         || !target.state_tx.same_channel(&sub.tx)
@@ -4709,6 +5012,13 @@ async fn route_private(
     if (target.broker_host.is_some() && !source_extended)
         || (extension && (!source_extended || !target.broker_protocol))
     {
+        return Ok(Some(U::UnsupportedPeer));
+    }
+    let source = wr
+        .action_targets
+        .get(&peer.device_public_key)
+        .expect("current source checked above");
+    if !agent_read_route_allowed(action, source, target) {
         return Ok(Some(U::UnsupportedPeer));
     }
     private_phase(action, "route_authorized");
@@ -4796,10 +5106,10 @@ async fn authorize_delivery(
 ) -> Result<(), UnavailableReason> {
     use UnavailableReason as U;
     let mut trace = DeliveryAuthorizationTrace::new(&delivery.action);
-    if !current_cert(&delivery.source, session) {
+    if !current_action_peer(&delivery.source, session) {
         return trace.reject("delivery_rejected_source_cert_initial", U::NotAuthorised);
     }
-    if !current_cert(recipient, session) {
+    if !current_action_peer(recipient, session) {
         return trace.reject("delivery_rejected_recipient_cert_initial", U::NotAuthorised);
     }
     trace.phase("delivery_registry_wait");
@@ -4825,10 +5135,10 @@ async fn authorize_delivery(
         Ok(wr) => wr,
         Err(_) => return trace.reject("delivery_rejected_membership_error", U::NotAuthorised),
     };
-    if !current_cert(&delivery.source, session) {
+    if !current_action_peer(&delivery.source, session) {
         return trace.reject("delivery_rejected_source_cert_current", U::NotAuthorised);
     }
-    if !current_cert(recipient, session) {
+    if !current_action_peer(recipient, session) {
         return trace.reject("delivery_rejected_recipient_cert_current", U::NotAuthorised);
     }
     if !current_member(&wr, &delivery.source) {
@@ -4866,6 +5176,17 @@ async fn authorize_delivery(
             "delivery_rejected_recipient_action_target",
             U::NotAuthorised,
         );
+    }
+    let source = wr
+        .action_targets
+        .get(&delivery.source.device_public_key)
+        .expect("current source checked above");
+    let target = wr
+        .action_targets
+        .get(&recipient.device_public_key)
+        .expect("current recipient checked above");
+    if !agent_read_route_allowed(&delivery.action, source, target) {
+        return trace.reject("delivery_rejected_agent_read_protocol", U::UnsupportedPeer);
     }
     drop(wr);
     trace.success()
@@ -5172,8 +5493,28 @@ mod private_transport_tests {
         assert_ne!(std::fs::read(selected).unwrap(), selected_before_advance);
     }
 
-    #[tokio::test]
-    async fn thirty_four_route_prefix_uses_one_all_original_selection_then_converges() {
+    // In an unoptimized build, polling this scenario through the persistence
+    // owner nests deeper than the default 2 MiB test-thread stack (it needs
+    // more than 4 MiB when it runs alone). Run it on its own thread with an
+    // explicit stack instead of depending on RUST_MIN_STACK.
+    #[test]
+    fn thirty_four_route_prefix_uses_one_all_original_selection_then_converges() {
+        std::thread::Builder::new()
+            .name("thirty-four-route-prefix".into())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(Box::pin(thirty_four_route_prefix_scenario()));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    async fn thirty_four_route_prefix_scenario() {
         use crate::store::{
             bounded::{Step, WorkLimit},
             shell_selection::{self, SelectedRead, Selection},
@@ -5458,7 +5799,10 @@ mod private_transport_tests {
         )
         .await
         .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), reached)
+        // A liveness guard, not a latency budget: this 32-record all-Original
+        // selection alone takes about 2 s in an unoptimized build, so a 2 s
+        // bound failed on timing whenever the machine was busy.
+        tokio::time::timeout(std::time::Duration::from_secs(30), reached)
             .await
             .unwrap_or_else(|_| {
                 let source_disconnect = match source_disconnected.try_recv() {
@@ -5859,9 +6203,11 @@ mod private_transport_tests {
                     crate::policy::TrustPolicy::AllowMatchingUser,
                 )),
                 own_user_public_key: peer.user_public_key,
+                own_device_cert: peer.cert.clone(),
                 metrics,
             },
             true,
+            false,
             std::future::pending::<()>(),
         ));
         let (client_read, mut client_write) = tokio::io::split(client);
@@ -6176,9 +6522,20 @@ mod private_transport_tests {
         }
         drop(release);
         let owner = crate::persistence::handle(&workspace).await;
-        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
-            .await
-            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let done = owner
+                .submit_resumable_wait(
+                    1,
+                    async { Ok(()) },
+                    |_, _| Ok(Step::Done(())),
+                    |result| async { result },
+                )
+                .await
+                .unwrap();
+            crate::persistence::receipt(done).await.unwrap();
+        })
+        .await
+        .expect("checkpoint prefix owner did not drain");
         if force_serial_finish_gc {
             let promoted =
                 String::from_utf8(std::fs::read(fault_root.join("CURRENT")).unwrap()).unwrap();
@@ -6213,9 +6570,20 @@ mod private_transport_tests {
         )
         .await
         .unwrap();
-        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
-            .await
-            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let done = owner
+                .submit_resumable_wait(
+                    1,
+                    async { Ok(()) },
+                    |_, _| Ok(Step::Done(())),
+                    |result| async { result },
+                )
+                .await
+                .unwrap();
+            crate::persistence::receipt(done).await.unwrap();
+        })
+        .await
+        .expect("checkpoint prefix owner did not drain");
 
         assert!(
             disconnects[0].try_recv().is_ok(),
@@ -6715,6 +7083,7 @@ mod private_transport_tests {
                 revocations: revocations.clone(),
                 trust_policy: trust.clone(),
                 own_user_public_key: user.public_key,
+                own_device_cert: a.cert.clone(),
                 metrics: Arc::new(crate::metrics::Metrics::default()),
             };
             tasks.push(tokio::spawn(run_peer_stream(
@@ -6723,6 +7092,7 @@ mod private_transport_tests {
                 write,
                 ctx,
                 true,
+                false,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -7033,9 +7403,11 @@ mod private_transport_tests {
                     revocations: revocations.clone(),
                     trust_policy: trust.clone(),
                     own_user_public_key: user.public_key,
+                    own_device_cert: a.cert.clone(),
                     metrics: Arc::new(crate::metrics::Metrics::default()),
                 },
                 true,
+                false,
                 std::future::pending::<()>(),
             )));
             let (read, mut write) = tokio::io::split(client);
@@ -7302,10 +7674,12 @@ mod private_transport_tests {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &user.public_key,
+            own_device_cert: &peer.cert,
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: false,
+            agent_reads_v1: false,
             private_tx: &private,
             revocations: &revocations,
         };
@@ -7489,6 +7863,7 @@ mod private_transport_tests {
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
+                    agent_reads_v1: false,
                     room,
                     peer: peer.clone(),
                     state_tx: tx.clone(),
@@ -7510,10 +7885,12 @@ mod private_transport_tests {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &user.public_key,
+            own_device_cert: &a.cert,
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
         };
@@ -7606,6 +7983,7 @@ mod private_transport_tests {
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
+                    agent_reads_v1: false,
                     room,
                     peer: peer.clone(),
                     state_tx: tx.clone(),
@@ -7627,10 +8005,12 @@ mod private_transport_tests {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &user.public_key,
+            own_device_cert: &a.cert,
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
         };
@@ -7760,10 +8140,12 @@ mod private_transport_tests {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &user.public_key,
+            own_device_cert: &source.cert,
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &source_disconnect,
             v2: true,
+            agent_reads_v1: false,
             private_tx: &source_private,
             revocations: &revocations,
         };
@@ -7903,15 +8285,20 @@ mod private_transport_tests {
 
     #[tokio::test]
     async fn bounded_private_queue_and_delivery_recheck_never_retain_traffic() {
-        bounded_private_queue_for_room_namespace(false).await;
+        bounded_private_queue_for_room_namespace(false, false).await;
     }
 
     #[tokio::test]
     async fn legacy_room_binding_preserves_private_delivery_and_authorization_rechecks() {
-        bounded_private_queue_for_room_namespace(true).await;
+        bounded_private_queue_for_room_namespace(true, false).await;
     }
 
-    async fn bounded_private_queue_for_room_namespace(legacy: bool) {
+    #[tokio::test]
+    async fn agent_read_queued_delivery_rechecks_protocol_host_and_replacement() {
+        bounded_private_queue_for_room_namespace(false, true).await;
+    }
+
+    async fn bounded_private_queue_for_room_namespace(legacy: bool, agent_read: bool) {
         let (root, user) = UserIdentity::generate("alice", 1);
         let (a, a_key) = certified_device(&root, user.public_key, "a");
         let (b, _) = certified_device(&root, user.public_key, "b");
@@ -7953,6 +8340,7 @@ mod private_transport_tests {
                 ActionTarget {
                     broker_host: None,
                     broker_protocol: false,
+                    agent_reads_v1: agent_read,
                     room,
                     peer: peer.clone(),
                     state_tx: tx.clone(),
@@ -7974,10 +8362,12 @@ mod private_transport_tests {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &user.public_key,
+            own_device_cert: &a.cert,
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &disconnect,
             v2: true,
+            agent_reads_v1: agent_read,
             private_tx: &ap,
             revocations: &revocations,
         };
@@ -7987,6 +8377,101 @@ mod private_transport_tests {
             disconnect: &recipient_disconnect,
             ..session
         };
+        if agent_read {
+            let host = uuid::Uuid::from_u128(40);
+            handle_private(EnvelopeV2::EnableBrokerClient { room }, &a, &session)
+                .await
+                .unwrap();
+            handle_private(EnvelopeV2::RegisterBroker { room, host }, &b, &receiver)
+                .await
+                .unwrap();
+            let read = DirectedAction {
+                room,
+                request_id: uuid::Uuid::from_u128(41),
+                source: a.device_public_key,
+                target: b.device_public_key,
+                message: ActionMessage::AgentReadV1 {
+                    host,
+                    invocation: uuid::Uuid::from_u128(42),
+                    request: qos_agent_control_protocol::AgentRequest::Capabilities { version: 1 },
+                },
+            };
+            assert_eq!(route_private(&read, &a, &session).await.unwrap(), None);
+            let PrivateOutbound::Delivery(delivery) = bpr.recv().await.unwrap() else {
+                panic!("read not queued")
+            };
+            assert_eq!(authorize_delivery(&delivery, &b, &receiver).await, Ok(()));
+            for device in [a.device_public_key, b.device_public_key] {
+                wr.lock()
+                    .await
+                    .action_targets
+                    .get_mut(&device)
+                    .unwrap()
+                    .agent_reads_v1 = false;
+                let mut wire = Vec::new();
+                write_private_delivery(&delivery, &b, &receiver, &mut wire)
+                    .await
+                    .unwrap();
+                assert!(wire.is_empty());
+                assert!(matches!(
+                    apr.recv().await,
+                    Some(PrivateOutbound::Reply(EnvelopeV2::Unavailable {
+                        reason: UnavailableReason::UnsupportedPeer,
+                        ..
+                    }))
+                ));
+                wr.lock()
+                    .await
+                    .action_targets
+                    .get_mut(&device)
+                    .unwrap()
+                    .agent_reads_v1 = true;
+            }
+            wr.lock()
+                .await
+                .action_targets
+                .get_mut(&b.device_public_key)
+                .unwrap()
+                .broker_host = Some(uuid::Uuid::from_u128(43));
+            assert_eq!(
+                authorize_delivery(&delivery, &b, &receiver).await,
+                Err(UnavailableReason::UnsupportedPeer)
+            );
+            wr.lock()
+                .await
+                .action_targets
+                .get_mut(&b.device_public_key)
+                .unwrap()
+                .broker_host = Some(host);
+            let (replacement, _rx) = mpsc::channel(2);
+            wr.lock().await.add_subscriber(Subscriber {
+                device_public_key: b.device_public_key,
+                role: b.role,
+                tx: replacement,
+                disconnect: recipient_disconnect.clone(),
+            });
+            let mut wire = Vec::new();
+            write_private_delivery(&delivery, &b, &receiver, &mut wire)
+                .await
+                .unwrap();
+            assert!(wire.is_empty());
+            assert!(matches!(
+                apr.recv().await,
+                Some(PrivateOutbound::Reply(EnvelopeV2::Unavailable {
+                    reason: UnavailableReason::NotAuthorised,
+                    ..
+                }))
+            ));
+            assert!(
+                wr.lock()
+                    .await
+                    .store
+                    .load_pending(&b.device_public_key)
+                    .unwrap()
+                    .is_empty()
+            );
+            return;
+        }
         let action = DirectedAction {
             room,
             request_id: uuid::Uuid::from_u128(8),
@@ -8367,10 +8852,12 @@ mod private_transport_tests {
             state_outbound: None,
             connection_live: None,
             own_user_public_key: &user.public_key,
+            own_device_cert: &browser.cert,
             metrics: &metrics,
             trust_policy: &trust,
             disconnect: &bdis,
             v2: false,
+            agent_reads_v1: false,
             private_tx: &ptx,
             revocations: &revocations,
         };
@@ -8563,6 +9050,7 @@ mod retention_diagnostic_tests {
             BatchProjectionReason, BatchSelectionOutcome, IncomingDisposition, Publication,
         };
         let represented = BatchSelectionOutcome {
+            supplemental_recovery: None,
             publication: Publication::Suppress,
             dispositions: vec![IncomingDisposition::Covered; 2],
             reason: BatchProjectionReason::Represented,
@@ -8572,6 +9060,7 @@ mod retention_diagnostic_tests {
             CheckpointBatchMode::Represented
         );
         let all_original = BatchSelectionOutcome {
+            supplemental_recovery: None,
             publication: Publication::Original,
             dispositions: vec![IncomingDisposition::Original; 2],
             reason: BatchProjectionReason::FinalBasisOmission,
@@ -8582,21 +9071,25 @@ mod retention_diagnostic_tests {
         );
         for rejected in [
             BatchSelectionOutcome {
+                supplemental_recovery: None,
                 publication: Publication::Original,
                 dispositions: vec![IncomingDisposition::Original],
                 reason: BatchProjectionReason::FinalBasisOmission,
             },
             BatchSelectionOutcome {
+                supplemental_recovery: None,
                 publication: Publication::Original,
                 dispositions: vec![IncomingDisposition::Covered, IncomingDisposition::Original],
                 reason: BatchProjectionReason::FinalBasisOmission,
             },
             BatchSelectionOutcome {
+                supplemental_recovery: None,
                 publication: Publication::Activate(std::path::PathBuf::from("selected")),
                 dispositions: vec![IncomingDisposition::Original; 2],
                 reason: BatchProjectionReason::FinalBasisOmission,
             },
             BatchSelectionOutcome {
+                supplemental_recovery: None,
                 publication: Publication::Original,
                 dispositions: vec![IncomingDisposition::Original; 2],
                 reason: BatchProjectionReason::UnresolvedTailDependencies,

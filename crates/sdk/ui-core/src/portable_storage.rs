@@ -6,6 +6,40 @@ thread_local! { static DOCUMENT_DECODES: std::cell::Cell<usize> = const { std::c
 mod tests {
     use super::*;
     #[test]
+    fn pending_write_accounting_includes_spare_byte_and_private_head_capacity() {
+        use automerge::transaction::Transactable;
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::Record {
+            package: "app".into(),
+            workspace: "room".into(),
+            record: "record".into(),
+        };
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "value", 1).unwrap();
+        cache.put(key.clone(), doc.save(), Some(vec![1])).unwrap();
+        cache.document_heads(&key).unwrap().unwrap();
+        let mut write = cache.pending_writes().remove(0);
+        let initial = write.retained_bytes().unwrap();
+        let before = write.value.bytes.capacity();
+        write.value.bytes.reserve_exact(before + 4096);
+        let growth = write.value.bytes.capacity() - before;
+        assert_eq!(write.retained_bytes().unwrap() - initial, growth);
+        let charged = write.retained_bytes().unwrap();
+        let heads = write
+            .document_heads
+            .as_mut()
+            .unwrap()
+            .heads
+            .as_mut()
+            .unwrap();
+        let before = heads.capacity();
+        heads.reserve_exact(32);
+        let growth = (heads.capacity() - before) * std::mem::size_of::<automerge::ChangeHash>();
+        assert!(growth >= 32 * std::mem::size_of::<automerge::ChangeHash>());
+        assert_eq!(write.retained_bytes().unwrap() - charged, growth);
+    }
+
+    #[test]
     fn committed_document_heads_reuse_saved_metadata_only_after_exact_acknowledgement() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
@@ -240,6 +274,93 @@ mod tests {
         assert_eq!(status.committed.unwrap().1.bytes, vec![2]);
     }
     #[test]
+    fn pending_summaries_and_captured_heads_match_the_copying_forms() {
+        use automerge::transaction::Transactable;
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        assert!(!cache.has_pending_writes());
+        let key = StorageKey::Record {
+            package: "app".into(),
+            workspace: "room".into(),
+            record: "record".into(),
+        };
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "value", 1).unwrap();
+        cache.put_document(key.clone(), &mut doc, None).unwrap();
+        cache
+            .put(
+                StorageKey::Admission {
+                    workspace: "room".into(),
+                },
+                vec![1, 2, 3],
+                None,
+            )
+            .unwrap();
+        assert!(cache.has_pending_writes());
+        let writes = cache.pending_writes();
+        let mut sizes = cache.pending_write_sizes();
+        sizes.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
+        let mut expected: Vec<_> = writes
+            .iter()
+            .map(|w| (w.key.clone(), w.value.bytes.len()))
+            .collect();
+        expected.sort_by(|a, b| format!("{:?}", a.0).cmp(&format!("{:?}", b.0)));
+        assert_eq!(sizes, expected);
+        let record = writes.iter().find(|w| w.key == key).unwrap();
+        assert_eq!(record.document_heads(), Some(Ok(doc.get_heads())));
+        let mut altered = record.clone();
+        altered.value.bytes.push(0);
+        assert_eq!(
+            altered.document_heads(),
+            None,
+            "heads are bound to the exact bytes"
+        );
+        let plain = writes.iter().find(|w| w.key != key).unwrap();
+        assert_eq!(plain.document_heads(), None);
+        for write in &writes {
+            cache.acknowledge(write, Ok(())).unwrap();
+        }
+        assert!(!cache.has_pending_writes());
+        assert!(cache.pending_write_sizes().is_empty());
+    }
+    #[test]
+    fn status_meta_and_committed_borrow_match_the_copying_status() {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::Admission {
+            workspace: "room".into(),
+        };
+        assert_eq!(cache.status_meta(&key), None);
+        assert_eq!(cache.with_committed(&key, |_, _| ()), None);
+        cache.put(key.clone(), vec![1], None).unwrap();
+        let first = cache.pending_writes().remove(0);
+        assert_eq!(cache.with_committed(&key, |_, _| ()), None);
+        cache.put(key.clone(), vec![2], None).unwrap();
+        cache.acknowledge(&first, Ok(())).unwrap();
+        let second = cache.pending_writes().remove(0);
+        cache.acknowledge(&second, Err("quota".into())).unwrap();
+        let status = cache.status(&key).unwrap();
+        let meta = cache.status_meta(&key).unwrap();
+        assert_eq!(
+            (
+                meta.revision,
+                meta.durable,
+                meta.error.clone(),
+                meta.committed_revision
+            ),
+            (
+                status.revision,
+                status.durable,
+                status.error.clone(),
+                status.committed.as_ref().map(|c| c.0)
+            )
+        );
+        assert_eq!(
+            cache.with_committed(&key, |revision, value| (revision, value.bytes.clone())),
+            status
+                .committed
+                .map(|(revision, value)| (revision, value.bytes))
+        );
+    }
+    #[test]
     fn cache_flush_requires_matching_durable_ack_and_retains_failed_bytes() {
         let cache = PortableStorage::new("profile-a", "device-a").unwrap();
         let key = StorageKey::View {
@@ -351,12 +472,78 @@ pub struct PendingWrite {
     cache_id: uuid::Uuid,
     document_heads: Option<DocumentHeads>,
 }
+impl PendingWrite {
+    /// Heads recorded for exactly these bytes when the canonical owner queued
+    /// them (`put_document`), or `None` when unknown or when the bytes were
+    /// changed after capture. Saves decoding a whole document to learn them.
+    pub fn document_heads(&self) -> Option<Result<Vec<automerge::ChangeHash>, ()>> {
+        self.document_heads
+            .as_ref()
+            .filter(|metadata| metadata.fingerprint == blake3::hash(&self.value.bytes))
+            .map(|metadata| metadata.heads.clone())
+    }
+    /// Bytes owned by this immutable capture: inline `Self` plus all owned
+    /// buffer capacities, including private cached document heads. Excludes
+    /// allocator bookkeeping and the enclosing container's spare capacity.
+    /// `None` reports arithmetic overflow; callers must reject that capture.
+    pub fn retained_bytes(&self) -> Option<usize> {
+        let mut total = std::mem::size_of::<Self>().checked_add(self.value.bytes.capacity())?;
+        if let Some(actor) = &self.value.actor {
+            total = total.checked_add(actor.capacity())?;
+        }
+        match &self.namespace {
+            ProfileNamespace::Native(path) => total = total.checked_add(path.capacity())?,
+            ProfileNamespace::Portable { profile, device } => {
+                total = total
+                    .checked_add(profile.capacity())?
+                    .checked_add(device.capacity())?;
+            }
+        }
+        let (workspace, package, record) = match &self.key {
+            StorageKey::Admission { workspace }
+            | StorageKey::PrivateActions { workspace }
+            | StorageKey::View { workspace, .. } => (workspace, None, None),
+            StorageKey::Primary { workspace, package } => (workspace, Some(package), None),
+            StorageKey::Record {
+                workspace,
+                package,
+                record,
+            } => (workspace, Some(package), Some(record)),
+        };
+        total = total.checked_add(workspace.capacity())?;
+        if let Some(package) = package {
+            total = total.checked_add(package.capacity())?;
+        }
+        if let Some(record) = record {
+            total = total.checked_add(record.capacity())?;
+        }
+        if let Some(metadata) = &self.document_heads
+            && let Ok(heads) = &metadata.heads
+        {
+            total = total.checked_add(
+                heads
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<automerge::ChangeHash>())?,
+            )?;
+        }
+        Some(total)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct StorageStatus {
     pub revision: u64,
     pub durable: bool,
     pub error: Option<String>,
     pub committed: Option<(u64, CachedBytes)>,
+}
+/// [`StorageStatus`] without the committed bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageMeta {
+    pub revision: u64,
+    pub durable: bool,
+    pub error: Option<String>,
+    pub committed_revision: Option<u64>,
 }
 // Bind derived metadata to exact serialized bytes, including across queued
 // snapshots whose public PendingWrite fields callers may subsequently modify.
@@ -373,8 +560,31 @@ impl DocumentHeads {
         }
     }
 }
-struct Entry {
+struct CommittedValue {
+    #[cfg(unix)]
+    provenance: Option<crate::host_worker::private_actions::PrivateCommitStamp>,
+    revision: u64,
     value: CachedBytes,
+    // Backing is dropped before its retained resource credit.
+    _credit: Option<automerge::resource_limits::NativeReservation>,
+}
+enum CurrentValue {
+    Owned {
+        value: CachedBytes,
+        _credit: Option<automerge::resource_limits::NativeReservation>,
+    },
+    Committed,
+}
+impl CurrentValue {
+    fn ordinary(value: CachedBytes) -> Self {
+        Self::Owned {
+            value,
+            _credit: None,
+        }
+    }
+}
+struct Entry {
+    value: CurrentValue,
     // Derived only from this entry's immutable bytes; replacement invalidates it.
     document_heads: Option<DocumentHeads>,
     // Independently keyed by `committed`: newer queued bytes are not durable.
@@ -382,33 +592,85 @@ struct Entry {
     revision: u64,
     durable: bool,
     error: Option<String>,
-    committed: Option<(u64, CachedBytes)>,
+    committed: Option<CommittedValue>,
+}
+impl Entry {
+    fn current(&self) -> &CachedBytes {
+        match &self.value {
+            CurrentValue::Owned { value, .. } => value,
+            CurrentValue::Committed => {
+                &self
+                    .committed
+                    .as_ref()
+                    .expect("private committed alias")
+                    .value
+            }
+        }
+    }
+}
+#[cfg(unix)]
+#[derive(Default)]
+struct PrivateMetadataCredits {
+    credits: Vec<automerge::resource_limits::NativeReservation>,
+}
+#[cfg(unix)]
+impl Drop for PrivateMetadataCredits {
+    fn drop(&mut self) {
+        // Latest reservation covers the complete current tracking Vec allocation.
+        let last = self.credits.pop();
+        drop(std::mem::take(&mut self.credits));
+        drop(last);
+    }
 }
 #[derive(Default)]
 struct Cache {
     entries: BTreeMap<StorageKey, Entry>,
     revision: u64,
     owners: BTreeMap<(String, String), std::rc::Weak<RefCell<crate::record::RecordSet>>>,
+    // Tree/key backing drops before the reservations that paid its insertion.
+    #[cfg(unix)]
+    private_metadata: PrivateMetadataCredits,
+}
+// One original Rc holds immutable binding and mutable entries. Namespace
+// buffers are moved here once; creating the binding adds no duplicate strings.
+struct CacheBinding {
+    namespace: ProfileNamespace,
+    id: uuid::Uuid,
+    inner: RefCell<Cache>,
+}
+impl CacheBinding {
+    fn borrow(&self) -> std::cell::Ref<'_, Cache> {
+        self.inner.borrow()
+    }
+    fn borrow_mut(&self) -> std::cell::RefMut<'_, Cache> {
+        self.inner.borrow_mut()
+    }
+    fn try_borrow(&self) -> Result<std::cell::Ref<'_, Cache>, std::cell::BorrowError> {
+        self.inner.try_borrow()
+    }
+    fn try_borrow_mut(&self) -> Result<std::cell::RefMut<'_, Cache>, std::cell::BorrowMutError> {
+        self.inner.try_borrow_mut()
+    }
 }
 /// Clone one cache throughout a browser host. Hydrate before opening its owners;
 /// only acknowledge writes after the external storage transaction commits.
 #[derive(Clone)]
 pub struct PortableStorage {
-    namespace: ProfileNamespace,
-    id: uuid::Uuid,
-    cache: Rc<RefCell<Cache>>,
+    cache: Rc<CacheBinding>,
 }
 impl PortableStorage {
     pub fn new(profile: &str, device: &str) -> Result<Self, String> {
         validate(profile)?;
         validate(device)?;
         Ok(Self {
-            namespace: ProfileNamespace::Portable {
-                profile: profile.into(),
-                device: device.into(),
-            },
-            id: uuid::Uuid::new_v4(),
-            cache: Rc::default(),
+            cache: Rc::new(CacheBinding {
+                namespace: ProfileNamespace::Portable {
+                    profile: profile.into(),
+                    device: device.into(),
+                },
+                id: uuid::Uuid::new_v4(),
+                inner: RefCell::new(Cache::default()),
+            }),
         })
     }
     pub(crate) fn record_owner(
@@ -434,14 +696,14 @@ impl PortableStorage {
             .insert((package.into(), workspace.into()), Rc::downgrade(owner));
     }
     pub fn namespace(&self) -> &ProfileNamespace {
-        &self.namespace
+        &self.cache.namespace
     }
     pub fn get(&self, key: &StorageKey) -> Option<CachedBytes> {
         self.cache
             .borrow()
             .entries
             .get(key)
-            .map(|entry| entry.value.clone())
+            .map(|entry| entry.current().clone())
     }
     /// Decode the current cached document without asserting that it is durable.
     pub(crate) fn document_heads(
@@ -453,10 +715,10 @@ impl PortableStorage {
         if entry.document_heads.is_none() {
             #[cfg(test)]
             DOCUMENT_DECODES.with(|count| count.set(count.get() + 1));
-            let heads = automerge::AutoCommit::load(&entry.value.bytes)
+            let heads = automerge::AutoCommit::load(&entry.current().bytes)
                 .map(|mut doc| doc.get_heads())
                 .map_err(|_| ());
-            entry.document_heads = Some(DocumentHeads::new(&entry.value.bytes, heads));
+            entry.document_heads = Some(DocumentHeads::new(&entry.current().bytes, heads));
         }
         entry
             .document_heads
@@ -471,9 +733,9 @@ impl PortableStorage {
     ) -> Option<Result<Vec<automerge::ChangeHash>, ()>> {
         let mut cache = self.cache.borrow_mut();
         let entry = cache.entries.get_mut(key)?;
-        let (_, committed) = entry.committed.as_ref()?;
+        let committed = &entry.committed.as_ref()?.value;
         if entry.committed_document_heads.is_none() {
-            let same_bytes = committed.bytes == entry.value.bytes;
+            let same_bytes = committed.bytes == entry.current().bytes;
             if same_bytes {
                 entry.committed_document_heads = entry
                     .document_heads
@@ -493,7 +755,7 @@ impl PortableStorage {
                 entry.document_heads = entry
                     .committed_document_heads
                     .clone()
-                    .map(|heads| DocumentHeads::new(&entry.value.bytes, heads));
+                    .map(|heads| DocumentHeads::new(&entry.current().bytes, heads));
             }
         }
         entry.committed_document_heads.clone()
@@ -513,14 +775,17 @@ impl PortableStorage {
         cache.entries.insert(
             key,
             Entry {
-                committed: Some((
-                    0,
-                    CachedBytes {
+                committed: Some(CommittedValue {
+                    #[cfg(unix)]
+                    provenance: None,
+                    revision: 0,
+                    value: CachedBytes {
                         bytes: bytes.clone(),
                         actor: actor.clone(),
                     },
-                )),
-                value: CachedBytes { bytes, actor },
+                    _credit: None,
+                }),
+                value: CurrentValue::ordinary(CachedBytes { bytes, actor }),
                 document_heads: None,
                 committed_document_heads: None,
                 revision: 0,
@@ -539,10 +804,10 @@ impl PortableStorage {
         key.validate()?;
         let mut cache = self.cache.borrow_mut();
         if let Some(entry) = cache.entries.get(&key) {
-            if entry.value.actor != actor {
+            if entry.current().actor != actor {
                 return Err("persistent actor binding mismatch".into());
             }
-            if entry.value.bytes == bytes {
+            if entry.current().bytes == bytes {
                 return Ok(());
             }
         }
@@ -551,19 +816,19 @@ impl PortableStorage {
             .checked_add(1)
             .ok_or("storage revision exhausted")?;
         let revision = cache.revision;
-        let committed = cache
-            .entries
-            .get(&key)
-            .and_then(|entry| entry.committed.clone());
-        let committed_document_heads = cache
-            .entries
-            .get(&key)
-            .and_then(|entry| entry.committed_document_heads.clone());
+        // Move, never duplicate, a previous paid committed value and its guard.
+        let (committed, committed_document_heads) = match cache.entries.get_mut(&key) {
+            Some(entry) => (
+                entry.committed.take(),
+                entry.committed_document_heads.take(),
+            ),
+            None => (None, None),
+        };
         cache.entries.insert(
             key,
             Entry {
                 committed,
-                value: CachedBytes { bytes, actor },
+                value: CurrentValue::ordinary(CachedBytes { bytes, actor }),
                 document_heads: None,
                 committed_document_heads,
                 revision,
@@ -575,7 +840,7 @@ impl PortableStorage {
     }
     /// Serialize a canonical document and queue its bytes through the ordinary
     /// persistence path. Callers cannot supply detached or unverified heads.
-    pub(crate) fn put_document(
+    pub fn put_document(
         &self,
         key: StorageKey,
         doc: &mut automerge::AutoCommit,
@@ -594,9 +859,28 @@ impl PortableStorage {
             .get_mut(&key)
             .expect("successful put installs the document");
         if entry.document_heads.is_none() {
-            entry.document_heads = Some(DocumentHeads::new(&entry.value.bytes, Ok(heads)));
+            entry.document_heads = Some(DocumentHeads::new(&entry.current().bytes, Ok(heads)));
         }
         Ok(())
+    }
+    /// Whether any value awaits host acknowledgement, without copying the
+    /// queued values (`pending_writes` copies every queued document).
+    pub fn has_pending_writes(&self) -> bool {
+        self.cache
+            .borrow()
+            .entries
+            .values()
+            .any(|entry| !entry.durable)
+    }
+    /// Key and byte length of every queued value, without copying the bytes.
+    pub fn pending_write_sizes(&self) -> Vec<(StorageKey, usize)> {
+        self.cache
+            .borrow()
+            .entries
+            .iter()
+            .filter(|(_, entry)| !entry.durable)
+            .map(|(key, entry)| (key.clone(), entry.current().bytes.len()))
+            .collect()
     }
     pub fn pending_writes(&self) -> Vec<PendingWrite> {
         self.cache
@@ -605,11 +889,11 @@ impl PortableStorage {
             .iter()
             .filter(|(_, entry)| !entry.durable)
             .map(|(key, entry)| PendingWrite {
-                namespace: self.namespace.clone(),
+                namespace: self.cache.namespace.clone(),
                 key: key.clone(),
-                value: entry.value.clone(),
+                value: entry.current().clone(),
                 revision: entry.revision,
-                cache_id: self.id,
+                cache_id: self.cache.id,
                 document_heads: entry.document_heads.clone(),
             })
             .collect()
@@ -620,7 +904,7 @@ impl PortableStorage {
         write: &PendingWrite,
         result: Result<(), String>,
     ) -> Result<(), String> {
-        if write.namespace != self.namespace || write.cache_id != self.id {
+        if write.namespace != self.cache.namespace || write.cache_id != self.cache.id {
             return Err("foreign persistence acknowledgement".into());
         }
         let mut cache = self.cache.borrow_mut();
@@ -633,16 +917,22 @@ impl PortableStorage {
             && entry
                 .committed
                 .as_ref()
-                .is_none_or(|(revision, _)| *revision < write.revision)
+                .is_none_or(|committed| committed.revision < write.revision)
         {
-            if write.value.actor != entry.value.actor {
+            if write.value.actor != entry.current().actor {
                 return Err("acknowledgement actor differs from persistent custody".into());
             }
-            if write.revision == entry.revision && write.value.bytes != entry.value.bytes {
+            if write.revision == entry.revision && write.value.bytes != entry.current().bytes {
                 return Err("acknowledgement bytes differ from the queued write".into());
             }
-            entry.committed = Some((write.revision, write.value.clone()));
-            entry.committed_document_heads = if write.value.bytes == entry.value.bytes {
+            entry.committed = Some(CommittedValue {
+                #[cfg(unix)]
+                provenance: None,
+                revision: write.revision,
+                value: write.value.clone(),
+                _credit: None,
+            });
+            entry.committed_document_heads = if write.value.bytes == entry.current().bytes {
                 entry
                     .document_heads
                     .as_ref()
@@ -658,7 +948,8 @@ impl PortableStorage {
         if write.revision != entry.revision {
             return Ok(());
         }
-        if write.value.bytes != entry.value.bytes || write.value.actor != entry.value.actor {
+        if write.value.bytes != entry.current().bytes || write.value.actor != entry.current().actor
+        {
             return Err("acknowledgement bytes differ from the queued write".into());
         }
         match result {
@@ -673,6 +964,32 @@ impl PortableStorage {
         }
         Ok(())
     }
+    /// [`Self::status`] without copying the committed bytes: hot readers
+    /// (health reports, delivery checks) run several times per frame and the
+    /// admission journal grows with the session.
+    pub fn status_meta(&self, key: &StorageKey) -> Option<StorageMeta> {
+        self.cache
+            .borrow()
+            .entries
+            .get(key)
+            .map(|entry| StorageMeta {
+                revision: entry.revision,
+                durable: entry.durable,
+                error: entry.error.clone(),
+                committed_revision: entry.committed.as_ref().map(|v| v.revision),
+            })
+    }
+    /// Borrow the committed value (revision and bytes) without copying it.
+    /// The closure must not re-enter this storage.
+    pub fn with_committed<R>(
+        &self,
+        key: &StorageKey,
+        read: impl FnOnce(u64, &CachedBytes) -> R,
+    ) -> Option<R> {
+        let cache = self.cache.borrow();
+        let committed = cache.entries.get(key)?.committed.as_ref()?;
+        Some(read(committed.revision, &committed.value))
+    }
     pub fn status(&self, key: &StorageKey) -> Option<StorageStatus> {
         self.cache
             .borrow()
@@ -682,7 +999,10 @@ impl PortableStorage {
                 revision: entry.revision,
                 durable: entry.durable,
                 error: entry.error.clone(),
-                committed: entry.committed.clone(),
+                committed: entry
+                    .committed
+                    .as_ref()
+                    .map(|v| (v.revision, v.value.clone())),
             })
     }
     pub fn flush(&self, key: &StorageKey) -> Result<(), String> {
@@ -696,5 +1016,577 @@ impl PortableStorage {
                 .clone()
                 .unwrap_or_else(|| "persistence pending host acknowledgement".into()))
         }
+    }
+}
+
+/// Paid immutable capture of exactly one pending private sender value.
+#[cfg(unix)]
+pub struct PrivateActionsCapture {
+    cache: Rc<CacheBinding>,
+    cache_id: uuid::Uuid,
+    namespace: ProfileNamespace,
+    key: StorageKey,
+    revision: u64,
+    value: CachedBytes,
+    credit: Option<automerge::resource_limits::NativeReservation>,
+}
+#[cfg(unix)]
+impl PrivateActionsCapture {
+    fn entry<'a>(
+        cache: &'a Cache,
+        workspace: &str,
+    ) -> Result<
+        Option<(&'a StorageKey, &'a Entry)>,
+        crate::host_worker::private_actions::SenderStorageCode,
+    > {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        if workspace.trim().is_empty() || workspace.chars().any(char::is_control) {
+            return Err(Code::InvalidScope);
+        }
+        let found = cache
+            .entries
+            .iter()
+            .find(|(key, _)| matches!(key,StorageKey::PrivateActions{workspace:w} if w==workspace));
+        let Some((key, entry)) = found else {
+            return Ok(None);
+        };
+        if entry.current().actor.is_some() {
+            return Err(Code::InvalidScope);
+        }
+        if entry.durable {
+            return Ok(None);
+        }
+        if entry.current().bytes.len() > 4 * 1024 * 1024 {
+            return Err(Code::Capacity);
+        }
+        Ok(Some((key, entry)))
+    }
+    fn cost(namespace: &ProfileNamespace, workspace: &str, entry: &Entry) -> Option<usize> {
+        let count = entry.current().bytes.len().checked_add(workspace.len())?;
+        match namespace {
+            ProfileNamespace::Native(path) => count.checked_add(path.as_os_str().len()),
+            ProfileNamespace::Portable { profile, device } => {
+                count.checked_add(profile.len())?.checked_add(device.len())
+            }
+        }
+    }
+    pub fn required_bytes(
+        cache: &PortableStorage,
+        workspace: &str,
+    ) -> Result<Option<usize>, crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        let inner = cache.cache.try_borrow().map_err(|_| Code::Busy)?;
+        Self::entry(&inner, workspace)?
+            .map(|(_, entry)| {
+                Self::cost(&cache.cache.namespace, workspace, entry).ok_or(Code::Capacity)
+            })
+            .transpose()
+    }
+    pub fn capture(
+        cache: &PortableStorage,
+        workspace: &str,
+        credit: automerge::resource_limits::NativeReservation,
+    ) -> Result<Option<Self>, crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::{
+            SenderStorageCode as Code, copy_bytes, copy_string,
+        };
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let inner = cache.cache.try_borrow().map_err(|_| Code::Busy)?;
+        let Some((_, entry)) = Self::entry(&inner, workspace)? else {
+            return Ok(None);
+        };
+        if credit.bytes()
+            < Self::cost(&cache.cache.namespace, workspace, entry).ok_or(Code::Capacity)?
+        {
+            return Err(Code::Capacity);
+        }
+        let namespace = match &cache.cache.namespace {
+            ProfileNamespace::Native(path) => ProfileNamespace::Native(
+                std::ffi::OsString::from_vec(copy_bytes(path.as_os_str().as_bytes())?).into(),
+            ),
+            ProfileNamespace::Portable { profile, device } => ProfileNamespace::Portable {
+                profile: copy_string(profile)?,
+                device: copy_string(device)?,
+            },
+        };
+        let key = StorageKey::PrivateActions {
+            workspace: copy_string(workspace)?,
+        };
+        let value = CachedBytes {
+            bytes: copy_bytes(&entry.current().bytes)?,
+            actor: None,
+        };
+        Ok(Some(Self {
+            cache: Rc::clone(&cache.cache),
+            cache_id: cache.cache.id,
+            namespace,
+            key,
+            revision: entry.revision,
+            value,
+            credit: Some(credit),
+        }))
+    }
+    pub(crate) fn required_for_revision(
+        cache: &PortableStorage,
+        workspace: &str,
+        expected: u64,
+    ) -> Result<usize, crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        let inner = cache.cache.try_borrow().map_err(|_| Code::Busy)?;
+        let (_, entry) = Self::entry(&inner, workspace)?.ok_or(Code::StaleCapture)?;
+        if entry.revision != expected {
+            return Err(Code::StaleCapture);
+        }
+        Self::cost(&cache.cache.namespace, workspace, entry).ok_or(Code::Capacity)
+    }
+    pub(crate) fn capture_for_revision(
+        cache: &PortableStorage,
+        workspace: &str,
+        expected: u64,
+        credit: automerge::resource_limits::NativeReservation,
+    ) -> Result<Self, crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        // Keep this selected-entry borrow through the existing capture/copy engine.
+        let inner = cache.cache.try_borrow().map_err(|_| Code::Busy)?;
+        let (_, entry) = Self::entry(&inner, workspace)?.ok_or(Code::StaleCapture)?;
+        if entry.revision != expected {
+            return Err(Code::StaleCapture);
+        }
+        Self::capture(cache, workspace, credit)?.ok_or(Code::StaleCapture)
+    }
+    fn matches(&self, cache: &Cache) -> bool {
+        // The original cache Rc and immutable namespace/cache UUID are retained,
+        // never reconstructed from caller-supplied PendingWrite fields.
+        self.cache.id == self.cache_id
+            && self.cache.namespace == self.namespace
+            && cache.entries.get(&self.key).is_some_and(|entry| {
+                !entry.durable
+                    && entry.revision == self.revision
+                    && entry.current().bytes == self.value.bytes
+                    && entry.current().actor.is_none()
+                    && self.value.actor.is_none()
+            })
+    }
+    pub(crate) fn check_current(
+        &self,
+    ) -> Result<(), crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        let cache = self.cache.try_borrow().map_err(|_| Code::Busy)?;
+        if self.matches(&cache) {
+            Ok(())
+        } else {
+            Err(Code::StaleCapture)
+        }
+    }
+    pub fn is_current(&self) -> bool {
+        self.cache
+            .try_borrow()
+            .is_ok_and(|cache| self.matches(&cache))
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.value.bytes
+    }
+    pub(super) fn finish(
+        &mut self,
+    ) -> Result<u64, crate::host_worker::private_actions::SenderStorageCode> {
+        self.finish_physical(None)
+    }
+    pub(crate) fn bound_to(&self, cache: &PortableStorage, workspace: &str) -> bool {
+        Rc::ptr_eq(&self.cache, &cache.cache)
+            && matches!(&self.key, StorageKey::PrivateActions { workspace: w } if w == workspace)
+    }
+    pub(crate) fn finish_physical(
+        &mut self,
+        stamp: Option<crate::host_worker::private_actions::PrivateCommitStamp>,
+    ) -> Result<u64, crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        let mut cache = self.cache.try_borrow_mut().map_err(|_| Code::Busy)?;
+        if !self.matches(&cache) {
+            return Err(Code::StaleCapture);
+        }
+        let entry = cache.entries.get_mut(&self.key).ok_or(Code::StaleCapture)?;
+        let value = CachedBytes {
+            bytes: std::mem::take(&mut self.value.bytes),
+            actor: None,
+        };
+        // Free capture metadata before transferring its conservative credit.
+        self.namespace = ProfileNamespace::Native(std::path::PathBuf::new());
+        if let StorageKey::PrivateActions { workspace } = &mut self.key {
+            *workspace = String::new();
+        }
+        entry.committed = Some(CommittedValue {
+            #[cfg(unix)]
+            provenance: stamp,
+            revision: self.revision,
+            value,
+            _credit: self.credit.take(),
+        });
+        // Owned current bytes drop before their own optional guard.
+        entry.value = CurrentValue::Committed;
+        entry.durable = true;
+        entry.error = None;
+        entry.committed_document_heads = None;
+        Ok(self.revision)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_capture_tests {
+    use super::*;
+    use crate::host_worker::private_actions::SenderStorageCode as Code;
+    #[test]
+    fn private_actions_storage_capture_rejects_foreign_binding_and_borrow_contention() {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::PrivateActions {
+            workspace: "room".into(),
+        };
+        cache.put(key, b"original".to_vec(), None).unwrap();
+        let budget = automerge::resource_limits::NativeAllowance::new(4096).unwrap();
+        let mut capture =
+            PrivateActionsCapture::capture(&cache, "room", budget.reserve(128).unwrap())
+                .unwrap()
+                .unwrap();
+        // Inert unit fault injection into closed resource fields; no authority.
+        let original = capture.cache_id;
+        capture.cache_id = uuid::Uuid::new_v4();
+        assert!(!capture.is_current());
+        assert_eq!(capture.finish(), Err(Code::StaleCapture));
+        capture.cache_id = original;
+        capture.namespace = ProfileNamespace::Portable {
+            profile: "other".into(),
+            device: "device".into(),
+        };
+        assert!(!capture.is_current());
+        drop(capture);
+        let mut capture =
+            PrivateActionsCapture::capture(&cache, "room", budget.reserve(128).unwrap())
+                .unwrap()
+                .unwrap();
+        let held = cache.cache.borrow_mut();
+        assert!(!capture.is_current());
+        assert_eq!(capture.finish(), Err(Code::Busy));
+        assert_eq!(
+            PrivateActionsCapture::required_bytes(&cache, "room"),
+            Err(Code::Busy)
+        );
+        drop(held);
+        assert!(capture.is_current());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_capture_transfer_tests {
+    use super::*;
+    #[test]
+    fn private_actions_storage_finish_transfers_backing_without_allocation() {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::PrivateActions {
+            workspace: "room".into(),
+        };
+        cache.put(key.clone(), vec![7; 4096], None).unwrap();
+        let budget = automerge::resource_limits::NativeAllowance::new(16384).unwrap();
+        let initial = budget.retained_bytes();
+        let n = PrivateActionsCapture::required_bytes(&cache, "room")
+            .unwrap()
+            .unwrap();
+        let mut saved = PrivateActionsCapture::capture(&cache, "room", budget.reserve(n).unwrap())
+            .unwrap()
+            .unwrap();
+        let original = saved.bytes().as_ptr();
+        let (result, stats) =
+            crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
+                saved.finish()
+            });
+        assert!(result.is_ok());
+        assert_eq!(stats.allocations, 0);
+        drop(saved);
+        assert_eq!(
+            cache.cache.borrow().entries[&key]
+                .committed
+                .as_ref()
+                .unwrap()
+                .value
+                .bytes
+                .as_ptr(),
+            original
+        );
+        cache.put(key.clone(), vec![9; 2048], None).unwrap();
+        assert_eq!(
+            cache.cache.borrow().entries[&key]
+                .committed
+                .as_ref()
+                .unwrap()
+                .value
+                .bytes
+                .as_ptr(),
+            original
+        );
+        assert_eq!(budget.retained_bytes(), initial + n);
+        drop(cache);
+        assert_eq!(budget.retained_bytes(), initial);
+    }
+}
+
+#[cfg(unix)]
+pub(crate) struct PrivateCurrentBorrow<'a> {
+    committed: std::cell::Ref<'a, CommittedValue>,
+}
+#[cfg(unix)]
+impl PrivateCurrentBorrow<'_> {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.committed.value.bytes
+    }
+}
+#[cfg(unix)]
+impl PortableStorage {
+    fn private_entry<'a>(cache: &'a Cache, workspace: &str) -> Option<&'a Entry> {
+        cache.entries.iter().find_map(|(key, entry)| {
+            matches!(key, StorageKey::PrivateActions {workspace:w} if w==workspace).then_some(entry)
+        })
+    }
+    fn private_matches(
+        entry: &Entry,
+        revision: u64,
+        stamp: &crate::host_worker::private_actions::PrivateCommitStamp,
+    ) -> bool {
+        entry.revision == revision
+            && entry.durable
+            && entry.error.is_none()
+            && entry.current().actor.is_none()
+            && entry.committed.as_ref().is_some_and(|c| {
+                c.revision == revision
+                    && c.provenance.as_ref() == Some(stamp)
+                    && c.value.actor.is_none()
+                    && entry.current().bytes == c.value.bytes
+            })
+    }
+    pub(crate) fn private_current(
+        &self,
+        workspace: &str,
+        revision: u64,
+        stamp: &crate::host_worker::private_actions::PrivateCommitStamp,
+    ) -> Result<PrivateCurrentBorrow<'_>, crate::host_worker::private_actions::SenderStorageCode>
+    {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        let cache = self.cache.try_borrow().map_err(|_| Code::Busy)?;
+        let entry = Self::private_entry(&cache, workspace).ok_or(Code::StaleCapture)?;
+        if !Self::private_matches(entry, revision, stamp) {
+            return Err(Code::StaleCapture);
+        }
+        let committed = std::cell::Ref::map(cache, |cache| {
+            Self::private_entry(cache, workspace)
+                .expect("checked entry")
+                .committed
+                .as_ref()
+                .expect("checked committed")
+        });
+        Ok(PrivateCurrentBorrow { committed })
+    }
+    fn private_metadata_cost(cache: &Cache, workspace: &str) -> Option<usize> {
+        use std::mem::{align_of, size_of};
+        let align = align_of::<StorageKey>()
+            .max(align_of::<Entry>())
+            .max(align_of::<usize>());
+        let mut node = 0usize;
+        for bytes in [
+            size_of::<usize>(),
+            size_of::<u16>(),
+            size_of::<u16>(),
+            11usize.checked_mul(size_of::<StorageKey>())?,
+            11usize.checked_mul(size_of::<Entry>())?,
+            12usize.checked_mul(size_of::<usize>())?,
+        ] {
+            node = node.checked_add(bytes.checked_add(align - 1)? & !(align - 1))?;
+        }
+        let count = cache.entries.len().checked_add(1)?;
+        let levels = (usize::BITS - count.leading_zeros()) as usize + 2;
+        workspace
+            .len()
+            .checked_add(node.checked_mul(levels)?)?
+            .checked_add(
+                cache
+                    .private_metadata
+                    .credits
+                    .len()
+                    .checked_add(1)?
+                    .checked_mul(size_of::<automerge::resource_limits::NativeReservation>())?,
+            )
+    }
+    pub(crate) fn private_hydrate_required(
+        &self,
+        workspace: &str,
+    ) -> Result<usize, crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        let cache = self.cache.try_borrow().map_err(|_| Code::Busy)?;
+        if Self::private_entry(&cache, workspace).is_some() {
+            return Err(Code::StaleCapture);
+        }
+        Self::private_metadata_cost(&cache, workspace).ok_or(Code::Capacity)
+    }
+    pub(crate) fn private_hydrate(
+        &self,
+        workspace: &str,
+        bytes: &mut Vec<u8>,
+        payload: std::ops::Range<usize>,
+        data_credit: &mut Option<automerge::resource_limits::NativeReservation>,
+        stamp: crate::host_worker::private_actions::PrivateCommitStamp,
+        credit: &mut Option<automerge::resource_limits::NativeReservation>,
+    ) -> Result<(), crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::{SenderStorageCode as Code, copy_string};
+        let mut cache = self.cache.try_borrow_mut().map_err(|_| Code::Busy)?;
+        if Self::private_entry(&cache, workspace).is_some() {
+            return Err(Code::StaleCapture);
+        }
+        let needed = Self::private_metadata_cost(&cache, workspace).ok_or(Code::Capacity)?;
+        if credit.as_ref().is_none_or(|v| v.bytes() < needed)
+            || data_credit
+                .as_ref()
+                .is_none_or(|v| v.bytes() < bytes.capacity())
+            || payload.start > payload.end
+            || payload.end > bytes.len()
+        {
+            return Err(Code::Capacity);
+        }
+        let key = StorageKey::PrivateActions {
+            workspace: copy_string(workspace)?,
+        };
+        let mut tracking = Vec::new();
+        tracking
+            .try_reserve_exact(
+                cache
+                    .private_metadata
+                    .credits
+                    .len()
+                    .checked_add(1)
+                    .ok_or(Code::Capacity)?,
+            )
+            .map_err(|_| Code::Capacity)?;
+        // No fallible semantic operation after this point. Move the original paid backing.
+        let length = payload.len();
+        bytes.copy_within(payload, 0);
+        bytes.truncate(length);
+        let committed = CommittedValue {
+            revision: 0,
+            value: CachedBytes {
+                bytes: std::mem::take(bytes),
+                actor: None,
+            },
+            provenance: Some(stamp),
+            _credit: data_credit.take(),
+        };
+        cache.entries.insert(
+            key,
+            Entry {
+                value: CurrentValue::Committed,
+                document_heads: None,
+                committed_document_heads: None,
+                revision: 0,
+                durable: true,
+                error: None,
+                committed: Some(committed),
+            },
+        );
+        let mut old = std::mem::take(&mut cache.private_metadata.credits);
+        tracking.extend(old.drain(..));
+        drop(old); // Previous tracking allocation freed while its guards remain in tracking.
+        tracking.push(credit.take().expect("checked metadata guard"));
+        cache.private_metadata.credits = tracking;
+        Ok(())
+    }
+    pub(crate) fn private_queue(
+        &self,
+        workspace: &str,
+        revision: u64,
+        stamp: &crate::host_worker::private_actions::PrivateCommitStamp,
+        payload: &mut Vec<u8>,
+        credit: &mut Option<automerge::resource_limits::NativeReservation>,
+    ) -> Result<Option<u64>, crate::host_worker::private_actions::SenderStorageCode> {
+        use crate::host_worker::private_actions::SenderStorageCode as Code;
+        let mut cache = self.cache.try_borrow_mut().map_err(|_| Code::Busy)?;
+        let entry = Self::private_entry(&cache, workspace).ok_or(Code::StaleCapture)?;
+        if !Self::private_matches(entry, revision, stamp) {
+            return Err(Code::StaleCapture);
+        }
+        if payload.len() > 4 * 1024 * 1024
+            || credit
+                .as_ref()
+                .is_none_or(|v| v.bytes() < payload.capacity())
+        {
+            return Err(Code::Capacity);
+        }
+        if entry.current().bytes == *payload {
+            return Ok(None);
+        }
+        let next = cache.revision.checked_add(1).ok_or(Code::Capacity)?;
+        let entry = cache
+            .entries
+            .iter_mut()
+            .find_map(|(key, entry)| {
+                matches!(key,StorageKey::PrivateActions{workspace:w} if w==workspace)
+                    .then_some(entry)
+            })
+            .expect("checked entry");
+        entry.value = CurrentValue::Owned {
+            value: CachedBytes {
+                bytes: std::mem::take(payload),
+                actor: None,
+            },
+            _credit: credit.take(),
+        };
+        entry.revision = next;
+        entry.durable = false;
+        entry.error = None;
+        entry.document_heads = None;
+        cache.revision = next;
+        Ok(Some(next))
+    }
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod private_physical_current_tests {
+    use super::*;
+    use crate::host_worker::private_actions::{SenderStorageCode, committed_test_fixture};
+    #[test]
+    fn private_actions_storage_consuming_borrow_conflict_and_generic_replacement_deny() {
+        let budget = automerge::resource_limits::NativeAllowance::new(32 * 1024 * 1024).unwrap();
+        let (_root, state, cache) = committed_test_fixture(b"original", &budget);
+        let borrowed = cache.cache.borrow_mut();
+        assert!(matches!(
+            state.borrow_current(),
+            Err(SenderStorageCode::Busy)
+        ));
+        drop(borrowed);
+        let key = StorageKey::PrivateActions {
+            workspace: state.workspace().into(),
+        };
+        cache
+            .put(key.clone(), b"replacement".to_vec(), None)
+            .unwrap();
+        let write = cache
+            .pending_writes()
+            .into_iter()
+            .find(|v| v.key == key)
+            .unwrap();
+        cache.acknowledge(&write, Ok(())).unwrap();
+        assert!(cache.flush(&key).is_ok());
+        assert!(matches!(
+            state.borrow_current(),
+            Err(SenderStorageCode::StaleCapture)
+        ));
+        let cache_borrow = cache.cache.borrow();
+        assert!(
+            cache_borrow
+                .entries
+                .get(&key)
+                .unwrap()
+                .committed
+                .as_ref()
+                .unwrap()
+                .provenance
+                .is_none()
+        );
     }
 }

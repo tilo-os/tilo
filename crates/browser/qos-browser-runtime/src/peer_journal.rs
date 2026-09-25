@@ -1,4 +1,5 @@
 //! Browser journal framing: preserve the exact old postcard body on migration.
+use crate::peer_delivery_cursor::{CursorIdentity, StoredDeliveryCursor};
 #[cfg(test)]
 use automerge::transaction::Transactable;
 use qos_peer_state::{DocumentRow, NeighbourMsg, StatePeer};
@@ -9,16 +10,138 @@ struct LegacyJournal {
     state: Vec<u8>,
     outbox: Vec<NeighbourMsg>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+// Frozen v2 wire layout. Never append optional fields to this postcard struct.
+#[derive(Serialize, Deserialize)]
+struct JournalV2<S, O, R, C> {
+    state: S,
+    outbox: O,
+    records: R,
+    receipts: C,
+}
+type OwnedV2 = JournalV2<
+    Vec<u8>,
+    Vec<NeighbourMsg>,
+    Vec<DocumentRow>,
+    std::collections::BTreeMap<String, String>,
+>;
+#[derive(Serialize, Deserialize)]
+struct JournalV3<B, D> {
+    base: B,
+    delivery: D,
+}
+// Explicit wrapper: V2 and V3 remain byte-for-byte frozen.
+#[derive(Serialize, Deserialize)]
+struct JournalV4<B, F> {
+    base: B,
+    descriptor: F,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DescriptorFloorV1 {
+    pub version: u8,
+    pub identity: CursorIdentity,
+    pub generation: u64,
+    pub descriptor_digest: [u8; 32],
+}
+/// Constructible only from exact PortableStorage committed Admission bytes.
+/// Staged journal metadata and JavaScript acknowledgements cannot create this value.
+pub(crate) struct AcknowledgedDescriptorFloor(DescriptorFloorV1);
+impl AcknowledgedDescriptorFloor {
+    pub fn read(
+        cache: &ui::portable_storage::PortableStorage,
+        identity: &CursorIdentity,
+    ) -> Result<Self, String> {
+        let floor = committed_storage(cache, &identity.room)
+            .ok_or("descriptor floor not acknowledged")??
+            .descriptor
+            .ok_or("descriptor floor not acknowledged")?;
+        floor.validate()?;
+        if &floor.identity != identity {
+            return Err("committed descriptor scope mismatch".into());
+        }
+        Ok(Self(floor))
+    }
+    pub fn floor(&self) -> &DescriptorFloorV1 {
+        &self.0
+    }
+}
+impl DescriptorFloorV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.version != 1
+            || self.generation == 0
+            || self.descriptor_digest == [0; 32]
+            || self.identity.workspace == 0
+            || self.identity.room.trim().is_empty()
+            || self.identity.room.len() > 256
+            || self.identity.room.chars().any(char::is_control)
+            || [
+                self.identity.workspace_root,
+                self.identity.device,
+                self.identity.device_root,
+                self.identity.host,
+                self.identity.host_root,
+            ]
+            .contains(&[0; 32])
+        {
+            return Err("invalid descriptor floor".into());
+        }
+        Ok(())
+    }
+    pub fn expectation(&self) -> tilo_relay::delivery_v3::descriptor::GenerationExpectation {
+        tilo_relay::delivery_v3::descriptor::GenerationExpectation::Current {
+            generation: self.generation,
+            descriptor_digest: self.descriptor_digest,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum JournalFormat {
+    #[default]
+    V2,
+    V3,
+    V4,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct JournalStorage {
+    pub format: JournalFormat,
+    pub delivery: Option<StoredDeliveryCursor>,
+    pub descriptor: Option<DescriptorFloorV1>,
+}
+impl JournalStorage {
+    pub fn advance_descriptor(&mut self, floor: DescriptorFloorV1) -> Result<(), String> {
+        floor.validate()?;
+        if self
+            .delivery
+            .as_ref()
+            .is_some_and(|c| c.identity != floor.identity)
+        {
+            return Err("descriptor floor cursor identity mismatch".into());
+        }
+        if let Some(old) = &self.descriptor {
+            if old.identity != floor.identity
+                || floor.generation < old.generation
+                || (floor.generation == old.generation
+                    && floor.descriptor_digest != old.descriptor_digest)
+            {
+                return Err("descriptor floor rollback or scope mismatch".into());
+            }
+        }
+        self.format = JournalFormat::V4;
+        self.descriptor = Some(floor);
+        Ok(())
+    }
+}
+#[derive(Debug)]
 pub(crate) struct Journal {
     pub state: Vec<u8>,
     pub outbox: Vec<NeighbourMsg>,
     pub records: Vec<DocumentRow>,
     pub receipts: std::collections::BTreeMap<String, String>,
+    pub storage: JournalStorage,
 }
 impl Journal {
     pub fn from_state(state: &StatePeer, outbox: Vec<NeighbourMsg>) -> Result<Self, String> {
         Ok(Self {
+            storage: JournalStorage::default(),
             state: state.durable()?,
             outbox,
             records: state.rows(),
@@ -75,35 +198,201 @@ impl Journal {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.starts_with(MAGIC) {
-            if bytes.get(MAGIC.len()) != Some(&2) {
-                return Err("unsupported browser journal version".into());
+        let (base, storage) = if bytes.starts_with(MAGIC) {
+            let body = bytes
+                .get(MAGIC.len() + 1..)
+                .ok_or("missing browser journal version")?;
+            match bytes.get(MAGIC.len()) {
+                Some(2) => (decode_exact::<OwnedV2>(body)?, JournalStorage::default()),
+                Some(3) => {
+                    let decoded: JournalV3<OwnedV2, Option<StoredDeliveryCursor>> =
+                        decode_exact(body)?;
+                    (
+                        decoded.base,
+                        JournalStorage {
+                            format: JournalFormat::V3,
+                            delivery: decoded.delivery,
+                            descriptor: None,
+                        },
+                    )
+                }
+                Some(4) => {
+                    let decoded: JournalV4<
+                        JournalV3<OwnedV2, Option<StoredDeliveryCursor>>,
+                        DescriptorFloorV1,
+                    > = decode_exact(body)?;
+                    decoded.descriptor.validate()?;
+                    if decoded
+                        .base
+                        .delivery
+                        .as_ref()
+                        .is_some_and(|cursor| cursor.identity != decoded.descriptor.identity)
+                    {
+                        return Err("descriptor floor cursor identity mismatch".into());
+                    }
+                    (
+                        decoded.base.base,
+                        JournalStorage {
+                            format: JournalFormat::V4,
+                            delivery: decoded.base.delivery,
+                            descriptor: Some(decoded.descriptor),
+                        },
+                    )
+                }
+                _ => return Err("unsupported browser journal version".into()),
             }
-            let (journal, tail) = postcard::take_from_bytes::<Self>(&bytes[MAGIC.len() + 1..])
-                .map_err(|e| e.to_string())?;
-            if !tail.is_empty() {
-                return Err("trailing browser journal bytes".into());
-            }
-            return Ok(journal);
-        }
-        let (old, tail) =
-            postcard::take_from_bytes::<LegacyJournal>(bytes).map_err(|e| e.to_string())?;
-        if !tail.is_empty() {
-            return Err("trailing legacy browser journal bytes".into());
-        }
+        } else {
+            let old: LegacyJournal = decode_exact(bytes)?;
+            (
+                JournalV2 {
+                    state: old.state,
+                    outbox: old.outbox,
+                    records: vec![],
+                    receipts: Default::default(),
+                },
+                JournalStorage::default(),
+            )
+        };
         Ok(Self {
-            state: old.state,
-            outbox: old.outbox,
-            records: vec![],
-            receipts: Default::default(),
+            state: base.state,
+            outbox: base.outbox,
+            records: base.records,
+            receipts: base.receipts,
+            storage,
         })
     }
     pub fn encode(&self) -> Result<Vec<u8>, String> {
+        self.encode_for(self.storage.format)
+    }
+    pub fn encode_for(&self, format: JournalFormat) -> Result<Vec<u8>, String> {
+        if let Some(cursor) = &self.storage.delivery {
+            cursor.validate_storage_shape()?;
+        }
+        if self.storage.format == JournalFormat::V4 && format != JournalFormat::V4
+            || self.storage.descriptor.is_some() && format != JournalFormat::V4
+        {
+            return Err("browser journal migration cannot discard descriptor floor".into());
+        }
+        let base = JournalV2 {
+            state: &self.state,
+            outbox: &self.outbox,
+            records: &self.records,
+            receipts: &self.receipts,
+        };
         let mut bytes = MAGIC.to_vec();
-        bytes.push(2);
-        bytes.extend(postcard::to_allocvec(self).map_err(|e| e.to_string())?);
+        match format {
+            JournalFormat::V2 => {
+                if self.storage.format == JournalFormat::V3 || self.storage.delivery.is_some() {
+                    return Err("browser journal migration cannot discard delivery metadata".into());
+                }
+                bytes.push(2);
+                bytes.extend(postcard::to_allocvec(&base).map_err(|e| e.to_string())?);
+            }
+            JournalFormat::V4 => {
+                let floor = self
+                    .storage
+                    .descriptor
+                    .as_ref()
+                    .ok_or("missing descriptor floor")?;
+                floor.validate()?;
+                if self
+                    .storage
+                    .delivery
+                    .as_ref()
+                    .is_some_and(|c| c.identity != floor.identity)
+                {
+                    return Err("descriptor floor cursor identity mismatch".into());
+                }
+                bytes.push(4);
+                bytes.extend(
+                    postcard::to_allocvec(&JournalV4 {
+                        base: JournalV3 {
+                            base,
+                            delivery: &self.storage.delivery,
+                        },
+                        descriptor: floor,
+                    })
+                    .map_err(|e| e.to_string())?,
+                );
+            }
+            JournalFormat::V3 => {
+                bytes.push(3);
+                bytes.extend(
+                    postcard::to_allocvec(&JournalV3 {
+                        base,
+                        delivery: &self.storage.delivery,
+                    })
+                    .map_err(|e| e.to_string())?,
+                );
+            }
+        }
         Ok(bytes)
     }
+}
+/// Validate canonical bytes without allocating another complete encoded journal.
+fn decode_exact<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T, String> {
+    let (value, trailing) = postcard::take_from_bytes::<T>(bytes).map_err(|e| e.to_string())?;
+    if !trailing.is_empty() {
+        return Err("trailing browser journal bytes".into());
+    }
+    postcard::serialize_with_flavor(&value, ExactBytes(bytes))
+        .map_err(|_| "noncanonical browser journal bytes".to_string())?;
+    Ok(value)
+}
+struct ExactBytes<'a>(&'a [u8]);
+impl postcard::ser_flavors::Flavor for ExactBytes<'_> {
+    type Output = ();
+    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+        self.try_extend(&[byte])
+    }
+    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
+        if !self.0.starts_with(bytes) {
+            return Err(postcard::Error::SerializeBufferFull);
+        }
+        self.0 = &self.0[bytes.len()..];
+        Ok(())
+    }
+    fn finalize(self) -> postcard::Result<()> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(postcard::Error::SerializeBufferFull)
+        }
+    }
+}
+/// Storage metadata of the committed Admission journal (delivery cursor and
+/// descriptor floor), decoded at most once per exact committed bytes. Every
+/// delivery step reads it (often several times), and a full journal decode
+/// copies the whole growing state and outbox. Keyed by the exact bytes, like
+/// `HealthProjection`: revisions can restart when storage is rehydrated. The
+/// bytes are borrowed from the cache, never copied, on a hit.
+pub(crate) fn committed_storage(
+    cache: &ui::portable_storage::PortableStorage,
+    room: &str,
+) -> Option<Result<JournalStorage, String>> {
+    thread_local! {
+        static COMMITTED: std::cell::RefCell<Option<(Vec<u8>, Result<JournalStorage, String>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let key = ui::portable_storage::StorageKey::Admission {
+        workspace: room.to_owned(),
+    };
+    cache.with_committed(&key, |_, value| {
+        COMMITTED.with_borrow_mut(|memo| {
+            if let Some((bytes, decoded)) = memo.as_ref()
+                && bytes.as_slice() == value.bytes.as_slice()
+            {
+                return decoded.clone();
+            }
+            let decoded = Journal::decode(&value.bytes).map(|journal| journal.storage);
+            if value.bytes.len() <= HEALTH_CACHE_BYTES {
+                *memo = Some((value.bytes.clone(), decoded.clone()));
+            } else {
+                *memo = None;
+            }
+            decoded
+        })
+    })
 }
 /// Cache decoding only, never admission or time-dependent permission decisions.
 /// Exact bytes are the key: revisions can restart when storage is rehydrated.
@@ -148,6 +437,136 @@ impl HealthProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn floor(generation: u64) -> DescriptorFloorV1 {
+        DescriptorFloorV1 {
+            version: 1,
+            identity: crate::peer_delivery_cursor::tests::cursor(1).identity,
+            generation,
+            descriptor_digest: [generation as u8; 32],
+        }
+    }
+    #[test]
+    fn floor_rejects_rollback_equivocation_scope_change_and_malformed_reload() {
+        let mut storage = JournalStorage::default();
+        storage.advance_descriptor(floor(2)).unwrap();
+        let previous = storage.clone();
+        assert!(storage.advance_descriptor(floor(1)).is_err());
+        let mut altered = floor(2);
+        altered.descriptor_digest = [8; 32];
+        assert!(storage.advance_descriptor(altered).is_err());
+        let mut altered = floor(3);
+        altered.identity.host = [8; 32];
+        assert!(storage.advance_descriptor(altered).is_err());
+        assert_eq!(storage, previous);
+        storage.advance_descriptor(floor(2)).unwrap();
+        storage.advance_descriptor(floor(3)).unwrap();
+        for invalid in [0_u64, 4] {
+            let mut f = floor(invalid);
+            if invalid == 4 {
+                f.descriptor_digest = [0; 32];
+            }
+            let mut bytes = b"QOSJ\x04\x01\x09\x00\x00\x00\x00".to_vec();
+            bytes.extend(postcard::to_allocvec(&f).unwrap());
+            assert!(Journal::decode(&bytes).is_err());
+        }
+    }
+    #[test]
+    fn descriptor_signing_basis_requires_exact_committed_admission_bytes() {
+        use ui::portable_storage::{PortableStorage, StorageKey};
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let first = floor(1);
+        let key = StorageKey::Admission {
+            workspace: first.identity.room.clone(),
+        };
+        let mut journal = Journal::decode(b"QOSJ\x02\x01\x09\x00\x00\x00").unwrap();
+        journal.storage.advance_descriptor(first.clone()).unwrap();
+        cache
+            .put(key.clone(), journal.encode().unwrap(), None)
+            .unwrap();
+        assert!(AcknowledgedDescriptorFloor::read(&cache, &first.identity).is_err());
+        let writes = cache.pending_writes();
+        for write in writes {
+            cache.acknowledge(&write, Err("quota".into())).unwrap();
+        }
+        assert!(AcknowledgedDescriptorFloor::read(&cache, &first.identity).is_err());
+        for write in cache.pending_writes() {
+            cache.acknowledge(&write, Ok(())).unwrap();
+        }
+        assert_eq!(
+            AcknowledgedDescriptorFloor::read(&cache, &first.identity)
+                .unwrap()
+                .floor(),
+            &first
+        );
+        journal.storage.advance_descriptor(floor(2)).unwrap();
+        cache
+            .put(key.clone(), journal.encode().unwrap(), None)
+            .unwrap();
+        assert_eq!(
+            AcknowledgedDescriptorFloor::read(&cache, &first.identity)
+                .unwrap()
+                .floor(),
+            &first,
+            "dirty memory cannot advance the durable floor"
+        );
+        let mut foreign = first.identity.clone();
+        foreign.host = [42; 32];
+        assert!(AcknowledgedDescriptorFloor::read(&cache, &foreign).is_err());
+        let saved = cache.status(&key).unwrap().committed.unwrap().1.bytes;
+        let restored = Journal::decode(&saved).unwrap();
+        assert_eq!(restored.storage.descriptor, Some(first));
+        assert!(restored.encode_for(JournalFormat::V3).is_err());
+    }
+
+    #[test]
+    fn descriptor_floor_v4_preserves_old_body_and_rejects_downgrade() {
+        let identity = crate::peer_delivery_cursor::tests::cursor(1).identity;
+        // Literal v2 body and absent v3 cursor, followed by the explicit v1 floor.
+        let mut bytes = b"QOSJ\x04\x01\x09\x00\x00\x00\x00".to_vec();
+        bytes.extend(postcard::to_allocvec(&(1_u8, &identity, 7_u64, [9_u8; 32])).unwrap());
+        let decoded = Journal::decode(&bytes).unwrap();
+        assert_eq!(decoded.state, [9]);
+        assert_eq!(decoded.encode().unwrap(), bytes);
+        assert!(decoded.encode_for(JournalFormat::V2).is_err());
+        assert!(decoded.encode_for(JournalFormat::V3).is_err());
+    }
+
+    #[test]
+    fn reader_preserves_v3_without_activating_v3_for_legacy_workspaces() {
+        // Hand-encoded postcard: state=[9], outbox=[], records=[], receipts={};
+        // v3 adds an absent cursor. Its writer floor must survive hydration.
+        let v2 = b"QOSJ\x02\x01\x09\x00\x00\x00";
+        let v3 = b"QOSJ\x03\x01\x09\x00\x00\x00\x00";
+        assert_eq!(Journal::decode(v2).unwrap().encode().unwrap(), v2);
+        assert_eq!(Journal::decode(v3).unwrap().encode().unwrap(), v3);
+        assert_eq!(Journal::decode(&[1, 9, 0]).unwrap().encode().unwrap(), v2);
+    }
+
+    #[test]
+    fn journal_rejects_noncanonical_postcard_before_rewriting_evidence() {
+        // Overlong encoding of the state vector's length (one).
+        assert!(Journal::decode(b"QOSJ\x02\x81\x00\x09\x00\x00\x00").is_err());
+    }
+
+    #[test]
+    fn cursor_journal_preserves_scope_and_refuses_downgrade() {
+        let mut journal = Journal::decode(b"QOSJ\x02\x01\x09\x00\x00\x00").unwrap();
+        let cursor = crate::peer_delivery_cursor::tests::cursor(11);
+        journal.storage = JournalStorage {
+            format: JournalFormat::V3,
+            delivery: Some(cursor.clone()),
+            descriptor: None,
+        };
+        let bytes = journal.encode().unwrap();
+        let decoded = Journal::decode(&bytes).unwrap();
+        assert_eq!(decoded.storage.delivery, Some(cursor));
+        assert_eq!(decoded.encode().unwrap(), bytes);
+        assert!(decoded.encode_for(JournalFormat::V2).is_err());
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(Journal::decode(&trailing).is_err());
+    }
+
     #[test]
     fn unchanged_exact_bytes_decode_once_and_changed_invalid_bytes_invalidate() {
         let mut cache = DecodedBytes::default();
@@ -231,6 +650,7 @@ mod tests {
                 heads: heads_a.clone(),
             }],
             receipts: Default::default(),
+            storage: JournalStorage::default(),
         };
         let mut projection = HealthProjection::default();
         assert_eq!(
@@ -307,6 +727,7 @@ mod tests {
                 heads,
             }],
             receipts: Default::default(),
+            storage: JournalStorage::default(),
         };
         cache
             .put(record.clone(), document.save(), Some(actor.clone()))
@@ -420,7 +841,7 @@ mod tests {
     #[test]
     fn unknown_version_and_trailing_data_fail_explicitly() {
         assert!(
-            Journal::decode(b"QOSJ\x03")
+            Journal::decode(b"QOSJ\x05")
                 .unwrap_err()
                 .contains("version")
         );
@@ -429,6 +850,7 @@ mod tests {
             outbox: vec![],
             records: vec![],
             receipts: Default::default(),
+            storage: JournalStorage::default(),
         }
         .encode()
         .unwrap();
@@ -594,7 +1016,22 @@ mod tests {
             .unwrap()
             .encode()
             .unwrap();
-        let journal = Journal::decode(&saved).unwrap();
+        let mut journal = Journal::decode(&saved).unwrap();
+        let exact_outbox = postcard::to_allocvec(&journal.outbox).unwrap();
+        let exact_state = journal.state.clone();
+        journal.storage = JournalStorage {
+            format: JournalFormat::V3,
+            delivery: Some(crate::peer_delivery_cursor::tests::cursor(17)),
+            descriptor: None,
+        };
+        let migrated = journal.encode().unwrap();
+        let journal = Journal::decode(&migrated).unwrap();
+        assert_eq!(
+            postcard::to_allocvec(&journal.outbox).unwrap(),
+            exact_outbox
+        );
+        assert_eq!(journal.state, exact_state);
+        assert!(journal.encode_for(JournalFormat::V2).is_err());
         let restored = StatePeer::restore(
             &journal.state,
             room,

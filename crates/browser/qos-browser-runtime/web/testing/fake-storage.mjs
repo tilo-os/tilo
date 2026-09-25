@@ -11,20 +11,26 @@
 import {servePersistence} from '../persistence-worker.mjs';
 
 const later=()=>new Promise(resolve=>setImmediate(resolve));
+const keyId=key=>JSON.stringify(key);
+const compareKeys=(a,b)=>{
+ if(Array.isArray(a)!==Array.isArray(b))return Array.isArray(a)?1:-1;
+ if(Array.isArray(a)){for(let i=0;i<Math.min(a.length,b.length);i++){const order=compareKeys(a[i],b[i]);if(order)return order;}return a.length-b.length;}
+ return a<b?-1:a>b?1:0;
+};
 const domError=(name,message=`${name} simulated`)=>Object.assign(Error(message),{name});
 
 export function fakeIndexedDB(){
   const databases=new Map(),log=[],hooks={commitGate:null,failPut:null},pending=new Set();
   function createTransaction(db,owner,mode,options){
     const tx=new EventTarget();
-    const entry={owner,mode,durability:options.durability??'default',outcome:'pending',keys:[]};log.push(entry);
+    const entry={owner,mode,durability:options.durability??'default',outcome:'pending',keys:[],reads:[]};log.push(entry);
     tx.mode=mode;tx.durability=entry.durability;tx.error=null;
     const staged=[],queue=[];let started=false,finished=false,pumping=false,finishRun;
     const ran=new Promise(resolve=>{finishRun=resolve;});
     const previous=db.queue;db.queue=ran;
     const finish=(kind,error)=>{
       if(finished)return;finished=true;pending.delete(control);
-      if(kind==='complete'){for(const [store,key,value] of staged)store.rows.set(key,value);}
+      if(kind==='complete'){for(const [store,key,value] of staged){if(value===undefined)store.rows.delete(keyId(key));else store.rows.set(keyId(key),value);}}
       else tx.error=error??null;
       entry.outcome=kind;tx.dispatchEvent(new Event(kind));finishRun();
     };
@@ -48,12 +54,24 @@ export function fakeIndexedDB(){
       if(hooks.commitGate){const gate=hooks.commitGate;hooks.commitGate=null;gate.reached();await gate.released;if(finished)return;}
       finish('complete');
     };
-    const schedule=work=>{const request={onsuccess:null,onerror:null,result:undefined,error:null};queue.push({request,work});void pump();return request;};
+    const schedule=(work,request={onsuccess:null,onerror:null,result:undefined,error:null})=>{queue.push({request,work});void pump();return request;};
     tx.objectStore=name=>{
       const store=db.stores.get(name);if(!store)throw domError('NotFoundError',`no store ${name}`);
+      const current=()=>{const rows=new Map(store.rows);for(const [target,key,value] of staged)if(target===store){if(value===undefined)rows.delete(keyId(key));else rows.set(keyId(key),value);}return rows;};
       return {
-        get:key=>schedule(()=>structuredClone(store.rows.get(key))),
-        getAll:()=>schedule(()=>[...store.rows.values()].map(value=>structuredClone(value))),
+        get:key=>schedule(()=>{entry.reads.push(structuredClone(key));return structuredClone(current().get(keyId(key)));}),
+        getAll:()=>schedule(()=>{entry.reads.push('*');return [...current().values()].map(value=>structuredClone(value));}),
+        openKeyCursor(){
+          let previous,first=true;const request={onsuccess:null,onerror:null,result:undefined,error:null};
+          const advance=target=>schedule(()=>{
+            const keys=[...current().values()].map(value=>value[store.keyPath]).sort(compareKeys);
+            const key=keys.find(key=>(first||compareKeys(key,previous)>0)&&(target===undefined||compareKeys(key,target)>=0));
+            first=false;if(key===undefined)return null;previous=key;
+            return {key:structuredClone(key),continue:next=>{advance(next);}};
+          },request);
+          advance();return request;
+        },
+        delete(key){if(mode!=='readwrite')throw domError('ReadOnlyError');return schedule(()=>{staged.push([store,key,undefined]);entry.keys.push(key);});},
         put(value){
           if(mode!=='readwrite')throw domError('ReadOnlyError');
           return schedule(()=>{
@@ -61,6 +79,7 @@ export function fakeIndexedDB(){
             const key=value[store.keyPath];staged.push([store,key,structuredClone(value)]);entry.keys.push(key);return key;
           });
         },
+
       };
     };
     previous.then(()=>{started=true;void pump();});

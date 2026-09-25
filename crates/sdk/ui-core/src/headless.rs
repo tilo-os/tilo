@@ -473,6 +473,10 @@ pub struct FrameHarness {
     /// [`Driver::relayout`] for why it is drawn at all.
     scene: Scene,
     presence: PresenceCtx,
+    /// Presence changed through [`Self::update_presence`]: the next frame
+    /// redraws (the collaborator overlays read presence at draw time) without
+    /// an extra synchronous relayout.
+    presence_redraw: bool,
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     interaction: crate::interaction::InteractionEnvironment,
@@ -1086,6 +1090,7 @@ impl FrameHarness {
             record_persistence: None,
             room_index: None,
             presence: PresenceCtx::empty(),
+            presence_redraw: false,
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -1453,6 +1458,7 @@ impl FrameHarness {
                 .filter_map(|root| root.next_wake_deadline())
                 .min(),
             needs_redraw: roots.iter().any(|root| root.needs_redraw())
+                || self.presence_redraw
                 || !self.bound_invocations.is_empty()
                 || !self.pending_control_invocations.is_empty()
                 || self
@@ -1564,24 +1570,29 @@ impl FrameHarness {
                 (f64::from(self.viewport.1) * self.input_scale).ceil() as u32,
             ),
             semantics: self.inspection(),
-            ime: self
-                .system_search_ime()
-                .or_else(|| {
-                    self.caller_palette.palette.as_ref().and_then(|p| {
-                        crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0)
-                    })
-                })
-                .or_else(|| {
-                    self.focused.and_then(|id| {
-                        self.inspect_node(id, crate::ime::ImeWindowState::from_widget)
-                            .ok()
-                            .flatten()
-                    })
-                }),
+            ime: self.ime_window(),
             needs_animation_frame: schedule.needs_animation_frame,
             next_wake_deadline: schedule.next_wake_deadline,
             needs_redraw: schedule.needs_redraw,
         }
+    }
+
+    /// The IME window of the current keyboard owner: the `ime` of
+    /// [`Self::frame_output`] without building the whole inspection tree.
+    pub fn ime_window(&self) -> Option<crate::ime::ImeWindowState> {
+        self.system_search_ime()
+            .or_else(|| {
+                self.caller_palette.palette.as_ref().and_then(|p| {
+                    crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0)
+                })
+            })
+            .or_else(|| {
+                self.focused.and_then(|id| {
+                    self.inspect_node(id, crate::ime::ImeWindowState::from_widget)
+                        .ok()
+                        .flatten()
+                })
+            })
     }
 
     /// Pump component wakes and animate using the production update/layout/draw passes.
@@ -1770,6 +1781,7 @@ impl FrameHarness {
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
         let viewport_changed = self.last_layout_viewport != Some(self.viewport);
+        self.presence_redraw = false;
         // A failed attempt mutates the tree as well as the requested viewport.
         // Only a successful complete frame may restore this validity marker.
         self.last_layout_viewport = None;
@@ -3916,7 +3928,13 @@ impl FrameHarness {
             resources.extend(legacy);
         }
         let mut semantics = crate::a11y_tree::SemanticTree::new();
-        semantics.refresh_bound(self.root.as_ref(), &self.node_map, self.focused, &resources);
+        semantics.refresh_bound(
+            self.root.as_ref(),
+            &self.node_map,
+            &self.bindings.semantic_node_names(&self.node_map),
+            self.focused,
+            &resources,
+        );
         resources.extend(semantics.action_resources());
         resources
     }
@@ -5415,6 +5433,35 @@ impl FrameHarness {
     pub fn set_presence_context(&mut self, presence: PresenceCtx) {
         self.presence = presence;
         self.relayout();
+    }
+
+    /// Mutate the collaborator presence read by the draw pass. When `update`
+    /// reports a change the next scheduled frame redraws; unlike
+    /// [`Self::set_presence_context`] this never runs a synchronous relayout,
+    /// so live remote carets cost one ordinary frame at display cadence.
+    pub fn update_presence(&mut self, update: impl FnOnce(&mut PresenceCtx) -> bool) -> bool {
+        let changed = update(&mut self.presence);
+        self.presence_redraw |= changed;
+        changed
+    }
+
+    /// Read-only view of the collaborator presence drawn by this harness.
+    pub fn presence(&self) -> &PresenceCtx {
+        &self.presence
+    }
+
+    /// Outbound caret/selection presence of the widget holding keyboard
+    /// focus (the same poll [`crate::app::App`] broadcasts to peers).
+    pub fn focus_presence_payload(
+        &self,
+    ) -> Option<(
+        crate::presence::PresenceKey,
+        crate::collaboration::PresencePayload,
+    )> {
+        let node = self.focused?;
+        self.inspect_node(node, |widget| widget.presence_payload())
+            .ok()
+            .flatten()
     }
 
     /// Send wheel line-deltas at the last pointer position. Move the pointer

@@ -593,10 +593,10 @@ impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
-    pub(crate) fn activation_on_error(&self) -> Option<PathBuf> {
+    pub(crate) fn publication_on_error(&self) -> Option<super::shell_selection::Publication> {
         self.selection
             .as_ref()
-            .and_then(|selection| selection.activation_on_error())
+            .and_then(|selection| selection.publication_on_error())
     }
     #[allow(
         dead_code,

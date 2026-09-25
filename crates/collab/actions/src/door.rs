@@ -81,7 +81,7 @@ pub enum InputSpec {
 impl InputSpec {
     fn of(input: &ActionInput) -> Self {
         match input {
-            ActionInput::Immediate(_) => InputSpec::None,
+            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => InputSpec::None,
             ActionInput::Prompted {
                 prompt,
                 placeholder,
@@ -274,7 +274,22 @@ pub fn encode(
 ) -> Result<EncodedAction, DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
     ensure_available(spec)?;
+    spec.validate_deferred_shape()
+        .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
     match (&spec.input, argument) {
+        (ActionInput::Deferred { type_id, build }, None) => {
+            let encoded = build();
+            if encoded.type_id != *type_id {
+                return Err(DoorError::InvalidArguments(format!(
+                    "builder returned `{}` but declared `{type_id}`",
+                    encoded.type_id
+                )));
+            }
+            Ok(encoded)
+        }
+        (ActionInput::Deferred { .. }, Some(_)) => {
+            Err(DoorError::UnexpectedArgument(address.clone()))
+        }
         (ActionInput::Immediate(encoded), None) => Ok(encoded.clone()),
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
         (ActionInput::Prompted { build, .. }, Some(text)) => {
@@ -367,7 +382,10 @@ pub fn invoke(
 /// # Errors
 ///
 /// Returns the same errors as [`invoke`].
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit protocol inputs stay separate parameters"
+)]
 pub fn invoke_confirmed(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -382,7 +400,10 @@ pub fn invoke_confirmed(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit protocol inputs stay separate parameters"
+)]
 fn invoke_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -438,7 +459,10 @@ pub fn invoke_with_context(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit protocol inputs stay separate parameters"
+)]
 fn invoke_with_context_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -450,6 +474,7 @@ fn invoke_with_context_consent(
     confirmed: bool,
 ) -> Result<Dispatched, DoorError> {
     ensure_confirmation(resources, address, confirmed)?;
+    ensure_deferred_local_owner(resources, address, registry)?;
     let encoded = encode(resources, address, argument)?;
     dispatch_encoded_with_context(
         doc, resources, address, encoded, provenance, registry, transport,
@@ -482,7 +507,10 @@ pub fn invoke_json(
 /// # Errors
 ///
 /// Returns the same errors as [`invoke_json`].
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit protocol inputs stay separate parameters"
+)]
 /// Typed-argument invocation after an outer policy boundary has completed the
 /// action contract's confirmation step.
 ///
@@ -504,7 +532,10 @@ pub fn invoke_json_confirmed(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit protocol inputs stay separate parameters"
+)]
 fn invoke_json_with_consent(
     doc: &mut crate::action::Doc,
     resources: &[Resource],
@@ -516,6 +547,7 @@ fn invoke_json_with_consent(
     confirmed: bool,
 ) -> Result<Dispatched, DoorError> {
     ensure_confirmation(resources, address, confirmed)?;
+    ensure_deferred_local_owner(resources, address, registry)?;
     let encoded = encode_json(resources, address, arguments)?;
     dispatch_encoded_with_context(
         doc,
@@ -539,6 +571,35 @@ fn ensure_confirmation(
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
     if !matches!(spec.contract.confirmation, crate::ConfirmationPolicy::None) && !confirmed {
         return Err(DoorError::ConfirmationRequired);
+    }
+    Ok(())
+}
+
+// This low-level transport accepts already encoded actions. A Deferred server
+// operation must instead reach the SDK's address-based broker door before mint.
+fn ensure_deferred_local_owner(
+    resources: &[Resource],
+    address: &ActionAddress,
+    registry: &ActionRegistry,
+) -> Result<(), DoorError> {
+    let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
+    if spec.deferred_invocation_type().is_some()
+        || matches!(spec.input, ActionInput::Deferred { .. })
+    {
+        spec.validate_deferred_shape()
+            .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+        if spec.kind != OperationKind::Document || spec.locus != ExecutionLocus::ClientLocal {
+            return Err(DoorError::Unavailable {
+                code: "deferred_owner_required".into(),
+                reason: "This creation must use the owning application's address-based action door"
+                    .into(),
+            });
+        }
+        if let Some(type_id) = spec.deferred_invocation_type() {
+            if !registry.contains(type_id) {
+                return Err(DoorError::UnregisteredType(type_id.into()));
+            }
+        }
     }
     Ok(())
 }
@@ -577,6 +638,11 @@ fn dispatch_encoded_with_context(
     let action = registry
         .decode(&encoded)
         .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
+    if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
+        return Err(DoorError::Failed(
+            "Deferred action locus differs from its declaration".into(),
+        ));
+    }
     dispatch_by_with_context(
         doc,
         action.as_ref(),

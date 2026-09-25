@@ -6,87 +6,46 @@
 //! Settings uses [`LockdownBackend::set_policy`] in-process.
 
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(test)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
 use zbus::interface;
 
 #[cfg(target_os = "linux")]
 use super::PortalContext;
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LockdownPolicy {
-    pub disable_printing: bool,
-    pub disable_save_to_disk: bool,
-    pub disable_application_handlers: bool,
-    pub disable_location: bool,
-    pub disable_camera: bool,
-    pub disable_microphone: bool,
-    pub disable_sound_output: bool,
+mod state;
+pub use state::LockdownPolicy;
+pub(crate) use state::watch_policy_at;
+
+pub(crate) fn watch_policy(
+    listener: &std::sync::Arc<dyn Fn(&LockdownPolicy) + Send + Sync>,
+) -> std::io::Result<()> {
+    watch_policy_at(default_path(), listener)
 }
 
 #[derive(Clone)]
 pub struct LockdownBackend {
-    policy: Arc<Mutex<LockdownPolicy>>,
-    path: Arc<PathBuf>,
+    state: state::PolicyStore,
 }
-
 impl LockdownBackend {
     #[cfg(target_os = "linux")]
     pub fn new(_ctx: PortalContext) -> Self {
         Self::at_path(default_path())
     }
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
-        let path = path.into();
-        let policy = fs::read(&path)
-            .ok()
-            .and_then(|v| serde_json::from_slice(&v).ok())
-            .unwrap_or_default();
         Self {
-            policy: Arc::new(Mutex::new(policy)),
-            path: Arc::new(path),
+            state: state::PolicyStore::at_path(path),
         }
     }
     pub fn policy(&self) -> LockdownPolicy {
-        self.policy.lock().map(|v| v.clone()).unwrap_or_default()
+        self.state.policy()
     }
-    /// Trusted in-process policy update; intentionally not a D-Bus property mutation.
     pub fn set_policy(&self, policy: LockdownPolicy) -> zbus::fdo::Result<()> {
-        let mut held = self
-            .policy
-            .lock()
-            .map_err(|_| failed("lockdown policy lock poisoned"))?;
-        let parent = self
-            .path
-            .parent()
-            .ok_or_else(|| failed("lockdown policy path has no parent"))?;
-        fs::create_dir_all(parent)
-            .map_err(|e| failed(&format!("cannot create lockdown directory: {e}")))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|e| failed(&format!("cannot protect lockdown directory: {e}")))?;
-        let tmp = self.path.with_extension("tmp");
-        let encoded = serde_json::to_vec(&policy)
-            .map_err(|e| failed(&format!("cannot encode lockdown policy: {e}")))?;
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| failed(&format!("cannot create lockdown policy: {e}")))?;
-        file.write_all(&encoded)
-            .and_then(|()| file.sync_all())
-            .map_err(|e| failed(&format!("cannot write lockdown policy: {e}")))?;
-        fs::rename(&tmp, self.path.as_ref())
-            .map_err(|e| failed(&format!("cannot commit lockdown policy: {e}")))?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|e| failed(&format!("cannot sync lockdown policy: {e}")))?;
-        *held = policy;
-        Ok(())
+        self.state
+            .set_policy(policy)
+            .map_err(|error| failed(&error.to_string()))
     }
 }
 

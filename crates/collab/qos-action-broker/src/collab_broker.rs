@@ -268,6 +268,83 @@ pub struct AppActionBroker {
 }
 
 impl AppActionBroker {
+    /// Reports the actual current enrolled subscription, without allocating or
+    /// recovering any process/task authority.
+    pub fn enrolled_recipient_ready(&self, channel: &str) -> bool {
+        self.state
+            .while_live(|state| Ok(state.enrolled_recipient_ready(channel)))
+            .unwrap_or(false)
+    }
+
+    pub fn install_enrolled_connection(
+        &self,
+        connection: launcher::managed::channel::AdmittedManagedConnection,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> Result<String, String> {
+        self.state
+            .while_live(|state| state.install_enrolled_connection(connection, caller))
+    }
+    pub fn dispatch_enrolled_task(
+        &self,
+        invocation: uuid::Uuid,
+        caller: &tilo_user_identity::DeviceCert,
+        envelope: runtime_collab::EnrolledTaskEnvelope,
+    ) -> Result<crate::enrolled_dispatch::EnrolledDispatchResult, String> {
+        self.state
+            .while_live(|state| state.dispatch_enrolled_task(invocation, caller, envelope))
+    }
+    /// See [`crate::collab_broker_capnp::CapnpBrokerState::install_fixture_enrolled_connection`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_fixture_enrolled_connection(
+        &self,
+        process: crate::enrolled_dispatch::EnrolledProcess,
+        stream: std::os::unix::net::UnixStream,
+        caller: tilo_user_identity::DeviceCert,
+    ) -> Result<String, String> {
+        self.state
+            .while_live(|state| state.install_fixture_enrolled_connection(process, stream, caller))
+    }
+    pub fn enrolled_child_binding(
+        &self,
+        dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
+        peer: u64,
+        resource: &str,
+        action: &str,
+    ) -> Result<(runtime_collab::PublishedInvocationBinding, String), String> {
+        self.state
+            .while_live(|state| state.enrolled_child_binding(dispatch, peer, resource, action))
+    }
+    pub fn invoke_enrolled_child(
+        &self,
+        dispatch: &crate::enrolled_dispatch::VerifiedEnrolledDispatch,
+        request: &crate::collab_broker_capnp::EnrolledChildRequest,
+    ) -> Result<Option<runtime_collab::PublishedInvocationResult>, String> {
+        self.state
+            .while_live(|state| state.invoke_enrolled_child(dispatch, request))
+    }
+    pub fn observe_enrolled_child(
+        &self,
+        owner: &crate::collab_broker_capnp::EnrolledChildOwner,
+        host: [u8; 16],
+        invocation: [u8; 16],
+    ) -> Result<Option<runtime_collab::PublishedInvocationResult>, String> {
+        self.state
+            .while_live(|state| state.observe_enrolled_child(owner, host, invocation))
+    }
+    /// The live dispatch witness of an accepted enrolled task on `channel`.
+    /// Owner revocation: close every enrolled connection of `agent`.
+    pub fn close_enrolled_agent(&self, agent: &str) -> usize {
+        self.state.close_enrolled_agent(agent)
+    }
+    pub fn enrolled_task_dispatch(
+        &self,
+        channel: &str,
+        invocation: uuid::Uuid,
+    ) -> Result<crate::enrolled_dispatch::VerifiedEnrolledDispatch, String> {
+        self.state
+            .while_live(|state| state.enrolled_task_dispatch(channel, invocation))
+    }
+
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production hosts construct this facade
     /// through `BrokerHandle`; arbitrary state injection is test-only.
@@ -507,6 +584,19 @@ pub struct BrokerHandle {
     channels: Arc<Mutex<BrokerChannels>>,
 }
 impl BrokerHandle {
+    /// Observe current private host-worker provenance for a native publication.
+    pub fn is_current_host_worker(
+        &self,
+        peer: u64,
+        route: &CrdtRoute,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<bool, String> {
+        match self.fanout.capnp_state() {
+            Some(state) => state.is_current_host_worker(peer, route, certificate),
+            None => Ok(false),
+        }
+    }
+
     pub fn connect_local_worker(
         &self,
         route: CrdtRoute,
@@ -516,6 +606,23 @@ impl BrokerHandle {
             .capnp_state()
             .ok_or("broker unavailable")?
             .connect_local_worker(route, certificate)
+    }
+
+    pub fn connect_local_worker_with_authorizer(
+        &self,
+        route: CrdtRoute,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<
+        (
+            std::os::unix::net::UnixStream,
+            ui::host_worker::PublishedInvocationAuthorizer,
+        ),
+        String,
+    > {
+        self.fanout
+            .capnp_state()
+            .ok_or("broker unavailable")?
+            .connect_local_worker_with_authorizer(route, certificate)
     }
 
     /// Cloneable handle for the live resource/action search provider.

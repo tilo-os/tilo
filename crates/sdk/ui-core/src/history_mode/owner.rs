@@ -20,7 +20,8 @@ pub(crate) enum OwnedDocumentPublication {
     Unfinished,
     Blocked,
     Changed {
-        document: Box<AutoCommit>,
+        mutation: collab_types::DocumentMutation,
+        authorization: Option<crate::invocation_scope::DocumentAuthorization>,
         heads: Vec<automerge::ChangeHash>,
     },
 }
@@ -57,6 +58,21 @@ pub(crate) enum OwnerKind {
     },
 }
 impl HistoryOwner {
+    pub(crate) fn check_invocation_lifetime(&self) -> Result<(), String> {
+        match &self.0 {
+            OwnerKind::Component(binding) => binding
+                .enter()
+                .map(|_| ())
+                .map_err(|error| format!("{error:?}")),
+            OwnerKind::Legacy { lifetime, .. } => {
+                if lifetime.upgrade().is_some_and(|life| life.active.get()) {
+                    Ok(())
+                } else {
+                    Err("invocation record owner has retired".into())
+                }
+            }
+        }
+    }
     pub(crate) fn component(binding: CallbackBinding) -> Self {
         Self(OwnerKind::Component(binding))
     }
@@ -206,6 +222,7 @@ impl HistoryOwner {
             sent_heads: &[automerge::ChangeHash],
             needs_snapshot: bool,
             blocked: bool,
+            provenance: &crate::invocation_scope::InvocationProvenance,
         ) -> OwnedDocumentPublication {
             if document.pending_ops() != 0 {
                 return OwnedDocumentPublication::Unfinished;
@@ -219,16 +236,37 @@ impl HistoryOwner {
             }
             #[cfg(test)]
             OWNED_DOCUMENT_CLONES.set(OWNED_DOCUMENT_CLONES.get() + 1);
+            let mut document = document.clone();
+            let from = if needs_snapshot { &[][..] } else { sent_heads };
+            let mutation = if needs_snapshot {
+                collab_types::DocumentMutation::Snapshot(document.save())
+            } else {
+                collab_types::DocumentMutation::Incremental(document.save_after(from))
+            };
+            let Ok(authorization) = provenance.capture(&mut document, from, &mutation) else {
+                return OwnedDocumentPublication::Blocked;
+            };
             OwnedDocumentPublication::Changed {
-                document: Box::new(document.clone()),
+                mutation,
+                authorization,
                 heads,
             }
         }
 
+        let (store, checkout) = self.store_checkout();
+        let provenance = store
+            .invocation_provenance(&checkout.id)
+            .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
         match &self.0 {
             OwnerKind::Component(binding) => binding
                 .read_document(outer, |document, _| {
-                    inspect(document, sent_heads, needs_snapshot, blocked)
+                    inspect(
+                        document,
+                        sent_heads,
+                        needs_snapshot,
+                        blocked,
+                        &provenance.borrow(),
+                    )
                 })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
             OwnerKind::Legacy {
@@ -244,7 +282,13 @@ impl HistoryOwner {
                     .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
                 store
                     .read_checked(&checkout.id, |document| {
-                        inspect(document, sent_heads, needs_snapshot, blocked)
+                        inspect(
+                            document,
+                            sent_heads,
+                            needs_snapshot,
+                            blocked,
+                            &provenance.borrow(),
+                        )
                     })
                     .map_err(|_| HistoryRegistrationError::UnsupportedOwner)
             }

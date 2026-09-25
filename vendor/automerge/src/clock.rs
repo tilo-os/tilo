@@ -204,3 +204,22 @@ mod tests {
         assert_eq!(new_actor_clock.partial_cmp(&after_clock), None);
     }
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for Clock {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        self.0.native_visit(visitor)
+    }
+}
+impl NativeVisit for SeqClock {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        self.0.native_visit(visitor)
+    }
+}

@@ -81,36 +81,38 @@ pub fn main() {
         unsafe { std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1") };
     }
 
-    ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("so.tilo.browser", browser_root)
-            .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
-            .shot_handler(render_shot)
-            .open_state_with_args(open_browser_state)
-            .allowed_live_options(&[
-                "--shots-live",
-                "--shots-suggestions",
-                "--shots-overlay",
-                "--shots-pip-empty",
-                "--shots-settings",
-                "--shots-history-paused",
-                "--shots-loading",
-                "--shots-error",
-                "--shots-library",
-                "--shots-tabs",
-                "--library-section",
-                "--library-filter",
-                "--download-state",
-                "--audit-state",
-                "--url",
-                "--size",
-                "--app-root",
-            ])
-            .allowed_flags(&["--probe-pip", "--pip-active"])
-            .allowed_live_flags(&["--private"])
-            .max_positionals(1)
-            .command_handler(command)
-            .live_handler(run_live),
-    );
+    ui::launch::run_or_exit(&launch_spec());
+}
+
+fn launch_spec() -> LaunchSpec {
+    LaunchSpec::new_with_args("so.tilo.browser", browser_root)
+        .runtime_attachment(|args| !launch_browsing_mode(args).is_private())
+        .shot_handler(render_shot)
+        .open_state_with_args(open_browser_state)
+        .allowed_live_options(&[
+            "--shots-live",
+            "--shots-suggestions",
+            "--shots-overlay",
+            "--shots-pip-empty",
+            "--shots-settings",
+            "--shots-history-paused",
+            "--shots-loading",
+            "--shots-error",
+            "--shots-library",
+            "--shots-tabs",
+            "--library-section",
+            "--library-filter",
+            "--download-state",
+            "--audit-state",
+            "--url",
+            "--size",
+            "--app-root",
+        ])
+        .allowed_flags(&["--probe-pip", "--pip-active"])
+        .allowed_live_flags(&["--private"])
+        .max_positionals(1)
+        .command_handler(command)
+        .live_handler(run_live)
 }
 
 #[allow(
@@ -239,26 +241,7 @@ fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::pe
         return (ui::State::new(), ui::persist::Autosave::disabled(error));
     }
     if let Some(root) = browser::storage::explicit_root() {
-        let opened = ui::persist::DocStore::open_canonical_at(id, &root.join("document"));
-        return match opened {
-            Ok(mut store) => {
-                let mut doc = store.load_or_new();
-                if let Some(error) = store.refusal() {
-                    return (
-                        ui::State::from_doc(doc),
-                        ui::persist::Autosave::disabled(error.to_string()),
-                    );
-                }
-                let mut autosave =
-                    ui::persist::Autosave::spawn(store, ui::persist::DEFAULT_DEBOUNCE);
-                autosave.seed(&mut doc);
-                (ui::State::from_doc(doc), autosave)
-            }
-            Err(error) => (
-                ui::State::new(),
-                ui::persist::Autosave::disabled(error.to_string()),
-            ),
-        };
+        return ui::persist::open_canonical_at(id, &root.join("document"));
     }
     ui::persist::open(id)
 }
@@ -286,36 +269,39 @@ fn browser_widget(args: &LaunchArgs, mode: BrowsingMode) -> BrowserWidget {
     reason = "signature is fixed by LaunchSpec::live_handler"
 )]
 fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
-    let widget = browser_workspace(args)?;
-    let engine = widget.engine_handle();
-
-    // Zero-copy GPU compositing: when the WebView engine exports dmabuf
-    // frames (TILO_WEBVIEW_DMABUF=1), install a render-thread hook that
-    // blits the imported texture over the content rect. A no-op otherwise.
-    #[cfg(feature = "wpe")]
-    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
-        ui::render_thread::set_frame_post_processor(Box::new(
-            browser::compositor::WebViewCompositor::new(
-                engine.clone(),
-                widget.content_rect_handle(),
-            ),
-        ));
-    }
-
-    let (state, autosave) = open_browser_state("so.tilo.browser", args);
     let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
+    let mut engine = None;
+    let mut make_root = || -> Result<Box<dyn Widget>, LaunchError> {
+        let widget = browser_workspace(args)?;
+        let actual_engine = widget.engine_handle();
+        #[cfg(feature = "wpe")]
+        if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
+            ui::render_thread::set_frame_post_processor(Box::new(
+                browser::compositor::WebViewCompositor::new(
+                    actual_engine.clone(),
+                    widget.content_rect_handle(),
+                ),
+            ));
+        }
+        engine = Some(actual_engine);
+        Ok(Box::new(widget))
+    };
     let mut app = if mode.is_private() {
-        ui::App::from_scoped_parts_local(wake_scope, state, Box::new(widget))
+        // Private browsing keeps its explicit local-only construction path.
+        let wake_scope = ui::wake::WakeScope::new();
+        let _entry = wake_scope.enter();
+        let root = make_root()?;
+        let (state, autosave) = open_browser_state("so.tilo.browser", args);
+        ui::App::from_scoped_parts_local(wake_scope, state, root).with_autosave(autosave)
     } else {
-        ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
-    }
-    .with_autosave(autosave);
+        launch_spec()
+            .prepare_native(args)?
+            .build_root(&mut make_root)?
+    };
     browser::actions::register(app.action_registry_mut());
-    // Wake the (otherwise event-driven) winit loop whenever the engine
-    // publishes a frame or a navigation event, so pages animate and
-    // finish loading without waiting for user input.
+    let engine = engine.ok_or_else(|| {
+        LaunchError::Operation("browser factory did not retain its engine".into())
+    })?;
     app.run_with_setup(move |proxy| {
         engine.set_waker(Box::new(move || {
             let _ = proxy.send_event(ui::app::UserEvent::External("webview-wake".into()));
@@ -497,7 +483,7 @@ fn render_overlay_shot(
     let mut widget = BrowserWidget::new_headless();
     widget.debug_force_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
+            url: "https://github.com/tilo/tilo".into(),
             title: "Tilo on code.podesta.ai".into(),
             last_visit: 3,
             visit_count: 12,
@@ -533,7 +519,7 @@ fn render_suggestions_shot(out: &std::path::Path, args: &LaunchArgs) {
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
         HistoryEntry {
-            url: "https://github.com/qos/qos".into(),
+            url: "https://github.com/tilo/tilo".into(),
             title: "Tilo — code.podesta.ai".into(),
             last_visit: 3,
             visit_count: 12,
@@ -667,8 +653,7 @@ fn render_live_shot_to_png(
         widget.apply_layout(&taffy, child, Point::ORIGIN);
 
         if pip_probe_started && pip_request.is_none() {
-            pip_request =
-                ui::widget::FloatingSurfaceWidgetExt::take_floating_surface_request(&mut widget);
+            pip_request = Widget::take_floating_surface_request(&mut widget);
         }
 
         let page = probe.state();

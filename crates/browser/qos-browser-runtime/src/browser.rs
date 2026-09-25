@@ -117,6 +117,33 @@ struct Mount {
     writes: HashMap<u64, PendingWrite>,
     images: Vec<ui::image_store::HostImageLoader>,
     error: Option<String>,
+    /// The last composed scene exceeded `scene_within_limits` (reported once).
+    oversized_scene: bool,
+}
+/// Glyphs one frame may encode. A full 4K screen of small text is far below
+/// this; only unculled off-screen content reaches it.
+const MAX_SCENE_GLYPHS: usize = 400_000;
+/// Encoded scene bytes one frame may hand to the renderer (before glyph
+/// outlines are resolved, which multiplies glyph cost).
+const MAX_SCENE_BYTES: usize = 128 << 20;
+fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
+    let encoding = scene.encoding();
+    let glyphs = encoding.resources.glyphs.len();
+    let bytes = encoding
+        .path_tags
+        .len()
+        .saturating_add(encoding.path_data.len().saturating_mul(4))
+        .saturating_add(encoding.draw_tags.len().saturating_mul(4))
+        .saturating_add(encoding.draw_data.len().saturating_mul(4))
+        .saturating_add(encoding.transforms.len().saturating_mul(24))
+        .saturating_add(encoding.styles.len().saturating_mul(8));
+    if glyphs > MAX_SCENE_GLYPHS || bytes > MAX_SCENE_BYTES {
+        Err(format!(
+            "Browser runtime: frame not rendered, scene too large ({glyphs} glyphs, {bytes} encoded bytes)"
+        ))
+    } else {
+        Ok(())
+    }
 }
 fn error(e: impl ToString) -> JsValue {
     JsValue::from_str(&e.to_string())
@@ -590,6 +617,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         writes: HashMap::new(),
         images,
         error: None,
+        oversized_scene: false,
     };
     MOUNTS.with_borrow_mut(|m| m.insert(id, mount));
     emit(&status, serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -695,6 +723,7 @@ fn begin_desktop(
         writes: HashMap::new(),
         images,
         error: None,
+        oversized_scene: false,
     };
     MOUNTS.with_borrow_mut(|mounts| mounts.insert(id, mount));
     emit(&status, serde_json::json!({"phase":"gpu-pending","id":id}));
@@ -923,6 +952,26 @@ impl Mount {
         self.metrics
             .borrow_mut()
             .end("draw_snapshot", snapshot_start);
+        // Never hand the renderer a scene it cannot resolve: an oversized
+        // encoding panics in vello's resolver (capacity overflow on wasm32)
+        // or exceeds WebGPU buffer limits, which took down the whole runtime
+        // after very large pastes. Keep the last presented frame, tell the
+        // user once, and keep the session (and its durable edits) alive.
+        if let Err(reason) = scene_within_limits(frame.scene) {
+            if !self.oversized_scene {
+                self.oversized_scene = true;
+                web_sys::console::error_1(&JsValue::from_str(&reason));
+                if let Some(desktop) = &self.desktop {
+                    desktop.errors.borrow_mut().push(
+                        "This content is too large to display in full; recent edits are kept."
+                            .into(),
+                    );
+                }
+            }
+            self.pending = false;
+            return Ok(());
+        }
+        self.oversized_scene = false;
         let render_start = self.metrics.borrow().begin();
         let mut physical = vello::Scene::new();
         physical.append(
@@ -1663,8 +1712,23 @@ pub(crate) fn refresh_peer_mounts(peer: u32) {
                     _ => {}
                 }
             }
-            mount.frame.relayout();
-            mount.collect_desktop();
+            // A presenting mount applies the queued admission in its next frame
+            // (the admission inbox marks the desktop for redraw, and the draw
+            // path collects desktop/search state around its relayout). An
+            // immediate relayout here ran the whole update/layout/draw pipeline
+            // inside every delivery callback, including each echo of this
+            // peer's own edits, and the next frame repeated it. Mounts that
+            // cannot draw now (hidden, suspended, failed, no GPU yet) keep the
+            // immediate application so their component state stays current.
+            let presents = !mount.hidden
+                && !mount.peer_suspended
+                && mount.error.is_none()
+                && mount.gpu.is_some()
+                && !mount.viewport.suspended();
+            if !presents {
+                mount.frame.relayout();
+                mount.collect_desktop();
+            }
             mount.pending = true;
             mount.window.request_redraw();
         }
@@ -1757,10 +1821,72 @@ pub fn pending_desktop_command(id: u64) -> Result<Option<String>, JsValue> {
     MOUNTS.with_borrow(|mounts| {
         let mount = mounts.get(&id).ok_or_else(|| error("desktop disposed"))?;
         if mount.peer_suspended { return Ok(None); }
-        mount.desktop.as_ref().and_then(|desktop| desktop.session_requests.borrow().first().cloned())
-            .map(|(invocation, command)| serde_json::to_string(&serde_json::json!({
-                "invocation": invocation, "command": serde_json::to_string(&command).map_err(error)?,
-            })).map_err(error)).transpose()
+        mount.desktop.as_ref().and_then(|desktop| desktop.session_requests.borrow().first().cloned().map(|request| (desktop, request)))
+            .map(|(desktop, (invocation, command))| {
+                let mut value = serde_json::json!({
+                    "invocation": invocation, "command": serde_json::to_string(&command).map_err(error)?,
+                });
+                // Optimistic reorder: where the group lands, measured before the
+                // local move, for the remote members' live ghost.
+                if let Some(preview) = desktop.speculation.borrow().preview(invocation) {
+                    value["preview"] = serde_json::json!({"group": preview.group.to_string(), "dx": preview.dx, "width": preview.width, "height": preview.height});
+                }
+                serde_json::to_string(&value).map_err(error)
+            }).transpose()
+    })
+}
+
+/// The host's command bridge reports terminal outcomes, so queued pure
+/// reorders may render optimistically (see `desktop_host/speculation.rs`).
+#[wasm_bindgen]
+pub fn desktop_speculation_enable(id: u64, enabled: bool) -> Result<(), JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let mount = mounts.get(&id).ok_or_else(|| error("desktop disposed"))?;
+        if let Some(desktop) = &mount.desktop {
+            desktop.speculation.borrow_mut().enabled = enabled;
+        }
+        Ok(())
+    })
+}
+
+/// Terminal outcome of a queued desktop command (its Rust invocation): a
+/// failure snaps an optimistic command back to durable state; a success lets
+/// it retire once durable state shows it. `receipt` is the success value (or
+/// a committed-desktop notice) whose `opened` binds an optimistic open to its
+/// committed window. `None` without a receipt only schedules a frame that
+/// re-checks the confirmation hold and deadlines.
+#[wasm_bindgen]
+pub fn desktop_command_settled(
+    id: u64,
+    invocation: &str,
+    succeeded: Option<bool>,
+    receipt: Option<String>,
+) -> Result<bool, JsValue> {
+    let invocation: uuid::Uuid = invocation.parse().map_err(error)?;
+    let opened = receipt
+        .and_then(|receipt| serde_json::from_str(&receipt).ok())
+        .and_then(|value| crate::desktop_host::opened_window(&value));
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts
+            .get_mut(&id)
+            .ok_or_else(|| error("desktop disposed"))?;
+        let Some(desktop) = &mount.desktop else {
+            return Ok(false);
+        };
+        let mut speculation = desktop.speculation.borrow_mut();
+        if speculation.is_empty() {
+            return Ok(false);
+        }
+        let changed = match (succeeded, opened) {
+            (None, None) => true,
+            _ => speculation.settle(invocation, succeeded, opened, web_time::Instant::now()),
+        };
+        drop(speculation);
+        if changed {
+            mount.pending = true;
+            mount.window.request_redraw();
+        }
+        Ok(changed)
     })
 }
 
@@ -1814,7 +1940,7 @@ pub fn desktop_input_ownership(id: u64) -> Result<String, JsValue> {
             "sequence": mount.frame.input_ownership_sequence().to_string(),
             "activation": desktop.activation_sequence.get().to_string(),
             "owner": mount.frame.inspection().keyboard_focus_owner,
-            "ime": mount.frame.frame_output().ime.map(|i| serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})),
+            "ime": mount.frame.ime_window().map(|i| serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)})),
         }).to_string())
     })
 }
@@ -1917,4 +2043,79 @@ pub fn take_frame_metrics() -> Result<String, JsValue> {
         }).collect();
         serde_json::to_string(&samples).map_err(error)
     })
+}
+
+thread_local! {
+    /// LIVE_V1: remote carets/selections projected onto each mount's presence.
+    static LIVE_REMOTE: RefCell<HashMap<u64, crate::live_view::RemoteProjection>> =
+        RefCell::new(HashMap::new());
+}
+/// LIVE_V1 lane E: the local presence snapshot the overlay publishes and maps
+/// remote pointers with (focus record, window rectangles, editor anchors,
+/// window drag). `null` for a single-record mount.
+#[wasm_bindgen]
+pub fn live_view_snapshot(id: u64) -> Result<String, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
+        let Some(desktop) = &m.desktop else {
+            return Ok("null".into());
+        };
+        let selection = m.frame.focus_presence_payload();
+        let layout = desktop.live.borrow();
+        let records = desktop.tab_records.borrow();
+        Ok(crate::live_view::snapshot_json(&layout, &records, selection).to_string())
+    })
+}
+/// LIVE_V1 lane E: replace the remote carets/selections drawn by the
+/// presence-aware editors. Only a change schedules a redraw (no relayout).
+#[wasm_bindgen]
+pub fn live_view_apply(id: u64, remotes: &str) -> Result<bool, JsValue> {
+    let inputs: Vec<crate::live_view::RemoteInput> =
+        serde_json::from_str(remotes).map_err(error)?;
+    MOUNTS.with_borrow_mut(|mounts| {
+        LIVE_REMOTE.with_borrow_mut(|all| all.retain(|mount, _| mounts.contains_key(mount)));
+        let m = mounts.get_mut(&id).ok_or_else(|| error("unknown mount"))?;
+        let changed = LIVE_REMOTE.with_borrow_mut(|all| {
+            let projection = all.entry(id).or_default();
+            m.frame
+                .update_presence(|presence| projection.apply(presence, inputs))
+        });
+        if changed && !m.peer_suspended {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(changed)
+    })
+}
+/// LIVE_V1: while other members are live, this peer's publications reach
+/// them on its own ops track at once, so edits publish within `ms` instead
+/// of the configured window; `null` restores the configured window.
+#[wasm_bindgen]
+pub fn live_view_publication_window(id: u64, ms: Option<u32>) -> Result<(), JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
+        let pending = {
+            let mut schedule = m.publication.borrow_mut();
+            schedule.set_live_window(ms.map(|ms| std::time::Duration::from_millis(u64::from(ms))));
+            schedule.due().is_some()
+        };
+        // A pending deadline may have moved earlier than the loop's wake-up.
+        if pending && !m.peer_suspended {
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+/// LIVE_V1: a forwarded or author-published change was installed into the
+/// in-memory view. The next status of each mount of this peer carries the
+/// semantics tree at once instead of waiting out the content-only throttle,
+/// so the accessibility DOM shows a collaborator's text in the same frame
+/// the canvas does. Remote live changes arrive at most once per publication
+/// window of the author, never per local keystroke.
+pub(crate) fn expedite_peer_semantics(peer: u32) {
+    MOUNTS.with_borrow(|mounts| {
+        for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
+            mount.semantics.borrow_mut().request();
+        }
+    });
 }

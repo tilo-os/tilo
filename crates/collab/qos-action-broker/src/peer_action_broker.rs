@@ -12,19 +12,28 @@ impl CapnpBrokerState {
         &self,
         evidence: &tilo_relay::client::CertifiedAction,
     ) -> Result<VerifiedActionCaller, String> {
+        let registered = self.registered_policy_time()?;
+        self.verify_network_action_caller_with_policy_time(evidence, registered.as_ref())
+    }
+    pub(super) fn verify_network_action_caller_with_policy_time(
+        &self,
+        evidence: &tilo_relay::client::CertifiedAction,
+        submitted: Option<&crate::peer_actions::PolicyTime>,
+    ) -> Result<VerifiedActionCaller, String> {
         let cert = evidence.certificate();
         let room = evidence.action().room.to_string();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "clock unavailable")?
-            .as_nanos()
-            .min(u128::from(u64::MAX)) as u64;
+        let (policy_time, now) = self.checked_policy_time(submitted)?;
         tilo_user_identity::verify_device_cert_at(cert, now).map_err(|_| "certificate rejected")?;
         if cert.capabilities.can_act_as_host || evidence.action().source != cert.device_public_key {
             return Err("device authority required".into());
         }
         if let Some(authority) = self.certificate_authority.get() {
-            authority.authorize(evidence.action().room, cert)?;
+            match &policy_time {
+                Some(time) => {
+                    authority.authorize_with_policy_time(evidence.action().room, cert, time)?
+                }
+                None => authority.authorize(evidence.action().room, cert)?,
+            }
         } else if let Some(devices) = &self.trusted_devices {
             if !devices.contains(&cert.device_public_key) {
                 return Err("device not enrolled".into());
@@ -37,18 +46,20 @@ impl CapnpBrokerState {
             .as_ref()
             .ok_or("membership unavailable")?
             .snapshot()?;
-        let admitted = admit_verified_join(
+        let admitted = admit_verified_join_at(
             &tree,
             &CrdtRoute::cluster(&room),
             VerifiedJoinIdentity {
                 user_public_key: cert.user_public_key,
                 device_public_key: cert.device_public_key,
             },
+            now / 1_000_000_000,
         )?;
         Ok(VerifiedActionCaller {
             room,
             presentation: Vec::new(),
             network: Some(evidence.clone()),
+            policy_time,
             admitted,
         })
     }
@@ -67,6 +78,20 @@ impl CapnpBrokerState {
                 let state = state.clone();
                 let directories = directories.clone();
                 tokio::task::spawn_local(async move {
+                    if request.reply.is_closed()
+                        && request.evidence.as_ref().is_some_and(|e| {
+                            matches!(
+                                &e.action().message,
+                                ActionMessage::AgentReadV1 { .. }
+                                    | ActionMessage::CatalogueRefresh { .. }
+                            )
+                        })
+                    {
+                        drop(request);
+                        return;
+                    }
+                    let custody = crate::agent_reads::AgentReadCustody::from_request(&request);
+                    let policy_time = request.policy_time().cloned();
                     let response = match state.invocation_host() {
                         Err(_) => Err(()),
                         Ok(host) => match request.evidence.as_ref() {
@@ -80,6 +105,9 @@ impl CapnpBrokerState {
                                     evidence,
                                     request.poll,
                                     request.notification,
+                                    request.deadline,
+                                    Some(custody),
+                                    policy_time.as_ref(),
                                 )
                                 .await
                                 .unwrap_or_else(|_| ActionMessage::Rejected {
@@ -103,8 +131,18 @@ impl CapnpBrokerState {
         evidence: &tilo_relay::client::CertifiedAction,
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
+        deadline: tokio::time::Instant,
+        custody: Option<crate::agent_reads::AgentReadCustody>,
+        policy_time: Option<&crate::peer_actions::PolicyTime>,
     ) -> Result<ActionMessage, String> {
-        let caller = self.verify_network_action_caller(evidence)?;
+        if matches!(
+            &evidence.action().message,
+            ActionMessage::AgentReadV1 { .. }
+        ) && tokio::time::Instant::now() >= deadline
+        {
+            return Err("certified agent read deadline".into());
+        }
+        let caller = self.verify_network_action_caller_with_policy_time(evidence, policy_time)?;
         let host = self.invocation_host()?;
         if let Some(invocation) = poll {
             let mut observation = self.peer_observation(&caller, invocation)?;
@@ -125,13 +163,51 @@ impl CapnpBrokerState {
         }
         match &evidence.action().message {
             ActionMessage::CatalogueRefresh { scope } => {
-                let catalogue = serde_json::from_str(&self.action_catalogue_json_for(
-                    &caller.room,
-                    &caller.admitted.broker_actor(),
-                    scope.as_ref(),
-                )?)
-                .map_err(|_| "catalogue unavailable")?;
+                let mut catalogue: serde_json::Value =
+                    serde_json::from_str(&self.action_catalogue_json_for(
+                        &caller.room,
+                        &caller.admitted.broker_actor(),
+                        scope.as_ref(),
+                    )?)
+                    .map_err(|_| "catalogue unavailable")?;
+                if let Some(owner) = self.services.certified_agent_reads.as_ref() {
+                    if let Ok(reply) = owner.binding(evidence.clone(), deadline, custody).await {
+                        let binding = reply.value();
+                        // Native fallback does not forward Cloud mutation commands.
+                        // Only an actual same-host read-only provider may be exposed here.
+                        if tokio::time::Instant::now() < deadline
+                            && tilo_relay::agent_reads::valid_binding(binding, host)
+                            && binding.agent.room == evidence.action().room.to_string()
+                            && binding.agent.device == hex::encode(evidence.action().source)
+                            && binding.spawn.is_none()
+                            && binding.message.is_none()
+                        {
+                            catalogue["agentReadsV1"] = serde_json::to_value(binding)
+                                .map_err(|_| "invalid agent read binding")?;
+                        }
+                    }
+                }
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue })
+            }
+            ActionMessage::AgentReadV1 { .. } => {
+                let owner = self
+                    .services
+                    .certified_agent_reads
+                    .as_ref()
+                    .ok_or("certified agent owner unavailable")?;
+                let reply = crate::agent_reads::read_from_owner(
+                    owner.as_ref(),
+                    host,
+                    evidence.clone(),
+                    deadline,
+                    custody,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                // The original Request still owns the same Arc until send; the
+                // carrier's PendingPeerAction retains it through response release.
+                let (message, _custody) = reply.into_parts();
+                Ok(message)
             }
             ActionMessage::Status { invocation } => self.peer_observation(&caller, *invocation),
             ActionMessage::Cancel { invocation } => {
@@ -182,16 +258,9 @@ impl CapnpBrokerState {
                     return self.peer_observation(&caller, *invocation);
                 }
                 let actor = caller.admitted.broker_actor();
-                let offered = if let Some(revision) = revision {
-                    let registered = directories
-                        .registered(request.peer_id, &caller.room)
-                        .map_err(|_| "directory unavailable")?;
-                    if registered.app_id != *app_id || registered.route.record_id != *record_id {
-                        return Err("directory route changed".into());
-                    }
-                    let resolved = tokio::time::timeout(
-                        Duration::from_secs(2),
-                        self.resolve_action_directory_for_actor(
+                let resolved_offer = if let Some(revision) = revision {
+                    let offer = self
+                        .resolve_invocation_offer(
                             directories,
                             &actor,
                             &caller.room,
@@ -199,25 +268,19 @@ impl CapnpBrokerState {
                             revision,
                             resource,
                             action,
-                        ),
-                    )
-                    .await
-                    .map_err(|_| "directory timeout")??;
-                    let runtime_collab::ActionDirectoryResolution::Found(row) = resolved else {
-                        return Err("directory revision or action changed".into());
-                    };
-                    let published =
-                        published_directory_action(&row).map_err(|_| "invalid action")?;
-                    (
-                        PublishedSurface {
-                            peer_id: request.peer_id,
-                            app_id: registered.app_id,
-                            route: registered.route,
-                            actions: vec![published.clone()],
-                            live: true,
-                        },
-                        published,
-                    )
+                        )
+                        .await?;
+                    if offer.registered.app_id != *app_id
+                        || offer.registered.route.record_id != *record_id
+                    {
+                        return Err("directory route changed".into());
+                    }
+                    Some(offer)
+                } else {
+                    None
+                };
+                let offered = if let Some(offer) = &resolved_offer {
+                    offer.offered(request.peer_id)
                 } else {
                     let surface = self
                         .surfaces
@@ -247,6 +310,9 @@ impl CapnpBrokerState {
                     .lock()
                     .map_err(|_| "admission unavailable")?;
                 let actor = self.current_action_caller(&caller)?.broker_actor();
+                if let Some(offer) = &resolved_offer {
+                    offer.check_registration(self, directories, request.peer_id)?;
+                }
                 if let Some(record) = self.verified_invocation_status(&caller, *invocation)? {
                     if record.intent["request"] != request.intent() {
                         return Err("changed invocation intent".into());

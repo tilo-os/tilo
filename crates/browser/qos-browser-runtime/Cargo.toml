@@ -7,6 +7,7 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 [dependencies]
+qos-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 uuid.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
@@ -14,6 +15,7 @@ web-time = { version = "1", features = ["serde"] }
 ed25519-dalek.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
+collab-types = { path = "../../collab/collab-types" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }
@@ -39,3 +41,8 @@ js-sys = "=0.3.85"
 web-sys = { version = "=0.3.85", features = ["HtmlCanvasElement", "Window", "Document", "Element", "HtmlElement", "console"] }
 [dev-dependencies]
 tempfile.workspace = true
+
+[package.metadata.cargo-machete]
+# The wasm32 build pulls iroh for its browser transport features; machete
+# cannot see target-specific feature-only dependencies.
+ignored = ["iroh"]

@@ -46,23 +46,23 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
-    let baseline = owner.outgoing().to_vec();
+    let baseline = outgoing_bytes(&owner).to_vec();
     let receipts =
         qos_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
     let receipt = owner.commit_desktop_command(&opening).unwrap();
     receipt.validate_for(&opening).unwrap();
-    assert!(owner.outgoing().starts_with(&baseline));
+    assert!(outgoing_bytes(&owner).starts_with(&baseline));
     assert_eq!(
-        owner.outgoing().len() - baseline.len(),
+        outgoing_bytes(&owner).len() - baseline.len(),
         2,
         "launch publishes room prerequisites and new record only"
     );
     assert_eq!(
-        &owner.outgoing_kinds()[baseline.len()..],
+        &outgoing_kinds(&owner)[baseline.len()..],
         &[
             qos_peer_state::transport::Retention::Delta,
             qos_peer_state::transport::Retention::Checkpoint
@@ -80,7 +80,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     let group = tree.workspaces[0].strips[0].window_groups.last().unwrap();
     let tab = group.tabs[0].id;
     let record = ui::record::RecordId::for_tab(tab).to_string();
-    let data = owner.peer().document("dev.qos.notes", &record).unwrap();
+    let data = owner.peer().document("so.tilo.notes", &record).unwrap();
     let close = request(
         &owner,
         DesktopCommand::CloseTab {
@@ -91,19 +91,19 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
             },
         },
     );
-    let before_close = owner.outgoing().len();
+    let before_close = outgoing_bytes(&owner).len();
     owner.commit_desktop_command(&close).unwrap();
     assert_eq!(
-        owner.outgoing().len() - before_close,
+        outgoing_bytes(&owner).len() - before_close,
         1,
         "closing topology publishes no unchanged applications"
     );
     assert_eq!(
-        owner.outgoing_kinds().last(),
+        outgoing_kinds(&owner).last(),
         Some(&qos_peer_state::transport::Retention::Delta)
     );
     assert_eq!(
-        owner.peer().document("dev.qos.notes", &record).unwrap(),
+        owner.peer().document("so.tilo.notes", &record).unwrap(),
         data
     );
     let status = owner.status();
@@ -111,7 +111,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     let mut restored = SessionOwner::open(&path).unwrap();
     assert_eq!(restored.status(), status);
     assert_eq!(
-        restored.peer().document("dev.qos.notes", &record).unwrap(),
+        restored.peer().document("so.tilo.notes", &record).unwrap(),
         data
     );
     assert!(
@@ -197,7 +197,7 @@ async fn restart_and_unrelated_room_receipts_do_not_invalidate_open_or_close() {
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -324,7 +324,7 @@ fn notes(owner: &SessionOwner) -> TabLocation {
     for strip in &tree.workspaces[0].strips {
         for group in &strip.window_groups {
             for tab in &group.tabs {
-                if matches!(&tab.tile, qos_desktop::TileContent::AppPlaceholder { kind: qos_desktop::AppKind::Other(app), .. } if app == "dev.qos.notes")
+                if matches!(&tab.tile, qos_desktop::TileContent::AppPlaceholder { kind: qos_desktop::AppKind::Other(app), .. } if app == "so.tilo.notes")
                 {
                     return TabLocation {
                         strip: strip.id.0,
@@ -351,7 +351,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     .unwrap_or_else(|| ui::record::RecordId::for_tab(original.tab).to_string());
     let original_data = owner
         .peer()
-        .document("dev.qos.notes", &original_record)
+        .document("so.tilo.notes", &original_record)
         .unwrap();
     execute(
         &mut owner,
@@ -372,7 +372,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     assert!(
         owner
             .peer()
-            .document("dev.qos.notes", &copy_record)
+            .document("so.tilo.notes", &copy_record)
             .is_some()
     );
     let copy_location = TabLocation {
@@ -510,7 +510,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     assert_eq!(
         owner
             .peer()
-            .document("dev.qos.notes", &original_record)
+            .document("so.tilo.notes", &original_record)
             .unwrap(),
         original_data
     );
@@ -550,7 +550,7 @@ fn canonical_command_matrix_preserves_record_routes_and_stable_ids_across_restar
     assert!(
         owner
             .peer()
-            .document("dev.qos.notes", &copy_record)
+            .document("so.tilo.notes", &copy_record)
             .is_some(),
         "closed data retained"
     );
@@ -702,7 +702,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -751,7 +751,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
         .rows()
         .into_iter()
         .find(|r| {
-            r.app_id == "dev.qos.notes"
+            r.app_id == "so.tilo.notes"
                 && !browser
                     .rows()
                     .iter()
@@ -873,14 +873,14 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
     let first = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
-    let first_publication = owner.outgoing().len();
+    let first_publication = outgoing_bytes(&owner).len();
     owner.commit_desktop_command(&first).unwrap();
     let mut withheld = None;
-    for bytes in &owner.outgoing()[first_publication..] {
+    for bytes in &outgoing_bytes(&owner)[first_publication..] {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
         if matches!(message, NeighbourMsg::AppDocument { .. }) {
             assert!(withheld.replace(bytes.clone()).is_none());
@@ -904,7 +904,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
     let second = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.calculator".into(),
+            app: "so.tilo.calculator".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -998,7 +998,7 @@ fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first
     let opening = request(
         &owner,
         DesktopCommand::OpenTab {
-            app: "dev.qos.notes".into(),
+            app: "so.tilo.notes".into(),
             placement: TabPlacement::NewGroup { strip, after: None },
         },
     );
@@ -1006,7 +1006,7 @@ fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first
         CommitOperation::DesktopCommand { invocation, .. } => *invocation,
         _ => unreachable!(),
     };
-    let publication = owner.outgoing().len();
+    let publication = outgoing_bytes(&owner).len();
     let (_, delivery) = owner
         .commit_desktop_command_with_delivery(&opening)
         .unwrap();
@@ -1019,7 +1019,7 @@ fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first
         } => opened.clone(),
         _ => panic!("launch carries its exact opened route"),
     };
-    for bytes in &owner.outgoing()[publication..] {
+    for bytes in &outgoing_bytes(&owner)[publication..] {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
         browser
             .receive_from(
@@ -1050,4 +1050,54 @@ fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first
     assert_eq!(notice.invocation.0, invocation);
     assert_eq!(notice.room.to_string(), browser.room());
     assert_eq!(notice.opened, expected_opened);
+}
+
+fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+fn outgoing_kinds(
+    owner: &qos_session_peer::SessionOwner,
+) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
+}
+
+/// The native owner keeps the issuer's command id through validation and
+/// commit: its receipt binds exactly that (device, invocation), and a
+/// refusal commits nothing and maps to a stable reason.
+#[test]
+fn native_owner_receipt_binds_the_command_id() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+    let open = request(
+        &owner,
+        DesktopCommand::OpenApp {
+            app: "so.tilo.notes".into(),
+        },
+    );
+    let id = DesktopCommandId::of(&open).unwrap();
+    assert_eq!(id.device, owner.peer().authority().device_public_key);
+    let receipt = owner.commit_desktop_command(&open).unwrap();
+    receipt.validate_for(&open).unwrap();
+    assert_eq!(
+        receipt.binding.target,
+        CommitTarget::DesktopCommand {
+            invocation: id.invocation
+        }
+    );
+    assert_eq!(id.to_string().parse::<DesktopCommandId>().unwrap(), id);
+    let status = owner.status();
+    let unknown = request(
+        &owner,
+        DesktopCommand::OpenApp {
+            app: "dev.qos.not-installed".into(),
+        },
+    );
+    let Err(DesktopCommandError::Rejected(message)) = owner.commit_desktop_command(&unknown) else {
+        panic!("an unknown application is refused")
+    };
+    assert_eq!(
+        DesktopRefusal::classify(&message),
+        DesktopRefusal::UnknownApp
+    );
+    assert_eq!(owner.status(), status, "a refusal commits nothing");
 }

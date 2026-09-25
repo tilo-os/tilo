@@ -1,20 +1,23 @@
 //! Production ordinary application host; SessionOwner remains the sole durable writer.
-use crate::{SessionOwner, host_signing::HostSigning};
+use crate::{SessionOwner, committed_authority::CommittedAuthority, host_signing::HostSigning};
 use anyhow::{Context, Result};
 use ed25519_dalek::Signer;
 use qos_action_broker::{
     collab_broker::{BrokerHandle, CrdtRoute},
     collab_outbound::{PeerPublishSink, PeerPublisher},
-    peer_actions::CertificateAuthority,
+    peer_actions::{CertificateAuthority, OwnerPolicyClock, PolicyTime},
     policy::WorkspacePolicy,
     services::WorkspaceAuthority,
 };
 use qos_peer_state::{NeighbourMsg, StatePeer, owner_commit::OwnerCommitService};
 use std::{
     cell::RefCell,
-    os::fd::IntoRawFd,
+    os::{fd::IntoRawFd, unix::fs::PermissionsExt},
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use ui::{
     application::{HostContext, LaunchTarget, RestoreInput},
@@ -23,16 +26,81 @@ use ui::{
     record::{RecordCheckout, RecordId, RecordOwners},
 };
 
-#[derive(Clone, Default)]
-pub(crate) struct Authority(pub Arc<Mutex<Option<StatePeer>>>);
+#[derive(Clone)]
+pub(crate) struct Authority {
+    committed: CommittedAuthority,
+    ready: Arc<AtomicBool>,
+    registration: Arc<OnceLock<PolicyTime>>,
+}
+impl Authority {
+    pub(crate) fn new(committed: CommittedAuthority) -> Self {
+        Self {
+            committed,
+            ready: Arc::new(AtomicBool::new(false)),
+            registration: Arc::default(),
+        }
+    }
+    pub(crate) fn set_ready(&self, ready: bool) {
+        self.ready.store(ready, Ordering::Release);
+    }
+    fn current(&self) -> Result<crate::committed_authority::Current<'_>, String> {
+        let current = self.committed.read()?;
+        if !self.ready.load(Ordering::Acquire) {
+            return Err("action transport unavailable".into());
+        }
+        Ok(current)
+    }
+    fn register_policy_time(&self) -> Result<PolicyTime, String> {
+        let current = self.committed.read()?;
+        let time = current.view().policy_time()?;
+        let registered = self.registration.get_or_init(|| time.clone());
+        if !registered.same_origin(&time) {
+            return Err("action runtime belongs to a retired policy origin".into());
+        }
+        current.view().check_policy_time(registered)?;
+        Ok(registered.clone())
+    }
+}
 impl CertificateAuthority for Authority {
+    fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
+        let Some(time) = self.registration.get() else {
+            return Ok(None);
+        };
+        self.current()?.view().check_policy_time(time)?;
+        Ok(Some(time.clone()))
+    }
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        cert: &tilo_user_identity::DeviceCert,
+        time: &PolicyTime,
+    ) -> Result<(), String> {
+        let registered = self
+            .registration
+            .get()
+            .ok_or("action policy time is not registered")?;
+        if !registered.same_origin(time) {
+            return Err("action policy clock or origin mismatch".into());
+        }
+        let guard = self.current()?;
+        let now = guard.view().check_policy_time(time)?;
+        let peer = guard.peer();
+        if peer.room() != room.to_string() || !peer.certificates().contains(cert) {
+            return Err("certificate not admitted by current owner".into());
+        }
+        peer.permissions(cert.device_public_key, policy_system_time(now))
+            .map(|_| ())
+    }
     fn authorize(
         &self,
         room: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
-        let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
-        let peer = guard.as_ref().ok_or("owner authority unavailable")?;
+        if let Some(time) = self.registration.get() {
+            return self.authorize_with_policy_time(room, cert, time);
+        }
+        let guard = self.current()?;
+        let peer = guard.peer();
         if peer.room() != room.to_string() || !peer.certificates().contains(cert) {
             return Err("certificate not admitted by current owner".into());
         }
@@ -42,8 +110,8 @@ impl CertificateAuthority for Authority {
 }
 impl WorkspaceAuthority for Authority {
     fn snapshot(&self) -> Result<qos_desktop::WorkspaceTree, String> {
-        let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
-        project(guard.as_ref().ok_or("owner authority unavailable")?)
+        let guard = self.current()?;
+        project(guard.peer())
     }
 }
 fn project(peer: &StatePeer) -> Result<qos_desktop::WorkspaceTree, String> {
@@ -114,8 +182,7 @@ impl PeerPublishSink for NetworkSink {
 struct Worker {
     app_id: String,
     record_id: String,
-    app: ui::App,
-    permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
+    runner: ui::host_worker::HostWorker,
 }
 /// Cache policy data, never its time-sensitive role or permission decision.
 struct WorkerPolicy {
@@ -137,17 +204,60 @@ impl WorkerPolicy {
         )
         .at_unix_time(now)
     }
-    fn context(&self, principal: &str) -> ui::permissions::PermissionContext {
-        let now = web_time::SystemTime::now()
-            .duration_since(web_time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.context_at(principal, now)
+    fn context(
+        &self,
+        principal: &str,
+        authority: Authority,
+        time: PolicyTime,
+    ) -> Result<ui::permissions::PermissionContext, String> {
+        let now = authority.current()?.view().check_policy_time(&time)? / 1_000_000_000;
+        let context = self.context_at(principal, now);
+        let role = qos_peer_state::room::role_of(
+            self.owner.as_deref(),
+            &self.capabilities,
+            principal,
+            now,
+        );
+        let principal = principal.to_owned();
+        let room = self.room.clone();
+        let owner = self.owner.clone();
+        let capabilities = self.capabilities.clone();
+        Ok(context.with_policy_time_sampler(Arc::new(move || {
+            let current = authority.current()?;
+            let now = current.view().check_policy_time(&time)? / 1_000_000_000;
+            let document = current
+                .peer()
+                .admitted_room()
+                .ok_or("worker governance missing")?;
+            let (_, current_owner, current_caps) =
+                qos_peer_state::room::extract_governed_fields(document);
+            if current.peer().room() != room
+                || current_owner != owner
+                || current_caps != capabilities
+                || qos_peer_state::room::role_of(
+                    current_owner.as_deref(),
+                    &current_caps,
+                    &principal,
+                    now,
+                ) != role
+            {
+                return Err("worker policy changed; current pump required".into());
+            }
+            Ok(now)
+        })))
     }
+}
+fn policy_system_time(now_ns: u64) -> web_time::SystemTime {
+    web_time::SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(now_ns)
 }
 pub(crate) struct ActionHost {
     pub broker: BrokerHandle,
+    policy_clock: OwnerPolicyClock,
+    policy_time: PolicyTime,
+    authority: Authority,
     workers: Vec<Worker>,
+    #[cfg(test)]
+    scoped_fixture: bool,
     recovery: Vec<ui::application::ComponentCloseReport>,
     signing: HostSigning,
     principal: String,
@@ -156,15 +266,72 @@ pub(crate) struct ActionHost {
     views: Rc<ui::application_view::InstanceViewStore>,
     publication: RefCell<crate::publication::PublicationCursor>,
     reconciled_policy: Option<(u64, WorkerPolicy)>,
+    // Declared after broker so its listener/thread closes before directory cleanup.
+    _socket_directory: tempfile::TempDir,
 }
 impl ActionHost {
+    pub(crate) fn registered_policy_time(&self) -> &PolicyTime {
+        &self.policy_time
+    }
+    pub(crate) fn policy_clock(&self) -> Result<OwnerPolicyClock, String> {
+        self.policy_clock
+            .now_ns()
+            .map_err(|error| error.to_string())?;
+        Ok(self.policy_clock.clone())
+    }
+
+    #[cfg(test)]
     pub fn start(
         owner: &SessionOwner,
         authority: Authority,
         signing: HostSigning,
         sender: tokio::sync::mpsc::Sender<NeighbourMsg>,
     ) -> Result<Self> {
+        Self::start_with_collaboration(owner, authority, signing, sender, None)
+    }
+
+    pub(crate) fn start_with_collaboration(
+        owner: &SessionOwner,
+        authority: Authority,
+        signing: HostSigning,
+        sender: tokio::sync::mpsc::Sender<NeighbourMsg>,
+        collaboration_admin: Option<crate::collaboration::CollaborationAdminHandle>,
+    ) -> Result<Self> {
+        #[cfg(test)]
+        {
+            Self::start_inner(
+                owner,
+                authority,
+                signing,
+                sender,
+                collaboration_admin,
+                false,
+            )
+        }
+        #[cfg(not(test))]
+        {
+            Self::start_inner(owner, authority, signing, sender, collaboration_admin)
+        }
+    }
+    fn start_inner(
+        owner: &SessionOwner,
+        authority: Authority,
+        signing: HostSigning,
+        sender: tokio::sync::mpsc::Sender<NeighbourMsg>,
+        collaboration_admin: Option<crate::collaboration::CollaborationAdminHandle>,
+        #[cfg(test)] scoped_fixture: bool,
+    ) -> Result<Self> {
         let _timing = crate::action_timing::Timing::new("action_startup");
+        let policy_clock = authority
+            .committed
+            .policy_clock()
+            .map_err(anyhow::Error::msg)?;
+        let policy_time = authority
+            .register_policy_time()
+            .map_err(anyhow::Error::msg)?;
+        signing
+            .register_policy_time(policy_time.clone())
+            .map_err(anyhow::Error::msg)?;
         let state = owner.root().join("actions");
         ensure_private(&state)?;
         if state.join("recovery.json").try_exists()? {
@@ -182,16 +349,25 @@ impl ActionHost {
             }),
             Arc::new(signing.clone()),
         );
+        // Unix socket names have a small platform limit, independent of the
+        // durable state path. TempDir atomically creates a unique private 0700
+        // directory; /tmp keeps even macOS's long per-user TMPDIR out of it.
+        let socket_directory = tempfile::Builder::new()
+            .prefix("qos-peer-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in("/tmp")
+            .context("creating private broker runtime directory")?;
         let broker = qos_action_broker::collab_broker::spawn_native_peer_with_services(
-            state.join("broker.sock"),
+            socket_directory.path().join("broker.sock"),
             Arc::new(authority.clone()),
             publisher,
             qos_action_broker::peer_actions::NativePeerBrokerConfig {
                 journal_root: state.join("journal"),
-                certificate_authority: Arc::new(authority),
+                certificate_authority: Arc::new(authority.clone()),
             },
             qos_action_broker::services::HostServices {
                 desktop_commands: Some(signing.desktop_commands(owner.peer().room().into())),
+                collaboration_admin: collaboration_admin.map(|service| Arc::new(service) as Arc<_>),
                 ..Default::default()
             },
         )?;
@@ -213,7 +389,12 @@ impl ActionHost {
         let owners = RecordOwners::portable(cache.clone());
         let mut this = Self {
             broker,
+            policy_clock,
+            policy_time,
+            authority,
             workers: vec![],
+            #[cfg(test)]
+            scoped_fixture,
             recovery: vec![],
             signing,
             principal,
@@ -222,6 +403,7 @@ impl ActionHost {
             views,
             publication: Default::default(),
             reconciled_policy: None,
+            _socket_directory: socket_directory,
         };
         let result = this.reconcile(owner);
         this.finish_start(owner, result)
@@ -242,25 +424,7 @@ impl ActionHost {
         anyhow::anyhow!(message)
     }
     fn retain_setup(&mut self, error: ui::launch::LaunchError) {
-        if let ui::launch::LaunchError::ComponentSetup {
-            source,
-            record,
-            records,
-            reports,
-        } = error
-        {
-            self.recovery.extend(reports);
-            self.recovery.push(ui::application::ComponentCloseReport {
-                recovery: None,
-                view_error: None,
-                view_retry: None,
-                record_error: None,
-                record_retry: Some(records),
-                record_retry_target: Some(record.id),
-                teardown_error: None,
-            });
-            self.retain_setup(*source);
-        }
+        ui::host_worker::retain_setup_error(error, &mut self.recovery);
     }
     fn reconcile(&mut self, owner: &SessionOwner) -> Result<()> {
         let generation = owner.committed_generation();
@@ -298,12 +462,28 @@ impl ActionHost {
             {
                 continue;
             }
-            let definition = match row.app_id.as_str() {
-                "dev.qos.word-processor" => word_processor::definition(),
-                "dev.qos.chat" => chat::definition(),
-                "dev.qos.notes" => notes::definition(),
-                "dev.qos.calculator" => calculator::definition(),
-                _ => continue,
+            // Rows keep the id they were created under; resolve the installed
+            // definition through the shared first-party rename table.
+            let Some(definition) = [
+                word_processor::definition(),
+                chat::definition(),
+                notes::definition(),
+                calculator::definition(),
+            ]
+            .into_iter()
+            .find(|definition| {
+                ui::application::lookup_compatible_first_party_app_ids(
+                    &row.app_id,
+                    definition.app_id,
+                )
+            }) else {
+                continue;
+            };
+            #[cfg(all(test, feature = "test-support"))]
+            let definition = if self.scoped_fixture {
+                scoped_fixture::test_definition(&row.app_id).unwrap_or(definition)
+            } else {
+                definition
             };
             let checkout = if row.record_id.is_empty() {
                 RecordCheckout::package_primary(definition.record_kind.clone())
@@ -376,6 +556,8 @@ impl ActionHost {
                     workspace.capabilities.clone(),
                 ),
             ));
+            #[cfg(all(test, feature = "test-support"))]
+            let fixture_records = records.clone();
             let context = HostContext::prepare(
                 definition,
                 records,
@@ -388,15 +570,19 @@ impl ActionHost {
                 &target,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            #[cfg(all(test, feature = "test-support"))]
+            if self.scoped_fixture {
+                scoped_fixture::edit_factory_input(&row.app_id, &fixture_records, &row.record_id);
+            }
             let route = CrdtRoute::record(&row.app_id, room.to_string(), &row.record_id);
             let spec = if row.record_id.is_empty() {
                 RouteSpec::app(&row.app_id, room)
             } else {
                 RouteSpec::record(&row.app_id, room, &row.record_id)
             };
-            let stream = self
+            let (stream, authorizer) = self
                 .broker
-                .connect_local_worker(route, cert)
+                .connect_local_worker_with_authorizer(route, cert)
                 .map_err(anyhow::Error::msg)?;
             let manager = CollaborationManager::for_route_fd_with_identity(
                 stream.into_raw_fd(),
@@ -410,23 +596,35 @@ impl ActionHost {
                 ),
             )
             .map_err(|e| anyhow::anyhow!("worker join: {e:?}"))?;
-            let component = definition
-                .instantiate(context, target, restore)
-                .map_err(|e| self.setup_error(e))?;
-            let app = ui::App::from_component_with_collaboration(
-                component,
-                ui::application::ComponentRunnerInputs {
-                    theme: ui::Theme::dark(),
-                    text_renderer: ui::TextRenderer::new(),
+            let mut runner = ui::host_worker::HostWorker::mount(
+                definition,
+                ui::application::PreparedComponentInputs {
+                    context,
+                    target,
+                    restore,
+                    runner_inputs: ui::application::ComponentRunnerInputs {
+                        theme: ui::Theme::dark(),
+                        text_renderer: ui::TextRenderer::new(),
+                    },
                 },
                 manager,
+                permissions,
             )
             .map_err(|e| self.setup_error(e))?;
+            #[cfg(all(test, feature = "test-support"))]
+            let authorizer = if self.scoped_fixture {
+                scoped_fixture::observe_authorizer(&row.app_id, authorizer)
+            } else {
+                authorizer
+            };
+            if let Err(error) = runner.install_published_invocation_authorizer(authorizer) {
+                self.recovery.extend(runner.close());
+                return Err(anyhow::Error::msg(error));
+            }
             self.workers.push(Worker {
                 app_id: row.app_id,
                 record_id: row.record_id,
-                app,
-                permissions,
+                runner,
             });
         }
         // A partial setup failure must retry this generation, preserving any
@@ -444,6 +642,10 @@ impl ActionHost {
 
     pub fn pump(&mut self, owner: &SessionOwner) -> Result<(), String> {
         let _timing = crate::action_timing::Timing::slow("action_pump");
+        self.authority
+            .current()?
+            .view()
+            .check_policy_time(&self.policy_time)?;
         self.signing.health()?;
         self.reconcile(owner)
             .map_err(|e| self.signing.fail(e.to_string()))?;
@@ -453,14 +655,15 @@ impl ActionHost {
             .expect("successful reconciliation installs policy")
             .1;
         for worker in &mut self.workers {
-            *worker.permissions.borrow_mut() = policy.context(&self.principal);
             let _timing = crate::action_timing::Timing::slow("worker_pump");
-            worker.app.pump_collab_presence();
-            if !worker.app.collaboration_is_connected() {
-                return Err(self
-                    .signing
-                    .fail("application collaboration transport failed; outcome unknown"));
-            }
+            worker
+                .runner
+                .pump(policy.context(
+                    &self.principal,
+                    self.authority.clone(),
+                    self.policy_time.clone(),
+                )?)
+                .map_err(|reason| self.signing.fail(reason))?;
         }
         self.acknowledge_committed(owner)?;
         Ok(())
@@ -473,6 +676,10 @@ impl ActionHost {
             let heads = records.read(&id, |doc| doc.clone().get_heads().iter().map(ToString::to_string).collect::<Vec<_>>()).unwrap();
             serde_json::json!({"app": worker.app_id, "record": worker.record_id, "heads": heads})
         }).collect())
+    }
+    /// The owner policy time this runtime registered with its broker.
+    pub(crate) fn policy_time(&self) -> PolicyTime {
+        self.policy_time.clone()
     }
     pub fn ready(&self) -> bool {
         use qos_peer_state::desktop_command;
@@ -526,18 +733,12 @@ impl ActionHost {
                     .peer()
                     .document(app, record)
                     .ok_or("worker record lost committed custody")?;
-                let mut document =
-                    ui::automerge::AutoCommit::load(&committed).map_err(|e| e.to_string())?;
-                let mut pending = ui::automerge::AutoCommit::load(&write.value.bytes)
-                    .map_err(|e| e.to_string())?;
-                let heads = pending.get_heads();
-                if heads
-                    .iter()
-                    .all(|head| document.get_change_by_hash(head).is_some())
-                    && owner.permits_publication()
-                {
-                    self.cache.acknowledge(&write, Ok(()))?;
-                }
+                ui::host_worker::acknowledge_document(
+                    &self.cache,
+                    &write,
+                    &committed,
+                    owner.permits_publication(),
+                )?;
             }
         }
         Ok(())
@@ -569,12 +770,15 @@ impl ActionHost {
             })
             .map_err(|error| error.to_string())
     }
-    pub fn close(&mut self, owner: &SessionOwner) -> Result<(), String> {
-        for worker in &mut self.workers {
-            worker.app.close_components();
-            self.recovery
-                .extend(worker.app.take_component_close_reports());
+    /// Stop the old runtime without borrowing authority from its replacement.
+    /// Original component retry custody stays here until close can settle it.
+    pub(crate) fn retire(&mut self) {
+        for mut worker in self.workers.drain(..) {
+            self.recovery.extend(worker.runner.close());
         }
+    }
+    pub fn close(&mut self, owner: &SessionOwner) -> Result<(), String> {
+        self.retire();
         let result: Result<(), String> = (|| {
             // First request every original owner's pending bytes; one failure
             // must not prevent another report from transferring its custody.
@@ -660,7 +864,87 @@ fn ensure_private(path: &std::path::Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    fn test_authority(owner: &crate::SessionOwner) -> super::Authority {
+        let authority =
+            super::Authority::new(crate::committed_authority::CommittedAuthority::new(owner));
+        authority.set_ready(true);
+        authority
+    }
+
     use super::*;
+    // A transport ACK or an older durable snapshot must not clear pending bytes.
+    #[test]
+    fn shared_worker_ack_requires_committed_heads_and_publication_authority() {
+        use ui::automerge::{ROOT, transaction::Transactable};
+        let cache = PortableStorage::new("host-worker-test", "device").unwrap();
+        let key = StorageKey::Record {
+            package: "app".into(),
+            workspace: "room".into(),
+            record: "record".into(),
+        };
+        let mut doc = ui::automerge::AutoCommit::new();
+        doc.put(ROOT, "value", 1).unwrap();
+        let before = doc.save();
+        doc.put(ROOT, "value", 2).unwrap();
+        let after = doc.save();
+        cache.put(key, after.clone(), None).unwrap();
+        let pending = cache.pending_writes().remove(0);
+        assert!(!ui::host_worker::acknowledge_document(&cache, &pending, &before, true).unwrap());
+        assert!(!ui::host_worker::acknowledge_document(&cache, &pending, &after, false).unwrap());
+        assert_eq!(cache.pending_writes().len(), 1);
+        assert!(ui::host_worker::acknowledge_document(&cache, &pending, &after, true).unwrap());
+        assert!(cache.pending_writes().is_empty());
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn long_durable_paths_use_private_independent_ephemeral_broker_sockets() {
+        use std::os::unix::{fs::PermissionsExt, net::UnixStream};
+
+        let root = tempfile::tempdir().unwrap();
+        let state_parent = root.path().join("long-durable-workspace-parent-".repeat(5));
+        std::fs::create_dir(&state_parent).unwrap();
+        let start = |name: &str| {
+            let owner = SessionOwner::initialize_workspace(&state_parent.join(name), name).unwrap();
+            let authority = test_authority(&owner);
+            let (handle, commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
+            let (signing, signatures) = HostSigning::new(handle);
+            let (sender, network) = tokio::sync::mpsc::channel(64);
+            let host = ActionHost::start(&owner, authority, signing, sender).unwrap();
+            (owner, host, commits, signatures, network)
+        };
+        let first = start("First");
+        let second = start("Second");
+        let socket = first.1.broker.capnp_socket().to_path_buf();
+        let second_socket = second.1.broker.capnp_socket().to_path_buf();
+        let directory = socket.parent().unwrap().to_path_buf();
+        assert_ne!(socket, second_socket);
+        assert!(!socket.starts_with(&state_parent));
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        UnixStream::connect(&socket).unwrap();
+        UnixStream::connect(&second_socket).unwrap();
+        let journal = first.0.root().join("actions/journal");
+        assert!(
+            journal.is_dir(),
+            "the action journal stays in durable state"
+        );
+        drop(first);
+        assert!(
+            !directory.exists(),
+            "dropping the host removes its temporary socket directory"
+        );
+        assert!(
+            journal.is_dir(),
+            "socket cleanup must retain the durable journal"
+        );
+        UnixStream::connect(&second_socket).unwrap();
+        let second_directory = second_socket.parent().unwrap().to_path_buf();
+        drop(second);
+        assert!(!second_directory.exists());
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn desktop_service_readiness_does_not_wait_for_document_workers() {
         let (_root, _owner, runtime) = runtime();
@@ -702,7 +986,7 @@ mod tests {
     async fn idle_pumps_reuse_projection_and_committed_generations_invalidate_it() {
         let root = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
-        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let authority = test_authority(&owner);
         let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, _signatures) = HostSigning::new(handle);
         let (sender, _network) = tokio::sync::mpsc::channel(64);
@@ -735,7 +1019,7 @@ mod tests {
         for fail_setup in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
-            let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+            let authority = test_authority(&owner);
             let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
             let (signing, _signatures) = HostSigning::new(handle);
             let (sender, _network) = tokio::sync::mpsc::channel(64);
@@ -762,7 +1046,7 @@ mod tests {
                                     .collect(),
                             },
                             command: DesktopCommand::OpenTab {
-                                app: "dev.qos.notes".into(),
+                                app: "so.tilo.notes".into(),
                                 placement: TabPlacement::NewGroup { strip, after: None },
                             },
                         },
@@ -827,16 +1111,17 @@ mod tests {
         use ui::automerge::{ROOT, ReadDoc, transaction::Transactable};
         let root = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
-        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let authority = test_authority(&owner);
         let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, _signatures) = HostSigning::new(handle);
         let (sender, _network) = tokio::sync::mpsc::channel(64);
-        let mut runtime = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        let mut runtime = ActionHost::start(&owner, authority.clone(), signing, sender).unwrap();
         let app = runtime.workers[0].app_id.clone();
         let resource = ResourceRef::App(app.clone());
         assert_eq!(
             runtime.workers[0]
-                .permissions
+                .runner
+                .permissions()
                 .borrow()
                 .decide(&resource, Verb::Write),
             CapDecision::Allow
@@ -874,13 +1159,20 @@ mod tests {
                 web_time::SystemTime::now(),
             )
             .unwrap();
-        owner
-            .commit_mutation_candidate(candidate, owner.directory().to_vec())
+        // Commit through the committed-authority guard, as the host loop does,
+        // so the worker's policy sampler observes the new generation.
+        authority
+            .committed
+            .with_owner(&mut owner, |owner| {
+                owner.commit_mutation_candidate(candidate, owner.directory().to_vec())
+            })
+            .unwrap()
             .unwrap();
         runtime.pump(&owner).unwrap();
         assert_eq!(
             runtime.workers[0]
-                .permissions
+                .runner
+                .permissions()
                 .borrow()
                 .decide(&resource, Verb::Write),
             CapDecision::DeniedByRestriction
@@ -913,7 +1205,7 @@ mod tests {
     fn runtime() -> (tempfile::TempDir, SessionOwner, ActionHost) {
         let root = tempfile::tempdir().unwrap();
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
-        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let authority = test_authority(&owner);
         let (handle, commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, signatures) = HostSigning::new(handle);
         // These tests exercise close custody without pumping asynchronous actions.
@@ -947,7 +1239,7 @@ mod tests {
             "a repeated committed notification must not fan out history again"
         );
         let mut candidate = owner.peer().clone();
-        let app = "dev.qos.word-processor";
+        let app = "so.tilo.word-processor";
         let record = "tab:0000000000000001";
         let mut doc =
             ui::automerge::AutoCommit::load(&candidate.document(app, record).unwrap()).unwrap();
@@ -996,7 +1288,7 @@ mod tests {
             &host_identity,
         )
         .unwrap();
-        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let authority = test_authority(&owner);
         let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, _signatures) = HostSigning::new(handle);
         let (sender, _network) = tokio::sync::mpsc::channel(64);
@@ -1024,9 +1316,10 @@ mod tests {
         assert_eq!(fresh.lock().unwrap().len(), owner.peer().rows().len());
     }
     fn saved_report(runtime: &mut ActionHost) -> ui::application::ComponentCloseReport {
-        runtime.workers[0].app.close_components();
+        runtime.workers[0].runner.app_mut().close_components();
         runtime.workers[0]
-            .app
+            .runner
+            .app_mut()
             .take_component_close_reports()
             .into_iter()
             .find(|report| report.recovery.is_some())
@@ -1072,7 +1365,7 @@ mod tests {
         let (_root, owner, mut runtime) = runtime();
         let records = runtime
             .owners
-            .open("dev.qos.word-processor", owner.peer().room())
+            .open("so.tilo.word-processor", owner.peer().room())
             .unwrap();
         let record = RecordId::for_tab(1);
         records
@@ -1119,7 +1412,7 @@ mod tests {
                     && entry["actor"]
                         == serde_json::json!(owner.identity.native_cert.device_public_key))
         );
-        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let authority = test_authority(&owner);
         let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, _signatures) = HostSigning::new(handle);
         let (sender, _network) = tokio::sync::mpsc::channel(64);
@@ -1132,10 +1425,14 @@ mod tests {
         );
     }
     #[tokio::test(flavor = "current_thread")]
+    #[ignore = "obsolete while the native final publication fence is closed: a host-local \
+                start has no captured original caller, and a certified caller's worker \
+                mutation is refused at exact startup replay (see production_authorizer_tests \
+                and scoped_fixture/deferred.rs); re-port when that fence opens"]
     async fn actual_worker_lost_authority_after_precommit_preserves_uncertain_effect() {
         let root = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
-        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let authority = test_authority(&owner);
         let (handle, mut commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, mut signatures) = HostSigning::new(handle);
         let (sender, mut network) = tokio::sync::mpsc::channel(64);
@@ -1146,8 +1443,8 @@ mod tests {
         let expected_surface =
             |surface: &qos_action_broker::collab_broker_capnp::PublishedSurface| {
                 surface.live
-                    && surface.app_id == "dev.qos.word-processor"
-                    && surface.route.app_id == "dev.qos.word-processor"
+                    && surface.app_id == "so.tilo.word-processor"
+                    && surface.route.app_id == "so.tilo.word-processor"
                     && surface.route.record_id == "tab:0000000000000001"
                     && surface.route.cluster_id == room
             };
@@ -1167,12 +1464,12 @@ mod tests {
             runtime.pump(&owner).unwrap();
             tokio::select! {
                 Some(pending) = signatures.recv() => {
-                    let mut guard = authority.0.lock().unwrap();
+                    let guard = authority.committed.begin(&owner).unwrap();
                     let (complete, result) = pending.apply(&mut owner); result.unwrap();
-                    *guard = Some(owner.peer().clone()); runtime.committed(&owner).unwrap(); complete();
+                    guard.publish(&owner).unwrap(); runtime.committed(&owner).unwrap(); complete();
                 },
                 Some(pending) = commits.recv() => {
-                    let mut guard = authority.0.lock().unwrap(); pending.apply(&mut owner).unwrap(); *guard = Some(owner.peer().clone());
+                    let guard = authority.committed.begin(&owner).unwrap(); let complete = pending.apply_deferred(&mut owner); guard.publish(&owner).unwrap(); complete().unwrap();
                 },
                 _ = network.recv() => {},
                 _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {},
@@ -1181,7 +1478,7 @@ mod tests {
         }
         let before = owner
             .peer()
-            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .document("so.tilo.word-processor", "tab:0000000000000001")
             .unwrap();
         let (surface, action) = runtime
             .broker
@@ -1198,17 +1495,64 @@ mod tests {
             })
             .unwrap();
         let broker = runtime.broker.app_action_broker().unwrap();
-        let job = broker
-            .start(
-                surface.peer_id,
-                &action.resource,
-                &action.action,
-                None,
-                &runtime.principal,
+        // A required host worker executes only an invocation whose original
+        // certified caller the broker captured, so start it from a genuine
+        // certified connection rather than a local, callerless broker start.
+        let room_id: uuid::Uuid = room.parse().unwrap();
+        let stream = runtime
+            .broker
+            .connect_local_worker(
+                CrdtRoute::record(
+                    "so.tilo.word-processor",
+                    room.clone(),
+                    "tab:0000000000000001",
+                ),
+                &owner.identity.native_cert,
             )
             .unwrap();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: room.clone(),
+            device_certificate: serde_json::to_vec(&owner.identity.native_cert).unwrap(),
+            proof: owner
+                .identity
+                .native
+                .sign(&runtime_identity::collaboration_join_signing_bytes(&room))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let mut caller = CollaborationManager::for_route_fd_with_identity(
+            stream.into_raw_fd(),
+            "so.tilo.word-processor",
+            room_id,
+            Some("tab:0000000000000001".into()),
+            None,
+            CertifiedEndpointIdentity::new(presentation, owner.identity.native.clone()),
+        )
+        .unwrap();
+        assert!(
+            caller.send(ui::collaboration::CollabRequest::InvokePublishedAction {
+                request_id: 942,
+                peer_id: surface.peer_id,
+                resource: action.resource.clone(),
+                action: action.action.clone(),
+                arguments: serde_json::Map::new(),
+                confirmation: serde_json::json!({}),
+            })
+        );
+        let mut job = None;
         let mut retired = false;
         loop {
+            for event in caller.poll() {
+                if let ui::collaboration::CollabEvent::PublishedInvocationResult {
+                    request_id: 942,
+                    result,
+                } = event
+                {
+                    job = Some(result.expect("genuine certified caller is admitted").0);
+                }
+            }
             let health = runtime.pump(&owner);
             if health.is_err() {
                 assert!(retired);
@@ -1216,15 +1560,21 @@ mod tests {
             }
             tokio::select! {
                 Some(pending) = signatures.recv() => {
-                    let mut guard = authority.0.lock().unwrap();
-                    let (complete, result) = pending.apply(&mut owner); result.unwrap();
-                    runtime.committed(&owner).unwrap();
-                    // The exact owner barrier already happened. Retire current
-                    // authority before the SDK can send its broker document RPC.
-                    *guard = None; retired = true; complete();
+                    let guard = authority.committed.begin(&owner).unwrap();
+                    // Final native publication of original-invocation
+                    // contributors stays closed until its bounded witness
+                    // exists: the owner refuses the precommitted document.
+                    let (complete, result) = pending.apply(&mut owner);
+                    assert_eq!(
+                        result.unwrap_err(),
+                        "startup replay cannot acknowledge invocation contributors"
+                    );
+                    // Retire current authority before the SDK can send its
+                    // broker document RPC.
+                    drop(guard); retired = true; complete();
                 },
                 Some(pending) = commits.recv() => {
-                    let mut guard = authority.0.lock().unwrap(); pending.apply(&mut owner).unwrap(); *guard = Some(owner.peer().clone());
+                    let guard = authority.committed.begin(&owner).unwrap(); let complete = pending.apply_deferred(&mut owner); guard.publish(&owner).unwrap(); complete().unwrap();
                 },
                 _ = network.recv() => {},
                 _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => {},
@@ -1234,21 +1584,27 @@ mod tests {
                 "worker did not retire after lost authority"
             );
         }
-        assert_ne!(
+        assert_eq!(
             owner
                 .peer()
-                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .document("so.tilo.word-processor", "tab:0000000000000001")
                 .unwrap(),
-            before
+            before,
+            "a refused contributor precommit changes no committed document"
         );
-        assert!(!runtime.ready());
+        // Lost committed authority keeps the runtime failed closed.
+        assert!(runtime.pump(&owner).is_err());
+        let job = job.expect("the certified invocation was admitted");
         assert!(!matches!(
-            broker.status(job.id),
+            broker.status(job),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(broker.peer_action_attachment().is_err());
         let committed = owner.status();
-        runtime.close(&owner).unwrap();
+        // The uncertain local effect is never acknowledged: close retains its
+        // dirty recovery custody instead of claiming success.
+        assert!(runtime.close(&owner).is_err());
+        assert!(owner.root().join("actions/recovery.json").is_file());
         drop(runtime);
         drop(owner);
         assert_eq!(
@@ -1263,7 +1619,7 @@ mod tests {
         use ui::automerge::transaction::Transactable;
         let root = tempfile::tempdir().unwrap();
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
-        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let authority = test_authority(&owner);
         let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, _signatures) = HostSigning::new(handle);
         let (sender, _network) = tokio::sync::mpsc::channel(64);
@@ -1271,7 +1627,7 @@ mod tests {
             ActionHost::start(&owner, authority.clone(), signing.clone(), sender.clone()).unwrap();
         let records = runtime
             .owners
-            .open("dev.qos.word-processor", owner.peer().room())
+            .open("so.tilo.word-processor", owner.peer().room())
             .unwrap();
         let record = RecordId::for_tab(1);
         records
@@ -1298,7 +1654,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["key"]["app"] == "dev.qos.word-processor")
+            .find(|entry| entry["key"]["app"] == "so.tilo.word-processor")
             .unwrap();
         assert_eq!(
             serde_json::from_value::<Vec<u8>>(entry["bytes"].clone()).unwrap(),
@@ -1323,3 +1679,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+pub(crate) mod scoped_fixture;
+
+#[cfg(test)]
+#[path = "action_host/production_authorizer_tests.rs"]
+mod production_authorizer_tests;

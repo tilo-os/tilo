@@ -37,6 +37,28 @@ impl ActionRegistrationBarrier {
 /// by a wire request. Signature, expiry, device role, room membership and action
 /// policy remain mandatory broker checks independent of this provider.
 pub trait CertificateAuthority: Send + Sync {
+    /// Installed local runtime clock/origin; never supplied by a wire peer.
+    fn policy_time(&self) -> Result<Option<PolicyTime>, String> {
+        Ok(None)
+    }
+    fn authorize_with_policy_time(
+        &self,
+        _room: Uuid,
+        _certificate: &tilo_user_identity::DeviceCert,
+        _time: &PolicyTime,
+    ) -> Result<(), String> {
+        Err("retained policy time authority unavailable".into())
+    }
+    /// Exact current pinned host authority for a broker-allocated private app
+    /// descriptor. Ordinary and remote joins must never use this exception.
+    fn authorize_host_worker(
+        &self,
+        _route: &crate::route::CrdtRoute,
+        _certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        Err("local host worker authority unavailable".into())
+    }
+
     fn authorize(
         &self,
         room: Uuid,
@@ -96,19 +118,40 @@ impl RequestFailure {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PeerActionQueue {
     sender: mpsc::Sender<Request>,
     permits: Arc<Semaphore>,
     transitions:
         tokio::sync::broadcast::Sender<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
+    /// Owner time retained by relay-served requests; see [`Self::with_policy_time`].
+    policy_time: Option<PolicyTime>,
+}
+impl std::fmt::Debug for PeerActionQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerActionQueue")
+            .field("sender", &self.sender)
+            .field("permits", &self.permits)
+            .field("transitions", &self.transitions)
+            .field("policy_time", &self.policy_time.is_some())
+            .finish()
+    }
 }
 pub struct Request {
+    policy_time: Option<PolicyTime>,
+    pub deadline: tokio::time::Instant,
     pub evidence: Option<CertifiedAction>,
     pub poll: Option<tilo_actions::InvocationId>,
     pub notification: Option<tilo_actions::InvocationUpdate>,
     pub reply: oneshot::Sender<Result<ActionMessage, ()>>,
-    pub _permit: OwnedSemaphorePermit,
+    pub _permit: Arc<OwnedSemaphorePermit>,
+}
+
+impl Request {
+    /// Required owner time on qualified private paths; None is legacy custody.
+    pub fn policy_time(&self) -> Option<&PolicyTime> {
+        self.policy_time.as_ref()
+    }
 }
 
 struct ReadinessReset(tokio::sync::watch::Sender<bool>);
@@ -125,9 +168,19 @@ impl PeerActionQueue {
                 sender,
                 permits: Arc::new(Semaphore::new(CAPACITY)),
                 transitions: tokio::sync::broadcast::channel(CAPACITY).0,
+                policy_time: None,
             },
             receiver,
         )
+    }
+    /// Serve relay-delivered requests under the owner's registered policy
+    /// time. A broker whose runtime registered an owner clock refuses requests
+    /// without the same time origin, so an attachment served for such an owner
+    /// must carry it; each request still samples the clock at admission.
+    #[must_use]
+    pub fn with_policy_time(mut self, time: PolicyTime) -> Self {
+        self.policy_time = Some(time);
+        self
     }
     async fn request(
         &self,
@@ -136,6 +189,7 @@ impl PeerActionQueue {
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
     ) -> Result<ActionMessage, RequestFailure> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         let result = async {
             let permit = self
                 .permits
@@ -148,18 +202,20 @@ impl PeerActionQueue {
             let (reply, rx) = oneshot::channel();
             self.sender
                 .try_send(Request {
+                    policy_time: self.policy_time.clone(),
+                    deadline,
                     evidence,
                     poll,
                     notification,
                     reply,
-                    _permit: permit,
+                    _permit: Arc::new(permit),
                 })
                 .map_err(|error| match error {
                     mpsc::error::TrySendError::Full(_) => RequestFailure::Capacity,
                     mpsc::error::TrySendError::Closed(_) => RequestFailure::QueueClosed,
                 })?;
             // Timeout is transport uncertainty. It never cancels admitted work.
-            match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+            match tokio::time::timeout_at(deadline, rx).await {
                 Err(_) => Err(RequestFailure::ReplyTimeout),
                 Ok(Err(_)) => Err(RequestFailure::ReplyClosed),
                 Ok(Ok(Err(()))) => Err(RequestFailure::BrokerRejected),
@@ -436,6 +492,8 @@ struct ReplyLimitDiagnostics {
 fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     let message = &reply.message;
     let message_kind = match message {
+        ActionMessage::AgentReadV1 { .. } => "agent_read_v1",
+        ActionMessage::AgentReadResultV1 { .. } => "agent_read_result_v1",
         ActionMessage::CatalogueRefresh { .. } => "catalogue_refresh",
         ActionMessage::CommittedDesktop { .. } => "committed_desktop",
         ActionMessage::BrokerCatalogue { .. } => "broker_catalogue",
@@ -674,3 +732,15 @@ mod tests {
         );
     }
 }
+
+mod carrier;
+pub use carrier::{CarrierError, CarrierTransition, CarrierTransitions, PendingPeerAction};
+
+mod policy_basis;
+pub use policy_basis::PrivatePolicyBasis;
+
+mod policy_clock;
+pub use policy_clock::{OwnerPolicyClock, PolicyClockError, PolicyOrigin, PolicyTime};
+
+#[cfg(any(test, feature = "test-support"))]
+pub use policy_clock::PolicyClockTestControl;

@@ -72,3 +72,31 @@ test('oversized general catalogue is reported as palette discovery failure',asyn
  assert.equal(reports[0].actionStage,'palette-discovery');assert.match(reports[0].actionError,/palette.*too much data/i);
  bridge.close();await actions.close();
 });
+test('v2 palette retains a ticket and consumes only after the mounted result is reported',async()=>{
+ let disk,rows,reported=false;const offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async v=>{if(v.entries.length===0&&disk?.entries.length)assert.equal(reported,true);disk=structuredClone(v);},request:async m=>m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue:offered}:{type:'observation',host,invocation:m.invocation,update:m.type==='invoke_bound'?{state:'succeeded',invocation:m.invocation,output:{resources:[]}}:null,uncertain:false,cancellation_requested:false}});
+ await client.catalogue();const bridge=bindActionPalette({actions:client.actionsV2,publish:value=>rows=value,report:()=>{reported=true;}});const row=await bridge.submit({control:rows[0].key});assert.equal(row.terminal,true);assert.equal(disk.entries.length,0);bridge.close();await client.close();
+});
+test('v2 repeated palette submission after reply loss drives its retained ticket instead of beginning again',async()=>{
+ let disk,rows;const calls=[],offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';let recorded=false;
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async v=>{disk=structuredClone(v);},request:async m=>{calls.push(m);if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};if(m.type==='invoke_bound'){recorded=true;throw Error('reply lost');}return{type:'observation',host,invocation:m.invocation,update:recorded?{state:'accepted',invocation:m.invocation}:null,uncertain:false,cancellation_requested:false};}});
+ await client.catalogue();const bridge=bindActionPalette({actions:client.actionsV2,publish:value=>rows=value});const input={control:rows[0].key,argument:{text:'original'}};await assert.rejects(bridge.submit(input),/reply lost/);await bridge.submit(input);assert.equal(disk.entries.length,1);assert.equal(calls.filter(m=>m.type==='invoke_bound').length,1);await assert.rejects(bridge.submit({...input,argument:{text:'replacement'}}),/original|intent/);bridge.close();await client.close();
+});
+test('v2 palette closed during strict admission retains ticket without a late effect send',async()=>{
+ let disk,rows,release,entered,held=false;const started=new Promise(r=>entered=r),calls=[],offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async v=>{if(v.entries.length&&!held){held=true;entered();await new Promise(r=>release=r);}disk=structuredClone(v);},request:async m=>{calls.push(m);return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue:offered}:{type:'observation',host,invocation:m.invocation,update:null,uncertain:false,cancellation_requested:false};}});
+ await client.catalogue();const bridge=bindActionPalette({actions:client.actionsV2,publish:value=>rows=value});
+ const pending=bridge.submit({control:rows[0].key,argument:{text:'original'}}).then(()=>({state:'resolved'}),error=>({state:'rejected',message:error.message}));await started;bridge.close();release();await pending;await client.catalogue();
+ assert.equal(disk.entries.length,1);assert.equal(disk.entries[0].ticket.consumer.slot,'palette-result');assert.equal(calls.filter(m=>m.type==='invoke_bound').length,0);await client.close();
+});
+test('v2 palette close while status is pending prevents subsequent absence-driven effect send',async()=>{
+ let disk,rows,release,entered;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r),calls=[],offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async v=>{disk=structuredClone(v);},request:async m=>{calls.push(m);if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};if(m.type==='status'){entered();await gate;}return{type:'observation',host,invocation:m.invocation,update:null,uncertain:false,cancellation_requested:false};}});
+ await client.catalogue();const bridge=bindActionPalette({actions:client.actionsV2,publish:value=>rows=value}),pending=bridge.submit({control:rows[0].key}).catch(()=>{});await started;bridge.close();release();await pending;await client.catalogue();assert.equal(disk.entries.length,1);assert.equal(calls.filter(m=>m.type==='invoke_bound').length,0);await client.close();
+});
+test('v2 second mounted palette cannot adopt or consume another parent by equal semantic intent',async()=>{
+ let disk,firstRows,secondRows;const offered=structuredClone(catalogue);offered.surfaces[0].actions[0].revision='exact';const accepted=new Set();let finish=false;
+ const client=await createActionClient({version:2,context:()=>binding,load:async()=>disk,commit:async v=>{disk=structuredClone(v);},request:async m=>{if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:offered};if(m.type==='invoke_bound')accepted.add(m.invocation);return{type:'observation',host,invocation:m.invocation,update:accepted.has(m.invocation)?finish?{state:'succeeded',invocation:m.invocation,output:{resources:[]}}:{state:'accepted',invocation:m.invocation}:null,uncertain:false,cancellation_requested:false};}});
+ await client.catalogue();const first=bindActionPalette({actions:client.actionsV2,publish:value=>firstRows=value});await first.submit({control:firstRows[0].key,argument:{text:'same text'}});const original=structuredClone(disk.entries[0]);finish=true;
+ const second=bindActionPalette({actions:client.actionsV2,publish:value=>secondRows=value});await second.submit({control:secondRows[0].key,argument:{text:'same text'}});assert.deepEqual(disk.entries,[original]);assert.equal(accepted.size,2,'second deliberate gesture owns a separate operation and never claims the original parent');first.close();second.close();await client.close();
+});

@@ -52,12 +52,15 @@ fn owned_resources<W: Widget + ?Sized>(
     address: Option<&ActionAddress>,
     resources: &mut Vec<Resource>,
 ) {
-    let local = root.resources(doc);
+    // A delivered invocation resolves against its invoker's own view,
+    // rebuilt now; outside one this is the widget's own view.
+    let participant = crate::invocation_scope::current_participant();
+    let local = root.resources_for(participant.as_ref(), doc);
     let eager_claim = address.is_some_and(|address| claims(&local, address) != 0);
     resources.extend(local);
     if let Some(address) = address
         && !eager_claim
-        && let Some(resource) = root.resource(doc, &address.resource)
+        && let Some(resource) = root.resource_for(participant.as_ref(), doc, &address.resource)
     {
         resources.push(resource);
     }
@@ -283,11 +286,9 @@ pub(crate) fn legacy_resources(
     Ok(output)
 }
 fn current_authority(authority: &PermissionContext) -> Result<PermissionContext, DoorError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| refused("permission_denied", e))?
-        .as_secs();
-    Ok(authority.clone().at_unix_time(now))
+    authority
+        .at_current_time()
+        .map_err(|error| refused("permission_denied", error))
 }
 fn operation_allowed(
     authority: &PermissionContext,
@@ -371,6 +372,7 @@ pub(crate) enum ResourceRequest<'a> {
         target: &'a LegacyResourceTarget,
         services: LegacyDocumentServices<'a>,
         input: LegacyInvocation<'a>,
+        scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
         result: Option<Result<LegacyDocumentOutcome, DoorError>>,
     },
     Effect {
@@ -379,6 +381,7 @@ pub(crate) enum ResourceRequest<'a> {
         kind: OperationKind,
         encoded: &'a tilo_actions::EncodedAction,
         outer: &'a mut AutoCommit,
+        scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
         result: Option<Result<crate::widget::ResourceOperationStart, DoorError>>,
     },
 }
@@ -413,21 +416,31 @@ impl ResourceRequest<'_> {
             kind,
             encoded,
             outer,
+            scope,
             result,
             ..
         } = self
         {
             *result = Some(if interactive {
-                tile.start_resource_operation_with_document(
-                    *invocation,
-                    *kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    outer,
-                    &ROOT,
-                )
-                .map_err(DoorError::Failed)
-                .and_then(|value| {
+                let started = match scope {
+                    Some(scope) => tile.start_resource_operation_scoped(
+                        scope,
+                        *kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                        outer,
+                        &ROOT,
+                    ),
+                    None => tile.start_resource_operation_with_document(
+                        *invocation,
+                        *kind,
+                        &encoded.type_id,
+                        &encoded.payload,
+                        outer,
+                        &ROOT,
+                    ),
+                };
+                started.map_err(DoorError::Failed).and_then(|value| {
                     value.ok_or_else(|| {
                         refused("unknown_action", "Selected owner declined the operation")
                     })
@@ -530,9 +543,10 @@ impl ResourceRequest<'_> {
                         target,
                         services,
                         input,
+                        scope,
                         result,
                     } if result.is_none() => {
-                        *result = Some(execute_owned(live, target, services, input));
+                        *result = Some(execute_owned(live, target, services, input, *scope));
                     }
                     _ => {}
                 }
@@ -594,10 +608,21 @@ pub(crate) fn invoke_legacy_document<'a>(
     services: LegacyDocumentServices<'a>,
     input: LegacyInvocation<'a>,
 ) -> Result<LegacyDocumentOutcome, DoorError> {
+    invoke_legacy_document_scoped(root, target, services, input, None)
+}
+
+pub(crate) fn invoke_legacy_document_scoped<'a>(
+    root: &mut dyn Widget,
+    target: &'a LegacyResourceTarget,
+    services: LegacyDocumentServices<'a>,
+    input: LegacyInvocation<'a>,
+    scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+) -> Result<LegacyDocumentOutcome, DoorError> {
     let mut request = ResourceRequest::Document {
         target,
         services,
         input,
+        scope,
         result: None,
     };
     root.visit_resource_owners_mut(&mut request)?;
@@ -646,12 +671,25 @@ pub(crate) fn invoke_legacy_effect(
     encoded: &tilo_actions::EncodedAction,
     outer: &mut AutoCommit,
 ) -> Result<crate::widget::ResourceOperationStart, DoorError> {
+    invoke_legacy_effect_scoped(root, target, invocation, kind, encoded, outer, None)
+}
+
+pub(crate) fn invoke_legacy_effect_scoped(
+    root: &mut dyn Widget,
+    target: &LegacyResourceTarget,
+    invocation: tilo_actions::InvocationId,
+    kind: OperationKind,
+    encoded: &tilo_actions::EncodedAction,
+    outer: &mut AutoCommit,
+    scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
+) -> Result<crate::widget::ResourceOperationStart, DoorError> {
     let mut request = ResourceRequest::Effect {
         target,
         invocation,
         kind,
         encoded,
         outer,
+        scope,
         result: None,
     };
     root.visit_resource_owners_mut(&mut request)?;
@@ -677,10 +715,12 @@ fn execute_owned(
     target: &LegacyResourceTarget,
     services: &mut LegacyDocumentServices<'_>,
     input: &LegacyInvocation<'_>,
+    scope: Option<&crate::invocation_scope::ResourceInvocationScope>,
 ) -> Result<LegacyDocumentOutcome, DoorError> {
-    if !services.qualified_local_transport
-        || input.broker_admitted
-        || input.actor != services.author.0
+    if scope.is_none()
+        && (!services.qualified_local_transport
+            || input.broker_admitted
+            || input.actor != services.author.0)
     {
         return Err(refused(
             "legacy_document_route_unsupported",
@@ -696,123 +736,136 @@ fn execute_owned(
         .map_err(|_| refused("closed_lifetime", "Record custody changed"))?;
     let outcome = store
         .with_action_state(&checkout.id, |doc, history, state| {
-            if target.owner.lifetime_id().is_none() || !admission.matches(doc, checkout) {
-                return Err(refused("closed_lifetime", "Record custody changed"));
-            }
-            if state.pending.is_some()
-                || doc.pending_ops() != 0
-                || root.needs_commit()
-                || !history.matches_recorded_frontier(doc)
-            {
-                return Err(refused(
-                    "record_action_pending",
-                    "The record has an unfinished edit",
-                ));
-            }
-            let next = state
-                .generation
-                .and_then(|g| g.checked_add(1))
-                .ok_or_else(|| refused("record_action_pending", "Record generation exhausted"))?;
-            if history.revision() == u64::MAX {
-                return Err(refused("record_action_pending", "Record history exhausted"));
-            }
-            let mut resources = vec![];
-            owned_resources(root, doc, Some(&target.address), &mut resources);
-            if claims(&resources, &target.address) != 1 {
-                return Err(refused(
-                    "ambiguous_action_target",
-                    "The exact owner must advertise one matching action",
-                ));
-            }
-            let (arguments, resource, spec) = resolve_resource_invocation(
-                &resources,
-                &target.address,
-                input.argument,
-                input.arguments,
-                false,
-            )?;
-            if spec.kind != OperationKind::Document
-                || spec.locus != tilo_actions::ExecutionLocus::ClientLocal
-                || spec.contract.execution != tilo_actions::ExecutionMode::Immediate
-                || !matches!(
-                    spec.contract.confirmation,
-                    tilo_actions::ConfirmationPolicy::None
+            let mut execute = |doc: &mut AutoCommit| {
+                if target.owner.lifetime_id().is_none() || !admission.matches(doc, checkout) {
+                    return Err(refused("closed_lifetime", "Record custody changed"));
+                }
+                if state.pending.is_some()
+                    || doc.pending_ops() != 0
+                    || root.needs_commit()
+                    || !history.matches_recorded_frontier(doc)
+                {
+                    return Err(refused(
+                        "record_action_pending",
+                        "The record has an unfinished edit",
+                    ));
+                }
+                let next = state
+                    .generation
+                    .and_then(|g| g.checked_add(1))
+                    .ok_or_else(|| {
+                        refused("record_action_pending", "Record generation exhausted")
+                    })?;
+                if history.revision() == u64::MAX {
+                    return Err(refused("record_action_pending", "Record history exhausted"));
+                }
+                let mut resources = vec![];
+                owned_resources(root, doc, Some(&target.address), &mut resources);
+                if claims(&resources, &target.address) != 1 {
+                    return Err(refused(
+                        "ambiguous_action_target",
+                        "The exact owner must advertise one matching action",
+                    ));
+                }
+                let (arguments, resource, spec) = resolve_resource_invocation(
+                    &resources,
+                    &target.address,
+                    input.argument,
+                    input.arguments,
+                    false,
+                )?;
+                if let Some(scope) = scope {
+                    scope.check_dispatch_spec(spec)?;
+                }
+                if spec.kind != OperationKind::Document
+                    || spec.locus != tilo_actions::ExecutionLocus::ClientLocal
+                    || spec.contract.execution != tilo_actions::ExecutionMode::Immediate
+                    || !matches!(
+                        spec.contract.confirmation,
+                        tilo_actions::ConfirmationPolicy::None
+                    )
+                {
+                    return Err(refused(
+                        "legacy_document_route_unsupported",
+                        "Only immediate ClientLocal documents without confirmation are supported",
+                    ));
+                }
+                if !operation_allowed(&current, &app, spec) {
+                    return Err(refused(
+                        "permission_denied",
+                        "The owner does not grant this operation",
+                    ));
+                }
+                spec.contract
+                    .result
+                    .validate(&tilo_actions::ActionOutput::default())
+                    .map_err(DoorError::Failed)?;
+                let encoded = encode_resource_action(
+                    &resources,
+                    &target.address,
+                    arguments.as_ref(),
+                    input.argument,
+                )?;
+                let action = services
+                    .registry
+                    .decode(&encoded)
+                    .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
+                if action.locus() != tilo_actions::ExecutionLocus::ClientLocal {
+                    return Err(refused(
+                        "legacy_document_route_unsupported",
+                        "Decoded action is not ClientLocal",
+                    ));
+                }
+                let mut context = tilo_actions::ActionContext::for_resource(
+                    &spec.label,
+                    resource.id.as_str(),
+                    &resource.kind,
+                    &resource.label,
                 )
-            {
-                return Err(refused(
-                    "legacy_document_route_unsupported",
-                    "Only immediate ClientLocal documents without confirmation are supported",
-                ));
-            }
-            if !operation_allowed(&current, &app, spec) {
-                return Err(refused(
-                    "permission_denied",
-                    "The owner does not grant this operation",
-                ));
-            }
-            spec.contract
-                .result
-                .validate(&tilo_actions::ActionOutput::default())
-                .map_err(DoorError::Failed)?;
-            let encoded = encode_resource_action(
-                &resources,
-                &target.address,
-                arguments.as_ref(),
-                input.argument,
-            )?;
-            let action = services
-                .registry
-                .decode(&encoded)
-                .map_err(|_| DoorError::UnregisteredType(encoded.type_id.clone()))?;
-            if action.locus() != tilo_actions::ExecutionLocus::ClientLocal {
-                return Err(refused(
-                    "legacy_document_route_unsupported",
-                    "Decoded action is not ClientLocal",
-                ));
-            }
-            let mut context = tilo_actions::ActionContext::for_resource(
-                &spec.label,
-                resource.id.as_str(),
-                &resource.kind,
-                &resource.label,
-            )
-            .with_app(&app, &app);
-            if let Some(ambient) = input.ambient {
-                context = context.enriched_by(ambient);
-            }
-            let dispatched = execute_document(
-                doc,
-                action.as_ref(),
-                encoded,
-                services.transport,
-                input.actor,
-                false,
-                context,
-            )?;
-            let tilo_actions::Dispatched::AppliedLocal(envelope) = dispatched else {
-                return Err(refused(
-                    "legacy_document_route_unsupported",
-                    "Local action was unexpectedly submitted",
-                ));
+                .with_app(&app, &app);
+                if let Some(ambient) = input.ambient {
+                    context = context.enriched_by(ambient);
+                }
+                let dispatched = execute_document(
+                    doc,
+                    action.as_ref(),
+                    encoded,
+                    services.transport,
+                    input.actor,
+                    false,
+                    context,
+                )?;
+                let tilo_actions::Dispatched::AppliedLocal(envelope) = dispatched else {
+                    return Err(refused(
+                        "legacy_document_route_unsupported",
+                        "Local action was unexpectedly submitted",
+                    ));
+                };
+                let changed = history.record_committed_action_authored(
+                    doc,
+                    envelope.base_change_hashes(),
+                    None,
+                    root.get_state(),
+                    Some(services.author.clone()),
+                );
+                if changed {
+                    state.generation = Some(next);
+                    state.statuses.clear();
+                }
+                root.document_action_applied(
+                    &envelope.action,
+                    &envelope.base_change_hashes(),
+                    doc,
+                    &ROOT,
+                );
+                Ok(LegacyDocumentOutcome { changed, envelope })
             };
-            let changed = history.record_committed_action_authored(
-                doc,
-                envelope.base_change_hashes(),
-                None,
-                root.get_state(),
-                Some(services.author.clone()),
-            );
-            if changed {
-                state.generation = Some(next);
-                state.statuses.clear();
+            match scope {
+                Some(scope) => scope
+                    .with_document_mutation(doc, |doc| Ok(execute(doc)))
+                    .map_err(DoorError::Failed)?,
+                None => execute(doc),
             }
-            root.document_action_applied(
-                &envelope.action,
-                &envelope.base_change_hashes(),
-                doc,
-                &ROOT,
-            );
-            Ok(LegacyDocumentOutcome { changed, envelope })
         })
         .map_err(|e| refused("record_unavailable", e))??;
     if outcome.changed {

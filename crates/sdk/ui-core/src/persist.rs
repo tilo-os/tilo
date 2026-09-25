@@ -54,6 +54,10 @@ use crate::state::State;
 /// comes up on an empty document, exactly as it did before persistence
 /// existed. An app that would rather know can call [`try_open`].
 pub fn open(manifest_id: &str) -> (State, Autosave) {
+    if let Some(result) = open_native_initial(manifest_id, None, None) {
+        return native_initial_result(result);
+    }
+
     try_open(manifest_id).unwrap_or_else(|e| {
         tracing::error!(error = %e, "app state unavailable; running without persistence");
         in_memory_fallback()
@@ -69,6 +73,10 @@ pub fn open(manifest_id: &str) -> (State, Autosave) {
 /// moved or deleted.  The next autosave lands in the room directory, so a
 /// crash during migration still leaves the legacy source intact.
 pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
+    if let Some(result) = open_native_initial(manifest_id, Some(room_id), None) {
+        return native_initial_result(result);
+    }
+
     let package_id = std::env::var("TILO_PACKAGE_ID")
         .ok()
         .filter(|id| !id.is_empty())
@@ -114,6 +122,10 @@ pub fn open_room(manifest_id: &str, room_id: &str) -> (State, Autosave) {
 /// left on disk; deleting it is a decision for whoever knows whether
 /// anything else still reads it.
 pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
+    if let Some(result) = open_native_initial(manifest_id, None, Some(legacy)) {
+        return native_initial_result(result);
+    }
+
     let attempt = || -> Result<(State, Autosave), StoreError> {
         let mut store = DocStore::open_with_manifest_id(manifest_id)?;
         match store.migrate_from(legacy) {
@@ -142,6 +154,118 @@ pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
 /// an incompatible layout).
 pub fn try_open(manifest_id: &str) -> Result<(State, Autosave), StoreError> {
     Ok(finish(DocStore::open_with_manifest_id(manifest_id)?))
+}
+
+/// Open an explicitly selected canonical profile through the same private
+/// native initial-read context when one is installed. The path selects local
+/// storage only; it never supplies a document authority or changes read mode.
+pub fn open_canonical_at(app: &str, directory: &Path) -> (State, Autosave) {
+    if let Some(capture) = crate::collaboration::native_initial::primary(app, None) {
+        return native_initial_result((|| {
+            let (_, read) = capture?;
+            let store =
+                DocStore::open_canonical_at(app, directory).map_err(|error| error.to_string())?;
+            let (doc, autosave) = finish_canonical_initial(store, read, |_| Ok(()))?;
+            Ok((State::from_doc(doc), autosave))
+        })());
+    }
+    match DocStore::open_canonical_at(app, directory) {
+        Ok(store) => finish(store),
+        Err(error) => (State::new(), Autosave::disabled(error.to_string())),
+    }
+}
+
+pub(crate) fn finish_canonical_initial(
+    mut store: DocStore,
+    read: crate::collaboration::CommittedDocument,
+    validate: impl Fn(&automerge::AutoCommit) -> Result<(), String>,
+) -> Result<(automerge::AutoCommit, Autosave), String> {
+    let mut incoming = read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err("native canonical snapshot missing".to_string());
+        };
+        let doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+        validate(&doc)?;
+        Ok::<_, String>(doc)
+    })??;
+    store
+        .validate_canonical_schema(&incoming)
+        .map_err(|error| error.to_string())?;
+    let loaded = store
+        .load_canonical_complete()
+        .map_err(|error| error.to_string())?;
+    let mut doc = if let Some(loaded) = loaded {
+        validate(loaded.document())?;
+        let mut existing = store
+            .accept_canonical(loaded)
+            .map_err(|error| error.to_string())?;
+        existing
+            .merge(&mut incoming)
+            .map_err(|error| error.to_string())?;
+        existing
+    } else {
+        // The absence is solely in this local cache. Its content comes from
+        // the already admitted remote Existing read, not a creation grant.
+        incoming.set_actor(store.actor().clone());
+        incoming
+    };
+    validate(&doc)?;
+    store
+        .validate_canonical_schema(&doc)
+        .map_err(|error| error.to_string())?;
+    let owner = std::sync::Arc::new(store);
+    let mut autosave = Autosave::try_spawn_canonical(&owner, DEFAULT_DEBOUNCE)
+        .map_err(|error| error.to_string())?;
+    autosave.request(&mut doc);
+    read.applied();
+    Ok((doc, autosave))
+}
+
+fn native_initial_result(result: Result<(State, Autosave), String>) -> (State, Autosave) {
+    result.unwrap_or_else(|error| {
+        crate::collaboration::native_initial::fail(&error);
+        (State::new(), Autosave::disabled(error))
+    })
+}
+fn open_native_initial(
+    app: &str,
+    room: Option<&str>,
+    legacy: Option<&Path>,
+) -> Option<Result<(State, Autosave), String>> {
+    crate::collaboration::native_initial::primary(app, room).map(|capture| {
+        let (room, read) = capture?;
+        let mut store = DocStore::open_room(app, &room).map_err(|e| e.to_string())?;
+        if let Some(legacy) = legacy {
+            store.migrate_from(legacy).map_err(|e| e.to_string())?;
+        }
+        finish_initial(store, read)
+    })
+}
+fn finish_initial(
+    mut store: DocStore,
+    read: crate::collaboration::CommittedDocument,
+) -> Result<(State, Autosave), String> {
+    let stored = store.load_complete().map_err(|e| e.to_string())?;
+    let had_stored = stored.is_some();
+    let mut doc = stored.unwrap_or_else(|| store.new_document());
+    let mut autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
+    // Only the previously stored heads are durable. The captured graph must
+    // remain a pending local-cache write even without a subsequent user edit.
+    if had_stored {
+        autosave.seed(&mut doc);
+    }
+    read.with_mutation(|mutation| {
+        let collab_types::DocumentMutation::Snapshot(bytes) = mutation else {
+            return Err("native initial snapshot missing".to_string());
+        };
+        let mut actual = automerge::AutoCommit::load(bytes).map_err(|e| e.to_string())?;
+        doc.merge(&mut actual).map_err(|e| e.to_string())?;
+        Ok::<_, String>(())
+    })??;
+    autosave.request(&mut doc);
+    let state = State::from_doc(doc);
+    read.applied();
+    Ok((state, autosave))
 }
 
 fn finish(mut store: DocStore) -> (State, Autosave) {

@@ -4056,10 +4056,11 @@ fn spawn_session_peer_sync(
                                 role,
                             )
                             .map(crate::shell::overlay_host::PeerSyncResponse::Message),
-                        PeerSyncRequest::AcceptInvite(token) => bridge_net
-                            .accept_invite(active, &token)
-                            .map(|room| room.to_string())
-                            .map(crate::shell::overlay_host::PeerSyncResponse::Message),
+                        PeerSyncRequest::AcceptInvite(token) => {
+                            bridge_net.accept_peer_invitation(active, &token)
+                        }
+                        PeerSyncRequest::PollEnrollment(id) => bridge_net.poll_enrollment(id),
+                        PeerSyncRequest::CancelEnrollment(id) => bridge_net.cancel_enrollment(id),
                         PeerSyncRequest::ListPendingInvitations => {
                             let room = tree_handle
                                 .read()
@@ -4343,6 +4344,8 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 }
 
 struct PortalBackend {
+    media_grants: crate::portal::GrantStoreHandle,
+    media_prompts: crate::portal::PromptQueueHandle,
     #[allow(
         dead_code,
         reason = "Retaining the runtime keeps portal worker tasks alive for the lifetime of the compositor backend."
@@ -4605,7 +4608,7 @@ fn start_portal_backend(
     };
 
     let ctx = crate::portal::PortalContext {
-        grants,
+        grants: grants.clone(),
         prompts: prompts.clone(),
         caller_map: crate::portal::CallerMap::new(),
         file_picker: crate::portal::FilePickerSpawnerHandle::new(Arc::new(pickers.clone())),
@@ -4660,7 +4663,9 @@ fn start_portal_backend(
 
     // The queues are useless until drained; attaching them to the overlay host
     // here (not at construction) keeps "portal up" and "prompts reach a screen" one fact.
-    frame_builder.host_mut().set_portal_queues(prompts, pickers);
+    frame_builder
+        .host_mut()
+        .set_portal_queues(prompts.clone(), pickers);
 
     tracing::info!(
         "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}; documents via {}",
@@ -4677,6 +4682,8 @@ fn start_portal_backend(
         );
     }
     Some(PortalBackend {
+        media_grants: grants,
+        media_prompts: prompts,
         runtime,
         server,
         remote_input: remote_input_rx,
@@ -5071,6 +5078,11 @@ pub fn run() {
         .flatten();
     if let Some(broker) = collab_broker.as_ref() {
         attach_collab_broker_bridges(&mut frame_builder, broker);
+        if let (Some(portal), Some(service)) =
+            (portal_backend.as_ref(), broker.native_media_service())
+        {
+            service.install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+        }
     }
     let mut local_session_lifecycle = collab_broker
         .as_ref()
@@ -6898,6 +6910,12 @@ pub fn run() {
                     onboarding_active,
                 ));
                 attach_collab_broker_bridges(&mut frame_builder, broker);
+                if let (Some(portal), Some(service)) =
+                    (portal_backend.as_ref(), broker.native_media_service())
+                {
+                    service
+                        .install_consent(portal.media_grants.clone(), portal.media_prompts.clone());
+                }
                 realtime_fabric_bridge = broker.realtime_fabric_bridge();
                 if let (Some(runtime), Some(bridge)) = (
                     device_fabric_runtime.as_mut(),

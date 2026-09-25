@@ -38,6 +38,11 @@
 //! rule stays under test in every configuration and `--open PATH` style flags
 //! work without a portal.
 
+mod uri;
+pub use uri::open_uri_scoped;
+#[cfg(any(test, feature = "test-support"))]
+pub use uri::{ScopedUriFixture, scoped_uri_fixture};
+
 #[cfg(all(feature = "portal", windows))]
 mod windows;
 
@@ -377,6 +382,20 @@ impl PickRequest {
     pub fn send(self) -> PortalChannel {
         self.send_on_platform(cfg!(not(target_arch = "wasm32")))
     }
+    /// Retain the original admitted caller through the actual chooser thread.
+    pub fn send_scoped(self, scope: crate::invocation_scope::ResourceEffectScope) -> PortalChannel {
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(backend) = scoped_picker_fixture_backend() {
+            let name = self.thread_name.clone();
+            return scoped_pick_worker(&name, scope, move || backend(self));
+        }
+        if cfg!(target_arch = "wasm32") || suppressed() {
+            return self.send_on_platform(cfg!(not(target_arch = "wasm32")));
+        }
+        let name = self.thread_name.clone();
+        scoped_pick_worker(&name, scope, move || single(self))
+    }
+
     fn send_on_platform(self, native: bool) -> PortalChannel {
         if !native {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -481,6 +500,21 @@ pub fn suppressed() -> bool {
 /// over) is simply dropped: the caller's receiver observes a closed
 /// channel, the same outward signal it must already handle for a worker
 /// that spawned but whose send lost the race with a dropped receiver.
+fn scoped_pick_worker(
+    name: &str,
+    scope: crate::invocation_scope::ResourceEffectScope,
+    pick: impl FnOnce() -> PortalOutcome + Send + 'static,
+) -> PortalChannel {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    spawn_worker(name, move || {
+        let outcome = scope
+            .with_effect(|| Ok(pick()))
+            .unwrap_or_else(PortalOutcome::Failed);
+        let _ = sender.send(outcome);
+    });
+    receiver
+}
+
 fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new()
         .name(name.to_string())
@@ -1374,4 +1408,132 @@ mod tests {
 #[cfg(target_arch = "wasm32")]
 pub fn to_local_path(_: &url::Url) -> Option<PathBuf> {
     None
+}
+
+#[cfg(test)]
+mod scoped_pick_tests {
+    use super::*;
+    use crate::invocation_scope::{
+        PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
+        for expired in [false, true] {
+            let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::in_room(
+                1960 + u64::from(expired),
+                "77777777-7777-4777-8777-777777777777",
+            );
+            fixture
+                .store
+                .require_invocation_provenance(&fixture.checkout)
+                .unwrap();
+            let time = Arc::new(AtomicU64::new(99));
+            let sampled = time.clone();
+            let lease = PublishedInvocationLease::new(
+                PublishedInvocationRequest {
+                    wire_id: 1960,
+                    invocation: tilo_actions::InvocationId::new(),
+                    address: tilo_actions::ActionAddress::new("fixture", "choose"),
+                    argument: None,
+                    actor: "original-caller".into(),
+                    participant: None,
+                },
+                fixture.target.owner.broker_route().unwrap(),
+                Arc::new(move || {
+                    (sampled.load(Ordering::Acquire) < 100)
+                        .then_some(())
+                        .ok_or_else(|| "original caller expired".into())
+                }),
+            )
+            .with_owner_token(Arc::new("retained fixture caller"))
+            .unwrap();
+            let scope =
+                ResourceInvocationScope::for_owner(fixture.target.owner.clone(), lease).unwrap();
+            let effect = scope.effect_scope().unwrap();
+            if expired {
+                time.store(100, Ordering::Release);
+            }
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let fixture = scoped_picker_fixture(Arc::new(move |_| {
+                observed.fetch_add(1, Ordering::AcqRel);
+                PortalOutcome::Cancelled
+            }))
+            .unwrap();
+            let receiver = PickRequest::open("Original caller", "Open")
+                .thread_name("writer-scope-test")
+                .send_scoped(effect);
+            drop(fixture);
+            let outcome = receiver
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap();
+            assert_eq!(
+                calls.load(Ordering::Acquire),
+                usize::from(!expired),
+                "expired admitted job must not enter actual chooser effect"
+            );
+            assert_eq!(matches!(outcome, PortalOutcome::Failed(_)), expired);
+        }
+    }
+}
+
+// A fixture is selected only by the current test UI thread. The selected Arc is
+// retained by this exact dispatched request, never looked up on the worker.
+#[cfg(any(test, feature = "test-support"))]
+type ScopedPickerBackend = std::sync::Arc<dyn Fn(PickRequest) -> PortalOutcome + Send + Sync>;
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static SCOPED_PICKER_FIXTURE: std::cell::RefCell<Option<ScopedPickerBackend>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(any(test, feature = "test-support"))]
+pub struct ScopedPickerFixture {
+    _owner_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+/// Select a test backend for scoped chooser requests on this exact UI thread.
+/// Dispatch retains the backend even after the guard leaves scope; all real
+/// effect checks still run immediately before invoking it on the worker.
+#[cfg(any(test, feature = "test-support"))]
+pub fn scoped_picker_fixture(backend: ScopedPickerBackend) -> Result<ScopedPickerFixture, String> {
+    SCOPED_PICKER_FIXTURE.with(|current| {
+        let mut current = current.borrow_mut();
+        if current.is_some() {
+            return Err("this UI thread already owns a picker fixture".into());
+        }
+        *current = Some(backend);
+        Ok(ScopedPickerFixture {
+            _owner_thread: std::marker::PhantomData,
+        })
+    })
+}
+#[cfg(any(test, feature = "test-support"))]
+fn scoped_picker_fixture_backend() -> Option<ScopedPickerBackend> {
+    SCOPED_PICKER_FIXTURE.with(|current| current.borrow().clone())
+}
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for ScopedPickerFixture {
+    fn drop(&mut self) {
+        SCOPED_PICKER_FIXTURE.with(|current| *current.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn writer_scoped_picker_fixture_is_thread_local_and_released_by_guard() {
+    use std::sync::Arc;
+    assert!(scoped_picker_fixture_backend().is_none());
+    let guard = scoped_picker_fixture(Arc::new(|_| PortalOutcome::Cancelled)).unwrap();
+    assert!(scoped_picker_fixture_backend().is_some());
+    assert!(scoped_picker_fixture(Arc::new(|_| PortalOutcome::Cancelled)).is_err());
+    assert!(
+        std::thread::spawn(|| scoped_picker_fixture_backend().is_none())
+            .join()
+            .unwrap()
+    );
+    drop(guard);
+    assert!(scoped_picker_fixture_backend().is_none());
 }

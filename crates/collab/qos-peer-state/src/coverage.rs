@@ -1,9 +1,18 @@
 //! Governor-authenticated replay floors for exact retained checkpoints.
 //! Carried in the existing room CRDT; this does not change neighbour v1 bytes.
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+pub(crate) mod read;
+use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+/// Legacy (v1) whole-map scalar, read for older rooms and migrated away by
+/// the governor's next coverage write.
 pub const FIELD: &str = "document_checkpoint_coverage_v1";
+/// Per-route map (v2): a commit rewrites only the routes it changed.
+pub const FIELD_V2: &str = "document_checkpoint_coverage_v2";
+pub(crate) const LAYOUT: crate::governed_routes::Layout = crate::governed_routes::Layout {
+    legacy: FIELD,
+    routes: FIELD_V2,
+};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coverage {
     pub room: String,
@@ -15,23 +24,158 @@ pub struct Coverage {
     pub sequence: u64,
     pub watermarks: BTreeMap<String, u64>,
 }
+/// Identity of the whole governed coverage (both layouts) for "unchanged"
+/// comparisons; `None` when the room carries none.
 pub fn governed_bytes(doc: &AutoCommit) -> Option<Vec<u8>> {
-    match doc.get(ROOT, FIELD).ok().flatten() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            ScalarValue::Bytes(bytes) => Some(bytes.clone()),
-            _ => Some(vec![]),
-        },
-        Some(_) => Some(vec![]),
-        None => None,
+    crate::governed_routes::identity(doc, LAYOUT)
+}
+
+/// One v2 route value. `Compact` drops what the route key and fixed-width
+/// binary forms already determine (app/record, hex heads and watermark
+/// authors, the textual room UUID); it is chosen only when it expands back
+/// to exactly the same `Coverage`, otherwise the route stores `Full`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum RouteValue {
+    Compact(CompactCoverage),
+    Full(Coverage),
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CompactCoverage {
+    room: [u8; 16],
+    payload_hash: [u8; 32],
+    heads: Vec<[u8; 32]>,
+    author: [u8; 32],
+    sequence: u64,
+    watermarks: Vec<([u8; 32], u64)>,
+}
+impl RouteValue {
+    pub(crate) fn payload_hash(&self) -> [u8; 32] {
+        match self {
+            Self::Compact(compact) => compact.payload_hash,
+            Self::Full(coverage) => coverage.payload_hash,
+        }
+    }
+    fn expand(self, key: &str) -> Result<Coverage, String> {
+        match self {
+            Self::Full(coverage) => Ok(coverage),
+            Self::Compact(compact) => {
+                let (app, record) = key
+                    .split_once('\0')
+                    .ok_or("compact checkpoint coverage without a route key")?;
+                Ok(Coverage {
+                    room: uuid::Uuid::from_bytes(compact.room).to_string(),
+                    app: app.into(),
+                    record: record.into(),
+                    payload_hash: compact.payload_hash,
+                    heads: compact.heads.iter().map(hex::encode).collect(),
+                    author: compact.author,
+                    sequence: compact.sequence,
+                    watermarks: compact
+                        .watermarks
+                        .iter()
+                        .map(|(author, seq)| (hex::encode(author), *seq))
+                        .collect(),
+                })
+            }
+        }
+    }
+    fn of(key: &str, coverage: &Coverage) -> Self {
+        let hash = |text: &String| -> Option<[u8; 32]> { hex::decode(text).ok()?.try_into().ok() };
+        let compact = (|| {
+            Some(CompactCoverage {
+                room: *uuid::Uuid::parse_str(&coverage.room).ok()?.as_bytes(),
+                payload_hash: coverage.payload_hash,
+                heads: coverage.heads.iter().map(hash).collect::<Option<_>>()?,
+                author: coverage.author,
+                sequence: coverage.sequence,
+                watermarks: coverage
+                    .watermarks
+                    .iter()
+                    .map(|(author, seq)| Some((hash(author)?, *seq)))
+                    .collect::<Option<_>>()?,
+            })
+        })()
+        .map(Self::Compact)
+        .filter(|value| value.clone().expand(key).ok().as_ref() == Some(coverage));
+        compact.unwrap_or_else(|| Self::Full(coverage.clone()))
     }
 }
-pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, Coverage>, String> {
-    match governed_bytes(doc) {
-        Some(bytes) => {
-            postcard::from_bytes(&bytes).map_err(|e| format!("invalid checkpoint coverage: {e}"))
-        }
-        None => Ok(BTreeMap::new()),
+pub(crate) fn encode_route(key: &str, coverage: &Coverage) -> Result<Vec<u8>, String> {
+    postcard::to_allocvec(&RouteValue::of(key, coverage)).map_err(|e| e.to_string())
+}
+/// One stored v2 route value. Besides the released `RouteValue` encoding
+/// this accepts a bare postcard `Coverage`: lab builds made from the source
+/// tree between the v2 map and the compact encoding (e.g. host
+/// 20260924-104841) wrote that, and a room carrying it must still open. The
+/// governor's next coverage write re-encodes every route.
+pub(crate) fn decode_value(bytes: &[u8]) -> Result<RouteValue, String> {
+    if let Some(value) = crate::governed_routes::exact::<RouteValue>(bytes) {
+        return Ok(value);
     }
+    if let Some(coverage) = crate::governed_routes::exact::<Coverage>(bytes) {
+        return Ok(RouteValue::Full(coverage));
+    }
+    Err(format!(
+        "invalid checkpoint coverage: {}",
+        postcard::from_bytes::<RouteValue>(bytes)
+            .err()
+            .map_or_else(|| "trailing bytes".to_string(), |e| e.to_string())
+    ))
+}
+fn decode_route(key: &str, bytes: &[u8]) -> Result<Coverage, String> {
+    decode_value(bytes)?.expand(key)
+}
+/// Whether `bytes` is how a writer stores `row`: the released encoding, or
+/// the bare interim encoding (rewritten by the next governor write).
+fn stored_as(key: &str, row: &Coverage, bytes: &[u8]) -> bool {
+    encode_route(key, row).ok().as_deref() == Some(bytes)
+        || postcard::to_allocvec(row).ok().as_deref() == Some(bytes)
+}
+/// Raw v2 route values of the room (empty without the map).
+pub(crate) fn route_values(doc: &AutoCommit) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    Ok(crate::governed_routes::route_bytes(doc, LAYOUT)?.unwrap_or_default())
+}
+pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, Coverage>, String> {
+    let mut rows: BTreeMap<String, Coverage> =
+        match crate::governed_routes::legacy_bytes(doc, LAYOUT) {
+            Some(bytes) => postcard::from_bytes(&bytes)
+                .map_err(|e| format!("invalid checkpoint coverage: {e}"))?,
+            None => BTreeMap::new(),
+        };
+    for (key, bytes) in route_values(doc)? {
+        let row = decode_route(&key, &bytes)?;
+        rows.insert(key, row);
+    }
+    Ok(rows)
+}
+/// Every stored coverage encoding is canonical.
+pub fn canonical(doc: &AutoCommit) -> bool {
+    if let Some(bytes) = crate::governed_routes::legacy_bytes(doc, LAYOUT) {
+        let Ok(rows) = postcard::from_bytes::<BTreeMap<String, Coverage>>(&bytes) else {
+            return false;
+        };
+        if postcard::to_allocvec(&rows).ok().as_ref() != Some(&bytes) {
+            return false;
+        }
+    }
+    route_values(doc).is_ok_and(|routes| {
+        routes.iter().all(|(key, bytes)| {
+            decode_route(key, bytes).is_ok_and(|row| stored_as(key, &row, bytes))
+        })
+    })
+}
+/// Test fixture for rooms written before the v2 layout: the whole map as the
+/// legacy v1 scalar.
+#[cfg(test)]
+pub(crate) fn put_legacy(doc: &mut AutoCommit, rows: &BTreeMap<String, Coverage>) {
+    use automerge::{ROOT, ScalarValue, transaction::Transactable};
+    doc.put(
+        ROOT,
+        FIELD,
+        ScalarValue::Bytes(postcard::to_allocvec(rows).unwrap()),
+    )
+    .unwrap();
+    doc.commit();
 }
 pub fn route_key(app: &str, record: &str) -> String {
     format!("{app}\0{record}")
@@ -39,10 +183,30 @@ pub fn route_key(app: &str, record: &str) -> String {
 pub fn put(doc: &mut AutoCommit, coverage: Coverage) -> Result<(), String> {
     put_all(doc, vec![coverage])
 }
-pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<(), String> {
-    if coverages.is_empty() {
-        return Ok(());
-    }
+/// Publish `coverages` and, in the SAME room change, the complete durable
+/// receipt set `receipts(new coverage rows)` (the governor's durable publish).
+/// One change per durable publication instead of a coverage change plus a
+/// receipt change, and receipts for the just-published coverage store only
+/// their generation.
+pub(crate) fn put_all_with_receipts(
+    doc: &mut AutoCommit,
+    coverages: Vec<Coverage>,
+    receipts: impl FnOnce(
+        &BTreeMap<String, Coverage>,
+    ) -> Result<BTreeMap<String, crate::durability::DurableReceipt>, String>,
+) -> Result<(), String> {
+    let (rows, next) = next_rows(doc, coverages)?;
+    let receipts = crate::durability::encode_all(&receipts(&rows)?, &rows)?;
+    crate::governed_routes::write_raw(
+        doc,
+        &[(LAYOUT, &next), (crate::durability::LAYOUT, &receipts)],
+    )?;
+    Ok(())
+}
+fn next_rows(
+    doc: &AutoCommit,
+    coverages: Vec<Coverage>,
+) -> Result<(BTreeMap<String, Coverage>, BTreeMap<String, Vec<u8>>), String> {
     let mut rows = entries(doc)?;
     let mut incoming = BTreeSet::new();
     for coverage in coverages {
@@ -52,10 +216,28 @@ pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<
         }
         rows.insert(route, coverage);
     }
-    let bytes = postcard::to_allocvec(&rows).map_err(|e| e.to_string())?;
-    doc.put(ROOT, FIELD, ScalarValue::Bytes(bytes))
-        .map_err(|e| e.to_string())?;
-    doc.commit();
+    let next = rows
+        .iter()
+        .map(|(key, row)| Ok((key.clone(), encode_route(key, row)?)))
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    Ok((rows, next))
+}
+pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<(), String> {
+    if coverages.is_empty() {
+        return Ok(());
+    }
+    let (_, next) = next_rows(doc, coverages)?;
+    // A durable receipt stored as "the route's current coverage" must keep
+    // naming the coverage it was issued for: pin it in full, in the same
+    // change, before that route's coverage changes.
+    let pinned = crate::durability::pin_before_coverage_change(doc, &next)?;
+    match pinned {
+        Some(receipts) => crate::governed_routes::write_raw(
+            doc,
+            &[(LAYOUT, &next), (crate::durability::LAYOUT, &receipts)],
+        )?,
+        None => crate::governed_routes::write_raw(doc, &[(LAYOUT, &next)])?,
+    };
     Ok(())
 }
 pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), String> {

@@ -274,3 +274,19 @@ pub(crate) mod error {
     #[error("mismatched encoding")]
     pub(crate) struct MismatchedEncoding;
 }
+
+// Native allocation traversal is read-only and does not populate caches.
+use crate::resource_limits::retained::{NativeVisit, Visitor};
+impl NativeVisit for ConcreteTextValue {
+    fn native_visit(
+        &self,
+        visitor: &mut Visitor<'_>,
+    ) -> Result<(), crate::resource_limits::NativeResourceError> {
+        match self {
+            Self::Utf8CodeUnit(value) => value.0.native_visit(visitor),
+            Self::Utf16CodeUnit(value) => value.0.native_visit(visitor),
+            Self::CodePoint(value) => value.0.native_visit(visitor),
+            Self::Grapheme(value) => value.0.native_visit(visitor),
+        }
+    }
+}

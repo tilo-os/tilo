@@ -3,7 +3,13 @@
  *
  *   {id,type:'open',profile,device}              → {namespace,epoch}
  *   {id,type:'hydrate',namespace}                → rows (bytes transferred)
- *   {id,type:'commit',namespace,writes,abortNext}→ undefined once the strict transaction completed
+ *   {id,type:'commit',namespace,writes,abortNext,options?:{transfer}}→ undefined once the strict transaction completed
+ *   {id,type:'transfer',namespace,method,args}  → bounded open/status/read result or undefined (write/drop)
+ *       methods list/open/status/write/read/drop/compareAndSwapResumeDigest; write/read move <=240KiB buffers.
+ *       CAS(handle,expectedDigest,nextDigest) returns inert status after a strict atomic
+ *       current-lease/current-digest check; <=4096 UTF-8 bytes per opaque digest.
+ *       list/open/status include resumeDigest (old records default to immutable cutToken).
+ *       No method validates a wire manifest or acknowledges native admission.
  *   {id,type:'release',namespace}                → undefined once the writer lock is released
  *   {id,type:'flush',namespace?}                 → undefined once queued work for the namespace(s) settled
  *

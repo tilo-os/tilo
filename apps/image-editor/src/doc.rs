@@ -31,6 +31,24 @@ const CONNECTIONS: &str = "connections";
 const TOMBSTONES: &str = "tombstones";
 const HISTORY_HIDDEN: &str = "history_hidden";
 
+/// The actor of the shared blank-project change. Nobody edits as it.
+const GENESIS_ACTOR: &[u8] = b"so.tilo.image-editor.project.v2.genesis";
+
+/// The canonical blank-project change, built once per process. `Project::blank`
+/// and every writer it drives iterate ordered collections, so the change is
+/// the same bytes on every machine.
+fn blank_genesis() -> Option<&'static [u8]> {
+    static GENESIS: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let bytes = GENESIS.get_or_init(|| {
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(GENESIS_ACTOR));
+        ProjectDoc::seed(&mut doc);
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+        doc.save()
+    });
+    (!bytes.is_empty()).then_some(bytes.as_slice())
+}
+
 /// Stateless access to the one canonical image project document.
 pub struct ProjectDoc;
 
@@ -43,6 +61,25 @@ impl ProjectDoc {
         }
         let legacy = Self::legacy(doc).unwrap_or_else(Project::blank);
         Self::write_fresh(doc, &legacy);
+    }
+
+    /// Give a document that has no project yet the *shared* blank project,
+    /// then [`Self::seed`]. Called where the app opens the document (`sync`),
+    /// outside any action transaction.
+    ///
+    /// `seed` writes the blank project under the current actor, so two
+    /// replicas that each open the same empty record before syncing mint two
+    /// `image-editor.project.v2` maps; a merge keeps one and every adjustment
+    /// made under the other disappears. The blank project is instead adopted
+    /// from one canonical change (fixed actor, no dependencies, time 0), which
+    /// is byte-identical on every replica and so deduplicates on merge.
+    pub fn open_shared(doc: &mut AutoCommit) {
+        let untouched =
+            doc.get_all(&ROOT, V2_KEY).is_ok_and(|v| v.is_empty()) && Self::legacy(doc).is_none();
+        if untouched && let Some(genesis) = blank_genesis() {
+            let _ = doc.load_incremental(genesis);
+        }
+        Self::seed(doc);
     }
 
     /// Materialize the bounded project projection used by the UI, search,
@@ -679,6 +716,41 @@ mod tests {
         let mut copy = AutoCommit::load(&right.save()).unwrap();
         left.merge(&mut copy).unwrap();
     }
+    /// Two replicas open the same empty record and each add an adjustment
+    /// before syncing: both must survive the merge.
+    #[test]
+    fn concurrent_first_opens_on_two_replicas_keep_both_adjustments() {
+        for _ in 0..8 {
+            let mut base = AutoCommit::new();
+            base.commit();
+            let mut a = base.fork();
+            let mut b = base.fork();
+            ProjectDoc::open_shared(&mut a);
+            ProjectDoc::open_shared(&mut b);
+            let exposure = Operation::Exposure { stops: 0.5 };
+            assert!(ProjectDoc::add_adjustment(
+                &mut a,
+                "exposure-a",
+                "Exposure",
+                &exposure
+            ));
+            assert!(ProjectDoc::add_adjustment(
+                &mut b,
+                "exposure-b",
+                "Exposure",
+                &exposure
+            ));
+            a.merge(&mut b).unwrap();
+            let project = ProjectDoc::read(&a);
+            assert!(
+                project.graph.nodes.contains_key("exposure-a")
+                    && project.graph.nodes.contains_key("exposure-b"),
+                "both replicas' adjustments survive; got {:?}",
+                project.graph.nodes.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
     #[test]
     fn migrates_legacy_scalar_without_changing_project_identity() {
         let project = Project::blank();

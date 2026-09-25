@@ -115,13 +115,45 @@ impl DocumentRouteDomain {
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
 /// device signs without changing the persisted `SignedOp` layout.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum DocumentMutation {
     /// A complete Automerge document used to seed a late joiner.
     Snapshot(#[serde(with = "serde_bytes")] Vec<u8>),
     /// One Automerge incremental change set.
     Incremental(#[serde(with = "serde_bytes")] Vec<u8>),
+}
+
+// One serializer for both the owned wire DTO and borrowed streaming output.
+// Keep the historical enum name, variant names/indices and serde_bytes body.
+#[derive(Serialize)]
+#[serde(rename = "DocumentMutation")]
+enum MutationRef<'a> {
+    Snapshot(#[serde(with = "serde_bytes")] &'a [u8]),
+    Incremental(#[serde(with = "serde_bytes")] &'a [u8]),
+}
+impl Serialize for DocumentMutation {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Snapshot(bytes) => MutationRef::Snapshot(bytes).serialize(serializer),
+            Self::Incremental(bytes) => MutationRef::Incremental(bytes).serialize(serializer),
+        }
+    }
+}
+struct SnapshotSink<F>(F);
+impl<F: FnMut(&[u8])> postcard::ser_flavors::Flavor for SnapshotSink<F> {
+    type Output = ();
+    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
+        (self.0)(&[byte]);
+        Ok(())
+    }
+    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
+        (self.0)(bytes);
+        Ok(())
+    }
+    fn finalize(self) -> postcard::Result<()> {
+        Ok(())
+    }
 }
 
 /// Failure to decode a typed document mutation from a signed payload.
@@ -168,6 +200,29 @@ pub struct DecodedDocumentMutation {
 }
 
 impl DocumentMutation {
+    /// Visit the exact snapshot encoding without allocating a payload buffer.
+    /// The visitor owns any destination allocation or digest state.
+    pub fn visit_snapshot_encoding(
+        bytes: &[u8],
+        version: DocumentWireVersion,
+        mut write: impl FnMut(&[u8]),
+    ) -> Result<(), DocumentMutationEncodeError> {
+        if bytes.len() > MAX_DOCUMENT_MUTATION_BYTES {
+            return Err(DocumentMutationEncodeError::TooLarge {
+                actual: bytes.len(),
+                max: MAX_DOCUMENT_MUTATION_BYTES,
+            });
+        }
+        write(version.prefix());
+        if version.is_v1() {
+            postcard::serialize_with_flavor(&MutationRef::Snapshot(bytes), SnapshotSink(write))
+                .map_err(|_| DocumentMutationEncodeError::Serialization)
+        } else {
+            write(&[DOCUMENT_SNAPSHOT_TAG]);
+            write(bytes);
+            Ok(())
+        }
+    }
     /// Encode the kind and Automerge bytes into the payload carried by a
     /// [`SignedOp`].
     ///

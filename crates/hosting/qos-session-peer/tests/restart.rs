@@ -477,10 +477,10 @@ async fn ordinary_host_restart_restores_bound_local_views() {
                 )
                 .unwrap()
             })
-            .find(|saved| saved.app_id == "dev.qos.notes")
+            .find(|saved| saved.app_id == "so.tilo.notes")
             .expect("ordinary Notes worker must persist its view");
         assert_eq!(notes.workspace_id, before.room);
-        assert_eq!(notes.application.as_ref().unwrap().app_id, "dev.qos.notes");
+        assert_eq!(notes.application.as_ref().unwrap().app_id, "so.tilo.notes");
         if let Some(previous) = &saved_notes {
             assert_eq!(notes.device_id, previous.device_id);
             assert_eq!(notes.instance_id, previous.instance_id);
@@ -739,7 +739,7 @@ fn authenticated_encryption_obligation_is_committed_even_without_plaintext_check
             .is_some()
     );
     assert!(!owner.permits_publication());
-    assert!(owner.outgoing().is_empty());
+    assert!(outgoing_bytes(&owner).is_empty());
     drop(owner);
     let mut restored = SessionOwner::open(&path).unwrap();
     assert!(!restored.permits_publication());
@@ -817,8 +817,16 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
             let status: serde_json::Value = serde_json::from_str(body).unwrap();
             let generation = status["generation"].as_u64().unwrap();
             let subscription = status["native_subscription_generation"].as_u64().unwrap();
+            assert!(
+                status["action_error"].is_null(),
+                "remote reconnect must retain committed local worker authority in cycle {cycle}: {status}"
+            );
+            // The first cycle commits the initial subscription. A reconnect
+            // with nothing new to commit re-subscribes without a durable write,
+            // so only the subscription generation must advance.
             if status["native_peer"] == "subscribed"
-                && generation > last_generation
+                && status["actions"] == "ready"
+                && (generation > last_generation || (cycle > 0 && generation == last_generation))
                 && subscription > last_subscription
             {
                 last_subscription = subscription;
@@ -961,7 +969,7 @@ fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
     let messages = source
         .bootstrap_messages(&key, web_time::SystemTime::now())
         .unwrap();
-    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id=="dev.qos.word-processor" && record_id=="tab:0000000000000001")).unwrap().clone();
+    let snapshot=messages.iter().find(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id=="so.tilo.word-processor" && record_id=="tab:0000000000000001")).unwrap().clone();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
     assert!(
         owner.receive(origin, snapshot).unwrap().is_none(),
@@ -1004,19 +1012,19 @@ fn published_durability_receipts_bind_committed_generation_and_survive_failed_ba
         assert_eq!(proof.generation, receipt.generation);
         assert_eq!(proof.coverage.heads, row.heads);
     }
-    let outgoing = owner.outgoing().to_vec();
+    let outgoing = outgoing_bytes(&owner).to_vec();
     let before = owner.status();
     fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
     fs::create_dir(path.join("session.bin")).unwrap();
     assert!(owner.refresh_checkpoint().is_err());
     assert!(!owner.permits_publication());
-    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
     assert_eq!(owner.status(), before);
     fs::remove_dir(path.join("session.bin")).unwrap();
     fs::rename(path.join("saved.bin"), path.join("session.bin")).unwrap();
     drop(owner);
     let owner = SessionOwner::open(&path).unwrap();
-    assert_eq!(owner.outgoing(), outgoing);
+    assert_eq!(outgoing_bytes(&owner), outgoing);
     for row in receipt.records {
         assert_eq!(
             owner
@@ -1038,14 +1046,14 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
     let owner = qos_session_peer::SessionOwner::initialize(&root).unwrap();
     let before = owner.status();
     assert!(
-        before.records.iter().any(|r| r.app_id == "dev.qos.notes"),
+        before.records.iter().any(|r| r.app_id == "so.tilo.notes"),
         "desktop must include a real initialized Notes record"
     );
     let writer = owner
         .peer()
-        .document("dev.qos.word-processor", "tab:0000000000000001")
+        .document("so.tilo.word-processor", "tab:0000000000000001")
         .unwrap();
-    let chat = owner.peer().document("dev.qos.chat", "").unwrap();
+    let chat = owner.peer().document("so.tilo.chat", "").unwrap();
     let message = owner.peer().room_message();
     let qos_peer_state::NeighbourMsg::SyncResp { changes, .. } = message else {
         panic!("room state")
@@ -1072,11 +1080,11 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
         assert_eq!(
             owner
                 .peer()
-                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .document("so.tilo.word-processor", "tab:0000000000000001")
                 .unwrap(),
             writer
         );
-        assert_eq!(owner.peer().document("dev.qos.chat", "").unwrap(), chat);
+        assert_eq!(owner.peer().document("so.tilo.chat", "").unwrap(), chat);
         let qos_peer_state::NeighbourMsg::SyncResp { changes, .. } = owner.peer().room_message()
         else {
             panic!("room state")
@@ -1090,4 +1098,8 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
         .unwrap();
         assert_eq!(doc.get_heads(), heads);
     }
+}
+
+fn outgoing_bytes(owner: &qos_session_peer::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }

@@ -1,0 +1,612 @@
+import type { Reader, Writer } from "../stream.ts";
+import * as Varint from "../varint.ts";
+import { type IetfVersion, Version } from "./version.ts";
+
+/// Setup Option key constants (separate namespace from Message Parameters).
+export const SetupOption = {
+	Path: 1n,
+	MaxRequestId: 2n,
+	AuthorizationToken: 3n,
+	MaxAuthTokenCacheSize: 4n,
+	Authority: 5n,
+	Implementation: 7n,
+	/** RELAY_HOPS, from the MoQ Cluster extension. See `cluster.ts`. */
+	RelayHops: 0x40b55n,
+	/** RELAY_COST, from the MoQ Cluster extension. See `cluster.ts`. */
+	RelayCost: 0x40b56n,
+	/** SOLICIT, from the MoQ Solicit extension. See `solicit.ts`. */
+	Solicit: 0x40b5an,
+} as const;
+
+/** Maximum size of the application proof carried in an Authorization Token. */
+export const MAX_AUTHORIZATION_BYTES = 8 * 1024;
+
+/** Validate and detach an application proof before asynchronous connection work begins. */
+export function copyAuthorization(authorization: Uint8Array): Uint8Array {
+	if (authorization.byteLength > MAX_AUTHORIZATION_BYTES) {
+		throw new RangeError(`authorization payload exceeds ${MAX_AUTHORIZATION_BYTES} bytes`);
+	}
+	return new Uint8Array(authorization);
+}
+
+/**
+ * Add one out-of-band Authorization Token to SETUP.
+ *
+ * Draft 21 encodes a token as Alias Type, Token Type, then the token value. The
+ * application proof is opaque to moq-net; type 0 identifies an out-of-band token and
+ * alias type 3 carries the value directly. The surrounding Setup Option supplies the
+ * length, so the token value has no inner length prefix.
+ */
+export function setAuthorization(options: SetupOptions, authorization: Uint8Array): void {
+	const proof = copyAuthorization(authorization);
+
+	const token = new Uint8Array(2 + proof.byteLength);
+	token[0] = 0x03; // Alias Type: USE_VALUE
+	token[1] = 0x00; // Token Type: application-defined out-of-band token
+	token.set(proof, 2);
+	options.setBytes(SetupOption.AuthorizationToken, token);
+}
+
+/// Setup Options — used in SETUP messages.
+///
+/// In d14-d16 these are count-prefixed ("Setup Parameters").
+/// In d17 these have no count prefix ("Setup Options") and read/write to end of message.
+export class SetupOptions {
+	vars: Map<bigint, bigint>;
+	bytes: Map<bigint, Uint8Array>;
+
+	constructor() {
+		this.vars = new Map();
+		this.bytes = new Map();
+	}
+
+	get size() {
+		return this.vars.size + this.bytes.size;
+	}
+
+	setBytes(id: bigint, value: Uint8Array) {
+		if (id % 2n !== 1n) {
+			throw new Error(`invalid parameter id: ${id.toString()}, must be odd`);
+		}
+		this.bytes.set(id, value);
+	}
+
+	setVarint(id: bigint, value: bigint) {
+		if (id % 2n !== 0n) {
+			throw new Error(`invalid parameter id: ${id.toString()}, must be even`);
+		}
+		this.vars.set(id, value);
+	}
+
+	getBytes(id: bigint): Uint8Array | undefined {
+		if (id % 2n !== 1n) {
+			throw new Error(`invalid parameter id: ${id.toString()}, must be odd`);
+		}
+		return this.bytes.get(id);
+	}
+
+	getVarint(id: bigint): bigint | undefined {
+		if (id % 2n !== 0n) {
+			throw new Error(`invalid parameter id: ${id.toString()}, must be even`);
+		}
+		return this.vars.get(id);
+	}
+
+	removeBytes(id: bigint): boolean {
+		if (id % 2n !== 1n) {
+			throw new Error(`invalid parameter id: ${id.toString()}, must be odd`);
+		}
+		return this.bytes.delete(id);
+	}
+
+	removeVarint(id: bigint): boolean {
+		if (id % 2n !== 0n) {
+			throw new Error(`invalid parameter id: ${id.toString()}, must be even`);
+		}
+		return this.vars.delete(id);
+	}
+
+	async encode(w: Writer, version: IetfVersion) {
+		if (version !== Version.DRAFT_14 && version !== Version.DRAFT_15) {
+			// d17+: no count prefix; d16: count prefix
+			if (version === Version.DRAFT_16) {
+				await w.u53(this.vars.size + this.bytes.size);
+			}
+
+			// Delta encoding: collect all keys, sort, encode deltas
+			const all: { key: bigint; isVar: boolean }[] = [];
+			for (const id of this.vars.keys()) all.push({ key: id, isVar: true });
+			for (const id of this.bytes.keys()) all.push({ key: id, isVar: false });
+			all.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+			let prevId = 0n;
+			for (let i = 0; i < all.length; i++) {
+				const { key, isVar } = all[i];
+				const delta = i === 0 ? key : key - prevId;
+				prevId = key;
+				await w.u62(delta);
+
+				if (isVar) {
+					// biome-ignore lint/style/noNonNullAssertion: key is guaranteed to exist in vars map
+					await w.u62(this.vars.get(key)!);
+				} else {
+					// biome-ignore lint/style/noNonNullAssertion: key is guaranteed to exist in bytes map
+					const value = this.bytes.get(key)!;
+					await w.u53(value.length);
+					await w.write(value);
+				}
+			}
+		} else {
+			await w.u53(this.vars.size + this.bytes.size);
+
+			for (const [id, value] of this.vars) {
+				await w.u62(id);
+				await w.u62(value);
+			}
+
+			for (const [id, value] of this.bytes) {
+				await w.u62(id);
+				await w.u53(value.length);
+				await w.write(value);
+			}
+		}
+	}
+
+	static async decode(r: Reader, version: IetfVersion): Promise<SetupOptions> {
+		const params = new SetupOptions();
+
+		if (version !== Version.DRAFT_14 && version !== Version.DRAFT_15 && version !== Version.DRAFT_16) {
+			// d17+: no count prefix, read until reader is done
+			let prevType = 0n;
+			let i = 0;
+			while (!(await r.done())) {
+				const delta = await r.u62();
+				const id = i === 0 ? delta : prevType + delta;
+				prevType = id;
+				i++;
+
+				if (id % 2n === 0n) {
+					if (params.vars.has(id)) {
+						throw new Error(`duplicate parameter id: ${id.toString()}`);
+					}
+					const varint = await r.u62();
+					params.setVarint(id, varint);
+				} else {
+					if (params.bytes.has(id)) {
+						throw new Error(`duplicate parameter id: ${id.toString()}`);
+					}
+					const size = await r.u53();
+					const bytes = await r.read(size);
+					params.setBytes(id, bytes);
+				}
+			}
+		} else {
+			const count = await r.u53();
+			let prevType = 0n;
+
+			for (let i = 0; i < count; i++) {
+				let id: bigint;
+				if (version === Version.DRAFT_16) {
+					const delta = await r.u62();
+					id = i === 0 ? delta : prevType + delta;
+					prevType = id;
+				} else {
+					id = await r.u62();
+				}
+
+				if (id % 2n === 0n) {
+					if (params.vars.has(id)) {
+						throw new Error(`duplicate parameter id: ${id.toString()}`);
+					}
+					const varint = await r.u62();
+					params.setVarint(id, varint);
+				} else {
+					if (params.bytes.has(id)) {
+						throw new Error(`duplicate parameter id: ${id.toString()}`);
+					}
+					const size = await r.u53();
+					const bytes = await r.read(size);
+					params.setBytes(id, bytes);
+				}
+			}
+		}
+
+		return params;
+	}
+}
+
+// ---- Message Parameters (used in Subscribe, Publish, Fetch, etc.) ----
+// Count-prefixed KVPs through d16, then definition-specific Type-Value pairs.
+// Parameter types are delta-encoded from d16 onward.
+
+// Varint parameter IDs (even)
+const MSG_PARAM_DELIVERY_TIMEOUT = 0x02n;
+/// SUBGROUP_DELIVERY_TIMEOUT, alongside the per-object one above.
+const MSG_PARAM_SUBGROUP_DELIVERY_TIMEOUT = 0x06n;
+const MSG_PARAM_MAX_CACHE_DURATION = 0x04n;
+const MSG_PARAM_EXPIRES = 0x08n;
+const MSG_PARAM_PUBLISHER_PRIORITY = 0x0en;
+const MSG_PARAM_FORWARD = 0x10n;
+const MSG_PARAM_SUBSCRIBER_PRIORITY = 0x20n;
+const MSG_PARAM_GROUP_ORDER = 0x22n;
+/// ROUTE_COST, from the MoQ Cluster extension. See `cluster.ts`.
+const MSG_PARAM_ROUTE_COST = 0x40b58n;
+
+// Bytes parameter IDs (odd)
+const MSG_PARAM_LARGEST_OBJECT = 0x09n;
+const MSG_PARAM_SUBSCRIPTION_FILTER = 0x21n;
+/// FILL_PARAMETERS, draft-20's request for a backfill.
+const MSG_PARAM_FILL_PARAMETERS = 0x23n;
+/// INCLUDE_PROPERTIES, draft-20's opt-out from Track Properties. Its own section calls the
+/// value a uint8, but 0x35 is odd, so the Key-Value-Pair rule length prefixes it.
+const MSG_PARAM_INCLUDE_PROPERTIES = 0x35n;
+/// HOP_PATH, from the MoQ Cluster extension. See `cluster.ts`.
+const MSG_PARAM_HOP_PATH = 0x40b57n;
+
+type MessageParamKind = "varint" | "uint8" | "bool" | "location" | "bytes";
+/** A `{Group, Object}` pair carried by a message parameter, such as LARGEST_OBJECT. */
+export type MessageLocation = { groupId: bigint; objectId: bigint };
+
+function getMessageParamKind(id: bigint): MessageParamKind {
+	switch (id) {
+		case MSG_PARAM_DELIVERY_TIMEOUT:
+		case MSG_PARAM_SUBGROUP_DELIVERY_TIMEOUT:
+		case MSG_PARAM_MAX_CACHE_DURATION:
+		case MSG_PARAM_EXPIRES:
+		case MSG_PARAM_ROUTE_COST:
+			return "varint";
+		case MSG_PARAM_PUBLISHER_PRIORITY:
+		case MSG_PARAM_SUBSCRIBER_PRIORITY:
+		case MSG_PARAM_GROUP_ORDER:
+			return "uint8";
+		case MSG_PARAM_FORWARD:
+			return "bool";
+		case MSG_PARAM_LARGEST_OBJECT:
+			return "location";
+		case MSG_PARAM_SUBSCRIPTION_FILTER:
+		case MSG_PARAM_FILL_PARAMETERS:
+		case MSG_PARAM_INCLUDE_PROPERTIES:
+		case MSG_PARAM_HOP_PATH:
+			return "bytes";
+		default:
+			throw new Error(`unknown message parameter id: ${id.toString()}`);
+	}
+}
+
+/**
+ * The draft-16 and earlier form: draft-16 section 9.2 serializes every Message Parameter as
+ * a Key-Value-Pair, and section 9.2.2.7 calls LARGEST_OBJECT "a length-prefixed Location
+ * structure", so the two QUIC-style varints sit inside a byte string.
+ */
+function decodeLocation(data: Uint8Array): MessageLocation {
+	const [groupId, objectData] = Varint.decodeBigInt(data);
+	const [objectId, trailing] = Varint.decodeBigInt(objectData);
+	if (trailing.length !== 0) {
+		throw new Error("trailing bytes in message parameter Location");
+	}
+	return { groupId, objectId };
+}
+
+function encodeLocation({ groupId, objectId }: MessageLocation): Uint8Array {
+	const group = Varint.encode(groupId);
+	const object = Varint.encode(objectId);
+	const combined = new Uint8Array(group.length + object.length);
+	combined.set(group, 0);
+	combined.set(object, group.length);
+	return combined;
+}
+
+/** Message parameters used in control messages. */
+export class Parameters {
+	vars: Map<bigint, bigint>;
+	bytes: Map<bigint, Uint8Array>;
+	#locations: Map<bigint, MessageLocation>;
+
+	constructor() {
+		this.vars = new Map();
+		this.bytes = new Map();
+		this.#locations = new Map();
+	}
+
+	// --- Numeric accessors ---
+
+	get subscriberPriority(): number | undefined {
+		const v = this.vars.get(MSG_PARAM_SUBSCRIBER_PRIORITY);
+		return v !== undefined ? Number(v) : undefined;
+	}
+
+	set subscriberPriority(v: number) {
+		this.vars.set(MSG_PARAM_SUBSCRIBER_PRIORITY, BigInt(v));
+	}
+
+	get groupOrder(): number | undefined {
+		const v = this.vars.get(MSG_PARAM_GROUP_ORDER);
+		return v !== undefined ? Number(v) : undefined;
+	}
+
+	set groupOrder(v: number) {
+		this.vars.set(MSG_PARAM_GROUP_ORDER, BigInt(v));
+	}
+
+	get forward(): boolean | undefined {
+		const v = this.vars.get(MSG_PARAM_FORWARD);
+		return v !== undefined ? v !== 0n : undefined;
+	}
+
+	set forward(v: boolean) {
+		this.vars.set(MSG_PARAM_FORWARD, v ? 1n : 0n);
+	}
+
+	get publisherPriority(): number | undefined {
+		const v = this.vars.get(MSG_PARAM_PUBLISHER_PRIORITY);
+		return v !== undefined ? Number(v) : undefined;
+	}
+
+	set publisherPriority(v: number) {
+		this.vars.set(MSG_PARAM_PUBLISHER_PRIORITY, BigInt(v));
+	}
+
+	get expires(): bigint | undefined {
+		return this.vars.get(MSG_PARAM_EXPIRES);
+	}
+
+	set expires(v: bigint) {
+		this.vars.set(MSG_PARAM_EXPIRES, v);
+	}
+
+	get deliveryTimeout(): bigint | undefined {
+		return this.vars.get(MSG_PARAM_DELIVERY_TIMEOUT);
+	}
+
+	set deliveryTimeout(v: bigint) {
+		this.vars.set(MSG_PARAM_DELIVERY_TIMEOUT, v);
+	}
+
+	get maxCacheDuration(): bigint | undefined {
+		return this.vars.get(MSG_PARAM_MAX_CACHE_DURATION);
+	}
+
+	set maxCacheDuration(v: bigint) {
+		this.vars.set(MSG_PARAM_MAX_CACHE_DURATION, v);
+	}
+
+	// --- Bytes accessors ---
+
+	get largest(): MessageLocation | undefined {
+		const location = this.#locations.get(MSG_PARAM_LARGEST_OBJECT);
+		return location && { ...location };
+	}
+
+	set largest(v: MessageLocation) {
+		this.#locations.set(MSG_PARAM_LARGEST_OBJECT, { ...v });
+	}
+
+	/**
+	 * LOCATION_FILTER, as its raw parameter value.
+	 *
+	 * Raw because the encoding is version dependent: a Filter Type tag through draft-19, a
+	 * list of up to four varints from draft-20 on. See `filter.ts`.
+	 */
+	get subscriptionFilter(): Uint8Array | undefined {
+		return this.bytes.get(MSG_PARAM_SUBSCRIPTION_FILTER);
+	}
+
+	set subscriptionFilter(v: Uint8Array) {
+		this.bytes.set(MSG_PARAM_SUBSCRIPTION_FILTER, v);
+	}
+
+	/** FILL_PARAMETERS: the draft-20 backfill request, as its raw parameter value. */
+	get fillParameters(): Uint8Array | undefined {
+		return this.bytes.get(MSG_PARAM_FILL_PARAMETERS);
+	}
+
+	set fillParameters(v: Uint8Array) {
+		this.bytes.set(MSG_PARAM_FILL_PARAMETERS, v);
+	}
+
+	/** INCLUDE_PROPERTIES: whether the peer wants Track Properties on the response. */
+	get includeProperties(): boolean | undefined {
+		const data = this.bytes.get(MSG_PARAM_INCLUDE_PROPERTIES);
+		if (!data) return undefined;
+		// The draft allows exactly 0 or 1; anything else is a protocol violation.
+		if (data.length !== 1 || data[0] > 1) {
+			throw new Error(`invalid INCLUDE_PROPERTIES value: ${data.join(",")}`);
+		}
+		return data[0] === 1;
+	}
+
+	set includeProperties(v: boolean) {
+		this.bytes.set(MSG_PARAM_INCLUDE_PROPERTIES, new Uint8Array([v ? 1 : 0]));
+	}
+
+	/** HOP_PATH: the hop chain an advertisement traversed, as its raw parameter value. */
+	get hopPath(): Uint8Array | undefined {
+		return this.bytes.get(MSG_PARAM_HOP_PATH);
+	}
+
+	set hopPath(v: Uint8Array) {
+		this.bytes.set(MSG_PARAM_HOP_PATH, v);
+	}
+
+	/** ROUTE_COST: the accumulated cost of that path. Absent means 0. */
+	get routeCost(): bigint | undefined {
+		return this.vars.get(MSG_PARAM_ROUTE_COST);
+	}
+
+	set routeCost(v: bigint) {
+		this.vars.set(MSG_PARAM_ROUTE_COST, v);
+	}
+
+	async encode(w: Writer, version: IetfVersion) {
+		await w.u53(this.vars.size + this.bytes.size + this.#locations.size);
+
+		if (version === Version.DRAFT_14 || version === Version.DRAFT_15) {
+			for (const [id, value] of this.vars) {
+				await w.u62(id);
+				await w.u62(value);
+			}
+
+			for (const [id, value] of this.bytes) {
+				await w.u62(id);
+				await w.u53(value.length);
+				await w.write(value);
+			}
+
+			for (const [id, value] of this.#locations) {
+				const encoded = encodeLocation(value);
+				await w.u62(id);
+				await w.u53(encoded.length);
+				await w.write(encoded);
+			}
+		} else {
+			// d16+: Delta encoding, merge all parameter storage, sort by key
+			const all: { key: bigint; storage: "var" | "bytes" | "location" }[] = [];
+			for (const id of this.vars.keys()) all.push({ key: id, storage: "var" });
+			for (const id of this.bytes.keys()) all.push({ key: id, storage: "bytes" });
+			for (const id of this.#locations.keys()) all.push({ key: id, storage: "location" });
+			all.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+
+			let prevId = 0n;
+			for (let i = 0; i < all.length; i++) {
+				const { key, storage } = all[i];
+				const delta = i === 0 ? key : key - prevId;
+				prevId = key;
+				await w.u62(delta);
+
+				if (version === Version.DRAFT_16) {
+					if (storage === "var") {
+						// biome-ignore lint/style/noNonNullAssertion: key is guaranteed to exist in vars map
+						await w.u62(this.vars.get(key)!);
+					} else {
+						const value =
+							storage === "bytes"
+								? // biome-ignore lint/style/noNonNullAssertion: key is guaranteed to exist in bytes map
+									this.bytes.get(key)!
+								: // biome-ignore lint/style/noNonNullAssertion: key is guaranteed to exist in locations map
+									encodeLocation(this.#locations.get(key)!);
+						await w.u53(value.length);
+						await w.write(value);
+					}
+					continue;
+				}
+
+				switch (getMessageParamKind(key)) {
+					case "varint": {
+						const value = this.vars.get(key);
+						if (value === undefined) throw new Error(`invalid varint message parameter: ${key.toString()}`);
+						await w.u62(value);
+						break;
+					}
+					case "uint8": {
+						const value = this.vars.get(key);
+						if (value === undefined || value < 0n || value > 0xffn) {
+							throw new Error(`invalid uint8 message parameter: ${key.toString()}`);
+						}
+						await w.u8(Number(value));
+						break;
+					}
+					case "bool": {
+						const value = this.vars.get(key);
+						if (value !== 0n && value !== 1n) {
+							throw new Error(`invalid bool message parameter: ${key.toString()}`);
+						}
+						await w.bool(value === 1n);
+						break;
+					}
+					case "location": {
+						const location = this.#locations.get(key);
+						if (location === undefined)
+							throw new Error(`invalid Location message parameter: ${key.toString()}`);
+						// Draft-17 section 9.3, and section 10.2 from draft-18 on, drops the
+						// Length from a Message Parameter and defines a Location value as
+						// "Two consecutive varints (Group, Object)", so they go out bare.
+						await w.u62(location.groupId);
+						await w.u62(location.objectId);
+						break;
+					}
+					case "bytes": {
+						const value = this.bytes.get(key);
+						if (value === undefined) throw new Error(`invalid bytes message parameter: ${key.toString()}`);
+						await w.u53(value.length);
+						await w.write(value);
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	static async decode(r: Reader, version: IetfVersion): Promise<Parameters> {
+		const count = await r.u53();
+		const params = new Parameters();
+
+		let prevType = 0n;
+
+		for (let i = 0; i < count; i++) {
+			let id: bigint;
+			if (version === Version.DRAFT_14 || version === Version.DRAFT_15) {
+				id = await r.u62();
+			} else {
+				// d16+: delta encoding
+				const delta = await r.u62();
+				id = i === 0 ? delta : prevType + delta;
+				prevType = id;
+			}
+
+			if (version === Version.DRAFT_14 || version === Version.DRAFT_15 || version === Version.DRAFT_16) {
+				if (id % 2n === 0n) {
+					if (params.vars.has(id)) {
+						throw new Error(`duplicate message parameter id: ${id.toString()}`);
+					}
+					const varint = await r.u62();
+					params.vars.set(id, varint);
+				} else {
+					const size = await r.u53();
+					const bytes = await r.read(size);
+					if (id === MSG_PARAM_LARGEST_OBJECT) {
+						if (params.#locations.has(id)) {
+							throw new Error(`duplicate message parameter id: ${id.toString()}`);
+						}
+						params.#locations.set(id, decodeLocation(bytes));
+					} else {
+						if (params.bytes.has(id)) {
+							throw new Error(`duplicate message parameter id: ${id.toString()}`);
+						}
+						params.bytes.set(id, bytes);
+					}
+				}
+				continue;
+			}
+
+			if (params.vars.has(id) || params.bytes.has(id) || params.#locations.has(id)) {
+				throw new Error(`duplicate message parameter id: ${id.toString()}`);
+			}
+
+			switch (getMessageParamKind(id)) {
+				case "varint":
+					params.vars.set(id, await r.u62());
+					break;
+				case "uint8":
+					params.vars.set(id, BigInt(await r.u8()));
+					break;
+				case "bool":
+					params.vars.set(id, (await r.bool()) ? 1n : 0n);
+					break;
+				case "location": {
+					// Two bare varints from draft-17 on; see the matching comment in encode.
+					const groupId = await r.u62();
+					const objectId = await r.u62();
+					params.#locations.set(id, { groupId, objectId });
+					break;
+				}
+				case "bytes": {
+					const size = await r.u53();
+					params.bytes.set(id, await r.read(size));
+					break;
+				}
+			}
+		}
+
+		return params;
+	}
+}

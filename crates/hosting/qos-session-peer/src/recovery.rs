@@ -12,8 +12,8 @@ use ui::history_mode::restore::{
     prepare_external_content_import,
 };
 
-const CHAT: &str = "dev.qos.chat";
-const WRITER: &str = "dev.qos.word-processor";
+const CHAT: &str = "so.tilo.chat";
+const WRITER: &str = "so.tilo.word-processor";
 const WRITER_RECORD: &str = "tab:0000000000000001";
 const WRITER_KEYS: &[&str] = &[
     "blocks",
@@ -268,7 +268,11 @@ pub fn import_verified_archive(
         let entry = manifest
             .documents
             .iter()
-            .find(|entry| entry.app_id == app && entry.record_id == record)
+            // Archives reviewed before the rename name the retired ids.
+            .find(|entry| {
+                ui::application::lookup_compatible_first_party_app_ids(&entry.app_id, app)
+                    && entry.record_id == record
+            })
             .context("reviewed canonical record missing")?;
         ensure!(
             entry.canonical_file == format!("document-{index}.automerge")
@@ -479,14 +483,14 @@ mod tests {
         std::fs::create_dir(archive).unwrap();
         let mut documents = vec![];
         for (index, (app, record)) in [
-            ("dev.qos.chat", ""),
-            ("dev.qos.word-processor", "tab:0000000000000001"),
+            ("so.tilo.chat", ""),
+            ("so.tilo.word-processor", "tab:0000000000000001"),
         ]
         .iter()
         .enumerate()
         {
             let mut doc = AutoCommit::load(&owner.peer().document(app, record).unwrap()).unwrap();
-            if *app == "dev.qos.chat" {
+            if *app == "so.tilo.chat" {
                 chat::doc::ChatDoc::push_message_with_id(
                     &mut doc,
                     "c_general",
@@ -510,7 +514,9 @@ mod tests {
             let bytes = doc.save();
             let file = format!("document-{index}.automerge");
             std::fs::write(archive.join(&file), &bytes).unwrap();
-            documents.push(serde_json::json!({"app_id":app,"record_id":record,"canonical_file":file,"canonical_blake3":blake3::hash(&bytes).to_hex().to_string(),"heads":heads,"canonical_record_schema":"verified","causally_complete":true}));
+            // Reviewed archives predate the rename and name the retired ids.
+            let archived_app = app.replacen("so.tilo.", "dev.qos.", 1);
+            documents.push(serde_json::json!({"app_id":archived_app,"record_id":record,"canonical_file":file,"canonical_blake3":blake3::hash(&bytes).to_hex().to_string(),"heads":heads,"canonical_record_schema":"verified","causally_complete":true}));
         }
         let manifest = serde_json::to_vec(&serde_json::json!({"format":"qos-offline-archive-inspection-v1","status":"historical_content_verified","verification_mode":"historical_content_only","live_admission":false,"source_room":owner.peer().room(),"documents":documents,"operation_checks":[{"signature":"verified","signer":hex::encode(owner.peer().authority().device_public_key)}]})).unwrap();
         std::fs::write(archive.join("manifest.json"), &manifest).unwrap();
@@ -526,7 +532,7 @@ mod tests {
         let mut new = SessionOwner::initialize(&dir.path().join("new")).unwrap();
         let authority = new.peer().authority().clone();
         let mut initial =
-            AutoCommit::load(&new.peer().document("dev.qos.chat", "").unwrap()).unwrap();
+            AutoCommit::load(&new.peer().document("so.tilo.chat", "").unwrap()).unwrap();
         let initial_heads = initial.get_heads();
         let metadata = initial.get_all(ROOT, "qos:record").unwrap();
         let schema_metadata = ["qos:schema_version", "tilo:schema_version"]
@@ -534,7 +540,7 @@ mod tests {
         import_verified_archive(&mut new, &archive, &digest).unwrap();
         assert_eq!(new.peer().authority(), &authority);
         assert_ne!(new.peer().room(), old.peer().room());
-        let mut doc = AutoCommit::load(&new.peer().document("dev.qos.chat", "").unwrap()).unwrap();
+        let mut doc = AutoCommit::load(&new.peer().document("so.tilo.chat", "").unwrap()).unwrap();
         assert_eq!(doc.get_all(ROOT, "qos:record").unwrap(), metadata);
         for (key, expected) in schema_metadata {
             assert_eq!(doc.get_all(ROOT, key).unwrap(), expected);
@@ -624,7 +630,7 @@ mod tests {
         assert_eq!(owner.peer().authority(), &authority);
         assert_eq!(owner.peer().room(), room);
         assert_ne!(room, "f378f3d5-b73b-420b-a3f0-8e74098b1b37");
-        let chat = AutoCommit::load(&owner.peer().document("dev.qos.chat", "").unwrap()).unwrap();
+        let chat = AutoCommit::load(&owner.peer().document("so.tilo.chat", "").unwrap()).unwrap();
         assert_eq!(chat::doc::ChatDoc::list_channels(&chat).len(), 2);
         let channels = chat::doc::ChatDoc::list_channels(&chat);
         assert_eq!(
@@ -637,7 +643,7 @@ mod tests {
         let writer = AutoCommit::load(
             &owner
                 .peer()
-                .document("dev.qos.word-processor", "tab:0000000000000001")
+                .document("so.tilo.word-processor", "tab:0000000000000001")
                 .unwrap(),
         )
         .unwrap();
