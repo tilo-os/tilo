@@ -1958,6 +1958,8 @@ mod tests {
                 note: String::new(),
             };
         persisted.flush_to_disk();
+        // The prior session exits, releasing the state file's single writer.
+        drop(persisted);
 
         let mut restored =
             crate::shell::persist::load_tree_from(&state_path).expect("restore tree");

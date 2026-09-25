@@ -1072,8 +1072,11 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     std::fs::write(&publisher, "#!/bin/sh\ncp \"$5\" \"$QOS_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$QOS_NATIVE_OWNER_STATE\" \"$QOS_NATIVE_OWNER_STATE_OBSERVED\"\n").unwrap();
     std::fs::set_permissions(&publisher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let values = [
-        ("QOS_FS_AUTHORITY_PUBLISHER", publisher),
-        ("QOS_FS_AUTHORITY_CACHE_DIR", directory.path().join("cache")),
+        ("TILO_FS_AUTHORITY_PUBLISHER", publisher),
+        (
+            "TILO_FS_AUTHORITY_CACHE_DIR",
+            directory.path().join("cache"),
+        ),
         ("QOS_NATIVE_OWNER_ACL_OBSERVED", observed_acl.clone()),
         ("QOS_NATIVE_OWNER_STATE", path.clone()),
         ("QOS_NATIVE_OWNER_STATE_OBSERVED", observed_state.clone()),

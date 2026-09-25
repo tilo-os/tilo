@@ -7573,6 +7573,8 @@ mod workspace_tree_lifecycle_tests {
         .unwrap();
         tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
             .unwrap();
+        // A restart ends the process that held the state file's single writer.
+        drop(tree);
         let mut tree = crate::shell::persist::load_tree_from(&state_path).unwrap();
         tree.persist_path = Some(state_path);
         let wrong_acceptance =

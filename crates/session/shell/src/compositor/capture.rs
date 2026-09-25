@@ -2274,13 +2274,9 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let store = frame_builder.chrome().records().clone();
+        // The record was created explicitly above by its owning action; the
+        // painted host already holds it open, so bind and write through it.
         let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
-        if !store.open_record(&checkout) {
-            store
-                .create_record(&checkout)
-                .expect("capture fixture creates its Notes record");
-        }
         frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)

@@ -176,8 +176,6 @@ mod tests {
             "projection.open",
             "collaborators.open",
             "room.activity.open",
-            "peer.invite",
-            "peer.connect",
         ] {
             assert_eq!(
                 required_capability(&resource("actions", id), &ResourceKind::Action),
@@ -202,7 +200,12 @@ mod tests {
             assert_eq!(verb, Verb::Write, "{id}");
         }
 
-        for id in ["peer.invite.named", "agent.invite"] {
+        for id in [
+            "peer.invite",
+            "peer.invite.named",
+            "peer.connect",
+            "agent.invite",
+        ] {
             let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
                 .unwrap_or_else(|| panic!("{id} must be gated"));
             assert_eq!(verb, Verb::Invite, "{id}");
@@ -334,10 +337,7 @@ mod tests {
             "granting Write must make the act visible"
         );
         assert!(
-            !granted_view.can_see(
-                &resource("actions", "peer.invite.named"),
-                &ResourceKind::Action
-            ),
+            !granted_view.can_see(&resource("actions", "peer.invite"), &ResourceKind::Action),
             "Write must not confer Invite"
         );
     }

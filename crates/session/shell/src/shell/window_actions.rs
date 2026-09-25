@@ -674,6 +674,8 @@ mod tests {
             .id;
 
         tree.set_active(target);
+        // A restart ends the process that held the state file's single writer.
+        drop(tree);
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("workspace selection must leave a loadable state file");
@@ -685,6 +687,7 @@ mod tests {
         let mut moved_up = restarted;
         moved_up.persist_path = Some(state_path.clone());
         assert!(moved_up.switch_up());
+        drop(moved_up);
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("moving to the previous workspace must persist immediately");
         assert_eq!(restarted.desktop.active, first);
@@ -692,6 +695,7 @@ mod tests {
         let mut moved_down = restarted;
         moved_down.persist_path = Some(state_path.clone());
         assert!(moved_down.switch_down());
+        drop(moved_down);
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("moving to the next workspace must persist immediately");
         assert_eq!(restarted.desktop.active, target);

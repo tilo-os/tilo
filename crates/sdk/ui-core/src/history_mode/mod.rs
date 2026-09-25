@@ -471,12 +471,7 @@ pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
 }
 
 fn is_effect_receipt(entry: &HistoryEntry) -> bool {
-    entry.context.as_ref().is_some_and(|context| {
-        context
-            .facets
-            .iter()
-            .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
-    })
+    entry.is_effect_receipt()
 }
 
 #[cfg(test)]

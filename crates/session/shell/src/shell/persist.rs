@@ -1230,6 +1230,9 @@ mod tests {
 
         let original = WorkspaceTree::bootstrap_demo();
         save_tree_to(&original, &path).expect("save");
+        // Simulate the writing process exiting and releasing its state-file
+        // writer; the load below may migrate and rewrite the file.
+        drop(original);
 
         let (mut loaded, notice) = load_or_default(&path);
         assert!(
@@ -1282,6 +1285,8 @@ mod tests {
         }
         std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
             .expect("write legacy state");
+        // The writer of the fixture is gone before the first boot.
+        drop(original);
 
         let (mut first_boot, _) = load_or_default(&path);
         // Identify the tree by the id the fixture wrote, not by its
@@ -1316,6 +1321,7 @@ mod tests {
 
         // The mint and the write are one operation, so the *next* boot
         // reads the same value rather than minting again.
+        drop(first_boot);
         let (mut second_boot, _) = load_or_default(&path);
         assert_eq!(
             second_boot.desktop.workspaces[0].room, room,

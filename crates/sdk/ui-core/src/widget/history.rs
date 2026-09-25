@@ -111,13 +111,23 @@ impl HistoryEntry {
     pub fn is_revertible(&self) -> bool {
         self.redaction.is_none()
             && op_class_is_revertible(self.op_class)
-            && !self.context.as_ref().is_some_and(|context| {
-                context
-                    .facets
-                    .iter()
-                    .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
-            })
+            && !self.is_effect_receipt()
     }
+
+    /// Whether this row is a durable effect receipt: external work recorded
+    /// in the activity timeline rather than a document mutation.
+    pub fn is_effect_receipt(&self) -> bool {
+        self.context
+            .as_ref()
+            .is_some_and(|context| context.facets.iter().any(is_effect_receipt_facet))
+    }
+}
+
+/// The facet an effect receipt carries. `tilo.receipt` is the current key;
+/// `qos.receipt` is what earlier builds and the action broker wrote into
+/// documents that are still replayed, so both are recognised.
+fn is_effect_receipt_facet(facet: &ActionFacet) -> bool {
+    matches!(facet.key.as_str(), "tilo.receipt" | "qos.receipt") && facet.value == "effect"
 }
 
 /// Empty fields are "match everything" so a freshly-constructed filter
