@@ -16,6 +16,10 @@ submodules remain separately pinned and must be clean before application.
    SME controls a separate streaming vector length, but is likewise outside
    the x86 ABI. The regression is built for both guest widths and includes
    ordinary `prctl` behavior.
+3. **Thunk identifier hashing:** use LLVM's SHA-256 implementation already
+   linked into the generator instead of requiring OpenSSL headers and libcrypto
+   in the FEX cross-build toolchain. The input bytes, 32-byte output, and
+   generated thunk identifiers remain unchanged.
 
 The payload builder applies the checksum-verified series in a disposable source
 copy and ships the patch files plus its application record. The OS consumer
@@ -24,7 +28,7 @@ runtime acceptance.
 
 ## Validation boundary
 
-Both patches apply to a clean checkout of the pinned commit and reproduce the
+All patches apply to a clean checkout of the pinned commit and reproduce the
 source files used by the incremental build. The compiler completed both native
 executables and the new 32/64-bit syscall tests. The full native upstream suite was started against the previously recorded
 baseline, but its final result has not been collected. The validation agent was
