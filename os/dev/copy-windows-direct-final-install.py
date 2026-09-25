@@ -7,8 +7,8 @@ ESP, /boot, and LUKS-root content extents. Only seven-partition direct plans
 are accepted.
 The direct route does not create staging partitions on the physical disk or
 change UEFI firmware state. A matching source receipt binds every final extent
-to a full SHA-256 digest of the VM-installed raw image. It is an integrity
-receipt, not a CI provenance or signature attestation.
+to a full SHA-256 digest of the VM-installed raw image, a checked guest proof,
+the source ESP UKI, and CI-signed index and SLSA release provenance.
 Successful execution is not proof that the guest installed the verified CI
 image and does not make the disk bootable; guest provenance and EFI BootNext
 must be checked separately before reporting a completed physical install.
@@ -366,14 +366,23 @@ def run(args):
                 and source_receipt.get("ci_verification_key_sha256")
                 == hashlib.sha256(key.read_bytes()).hexdigest(),
                 "VM source receipt does not bind the CI verification key")
-        provenance.verify_ci_image(args.ci_image, key,
-                                   args.cosign_command_json, args.cosign_key_arg)
-        index_digest, child_digest = provenance.signed_ci_child(
+        index_digest, child_digest, children, kind = provenance.signed_ci_child(
             args.ci_image, args.ci_index_manifest, args.ci_child_manifest)
+        require(kind == "lenovo-83ed",
+                "physical install requires the signed Lenovo ARM64 CI image")
+        ci_provenance = provenance.verify_ci_image(
+            args.ci_image, key, children, kind,
+            args.cosign_command_json, args.cosign_key_arg)
         checked = provenance.checked_guest_proof(args.vm_proof_checked, child_digest)
         guest = checked["guest_proof"]
         require(source_receipt.get("ci_index_digest") == index_digest
                 and source_receipt.get("ci_child_digest") == child_digest
+                and source_receipt.get("ci_source_revision") == ci_provenance["source_revision"]
+                and source_receipt.get("ci_generation") == ci_provenance["generation"]
+                and source_receipt.get("ci_image_kind") == ci_provenance["image_kind"]
+                and source_receipt.get("ci_firmware_candidate") == ci_provenance["firmware_candidate"]
+                and source_receipt.get("ci_firmware_manifest_sha256") == ci_provenance["firmware_manifest_sha256"]
+                and source_receipt.get("ci_slsa_statement_sha256") == ci_provenance["statement_sha256"]
                 and source_receipt.get("vm_proof_checked_sha256")
                 == hashlib.sha256(args.vm_proof_checked.read_bytes()).hexdigest()
                 and source_receipt.get("installed_uki_sha256") == guest["target_uki_sha256"],
@@ -398,6 +407,11 @@ def run(args):
                 source, final_rows[0], guest["composefs_digest"])
                 == guest["target_uki_sha256"],
                 "VM source ESP UKI differs from checked guest proof")
+            loader_path, loader_hash = provenance.installed_loader(source, final_rows[0])
+            require(source_receipt.get("final_esp_partuuid") == final_rows[0]["partuuid"]
+                    and source_receipt.get("loader_path") == loader_path
+                    and source_receipt.get("loader_sha256") == loader_hash,
+                    "VM source ESP loader differs from source receipt")
     with stage.open_physical_drive(disk_number) as target:
         validate_physical(plan, stage_receipt, current, target)
         with args.source_raw.open("rb", buffering=0) as source:
@@ -419,6 +433,9 @@ def run(args):
         output["ci_child_digest"] = child_digest
         output["installed_uki_sha256"] = guest["target_uki_sha256"]
         output["vm_proof_checked_sha256"] = source_receipt["vm_proof_checked_sha256"]
+        output["final_esp_partuuid"] = final_rows[0]["partuuid"]
+        output["loader_path"] = loader_path
+        output["loader_sha256"] = loader_hash
         require(args.output is not None, "execute requires --output")
         stage.atomic_json(args.output, output)
     print(json.dumps(output, indent=2))
