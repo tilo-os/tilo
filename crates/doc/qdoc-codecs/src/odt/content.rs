@@ -511,6 +511,8 @@ struct BodyState {
     inline: Option<(usize, i32)>,
     // Grid columns the open (or covered) table cell takes: its `table:number-columns-repeated`.
     cell_repeat: usize,
+    // The outermost open list's style.
+    list_style: Option<String>,
     // The current table's style and columns, and row's style, until a cell takes them.
     table_style: Option<String>,
     table_columns: Option<String>,
@@ -520,6 +522,15 @@ struct BodyState {
 /// Block attr: a paragraph's automatic style, referenced again on export while the block's
 /// modeled paragraph attributes still agree with it.
 pub(super) const ODT_STYLE: &str = "odt_style";
+/// Whether an automatic style is one the exporter generates from the model (`qdoc` in its
+/// name), which says nothing the model does not.
+fn is_generated_style(name: &str) -> bool {
+    name.contains("qdoc")
+}
+
+/// List-item attr: the style of the list it is in, referenced again on export (with every
+/// level's numbering and bullets) while the item still numbers the way it says.
+pub(super) const ODT_LIST_STYLE: &str = "odt_list_style";
 /// Mark: a text style (a character style, or one with properties no mark represents) the
 /// covered text is wrapped in again on export.
 pub(super) const MARK_ODT_SPAN: &str = "odt_span";
@@ -769,6 +780,9 @@ impl BodyState {
             b"text:list" if self.in_text => {
                 // A nested `text:list` often omits its own style-name, continuing the parent list's style at the deeper level — so inherit the parent's ordered-ness instead of defaulting to bulleted.
                 let style = attr_val(e, b"text:style-name");
+                if self.list_stack.is_empty() {
+                    self.list_style = style.clone().filter(|s| !is_generated_style(s));
+                }
                 let ordered = style
                     .as_deref()
                     .and_then(|s| reg.list_ordered.get(s).copied())
@@ -804,6 +818,9 @@ impl BodyState {
                 );
                 let ordered = *self.list_stack.last().unwrap_or(&false);
                 doc.set_attr(&id, "ordered", ordered);
+                if let Some(s) = self.list_style.as_deref() {
+                    doc.set_attr(&id, ODT_LIST_STYLE, s);
+                }
                 // 0-based nesting depth. Match the markdown codec: only emit `level` when nested, so a top-level item's attr set stays identical across codecs.
                 let level = i64::try_from(self.list_stack.len())
                     .unwrap_or(i64::MAX)
@@ -945,6 +962,7 @@ impl BodyState {
                 if first
                     && let (Some(s), Some(id)) = (style, self.cur.as_deref())
                     && reg.para.get(&s).is_some_and(|p| !p.named)
+                    && !is_generated_style(&s)
                 {
                     doc.set_attr(id, ODT_STYLE, s.as_str());
                 }
