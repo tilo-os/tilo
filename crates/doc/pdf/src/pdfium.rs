@@ -1829,10 +1829,12 @@ fn export_seed(bytes: &[u8], edits: &Edits) -> [u8; 32] {
 }
 
 /// pdfium seeds the file identifier it writes into the trailer from a heap
-/// address, so two identical exports would differ there. Replace every
-/// identifier string that pdfium generated (any `/ID` hex string not
-/// present in the source) with one derived from the inputs, keeping its
-/// length so no byte offset moves.
+/// address (and a random generator), so two identical exports would differ
+/// there — between processes, and between runs whenever the allocator hands
+/// out a different address. Replace every identifier string that pdfium
+/// generated (any `/ID` string, hex or literal, not present in the source)
+/// with one derived from the inputs, keeping its length so no byte offset
+/// moves.
 fn normalize_trailer_ids(out: &mut [u8], source: &[u8], seed: &[u8; 32]) {
     let start = if out.starts_with(source) {
         source.len()
@@ -1843,7 +1845,7 @@ fn normalize_trailer_ids(out: &mut [u8], source: &[u8], seed: &[u8; 32]) {
     let mut pos = start;
     while let Some(found) = find(out, b"/ID", pos) {
         pos = found.saturating_add(3);
-        // Expect optional whitespace, '[', then hex strings.
+        // Expect optional whitespace, '[', then strings.
         let mut i = pos;
         while out.get(i).is_some_and(u8::is_ascii_whitespace) {
             i = i.saturating_add(1);
@@ -1856,38 +1858,66 @@ fn normalize_trailer_ids(out: &mut [u8], source: &[u8], seed: &[u8; 32]) {
             while out.get(i).is_some_and(u8::is_ascii_whitespace) {
                 i = i.saturating_add(1);
             }
-            if out.get(i) != Some(&b'<') {
-                break;
-            }
-            let hex_start = i.saturating_add(1);
-            let Some(hex_end) = find(out, b">", hex_start) else {
+            // The string's whole token and the bytes between its delimiters.
+            let Some((token_end, content)) = pdf_string_at(out, i) else {
                 break;
             };
-            let literal = out.get(i..=hex_end).map(<[u8]>::to_vec).unwrap_or_default();
-            if find(source, &literal, 0).is_none() {
+            let token = out
+                .get(i..token_end)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default();
+            if find(source, &token, 0).is_none() {
                 let mut hasher = blake3::Hasher::new();
                 hasher.update(seed);
                 hasher.update(&counter.to_le_bytes());
-                let digest = hasher.finalize();
-                let mut hex_digits = digest
+                let mut digits = hasher
+                    .finalize()
                     .to_hex()
                     .to_string()
                     .to_ascii_uppercase()
                     .into_bytes();
-                let len = hex_end.saturating_sub(hex_start);
-                while hex_digits.len() < len {
-                    let again = hex_digits.clone();
-                    hex_digits.extend_from_slice(&again);
+                let len = content.len();
+                while digits.len() < len {
+                    let again = digits.clone();
+                    digits.extend_from_slice(&again);
                 }
-                if let (Some(dst), Some(src)) =
-                    (out.get_mut(hex_start..hex_end), hex_digits.get(..len))
-                {
+                // Hex digits are valid content for either string form.
+                if let (Some(dst), Some(src)) = (out.get_mut(content), digits.get(..len)) {
                     dst.copy_from_slice(src);
                 }
                 counter = counter.saturating_add(1);
             }
-            i = hex_end.saturating_add(1);
+            i = token_end;
         }
+    }
+}
+
+/// The PDF string starting at `at` — `<hex>` or `(literal)` with balanced
+/// parentheses and backslash escapes — as the end of its token and the range
+/// of the bytes between its delimiters.
+fn pdf_string_at(bytes: &[u8], at: usize) -> Option<(usize, std::ops::Range<usize>)> {
+    let first = at.checked_add(1)?;
+    match bytes.get(at)? {
+        b'<' => {
+            let end = find(bytes, b">", first)?;
+            Some((end.checked_add(1)?, first..end))
+        }
+        b'(' => {
+            let mut depth = 1usize;
+            let mut i = first;
+            while depth > 0 {
+                match bytes.get(i)? {
+                    b'\\' => i = i.checked_add(1)?,
+                    b'(' => depth = depth.checked_add(1)?,
+                    b')' => depth = depth.checked_sub(1)?,
+                    _ => {}
+                }
+                i = i.checked_add(1)?;
+            }
+            let end = i.checked_sub(1)?;
+            Some((i, first..end))
+        }
+        _ => None,
     }
 }
 
@@ -1921,5 +1951,31 @@ mod tests {
         let mut again = before;
         normalize_trailer_ids(&mut again, &source, &[7; 32]);
         assert_eq!(out, again, "deterministic");
+    }
+
+    /// Typst (and many writers) use literal strings for `/ID`; pdfium keeps
+    /// the first and appends its own after it.
+    #[test]
+    fn generated_ids_after_a_literal_source_id_are_replaced() {
+        let source = b"%PDF-1.7 trailer<</ID[(X/a\\)b==)(X/a\\)b==)]>>".to_vec();
+        let mut out = source.clone();
+        out.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)<9F3A11>]>>");
+        let mut other = source.clone();
+        other.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)<07BC2E>]>>");
+        normalize_trailer_ids(&mut out, &source, &[7; 32]);
+        normalize_trailer_ids(&mut other, &source, &[7; 32]);
+        assert_eq!(
+            out, other,
+            "whatever pdfium generated, the result is the same"
+        );
+        let tail = &out[source.len()..];
+        assert!(find(tail, b"(X/a\\)b==)", 0).is_some(), "source id kept");
+        // A generated literal string is replaced too.
+        let mut literal = source.clone();
+        literal.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)(zz(q)z)]>>");
+        let before = literal.len();
+        normalize_trailer_ids(&mut literal, &source, &[7; 32]);
+        assert_eq!(literal.len(), before);
+        assert!(find(&literal[source.len()..], b"zz(q)z", 0).is_none());
     }
 }
