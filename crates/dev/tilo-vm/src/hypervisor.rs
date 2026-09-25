@@ -771,7 +771,7 @@ fn whpx_file(disk: &str, suffix: &str) -> String {
 /// Quote one argument for the Windows C runtime command-line parser.
 fn win_arg(text: &str) -> String {
     let mut result = String::from("\"");
-    let mut slashes = 0;
+    let mut slashes: usize = 0;
     for c in text.chars() {
         match c {
             '\\' => slashes = slashes.saturating_add(1),
