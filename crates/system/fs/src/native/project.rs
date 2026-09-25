@@ -157,7 +157,7 @@ struct Pending {
 
 enum Prepared {
     Done,
-    Pending(Pending),
+    Pending(Box<Pending>),
     /// Its bytes are not reachable right now.
     Unavailable,
 }
@@ -298,7 +298,7 @@ impl Projector {
             }
             match self.prepare_file(&rel, e, materialized, fencing, &mut out) {
                 Ok(Prepared::Done) => {}
-                Ok(Prepared::Pending(p)) => pending.push(p),
+                Ok(Prepared::Pending(p)) => pending.push(*p),
                 Ok(Prepared::Unavailable) => {
                     // Its bytes are not reachable right now; what follows it
                     // waits, as for an unverified version.
@@ -679,13 +679,13 @@ impl Projector {
                     return Ok(Prepared::Done);
                 }
                 next.mode = Some(e.posix.mode);
-                return Ok(Prepared::Pending(Pending {
+                return Ok(Prepared::Pending(Box::new(Pending {
                     rel: rel.to_path_buf(),
                     new: false,
                     mtime_ms: e.mtime_ms,
                     install: Install::Chmod(e.posix.mode),
                     record: next,
-                }));
+                })));
             }
             if next != *m {
                 out.updates.push((rel.to_path_buf(), Some(next)));
@@ -753,7 +753,7 @@ impl Projector {
             return Ok(Prepared::Unavailable);
         };
         let placeholder = matches!(install, Install::Placeholder { .. });
-        Ok(Prepared::Pending(Pending {
+        Ok(Prepared::Pending(Box::new(Pending {
             rel: rel.to_path_buf(),
             new: local.is_none(),
             mtime_ms: e.mtime_ms,
@@ -771,7 +771,7 @@ impl Projector {
                 fence: e.fence,
                 own: false,
             },
-        }))
+        })))
     }
 
     /// Prepares one version off to the side: a small file or a link is
