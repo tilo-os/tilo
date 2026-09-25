@@ -30,6 +30,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/llvm-bin"
           ln -s "$(command -v clang-18 || command -v clang)" "$RUNNER_TEMP/llvm-bin/clang-cl"
           ln -s "$(command -v lld-link-18 || command -v lld-link)" "$RUNNER_TEMP/llvm-bin/lld-link"
+          for tool in llvm-lib llvm-rc llvm-dlltool; do
+            if path="$(command -v "${tool}-18" || command -v "$tool")"; then
+              ln -s "$path" "$RUNNER_TEMP/llvm-bin/$tool"
+            fi
+          done
+          test -x "$RUNNER_TEMP/llvm-bin/llvm-lib"
           printf '%s\n' "$RUNNER_TEMP/llvm-bin" >> "$GITHUB_PATH"
           rustup target add aarch64-pc-windows-msvc
           cargo install --locked cargo-xwin --version 0.23.1
