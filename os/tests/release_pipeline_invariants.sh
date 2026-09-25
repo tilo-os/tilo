@@ -186,7 +186,10 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'kernel-build-support.sh stage-modules "$(uname -m)"' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"' "$repo/os/kernel/build-support.sh" \
    && grep -Fq '.pushsection .discard.tilo_module_cert' "$repo/os/kernel/build-support.sh" \
-   && grep -Fq "vmlinux does not embed this build's module signing certificate" "$repo/os/kernel/build-support.sh" \
+   && grep -Fq 'python3 /work/check-signing-identity.py "$ksrc/vmlinux"' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq '"$stage/lib/modules/$kver/vmlinuz" "$ksrc/scripts/extract-vmlinux"' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq '"$stage/lib/modules/$kver/vmlinuz"' "$repo/os/kernel/build-support.sh" \
+   && grep -Fq 'check_extracted_image(boot_image, extractor, signed_with)' "$repo/os/kernel/check-signing-identity.py" \
    && grep -Fq 'aarch64) image=arch/arm64/boot/Image' "$repo/os/kernel/build-support.sh" \
    && grep -Fq 'x86_64) image=arch/x86/boot/bzImage' "$repo/os/kernel/build-support.sh" \
    && grep -Fq 'rpm-build make gcc clang lld bc flex bison rust cargo' "$repo/os/Containerfile.kernel-buildroot" \
