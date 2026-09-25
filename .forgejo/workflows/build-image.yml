@@ -1220,8 +1220,8 @@ jobs:
       # pays for the second uncached build; integration images for tilo-ci
       # and dev disks are never signed or published and skip it.
       - name: Independently rebuild the release candidate
-        id: repro
         if: steps.release-mode.outputs.publish == 'true'
+        id: repro
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
