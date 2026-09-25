@@ -16,6 +16,7 @@ use collab_types::caps::CapOverride;
 use compat_catalogue::{ApplicationQuery, Catalogue, VmFallback};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use wire_frame::{FrameError, Framing};
 
 use crate::service::published_vm_explanation;
 use crate::{
@@ -26,8 +27,10 @@ use crate::{
 };
 
 const MANAGER_APP_ID: &str = "so.tilo.windows";
-const MAX_HANDOFF_BYTES: usize = 4 * 1024;
-const MAX_FRAME_BYTES: usize = 1024 * 1024;
+/// Requests and responses: a little-endian `u32` length, then JSON. A request
+/// that passes a descriptor carries it with the length. Empty frames are
+/// invalid.
+const FRAMING: Framing = Framing::little_endian(1024 * 1024).reject_empty();
 const MAX_CLIENT_WORKERS: usize = 8;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
 // An `i32` is exactly four bytes by definition; `SCM_RIGHTS` carries one raw fd.
@@ -642,12 +645,13 @@ where
     E: SandboxExecutor,
     V: VmDelegate,
 {
-    let handoff: SessionHandoff = read_frame(&mut stream, MAX_HANDOFF_BYTES)?;
+    let handoff: SessionHandoff =
+        read_frame(&mut stream, launcher::services::COMPAT_HANDOFF_FRAMING)?;
     validate_handoff(&handoff)?;
     let mut allowed_entry_ids = authenticator.consume_handoff(&stream, &handoff)?;
     let mut pending_vm_install = None;
     loop {
-        let (request, descriptor) = match read_request_frame(&mut stream, MAX_FRAME_BYTES) {
+        let (request, descriptor) = match read_request_frame(&mut stream, FRAMING) {
             Ok(request) => request,
             Err(SessionError::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
                 return Ok(());
@@ -663,7 +667,7 @@ where
             request,
             descriptor,
         );
-        write_frame(&mut stream, &response, MAX_FRAME_BYTES)?;
+        write_frame(&mut stream, &response, FRAMING)?;
     }
 }
 
@@ -1305,8 +1309,8 @@ impl SessionClient {
     }
 
     pub fn request(&mut self, request: &ProtocolRequest) -> Result<ProtocolResponse, SessionError> {
-        write_frame(&mut self.stream, request, MAX_FRAME_BYTES)?;
-        read_frame(&mut self.stream, MAX_FRAME_BYTES)
+        write_frame(&mut self.stream, request, FRAMING)?;
+        read_frame(&mut self.stream, FRAMING)
     }
 
     /// Send one request together with the already-open file selected by the
@@ -1327,21 +1331,17 @@ impl SessionClient {
         ) {
             return Err(SessionError::DescriptorInvalid);
         }
-        write_frame_with_fd(&mut self.stream, request, MAX_FRAME_BYTES, file.as_raw_fd())?;
-        read_frame(&mut self.stream, MAX_FRAME_BYTES)
+        write_frame_with_fd(&mut self.stream, request, FRAMING, file.as_raw_fd())?;
+        read_frame(&mut self.stream, FRAMING)
     }
 }
 
 fn read_request_frame(
     stream: &mut UnixStream,
-    max: usize,
+    framing: Framing,
 ) -> Result<(ProtocolRequest, Option<OwnedFd>), SessionError> {
     let (length, descriptor) = recv_length_with_fd(stream)?;
-    let length =
-        usize::try_from(u32::from_le_bytes(length)).map_err(|_| SessionError::FrameTooLarge)?;
-    if length == 0 || length > max {
-        return Err(SessionError::FrameTooLarge);
-    }
+    let length = framing.decode_prefix(length).map_err(frame_error)?;
     let mut bytes = vec![0_u8; length];
     stream.read_exact(&mut bytes)?;
     let request = serde_json::from_slice(&bytes)?;
@@ -1410,15 +1410,15 @@ fn recv_length_with_fd(stream: &UnixStream) -> Result<([u8; 4], Option<OwnedFd>)
 fn write_frame_with_fd<T: Serialize>(
     stream: &mut UnixStream,
     value: &T,
-    max: usize,
+    framing: Framing,
     descriptor: i32,
 ) -> Result<(), SessionError> {
     let bytes = serde_json::to_vec(value)?;
-    if bytes.is_empty() || bytes.len() > max || descriptor < 0 {
+    if descriptor < 0 {
         return Err(SessionError::FrameTooLarge);
     }
-    let length = u32::try_from(bytes.len()).map_err(|_| SessionError::FrameTooLarge)?;
-    send_length_with_fd(stream, length.to_le_bytes(), descriptor)?;
+    let length = framing.encode_prefix(bytes.len()).map_err(frame_error)?;
+    send_length_with_fd(stream, length, descriptor)?;
     stream.write_all(&bytes)?;
     stream.flush()?;
     Ok(())
@@ -1477,34 +1477,35 @@ fn control_words(bytes: usize) -> usize {
 
 fn read_frame<T: serde::de::DeserializeOwned>(
     stream: &mut UnixStream,
-    max: usize,
+    framing: Framing,
 ) -> Result<T, SessionError> {
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length)?;
-    let length =
-        usize::try_from(u32::from_le_bytes(length)).map_err(|_| SessionError::FrameTooLarge)?;
-    if length == 0 || length > max {
-        return Err(SessionError::FrameTooLarge);
-    }
-    let mut bytes = vec![0_u8; length];
-    stream.read_exact(&mut bytes)?;
+    let bytes = framing
+        .read(stream)
+        .and_then(|bytes| bytes.ok_or(FrameError::Closed))
+        .map_err(frame_error)?;
     serde_json::from_slice(&bytes).map_err(Into::into)
 }
 
 fn write_frame<T: Serialize>(
     stream: &mut UnixStream,
     value: &T,
-    max: usize,
+    framing: Framing,
 ) -> Result<(), SessionError> {
     let bytes = serde_json::to_vec(value)?;
-    if bytes.is_empty() || bytes.len() > max {
-        return Err(SessionError::FrameTooLarge);
-    }
-    let length = u32::try_from(bytes.len()).map_err(|_| SessionError::FrameTooLarge)?;
-    stream.write_all(&length.to_le_bytes())?;
-    stream.write_all(&bytes)?;
+    framing.write(stream, &bytes).map_err(frame_error)?;
     stream.flush()?;
     Ok(())
+}
+
+/// Stream failures and closes stay I/O errors, so a peer hanging up between
+/// requests ends the session cleanly; anything wrong with a frame's size is
+/// [`SessionError::FrameTooLarge`].
+fn frame_error(error: FrameError) -> SessionError {
+    match error {
+        FrameError::Io(error) => SessionError::Io(error),
+        FrameError::Truncated | FrameError::Closed => SessionError::Io(error.into()),
+        _ => SessionError::FrameTooLarge,
+    }
 }
 
 #[derive(Debug, Error)]
@@ -1628,14 +1629,62 @@ mod tests {
         assert!(!other_workspace_entries.contains("windows-vm-candidate-remaining"));
     }
 
+    /// The session socket's bytes: a little-endian `u32` length (carrying the
+    /// descriptor, when there is one), then JSON. Empty frames are refused.
+    #[test]
+    fn session_wire_bytes_are_pinned() {
+        const FRAME: [u8; 11] = [7, 0, 0, 0, b'{', b'"', b'k', b'"', b':', b'1', b'}'];
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        write_frame(&mut writer, &serde_json::json!({"k": 1}), FRAMING).unwrap();
+        let mut sent = [0_u8; FRAME.len()];
+        reader.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, FRAME);
+
+        let selected = NamedTempFile::new().unwrap();
+        write_frame_with_fd(
+            &mut writer,
+            &serde_json::json!({"k": 1}),
+            FRAMING,
+            selected.as_file().as_raw_fd(),
+        )
+        .unwrap();
+        let mut sent = [0_u8; FRAME.len()];
+        reader.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, FRAME);
+
+        writer.write_all(&FRAME).unwrap();
+        let value: serde_json::Value = read_frame(&mut reader, FRAMING).unwrap();
+        assert_eq!(value["k"], 1);
+
+        let body = serde_json::to_vec(&ProtocolRequest::Install {
+            version: PROTOCOL_VERSION,
+            source_name: "a.exe".to_string(),
+        })
+        .unwrap();
+        let prefix = u32::try_from(body.len()).unwrap().to_le_bytes();
+        send_length_with_fd(&writer, prefix, selected.as_file().as_raw_fd()).unwrap();
+        writer.write_all(&body).unwrap();
+        let (request, descriptor) = read_request_frame(&mut reader, FRAMING).unwrap();
+        assert!(
+            matches!(request, ProtocolRequest::Install { source_name, .. } if source_name == "a.exe")
+        );
+        assert!(descriptor.is_some());
+
+        writer.write_all(&[0, 0, 0, 0]).unwrap();
+        assert!(matches!(
+            read_frame::<serde_json::Value>(&mut reader, FRAMING),
+            Err(SessionError::FrameTooLarge)
+        ));
+    }
+
     #[test]
     fn oversized_frame_is_rejected_before_allocation() {
         let (mut writer, mut reader) = UnixStream::pair().unwrap();
         writer
-            .write_all(&(u32::try_from(MAX_FRAME_BYTES).unwrap() + 1).to_le_bytes())
+            .write_all(&(u32::try_from(FRAMING.max_len()).unwrap() + 1).to_le_bytes())
             .unwrap();
         assert!(matches!(
-            read_frame::<ProtocolRequest>(&mut reader, MAX_FRAME_BYTES),
+            read_frame::<ProtocolRequest>(&mut reader, FRAMING),
             Err(SessionError::FrameTooLarge)
         ));
     }
@@ -1652,12 +1701,12 @@ mod tests {
                 version: PROTOCOL_VERSION,
                 source_name: "favorite.exe".to_string(),
             },
-            MAX_FRAME_BYTES,
+            FRAMING,
             selected.as_file().as_raw_fd(),
         )
         .unwrap();
 
-        let (request, descriptor) = read_request_frame(&mut reader, MAX_FRAME_BYTES).unwrap();
+        let (request, descriptor) = read_request_frame(&mut reader, FRAMING).unwrap();
         assert!(matches!(
             request,
             ProtocolRequest::Install { source_name, .. } if source_name == "favorite.exe"
@@ -1678,7 +1727,7 @@ mod tests {
         selected.flush().unwrap();
 
         let worker = std::thread::spawn(move || {
-            let (request, descriptor) = read_request_frame(&mut reader, MAX_FRAME_BYTES).unwrap();
+            let (request, descriptor) = read_request_frame(&mut reader, FRAMING).unwrap();
             assert!(matches!(
                 request,
                 ProtocolRequest::LaunchVmWithPortalFile { entry_id, .. }
@@ -1694,7 +1743,7 @@ mod tests {
                 &ProtocolResponse::Error {
                     error: ProtocolError::new("test_complete", "test response"),
                 },
-                MAX_FRAME_BYTES,
+                FRAMING,
             )
             .unwrap();
         });
@@ -1719,7 +1768,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(10)))
             .unwrap();
         assert!(matches!(
-            read_frame::<ProtocolRequest>(&mut reader, MAX_FRAME_BYTES),
+            read_frame::<ProtocolRequest>(&mut reader, FRAMING),
             Err(SessionError::Io(error))
                 if matches!(error.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
         ));

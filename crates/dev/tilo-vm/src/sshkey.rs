@@ -121,6 +121,7 @@ mod tests {
 
     const PUBLIC: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev";
 
+    #[cfg(unix)]
     #[test]
     fn keys_live_beside_the_registry() {
         let key = key_path(Path::new("/cfg/tilo-vm/vms.toml"), "dev");

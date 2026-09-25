@@ -82,10 +82,13 @@ class OsReleaseMatrixTests(unittest.TestCase):
             ],
         )
 
-    def test_manual_nonpublication_remains_a_single_native_smoke_lane(self):
+    def test_manual_nonpublication_builds_both_native_integration_lanes(self):
         publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "false")
         self.assertFalse(publish)
-        self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-disk-100g"}])
+        self.assertEqual(lanes, [
+            {"arch": "x86_64", "runner": "runner-disk-100g"},
+            {"arch": "aarch64", "runner": "runner-disk-100g-arm64"},
+        ])
 
     def test_nightly_main_publishes_through_the_manual_main_fleet(self):
         publish, skip, lanes = plan("refs/heads/main", "schedule", "", "f" * 40)
@@ -119,7 +122,10 @@ class OsReleaseMatrixTests(unittest.TestCase):
         publish, skip, lanes = plan("refs/heads/main", "schedule", "", "", "false")
         self.assertFalse(publish)
         self.assertFalse(skip)
-        self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-disk-100g"}])
+        self.assertEqual(lanes, [
+            {"arch": "x86_64", "runner": "runner-disk-100g"},
+            {"arch": "aarch64", "runner": "runner-disk-100g-arm64"},
+        ])
 
     def test_unconfigured_nightly_skips_an_already_built_integration_image(self):
         publish, skip, _ = plan("refs/heads/main", "schedule", "", "", "false", SHA)

@@ -97,8 +97,9 @@ fn preserved_names(layout: Layout) -> &'static [&'static str] {
     }
 }
 
-/// Build the alongside target as a raw image at `raw`, returning the
-/// extents to verify after the install. The caller converts it to qcow2.
+/// Build the alongside target as a sparse raw image at `raw`, returning the
+/// extents to verify after the install. The caller creates a qcow2 child with
+/// this immutable raw image as its backing file.
 ///
 /// # Errors
 ///
@@ -170,6 +171,65 @@ pub fn changed(raw: &Path, preserved: &[Preserved]) -> std::io::Result<Vec<Strin
     Ok(changed)
 }
 
+/// Re-hash only the preserved extents through the installed qcow2 chain.
+/// Reading those ranges avoids converting the entire target back to raw.
+///
+/// # Errors
+///
+/// A tool failure, truncated extraction, or an I/O error.
+pub fn changed_cow(
+    qcow2: &Path,
+    scratch: &Path,
+    preserved: &[Preserved],
+    tools: &mut dyn Tools,
+) -> Result<Vec<String>, String> {
+    std::fs::create_dir_all(scratch).map_err(io("creating verification scratch"))?;
+    let mut changed = Vec::new();
+    for (index, extent) in preserved.iter().enumerate() {
+        if extent.offset % MIB != 0 || extent.length % MIB != 0 {
+            return Err(format!("{} is not MiB-aligned", extent.name));
+        }
+        let extracted = scratch.join(format!("preserved-{index}.raw"));
+        let input = format!("if={}", qcow2.display());
+        let output = format!("of={}", extracted.display());
+        let skip = format!("skip={}", extent.offset / MIB);
+        let count = format!("count={}", extent.length / MIB);
+        tools.run(
+            "qemu-img",
+            &[
+                "dd",
+                "-f",
+                "qcow2",
+                "-O",
+                "raw",
+                &input,
+                &output,
+                "bs=1048576",
+                &skip,
+                &count,
+            ],
+            None,
+        )?;
+        let result = (|| {
+            let actual_len = std::fs::metadata(&extracted)
+                .map_err(io("checking extracted extent length"))?
+                .len();
+            if actual_len != extent.length {
+                return Err(format!(
+                    "{} extraction has {actual_len} bytes, expected {}",
+                    extent.name, extent.length
+                ));
+            }
+            hash_range(&extracted, 0, extent.length).map_err(io("hashing an extracted extent"))
+        })();
+        let _ = std::fs::remove_file(&extracted);
+        if result? != extent.sha256 {
+            changed.push(extent.name.clone());
+        }
+    }
+    Ok(changed)
+}
+
 fn io(what: &'static str) -> impl FnOnce(std::io::Error) -> String {
     move |error| format!("{what}: {error}")
 }
@@ -193,7 +253,10 @@ fn hash_range(path: &Path, offset: u64, length: u64) -> std::io::Result<String> 
         let chunk = buffer.get_mut(..want).unwrap_or_default();
         let read = file.read(chunk)?;
         if read == 0 {
-            break;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "preserved extent ends before its declared length",
+            ));
         }
         hasher.update(chunk.get(..read).unwrap_or_default());
         remaining = remaining.saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
@@ -241,6 +304,9 @@ mod tests {
         assert_eq!(sfdisk_script(Layout::Erase), "label: gpt\n");
     }
 
+    // build() creates a 40 GiB sparse raw fixture with Linux disk tools.
+    // Windows does not make that file sparse with set_len, so never run it there.
+    #[cfg(unix)]
     #[test]
     fn preserved_extents_are_hashed_and_a_change_is_caught() {
         let dir = tempfile::tempdir().unwrap();

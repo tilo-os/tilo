@@ -236,6 +236,25 @@ fn native_loop_park(
     )
 }
 
+/// Whether the next park must keep the frame deadline for a pending frame.
+/// While the bounded presenter is full, an already-due frame deadline would
+/// make every park a zero timeout and spin the loop until a frame retires;
+/// the presenter's retirement ping wakes calloop as soon as capacity returns.
+fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
+    pipe_ready && frame_pending
+}
+
+/// A widget deadline only matters while the presenter can accept the frame
+/// it would cause. Under back-pressure an overdue animation deadline would
+/// turn every park into an immediate return while the paint gate keeps
+/// declining the frame; retirement pings the loop once capacity is restored.
+fn widget_deadline_for_presenter(
+    pipe_ready: bool,
+    widget_deadline: Option<Instant>,
+) -> Option<Instant> {
+    widget_deadline.filter(|_| pipe_ready)
+}
+
 // A due animation remains dirty until it paints, but is no longer a wake
 // deadline. Keeping an expired deadline here would busy-spin while waiting
 // for display cadence or presenter retirement. Those wake sources already
@@ -7154,9 +7173,12 @@ pub fn run() {
         let should_paint = content_changed && cadence_due && pipe_ready;
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
-        // deadline could strand that frame.
-        let cadence_needed =
-            (content_changed && !cadence_due) || (!session.is_locked() && animating);
+        // deadline could strand that frame. A full presenter is itself the
+        // gate: its retirement ping wakes the loop when capacity returns.
+        let cadence_needed = cadence_wait_needed(
+            pipe_ready,
+            (content_changed && !cadence_due) || (!session.is_locked() && animating),
+        );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -7759,7 +7781,7 @@ pub fn run() {
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                frame_builder.next_wake_deadline(),
+                widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
                 lock_animation_park_deadline(
                     park_now,
                     lock_screen::animation_deadline(
@@ -8012,6 +8034,45 @@ mod tests {
         assert_eq!(
             native_loop_park(now, true, frame, [Some(keepalive)]),
             Some(Duration::from_millis(8))
+        );
+    }
+
+    #[test]
+    fn full_presenter_parks_instead_of_spinning_on_overdue_deadlines() {
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
+        // Animation stays dirty and both the frame and widget deadlines are
+        // already due, but the presenter has no capacity.
+        let cadence_needed = cadence_wait_needed(false, true);
+        assert_eq!(
+            native_loop_park(
+                now,
+                cadence_needed,
+                stale,
+                [widget_deadline_for_presenter(false, Some(stale))],
+            ),
+            Some(IDLE_BACKEND_POLL),
+            "a saturated presenter must wait for its retirement wake, not poll with a zero timeout"
+        );
+    }
+
+    #[test]
+    fn available_presenter_keeps_overdue_work_immediate() {
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
+        assert_eq!(
+            widget_deadline_for_presenter(true, Some(stale)),
+            Some(stale)
+        );
+        let frame = now + Duration::from_millis(7);
+        assert_eq!(
+            native_loop_park(now, cadence_wait_needed(true, true), frame, []),
+            Some(Duration::from_millis(7)),
+            "the back-pressure guard must not weaken normal animation pacing"
         );
     }
 

@@ -1,8 +1,8 @@
 name: Release / Dev VM disk
 
-# Builds the dev VM image (os/Containerfile.dev) FROM the signed production OS
-# image of the same commit, installs it to a bootable disk, boots that disk once,
-# and publishes:
+# Builds the dev VM image (os/Containerfile.dev) FROM a same-commit signed
+# production OS image or an unsigned tilo-ci integration image, installs it to
+# a bootable disk, boots that disk once, and publishes:
 #
 #   code.podesta.ai/qos/tilo-vm:<tag>              OCI index, one child per arch
 #   <generic packages>/tilo-vm-disk/<tag>/<disk>   qcow2 (and optional VHDX) disks

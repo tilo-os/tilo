@@ -565,6 +565,10 @@ enum PairingBackend {
     },
 }
 
+/// Pairing-broker messages over TLS: a big-endian `u32` length, then the
+/// postcard [`PairingBrokerRequest`] or [`PairingBrokerResponse`].
+pub const PAIRING_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(256 * 1024);
+
 #[derive(Debug, Serialize, Deserialize)]
 pub enum PairingBrokerRequest {
     PutPairerRound1([u8; 16], EnrolmentRound1),
@@ -675,11 +679,8 @@ impl PairingHandshake {
         certificate: &[u8],
         request: &PairingBrokerRequest,
     ) -> Option<PairingBrokerResponse> {
-        use std::io::{Read, Write};
-        let bytes = postcard::to_allocvec(request).ok()?;
-        if bytes.len() > 256 * 1024 {
-            return None;
-        }
+        use std::io::Write;
+        let frame = PAIRING_FRAMING.encode_value(request).ok()?;
         let tcp =
             std::net::TcpStream::connect_timeout(&endpoint.parse().ok()?, Duration::from_secs(2))
                 .ok()?;
@@ -701,18 +702,8 @@ impl PairingHandshake {
         let name = rustls::pki_types::ServerName::try_from("tilo-pairing.invalid").ok()?;
         let connection = rustls::ClientConnection::new(Arc::new(config), name).ok()?;
         let mut stream = rustls::StreamOwned::new(connection, tcp);
-        let frame_len = u32::try_from(bytes.len()).ok()?;
-        stream.write_all(&frame_len.to_be_bytes()).ok()?;
-        stream.write_all(&bytes).ok()?;
-        let mut len = [0; 4];
-        stream.read_exact(&mut len).ok()?;
-        let len = u32::from_be_bytes(len) as usize;
-        if len > 256 * 1024 {
-            return None;
-        }
-        let mut response = vec![0; len];
-        stream.read_exact(&mut response).ok()?;
-        postcard::from_bytes(&response).ok()
+        stream.write_all(&frame).ok()?;
+        PAIRING_FRAMING.read_value(&mut stream).ok()?
     }
 
     /// Open a restart-safe broker spool owned by the shell/runtime. `root`
@@ -2723,6 +2714,26 @@ pub(super) mod test_events {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pairing-broker frames cross two devices that may run different builds:
+    /// a big-endian `u32` length, then postcard, at most 256 KiB.
+    #[test]
+    fn pairing_broker_wire_bytes_are_pinned() {
+        let mut expected = vec![0, 0, 0, 17, 4];
+        expected.extend_from_slice(&[7; 16]);
+        assert_eq!(
+            PAIRING_FRAMING
+                .encode_value(&PairingBrokerRequest::TakeHostRound2([7; 16]))
+                .unwrap(),
+            expected
+        );
+        let response: PairingBrokerResponse = PAIRING_FRAMING
+            .read_value(&mut &[0_u8, 0, 0, 1, 4][..])
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, PairingBrokerResponse::Denied));
+        assert!(PAIRING_FRAMING.read(&mut &[0_u8, 4, 0, 1][..]).is_err());
+    }
 
     /// Pairing codes and MACs cross two devices that may run different
     /// builds, so the SHA-512 and HMAC-SHA-512 outputs are pinned to bytes.

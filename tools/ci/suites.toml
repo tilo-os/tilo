@@ -46,6 +46,7 @@ suites = [
   "os/tests/test_assembly_registry_cache.py",
   "os/tests/test_bootc_registry_wrapper.py",
   "os/tests/test_broker_signing_runner.py",
+  "os/tests/test_cache_reconstruction_approval.py",
   "os/tests/test_cache_source_compatibility.py",
   "os/tests/test_checkpoint_export.py",
   "os/tests/test_compile_host_crypto.py",
@@ -55,6 +56,7 @@ suites = [
   "os/tests/test_complete_initramfs_rebind.py",
   "os/tests/test_create_development_disk.py",
   "os/tests/test_development_boot.py",
+  "os/tests/test_development_compile.py",
   "os/tests/test_development_composefs.py",
   "os/tests/test_development_loader.py",
   "os/tests/test_development_prediction.py",
@@ -77,10 +79,13 @@ suites = [
   "os/tests/test_installer_bootc_helper_workflow.py",
   "os/tests/test_installer_cmdline_projection.py",
   "os/tests/test_installer_overlay.py",
+  "os/tests/test_kernel_checkpoint_restore.py",
   "os/tests/test_kernel_config_values.py",
   "os/tests/test_kernel_failure_checkpoint.py",
   "os/tests/test_native_builder_artifact.py",
   "os/tests/test_native_payload_durability.py",
+  "os/tests/test_native_reconstruction_approval.py",
+  "os/tests/test_native_resume.py",
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_native_resume_launcher.py",
   "os/tests/test_native_source_compatibility.py",
@@ -91,8 +96,11 @@ suites = [
   "os/tests/test_raw_rootfs_receipt.py",
   "os/tests/test_rebind_development_rootfs.py",
   "os/tests/test_rebind_development_trust.py",
+  "os/tests/test_reconstructed_native_consumer.py",
+  "os/tests/test_reconstructed_partials.py",
   "os/tests/test_replicate_builder_index.py",
   "os/tests/test_reseal_image.py",
+  "os/tests/test_restore_thin_cache.py",
   "os/tests/test_retain_development_rootfs.py",
   "os/tests/test_rootfs_layer_audit.py",
   "os/tests/test_rpm_snapshot_inputs.py",
@@ -104,7 +112,9 @@ suites = [
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_windows_dualboot_preflight.py",
+  "os/tests/test_wpe_candidate_receipt.py",
   "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
@@ -120,6 +130,7 @@ suites = [
   "os/tests/test_finalization_checkpoint_fetch.py",
   "os/tests/test_finalization_worker.py",
   "os/tests/test_open_snapshot_pr.py",
+  "os/tests/test_raw_layer_epoch.py",
 ]
 
 [[group]]
@@ -198,6 +209,12 @@ suites = [
 ]
 
 [[group]]
+name = "kernel-signer"
+# Projects tilo-crypto's manifest against the workspace for the kernel build.
+inputs = ["os/", "Cargo.toml", "crates/system/tilo-crypto/"]
+suites = ["os/tests/test_project_kernel_crate.py"]
+
+[[group]]
 name = "imager-packaging"
 inputs = ["apps/imager/packaging/"]
 suites = ["apps/imager/packaging/test_build_desktop_catalog.py"]
@@ -235,9 +252,14 @@ inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
 suites = [
   "scripts/perf/check_app_coverage_test.py",
   "scripts/perf/code_editor_effects_test.py",
+  "scripts/perf/collect_code_editor_native_test.py",
+  "scripts/perf/collect_file_explorer_native_test.py",
+  "scripts/perf/collect_scratchpad_native_test.py",
+  "scripts/perf/collect_settings_native_test.py",
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
   "scripts/perf/main_stages_test.py",
+  "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",
   "scripts/perf/presentation_feedback_test.py",
   "scripts/perf/render_boundaries_test.py",
@@ -278,6 +300,10 @@ by = "os/tests/imager_release_invariants.sh"
 [[covered]]
 suite = "os/containers/tilo-relay/test-base-retry.sh"
 by = "os/containers/tilo-relay/test-contract.sh"
+
+[[covered]]
+suite = "os/tests/frozen_source_fixture.py"
+by = "os/tests/test_native_resume.py"
 
 [[covered]]
 suite = "os/tests/forgejo_release_publication.sh"
@@ -368,10 +394,6 @@ reason = "needs built RPM packages"
 suite = "dist/rpm/test-signing-contract.sh"
 reason = "needs a gpg-agent the ci-fast image cannot provide reliably; runs in the package container"
 workflow = "package-desktop.yml"
-
-[[unrequired]]
-suite = "experiments/ci-forgejo/first-x86-qualification/test_policy.py"
-reason = "fails on main: needs commit b4cba221 from an unmerged branch and its policy fixture is incomplete"
 
 [[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
@@ -604,15 +626,6 @@ suite = "os/tests/system_extension_boot_pack_stage.sh"
 reason = "needs a systemd system manager; skips without one"
 
 [[unrequired]]
-suite = "os/tests/test_cache_reconstruction_approval.py"
-reason = "fails on main: reads commit 4583a44c, which is not in the repository"
-
-[[unrequired]]
-suite = "os/tests/test_development_compile.py"
-reason = "fails on main: a changed firmware artifact reference is not rejected"
-workflow = "development-compile.yml"
-
-[[unrequired]]
 suite = "os/tests/test_direct_sparse_transfer.py"
 reason = "asserts preserved sparse holes, which the container overlay root of the suites job does not report"
 
@@ -622,44 +635,12 @@ reason = "needs a root-owned /usr/local/bin/tilo-crypto"
 workflow = "development-source.yml"
 
 [[unrequired]]
-suite = "os/tests/test_kernel_checkpoint_restore.py"
-reason = "fails on main: reads commit 33e83f64, which is not in the repository; also needs make"
-
-[[unrequired]]
-suite = "os/tests/test_native_reconstruction_approval.py"
-reason = "fails on main: reads commit 4583a44c, which is not in the repository"
-
-[[unrequired]]
-suite = "os/tests/test_native_resume.py"
-reason = "fails on main: reads commit 4583a44c, which is not in the repository"
-
-[[unrequired]]
-suite = "os/tests/test_project_kernel_crate.py"
-reason = "fails on main: projected signer dependencies no longer match the workspace manifest"
-
-[[unrequired]]
-suite = "os/tests/test_raw_layer_epoch.py"
-reason = "fails on main: the workflow text it anchors on (docker build --file) is gone"
-
-[[unrequired]]
-suite = "os/tests/test_reconstructed_native_consumer.py"
-reason = "fails on main: the resume hook no longer exposes resume_thin_cache_approval"
-
-[[unrequired]]
-suite = "os/tests/test_reconstructed_partials.py"
-reason = "fails on main: reads commit 4583a44c, which is not in the repository"
-
-[[unrequired]]
-suite = "os/tests/test_restore_thin_cache.py"
-reason = "fails on main: reads commit 4583a44c, which is not in the repository"
+suite = "os/tests/test_kernel_checkpoint_make.py"
+reason = "needs make, absent from the ci-fast image"
 
 [[unrequired]]
 suite = "os/tests/test_signing_spool.py"
 reason = "needs the isolated signing tools container (root-owned tilo-crypto)"
-
-[[unrequired]]
-suite = "os/tests/test_wpe_candidate_receipt.py"
-reason = "fails on main: a mutable or wrong-namespace reference is not rejected"
 
 [[unrequired]]
 suite = "os/tests/test_write_verified_installer_media.py"
@@ -694,26 +675,6 @@ reason = "runs inside the booted test image"
 [[unrequired]]
 suite = "os/verify-test.sh"
 reason = "boots the test image in a VM"
-
-[[unrequired]]
-suite = "scripts/perf/collect_code_editor_native_test.py"
-reason = "fails on main: the fixture run leaves no app.log"
-
-[[unrequired]]
-suite = "scripts/perf/collect_file_explorer_native_test.py"
-reason = "fails on main: the fixture run leaves no app.log"
-
-[[unrequired]]
-suite = "scripts/perf/collect_scratchpad_native_test.py"
-reason = "fails on main: the fixture run leaves no app.log"
-
-[[unrequired]]
-suite = "scripts/perf/collect_settings_native_test.py"
-reason = "fails on main: the fixture run leaves no app.log"
-
-[[unrequired]]
-suite = "scripts/perf/native_app_capture_test.py"
-reason = "fails on main: shares the scratchpad collector failure fixture"
 
 [[unrequired]]
 suite = "scripts/test-flatpak-share.sh"

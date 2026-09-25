@@ -489,7 +489,7 @@ pub struct CreateArgs {
     pub name: String,
     /// Default: the host's native one, which its UI shows: libvirt's
     /// `qemu:///session` on Linux (virt-manager, Boxes), utm on macOS, hyperv on
-    /// Windows. `qemu` is the headless os/dev/vm.sh adapter for CI and
+    /// Windows with Hyper-V, and whpx on Windows ARM64 Home. `qemu` is the headless os/dev/vm.sh adapter for CI and
     /// scenario tests.
     #[arg(long)]
     pub hypervisor: Option<String>,

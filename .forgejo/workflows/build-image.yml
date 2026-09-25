@@ -156,9 +156,13 @@ jobs:
               matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}'
             fi
           else
-            # BuildKit layers and OCI export coexist; ordinary 50 GiB runners
-            # can fill during export. Use the larger disk lane for this build.
-            matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}'
+            # Main integration images feed both native dev VM architectures.
+            # BuildKit layers and OCI export coexist, so use 100 GiB runners.
+            if [[ $GITHUB_REF == refs/heads/main ]]; then
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}'
+            else
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}'
+            fi
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
@@ -1561,6 +1565,106 @@ jobs:
           path: tilo-os-release-index.json
           if-no-files-found: error
 
+  # Integration images remain unsigned and outside the production tilo
+  # repository. Publish an index only after both native lanes complete; the
+  # dev disk workflow can then verify each child against the same source SHA.
+  promote-integration:
+    needs: [plan, build-and-push]
+    if: needs.plan.outputs.publish != 'true' && needs.plan.outputs.skip != 'true' && github.ref == 'refs/heads/main'
+    runs-on: runner
+    timeout-minutes: 60
+    steps:
+      - name: Install OCI index tooling
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends jq podman skopeo
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf install -y jq podman skopeo
+          else
+            echo '::error::integration runner must provide apt-get or dnf'
+            exit 1
+          fi
+      - name: Authenticate to the development image registry
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | podman login code.podesta.ai \
+            --username "${{ github.actor }}" --password-stdin
+      - name: Verify native children and publish unsigned integration index
+        run: |
+          set -euo pipefail
+          repository=code.podesta.ai/qos/tilo-ci
+          children='[]'
+          for arch in x86_64 aarch64; do
+            case "$arch" in x86_64) platform=amd64 ;; aarch64) platform=arm64 ;; esac
+            ref="$repository:main-${GITHUB_SHA:0:7}-$arch"
+            raw="$(skopeo inspect --raw "docker://$ref")"
+            digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
+            config="$(skopeo inspect "docker://$repository@$digest")"
+            [[ "$(jq -er .Architecture <<< "$config")" == "$platform" ]] || {
+              echo "::error::$ref has the wrong architecture"
+              exit 1
+            }
+            [[ "$(jq -r '.Labels["org.opencontainers.image.revision"] // empty' <<< "$config")" == "$GITHUB_SHA" ]] || {
+              echo "::error::$ref does not bind the source revision"
+              exit 1
+            }
+            children="$(jq -c --arg arch "$arch" --arg digest "$digest" \
+              '. + [{architecture:$arch,digest:$digest}]' <<< "$children")"
+          done
+          manifest="tilo-integration-index-$GITHUB_RUN_ID"
+          podman manifest create "$manifest"
+          for digest in $(jq -r '.[].digest' <<< "$children"); do
+            podman manifest add "$manifest" "docker://$repository@$digest"
+          done
+          candidate="$repository:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          digest_file="$(mktemp /var/tmp/tilo-ci-index.XXXXXX)"
+          podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
+          index_digest="$(tr -d '[:space:]' < "$digest_file")"
+          [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          image="$repository@$index_digest"
+          actual="$(skopeo inspect --raw "docker://$image" | jq -ce '
+            [.manifests[] | {
+              architecture: (if .platform.architecture == "amd64" then "x86_64"
+                             elif .platform.architecture == "arm64" then "aarch64"
+                             else error("unsupported index architecture") end),
+              digest: .digest
+            }] | sort_by(.architecture)
+          ')"
+          expected="$(jq -c 'sort_by(.architecture)' <<< "$children")"
+          [[ "$actual" == "$expected" ]] || {
+            echo '::error::integration index does not contain exactly the verified native children'
+            exit 1
+          }
+          durable="$repository:main-${GITHUB_SHA:0:7}"
+          existing=""
+          if existing_raw="$(skopeo inspect --raw "docker://$durable" 2>/dev/null)"; then
+            existing="sha256:$(printf '%s' "$existing_raw" | sha256sum | awk '{print $1}')"
+          fi
+          [[ -z "$existing" || "$existing" == "$index_digest" ]] || {
+            echo "::error::$durable already binds $existing"
+            exit 1
+          }
+          if [[ -z "$existing" ]]; then
+            skopeo copy --all "docker://$image" "docker://$durable"
+          fi
+          [[ "$(skopeo inspect --raw "docker://$durable" | sha256sum | awk '{print "sha256:" $1}')" == "$index_digest" ]] || {
+            echo "::error::registry did not persist $durable as $index_digest"
+            exit 1
+          }
+          jq -n --arg image "$image" --arg source "$GITHUB_SHA" \
+            '{image:$image,sourceRevision:$source}' > tilo-os-integration-index.json
+          echo "::notice::published unsigned development index $durable ($index_digest)"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-os-integration-index
+          path: tilo-os-integration-index.json
+          if-no-files-found: error
+
   # Dev VM disks are derived from an image this run produced, never rebuilt
   # from source here. A promoted release is preferred: the request pins its
   # exact index digest. Otherwise a main run that built an image requests
@@ -1569,8 +1673,8 @@ jobs:
   # request pins the source revision and digest, so a later main commit cannot
   # change what the dev image is built on.
   dispatch-dev-disk:
-    needs: [plan, build-and-push, promote-multiarch]
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.promote-multiarch.result == 'success' || (github.ref == 'refs/heads/main' && needs.build-and-push.result != 'skipped' && needs.build-and-push.result != 'cancelled')) }}
+    needs: [plan, promote-multiarch, promote-integration]
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.skip != 'true' && (needs.promote-multiarch.result == 'success' || needs.promote-integration.result == 'success') }}
     runs-on: runner
     timeout-minutes: 15
     steps:
@@ -1579,10 +1683,14 @@ jobs:
         with:
           name: tilo-os-release-index
           path: release-index
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        if: needs.promote-integration.result == 'success'
+        with:
+          name: tilo-os-integration-index
+          path: integration-index
       - name: Request dev VM disks for this run's image
         env:
           FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-          REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
           PROMOTED: ${{ needs.promote-multiarch.result == 'success' }}
         run: |
           set -euo pipefail
@@ -1598,35 +1706,18 @@ jobs:
               tag="main-${GITHUB_SHA:0:7}"
             fi
           else
-            # The dev-trust image of the x86_64 lane, which every main build
-            # has. Its revision label is checked here and again by dev-disk.
-            if ! command -v skopeo >/dev/null; then
-              if command -v apt-get >/dev/null; then
-                export DEBIAN_FRONTEND=noninteractive
-                sudo -n apt-get -o Acquire::Retries=3 update
-                sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends skopeo
-              else
-                sudo -n dnf --setopt=retries=3 install -y skopeo
-              fi
-            fi
-            ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64"
-            if ! raw="$(skopeo inspect --retry-times 3 --raw --creds "$REGISTRY_CREDS" "docker://$ref")"; then
-              echo "::notice::no dev-trust integration image $ref; this run built none, so no dev disk is requested"
-              exit 0
-            fi
-            digest="sha256:$(printf '%s' "$raw" | sha256sum | awk '{print $1}')"
-            image="code.podesta.ai/qos/tilo-ci@$digest"
-            revision="$(skopeo inspect --retry-times 3 --creds "$REGISTRY_CREDS" "docker://$image" \
-              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
-            [[ $revision == "$GITHUB_SHA" ]] || {
-              echo "::error::$ref carries revision '${revision}', expected $GITHUB_SHA"
+            image="$(jq -er --arg source "$GITHUB_SHA" \
+              'select(.sourceRevision == $source) | .image' \
+              integration-index/tilo-os-integration-index.json)"
+            [[ "$image" =~ ^code\.podesta\.ai/qos/tilo-ci@sha256:[0-9a-f]{64}$ ]] || {
+              echo "::error::unexpected integration index image: $image"
               exit 1
             }
             tag="main-${GITHUB_SHA:0:7}-ci"
           fi
           payload="$(jq -cn --arg ref "$GITHUB_REF_NAME" --arg source "$GITHUB_SHA" \
             --arg base "$image" --arg tag "$tag" \
-            '{ref:$ref,inputs:{source_revision:$source,base_image:$base,tag:$tag}}')"
+            '{ref:$ref,inputs:{source_revision:$source,base_image:$base,tag:$tag,architectures:"x86_64 aarch64",formats:"qcow2"}}')"
           curl --fail-with-body --silent --show-error -X POST \
             -H "Authorization: token ${FORGEJO_TOKEN}" \
             -H 'Content-Type: application/json' \

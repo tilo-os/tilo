@@ -20,6 +20,7 @@
 #        --reuse-image-installer (inherit the already-built native installer)
 #        --image-only (stop at the unsigned installer layer, before disk/signing)
 #        --dev-login (local diagnostics only; requires TILO_INSTALLER_DEV_PASSWORD)
+#        --compact-ext4 (VM-only validation: fixed 40 GiB ext4 live root)
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # Several native build tools ignore Cargo's target directory and create
@@ -37,6 +38,7 @@ REUSE_IMAGE_INSTALLER=0
 IMAGE_ONLY=0
 BINARY_MODES=0
 DEV_LOGIN=0
+COMPACT_EXT4=0
 for a in "$@"; do
   case "$a" in
     --stub-ui) STUB_UI=1; DO_CARGO=0; BINARY_MODES=$((BINARY_MODES + 1)) ;;
@@ -44,12 +46,15 @@ for a in "$@"; do
     --reuse-image-installer) REUSE_IMAGE_INSTALLER=1; DO_CARGO=0; BINARY_MODES=$((BINARY_MODES + 1)) ;;
     --image-only) IMAGE_ONLY=1 ;;
     --dev-login) DEV_LOGIN=1 ;;
+    --compact-ext4) COMPACT_EXT4=1 ;;
     -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) die "unknown arg: $a" ;;
   esac
 done
 
 [ "$BINARY_MODES" -le 1 ] || die "choose only one installer binary source"
+[ "$COMPACT_EXT4" = 0 ] || [ "$IMAGE_ONLY" = 0 ] \
+  || die "--compact-ext4 requires disk creation; remove --image-only"
 
 if [ "$DEV_LOGIN" = 1 ] && [ -z "${TILO_INSTALLER_DEV_PASSWORD:-}" ]; then
   die "--dev-login requires a non-empty TILO_INSTALLER_DEV_PASSWORD"
@@ -135,17 +140,30 @@ msg "3/3 disk image -> installer qcow2"
 #
 # `tilo.install` is not passed here — it lives in the image, as
 # /usr/lib/bootc/kargs.d/50-installer.toml (see os/Containerfile.installer).
-rm -rf "$TILO_INSTALLER_OUTPUT/qcow2" "$TILO_INSTALLER_OUTPUT"/manifest* 2>/dev/null || true
 image_bytes="$(podman image inspect "$TILO_INSTALLER_IMAGE" --format '{{.Size}}')"
+[[ "$image_bytes" =~ ^[0-9]+$ ]] && [ "$image_bytes" -gt 0 ] \
+  || die "podman returned an invalid installer image size: $image_bytes"
 gib=$((1024 * 1024 * 1024))
 root_gib=$(((image_bytes * 3 + gib - 1) / gib))
 [ "$root_gib" -ge 40 ] || root_gib=40
-msg "   live root ${root_gib}G (OCI image $(numfmt --to=iec-i --suffix=B "$image_bytes"), 3x + 40G floor)"
+rootfs=btrfs
+if [ "$COMPACT_EXT4" = 1 ]; then
+  [ "$image_bytes" -le $((18 * gib)) ] \
+    || die "--compact-ext4 needs 2x OCI image bytes plus 4 GiB slack within 40 GiB; image is $(numfmt --to=iec-i --suffix=B "$image_bytes"). Use the default growing layout."
+  root_gib=40
+  rootfs=ext4
+  msg "   experimental compact VM live root: ext4 40G (OCI image $(numfmt --to=iec-i --suffix=B "$image_bytes"), 2x estimate + 4G slack)"
+else
+  msg "   live root ${root_gib}G (OCI image $(numfmt --to=iec-i --suffix=B "$image_bytes"), 3x + 40G floor)"
+fi
+rm -rf "$TILO_INSTALLER_OUTPUT/qcow2" "$TILO_INSTALLER_OUTPUT"/manifest* 2>/dev/null || true
 DISK_ARGS=(
   "$TILO_INSTALLER_IMAGE"
   "$(dirname "$TILO_INSTALLER_DISK")"
   --root-min "${root_gib}G"
+  --rootfs "$rootfs"
 )
+[ "$COMPACT_EXT4" = 0 ] || DISK_ARGS+=(--root-max 40G)
 if [ "$DEV_LOGIN" = 1 ]; then
   DISK_ARGS+=(--user "quickuser:${TILO_INSTALLER_DEV_PASSWORD}:wheel")
 fi
