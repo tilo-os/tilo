@@ -2145,3 +2145,261 @@ mod shapes {
         assert_eq!(doc.get_all(ROOT, "k").unwrap().len(), n);
     }
 }
+
+// ===========================================================================
+// columnar: forged document/bundle column contents that reach 0.12's
+// collectors (VecEncoder::add assert, ChangeCollector::unbundle unwrap), and
+// a checksum-preserving single-byte mutation sweep over every chunk kind.
+// ===========================================================================
+mod columnar {
+    use super::*;
+
+    /// Column-level view of a document (kind 0) or bundle (kind 3) chunk.
+    struct Columnar {
+        kind: u8,
+        prefix: Vec<u8>,
+        changes: Vec<(u64, Vec<u8>)>,
+        ops: Vec<(u64, Vec<u8>)>,
+        suffix: Vec<u8>,
+    }
+
+    fn read_meta(r: &mut &[u8]) -> Vec<(u64, usize)> {
+        let n = read_uint(r);
+        (0..n).map(|_| (read_uint(r), read_uint(r) as usize)).collect()
+    }
+    fn take_cols(r: &mut &[u8], meta: &[(u64, usize)]) -> Vec<(u64, Vec<u8>)> {
+        meta.iter()
+            .map(|(spec, len)| {
+                let data = r[..*len].to_vec();
+                *r = &r[*len..];
+                (*spec, data)
+            })
+            .collect()
+    }
+    fn write_meta(cols: &[(u64, Vec<u8>)], out: &mut Vec<u8>) {
+        leb(cols.len() as u64, out);
+        for (spec, data) in cols {
+            leb(*spec, out);
+            leb(data.len() as u64, out);
+        }
+    }
+
+    impl Columnar {
+        fn parse(raw: &[u8]) -> Self {
+            let kind = raw[8];
+            let mut b = &raw[9..];
+            let _len = read_uint(&mut b);
+            let body = b;
+            let mut r = body;
+            match kind {
+                0 => {
+                    let n = read_uint(&mut r);
+                    for _ in 0..n {
+                        read_blob(&mut r);
+                    }
+                    let heads = read_uint(&mut r) as usize;
+                    r = &r[heads * 32..];
+                    let prefix = body[..body.len() - r.len()].to_vec();
+                    let change_meta = read_meta(&mut r);
+                    let op_meta = read_meta(&mut r);
+                    let changes = take_cols(&mut r, &change_meta);
+                    let ops = take_cols(&mut r, &op_meta);
+                    Self { kind, prefix, changes, ops, suffix: r.to_vec() }
+                }
+                3 => {
+                    let n = read_uint(&mut r) as usize;
+                    r = &r[n * 32..];
+                    let a = read_uint(&mut r);
+                    for _ in 0..a {
+                        read_blob(&mut r);
+                    }
+                    let prefix = body[..body.len() - r.len()].to_vec();
+                    let change_meta = read_meta(&mut r);
+                    let changes = take_cols(&mut r, &change_meta);
+                    let op_meta = read_meta(&mut r);
+                    let ops = take_cols(&mut r, &op_meta);
+                    assert!(r.is_empty());
+                    Self { kind, prefix, changes, ops, suffix: Vec::new() }
+                }
+                k => panic!("not a columnar chunk: {k}"),
+            }
+        }
+        fn encode(&self) -> Vec<u8> {
+            let mut out = self.prefix.clone();
+            match self.kind {
+                0 => {
+                    write_meta(&self.changes, &mut out);
+                    write_meta(&self.ops, &mut out);
+                    for (_, d) in self.changes.iter().chain(&self.ops) {
+                        out.extend(d);
+                    }
+                    out.extend(&self.suffix);
+                }
+                _ => {
+                    write_meta(&self.changes, &mut out);
+                    for (_, d) in &self.changes {
+                        out.extend(d);
+                    }
+                    write_meta(&self.ops, &mut out);
+                    for (_, d) in &self.ops {
+                        out.extend(d);
+                    }
+                }
+            }
+            chunk(self.kind, &out)
+        }
+        fn set(cols: &mut [(u64, Vec<u8>)], spec: u64, data: Vec<u8>) {
+            let col = cols.iter_mut().find(|(s, _)| *s == spec).unwrap_or_else(|| panic!("no column {spec:#x}"));
+            col.1 = data;
+        }
+    }
+
+    /// Delta column holding exactly `values` as a literal run.
+    fn delta_literal(values: &[i64]) -> Vec<u8> {
+        let mut out = Vec::new();
+        sleb(-(values.len() as i64), &mut out);
+        let mut last = 0;
+        for v in values {
+            sleb(v - last, &mut out);
+            last = *v;
+        }
+        out
+    }
+
+    /// Runs the checked surface on `input`; asserts refusal without panic.
+    fn assert_refused_without_panic(what: &str, input: &[u8]) {
+        let owned = reconstruct(input, &NativeLimits::default()).map(drop);
+        assert!(owned.is_err(), "{what}: reconstruct accepted forged storage");
+        let mut doc = seeded_doc();
+        for policy in [NativeDependencyPolicy::RequireComplete, NativeDependencyPolicy::RetainOrphans] {
+            let result = incoming(&mut doc, input, &NativeLimits::default(), &allowance(), policy);
+            assert!(result.is_err(), "{what}: apply_incoming_checked accepted forged storage: {result:?}");
+        }
+    }
+
+    /// Two ops of one change given the same op id (1@A) in a document
+    /// chunk. 0.12's ChangeCollector hits `assert!` in VecEncoder::add.
+    #[test]
+    fn document_with_duplicate_op_ids_is_refused_without_panic() {
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0xc1; 16]));
+        doc.put(ROOT, "a", 1).unwrap();
+        doc.put(ROOT, "b", 2).unwrap();
+        doc.commit();
+        let mut parts = Columnar::parse(&doc.save_nocompress());
+        Columnar::set(&mut parts.ops, 0x23, delta_literal(&[1, 1]));
+        let forged = parts.encode();
+        let plain = catch_unwind(|| AutoCommit::load(&forged).map(drop));
+        println!("plain 0.12 load of duplicate op ids: panicked={}", plain.is_err());
+        assert_refused_without_panic("duplicate op ids", &forged);
+    }
+
+    /// An op id beyond its change's op range (1@A, 5@A with max_op 2):
+    /// indexes VecEncoder past its dense slots.
+    #[test]
+    fn document_with_op_id_outside_its_change_is_refused_without_panic() {
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0xc2; 16]));
+        doc.put(ROOT, "a", 1).unwrap();
+        doc.put(ROOT, "b", 2).unwrap();
+        doc.commit();
+        let mut parts = Columnar::parse(&doc.save_nocompress());
+        Columnar::set(&mut parts.ops, 0x23, delta_literal(&[1, 5]));
+        assert_refused_without_panic("op id outside change", &parts.encode());
+    }
+
+    /// A bundle whose second change claims one more op than the bundle
+    /// carries (max_op bumped). 0.12's ChangeCollector::unbundle unwraps the
+    /// resulting MissingOps error.
+    #[test]
+    fn bundle_change_with_missing_ops_is_refused_without_panic() {
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0xc3; 16]));
+        doc.put(ROOT, "a", 1).unwrap();
+        doc.commit();
+        doc.put(ROOT, "b", 2).unwrap();
+        doc.commit();
+        let hashes: Vec<_> = doc.get_changes(&[]).iter().map(Change::hash).collect();
+        let bundle = doc.bundle(hashes).unwrap();
+        let mut parts = Columnar::parse(bundle.bytes());
+        // Bundle change column group: MAX_OP is delta column id 2.
+        Columnar::set(&mut parts.changes, 0x23, delta_literal(&[1, 3]));
+        let forged = parts.encode();
+        let plain = catch_unwind(|| AutoCommit::load(&forged).map(drop));
+        println!("plain 0.12 load of bundle with missing ops: panicked={}", plain.is_err());
+        assert_refused_without_panic("bundle missing ops", &forged);
+    }
+
+    /// Single-byte mutations of every body byte (checksum recomputed so the
+    /// mutation reaches the decoders): the checked surface must never panic,
+    /// and must never mutate the resident document on refusal. Full value
+    /// set behind AM012_SLOW.
+    #[test]
+    fn checksum_preserving_mutation_sweep_never_panics() {
+        let mut src = AutoCommit::new().with_actor(ActorId::from(vec![0xd1; 16]));
+        let text = src.put_object(ROOT, "t", ObjType::Text).unwrap();
+        src.splice_text(&text, 0, 0, "hello").unwrap();
+        src.mark(&text, Mark::new("b".into(), true, 0, 3), ExpandMark::After).unwrap();
+        let list = src.put_object(ROOT, "l", ObjType::List).unwrap();
+        src.insert(&list, 0, ScalarValue::counter(1)).unwrap();
+        src.commit();
+        src.put(ROOT, "k", "v").unwrap();
+        src.increment(&list, 0, 2).unwrap();
+        src.delete(&text, 1).unwrap();
+        src.commit();
+        let changes = src.get_changes(&[]);
+        let hashes: Vec<_> = changes.iter().map(Change::hash).collect();
+        let seeds: Vec<(u8, Vec<u8>)> = vec![
+            (0, src.save_nocompress()),
+            (1, changes[1].raw_bytes().to_vec()),
+            (3, src.bundle(hashes).unwrap().bytes().to_vec()),
+        ];
+        let values: &[fn(u8) -> u8] = if slow() {
+            &[|b| b ^ 1, |b| b ^ 0x80, |_| 0, |_| 0xff, |b| b.wrapping_add(1), |b| b.wrapping_sub(1), |b| b ^ 0x40]
+        } else {
+            &[|b| b ^ 1, |b| b ^ 0x80]
+        };
+        let mut failures = Vec::new();
+        let mut accepted = 0usize;
+        // Mutant panics are collected below; silence the default hook meanwhile.
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        for (kind, raw) in &seeds {
+            let mut b = &raw[9..];
+            let _ = read_uint(&mut b);
+            let body_start = raw.len() - b.len();
+            let body = &raw[body_start..];
+            for i in 0..body.len() {
+                for f in values {
+                    let mut m = body.to_vec();
+                    m[i] = f(m[i]);
+                    if m[i] == body[i] {
+                        continue;
+                    }
+                    let input = chunk(*kind, &m);
+                    let outcome = catch_unwind(AssertUnwindSafe(|| {
+                        if inspect(&input, &NativeLimits::default()).is_err() {
+                            return false;
+                        }
+                        let _ = reconstruct(&input, &NativeLimits::default());
+                        let mut doc = seeded_doc();
+                        let _ = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
+                        true
+                    }));
+                    match outcome {
+                        Ok(true) => accepted += 1,
+                        Ok(false) => {}
+                        Err(p) => {
+                            let msg = p
+                                .downcast_ref::<String>()
+                                .cloned()
+                                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                                .unwrap_or_default();
+                            failures.push(format!("kind {kind} byte {i}: {} -> {}: {}", body[i], m[i], msg.chars().take(160).collect::<String>()));
+                        }
+                    }
+                }
+            }
+        }
+        std::panic::set_hook(hook);
+        println!("mutation sweep: {accepted} mutants passed inspection");
+        assert!(failures.is_empty(), "{} panicking mutants:\n{}", failures.len(), failures.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+    }
+}
