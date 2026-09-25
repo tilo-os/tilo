@@ -2287,6 +2287,29 @@ const HISTORY_TRIM_SLACK: usize = 256;
 #[cfg(test)]
 const HISTORY_TRIM_SLACK: usize = 8;
 
+impl TerminalWidget {
+    /// The find bar's match status, announced on its previous/next buttons.
+    fn find_result_summary(&self) -> String {
+        if self.find_query.is_empty() {
+            "Type to find in retained local scrollback".to_string()
+        } else if self.find_matches.is_empty() {
+            "No matches in retained local scrollback".to_string()
+        } else if self.find_matches.len() == MAX_FIND_MATCHES {
+            format!(
+                "Match {} of {} or more",
+                self.find_current + 1,
+                MAX_FIND_MATCHES
+            )
+        } else {
+            format!(
+                "Match {} of {}",
+                self.find_current + 1,
+                self.find_matches.len()
+            )
+        }
+    }
+}
+
 impl Widget for TerminalWidget {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.gesture_effects.pop_front().or_else(|| {
@@ -3052,23 +3075,7 @@ impl Widget for TerminalWidget {
             .extend(self.visible_link_accessibility());
         if self.find_open {
             let prefix = format!("terminal.find:{}", self.pane_id);
-            let result = if self.find_query.is_empty() {
-                "Type to find in retained local scrollback".to_string()
-            } else if self.find_matches.is_empty() {
-                "No matches in retained local scrollback".to_string()
-            } else if self.find_matches.len() == MAX_FIND_MATCHES {
-                format!(
-                    "Match {} of {} or more",
-                    self.find_current + 1,
-                    MAX_FIND_MATCHES
-                )
-            } else {
-                format!(
-                    "Match {} of {}",
-                    self.find_current + 1,
-                    self.find_matches.len()
-                )
-            };
+            let result = self.find_result_summary();
             transcript.children.push(
                 AccessNode::new(Role::Group)
                     .with_name("Find in scrollback")
@@ -5185,11 +5192,8 @@ impl TerminalWidget {
             .get(index)
             .and_then(MenuItem::label)
             .map(str::to_owned);
-        match label.as_deref() {
-            Some("Copy on select: On" | "Copy on select: Off") => {
-                self.select_to_copy = !self.select_to_copy;
-            }
-            _ => {}
+        if let Some("Copy on select: On" | "Copy on select: Off") = label.as_deref() {
+            self.select_to_copy = !self.select_to_copy;
         }
     }
 

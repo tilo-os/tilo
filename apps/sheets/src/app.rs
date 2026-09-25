@@ -3936,6 +3936,10 @@ impl SheetsApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the settings modal lays out its sections top to bottom sharing the running y cursor and chip-row wrapping"
+    )]
     fn layout_settings_panel(&mut self) {
         // Centered modal panel, sized to fit even the narrow viewport. Chip
         // rows start past the measured section-label column and wrap within

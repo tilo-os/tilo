@@ -34,10 +34,10 @@ use crate::common::client_endpoint;
 const FILE_WORKSPACE: u64 = 42;
 
 fn wait_for_file(path: &std::path::Path, what: &str) {
-    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+    let started = Instant::now();
     while !path.is_file() {
         assert!(
-            Instant::now() < deadline,
+            started.elapsed() < Duration::from_secs(5),
             "timed out waiting for {what} at {}",
             path.display()
         );
@@ -370,12 +370,13 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
     {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
+        const REQUEST_UID: u32 = 42_424;
+
         assert_eq!(
             std::fs::metadata("/proc/self").unwrap().uid(),
             0,
             "privileged runner must be root"
         );
-        const REQUEST_UID: u32 = 42_424;
         let scope = tempfile::tempdir().unwrap();
         let approver_root = scope.path().join("approver/tilo");
         let approver_identities = scope.path().join("approver/identities");

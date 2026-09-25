@@ -240,7 +240,7 @@ impl RecordTransactionJournal {
         namespace_delta: Option<Vec<u8>>,
     ) -> Result<bool, RecordTransactionJournalError> {
         if self.legacy_restores.contains_key(&id) {
-            return self.advance_legacy(id, phase, namespace_delta);
+            return self.advance_legacy(id, phase, namespace_delta.as_deref());
         }
         let current = self
             .entries
@@ -346,15 +346,12 @@ impl RecordTransactionJournal {
     }
 }
 
-fn load_entries(
-    root: &Path,
-) -> Result<
-    (
-        BTreeMap<Uuid, RecordTransactionJournalEntry>,
-        BTreeMap<Uuid, LegacyRestoreEntry>,
-    ),
-    RecordTransactionJournalError,
-> {
+type LoadedEntries = (
+    BTreeMap<Uuid, RecordTransactionJournalEntry>,
+    BTreeMap<Uuid, LegacyRestoreEntry>,
+);
+
+fn load_entries(root: &Path) -> Result<LoadedEntries, RecordTransactionJournalError> {
     if !root.exists() {
         return Ok((BTreeMap::new(), BTreeMap::new()));
     }
@@ -393,7 +390,7 @@ fn load_entries(
             if entries.contains_key(&id) || legacy.insert(id, entry).is_some() {
                 return Err(RecordTransactionJournalError::TransactionIdCollision(id));
             }
-            if entries.len() + legacy.len() > MAX_RECORD_TRANSACTION_ENTRIES {
+            if entries.len().saturating_add(legacy.len()) > MAX_RECORD_TRANSACTION_ENTRIES {
                 return Err(RecordTransactionJournalError::TooManyEntries);
             }
             continue;
@@ -406,7 +403,7 @@ fn load_entries(
         if entries.insert(id, entry).is_some() {
             return Err(RecordTransactionJournalError::TransactionIdCollision(id));
         }
-        if entries.len() + legacy.len() > MAX_RECORD_TRANSACTION_ENTRIES {
+        if entries.len().saturating_add(legacy.len()) > MAX_RECORD_TRANSACTION_ENTRIES {
             return Err(RecordTransactionJournalError::TooManyEntries);
         }
     }

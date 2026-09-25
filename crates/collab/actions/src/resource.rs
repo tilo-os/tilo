@@ -1826,7 +1826,7 @@ mod tests {
         assert!(valid.is_valid());
         assert!(
             Resource::new("weather:home", "weather", "Home")
-                .with_presentation(valid.clone())
+                .with_presentation(valid)
                 .presentation
                 .is_some()
         );

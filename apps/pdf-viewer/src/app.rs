@@ -6028,7 +6028,7 @@ mod tests {
     }
 
     /// Standalone fixture frames explicitly admit a file's record, just like
-    /// the live host. Multi-document tests retain their RecordSet separately.
+    /// the live host. Multi-document tests retain their `RecordSet` separately.
     fn sync_fixture(app: &mut PdfApp, st: &mut ui::State) {
         if let Some(want) = app.record_intent() {
             if ui::record::identity(&st.doc).is_none() {

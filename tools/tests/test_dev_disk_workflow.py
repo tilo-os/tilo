@@ -48,6 +48,22 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}", build)
         self.assertIn('./os/dev/assert-native-arch.sh "$ARCH"', build)
 
+    def test_arm_disk_build_uses_measured_native_overlay(self) -> None:
+        build = job(self.source, "build")
+        devices = step(build, "Expose guest FUSE and loop devices")
+        native = step(build, "Use native Podman overlay for ARM dev disk")
+        login = step(build, "Authenticate to the image registry")
+        self.assertIn("sudo -n losetup --find >/dev/null", devices)
+        self.assertIn("if: matrix.arch == 'aarch64'", native)
+        self.assertIn('sudo -n mount -t ext4 "$loop" "$root"', native)
+        self.assertIn('export CONTAINERS_STORAGE_CONF="$root/storage.conf"', native)
+        self.assertIn('.store.graphStatus["Backing Filesystem"] == "extfs"', native)
+        self.assertIn('.has-mount-program', native)
+        self.assertIn('>> "$GITHUB_ENV"', native)
+        self.assertLess(build.index("Expose guest FUSE"), build.index("Use native Podman overlay"))
+        self.assertLess(build.index("Use native Podman overlay"), build.index("Authenticate to the image registry"))
+        self.assertIn("podman login", login)
+
     def test_dev_image_builds_on_the_verified_same_source_base(self) -> None:
         build = job(self.source, "build")
         self.assertIn("ref: ${{ needs.plan.outputs.source }}", build)

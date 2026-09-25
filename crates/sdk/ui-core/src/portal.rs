@@ -748,10 +748,10 @@ mod tests {
 
     fn u(s: &str) -> url::Url {
         #[cfg(windows)]
-        let s = s
+        let s = &s
             .replace("file:///", "file:///C:/")
             .replace("file://localhost/", "file://localhost/C:/");
-        url::Url::parse(&s).unwrap()
+        url::Url::parse(s).unwrap()
     }
 
     fn local_path(s: &str) -> PathBuf {

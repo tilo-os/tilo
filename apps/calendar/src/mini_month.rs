@@ -65,6 +65,10 @@ impl MiniMonth {
         clippy::too_many_lines,
         reason = "the component paints one compact header and one fixed 42-cell grid; keeping the shared geometry in one pass makes its targets and pixels visibly correspond"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the navigator needs the paint context, sidebar bounds, reserved limit, dates, event markers and pointer"
+    )]
     pub(crate) fn draw(
         scene: &mut Scene,
         transform: Affine,

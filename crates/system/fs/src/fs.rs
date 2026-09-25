@@ -2174,7 +2174,7 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if self.restore_codec(&self.ns(), ino).is_err() {
+        if Self::restore_codec(&self.ns(), ino).is_err() {
             // Document restoration needs codec-aware CRDT checkout rather
             // than replacing its exported bytes as if it were a plain file.
             return Err(libc::ENOTSUP);
@@ -5898,7 +5898,7 @@ impl Filesystem for QuickFS {
                 };
                 match serde_json::to_vec(&response) {
                     Ok(bytes) if bytes.len() <= collab_types::files::MAX_HISTORY_READ_BYTES => {
-                        reply_xattr_bytes(reply, &bytes, size)
+                        reply_xattr_bytes(reply, &bytes, size);
                     }
                     _ => reply.error(to_errno(EIO)),
                 }

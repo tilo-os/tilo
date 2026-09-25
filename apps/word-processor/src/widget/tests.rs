@@ -116,7 +116,7 @@ fn plain_body_edits_retain_untouched_views_and_fall_back_for_other_changes() {
     wp.inner.insert_str(&mut state.doc, "Untouched paragraph");
     wp.inner.enter(&mut state.doc);
     wp.inner.insert_str(&mut state.doc, "Edited paragraph");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let untouched = wp.blocks[0].text.as_ptr();
     for (key, text) in [
         (Key::Character("é".into()), Some("é")),
@@ -607,7 +607,7 @@ fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
     pipeline_draw(&mut wp, &mut state, 1000, 700);
     let mut handled = false;
     wp.handle_mouse_wheel(
-        &MouseScrollDelta::LineDelta(0.0, 100000.0),
+        &MouseScrollDelta::LineDelta(0.0, 100_000.0),
         1.0,
         false,
         &mut handled,
@@ -643,7 +643,7 @@ fn scrolling_retains_overlap_but_discards_transient_block_previews() {
     let retained_text = wp.blocks[100].text.as_ptr();
     for focus in [60, 80, 70, 48] {
         wp.scroll_y = num::f64_of_usize(focus) * ESTIMATED_BLOCK_EXTENT;
-        wp.refresh_blocks(&mut state.doc);
+        wp.refresh_blocks(&state.doc);
         assert_eq!(
             wp.blocks
                 .iter()
@@ -671,7 +671,7 @@ fn scrolling_retains_overlap_but_discards_transient_block_previews() {
     wp.set_caret_block_indent_view(123.0);
     wp.set_caret_block_first_line_view(42.0);
     wp.scroll_y = 70.0 * ESTIMATED_BLOCK_EXTENT;
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let (start, end) = wp.body_window_bounds();
     assert_eq!(
         wp.blocks,
@@ -719,7 +719,7 @@ fn toolbar_insert_table_matches_palette_spec() {
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "Intro");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
 
     // What the palette would dispatch, resolved before the button fires.
     let resources = Widget::resources(&wp, &state.doc);
@@ -738,7 +738,7 @@ fn toolbar_insert_table_matches_palette_spec() {
         "toolbar affordance and palette spec build the same EncodedAction"
     );
     // And the affordance really created the table (a 2x2 = four cells).
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     assert_eq!(
         wp.blocks.iter().filter(|b| b.kind == "cell").count(),
         4,
@@ -754,7 +754,7 @@ fn panel_align_dispatches_action_and_arms_one_undo_boundary() {
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "Body text");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let before = state.doc.get_heads();
 
     wp.apply_panel_hit(&mut state.doc, PanelHit::ParaAlign("center"));
@@ -788,7 +788,7 @@ fn panel_align_dispatches_action_and_arms_one_undo_boundary() {
         "panel align and palette spec build the same EncodedAction"
     );
     // The block really carries the centre alignment.
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let aligned = wp
         .blocks
         .iter()
@@ -804,7 +804,7 @@ fn highlight_mark_yields_background_span() {
     wp.model_mut().insert_str(&mut state.doc, "hello world");
     select_range(&mut wp, 0, 5);
     wp.model_mut().set_highlight(&mut state.doc, "#fff35c");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let b = wp
         .blocks
         .iter()
@@ -835,7 +835,7 @@ fn super_mark_yields_super_baseline() {
     wp.model_mut().insert_str(&mut state.doc, "x2");
     select_range(&mut wp, 1, 2); // the "2"
     wp.model_mut().toggle_super(&mut state.doc);
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let b = wp
         .blocks
         .iter()
@@ -883,7 +883,7 @@ fn line_spacing_2x_shapes_a_taller_layout() {
 
     // Now set double spacing and redraw on the same path.
     wp.model_mut().set_line_spacing(&mut state.doc, 2.0);
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     assert_eq!(
         block_line_spacing(wp.blocks.iter().find(|b| b.text == long).unwrap()),
         2.0,
@@ -966,7 +966,7 @@ fn find_and_replace_all_works() {
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut()
         .insert_str(&mut state.doc, "hello world hello there");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
 
     wp.find.set_queries_for_tests("hello", "hi");
     wp.find.open(None, &wp.blocks);
@@ -977,7 +977,7 @@ fn find_and_replace_all_works() {
     );
 
     wp.replace_all(&mut state.doc);
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     assert_eq!(wp.blocks[0].text, "hi world hi there");
     assert!(
         wp.find.matches().is_empty(),
@@ -1004,7 +1004,7 @@ fn styles_panel_renders_hits_and_picks_a_style() {
 
     // Picking the Quote style makes the caret block adopt it (component-instance).
     wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("quote".into()));
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     assert_eq!(
         wp.focused_style_key().as_deref(),
         Some("quote"),
@@ -1081,7 +1081,7 @@ fn new_style_from_this_duplicates_and_applies() {
         n_before + 1,
         "a new style id was added"
     );
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let key = wp.focused_style_key().unwrap();
     assert!(
         key.starts_with("custom"),
@@ -1266,7 +1266,7 @@ fn compact_toolbar_overflow_keeps_every_direct_colour_action() {
         .expect("shared picker lays out each swatch")
         .center();
     left_click(&mut wp, &mut state, swatch);
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     assert_eq!(wp.current_text_color(), Some(STYLE_PALETTE[3]));
 }
 
@@ -1600,7 +1600,7 @@ fn font_size_applies_to_the_selection_from_the_toolbar() {
     );
 
     wp.apply_tool(&mut state.doc, ToolAction::FontSizeInc);
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     let up = wp.current_font_size();
     assert!(up > base, "A+ enlarges the selection: {base} -> {up}");
     // The nudge is a per-run character mark, not an edit of the Body style.
@@ -1623,7 +1623,7 @@ fn bold_still_applies_to_the_selection_from_the_toolbar() {
     assert!(!wp.mark_active_in_selection("strong"), "not bold yet");
 
     wp.apply_tool(&mut state.doc, ToolAction::Bold);
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     assert!(
         wp.mark_active_in_selection("strong"),
         "the whole selection is now bold"
@@ -5177,7 +5177,7 @@ fn template_menu_hover_paints_feedback_in_both_themes() {
 fn template_menu_keyboard_selects_without_editing_the_document() {
     let (mut state, mut wp) = bound();
     wp.model_mut().insert_str(&mut state.doc, "Draft");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     pipeline_draw(&mut wp, &mut state, 1200, 700);
     wp.lifecycle.focused = true;
     wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
@@ -5269,7 +5269,7 @@ fn selecting_a_template_replaces_the_document_content() {
     // Author some pre-existing content so we can prove it's actually replaced.
     wp.model_mut()
         .insert_str(&mut state.doc, "Pre-existing rough draft");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
     assert_eq!(
         first_block(&wp, &state).map(|b| b.text),
         Some("Pre-existing rough draft".to_string()),
@@ -5505,7 +5505,7 @@ fn recovery_reuses_fresh_complete_views_and_falls_back_for_stale_or_partial_view
         };
         wp.set_recovery_dir(dir.clone());
         wp.inner.insert_str(&mut state.doc, "Unicode café recovery");
-        wp.refresh_blocks(&mut state.doc);
+        wp.refresh_blocks(&state.doc);
         if case == "stale" {
             wp.inner.insert_str(&mut state.doc, " latest pending edit");
         } else if case == "partial" {
@@ -5649,7 +5649,7 @@ fn discard_recovery_removes_the_file_and_banner() {
     wp.set_recovery_dir(dir.clone());
     wp.set_file(dir.join("d.md"), WpFormat::Markdown);
     wp.model_mut().insert_str(&mut state.doc, "Keep me");
-    wp.refresh_blocks(&mut state.doc);
+    wp.refresh_blocks(&state.doc);
 
     let rp = wp.recovery_path();
     std::fs::create_dir_all(rp.parent().unwrap()).unwrap();
@@ -8218,6 +8218,10 @@ fn color_picker_popover_dismisses_on_outside_click() {
 
 #[test]
 #[ignore = "GPU pixel equivalence; run explicitly when changing text clipping"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end raster scenario that reads top to bottom: seed review state, render, compare, then re-check state"
+)]
 fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
     let body = format!(
         "Annotated text {}",
@@ -8399,7 +8403,7 @@ fn render_review_png_themed(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     wp.sync(&mut state.doc, &state.root);
-    let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = wp.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy
         .new_with_children(
             Style {
@@ -8438,11 +8442,11 @@ fn render_review_png_themed(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
-    wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     std::fs::create_dir_all(dir).ok();
     OffscreenRenderer::new(w, h).render_png(
         &scene,

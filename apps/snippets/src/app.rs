@@ -2486,6 +2486,10 @@ impl SnippetsApp {
 
     /// The "New snippet" primary call to action shown when the whole
     /// library is empty, plus a quiet hint at the search grammar beneath it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the call to action combines the paint context with its centre, vertical position and width limit"
+    )]
     fn draw_empty_new_snippet_cta(
         &mut self,
         scene: &mut Scene,
@@ -2591,6 +2595,10 @@ impl SnippetsApp {
         self.record(btn, Action::ClearSearch);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a list row paints its title, language, tags and preview in one pass sharing the row geometry"
+    )]
     fn draw_list_row(
         &self,
         scene: &mut Scene,

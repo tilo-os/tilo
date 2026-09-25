@@ -3376,6 +3376,10 @@ impl ContactsApp {
     /// phone/email/address rows are built by per-group helpers purely for
     /// length; the geometry (and thus the rendered layout) is unchanged
     /// from one flat function.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "every form field's rect is assigned in one vertical pass sharing the running y cursor; the repeated groups are already split out"
+    )]
     fn layout_form(&mut self) {
         let large_text = self.text_scale >= 1.75;
         let area = self.detail_rect;

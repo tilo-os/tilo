@@ -1505,7 +1505,7 @@ fn menu_clear_uses_real_app_permission_and_confirmation_admission() {
         );
         assert_eq!(
             app.action_palette()
-                .is_some_and(|palette| palette.is_open()),
+                .is_some_and(ui::action_palette::ActionPalette::is_open),
             role == Role::Editor
         );
 
@@ -1541,6 +1541,10 @@ thread_local! {
     static MENU_COMPONENT_WIDGET: std::cell::RefCell<Option<TerminalWidget>> = const { std::cell::RefCell::new(None) };
 }
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the application definition's `create` hook requires this fallible signature"
+)]
 fn menu_component_factory(
     mut context: ui::application::HostContext,
     _: ui::application::LaunchTarget,
@@ -1563,6 +1567,10 @@ fn menu_component_factory(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario through the real component runner, read top to bottom"
+)]
 fn confirmed_menu_clear_checks_live_component_permissions_and_writes_exact_bytes() {
     use std::{cell::RefCell, rc::Rc};
     use ui::application::{

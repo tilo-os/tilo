@@ -3505,13 +3505,13 @@ impl WordProcessorWidget {
     /// Materialize the body only when its CRDT heads change, or when scrolling
     /// moves a large document's bounded working set. qdoc's requested-block API
     /// preserves the canonical id order without doing a whole-region traversal.
-    fn refresh_blocks(&mut self, state: &mut AutoCommit) {
+    fn refresh_blocks(&mut self, state: &AutoCommit) {
         self.refresh_blocks_after_text_edit(state, None);
     }
 
     /// A hint is issued only before a known single-block edit at the cached
     /// revision. Metadata still refreshes; all uncertain changes use the full path.
-    fn refresh_blocks_after_text_edit(&mut self, state: &mut AutoCommit, text_block: Option<&str>) {
+    fn refresh_blocks_after_text_edit(&mut self, state: &AutoCommit, text_block: Option<&str>) {
         let Some(c) = self.inner.containers.as_ref() else {
             return;
         };
@@ -3559,7 +3559,13 @@ impl WordProcessorWidget {
             );
         }
         if let Some((index, block)) = replacement {
-            self.blocks[index] = block;
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "index came from `self.blocks.iter().position` above and `self.blocks` is not resized in between"
+            )]
+            {
+                self.blocks[index] = block;
+            }
         } else {
             let ids = self.body_order.get(start..end).unwrap_or(&[]);
             if !changed && !self.block_views_have_preview {
@@ -5154,7 +5160,7 @@ impl WordProcessorWidget {
     /// dispatch path.
     #[expect(
         clippy::too_many_lines,
-        reason = "one immediate-mode paint pass for the image inspector panel"
+        reason = "the image inspector paints its size, flip, crop and placement rows in one top-to-bottom pass sharing the running y cursor"
     )]
     fn draw_image_inspector(
         &mut self,
@@ -5342,6 +5348,10 @@ impl WordProcessorWidget {
         self.panel_hits.push((right_wrap, PanelHit::ImageWrapRight));
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "flip toggles combine the paint context with the inspector column geometry and button width"
+    )]
     fn draw_panel_image_flip(
         &mut self,
         scene: &mut Scene,
@@ -6402,7 +6412,7 @@ impl WordProcessorWidget {
     /// pass of [`Self::draw`].
     #[expect(
         clippy::too_many_lines,
-        reason = "one immediate-mode paint pass for the window chrome"
+        reason = "the chrome bands are laid out top to bottom, each reserving space the next band and the canvas depend on"
     )]
     fn draw_frame_chrome(
         &mut self,
@@ -9565,7 +9575,7 @@ impl WordProcessorWidget {
         &mut self,
         state: &AutoCommit,
         key: &Key,
-        modifiers: &Modifiers,
+        modifiers: Modifiers,
     ) -> bool {
         if !self.lifecycle.focused || self.editing_field.is_some() || self.find.is_open() {
             return false;
@@ -10563,7 +10573,7 @@ impl Widget for WordProcessorWidget {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "the widget's single winit event dispatch"
+        reason = "the widget's single event entry point routes each window event to overlays, panels and the editor in priority order"
     )]
     fn handle_event(
         &mut self,
@@ -10588,7 +10598,7 @@ impl Widget for WordProcessorWidget {
         if self.unsaved_changes.is_open() {
             if let Some(choice) = self
                 .unsaved_changes
-                .handle_event(event, scale_factor, modifiers)
+                .handle_event(event, scale_factor, *modifiers)
             {
                 self.resolve_unsaved_choice(state, choice);
             }
@@ -10825,7 +10835,7 @@ impl Widget for WordProcessorWidget {
                     },
                 ..
             } => {
-                if self.handle_modified_navigation(state, logical_key, modifiers) {
+                if self.handle_modified_navigation(state, logical_key, *modifiers) {
                     *handled = true;
                 } else {
                     self.handle_key_press(
@@ -10972,7 +10982,7 @@ impl Widget for WordProcessorWidget {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "one flat semantic action dispatch mirroring the pointer hit inventory"
+        reason = "one flat dispatch table from every accessibility action target to the matching editor command"
     )]
     fn perform_action_at(
         &mut self,
@@ -11358,7 +11368,7 @@ impl WordProcessorWidget {
     /// primary surface while keeping each persisted reply visible and usable.
     #[expect(
         clippy::too_many_lines,
-        reason = "one immediate-mode paint pass for a comment thread"
+        reason = "the thread panel paints its header, persisted replies and composer in one pass sharing the running y cursor"
     )]
     fn draw_comment_thread(
         &mut self,
@@ -13857,6 +13867,10 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
 #[path = "widget/mark_boundary_tests.rs"]
 mod mark_boundary_tests;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "legacy buttons take the paint context, chrome colours, rect, label and two independent style flags"
+)]
 fn draw_legacy_btn(
     scene: &mut Scene,
     transform: Affine,

@@ -17,6 +17,10 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end session scenario that reads top to bottom"
+)]
 async fn compute_session_routes_and_replays_unacknowledged_status() {
     let user = TestUser::fresh("compute owner");
     let relay_device = user.enrol("relay", DeviceCapabilities::host());
@@ -159,12 +163,12 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
     .await
     .unwrap();
     requester_again.attach(77).await.unwrap();
-    let replay = tokio::time::timeout(Duration::from_secs(2), requester_again.receive())
+    let replayed = tokio::time::timeout(Duration::from_secs(2), requester_again.receive())
         .await
         .unwrap()
         .unwrap();
     assert!(matches!(
-        replay.envelope,
+        replayed.envelope,
         ComputeEnvelope::Status {
             update: ComputeStatusUpdate {
                 sequence: 1,
@@ -173,7 +177,7 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
             }
         }
     ));
-    requester_again.acknowledge(&replay).await.unwrap();
+    requester_again.acknowledge(&replayed).await.unwrap();
     assert!(matches!(
         requester_again.receive().await.unwrap().envelope,
         ComputeEnvelope::Ready {
@@ -184,6 +188,10 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end session scenario that reads top to bottom"
+)]
 async fn compute_session_replays_offline_exact_cancel_until_ack() {
     let user = TestUser::fresh("compute cancel owner");
     let relay_device = user.enrol("relay", DeviceCapabilities::host());
@@ -352,16 +360,16 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     .await
     .unwrap();
     second_reconnect.attach(88).await.unwrap();
-    let replay = tokio::time::timeout(Duration::from_secs(2), second_reconnect.receive())
+    let replayed = tokio::time::timeout(Duration::from_secs(2), second_reconnect.receive())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(replay.sequence, Some(durable_sequence));
+    assert_eq!(replayed.sequence, Some(durable_sequence));
     assert!(matches!(
-        &replay.envelope,
+        &replayed.envelope,
         ComputeEnvelope::Cancel { binding: delivered } if delivered == &binding
     ));
-    second_reconnect.acknowledge(&replay).await.unwrap();
+    second_reconnect.acknowledge(&replayed).await.unwrap();
     assert!(matches!(
         second_reconnect.receive().await.unwrap().envelope,
         ComputeEnvelope::Ready {

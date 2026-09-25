@@ -206,15 +206,16 @@ impl PhotosSearchProvider {
         let ids = page
             .results
             .iter()
-            .filter_map(|result| result.action_address())
+            .filter_map(SearchResult::action_address)
             .filter(|address| {
                 matches!(
                     state.seeds.get(&address.resource),
                     Some(MaterializationSeed::Photo(_))
                 )
             })
-            .map(|address| address.resource.clone())
+            .map(|address| address.resource)
             .collect();
+        drop(state);
         (ids, page.next, page.inspected)
     }
 

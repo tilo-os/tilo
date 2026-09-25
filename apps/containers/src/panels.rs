@@ -177,6 +177,10 @@ impl ContainersApp {
     }
 
     /// The section list (Containers / Images / Volumes / Distrobox).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "rail painting combines paint context and the rail rect with view state and the expanded/compact layout flags"
+    )]
     fn draw_rail_sections(
         &mut self,
         scene: &mut Scene,
@@ -357,6 +361,74 @@ impl ContainersApp {
     // Shared header (title + search + primary action)
     // =================================================================
 
+    /// Draws the header's right-aligned primary action and returns the x the
+    /// title must stop before.
+    fn draw_header_action(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        header: Rect,
+        (label, hit): (&str, Hit),
+    ) -> f64 {
+        let c = &theme.tokens.colors;
+        let compact = self.uses_compact_layout(theme);
+        let right = header.x1 - PAD;
+        let shown = if compact { "New" } else { label };
+        let (lw, lh) = draw::measure(
+            tr,
+            shown,
+            theme.tokens.typography.scale.base,
+            TextWeight::Semibold,
+        );
+        // icon slot (12 + 16 + 6) + label + trailing padding
+        let bw = 34.0 + f64::from(lw) + 16.0;
+        let btn = Rect::new(
+            right - bw,
+            if compact {
+                header.y0 + 10.0
+            } else {
+                header.center().y - 17.0
+            },
+            right,
+            if compact {
+                header.y0 + 46.0
+            } else {
+                header.center().y + 17.0
+            },
+        );
+        let hov = self.hovered(btn);
+        draw::fill_round(
+            scene,
+            btn,
+            f64::from(theme.tokens.radii.md),
+            if hov { c.accent[4] } else { c.accent[5] },
+        );
+        draw::icon(
+            scene,
+            Icon::Plus,
+            Rect::new(
+                btn.x0 + 12.0,
+                btn.center().y - 8.0,
+                btn.x0 + 28.0,
+                btn.center().y + 8.0,
+            ),
+            Color::WHITE,
+            1.8,
+        );
+        draw::text(
+            scene,
+            tr,
+            shown,
+            theme.tokens.typography.scale.base,
+            Color::WHITE,
+            Point::new(btn.x0 + 34.0, btn.center().y - f64::from(lh) / 2.0),
+            TextWeight::Semibold,
+        );
+        self.push_hit(btn, hit);
+        btn.x0 - 12.0
+    }
+
     /// Draws the content header and returns the y of the content body start.
     fn draw_header(
         &mut self,
@@ -393,62 +465,9 @@ impl ContainersApp {
         };
 
         // Primary action button (right-aligned).
-        let mut right = header.x1 - PAD;
-        if let Some((label, hit)) = action_label {
-            let shown = if compact { "New" } else { label };
-            let (lw, lh) = draw::measure(
-                tr,
-                shown,
-                theme.tokens.typography.scale.base,
-                TextWeight::Semibold,
-            );
-            // icon slot (12 + 16 + 6) + label + trailing padding
-            let bw = 34.0 + f64::from(lw) + 16.0;
-            let btn = Rect::new(
-                right - bw,
-                if compact {
-                    header.y0 + 10.0
-                } else {
-                    header.center().y - 17.0
-                },
-                right,
-                if compact {
-                    header.y0 + 46.0
-                } else {
-                    header.center().y + 17.0
-                },
-            );
-            let hov = self.hovered(btn);
-            draw::fill_round(
-                scene,
-                btn,
-                f64::from(theme.tokens.radii.md),
-                if hov { c.accent[4] } else { c.accent[5] },
-            );
-            draw::icon(
-                scene,
-                Icon::Plus,
-                Rect::new(
-                    btn.x0 + 12.0,
-                    btn.center().y - 8.0,
-                    btn.x0 + 28.0,
-                    btn.center().y + 8.0,
-                ),
-                Color::WHITE,
-                1.8,
-            );
-            draw::text(
-                scene,
-                tr,
-                shown,
-                theme.tokens.typography.scale.base,
-                Color::WHITE,
-                Point::new(btn.x0 + 34.0, btn.center().y - f64::from(lh) / 2.0),
-                TextWeight::Semibold,
-            );
-            self.push_hit(btn, hit);
-            right = btn.x0 - 12.0;
-        }
+        let right = action_label.map_or(header.x1 - PAD, |action| {
+            self.draw_header_action(scene, tr, theme, header, action)
+        });
 
         // The title centres on its measured line box (not `centre − 14`,
         // which only centred a 1× x2l line) when it shares the header with
@@ -738,7 +757,7 @@ impl ContainersApp {
         detail_open: bool,
         view: &ViewState,
     ) {
-        let row_height = self.row_height(theme);
+        let row_height = Self::row_height(theme);
         let content_h = rows.len() as f64 * row_height;
         let max_scroll = (content_h - rows_area.height()).max(0.0);
         self.clamp_list_scroll(max_scroll);
@@ -894,7 +913,7 @@ impl ContainersApp {
             // trailing edge exclusively for lifecycle buttons.
             let compact_name_y = row.y0 + 14.0;
             let compact_sub_y = row.y0
-                + if self.row_height(theme) > crate::app::ROW_HEIGHT {
+                + if Self::row_height(theme) > crate::app::ROW_HEIGHT {
                     50.0
                 } else {
                     36.0
@@ -1312,7 +1331,7 @@ impl ContainersApp {
                 theme.tokens.typography.scale.lg
             },
             c.text_dim,
-            Point::new(close.x0 + if compact { 6.0 } else { 6.0 }, close.y0 + 2.0),
+            Point::new(close.x0 + 6.0, close.y0 + 2.0),
             TextWeight::Regular,
         );
         self.push_hit(close, Hit::CloseDetail);
@@ -1832,6 +1851,54 @@ impl ContainersApp {
         Self::draw_scrollbar(scene, theme, area, self.detail_scroll, content_h);
     }
 
+    /// The "Attach shell" button in the terminal card's bottom-right corner.
+    fn draw_attach_button(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        inner: Rect,
+        container: &Container,
+    ) {
+        let c = &theme.tokens.colors;
+        let bw = 150.0;
+        let btn = Rect::new(
+            inner.x1 - 14.0 - bw,
+            inner.y1 - 44.0,
+            inner.x1 - 14.0,
+            inner.y1 - 12.0,
+        );
+        let hov = self.hovered(btn);
+        draw::fill_round(
+            scene,
+            btn,
+            f64::from(theme.tokens.radii.md),
+            if hov { c.accent[4] } else { c.accent[5] },
+        );
+        draw::icon(
+            scene,
+            Icon::Terminal,
+            Rect::new(
+                btn.x0 + 10.0,
+                btn.center().y - 8.0,
+                btn.x0 + 26.0,
+                btn.center().y + 8.0,
+            ),
+            Color::WHITE,
+            1.5,
+        );
+        draw::text(
+            scene,
+            tr,
+            "Attach shell",
+            theme.tokens.typography.scale.sm,
+            Color::WHITE,
+            Point::new(btn.x0 + 32.0, btn.center().y - 7.0),
+            TextWeight::Semibold,
+        );
+        self.push_hit(btn, Hit::AttachShell(container.id.clone()));
+    }
+
     fn draw_terminal(
         &mut self,
         scene: &mut Scene,
@@ -1895,42 +1962,7 @@ impl ContainersApp {
         );
         // Attach button (real exec via the Tilo terminal) for running containers.
         if container.status.is_running() {
-            let bw = 150.0;
-            let btn = Rect::new(
-                inner.x1 - 14.0 - bw,
-                inner.y1 - 44.0,
-                inner.x1 - 14.0,
-                inner.y1 - 12.0,
-            );
-            let hov = self.hovered(btn);
-            draw::fill_round(
-                scene,
-                btn,
-                f64::from(theme.tokens.radii.md),
-                if hov { c.accent[4] } else { c.accent[5] },
-            );
-            draw::icon(
-                scene,
-                Icon::Terminal,
-                Rect::new(
-                    btn.x0 + 10.0,
-                    btn.center().y - 8.0,
-                    btn.x0 + 26.0,
-                    btn.center().y + 8.0,
-                ),
-                Color::WHITE,
-                1.5,
-            );
-            draw::text(
-                scene,
-                tr,
-                "Attach shell",
-                theme.tokens.typography.scale.sm,
-                Color::WHITE,
-                Point::new(btn.x0 + 32.0, btn.center().y - 7.0),
-                TextWeight::Semibold,
-            );
-            self.push_hit(btn, Hit::AttachShell(container.id.clone()));
+            self.draw_attach_button(scene, tr, theme, inner, container);
         }
         // hint
         let hint = if container.status.is_running() {
@@ -3731,6 +3763,10 @@ mod row_layout_tests {
     /// lifecycle buttons start; a 240px list beside an open detail pane does
     /// not have that room and stacks the status under the name instead.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn narrow_list_stacks_status_when_the_pill_would_reach_the_actions() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

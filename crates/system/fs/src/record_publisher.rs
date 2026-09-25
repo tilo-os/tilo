@@ -140,6 +140,10 @@ impl RecordPublisher {
         }
         let transaction = FileMutationTransaction::signed(manifest, &self.signing_key)
             .map_err(|_| RecordPublisherError::InvalidTransaction)?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "`FileMutationTransaction::signed` validates the manifest, which rejects an empty participant list"
+        )]
         let record_id = transaction.manifest.participants[0].record_id;
         let prepare = previous_sequence
             .checked_add(1)

@@ -123,6 +123,10 @@ where
     clippy::too_many_arguments,
     reason = "checked restore coordinates converged repository state, journal, history, durable namespace, admitted intent and broadcast"
 )]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "namespace, history and repository stay leased until the namespace commit is journaled"
+)]
 pub(crate) fn complete_checked_restore_after_repository<F>(
     repository: &RecordRepository,
     journal: &mut RecordTransactionJournal,

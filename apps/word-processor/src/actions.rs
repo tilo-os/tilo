@@ -3986,10 +3986,14 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "end-to-end validation scenario that seeds every region shape and checks each against the snapshot in order"
+    )]
     fn splice_validation_matches_snapshot_without_scanning_regions() {
         use automerge::{ObjType, ScalarValue};
         use qdoc::schema::{BLOCK_ORDER, BLOCK_TEXT, KEY_FOOTER, KEY_HEADER};
-        let (mut state, ids) = seeded("Aé🦀é\n");
+        let (mut state, ids) = seeded("Aé🦀e\u{301}\n");
         let c = qdoc::model::open(&state.doc, &state.root).unwrap();
         for region in [RegionKind::Header, RegionKind::Footer] {
             let action = WordProcessorAction::SpliceText {
@@ -4045,7 +4049,7 @@ mod tests {
                         .doc
                         .put_object(&obj, BLOCK_TEXT, ObjType::Text)
                         .unwrap();
-                    state.doc.splice_text(&text, 0, 0, "Aé🦀é").unwrap();
+                    state.doc.splice_text(&text, 0, 0, "Aé🦀e\u{301}").unwrap();
                 }
             }
             state

@@ -1667,8 +1667,7 @@ impl BlockEditor {
             (Some(0) | None, true) => len.saturating_sub(1),
             (Some(index), true) => index.saturating_sub(1),
             (Some(index), false) if index < len.saturating_sub(1) => index.saturating_add(1),
-            (Some(_), false) => 0,
-            (None, false) => 0,
+            (Some(_) | None, false) => 0,
         };
         self.activate_find_match(next);
     }
@@ -3923,7 +3922,6 @@ impl TablePreviewLayout {
 
     #[expect(
         clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
         clippy::cast_precision_loss,
         reason = "bounded table-grid rendering converts validated row and column indices to coordinates"
     )]
@@ -5758,10 +5756,6 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     }
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "finite image-card pixel widths are intentionally narrowed for the text renderer"
-)]
 fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     let Some((alt, destination)) = standalone_markdown_image(source) else {
         return;
@@ -9601,10 +9595,6 @@ impl BlockEditor {
 }
 
 impl BlockEditor {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "row and column bounds are checked before the atomic rectangular table rewrite"
-    )]
     fn edit_table_structure(
         &mut self,
         index: usize,
@@ -9791,7 +9781,6 @@ impl BlockEditor {
 
     #[expect(
         clippy::too_many_lines,
-        clippy::indexing_slicing,
         reason = "one cohesive table interaction state machine routes controls and projected cells"
     )]
     fn handle_visual_table_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {

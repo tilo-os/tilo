@@ -113,6 +113,10 @@ pub fn draw_structure(
     clippy::too_many_arguments,
     reason = "one panel's full draw context: canvas + theme + area + y + table + the measured bands"
 )]
+#[expect(
+    clippy::similar_names,
+    reason = "`chip_x0`/`chip_y0` are the chip's origin coordinates"
+)]
 fn draw_columns_panel(
     scene: &mut Scene,
     t: Affine,

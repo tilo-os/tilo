@@ -46,7 +46,9 @@ fn run(root: &Path, host: &Path, target: Option<&Path>, dump: &Path) -> serde_js
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(30))
+        .expect("a 30 s deadline is representable");
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
