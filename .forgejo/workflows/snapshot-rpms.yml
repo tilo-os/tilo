@@ -2,8 +2,15 @@ name: Snapshot / RPM repository
 
 # Builds + pushes the digest-pinned frozen RPM repo that os/Containerfile
 # installs from (for cross-time-reproducible OS builds). CI publishes the image.
-# Manual dispatch runs when the base image or package set changes. It opens a
-# pull request that pins the new RPMS_REF in os/rpms-snapshot.env.
+# Runs when the base image or package set changes; a manual dispatch forces a
+# refresh.
+#
+# Kernel provenance binds RPMS_REF, so an RPM pin is only usable together with
+# kernels built against it. After publishing the snapshot this workflow calls
+# build-kernel.yml with the new RPMS_REF; that run builds, signs and verifies
+# both native kernels and opens one pull request that updates
+# os/rpms-snapshot.env and os/kernel-snapshot.env together. Main therefore
+# never holds an RPM pin without its matching kernels.
 on:
   workflow_dispatch:
   push:
@@ -11,7 +18,10 @@ on:
     paths:
       # These are the only files used below to derive the frozen package set.
       # Refreshing on changes prevents an OS build from asking an older snapshot
-      # for a package that was added to one of the Containerfiles.
+      # for a package that was added to one of the Containerfiles. Keep this
+      # list equal to INPUTS in os/dev/rpm-snapshot-inputs.py. Landing a pin
+      # rechecks it against main, so a change that landed while the pin was in
+      # review still refreshes the snapshot.
       - os/Containerfile
       - os/base-snapshot.env
       - os/dev/rpm-snapshot-inputs.py
@@ -32,6 +42,7 @@ on:
       - os/containers/tilo-relay/Containerfile
       - os/kernel/Containerfile
       - .forgejo/workflows/snapshot-rpms.yml
+      - os/rpms-snapshot.env
 
 concurrency:
   # Keep manual publications serialized. Each automatic revision is independent
@@ -39,30 +50,6 @@ concurrency:
   group: snapshot-rpms-${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}
   # A later semantic no-op must not cancel a useful native snapshot.
   cancel-in-progress: false
-
-env:
-  RPM_SNAPSHOT_INPUTS: |
-    os/Containerfile
-    os/base-snapshot.env
-    os/dev/rpm-snapshot-inputs.py
-    .forgejo/actions/install-cosign
-    os/Containerfile.rpms
-    os/dev/verify-rpm-snapshot-signatures.sh
-    os/external-assets/github-assets.tsv
-    os/dev/cache-github-assets.sh
-    os/dev/derive-rpm-package-set.py
-    keys/cosign.pub
-    os/dev/promote-native-index.py
-    os/dev/open-snapshot-pr.py
-    os/dev/install-cached-cosign.sh
-    os/dev/configure-cosign-kms.sh
-    os/Containerfile.dev
-    os/Containerfile.host
-    os/dev/composefs/Containerfile
-    os/containers/tilo-relay/Containerfile
-    os/kernel/Containerfile
-    .forgejo/workflows/snapshot-rpms.yml
-    os/rpms-snapshot.env
 
 jobs:
   inputs:
@@ -77,16 +64,17 @@ jobs:
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:
+      # Shallow: the comparison fetches the pinned snapshot's source commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
           token: ${{ secrets.REGISTRY_TOKEN }}
+      # Compare with the commit the pinned snapshot was built from, not the
+      # previous push, so no change is lost to a refused publication.
       - name: Compare actual snapshot inputs before native fanout
         id: compare
         env:
-          BEFORE: ${{ github.event.before }}
           EVENT: ${{ github.event_name }}
-        run: python3 os/dev/rpm-snapshot-inputs.py --base "$BEFORE" --head "$GITHUB_SHA" --event "$EVENT"
+        run: python3 os/dev/rpm-snapshot-inputs.py --since-pin --head "$GITHUB_SHA" --event "$EVENT"
 
   signing-preflight:
     needs: inputs
@@ -256,6 +244,8 @@ jobs:
     timeout-minutes: 60
     needs: snapshot
     runs-on: runner
+    outputs:
+      rpms-ref: ${{ steps.attest.outputs.ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -320,6 +310,7 @@ jobs:
           driver: docker-container
 
       - name: Attest and verify the native snapshot index
+        id: attest
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -386,68 +377,25 @@ jobs:
                 )
             ' >/dev/null
           echo "::notice::Frozen RPM repo published: RPMS_REF=$ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
           {
             echo "## Frozen RPM repo published"
             echo ""
-            echo 'The promotion pull request pins this in `os/rpms-snapshot.env`:'
+            echo 'The kernels are rebuilt against it next; their pull request pins both:'
             echo ""
             echo '```'
             echo "RPMS_REF=$ref"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Protected main accepts no direct pushes. Land the pin the way
-      # build-kernel.yml does: commit it on the current main tip, push a branch
-      # named after the pin file's digest, and open a pull request so the
-      # required checks and merge policy apply.
-      #
-      # No image build is dispatched here. Kernel provenance binds RPMS_REF, so
-      # an OS build verifies only after this pin merges, build-kernel.yml
-      # rebuilds the kernels against it, and that kernel pin merges too.
-      - name: Propose the frozen snapshot pin through protected main
-        env:
-          # The checkout's REGISTRY_TOKEN pushes the branch, but Forgejo answers
-          # its pull-request API calls with 404. RELEASE_TOKEN has repository
-          # scope; a PR it opens also triggers its own required checks.
-          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          set -euo pipefail
-          ref="$(cat rpms-index.txt)"
-          [[ "$ref" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]
-          git fetch --no-tags origin main
-          if ! python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent; then
-            echo '::error::snapshot build inputs changed during native construction'
-            exit 1
-          fi
-          git checkout --detach FETCH_HEAD
-          printf '%s\n' \
-            '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
-            '# Updated by the snapshot-rpms workflow when the package set changes.' \
-            "RPMS_REF=$ref" > os/rpms-snapshot.env
-          if git diff --quiet -- os/rpms-snapshot.env; then
-            echo "Snapshot pin is already current"
-            exit 0
-          fi
-          git config user.name "Tilo CI"
-          git config user.email "ci@tilo.invalid"
-          git add os/rpms-snapshot.env
-          git commit -m "build(os): refresh native RPM snapshot index"
-          snapshot_digest="$(sha256sum os/rpms-snapshot.env | awk '{print $1}')"
-          [[ "$snapshot_digest" =~ ^[0-9a-f]{64}$ ]]
-          branch="automation/rpm-snapshot-${snapshot_digest:0:16}"
-          remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
-          if ! git push --force-with-lease="refs/heads/$branch:$remote_tip" \
-              origin "HEAD:refs/heads/$branch" 2> push.log; then
-            cat push.log >&2
-            if grep -Fq 'stale info' push.log; then
-              echo "::error::$branch moved on the remote during promotion (lease lost); rerun to adopt it"
-            else
-              echo "::error::Forgejo refused the snapshot pin push to $branch (see the git output above)"
-            fi
-            exit 1
-          fi
-          cat push.log >&2
-          python3 os/dev/open-snapshot-pr.py \
-            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
-            --branch "$branch" --snapshot-digest "$snapshot_digest" \
-            rpms --rpms-ref "$ref" | tee -a "$GITHUB_STEP_SUMMARY"
+  # No pull request is opened here. build-kernel.yml builds, signs and verifies
+  # the native kernels against the new index and proposes both pins in one pull
+  # request, after checking that neither the RPM nor the kernel inputs moved on
+  # main meanwhile.
+  kernels:
+    if: github.ref == 'refs/heads/main'
+    needs: promote-snapshot
+    uses: ./.forgejo/workflows/build-kernel.yml
+    with:
+      rpms_ref: ${{ needs.promote-snapshot.outputs.rpms-ref }}
+    secrets: inherit

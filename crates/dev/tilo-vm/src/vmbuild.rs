@@ -97,9 +97,12 @@ fn rsync_source(root: &Path) -> String {
     #[cfg(windows)]
     {
         let bytes = path.as_bytes();
-        if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-            let drive = (bytes[0] as char).to_ascii_lowercase();
-            return format!("/{drive}{}", path[2..].replace('\\', "/"));
+        if let (Some(&drive), Some(&b':'), Some(suffix)) =
+            (bytes.first(), bytes.get(1), path.get(2..))
+            && drive.is_ascii_alphabetic()
+        {
+            let drive = (drive as char).to_ascii_lowercase();
+            return format!("/{drive}{}", suffix.replace('\\', "/"));
         }
     }
     path

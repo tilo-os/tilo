@@ -25,15 +25,19 @@ sudo unshare --mount --propagation private -- \
   --preflight-disk /absolute/path/to/disk.raw
 ```
 
-On the Windows ARM64 host, start the disk and follow its serial evidence with:
+Boot each attempt as its own throwaway VM on a copy-on-write child of the disk,
+and follow its serial evidence (Linux libvirt or Windows ARM64 WHPX):
 
-```powershell
-pwsh -NoProfile -File .\tools\launch-arm64-disk.ps1 -DiskPath <disk.raw>
-Get-Content "$env:LOCALAPPDATA\Tilo\qemu-arm64\serial.log" -Wait
+```sh
+tilo-vm vm create try1 --image /absolute/path/to/disk.raw
+tilo-vm vm start try1
+tilo-vm vm serial try1
+tilo-vm vm rm try1 --force
 ```
 
-Reset the variable store only to distinguish persistent UEFI state from disk
-content. A normal retry must retain it.
+A new VM starts from a fresh UEFI variable store; to rule out persistent UEFI
+state, compare a retry of the same VM with a new one. A candidate UKI or loader
+boots from a separate ESP without touching the disk: `os/dev/local-boot-esp.md`.
 
 ## Fault-isolation matrix
 

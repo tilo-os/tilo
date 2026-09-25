@@ -1666,6 +1666,8 @@ pub struct CapnpBrokerState {
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
+    /// Changes to job discovery and receipts, independent of resource surfaces.
+    invocation_generation: AtomicU64,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
     completed_invocations: Mutex<HashMap<u64, (String, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
@@ -2414,6 +2416,7 @@ impl CapnpBrokerState {
     fn record_completion(&self, id: u64, actor: String, update: tilo_actions::InvocationUpdate) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
+            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
                 let Some(oldest) = completed.keys().min().copied() else {
                     break;
@@ -2610,6 +2613,7 @@ impl CapnpBrokerState {
                 action_directory_roots: Mutex::new(HashMap::new()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 invocation_subscribers: Mutex::new(HashMap::new()),
+                invocation_generation: AtomicU64::new(0),
                 pending_invocations: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
                 confirmation_grants: Mutex::new(HashMap::new()),
@@ -2656,6 +2660,17 @@ impl CapnpBrokerState {
             None,
         );
         crate::shell::collab_broker::AppActionBroker::from_state_for_test(state)
+    }
+
+    /// Retain a terminal receipt as if an application had reported it.
+    #[cfg(test)]
+    pub(crate) fn record_completion_for_test(
+        &self,
+        id: u64,
+        actor: &str,
+        update: tilo_actions::InvocationUpdate,
+    ) {
+        self.record_completion(id, actor.to_owned(), update);
     }
 
     /// Stand in for an application's invocation stream on `peer_id`.
@@ -3524,6 +3539,7 @@ impl CapnpBrokerState {
                     cancellation_requested_at: None,
                 },
             );
+        self.invocation_generation.fetch_add(1, Ordering::Relaxed);
         if sender
             .send(InvocationEnvelope {
                 id,
@@ -3539,9 +3555,43 @@ impl CapnpBrokerState {
                 .pending_invocations
                 .lock()
                 .map(|mut pending| pending.remove(&id));
+            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
             return Err("the application invocation stream closed".into());
         }
         Ok(InvocationJob { id, completion: rx })
+    }
+
+    pub fn invocations_generation(&self) -> u64 {
+        self.invocation_generation.load(Ordering::Relaxed)
+    }
+
+    /// Read one current receipt without surveying or disclosing another actor's jobs.
+    pub fn invocation_status_for_actor(
+        &self,
+        id: u64,
+        actor: &str,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        self.expire_stale_invocations();
+        self.pending_invocations
+            .lock()
+            .ok()
+            .and_then(|pending| {
+                pending
+                    .get(&id)
+                    .filter(|job| job.actor == actor)
+                    .map(|job| job.update.clone())
+            })
+            .or_else(|| {
+                self.completed_invocations
+                    .lock()
+                    .ok()
+                    .and_then(|completed| {
+                        completed
+                            .get(&id)
+                            .filter(|(owner, _)| owner == actor)
+                            .map(|(_, update)| update.clone())
+                    })
+            })
     }
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
@@ -3606,8 +3656,10 @@ impl CapnpBrokerState {
         let job = pending
             .get_mut(&id)
             .ok_or_else(|| "the invocation is not running".to_string())?;
-        job.cancellation_requested_at
-            .get_or_insert_with(std::time::Instant::now);
+        if job.cancellation_requested_at.is_none() {
+            job.cancellation_requested_at = Some(std::time::Instant::now());
+            self.invocation_generation.fetch_add(1, Ordering::Relaxed);
+        }
         drop(pending);
         self.cancellation_requests
             .lock()
@@ -6640,6 +6692,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 ));
             }
             pending.update = update.clone();
+            state.invocation_generation.fetch_add(1, Ordering::Relaxed);
             if update.is_terminal() {
                 let completion = match &update {
                     tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
