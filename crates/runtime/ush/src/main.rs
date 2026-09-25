@@ -593,7 +593,7 @@ explain when the host does not offer them.\n";
             manifest.record(InstalledPackage {
                 nevra: ush::pkg::nevra(name),
                 name: name.clone(),
-                at: ush::audit::now_unix(),
+                at: tilo_clock::unix_now(),
                 one_time,
             });
             let _ = ask(&Request::PkgRecorded {

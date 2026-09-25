@@ -895,3 +895,76 @@ fn an_unparseable_or_absent_capability_file_grants_nothing() {
         CapabilityPlan::empty()
     );
 }
+
+/// The production path from package to process: pack the hello payload,
+/// install it into a package store (payload blobs in the content store, the
+/// tree materialised read-only from there), resolve it through the catalogue
+/// the desktop reads, and launch it from the materialised tree.
+#[test]
+fn an_installed_package_launches_from_the_package_store() {
+    let bwrap = bwrap_path();
+    let identity = tilo_app_package::SigningIdentity::generate();
+    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+        r#"
+[package]
+id = "com.example.hello"
+version = "1.0.0"
+kind = "app"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/hello"
+type = "gui"
+"#,
+        hex::encode(identity.public_key_bytes())
+    ))
+    .unwrap();
+    let packed = tilo_app_package::pack(hello_payload(), &manifest, &identity).unwrap();
+    let tapp = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+
+    let store_root = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let store = package_store::PackageStore::at(store_root.path());
+    store
+        .install(
+            tapp.as_slice(),
+            |_| Ok(package_store::Admission::default()),
+            None,
+        )
+        .expect("install into the package store");
+    let row = package_store::Catalog::at(store_root.path(), None)
+        .find("com.example.hello")
+        .unwrap()
+        .expect("the catalogue lists the installed package");
+    assert_eq!(row.payload_root, store.layout().payload(packed.id()));
+
+    let m = read_manifest(&row.manifest_path).expect("the launcher reads the signed manifest");
+    let data = tempfile::tempdir().unwrap();
+    let opts = RunOptions {
+        no_services: false,
+        runtime_root: None,
+        bwrap_bin: Some(bwrap),
+        sandbox_shim_bin: Some(PathBuf::from(env!("CARGO_BIN_EXE_tilo-launcher"))),
+        minimal_libs: false,
+        landlock_enforce: false,
+        mode: launcher::run::LaunchMode::Gui,
+        ..isolated_options(data.path())
+    };
+    let (status, stdout) = run_with_captured(&m, &row.payload_root, &opts).expect("launch");
+    assert!(status.success(), "child exited non-zero: {status:?}");
+    let stdout = String::from_utf8_lossy(&stdout);
+    assert!(
+        stdout.contains("hello"),
+        "expected 'hello' in stdout, got {stdout:?}"
+    );
+}

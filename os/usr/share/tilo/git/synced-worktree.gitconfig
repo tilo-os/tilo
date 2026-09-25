@@ -1,0 +1,18 @@
+# Git defaults for working trees that sync between devices.
+#
+# A synced file keeps its content, size, mode and modification time on every
+# device, but not its inode number or change time: those are local to the
+# filesystem that holds the file. Git's index caches both by default, so on
+# the device that did not make a change every file looks modified, git
+# re-hashes the tree and rewrites the index, and the rewritten index syncs
+# back to the first device, which does the same. With these two settings git
+# compares only what syncs (whole-second mtime and size), and a synced
+# repository shows `git status` clean on every device without re-hashing.
+#
+# This is configuration, not a code path in the storage daemon: any tool that
+# caches stat data can be told the same thing. See
+# docs/device-local-state.md. A repository or user configuration that sets
+# these keys overrides them.
+[core]
+	trustctime = false
+	checkStat = minimal

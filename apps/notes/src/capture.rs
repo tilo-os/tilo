@@ -593,8 +593,9 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             );
         }
         Some("sidebar_hover") => {
-            let rect = semantic_target_rect(driver, |target| target.starts_with("notes:actions:"))
-                .ok_or_else(|| LaunchError::Operation("sidebar hover action missing".into()))?;
+            let rect =
+                semantic_target_rect(driver, |target| target.starts_with("row-action:1:"))
+                    .ok_or_else(|| LaunchError::Operation("sidebar hover action missing".into()))?;
             move_pointer(driver, rect.center());
         }
         Some("note_menu") => {
@@ -1258,7 +1259,7 @@ fn validate_capture(
         Some("sidebar_hover") => semantic_observed(driver, |node| {
             node.action_target
                 .as_deref()
-                .is_some_and(|target| target.starts_with("notes:actions:"))
+                .is_some_and(|target| target.starts_with("row-action:1:"))
         }),
         Some("rename") => semantic_observed(driver, |node| {
             node.role == ui::a11y::Role::TextInput

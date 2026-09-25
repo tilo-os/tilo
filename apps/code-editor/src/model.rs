@@ -569,6 +569,17 @@ impl Project {
         }
     }
 
+    /// Set a folder's expanded flag. No-op on files.
+    pub fn set_folder_expanded(&mut self, id: NodeId, open: bool) {
+        if let Some(TreeNode {
+            kind: NodeKind::Folder { expanded, .. },
+            ..
+        }) = self.nodes.get_mut(&id)
+        {
+            *expanded = open;
+        }
+    }
+
     // ---- real filesystem projection ---------------------------------------
 
     /// Build a project rooted at the real directory `path`, reading its top

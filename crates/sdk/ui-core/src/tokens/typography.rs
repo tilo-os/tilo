@@ -10,18 +10,26 @@ pub struct TypeScale {
     pub x4l: f32,
 }
 
+impl TypeScale {
+    /// Unscaled reference scale: 10 / 12 / 14 / 16 / 20 / 24 / 32 / 40.
+    /// [`TypeScale::default`] returns this; a `const` that has to agree with
+    /// a token before a theme is seen reads it directly instead of restating
+    /// the number.
+    pub const BASE: Self = Self {
+        xs: 10.0,
+        sm: 12.0,
+        base: 14.0,
+        lg: 16.0,
+        xl: 20.0,
+        x2l: 24.0,
+        x3l: 32.0,
+        x4l: 40.0,
+    };
+}
+
 impl Default for TypeScale {
     fn default() -> Self {
-        Self {
-            xs: 10.0,
-            sm: 12.0,
-            base: 14.0,
-            lg: 16.0,
-            xl: 20.0,
-            x2l: 24.0,
-            x3l: 32.0,
-            x4l: 40.0,
-        }
+        Self::BASE
     }
 }
 

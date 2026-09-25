@@ -81,6 +81,7 @@ ignored = ["blake3"]
 
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -47,12 +47,7 @@ struct CallAction {
 
 fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     let digest = blake3::derive_key(domain, bytes);
-    let mut encoded = String::with_capacity(32);
-    for byte in digest.iter().take(16) {
-        use std::fmt::Write as _;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
 fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
@@ -430,7 +425,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 ),
                 title: format!(
                     "{} placement suggestion for {}",
-                    capitalize(verb),
+                    ui::format::capitalize_first(verb),
                     label_for(&proposal.peer)
                 ),
                 subtitle: "Act on the current proximity-derived placement proposal".into(),
@@ -743,13 +738,6 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         }
     }
     actions
-}
-
-fn capitalize(value: &str) -> String {
-    let mut chars = value.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().collect::<String>() + chars.as_str()
-    })
 }
 
 fn projection_revision<'a>(

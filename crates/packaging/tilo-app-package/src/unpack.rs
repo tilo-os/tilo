@@ -1,65 +1,52 @@
-//! `unpack` — given a [`PackageId`] and a [`BlobStore`] that
-//! holds the signed-root, manifest, collection, and per-file
-//! blobs, write the payload to `dest_dir` and return the
-//! decoded [`Manifest`].
+//! `unpack` — write a package's payload tree to a directory, streaming each
+//! file from a [`BlobSource`] and checking its hash on the way.
 //!
-//! This is the reverse of [`crate::pack::pack`]. It does **not**
-//! verify the signature — see [`crate::verify`] for that.
-//! Unpack succeeds on an unsigned bundle so build tooling can
-//! round-trip without keys.
+//! This is the reverse of [`crate::pack::pack`]. It does **not** check the
+//! publisher signature — see [`crate::verify`] for that. Unpack succeeds on
+//! an unsigned package so build tooling can round-trip without keys.
 
+use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::Path;
 
-use crate::blobs::{BlobStore, Collection, CollectionDecodeError};
-use crate::id::PackageId;
+use crate::blobs::{BlobHash, BlobSource, Collection, HashingReader};
 use crate::manifest::Manifest;
-use crate::signed::{SignedRoot, SignedRootError};
+use crate::package::PackageMeta;
 
 #[derive(Debug, thiserror::Error)]
 pub enum UnpackError {
-    #[error("package {0} not present in store")]
-    MissingRoot(PackageId),
-    #[error("signed-root decode: {0}")]
-    SignedRoot(#[from] SignedRootError),
-    #[error("manifest blob missing")]
-    MissingManifest,
-    #[error("payload-collection blob missing")]
-    MissingCollection,
-    #[error("payload file {0} (declared at {1:?}) missing")]
+    #[error("payload file {1:?} (blob {0}) is not available")]
     MissingPayloadBlob(String, String),
-    #[error("manifest parse: {0}")]
-    Manifest(#[from] crate::manifest::ManifestParseError),
-    #[error("collection decode: {0}")]
-    Collection(#[from] CollectionDecodeError),
-    #[error("blob store: {0}")]
-    Store(#[from] crate::blobs::BlobStoreError),
+    #[error("payload file {0:?} does not match its hash")]
+    PayloadHashMismatch(String),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
-    #[error("payload path {0:?} escapes destination dir")]
-    PathTraversal(String),
+    #[error("destination {0} already exists")]
+    DestinationExists(String),
     #[error("application payload has {found} entries; limit is {limit}")]
     TooManyPayloadEntries { found: usize, limit: usize },
     #[error("application payload materializes to {found} bytes; limit is {limit}")]
     PayloadTooLarge { found: u64, limit: u64 },
 }
 
-/// Validate the filesystem work represented by a decoded payload collection.
+/// Validate the filesystem work a decoded payload collection represents.
 ///
-/// This is separate from [`unpack`] so registries can reject amplification
-/// before publishing or approving a bundle, without creating a temporary
-/// destination directory.
+/// `len_of` reports the size of each blob the caller holds, and `None` for
+/// one it lacks. Separate from [`unpack`] so a registry or an installer can
+/// reject amplification before writing a single file: a collection may point
+/// many paths at one blob, so neither archive size nor stored bytes bound
+/// the disk writes or inodes of a materialised tree.
 ///
 /// # Errors
 ///
 /// Returns [`UnpackError::TooManyPayloadEntries`] or
 /// [`UnpackError::PayloadTooLarge`] when an application exceeds its
-/// materialization budget, [`UnpackError::MissingPayloadBlob`] when a
-/// collection entry has no stored bytes, or [`UnpackError::Store`] when the
-/// backing store cannot be read.
-pub fn validate_materialized_payload<S: BlobStore>(
+/// materialization budget, or [`UnpackError::MissingPayloadBlob`] when a
+/// collection entry has no known size.
+pub fn validate_materialized_payload(
     manifest: &Manifest,
     collection: &Collection,
-    store: &S,
+    mut len_of: impl FnMut(&BlobHash) -> Option<u64>,
 ) -> Result<(), UnpackError> {
     if manifest.package.kind != crate::id::Kind::App {
         return Ok(());
@@ -70,12 +57,18 @@ pub fn validate_materialized_payload<S: BlobStore>(
             limit: crate::MAX_APP_PAYLOAD_ENTRIES,
         });
     }
+    let mut sizes = BTreeMap::new();
     let mut materialized = 0u64;
     for (rel_path, hash) in &collection.entries {
-        let bytes = store
-            .get(hash)?
-            .ok_or_else(|| UnpackError::MissingPayloadBlob(hash.to_hex(), rel_path.clone()))?;
-        materialized = materialized.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        let len = if let Some(len) = sizes.get(hash) {
+            *len
+        } else {
+            let len = len_of(hash)
+                .ok_or_else(|| UnpackError::MissingPayloadBlob(hash.to_hex(), rel_path.clone()))?;
+            sizes.insert(*hash, len);
+            len
+        };
+        materialized = materialized.saturating_add(len);
         if materialized > crate::MAX_APP_UNPACKED_BYTES {
             return Err(UnpackError::PayloadTooLarge {
                 found: materialized,
@@ -86,85 +79,57 @@ pub fn validate_materialized_payload<S: BlobStore>(
     Ok(())
 }
 
-/// Reconstruct the manifest + write the payload to `dest_dir`.
+/// Write `meta`'s payload tree under `dest_dir`, which must not exist yet.
+///
+/// Each file streams from `source` and must hash to its collection entry;
+/// the entrypoint gets its execute bit. On error the partial tree is left
+/// for the caller to remove.
 ///
 /// # Errors
 ///
-/// Returns [`UnpackError::MissingRoot`] if `id` is not in `store`,
-/// [`UnpackError::SignedRoot`] if the signed-root blob fails to decode,
-/// [`UnpackError::MissingManifest`] or [`UnpackError::MissingCollection`] if
-/// their blobs are missing, [`UnpackError::Manifest`] or
-/// [`UnpackError::Collection`] if either fails to decode,
-/// [`UnpackError::PathTraversal`] if a payload entry's path is absolute or
-/// contains a `..` segment, [`UnpackError::MissingPayloadBlob`] if a
-/// declared per-file blob is missing from `store`, or [`UnpackError::Io`] or
-/// [`UnpackError::Store`] if creating `dest_dir`, writing a file, or reading
-/// from `store` fails.
-pub fn unpack<S: BlobStore>(
-    id: PackageId,
-    store: &S,
+/// Returns [`UnpackError::DestinationExists`] if `dest_dir` exists,
+/// [`UnpackError::MissingPayloadBlob`] if `source` lacks a file,
+/// [`UnpackError::PayloadHashMismatch`] if a file's bytes do not match, or
+/// [`UnpackError::Io`] if writing fails.
+pub fn unpack(
+    meta: &PackageMeta,
+    source: &dyn BlobSource,
     dest_dir: &Path,
-) -> Result<Manifest, UnpackError> {
-    let signed_bytes = store
-        .get(&crate::blobs::BlobHash(*id.as_bytes()))?
-        .ok_or(UnpackError::MissingRoot(id))?;
-    let signed = SignedRoot::decode(&signed_bytes)?;
-    let manifest_bytes = store
-        .get(&signed.manifest_hash)?
-        .ok_or(UnpackError::MissingManifest)?;
-    let manifest_str = std::str::from_utf8(&manifest_bytes)
-        .map_err(|e| UnpackError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
-    let manifest = Manifest::from_toml_str(manifest_str)?;
-    let collection_bytes = store
-        .get(&signed.payload_root_hash)?
-        .ok_or(UnpackError::MissingCollection)?;
-    let collection = Collection::decode(&collection_bytes)?;
-
-    // Validate the complete materialized shape before creating `dest_dir`.
-    // A collection can point many paths at one blob, so archive/store size is
-    // not an upper bound on disk writes or inode consumption.
-    validate_materialized_payload(&manifest, &collection, store)?;
-
+) -> Result<(), UnpackError> {
+    if std::fs::symlink_metadata(dest_dir).is_ok() {
+        return Err(UnpackError::DestinationExists(
+            dest_dir.display().to_string(),
+        ));
+    }
     std::fs::create_dir_all(dest_dir)?;
-    let dest_dir = dest_dir.canonicalize()?;
-    // The entrypoint declared by the manifest MUST be executable — the
-    // launcher execs it directly. We record the normalised path here so
-    // we can mark it +x once its bytes hit disk. Path values inside a
-    // Collection are always forward-slash-normalised regardless of host,
-    // so the comparison is stable.
-    #[cfg(unix)]
-    let entrypoint_rel: Option<String> = match manifest.package.kind {
-        crate::id::Kind::App | crate::id::Kind::Service => manifest
-            .entrypoint
-            .as_ref()
-            .and_then(|e| e.bin.to_str())
-            .map(|s| s.trim_start_matches("./").replace('\\', "/")),
-        _ => None,
-    };
-    for (rel_path, hash) in &collection.entries {
-        // Path-traversal guard: reject `..` segments and absolute
-        // paths inside the collection. Done as a string check
-        // before joining so a crafted entry can't escape.
-        if std::path::Path::new(rel_path).is_absolute()
-            || rel_path.split('/').any(|seg| seg == "..")
-        {
-            return Err(UnpackError::PathTraversal(rel_path.clone()));
-        }
+    let executable = meta.executable_path();
+    for (rel_path, hash) in &meta.collection.entries {
         let out_path = dest_dir.join(rel_path);
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let bytes = store
-            .get(hash)?
+        let blob = source
+            .open_blob(hash)?
             .ok_or_else(|| UnpackError::MissingPayloadBlob(hash.to_hex(), rel_path.clone()))?;
-        std::fs::write(&out_path, bytes)?;
+        // A source is untrusted: never write more than it claims, and let
+        // the hash check below catch a wrong claim.
+        let mut hashing = HashingReader::new(std::io::Read::take(blob.reader, blob.len));
+        let mut file = std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&out_path)?;
+        std::io::copy(&mut hashing, &mut file)?;
+        file.flush()?;
+        if hashing.finish().0 != *hash {
+            return Err(UnpackError::PayloadHashMismatch(rel_path.clone()));
+        }
         #[cfg(unix)]
-        if entrypoint_rel.as_deref() == Some(rel_path.as_str()) {
+        if executable.as_deref() == Some(rel_path.as_str()) {
             use std::os::unix::fs::PermissionsExt;
-            let mut perm = std::fs::metadata(&out_path)?.permissions();
-            perm.set_mode(perm.mode() | 0o111); // preserve read/write bits, add exec
-            std::fs::set_permissions(&out_path, perm)?;
+            let mut perm = file.metadata()?.permissions();
+            perm.set_mode(perm.mode() | 0o111);
+            file.set_permissions(perm)?;
         }
     }
-    Ok(manifest)
+    Ok(())
 }

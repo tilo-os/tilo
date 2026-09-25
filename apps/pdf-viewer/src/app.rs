@@ -6768,7 +6768,6 @@ mod tests {
         use qdoc::blobstore::{self, MemoryBlobStore};
         use std::sync::Arc;
 
-        blobstore::clear_transport();
         blobstore::set_store(Arc::new(MemoryBlobStore::default()));
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
         let mut app = PdfApp::open(path);

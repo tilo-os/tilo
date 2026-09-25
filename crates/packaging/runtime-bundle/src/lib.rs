@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use tilo_clock::unix_now;
 
 use serde::{Deserialize, Serialize};
 
@@ -879,12 +880,6 @@ fn resolve_from(host_root: &Path, abs: &str) -> PathBuf {
     // Strip the leading slash so `join()` doesn't discard host_root.
     let rel = abs.trim_start_matches('/');
     host_root.join(rel)
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 fn produced_at() -> Result<u64, BundleError> {

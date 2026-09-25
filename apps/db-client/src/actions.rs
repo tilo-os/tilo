@@ -320,6 +320,100 @@ mod tests {
         p
     }
 
+    const SAVED_SQL: &str = "SELECT count(*) FROM orders";
+
+    /// A workspace with two saved connections, one saved query and SQL in the
+    /// editor, written through the same actions and text path the app uses.
+    fn seeded_doc() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        let mut shop = ConnectionProfile::new("Shop", Engine::MySql);
+        shop.host = "mysql.staging".into();
+        for action in [
+            add_connection_action(&profile()),
+            add_connection_action(&shop),
+            save_query_action(Uuid::new_v4(), "Daily totals", SAVED_SQL),
+        ] {
+            action.apply(&mut doc).unwrap();
+        }
+        crate::doc::EditorDoc::set_sql(&mut doc, "SELECT * FROM customers");
+        doc.commit();
+        doc
+    }
+
+    /// What the live app publishes for `doc`: its eager workspace tree plus
+    /// the saved-connection and saved-query resources it resolves by id,
+    /// after the frame `sync` that reconciles its session from the document.
+    fn resources_for(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        use ui::widget::Widget;
+        let mut app = crate::app::DbClientApp::new();
+        app.sync(&mut doc.clone(), &ROOT);
+        let mut resources = app.resources(doc);
+        let addressed = ConnectionsDoc::read(doc)
+            .into_iter()
+            .map(|c| format!("connection:{}", c.id))
+            .chain(
+                crate::doc::SavedQueriesDoc::read(doc)
+                    .into_iter()
+                    .map(|q| format!("saved-query:{}", q.id)),
+            );
+        for id in addressed {
+            resources.push(
+                app.resource(doc, &id)
+                    .unwrap_or_else(|| panic!("the app resolves {id}")),
+            );
+        }
+        resources
+    }
+
+    fn first_connection(doc: &AutoCommit) -> Uuid {
+        ConnectionsDoc::read(doc)[0].id
+    }
+
+    fn saved_query(doc: &AutoCommit) -> Uuid {
+        crate::doc::SavedQueriesDoc::read(doc)[0].id
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: {
+            let mut registry = ActionRegistry::new();
+            register(&mut registry);
+            registry
+        },
+        resources: |doc| resources_for(doc),
+        palette: ["Remove saved connection", "Remove saved query", "Save current query", "Connect"],
+        replay: [
+            add_connection => |_| encode(&add_connection_action(&ConnectionProfile::new(
+                "Local",
+                Engine::Sqlite,
+            ))),
+            rename_connection => |doc| encode(&rename_connection_action(
+                first_connection(doc),
+                "Prod analytics",
+            )),
+            save_query => |_| encode(&save_query_action(Uuid::new_v4(), "Top", "SELECT 1")),
+        ],
+        undo: [
+            remove_connection => |doc| encode(&remove_connection_action(first_connection(doc))),
+            remove_query => |doc| encode(&remove_query_action(saved_query(doc))),
+            rename_connection => |doc| encode(&rename_connection_action(
+                first_connection(doc),
+                "Prod analytics",
+            )),
+        ],
+        encodes: [
+            remove_connection => ("database.connection", "remove", |doc, _| {
+                encode(&remove_connection_action(first_connection(doc)))
+            }),
+            rename_connection => ("database.connection", "rename", arg: "Prod analytics", |doc, _| {
+                encode(&rename_connection_action(first_connection(doc), "Prod analytics"))
+            }),
+            remove_query => ("database.saved-query", "remove", |doc, _| {
+                encode(&remove_query_action(saved_query(doc)))
+            }),
+        ],
+    }
+
     /// `AddConnection` through the real `Action::apply` path writes the profile
     /// into `root["connections"]` and it reads back with every field intact.
     #[test]
@@ -475,24 +569,5 @@ mod tests {
             .apply(&mut doc)
             .unwrap();
         assert_eq!(ConnectionsDoc::read(&doc)[0].name, "Prod analytics");
-    }
-
-    /// Actions replay byte-identically on an independent replica: a peer that
-    /// merges the change converges to the same heads (the collaboration
-    /// guarantee the action model exists to give).
-    #[test]
-    fn connection_actions_replicate_to_a_peer() {
-        let mut doc = AutoCommit::new();
-        add_connection_action(&profile()).apply(&mut doc).unwrap();
-        doc.commit();
-        let base = doc.save();
-
-        let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(
-            ConnectionsDoc::read(&peer).len(),
-            1,
-            "the peer sees the saved connection after merge"
-        );
-        assert_eq!(doc.get_heads(), peer.get_heads(), "replicas converge");
     }
 }

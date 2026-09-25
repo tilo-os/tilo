@@ -55,7 +55,10 @@
 #      the target disk (wipes it, --filesystem layout). tilo-disk-encrypt builds
 #      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
-#      `--block-setup tpm2-luks`,
+#      `--block-setup tpm2-luks`. On a large enough disk the layout ends with
+#      the LUKS2 + Btrfs room store the storage daemon's native data plane
+#      serves from; its key file goes into the encrypted root (step 3b),
+#      from where it unlocks at boot without a second prompt,
 #   3. create the user account: `bootc install` does NOT make users, so we
 #      hash the password and drop `<name>:<hash>` into the freshly-installed
 #      deployment's WRITABLE /etc/tilo/install-user.conf, which a baked
@@ -92,6 +95,8 @@ LOCAL_IMG="localhost/bootc"
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 STAGING_HANDOFF="${TILO_STAGING_HANDOFF:-/usr/libexec/tilo-staging-handoff}"
+# The room store volume the storage daemon's native data plane serves from.
+STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
 EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artifacts}"
 BOOT_MENU="${TILO_INSTALL_BOOT_MENU:-/usr/libexec/tilo-install-boot-menu}"
@@ -1064,6 +1069,7 @@ validate_disk_identity
 ENC_MNT=""
 ENC_LUKS=""
 ENC_KEYFILE=""
+STORE_PART=""
 if [ "$ENCRYPT" -eq 1 ]; then
   if [ "$ALONGSIDE" -eq 1 ]; then
     step "Preparing encrypted Tilo root on $ROOT_PARTITION (existing OS partitions are preserved)"
@@ -1089,6 +1095,19 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_BOOT_PART="$(printf '%s\n' "$PREP" | sed -n 's/^BOOT_PART=//p')"
   ROOT_FS_UUID="$ENC_ROOT_UUID"
   ENC_KARGS="$(printf '%s\n' "$PREP" | sed -n 's/^KARGS=//p')"
+  # Whole-disk installs on a large enough disk also get the room store
+  # partition. Alongside installs have one reviewed partition to work with;
+  # tilo-store-volume.service gives them an image-backed store on first boot.
+  STORE_PART="$(printf '%s\n' "$PREP" | sed -n 's/^STORE_PART=//p')"
+  STORE_LUKS_UUID="$(printf '%s\n' "$PREP" | sed -n 's/^STORE_LUKS_UUID=//p')"
+  STORE_FS_UUID="$(printf '%s\n' "$PREP" | sed -n 's/^STORE_FS_UUID=//p')"
+  STORE_KEY_FILE="$(printf '%s\n' "$PREP" | sed -n 's/^STORE_KEY_FILE=//p')"
+  if [ -n "$STORE_PART" ]; then
+    [ -n "$STORE_LUKS_UUID" ] && [ -n "$STORE_FS_UUID" ] && [ -n "$STORE_KEY_FILE" ] \
+      || die "encryption: tilo-disk-encrypt prepare reported an incomplete store volume"
+    log "  store volume: $STORE_PART (LUKS2 + Btrfs for the native data plane)"
+  fi
+
   # From here the volume is open and the tree is mounted. If anything below fails
   # the installer exits without reaching `finish`, so close them on the way out —
   # otherwise a retry finds a mounted disk it refuses to touch. Key slots are
@@ -1246,6 +1265,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENROL_ARGS=()
   [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
   ENROL_ARGS+=(--passphrase)
+  [ -z "${STORE_PART:-}" ] || ENROL_ARGS+=(--store-part "$STORE_PART" --store-key-file "$STORE_KEY_FILE")
   if [ "$WANT_PIN" -eq 1 ]; then
     PIN_FILE=/run/tilo-install/pin
     install -d -m 0700 /run/tilo-install
@@ -1466,6 +1486,19 @@ if [ -n "$FULL_NAME" ]; then
   chmod 0600 "$FULL_NAME_TMP"
   printf '%s\n' "$FULL_NAME" > "$FULL_NAME_TMP"
   mv -f "$FULL_NAME_TMP" "$FULL_NAME_CONF"
+fi
+
+# --- 3b. room store volume ----------------------------------------------------
+# The store's key file moves into the encrypted root, next to the crypttab and
+# fstab lines that unlock and mount it at /var/lib/tilo/store on every boot.
+# tilo-store-volume.service hands its rooms to this account on first boot, once
+# the account exists.
+if [ -n "$STORE_PART" ]; then
+  step "Configuring the room store volume"
+  "$STORE_VOLUME" install-config --etc "$DEPLOY_ETC" \
+    --luks-uuid "$STORE_LUKS_UUID" --fs-uuid "$STORE_FS_UUID" \
+    --key-file "$STORE_KEY_FILE" --owner "$USERNAME"
+  shred -u "$STORE_KEY_FILE" 2>/dev/null || rm -f "$STORE_KEY_FILE"
 fi
 
 # --- 4. seed hostname + time zone into the installed deployment's /etc -------

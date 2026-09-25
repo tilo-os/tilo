@@ -132,6 +132,23 @@ mod tests {
         (app, doc)
     }
 
+    /// What a Disks app that adopted `doc` on its first frame publishes.
+    fn resources_for(doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        let mut app = DisksApp::new();
+        app.sync(&mut doc.clone(), &ROOT);
+        Widget::resources(&app, doc)
+    }
+
+    // Disks publishes only effect operations, so the registry decodes nothing.
+    // Without live disk access (as in tests) every effect is published as
+    // unavailable, which the palette rightly hides, so there is no `palette`
+    // section: the sweep checks the published surface and its contracts.
+    ui::action_contract_tests! {
+        seed: synced().1,
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| resources_for(doc),
+    }
+
     /// The whole CRDT footprint is a system projection (`topology`) plus per-peer
     /// view state (`selected`, `selected_part`, `tab`, `pending`, `status`).
     /// There is no user-authored record collection anywhere — no saved presets,

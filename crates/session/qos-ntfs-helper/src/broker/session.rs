@@ -3,7 +3,6 @@ use super::{
     BTreeSet, Candidate, Digest, Duration, HeldClaim, Instant, Sha256, claim_candidates,
     credentials, digest, inventory, io, limits, non_ntfs_mounts, refusal, revalidate, selection,
 };
-use std::fmt::Write;
 type Finished = (Vec<(String, String)>, Vec<Issue>);
 use crate::{
     limits::{NativeOperation, ReadRequest},
@@ -42,11 +41,7 @@ pub(super) fn random() -> io::Result<String> {
     if unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) } != 32 {
         return Err(io::Error::last_os_error());
     }
-    let mut nonce = String::new();
-    for byte in bytes {
-        write!(nonce, "{byte:02x}").map_err(io::Error::other)?;
-    }
-    Ok(nonce)
+    Ok(hex::encode(bytes))
 }
 pub(super) fn serve(args: &[String]) -> io::Result<()> {
     let [verb, idflag, id, rootflag, root, uidflag, uid] = args else {

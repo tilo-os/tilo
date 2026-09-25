@@ -271,6 +271,22 @@ const WEEKDAYS_FULL: [&str; 7] = [
     "Saturday",
 ];
 
+/// Upper-case the first character (by Unicode case mapping, so `ß` becomes
+/// `SS`) and keep the rest unchanged.
+///
+/// ```
+/// use tilo_ui::format::capitalize_first;
+/// assert_eq!(capitalize_first("ada lovelace"), "Ada lovelace");
+/// assert_eq!(capitalize_first(""), "");
+/// ```
+#[must_use]
+pub fn capitalize_first(value: &str) -> String {
+    let mut chars = value.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
 /// Three-letter English month abbreviation for a **0-based** month index
 /// (`0` = Jan … `11` = Dec). The index wraps mod 12, so callers holding a
 /// 1-based month can pass `month - 1` without a bounds check.

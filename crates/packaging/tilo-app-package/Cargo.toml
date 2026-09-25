@@ -12,8 +12,8 @@ name = "tilo_app_package"
 path = "src/lib.rs"
 
 # The foundation crate for Tilo packages (.tapp). Defines the manifest
-# schema, the BLAKE3 content-addressed package id, the on-disk blob
-# layout, and the pack/unpack/sign/verify operations. Used by all
+# schema, the BLAKE3 content-addressed package id, the thin and full
+# `.tapp` archive codec, and the pack/unpack/sign/verify operations. Used by all
 # package kinds (app, service, format-provider, plugin, runtime) and
 # by both the native loader and the Flatpak packager.
 
@@ -37,6 +37,7 @@ hex.workspace = true
 semver.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tar.workspace = true
 toml.workspace = true
 walkdir.workspace = true
 

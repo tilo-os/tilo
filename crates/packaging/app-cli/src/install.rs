@@ -131,8 +131,9 @@ pub fn install_argv(
     staged_tapp: &Path,
     publisher_pubkey_hex: &str,
     tapp_root_hash_hex: &str,
+    payload_from: Option<&str>,
 ) -> Vec<String> {
-    vec![
+    let mut argv = vec![
         "install".to_string(),
         staged_tapp.display().to_string(),
         // Replace an older copy of the same id rather than failing — opening
@@ -144,7 +145,23 @@ pub fn install_argv(
         publisher_pubkey_hex.to_string(),
         "--require-package-root".to_string(),
         tapp_root_hash_hex.to_string(),
-    ]
+    ];
+    if let Some(url) = payload_from {
+        // A thin package's payload comes from the registry that offered it;
+        // every blob is still checked against the signed collection.
+        argv.extend(["--payload-from".to_string(), url.to_string()]);
+    }
+    argv
+}
+
+/// The base URL of the registry that offered `app`, which also serves the
+/// payload blobs of the packages it reviewed.
+fn payload_source(app: &CatalogueApp) -> Option<String> {
+    crate::config::load_registries_no_seed()
+        .registries
+        .into_iter()
+        .find(|registry| registry.name == app.registry)
+        .map(|registry| registry.base_url)
 }
 
 fn validate_offer_metadata(app: &CatalogueApp) -> Result<(), InstallError> {
@@ -444,6 +461,7 @@ fn install_or_update_app_reporting(
         });
     }
 
+    let payload_from = payload_source(app);
     let mut command = Command::new(tilo_install_bin());
     if update {
         command.args([
@@ -456,11 +474,15 @@ fn install_or_update_app_reporting(
             "--require-package-root".to_string(),
             app.tapp_root_hash_hex.clone(),
         ]);
+        if let Some(url) = &payload_from {
+            command.args(["--payload-from", url.as_str()]);
+        }
     } else {
         command.args(install_argv(
             &dest,
             &app.publisher_pubkey_hex,
             &app.tapp_root_hash_hex,
+            payload_from.as_deref(),
         ));
     }
     on_progress(DownloadProgress {
@@ -712,7 +734,12 @@ mod tests {
     fn the_install_invocation_never_relaxes_signature_checking() {
         let publisher = "ab".repeat(32);
         let root = "cd".repeat(32);
-        let argv = install_argv(Path::new("/tmp/staged.tapp"), &publisher, &root);
+        let argv = install_argv(
+            Path::new("/tmp/staged.tapp"),
+            &publisher,
+            &root,
+            Some("https://registry.example"),
+        );
         assert_eq!(argv[0], "install");
         assert_eq!(argv[1], "/tmp/staged.tapp");
         assert!(
@@ -733,6 +760,11 @@ mod tests {
         assert!(
             !argv.iter().any(|a| a.starts_with("--require-attestor")),
             "attestor policy is the user's to set, not this path's: {argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair[0] == "--payload-from" && pair[1] == "https://registry.example"),
+            "a thin package's payload comes from the offering registry: {argv:?}"
         );
     }
 

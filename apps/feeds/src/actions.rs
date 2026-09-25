@@ -36,7 +36,6 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
 use uuid::Uuid;
 
 use tilo_actions::{
@@ -68,11 +67,7 @@ pub fn article_resource_id(id: Id) -> String {
 }
 
 pub fn tag_resource_id(tag: &str) -> String {
-    let mut encoded = String::with_capacity(tag.len().saturating_mul(2));
-    for byte in tag.as_bytes() {
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    format!("feeds.tag:{encoded}")
+    format!("feeds.tag:{}", hex::encode(tag))
 }
 
 /// Decode a canonical tag resource id without accepting aliases or an
@@ -83,24 +78,11 @@ pub fn tag_from_resource_id(id: &str) -> Option<String> {
     if encoded.is_empty() || encoded.len() > 384 || encoded.len() % 2 != 0 {
         return None;
     }
-    let mut bytes = Vec::with_capacity(encoded.len() / 2);
-    for pair in encoded.as_bytes().chunks_exact(2) {
-        let &[hi, lo] = pair else { return None };
-        let hi = hex_nibble(hi)?;
-        let lo = hex_nibble(lo)?;
-        bytes.push((hi << 4) | lo);
-    }
-    let decoded = String::from_utf8(bytes).ok()?;
+    // `hex` also accepts upper case; the round-trip check below still admits
+    // only the canonical lower-case id.
+    let decoded = String::from_utf8(hex::decode(encoded).ok()?).ok()?;
     let normalized = normalize_tags([decoded.as_str()]).into_iter().next()?;
     (tag_resource_id(&normalized) == id).then_some(normalized)
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        _ => None,
-    }
 }
 
 pub fn open_feed_address(id: Id) -> ActionAddress {
@@ -913,13 +895,6 @@ mod tests {
         r
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
@@ -1160,21 +1135,6 @@ mod tests {
         assert!(flat.contains(&"New folder"), "{flat:?}");
         assert!(flat.contains(&"Unsubscribe"), "{flat:?}");
         assert!(flat.contains(&"Delete folder"), "{flat:?}");
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("New folder")),
-            "{labels:?}"
-        );
-        palette.set_query("Rename folder");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Rename folder")),
-            "{labels:?}"
-        );
     }
 
     #[test]
@@ -1221,207 +1181,76 @@ mod tests {
         assert_eq!(FeedsDoc::load(&doc).feeds.len(), before);
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let (app, seeded_doc) = seeded();
-        let mut state = ui::State::new();
-        state.doc = seeded_doc;
-
-        let victim = app.store_feed_ids()[0];
-        let before_heads = state.doc.get_heads();
-        let before = FeedsDoc::load(&state.doc).feeds.len();
-
-        let action = remove_subscription_action(victim);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            FeedsDoc::load(&state.doc).feeds.len(),
-            before - 1,
-            "the action removed a feed"
-        );
-        assert!(
-            !FeedsDoc::load(&state.doc)
-                .feeds
-                .iter()
-                .any(|f| f.id == victim),
-            "the right feed is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            FeedsDoc::load(&state.doc).feeds.len(),
-            before,
-            "undo reverted the removal and nothing else"
-        );
-        assert!(
-            FeedsDoc::load(&state.doc)
-                .feeds
-                .iter()
-                .any(|f| f.id == victim),
-            "the feed is back after undo"
-        );
+    /// The reader a peer holding `doc` would publish: a fresh app mirrors the
+    /// document through its real sync path, exactly as the live app does on
+    /// open.
+    fn app_for(doc: &AutoCommit) -> FeedsApp {
+        let mut mirror = doc.clone();
+        let mut app = FeedsApp::new();
+        app.sync(&mut mirror, &automerge::ROOT);
+        app
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a
-    /// second independent replica (from the same base state) lands on the
-    /// byte-identical document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Star an article: a single field write, deterministic against the base.
-        let article = app.store_article_ids()[0];
-        let action = set_starred_action(article, true);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            FeedsDoc::load(&a).article(article).unwrap().starred,
-            "the star landed on both replicas"
-        );
-        assert!(FeedsDoc::load(&b).article(article).unwrap().starred);
-
-        let tags = vec!["design".to_string(), "later".to_string()];
-        let action = set_article_tags_action(article, &tags);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "tag edit replayed identically"
-        );
-        assert_eq!(
-            FeedsDoc::load(&b).article(article).unwrap().tags,
-            ["design", "later"]
-        );
-    }
-
-    #[test]
-    fn reader_preferences_and_folder_collapse_replay_byte_identically() {
-        let (app, seeded_doc) = seeded();
-        let folder = app.store_folder_ids()[0];
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let settings = ReadSettings {
-            font_scale: 1.35,
-            font: crate::model::ReadFont::Serif,
-            theme: crate::model::ReadTheme::Sepia,
-        };
-        for action in [
-            set_read_settings_action(settings),
-            set_folder_collapsed_action(folder, true),
-        ] {
-            let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-            tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
-        }
-
-        assert_eq!(a.get_heads(), b.get_heads(), "shared preferences converge");
-        assert_eq!(FeedsDoc::read_settings(&a), settings);
-        assert!(FeedsDoc::load(&a).folder(folder).unwrap().collapsed);
-    }
-
-    /// Adding a subscription replays byte-identically too — the create path, not
-    /// just a field toggle.
-    #[test]
-    fn add_subscription_replays_byte_identical() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-
-        let id = Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_0001);
-        let action = add_subscription_action(id, "https://blog.rust-lang.org/feed.xml", None, 7);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
-        let feed = FeedsDoc::load(&b)
-            .feed(id)
-            .cloned()
-            .expect("the feed exists on the peer");
-        assert_eq!(feed.url, "https://blog.rust-lang.org/feed.xml");
-        assert_eq!(feed.site_url, "https://blog.rust-lang.org");
-    }
-
-    /// Single source of truth: the palette's "Unsubscribe" spec and the builder
-    /// the context menu calls encode byte-identically, and likewise for the
-    /// rename and mark-all-read specs.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let feed = resources[0]
-            .children
-            .iter()
-            .find(|r| r.kind == "feeds.subscription")
-            .unwrap();
-        let id: Id = feed
-            .id
-            .0
+    /// The store id a subscription resource's address ends in.
+    fn feed_id(res: &Resource) -> Id {
+        res.id
+            .as_str()
             .trim_start_matches("feeds.subscription:")
             .parse()
-            .unwrap();
+            .expect("subscription resource id")
+    }
 
-        let unsub_spec = feed.actions.iter().find(|a| a.id == "unsubscribe").unwrap();
-        let from_spec = immediate_encode(unsub_spec);
-        let from_builder = encode(&remove_subscription_action(id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "unsubscribe is one source of truth"
-        );
-
-        let rename_spec = feed.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename_spec, "My Feed");
-        let from_builder = encode(&rename_feed_action(id, "My Feed"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
-
-        // The palette's "Mark all as read" resolves the same unread ids the
-        // context menu's per-feed mark-all does.
-        let mark_spec = feed.actions.iter().find(|a| a.id == "mark-read").unwrap();
-        let from_spec = immediate_encode(mark_spec);
-        let unread: Vec<Id> = app.store_unread_ids(Filter::Feed(id));
-        let from_builder = encode(&mark_all_read_action(&unread));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "mark-all-read is one source of truth"
-        );
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| ResourceProvider::resources(&app_for(doc), doc),
+        palette: ["New folder", "Rename folder", "Unsubscribe"],
+        replay: [
+            star_article => |doc| {
+                let unstarred = FeedsDoc::load(doc)
+                    .articles
+                    .into_iter()
+                    .find(|a| !a.starred)
+                    .expect("the demo reader has an unstarred article");
+                encode(&set_starred_action(unstarred.id, true))
+            },
+            tag_article => |doc| encode(&set_article_tags_action(
+                app_for(doc).store_article_ids()[0],
+                &["design".to_string(), "later".to_string()],
+            )),
+            read_settings => |_| encode(&set_read_settings_action(ReadSettings {
+                font_scale: 1.35,
+                font: crate::model::ReadFont::Serif,
+                theme: crate::model::ReadTheme::Sepia,
+            })),
+            collapse_folder => |doc| encode(&set_folder_collapsed_action(
+                app_for(doc).store_folder_ids()[0],
+                true,
+            )),
+            add_subscription => |_| encode(&add_subscription_action(
+                Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_0001),
+                "https://blog.rust-lang.org/feed.xml",
+                None,
+                7,
+            )),
+        ],
+        undo: [
+            remove_subscription => |doc| encode(&remove_subscription_action(app_for(doc).store_feed_ids()[0])),
+            delete_folder => |doc| encode(&delete_folder_action(app_for(doc).store_folder_ids()[0])),
+        ],
+        encodes: [
+            unsubscribe => ("feeds.subscription", "unsubscribe", |_, res| {
+                encode(&remove_subscription_action(feed_id(res)))
+            }),
+            rename_feed => ("feeds.subscription", "rename", arg: "My Feed", |_, res| {
+                encode(&rename_feed_action(feed_id(res), "My Feed"))
+            }),
+            mark_feed_read => ("feeds.subscription", "mark-read", |doc, res| {
+                encode(&mark_all_read_action(
+                    &app_for(doc).store_unread_ids(Filter::Feed(feed_id(res))),
+                ))
+            }),
+        ],
     }
 
     /// Deleting a folder through its action drops the folder but keeps its feeds,

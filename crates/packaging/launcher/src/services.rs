@@ -63,6 +63,22 @@ pub const COMPAT_SERVICE: &str = "compat";
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
+/// Document media. Not declared by manifests: every app is handed a
+/// capability scoped to itself and its room, so a document's images live in
+/// the device content store rather than in the app's sandbox.
+pub const BLOB_SERVICE: &str = "blobs";
+/// The filesystem daemon's document-media socket (`runtime_fs::blobs`).
+pub const DEFAULT_BLOB_SOCKET: &str = "/run/tilo/fs-blobs.sock";
+/// Overrides [`DEFAULT_BLOB_SOCKET`] for sessions whose daemon runs elsewhere.
+pub const BLOB_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
+/// Prefix of the handoff that fixes the connection's scope before the app
+/// holds the descriptor; the daemon reads it before any Cap'n Proto.
+pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
+const BLOB_HANDOFF_PROTOCOL: u16 = 1;
+/// In-sandbox descriptor slot of the automatic document-media service.
+const BLOB_CHILD_FD: i32 = 30;
+/// Slot of the automatic identity service.
+const IDENTITY_CHILD_FD: i32 = 31;
 const STORE_APP_ID: &str = "so.tilo.store";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
@@ -280,8 +296,100 @@ pub fn resolve_identity_bind(
         host: OwnedFd::from(stream),
         // Normal manifest services start at 17. Keep the automatic service in
         // a reserved slot so it cannot collide as the manifest evolves.
-        child_fd: 31,
+        child_fd: IDENTITY_CHILD_FD,
     }))
+}
+
+/// Where the filesystem daemon serves document media.
+pub fn blob_socket() -> PathBuf {
+    std::env::var_os(BLOB_SOCKET_ENV)
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| PathBuf::from(DEFAULT_BLOB_SOCKET), PathBuf::from)
+}
+
+/// Connect the filesystem daemon's document-media service on the app's
+/// behalf and fix the connection's scope — this app in this room — before
+/// the sandboxed app can write to it. The app therefore never names its own
+/// scope, and cannot reach the socket itself.
+///
+/// A missing daemon degrades to `Ok(None)`: the app keeps document media in
+/// memory for the session, as it does outside Tilo.
+///
+/// # Errors
+///
+/// Returns [`ServiceError::OpenFailed`] if the handoff cannot be written.
+pub fn resolve_blob_bind(
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    resolve_blob_bind_at(&blob_socket(), app_id, workspace_id, no_services)
+}
+
+fn blob_scope_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        && !value.bytes().all(|byte| byte == b'.')
+}
+
+fn resolve_blob_bind_at(
+    path: &Path,
+    app_id: &str,
+    workspace_id: Option<&str>,
+    no_services: bool,
+) -> Result<Option<ResolvedService>, ServiceError> {
+    if no_services {
+        return Ok(None);
+    }
+    // The same partition the app's private directory uses, so a launch with
+    // no workspace lands in the personal room.
+    let room = crate::appdir::room_slug(workspace_id);
+    if !blob_scope_component(&room) || !blob_scope_component(app_id) {
+        tracing::warn!(app_id, room, "no document media scope for this launch");
+        return Ok(None);
+    }
+    if !path.exists() {
+        tracing::warn!(
+            path = %path.display(),
+            "document media service is unavailable; the app keeps media in memory"
+        );
+        return Ok(None);
+    }
+    let mut stream = match UnixStream::connect(path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "document media service refused connection");
+            return Ok(None);
+        }
+    };
+    write_blob_handoff(&mut stream, app_id, &room).map_err(|source| ServiceError::OpenFailed {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(Some(ResolvedService {
+        name: BLOB_SERVICE.to_string(),
+        host: OwnedFd::from(stream),
+        child_fd: BLOB_CHILD_FD,
+    }))
+}
+
+fn write_blob_handoff(stream: &mut UnixStream, app_id: &str, room: &str) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "protocol": BLOB_HANDOFF_PROTOCOL,
+        "principal": "app",
+        "room": room,
+        "app_id": app_id,
+    }))
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    let length = u32::try_from(bytes.len())
+        .map_err(|_| std::io::Error::other("document media handoff is too large"))?;
+    stream.write_all(&BLOB_HANDOFF_MAGIC)?;
+    stream.write_all(&length.to_le_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()
 }
 
 /// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist.
@@ -520,7 +628,7 @@ fn resolve_service_binds_inner(
         // proxy and the egress gate.
         let host = OwnedFd::from(stream);
 
-        if next_child_fd == 31 {
+        while next_child_fd == BLOB_CHILD_FD || next_child_fd == IDENTITY_CHILD_FD {
             next_child_fd = next_child_fd.saturating_add(1);
         }
         let child_fd = next_child_fd;
@@ -698,6 +806,74 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&bytes[8..]).unwrap(),
             app_only
+        );
+    }
+
+    #[test]
+    fn blob_handoff_fixes_the_app_and_room_before_the_app_holds_the_descriptor() {
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().expect("socket dir");
+        let path = dir.path().join("fs-blobs.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("listen");
+        let reader = std::thread::spawn(move || {
+            let mut frames = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut magic = [0_u8; 4];
+                stream.read_exact(&mut magic).expect("magic");
+                let mut len = [0_u8; 4];
+                stream.read_exact(&mut len).expect("length");
+                let mut bytes = vec![0_u8; u32::from_le_bytes(len) as usize];
+                stream.read_exact(&mut bytes).expect("payload");
+                frames.push((
+                    magic,
+                    serde_json::from_slice::<serde_json::Value>(&bytes).expect("json"),
+                ));
+            }
+            frames
+        });
+        let room = resolve_blob_bind_at(&path, "so.tilo.notes", Some("room-7"), false)
+            .expect("resolve")
+            .expect("blob bind");
+        assert_eq!(room.name, BLOB_SERVICE);
+        assert_eq!(room.child_fd, BLOB_CHILD_FD);
+        let personal = resolve_blob_bind_at(&path, "so.tilo.notes", None, false)
+            .expect("resolve")
+            .expect("personal blob bind");
+        let frames = reader.join().expect("reader");
+        drop((room, personal));
+        assert_eq!(frames[0].0, BLOB_HANDOFF_MAGIC);
+        assert_eq!(
+            frames[0].1,
+            serde_json::json!({
+                "protocol": 1,
+                "principal": "app",
+                "room": "room-7",
+                "app_id": "so.tilo.notes",
+            })
+        );
+        assert_eq!(frames[1].1["room"], crate::appdir::PERSONAL_ROOM);
+
+        assert!(
+            resolve_blob_bind_at(
+                &dir.path().join("absent.sock"),
+                "so.tilo.notes",
+                None,
+                false
+            )
+            .expect("absent daemon degrades")
+            .is_none()
+        );
+        assert!(
+            resolve_blob_bind_at(&path, "so.tilo.notes", None, true)
+                .expect("no services")
+                .is_none()
+        );
+        assert!(
+            resolve_blob_bind_at(&path, "../escape", None, false)
+                .expect("invalid app id degrades")
+                .is_none()
         );
     }
 

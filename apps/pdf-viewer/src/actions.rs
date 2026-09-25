@@ -1968,40 +1968,56 @@ impl ResourceProvider for crate::app::PdfApp {
 mod tests {
     use super::*;
     use crate::app::PdfApp;
-    use qdoc::blobstore::{self, BlobStore, BlobTransport, MemoryBlobStore};
+    use qdoc::blobstore::{
+        self, BlobStore, BlobStoreError, BlobStoreLimits, CachedContentStore, ContentStoreClient,
+        Fetch, MemoryBlobStore,
+    };
     use serial_test::serial;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
     use ui::widget::Widget;
 
-    /// A tiny synchronous two-peer bridge. `offer()` belongs to peer A; a
-    /// later `want()` from peer B verifies and installs those exact bytes into
-    /// B's separate store. It exercises the same qdoc transport boundary used
-    /// by runtime-collab without sharing a process-global store by accident.
+    /// One device's content store. A read it cannot answer from its own
+    /// bytes starts a fetch from the collaborator's device and answers
+    /// `Pending`, as the filesystem daemon does; the bytes are its own once
+    /// the fetch lands. Two of these never share a process-global store.
     #[derive(Default)]
-    struct TestBlobBridge {
-        offered: Mutex<BTreeMap<String, Vec<u8>>>,
-        destination: Mutex<Option<Arc<MemoryBlobStore>>>,
+    struct DeviceStore {
+        own: Mutex<BTreeMap<String, Vec<u8>>>,
+        collaborator: Option<Arc<DeviceStore>>,
     }
 
-    impl BlobTransport for TestBlobBridge {
-        fn offer(&self, hash: &str, bytes: &[u8]) {
-            if let Ok(mut offered) = self.offered.lock() {
-                offered.insert(hash.to_string(), bytes.to_vec());
+    impl ContentStoreClient for DeviceStore {
+        fn put(&self, bytes: &[u8], _mime: &str) -> Result<String, BlobStoreError> {
+            let hash = blobstore::hash_bytes(bytes);
+            if let Ok(mut own) = self.own.lock() {
+                own.insert(hash.clone(), bytes.to_vec());
+            }
+            Ok(hash)
+        }
+
+        fn read(&self, hash: &str) -> Fetch {
+            if let Some(bytes) = self.own.lock().ok().and_then(|own| own.get(hash).cloned()) {
+                return Fetch::Ready(bytes);
+            }
+            let fetched = self
+                .collaborator
+                .as_ref()
+                .and_then(|peer| peer.own.lock().ok().and_then(|own| own.get(hash).cloned()));
+            match fetched {
+                Some(bytes) => {
+                    if let Ok(mut own) = self.own.lock() {
+                        own.insert(hash.to_string(), bytes);
+                    }
+                    Fetch::Pending
+                }
+                None => Fetch::Unavailable,
             }
         }
 
-        fn want(&self, hash: &str) {
-            let bytes = self
-                .offered
-                .lock()
-                .ok()
-                .and_then(|offered| offered.get(hash).cloned());
-            let destination = self.destination.lock().ok().and_then(|slot| slot.clone());
-            if let (Some(bytes), Some(destination)) = (bytes, destination) {
-                let _ = destination.put(hash, &bytes);
-            }
+        fn has(&self, hash: &str) -> bool {
+            self.own.lock().is_ok_and(|own| own.contains_key(hash))
         }
     }
 
@@ -2018,13 +2034,6 @@ mod tests {
         }
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     /// The sample reader, synced once so its demonstration markup (two
     /// highlights, a sticky note with a two-reply thread, a highlight comment,
     /// and a free resolved comment) is in the shared document.
@@ -2033,6 +2042,70 @@ mod tests {
         let mut state = ui::State::new();
         Widget::sync(&mut app, &mut state.doc, &state.root);
         (app, state)
+    }
+
+    thread_local! {
+        /// The sample reader a contract seed was synced from; its page plan
+        /// and resource context belong to that very document.
+        static SEEDED: std::cell::RefCell<Option<PdfApp>> = const { std::cell::RefCell::new(None) };
+    }
+
+    fn markup_seed() -> AutoCommit {
+        let (app, state) = open_with_markup();
+        SEEDED.set(Some(app));
+        state.doc
+    }
+
+    fn markup_resources(doc: &AutoCommit) -> Vec<Resource> {
+        SEEDED.with_borrow(|app| {
+            ResourceProvider::resources(app.as_ref().expect("the contract seed ran first"), doc)
+        })
+    }
+
+    fn resource_key<'a>(res: &'a Resource, prefix: &str) -> &'a str {
+        res.id
+            .as_str()
+            .strip_prefix(prefix)
+            .expect("a keyed resource")
+    }
+
+    ui::action_contract_tests! {
+        seed: markup_seed(),
+        registry: registry(),
+        resources: |doc| markup_resources(doc),
+        palette: ["Add note", "Delete annotation", "Delete comment"],
+        replay: [
+            add_ink_annotation => |_| encode(&add_annotation_action(&Annotation {
+                id: Annotation::new_id(),
+                page: 2,
+                kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
+                color: Swatch::Blue,
+                author: "You".into(),
+                chars: None,
+                created_ms: 0,
+                space: crate::model::GeomSpace::Page,
+            })),
+        ],
+        undo: [
+            add_highlight => |_| encode(&add_annotation_action(&Annotation {
+                id: Annotation::new_id(),
+                page: 1,
+                kind: AnnoKind::highlight(PtRect::new(70.0, 300.0, 120.0, 12.0)),
+                color: Swatch::Green,
+                author: "You".into(),
+                chars: None,
+                created_ms: 0,
+                space: crate::model::GeomSpace::Page,
+            })),
+        ],
+        encodes: [
+            delete_annotation => ("pdf.annotation", "delete", |_, res| {
+                encode(&delete_annotation_action(resource_key(res, "pdf.annotation:")))
+            }),
+            edit_comment => ("pdf.comment", "edit", arg: "revised", |_, res| {
+                encode(&set_comment_body_action(resource_key(res, "pdf.comment:"), "revised"))
+            }),
+        ],
     }
 
     /// Ctrl+K on the reader yields the full nested tree: the open document →
@@ -2066,7 +2139,11 @@ mod tests {
         assert_eq!(duplicate.kind, OperationKind::Document);
         assert!(duplicate.contract.reversible);
         assert!(
-            registry().decode(&immediate_encode(duplicate)).is_ok(),
+            registry()
+                .decode(&ui::testing::action_contract::spec_encoding(
+                    duplicate, None
+                ))
+                .is_ok(),
             "page-plan actions use the same registry as all other shared PDF mutations"
         );
         assert!(
@@ -2119,26 +2196,6 @@ mod tests {
         assert!(
             document.children.iter().any(|r| r.kind == "pdf.comment"),
             "a free-comment resource hangs off the document"
-        );
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        palette.set_query("Add note");
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Add note")), "{labels:?}");
-        palette.set_query("Delete annotation");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete annotation")),
-            "{labels:?}"
-        );
-        palette.set_query("Delete comment");
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Delete comment")),
-            "{labels:?}"
         );
     }
 
@@ -2237,12 +2294,11 @@ mod tests {
         );
     }
 
-    /// The full undo covenant on one action via the real affordance path:
-    /// dispatched through [`PdfApp::perform_action`] it mutates the doc and
-    /// stashes exactly one undo boundary, which the host records — and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
+    /// The affordance path: dispatched through [`PdfApp::perform_action`] an
+    /// action stashes its undo boundary, which the host's recorder attributes
+    /// to the local user — so their author-scoped Ctrl+Z reverts it.
     #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
+    fn perform_action_undo_is_attributed_to_the_local_author() {
         let (mut app, mut state) = open_with_markup();
         let before_len = PdfDoc::list_annotations(&state.doc).len();
         let before_heads = state.doc.get_heads();
@@ -2304,51 +2360,6 @@ mod tests {
         );
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, state) = open_with_markup();
-        // Two replicas sharing history.
-        let mut a = state.doc;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let anno = Annotation {
-            id: Annotation::new_id(),
-            page: 2,
-            kind: AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
-            color: Swatch::Blue,
-            author: "You".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let action = add_annotation_action(&anno);
-        let encoded = encode(&action);
-
-        // A applies locally, producing the envelope; B replays it.
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            PdfDoc::list_annotations(&a).len(),
-            PdfDoc::list_annotations(&b).len(),
-        );
-    }
-
     #[test]
     fn content_addressed_import_replays_byte_identically() {
         let mut a = AutoCommit::new();
@@ -2378,67 +2389,38 @@ mod tests {
 
     #[test]
     #[serial(pdf_blobstore)]
-    fn imported_bytes_cross_a_blob_transport_without_entering_the_action() {
-        let producer = Arc::new(MemoryBlobStore::default());
-        let consumer = Arc::new(MemoryBlobStore::default());
-        let bridge = Arc::new(TestBlobBridge::default());
-        blobstore::set_store(producer.clone());
-        blobstore::set_transport(&(bridge.clone() as Arc<dyn BlobTransport>));
+    fn imported_bytes_reach_a_collaborator_through_the_content_store_not_the_action() {
+        let producer = Arc::new(DeviceStore::default());
+        blobstore::set_store(Arc::new(CachedContentStore::new(
+            producer.clone(),
+            BlobStoreLimits::default(),
+        )));
         let bytes = b"content that is deliberately not in Automerge";
         let hash = blobstore::put(bytes).expect("test fixture fits blob quota");
         assert!(producer.has(&hash));
+
+        let consumer = Arc::new(DeviceStore {
+            own: Mutex::default(),
+            collaborator: Some(producer),
+        });
+        let consumer_view = Arc::new(CachedContentStore::new(
+            consumer.clone(),
+            BlobStoreLimits::default(),
+        ));
+        blobstore::set_store(consumer_view.clone());
         assert!(!consumer.has(&hash));
-
-        let Ok(mut destination) = bridge.destination.lock() else {
-            return;
-        };
-        *destination = Some(consumer.clone());
-        drop(destination);
-        blobstore::set_store(consumer.clone());
-        // First read is intentionally non-blocking; it asks the transport.
+        // First read is intentionally non-blocking; the device fetches.
         assert!(blobstore::get(&hash).is_none());
-        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Resolved);
+        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Pending);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
         assert_eq!(blobstore::get(&hash).as_deref(), Some(bytes.as_slice()));
-        assert!(!consumer.put(&hash, b"tampered"));
-        assert_eq!(consumer.get(&hash).as_deref(), Some(bytes.as_slice()));
-        blobstore::clear_transport();
+        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Resolved);
+        assert!(consumer.has(&hash));
+        assert_eq!(
+            consumer_view.cached(&hash).as_deref(),
+            Some(bytes.as_slice())
+        );
         blobstore::set_store(Arc::new(MemoryBlobStore::default()));
-    }
-
-    /// Single source of truth: a palette "Edit comment" spec and a directly built
-    /// edit action encode byte-identically, as do the immediate delete specs.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (app, state) = open_with_markup();
-        let resources = Widget::resources(&app, &state.doc);
-        let document = &resources[0];
-        let anno = document
-            .children
-            .iter()
-            .find(|r| r.kind == "pdf.annotation" && !r.children.is_empty())
-            .unwrap();
-
-        // The annotation's delete spec == the delete builder for its id.
-        let anno_id = anno.id.as_str().trim_start_matches("pdf.annotation:");
-        let spec = anno.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&delete_annotation_action(anno_id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth"
-        );
-
-        // And a comment's edit spec matches the edit builder for the same text.
-        let comment = &anno.children[0];
-        let cid = comment.id.as_str().trim_start_matches("pdf.comment:");
-        let edit_spec = comment.actions.iter().find(|a| a.id == "edit").unwrap();
-        let from_spec = prompted_encode(edit_spec, "revised");
-        let from_builder = encode(&set_comment_body_action(cid, "revised"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "edit is one source of truth"
-        );
     }
 
     #[test]

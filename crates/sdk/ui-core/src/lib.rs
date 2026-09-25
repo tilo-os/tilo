@@ -118,6 +118,8 @@ pub(crate) mod application_test_support;
 pub mod app;
 pub mod auth_backdrop;
 pub mod background;
+#[cfg(all(unix, feature = "native"))]
+pub use native::blobs;
 pub mod caps_lock;
 pub mod capture;
 pub mod chart_palette;
@@ -208,6 +210,8 @@ pub mod state;
 pub mod status_bubble;
 pub mod surface;
 pub mod sysdirs;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 pub mod text_edit;
 pub mod text_metrics;
 pub mod text_render;

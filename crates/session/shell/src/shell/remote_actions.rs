@@ -17,6 +17,7 @@ use tilo_actions::remote::{
 };
 
 use crate::shell::collab_broker::AppActionBroker;
+use crate::shell::collab_broker_capnp::LaunchScope;
 
 /// [`ActionHost`] over the live application broker.
 #[derive(Clone)]
@@ -25,6 +26,9 @@ pub struct BrokerActionHost {
     /// The application connection the caller itself is, when it is one; it
     /// is what [`tilo_actions::remote::OWN_PROVIDER`] names.
     own_peer: Option<u64>,
+    /// The application the launcher authenticated for that connection; the
+    /// only scope through which a launch may read content by hash.
+    launch: Option<LaunchScope>,
 }
 
 impl BrokerActionHost {
@@ -33,15 +37,22 @@ impl BrokerActionHost {
         Self {
             broker,
             own_peer: None,
+            launch: None,
         }
     }
 
-    /// The host as seen from application connection `peer_id`.
+    /// The host as seen from application connection `peer_id`, which the
+    /// launcher authenticated as `launch` when it arrived through it.
     #[must_use]
-    pub fn for_connection(broker: AppActionBroker, peer_id: u64) -> Self {
+    pub(crate) fn for_connection(
+        broker: AppActionBroker,
+        peer_id: u64,
+        launch: Option<LaunchScope>,
+    ) -> Self {
         Self {
             broker,
             own_peer: Some(peer_id),
+            launch,
         }
     }
 
@@ -82,7 +93,7 @@ impl ActionHost for BrokerActionHost {
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         self.broker
             .state()
-            .action_invoke(caller, self.own_peer, &request)
+            .action_invoke(caller, self.own_peer, self.launch.as_ref(), &request)
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
@@ -313,6 +324,45 @@ mod tests {
         erase.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);
         now(host.invoke(&owner(), erase)).expect("confirmed");
         assert!(invocations.try_recv().is_ok(), "dispatched once confirmed");
+    }
+
+    /// A launch opens content only through the scope of the application
+    /// the launcher authenticated for the calling connection; a caller
+    /// without one holding a hash opens nothing.
+    #[test]
+    fn a_launch_without_a_launch_scope_cannot_open_content_by_hash() {
+        let (host, _) = host();
+        let room = catalogue(&host, &owner())
+            .rows
+            .iter()
+            .find_map(|row| tilo_actions::remote::workspace_provider_room(&row.provider))
+            .map(str::to_owned)
+            .expect("the workspace is offered");
+        let caller = Caller::local_person("a1".repeat(32)).in_room(&room);
+        let open = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_actions::remote::workspace_provider(&room),
+                address: ActionAddress::new(
+                    format!(
+                        "{}so.tilo.photos",
+                        tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                    ),
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                ),
+            },
+            argument: InvokeArgument::Text(blake3::hash(b"a photograph").to_hex().to_string()),
+            context: None,
+            confirmation: None,
+            revision: None,
+        };
+        match now(host.invoke(&caller, open)) {
+            Err(ActionHostError::Refused { reason }) => assert!(
+                reason.contains("launcher authenticated"),
+                "refused for its missing launch scope: {reason}"
+            ),
+            other => panic!("a hash alone must not open content: {other:?}"),
+        }
     }
 
     #[test]

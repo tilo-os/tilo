@@ -11,6 +11,7 @@ use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointAddr;
 use thiserror::Error;
+use tilo_clock::{unix_now_ms, unix_now_ns};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -195,7 +196,7 @@ async fn authenticate_server(
         &protocol.own_user_public_key,
         &TrustPolicy::AllowMatchingUser,
         &revocations,
-        crate::peer::now_ns(),
+        unix_now_ns(),
     )?;
     if peer.user_public_key != protocol.own_user_public_key {
         return Err(ComputeSessionError::Protocol(
@@ -364,7 +365,7 @@ async fn dispatch_compute(
                 compute.advertise(
                     peer.device_public_key,
                     workspace_id,
-                    now_ms(),
+                    unix_now_ms(),
                     advertisement.clone(),
                 )?;
                 return Ok(None);
@@ -372,7 +373,7 @@ async fn dispatch_compute(
             ComputeEnvelope::Request { spec } => compute.accept_request(
                 peer.device_public_key,
                 workspace_id,
-                now_ms(),
+                unix_now_ms(),
                 store,
                 spec,
             )?,
@@ -422,7 +423,7 @@ fn is_server_only(envelope: &ComputeEnvelope) -> bool {
 }
 
 fn next_queue_sequence() -> u64 {
-    let observed = crate::peer::now_ns();
+    let observed = unix_now_ns();
     COMPUTE_QUEUE_SEQUENCE
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
             Some(observed.max(previous.saturating_add(1)))
@@ -430,10 +431,6 @@ fn next_queue_sequence() -> u64 {
         .map_or(observed, |previous| {
             observed.max(previous.saturating_add(1))
         })
-}
-
-fn now_ms() -> u64 {
-    crate::peer::now_ns() / 1_000_000
 }
 
 async fn read_compute(receive: &mut RecvStream) -> Result<ComputeEnvelope, ComputeSessionError> {
@@ -517,7 +514,7 @@ impl ComputeClient {
             &acknowledgement,
             &expected_server_user,
             &revocations,
-            crate::peer::now_ns(),
+            unix_now_ns(),
             &nonce,
         )?;
         if expected_server_device.is_some_and(|expected| relay_peer.device_public_key != expected) {

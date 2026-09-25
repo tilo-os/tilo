@@ -34,7 +34,6 @@ apps/chat/src/responsive.rs pixel_const 2
 apps/code-editor/src/app.rs pixel_const 7
 apps/code-editor/src/bottom_panel.rs pixel_const 6
 apps/code-editor/src/editor_view.rs pixel_const 4
-apps/code-editor/src/file_tree.rs pixel_const 4
 apps/code-editor/src/find.rs pixel_const 10
 apps/contacts/src/app.rs pixel_const 22
 apps/contacts/src/export_dialog.rs pixel_const 5
@@ -44,7 +43,6 @@ apps/containers/src/draw.rs pixel_const 2
 apps/containers/src/panels.rs pixel_const 3
 apps/db-client/src/app.rs pixel_const 12
 apps/db-client/src/grid.rs pixel_const 4
-apps/db-client/src/schema_tree.rs pixel_const 3
 apps/db-client/src/structure.rs pixel_const 2
 apps/diffmerge/src/app.rs pixel_const 7
 apps/diffmerge/src/diff_view.rs pixel_const 9
@@ -99,8 +97,6 @@ apps/music/src/app/render.rs pixel_const 13
 apps/notes/src/app.rs pixel_const 4
 apps/notes/src/main_panel.rs pixel_const 7
 apps/notes/src/shortcuts_overlay.rs pixel_const 5
-apps/notes/src/sidebar.rs pixel_const 10
-apps/notes/src/sidebar.rs taffy_length 1
 apps/osk/src/widget.rs pixel_const 3
 apps/passwords/src/showcase.rs pixel_const 1
 apps/pdf-viewer/src/app.rs pixel_const 16
@@ -164,7 +160,7 @@ apps/word-processor/src/history_panel.rs pixel_const 2
 apps/word-processor/src/recovery_banner.rs pixel_const 1
 apps/word-processor/src/review_overlay.rs pixel_const 4
 apps/word-processor/src/ruler.rs pixel_const 1
-apps/word-processor/src/style_color_picker.rs pixel_const 2
+apps/word-processor/src/style_color_picker.rs pixel_const 1
 apps/word-processor/src/widget.rs pixel_const 41
 apps/word-processor/src/widget/block_layout.rs pixel_const 2
 apps/word-processor/src/widget/toolbar.rs pixel_const 1

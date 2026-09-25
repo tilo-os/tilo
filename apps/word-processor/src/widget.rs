@@ -1116,6 +1116,31 @@ enum DocumentSaveStatus {
 struct ProofingPreferences {
     enabled: bool,
     language: String,
+    /// The word list "Add to dictionary" persists to and a new dictionary
+    /// loads from; `None` keeps added words in memory only.
+    user_dictionary: Option<std::path::PathBuf>,
+}
+
+impl ProofingPreferences {
+    /// The session's language and the person's word list. A unit test starts
+    /// from a fixed English checker with no persisted words instead, so its
+    /// results do not depend on the host locale or on words the developer has
+    /// added; a test that exercises either sets it explicitly.
+    fn for_session() -> Self {
+        if cfg!(test) {
+            Self {
+                enabled: true,
+                language: "en_US".to_owned(),
+                user_dictionary: None,
+            }
+        } else {
+            Self {
+                enabled: true,
+                language: spellcheck::default_language(),
+                user_dictionary: spellcheck::user_dict_path(),
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1360,6 +1385,10 @@ impl WordProcessorWidget {
         OUTLINE_PANEL_W * self.text_scale
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor lists every child widget and its initial state in one place"
+    )]
     pub fn new() -> Self {
         Self {
             inner: WordProcessor::new(),
@@ -1433,10 +1462,7 @@ impl WordProcessorWidget {
             toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
-            proofing: ProofingPreferences {
-                enabled: true,
-                language: spellcheck::default_language(),
-            },
+            proofing: ProofingPreferences::for_session(),
             last_autocorrection: None,
             spell_cache: HashMap::new(),
             context_menu: ContextMenu::new(),
@@ -2202,9 +2228,12 @@ impl WordProcessorWidget {
     /// with any persisted user words layered in. Owned so "Add to dictionary"
     /// can mutate it.
     fn dictionary(&mut self) -> &mut spellcheck::Dictionary {
+        let user_dictionary = self.proofing.user_dictionary.as_deref();
         self.dict.get_or_insert_with(|| {
             let mut d = (*shared_dictionary()).clone();
-            d.load_user_dict();
+            if let Some(path) = user_dictionary {
+                d.load_user_dict_from(path);
+            }
             d
         })
     }
@@ -11745,12 +11774,15 @@ impl WordProcessorWidget {
             }
             CtxAction::SelectAll => self.inner.select_all(state),
             CtxAction::AddToDictionary(word) => {
+                let user_dictionary = self.proofing.user_dictionary.clone();
                 let dict = self.dictionary();
                 if dict.add_word(&word) {
                     // Persist best-effort, then drop the spell cache so every
                     // block re-checks against the updated dictionary and the
                     // squiggle clears on the next draw.
-                    let _ = dict.save_user_dict();
+                    if let Some(path) = user_dictionary {
+                        let _ = dict.save_user_dict_to(&path);
+                    }
                     self.spell_cache.clear();
                 }
             }

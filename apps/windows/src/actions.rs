@@ -476,6 +476,74 @@ fn appliance_resource(catalogue: &Catalogue) -> Resource {
 mod tests {
     use super::*;
     use crate::provider::CompatibilityProvider;
+
+    fn registry() -> ActionRegistry {
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+    }
+
+    fn set_route(app_id: &str, route: Route) -> WindowsAction {
+        WindowsAction::SetRoute {
+            app_id: app_id.into(),
+            route,
+        }
+    }
+
+    fn reset_route(app_id: &str) -> WindowsAction {
+        WindowsAction::ResetRoute {
+            app_id: app_id.into(),
+        }
+    }
+
+    /// A shared document in which a collaborator has moved the game off its
+    /// catalogue route, authored through the route action itself.
+    fn seeded_doc() -> Doc {
+        let mut doc = Doc::new();
+        let action = set_route("cyberpunk-2077", Route::Wine);
+        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        doc
+    }
+
+    /// The offline app's published tree after the host projected `doc`'s
+    /// shared route policy into it.
+    fn resources(doc: &Doc) -> Vec<Resource> {
+        let mut app = crate::app::WindowsApp::new_offline();
+        let mut doc = doc.clone();
+        ui::widget::Widget::sync(&mut app, &mut doc, &ROOT);
+        ui::widget::Widget::resources(&app, &doc)
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| resources(doc),
+        palette: [
+            "Use Wine",
+            "Use Proton",
+            "Use catalogue recommendation",
+            "Launch",
+            "Install Windows application",
+            "Start Windows",
+        ],
+        replay: [
+            route_override => |_| encode(&set_route("cyberpunk-2077", Route::Proton)),
+            route_reset => |_| encode(&reset_route("cyberpunk-2077")),
+        ],
+        undo: [
+            route_override => |_| encode(&set_route("adobe-reader", Route::Proton)),
+            route_reset => |_| encode(&reset_route("cyberpunk-2077")),
+        ],
+        encodes: [
+            use_proton => ("windows.app:adobe-reader", "route-proton", |_, _| {
+                encode(&set_route("adobe-reader", Route::Proton))
+            }),
+            catalogue_recommendation => ("windows.app:cyberpunk-2077", "reset-route", |_, _| {
+                encode(&reset_route("cyberpunk-2077"))
+            }),
+        ],
+    }
+
     #[test]
     fn route_policy_is_deterministic_and_reset_removes_it() {
         let mut doc = Doc::new();

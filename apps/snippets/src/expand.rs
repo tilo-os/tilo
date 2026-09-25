@@ -323,7 +323,7 @@ impl ExpandModal {
             }
             let mut sx = card.x0 + 14.0;
             for span in spans {
-                let color = highlight::token_color(span.kind, theme);
+                let color = theme.tokens.syntax.color(span.kind);
                 draw::mono(
                     scene,
                     tr,

@@ -21,7 +21,7 @@ async fn bind_certified_endpoint() -> (Endpoint, MemoryLookup, FsTransportIdenti
 
 #[tokio::test]
 async fn thumbnail_prefetch_isolated_retries_without_another_namespace_change() {
-    let source_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+    let source_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
     let source_store = ContentStore::memory();
     let ready_thumbnail = source_store.ingest("ready preview").await.unwrap();
     let source_router = Router::builder(source_endpoint.clone())
@@ -32,7 +32,7 @@ async fn thumbnail_prefetch_isolated_retries_without_another_namespace_change() 
     // during the first pass, modelling an auth warm-up/offline source.
     let late_store = ContentStore::memory();
     let late_thumbnail = late_store.ingest("late preview").await.unwrap();
-    let client_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+    let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
     let local_store = Arc::new(ContentStore::memory());
     let hydrator = Hydrator::new(client_endpoint.clone(), Arc::clone(&local_store));
     hydrator.add_peer(source_endpoint.addr());
@@ -54,7 +54,7 @@ async fn thumbnail_prefetch_isolated_retries_without_another_namespace_change() 
     assert!(local_store.has(ready_thumbnail).await);
     assert!(pending.contains_key(&late_thumbnail));
 
-    let late_endpoint = Endpoint::bind(presets::N0).await.unwrap();
+    let late_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
     let late_router = Router::builder(late_endpoint.clone())
         .accept(iroh_blobs::ALPN, late_store.blobs_protocol(None))
         .spawn();
@@ -547,7 +547,7 @@ async fn certified_peer_acknowledges_only_a_durable_exact_version_and_replay_is_
                 mime: Some("application/octet-stream".into()),
                 previews: Vec::new(),
                 latest_actor: Some(actor),
-                observed_at_ms: now_ms(),
+                observed_at_ms: unix_now_ms(),
                 index_status: IndexStatus::Pending,
                 properties: None,
             },
@@ -556,7 +556,7 @@ async fn certified_peer_acknowledges_only_a_durable_exact_version_and_replay_is_
                 record_id,
                 parents: Vec::new(),
                 actor,
-                timestamp_ms: now_ms(),
+                timestamp_ms: unix_now_ms(),
                 content_hash,
                 metadata_hash,
                 provenance: FileProvenance::Create,

@@ -166,7 +166,7 @@ fn notebook_shared_history_previews_restores_and_undoes_saved_content() {
                 target.get(ROOT, "notes_schema_version").unwrap()
             );
             assert_eq!(
-                doc.get(ROOT, "workspace_json").unwrap().unwrap().0.to_str(),
+                doc.get(ROOT, "workspace_json").unwrap().unwrap().0.as_str(),
                 Some("retained legacy metadata")
             );
         })
@@ -476,18 +476,15 @@ fn durable_import_without_retirement_marker_reopens_the_same_graph() {
 fn actual_binary_launch_spec_prepares_the_notebook_and_shared_history() {
     let temp = tempfile::tempdir().unwrap();
     let notebook = temp.path().join("notebook");
+    let state = temp.path().join("application-state");
     let dump = temp.path().join("inspection.json");
     let spec = serde_json::json!({"actions":[{"click_named":"history-open"}],"inspect":dump});
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
-        .env("XDG_DATA_HOME", temp.path().join("application-state"))
+        .env("XDG_DATA_HOME", &state)
+        .env("TILO_NOTES_ROOT", &notebook)
         .env("TILO_PACKAGE_ID", canonical::PACKAGE)
         .env("QOS_WORKSPACE_ID", "00000000-0000-0000-0000-000000000023")
-        .args([
-            "--notebook-dir",
-            notebook.to_str().unwrap(),
-            "--headless-drive",
-            &spec.to_string(),
-        ])
+        .args(["--headless-drive", &spec.to_string()])
         .output()
         .unwrap();
     assert!(
@@ -498,7 +495,34 @@ fn actual_binary_launch_spec_prepares_the_notebook_and_shared_history() {
     );
     let inspection = std::fs::read_to_string(&dump).unwrap();
     assert!(inspection.contains("activity_timeline"), "{inspection}");
-    assert!(notebook.join(".notes-canonical-v1").is_file());
+    // The notebook is a canonical record in application state. A workspace
+    // launch never adopts, creates or retires a personal Markdown notebook.
+    assert!(
+        walkdir(&state).next().is_some(),
+        "the launch persisted its notebook record under {}",
+        state.display()
+    );
+    assert!(
+        !notebook.exists(),
+        "a workspace launch leaves the personal notebook alone"
+    );
+}
+
+/// Every regular file below `root`.
+fn walkdir(root: &std::path::Path) -> impl Iterator<Item = std::path::PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.into_iter()
 }
 
 #[test]

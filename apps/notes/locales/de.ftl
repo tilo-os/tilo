@@ -43,7 +43,6 @@ notes-menu-copy-link = Notizlink kopieren
 notes-menu-export = Markdown exportieren
 notes-menu-insert-image = Bild einfügen
 notes-menu-delete = Löschen
-notes-a11y-rename = Notiz umbenennen
 notes-a11y-new-child-under = Untergeordnete Notiz erstellen unter
 notes-a11y-more-actions-for = Weitere Aktionen für
 

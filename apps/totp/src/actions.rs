@@ -613,29 +613,14 @@ impl ResourceProvider for crate::app::AuthenticatorApp {
 mod tests {
     use super::*;
     use crate::app::AuthenticatorApp;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
+    use ui::testing::action_contract::spec_encoding;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    /// Build an [`EncodedAction`] from a prompted spec's closure — the same path
-    /// the palette takes on Enter.
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
     }
 
     /// Two deterministic accounts seeded straight into a fresh document (the
@@ -698,7 +683,7 @@ mod tests {
         assert_eq!(copy.contract.risk, RiskLevel::Privileged);
         assert_eq!(copy.contract.confirmation, ConfirmationPolicy::Confirm);
         assert_eq!(copy.contract.retry, RetryPolicy::AtMostOnce);
-        let encoded_copy = immediate_encode(copy);
+        let encoded_copy = spec_encoding(copy, None);
         let operation: TotpOperation = serde_json::from_slice(&encoded_copy.payload).unwrap();
         assert!(matches!(operation, TotpOperation::CopyCode { .. }));
         for secret in seed_accounts()
@@ -721,7 +706,7 @@ mod tests {
             .unwrap();
         assert_eq!(add.kind, OperationKind::View);
         assert_eq!(add.contract, ActionContract::view());
-        let encoded_add = immediate_encode(add);
+        let encoded_add = spec_encoding(add, None);
         assert!(matches!(
             serde_json::from_slice::<TotpOperation>(&encoded_add.payload).unwrap(),
             TotpOperation::OpenAddAccount
@@ -830,165 +815,54 @@ mod tests {
                 .availability,
             Availability::Unavailable { .. }
         ));
-
-        // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
-        let mut palette_resources = resources.clone();
-        palette_resources.push(acct.clone());
-        palette.load_open_resources(&palette_resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("Add account")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Copy current code")),
-            "{labels:?}"
-        );
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the doc and records exactly one undo boundary, and Ctrl+Z (the
-    /// host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        let accts = seed_accounts();
-        AuthDoc::sync_vault(&mut state.doc, &accts);
-        let before_heads = state.doc.get_heads();
-        let before_len = AuthDoc::list_accounts(&state.doc).len();
-        let target = accts[0].id;
-
-        // Delete an account via the action + the host's undo recording.
-        let action = delete_account_action(target);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            AuthDoc::list_accounts(&state.doc).len(),
-            before_len - 1,
-            "the action removed one account from the document"
-        );
-        assert!(
-            AuthDoc::list_accounts(&state.doc)
-                .iter()
-                .all(|a| a.id != target),
-            "the targeted account is gone"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            AuthDoc::list_accounts(&state.doc).len(),
-            before_len,
-            "undo restored the deleted account and nothing else"
-        );
-        assert!(
-            AuthDoc::list_accounts(&state.doc)
-                .iter()
-                .any(|a| a.id == target),
-            "the exact account is back after undo"
-        );
+    fn first_account() -> AccountId {
+        seed_accounts()[0].id
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn add_account_replays_byte_identical_on_a_peer() {
-        let mut a = seeded_doc();
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let new = Account {
-            id: Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_FEED),
-            issuer: "Proton".into(),
-            label: "ada@pm.me".into(),
-            secret: "JBSWY3DPEHPK3PXP".into(),
-            algorithm: Algorithm::Sha1,
-            digits: 6,
-            period: 30,
-            color: 3,
-            order: 5,
-        };
-        let action = add_account_action(&new, 5);
-        let encoded = encode(&action);
-
-        // A applies locally, producing the envelope; B replays it.
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            AuthDoc::list_accounts(&a).iter().any(|x| x.id == new.id),
-            "the account landed on the origin"
-        );
-        assert_eq!(
-            AuthDoc::list_accounts(&a).len(),
-            AuthDoc::list_accounts(&b).len(),
-            "both replicas hold the same account set"
-        );
+    fn first_account_resource() -> String {
+        account_resource_id(first_account())
     }
 
-    /// Single source of truth: the account resource's immediate "Delete" spec and
-    /// the prompted "Rename" spec encode byte-identically to their direct builders
-    /// — proving the on-screen affordances and the palette dispatch the same action.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let doc = seeded_doc();
-        let accts = seed_accounts();
-        let resources = provide_resources(&doc);
-        let vault = &resources[0];
-        let acct = vault
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == format!("totp.account:{}", accts[0].id))
-            .expect("the first account is a resource");
-
-        // Immediate delete spec == delete builder.
-        let del = acct.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(del);
-        let from_builder = encode(&delete_account_action(accts[0].id));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        // Immediate move-down spec == move-down builder.
-        let mv = acct.actions.iter().find(|a| a.id == "move-down").unwrap();
-        assert_eq!(
-            immediate_encode(mv).payload,
-            encode(&move_down_action(accts[0].id)).payload,
-            "one source of truth for reorder"
-        );
-
-        // Prompted rename spec == rename builder for the same argument.
-        let rn = acct.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rn, "NewName");
-        let from_builder = encode(&set_issuer_action(accts[0].id, "NewName"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for rename"
-        );
+    ui::action_contract_tests! {
+        seed: seeded_doc(),
+        registry: registry(),
+        resources: |doc| provide_resources(doc),
+        palette: ["Add account", "Relabel account", "Delete account", "Move down"],
+        replay: [
+            add_account => |_| encode(&add_account_action(
+                &Account {
+                    id: Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_FEED),
+                    issuer: "Proton".into(),
+                    label: "ada@pm.me".into(),
+                    secret: "JBSWY3DPEHPK3PXP".into(),
+                    algorithm: Algorithm::Sha1,
+                    digits: 6,
+                    period: 30,
+                    color: 3,
+                    order: 5,
+                },
+                5,
+            )),
+        ],
+        undo: [
+            delete_account => |_| encode(&delete_account_action(first_account())),
+        ],
+        encodes: [
+            delete => (&first_account_resource(), "delete", |_, _| {
+                encode(&delete_account_action(first_account()))
+            }),
+            move_down => (&first_account_resource(), "move-down", |_, _| {
+                encode(&move_down_action(first_account()))
+            }),
+            rename => (&first_account_resource(), "rename", arg: "NewName", |_, _| {
+                encode(&set_issuer_action(first_account(), "NewName"))
+            }),
+            relabel => (&first_account_resource(), "relabel", arg: "ada@corp.example", |_, _| {
+                encode(&set_label_action(first_account(), "ada@corp.example"))
+            }),
+        ],
     }
 
     /// The vault's add entry is a local View route: secret-bearing setup links
@@ -1002,7 +876,7 @@ mod tests {
             .iter()
             .find(|a| a.id == "add-account")
             .unwrap();
-        let encoded = immediate_encode(add);
+        let encoded = spec_encoding(add, None);
         assert!(matches!(
             serde_json::from_slice::<TotpOperation>(&encoded.payload).unwrap(),
             TotpOperation::OpenAddAccount

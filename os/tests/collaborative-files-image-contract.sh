@@ -119,6 +119,21 @@ require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/tilo/fs-capabili
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/dev/fuse"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/var/lib/tilo/device/cert.bin"
 require_line /usr/lib/systemd/system/fs.service "ExecStop=/usr/bin/fusermount3 -u -z /var/workspace"
+# The room store volume: prepared before the daemon, which serves FUSE unless
+# the preparation announced a mounted store.
+require_exec /usr/libexec/tilo-store-volume
+require_file /usr/lib/systemd/system/tilo-store-volume.service
+require_file /usr/lib/systemd/system/tilo-store-loop.service
+require_line /usr/lib/systemd/system/fs.service "ExecStopPost=-/usr/bin/umount --lazy /var/workspace"
+require_line /usr/lib/systemd/system/fs.service "Wants=tilo-store-volume.service var-lib-tilo-store.mount"
+require_line /usr/lib/systemd/system/fs.service "After=tilo-store-volume.service var-lib-tilo-store.mount"
+require_line /usr/lib/systemd/system/fs.service "Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse"
+require_line /usr/lib/systemd/system/fs.service "EnvironmentFile=-/run/tilo-store/fs.env"
+require_line /usr/lib/systemd/system/fs.service "    \$TILO_FS_DATA_PLANE_ARGS"
+require_line /usr/lib/systemd/system/tilo-store-volume.service "ExecStart=/usr/libexec/tilo-store-volume ensure"
+require_line /usr/lib/systemd/system/tilo-store-volume.service "Before=fs.service"
+require_line /usr/lib/systemd/system/tilo-store-volume.service "RuntimeDirectory=tilo-store"
+require_line /usr/lib/systemd/system/tilo-store-loop.service "ExecStart=/usr/libexec/tilo-store-volume attach"
 require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/tilo/device/cert.bin"
 require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
 require_text /usr/lib/systemd/user/tilo-fs-recipient.service "/usr/bin/fs recipient-service --socket %t/tilo/services/tilo-fs.sock"
@@ -152,18 +167,43 @@ require_text /usr/lib/tmpfiles.d/tilo.conf "C  /var/lib/tilo/fs-capabilities.jso
 # Files must be installed through the same registry/payload route the launcher
 # consumes.  A loose /usr/bin copy alone does not make it launchable as an app.
 registry=/usr/share/tilo-apps/registry.toml
-payload=/usr/share/tilo-apps/payloads/so.tilo.file-explorer
 require_file "$registry"
-require_file "$payload/manifest.toml"
-require_exec "$payload/bin/file-explorer"
 require_text "$registry" 'id = "so.tilo.file-explorer"'
-require_text "$registry" 'payload_root = "/usr/share/tilo-apps/payloads/so.tilo.file-explorer"'
-require_text "$registry" 'manifest_path = "/usr/share/tilo-apps/payloads/so.tilo.file-explorer/manifest.toml"'
+# The package store names each tree by its signed package id, so read where
+# the row points instead of assuming a path.
+registry_field() {
+  python3 - "$(at "$registry")" "$1" "$2" <<'PY'
+import pathlib
+import sys
+import tomllib
+
+rows = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+for row in rows.get("entry", []):
+    if row.get("id") == sys.argv[2]:
+        print(row[sys.argv[3]])
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+payload="$(registry_field so.tilo.file-explorer payload_root)" \
+  || die "registry has no payload root for Files"
+manifest="$(registry_field so.tilo.file-explorer manifest_path)" \
+  || die "registry has no manifest for Files"
+case "$payload" in
+  /usr/share/tilo-apps/pkgs/*) ;;
+  *) die "Files payload $payload is outside the system package store" ;;
+esac
+case "$manifest" in
+  /usr/share/tilo-apps/pkgs/*.pkg/manifest.toml) ;;
+  *) die "Files manifest $manifest is not the signed record" ;;
+esac
+require_file "$manifest"
+require_exec "$payload/bin/file-explorer"
 # The packer serializes a normalized manifest rather than preserving authoring
 # whitespace. Validate the installed TOML values, not one formatter's spacing.
-require_toml_string "$payload/manifest.toml" package.id "so.tilo.file-explorer"
-require_toml_string "$payload/manifest.toml" sandbox.services.tilo-fs "optional@1"
-require_toml_string "$payload/manifest.toml" package.runtime "tilo-runtime/2026.07"
+require_toml_string "$manifest" package.id "so.tilo.file-explorer"
+require_toml_string "$manifest" sandbox.services.tilo-fs "optional@1"
+require_toml_string "$manifest" package.runtime "tilo-runtime/2026.07"
 # These are deliberately allowed to be distinct signed build artifacts.  The
 # loose binary is the privileged recovery surface built with the OS, while the
 # launcher resolves the checksum-pinned app-collection payload.  Requiring
@@ -193,6 +233,12 @@ if [ "$root" = / ]; then
   /usr/bin/tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
     --require-publisher "$(cat /usr/share/tilo/runtime-bundle-publisher.hex)" >/dev/null \
     || die "shipped runtime bundle signature or content check failed"
+  # Everything the store volume helper runs, at install and at boot.
+  for tool in mkfs.btrfs cryptsetup losetup fallocate chattr blkid findmnt systemd-escape; do
+    command -v "$tool" >/dev/null 2>&1 || die "store volume tool $tool is not in the image"
+  done
+  /usr/libexec/tilo-store-volume plan --disk-bytes 137438953472 --reserved-bytes 1612709888 \
+    | grep -q '^STORE_BYTES=[1-9]' || die "shipped store volume helper plans no store on a 128 GiB disk"
 fi
 
 if [ "$mode" = runtime ]; then
@@ -202,8 +248,26 @@ if [ "$mode" = runtime ]; then
   systemctl is-enabled --quiet fs-identity.path || die "fs-identity.path is not enabled"
   systemctl is-active --quiet fs.service || die "fs.service is not active"
   mountpoint -q /var/workspace || die "/var/workspace is not mounted"
+  systemctl is-active --quiet tilo-store-volume.service || die "tilo-store-volume.service is not active"
+  [ -r /run/tilo-store/fs.env ] || die "the store preparation announced no data plane"
   fs_type="$(findmnt -n -o FSTYPE --target /var/workspace)"
-  case "$fs_type" in fuse|fuse.*) ;; *) die "/var/workspace type is $fs_type, not FUSE" ;; esac
+  # The data plane follows the store: a mounted, announced store volume means
+  # the native tree is bound at /var/workspace (unless the daemon logged why the
+  # kernel probes refused it); no store means FUSE.
+  if grep -Fq -- '--data-plane=auto' /run/tilo-store/fs.env; then
+    [ "$(findmnt -n -o FSTYPE -M /var/lib/tilo/store)" = btrfs ] \
+      || die "a store was announced but /var/lib/tilo/store is not a mounted Btrfs volume"
+    case "$fs_type" in
+      btrfs) ;;
+      fuse|fuse.*)
+        journalctl -b -u fs.service --no-pager | grep -F 'Data plane: FUSE' \
+          || die "/var/workspace is FUSE on a store volume and fs.service logged no reason"
+        ;;
+      *) die "/var/workspace type is $fs_type, neither the native tree nor FUSE" ;;
+    esac
+  else
+    case "$fs_type" in fuse|fuse.*) ;; *) die "/var/workspace type is $fs_type without a store, not FUSE" ;; esac
+  fi
   [ -r /var/lib/tilo/fs-capabilities.json ] || die "live ACL seed is missing"
 
   # This command is run as the installed login user over SSH, after the

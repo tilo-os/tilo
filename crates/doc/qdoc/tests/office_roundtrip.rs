@@ -377,9 +377,12 @@ fn large_document_parse_and_serialize_is_fast() {
 
     // The wall-clock guard runs the full book-length N; the structural
     // guards are scale-independent, so a *debug* build uses a smaller N
-    // to stay CI-fast (building N blocks is automerge-0.8's inherent
-    // O(n^2), minutes at 4000 in debug).
-    const N: usize = if cfg!(debug_assertions) { 400 } else { 4_000 };
+    // to stay fast (building N blocks is automerge-0.8's inherent O(n^2),
+    // minutes at 4000 in debug). 128 still separates both regressions
+    // clearly: a per-insert scan would count 128 scans against the bound of
+    // 4, and a key growing a byte per insert would reach 128 bytes against
+    // the bound of 64.
+    const N: usize = if cfg!(debug_assertions) { 128 } else { 4_000 };
     let mut d = Document::new();
     let mut prev: Option<String> = None;
 

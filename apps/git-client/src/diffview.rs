@@ -8,12 +8,11 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::ButtonFace;
-use ui::widget::code_editor::{SyntaxHighlighter, TokenKind};
+use ui::widget::code_editor::SyntaxHighlighter;
 
 use crate::draw;
 use crate::model::{DiffLine, DiffLineKind, FileDiff};
@@ -707,7 +706,7 @@ impl DiffView {
             let Some(text) = content.get(span.range) else {
                 continue;
             };
-            let color = token_color(theme, span.kind);
+            let color = theme.tokens.syntax.color(span.kind);
             draw::mono(scene, tr, t, text, FONT, color, cx, y);
             cx += f64::from(draw::mono_width(tr, text, FONT));
         }
@@ -767,20 +766,6 @@ impl DiffView {
             action,
             rect: brect,
         }
-    }
-}
-
-fn token_color(theme: &Theme, kind: TokenKind) -> Color {
-    let c = &theme.tokens.colors;
-    match kind {
-        TokenKind::Keyword => c.accent[6],
-        TokenKind::StringLit | TokenKind::CharLit => c.semantic.success,
-        TokenKind::Comment => c.text_dim,
-        TokenKind::Number | TokenKind::Constant => c.semantic.warning,
-        TokenKind::Type | TokenKind::Function => c.semantic.info,
-        TokenKind::Operator | TokenKind::Punctuation => c.neutral[7],
-        TokenKind::Attribute | TokenKind::Preprocessor => c.semantic.danger,
-        _ => c.text_primary,
     }
 }
 

@@ -688,15 +688,9 @@ fn start_http_server(
 }
 
 fn random_media_token() -> String {
-    use std::fmt::Write as _;
-
     let mut bytes = [0u8; 24];
     UnwrapErr(SysRng).fill_bytes(&mut bytes);
-    let mut token = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        let _ = write!(token, "{byte:02x}");
-    }
-    token
+    hex::encode(bytes)
 }
 
 struct SessionEvents {

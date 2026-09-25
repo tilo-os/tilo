@@ -9,6 +9,7 @@ use crate::app_host_capnp::{
     app_host,
 };
 use crate::install::InstallExpectation;
+use package_store::InstalledPackage;
 use tilo_app_package::PackageId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,17 +17,6 @@ pub enum FlatpakAction {
     Install,
     Update,
     Remove,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InstalledPackage {
-    pub package_root: PackageId,
-    pub app_id: String,
-    pub version: String,
-    pub pinned: bool,
-    /// True for packages in the per-user mutable store. System packages are
-    /// read-only but remain launchable through the same capability.
-    pub user_managed: bool,
 }
 
 pub struct BlockingClient {
@@ -97,7 +87,8 @@ impl BlockingClient {
         parse_id(bytes)
     }
 
-    /// List packages installed by the privileged host service.
+    /// List the packages the host service can launch: the user's, and the
+    /// read-only system packages they do not shadow.
     ///
     /// # Errors
     ///
@@ -115,12 +106,29 @@ impl BlockingClient {
                 .map_err(|e| e.to_string())?;
             let manifest = tilo_app_package::Manifest::from_toml_str(&manifest_text)
                 .map_err(|e| format!("installed manifest: {e}"))?;
+            let text = |value: Result<capnp::text::Reader<'_>, capnp::Error>| {
+                text_result(value).map(std::path::PathBuf::from)
+            };
+            let id = parse_id(entry.get_id().map_err(|e| e.to_string())?)?;
             out.push(InstalledPackage {
-                package_root: parse_id(entry.get_id().map_err(|e| e.to_string())?)?,
-                app_id: manifest.package.id,
+                id: manifest.package.id,
                 version: manifest.package.version,
+                package_id_hex: id.to_hex(),
+                payload_root: text(entry.get_payload_root())?,
+                manifest_path: text(entry.get_manifest_path())?,
+                publisher_key_hex: manifest
+                    .publisher
+                    .identity_bytes()
+                    .map(hex::encode)
+                    .unwrap_or_default(),
                 pinned: entry.get_pinning().map_err(|e| e.to_string())? == WirePinning::Pinned,
-                user_managed: entry.get_user_managed(),
+                installed_at: 0,
+                last_used: entry.get_last_used_unix(),
+                attested_by: String::new(),
+                cli_commands: manifest.cli.map(|cli| cli.commands).unwrap_or_default(),
+                runtime: manifest.package.runtime.unwrap_or_default(),
+                source: String::new(),
+                system: !entry.get_user_managed(),
             });
         }
         Ok(out)

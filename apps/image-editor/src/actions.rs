@@ -600,4 +600,87 @@ mod tests {
             Operation::Rotate { quarter_turns: 3 }
         ));
     }
+
+    fn registry() -> ActionRegistry {
+        let mut registry = ActionRegistry::new();
+        register(&mut registry);
+        registry
+    }
+
+    /// The seeded project the app starts from, with two adjustments added
+    /// through the same collaborative action the toolbar dispatches.
+    fn seeded() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        ProjectDoc::seed(&mut doc);
+        for (id, title, operation) in [
+            (
+                "exposure-seed",
+                "Exposure",
+                Operation::Exposure { stops: 0.5 },
+            ),
+            (
+                "contrast-seed",
+                "Contrast",
+                Operation::Contrast { amount: 0.15 },
+            ),
+        ] {
+            AddAdjustment {
+                id: id.into(),
+                title: title.into(),
+                operation,
+            }
+            .apply(&mut doc)
+            .unwrap();
+        }
+        doc.commit();
+        doc
+    }
+
+    fn encode<A: Action + serde::Serialize>(type_id: &str, action: &A) -> EncodedAction {
+        EncodedAction::encode(type_id, action).unwrap()
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded(),
+        registry: registry(),
+        resources: |doc| vec![resource(&ProjectDoc::read(doc))],
+        palette: ["Add exposure", "Remove adjustment", "Set contrast"],
+        replay: [
+            add_adjustment => |_| encode(ADD_ADJUSTMENT_TYPE, &AddAdjustment {
+                id: "mono-peer".into(),
+                title: "Black and white".into(),
+                operation: Operation::Grayscale,
+            }),
+            set_exposure => |_| encode_update(&UpdateAdjustment {
+                id: "exposure-seed".into(),
+                update: AdjustmentUpdate::Number {
+                    field: "stops".into(),
+                    value: 1.25,
+                },
+            }),
+            move_node => |_| encode_update(&UpdateAdjustment {
+                id: "contrast-seed".into(),
+                update: AdjustmentUpdate::Position { x: 320.0, y: 48.0 },
+            }),
+        ],
+        undo: [
+            remove_adjustment => |_| encode(REMOVE_ADJUSTMENT_TYPE, &RemoveAdjustment {
+                id: "contrast-seed".into(),
+            }),
+            set_exposure => |_| encode_update(&UpdateAdjustment {
+                id: "exposure-seed".into(),
+                update: AdjustmentUpdate::Number {
+                    field: "stops".into(),
+                    value: -1.0,
+                },
+            }),
+        ],
+        encodes: [
+            remove_adjustment => ("image-editor.adjustment:exposure-seed", "remove", |_, _| {
+                encode(REMOVE_ADJUSTMENT_TYPE, &RemoveAdjustment {
+                    id: "exposure-seed".into(),
+                })
+            }),
+        ],
+    }
 }

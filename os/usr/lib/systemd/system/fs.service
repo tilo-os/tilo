@@ -1,8 +1,14 @@
 [Unit]
-Description=QuickFS Collaborative Filesystem (Iroh-backed FUSE3 mount)
+Description=QuickFS Collaborative Filesystem (native store volume or Iroh-backed FUSE3 mount)
 Documentation=https://github.com/nirios/quickdesktop
 After=local-fs.target network.target systemd-tmpfiles-setup.service
 Wants=network.target
+# The store volume (/var/lib/tilo/store) is mounted `nofail`, so local-fs.target
+# does not wait for it; wait here instead. tilo-store-volume.service prepares
+# it for the local person (creating an image-backed store on installs without
+# a store partition) and writes the data-plane arguments below.
+Wants=tilo-store-volume.service var-lib-tilo-store.mount
+After=tilo-store-volume.service var-lib-tilo-store.mount
 # Iroh reconnects as interfaces become usable, so waiting for
 # network-online.target only stalls offline boots and does not establish a
 # stronger readiness condition. Start concurrently with the greeter; the mount
@@ -47,6 +53,12 @@ Type=simple
 # a session, which is why reading it only at mount time was equivalent to
 # not reading it at all.
 #
+# `--blob-sock` serves document media (images in notes, chat, photos, …)
+# from the same content store. The launcher connects to it for each app and
+# names the app and room before the app receives the descriptor, so apps only
+# ever hold a scoped capability; the socket is group-connectable like the
+# storage socket and never bound into a sandbox.
+#
 # `--principal person:local` is the subject the shipped list grants to.
 # The shipped default uses a human-readable local principal. The mount also
 # has the machine's durable certified device key, shared with the shell, so
@@ -58,13 +70,32 @@ Type=simple
 # enforcement point live so that a restriction added to
 # /var/lib/tilo/fs-capabilities.json actually bites, and so a mount joined
 # from a peer's ticket has somewhere to put a narrower policy.
+#
+# The data plane. With a store volume mounted, tilo-store-volume.service
+# writes `--data-plane=auto --store=/var/lib/tilo/store --native-owner=UID:GID`
+# to /run/tilo-store/fs.env on every boot: the daemon then serves the native
+# tree when the volume is dedicated and the kernel probes hold, and FUSE
+# otherwise, logging why. `--native-owner` is the local person, who owns every
+# file the native plane materialises. Without that file (no store, no local
+# person yet, or the preparation failed) the daemon serves FUSE.
+Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse
+EnvironmentFile=-/run/tilo-store/fs.env
 ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
-    --storage-sock /run/tilo/fs-storage.sock \
-    --acl /var/lib/tilo/fs-capabilities.json --principal person:local
+    --storage-sock /run/tilo/fs-storage.sock --blob-sock /run/tilo/fs-blobs.sock \
+    --acl /var/lib/tilo/fs-capabilities.json --principal person:local \
+    $TILO_FS_DATA_PLANE_ARGS
 # `fusermount -u` is preferable to plain `umount` because it doesn't
 # need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client
 # can't block shutdown.
 ExecStop=/usr/bin/fusermount3 -u -z /var/workspace
+# On a machine with a dedicated store volume at /var/lib/tilo/store
+# (`--store`) the daemon serves the Tier 1 data plane instead: the
+# room's native tree is bind-mounted at /var/workspace and fanotify fills
+# placeholders on first access. Placeholders read as holes once the daemon's
+# fanotify group is gone, so the bind must never outlive the process. The
+# daemon detaches it on a clean stop; this covers a crash or SIGKILL, and is
+# a no-op for the FUSE data plane (already unmounted above).
+ExecStopPost=-/usr/bin/umount --lazy /var/workspace
 Restart=always
 RestartSec=5
 # The FUSE mount must propagate into the host namespace, so filesystem
@@ -76,7 +107,16 @@ LimitCORE=0
 NoNewPrivileges=yes
 PrivateIPC=yes
 KeyringMode=private
-CapabilityBoundingSet=CAP_SYS_ADMIN
+# CAP_SYS_ADMIN: the FUSE mount, or on Tier 1 the fanotify filesystem mark,
+# pre-content group, Btrfs snapshots and the bind mount. CAP_DAC_READ_SEARCH:
+# open_by_handle_at, which turns fanotify's directory handles into paths.
+# CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE: on Tier 1 the room and every file
+# in it belong to the local person, not to the daemon, yet the daemon creates
+# remote files there and hands them to that person (chown), fills
+# placeholders and restores their mtime and residency xattr (owner-only
+# operations), and writes into directories the person owns. FUSE never needed
+# them because it presents ownership instead of storing it.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE
 AmbientCapabilities=
 DevicePolicy=closed
 DeviceAllow=/dev/fuse rw
@@ -87,5 +127,6 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service @mount
+SystemCallFilter=fanotify_init fanotify_mark name_to_handle_at open_by_handle_at
 SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
 SystemCallErrorNumber=EPERM

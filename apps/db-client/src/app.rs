@@ -18,7 +18,6 @@
 //! the breakpoint default-reconciliation use the shared [`FlapState`] kernel.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
 use std::time::Instant;
@@ -34,7 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource};
+use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, ResultSpec};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -47,7 +46,7 @@ use crate::connect_modal::ConnectModal;
 use crate::doc::{ConnectionsDoc, EditorDoc};
 use crate::grid::GridView;
 use crate::model::Engine;
-use crate::schema_tree::{SchemaTree, TreeClick};
+use crate::schema_nav::{self, Activation, SchemaActivations, SchemaBrowser};
 use crate::session::{MainTab, RunStatus, Session};
 use crate::theme_ext::ThemeExt;
 
@@ -136,11 +135,7 @@ pub(crate) const DB_OPERATION_TYPE: &str = "db_client.operation";
 /// of delimiter-joined ids (`a:b` vs `a`, `b`). Labels remain human-readable;
 /// only machine identities use this representation.
 fn resource_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
-    for byte in value.bytes() {
-        let _ = write!(&mut encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(value)
 }
 
 pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
@@ -813,7 +808,14 @@ pub struct DbClientApp {
     last_child_sig: Option<QueryChildSig>,
     grid: GridView,
     data_grid: GridView,
-    tree: SchemaTree,
+    /// The schema browser: a toolkit `TreeView` hosted as a real child widget
+    /// (focus, keyboard and semantics included) and placed in the sidebar's
+    /// lower region each layout pass.
+    tree: SchemaBrowser,
+    tree_node: Option<NodeId>,
+    schema_activations: SchemaActivations,
+    /// Catalog fingerprint the browser's model was last built from.
+    schema_signature: u64,
     modal: ConnectModal,
     /// Dispatches saved-connection CRUD through the shared action model, so the
     /// connection list is collaborative, undoable document state.
@@ -948,42 +950,7 @@ impl DbClientApp {
                 })
                 .is_ok();
         }
-        if let Some(name) = target
-            .strip_prefix("db.schema:")
-            .filter(|_| matches!(action, Action::Activate))
-        {
-            if self
-                .session
-                .schema
-                .schemas
-                .iter()
-                .any(|schema| schema.name == name)
-            {
-                self.tree.toggle_schema(name);
-                return true;
-            }
-            return false;
-        }
-        let Some((schema, name)) = target
-            .strip_prefix("db.table:")
-            .filter(|_| matches!(action, Action::Activate | Action::Focus))
-            .and_then(|address| address.split_once('\0'))
-        else {
-            return false;
-        };
-        if self.session.schema.find_relation(schema, name).is_none() {
-            return false;
-        }
-        let relation = crate::model::RelationRef {
-            schema: schema.to_string(),
-            name: name.to_string(),
-        };
-        self.session.select_relation(relation.clone());
-        self.tree.set_selected(relation);
-        if self.split_layout() == SplitLayout::Overlay {
-            self.flap.close();
-        }
-        true
+        false
     }
 
     /// The live app: starts on the user's saved connections (empty on a fresh
@@ -1042,6 +1009,9 @@ impl DbClientApp {
         // Preserve the database client's type-to-query startup policy. The
         // shared widget itself remains conservatively unfocused by default.
         editor.set_focused(true);
+        let schema_activations = SchemaActivations::default();
+        let tree = schema_nav::browser(&session.schema, &schema_activations);
+        let schema_signature = schema_nav::signature(&session.schema);
         let mut app = Self {
             session,
             demo,
@@ -1062,7 +1032,10 @@ impl DbClientApp {
             last_child_sig: None,
             grid: GridView::new(),
             data_grid: GridView::new(),
-            tree: SchemaTree::new(),
+            tree,
+            tree_node: None,
+            schema_activations,
+            schema_signature,
             modal: ConnectModal::new(),
             actions: ui::ActionHost::new(),
             pending_connect_id: None,
@@ -1261,7 +1234,8 @@ impl DbClientApp {
             {
                 return Err("schema is no longer available in the active catalog".into());
             }
-            self.tree.reveal_schema(schema);
+            self.tree
+                .set_expanded(schema_nav::schema_row_id(schema), true);
         }
         self.flap.open();
         Ok(())
@@ -1475,7 +1449,7 @@ impl DbClientApp {
             self.sidebar_rect.x1,
             self.sidebar_rect.y1,
         );
-        self.tree.set_rect(tree_rect);
+        self.tree.place_at(tree_rect);
 
         // Main panel: tab bar, then tab content. Band heights are the ones the
         // last draw measured (the 1× constants until text grows past them).
@@ -1671,36 +1645,6 @@ impl DbClientApp {
                     .with_children(children)
             })
             .collect();
-        let mut tree_items = Vec::new();
-        for schema in &self.session.schema.schemas {
-            let tables = schema
-                .tables
-                .iter()
-                .map(|table| {
-                    AccessNode::new(Role::TreeItem)
-                        .with_name(&table.name)
-                        .with_description(match table.kind {
-                            crate::model::RelationKind::Table => "Table",
-                            crate::model::RelationKind::View => "View",
-                        })
-                        .with_action_target(format!("db.table:{}\0{}", schema.name, table.name))
-                        .with_state(AccessState::new().focusable(true).selected(
-                            self.session.selected_relation.as_ref()
-                                == Some(&crate::model::RelationRef {
-                                    schema: schema.name.clone(),
-                                    name: table.name.clone(),
-                                }),
-                        ))
-                })
-                .collect();
-            tree_items.push(
-                AccessNode::new(Role::TreeItem)
-                    .with_name(&schema.name)
-                    .with_action_target(format!("db.schema:{}", schema.name))
-                    .with_state(AccessState::new().focusable(true).expanded(true))
-                    .with_children(tables),
-            );
-        }
         AccessNode::new(Role::Group)
             .with_name("Database navigator")
             .with_hashed_key("db.sidebar")
@@ -1714,10 +1658,6 @@ impl DbClientApp {
                     .with_description("Shortcut: Control N")
                     .with_action_target("db.new-connection")
                     .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Tree)
-                    .with_name("Schema")
-                    .with_hashed_key("db.schema-tree")
-                    .with_children(tree_items),
             ])
     }
 
@@ -1987,6 +1927,7 @@ impl Widget for DbClientApp {
         // lighter in-app path for clearly read-only SQL.
         query = query
             .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job)
             .destructive();
         if !self.session.connected {
             query = query.unavailable(
@@ -2209,6 +2150,7 @@ impl Widget for DbClientApp {
             }
         }
 
+        self.sync_schema_tree();
         let sql_text = EditorDoc::sql_text(state);
         self.editor.bind_text(sql_text);
         self.editor.pull(state);
@@ -2235,6 +2177,25 @@ impl Widget for DbClientApp {
         self.query_divider_node = None;
         self.query_resize_menu_node = None;
         let mut children = Vec::new();
+        self.tree_node = None;
+        if self.schema_in_tree() {
+            // Registered for focus, semantics and inspection; its rect is the
+            // sidebar region `relayout` computes, so it takes no flow space.
+            let child = self.tree.build_layout(taffy, theme, node_map);
+            let _ = taffy.set_style(
+                child,
+                Style {
+                    position: Position::Absolute,
+                    size: Size {
+                        width: length(0.0_f32),
+                        height: length(0.0_f32),
+                    },
+                    ..Default::default()
+                },
+            );
+            self.tree_node = Some(child);
+            children.push(child);
+        }
         if self.session.connections.is_empty() {
             let child = self.empty_state.build_layout(taffy, theme, node_map);
             self.empty_state_node = Some(child);
@@ -2405,6 +2366,10 @@ impl Widget for DbClientApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one window-event dispatcher; each arm is a short hand-off to the owning pane"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -2498,6 +2463,18 @@ impl Widget for DbClientApp {
 
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.on_cursor_moved(position.x, position.y, scale_factor);
+        }
+        if self.route_to_schema_tree(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            taffy,
+        ) {
+            return;
         }
         if self.handle_query_divider_pointer(event, handled, focus_target) {
             return;
@@ -2609,12 +2586,19 @@ impl Widget for DbClientApp {
         measurement_changed || child_changed || self_changed
     }
 
+    /// The schema browser eases wheel scrolling and row transitions on its
+    /// own clock; it is the one child whose per-frame update this root runs.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.schema_in_tree() && self.tree.update(state, path)
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while the sidebar flap is sliding, the worker has
         // a connect/query in flight (so its result lands without further input),
         // OR the floating status bubble is still lingering/fading (so it hides
         // itself without a stray pointer event).
         self.flap_animating()
+            || (self.schema_in_tree() && self.tree.needs_animation_frame())
             || self.session.busy()
             || self.status_bubble.needs_frame(Instant::now())
     }
@@ -2686,10 +2670,7 @@ impl Widget for DbClientApp {
             self.dirty = true;
             return true;
         }
-        if target.starts_with("db.connection")
-            || target.starts_with("db.schema:")
-            || target.starts_with("db.table:")
-        {
+        if target.starts_with("db.connection") {
             let handled = self.perform_navigator_semantic_action(target, action, state);
             self.dirty |= handled;
             return handled;
@@ -2738,36 +2719,49 @@ impl Widget for DbClientApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        if self.schema_in_tree() {
+            children.push(&self.tree);
+        }
         if self.session.connections.is_empty() {
-            vec![&self.empty_state]
+            children.push(&self.empty_state);
         } else if self.session.tab == MainTab::Query {
-            let mut children: Vec<&dyn Widget> = vec![&self.editor, &self.query_divider];
+            children.push(&self.editor);
+            children.push(&self.query_divider);
             if self.query_resize_menu.is_open() {
                 children.push(&self.query_resize_menu);
             }
-            children
-        } else {
-            Vec::new()
         }
+        children
+    }
+
+    /// The schema browser's own `Tree` belongs inside the "Database
+    /// navigator" group, the first child of the window node.
+    fn accessibility_child_path(&self, child_index: usize) -> Option<Vec<usize>> {
+        (child_index == 0 && self.schema_in_tree() && !self.modal.is_open()).then(|| vec![0])
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let in_tree = self.schema_in_tree();
+        let mut children: Vec<&mut dyn Widget> = Vec::new();
+        if in_tree {
+            children.push(&mut self.tree);
+        }
         if self.session.connections.is_empty() {
-            vec![&mut self.empty_state]
+            children.push(&mut self.empty_state);
         } else if self.session.tab == MainTab::Query {
-            let mut children: Vec<&mut dyn Widget> =
-                vec![&mut self.editor, &mut self.query_divider];
+            children.push(&mut self.editor);
+            children.push(&mut self.query_divider);
             if self.query_resize_menu.is_open() {
                 children.push(&mut self.query_resize_menu);
             }
-            children
-        } else {
-            Vec::new()
         }
+        children
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.query_drag.is_some()
+            || self.tree.wants_pointer_capture()
             || (!self.session.connections.is_empty()
                 && self.session.tab == MainTab::Query
                 && self.editor.wants_pointer_capture())
@@ -2946,7 +2940,112 @@ impl DbClientApp {
         } else if self.session.tab == MainTab::Data {
             self.data_grid.hover_row = self.data_grid.row_hit(self.cursor);
         }
-        self.tree.set_cursor(self.cursor);
+    }
+
+    /// Whether the schema browser is part of the widget tree this frame.
+    fn schema_in_tree(&self) -> bool {
+        !self.session.connections.is_empty() && self.sidebar_visible()
+    }
+
+    /// Offer an event to the schema browser. Pointer input reaches it only
+    /// while the sidebar is interactive (so a closed overlay flap lets taps
+    /// through); keys reach it only while it holds focus. Returns whether it
+    /// consumed the event, after applying any rows it activated.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards one WindowEvent's decoded fields to the child's Widget::handle_event, whose signature this crate does not own"
+    )]
+    fn route_to_schema_tree(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let Some(node) = self.tree_node else {
+            return false;
+        };
+        let pointer = matches!(
+            event,
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
+        );
+        if pointer && !self.sidebar_interactive() && !self.tree.wants_pointer_capture() {
+            return false;
+        }
+        self.tree.handle_event(
+            event,
+            scale_factor,
+            &modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node,
+            taffy,
+        );
+        if *focus_target == Some(node) {
+            self.editor.set_focused(false);
+            self.query_divider.set_focus(false);
+        }
+        self.drain_schema_activations();
+        if *handled {
+            self.dirty = true;
+        }
+        *handled
+    }
+
+    /// Apply the rows the browser activated: open a table (a column opens its
+    /// table) or toggle a schema.
+    fn drain_schema_activations(&mut self) {
+        let activated = std::mem::take(&mut *self.schema_activations.borrow_mut());
+        for id in activated {
+            match schema_nav::resolve(self.tree.model(), id) {
+                Some(Activation::Open(relation)) => {
+                    self.session.select_relation(relation.clone());
+                    self.show_relation(&relation);
+                    // On a narrow window the sidebar is an overlay; pick a
+                    // table and the flap steps aside to reveal its rows.
+                    if self.split_layout() == SplitLayout::Overlay {
+                        self.flap.close();
+                    }
+                    self.relayout();
+                }
+                Some(Activation::Toggle(id)) => self.tree.toggle_expand(id),
+                None => {}
+            }
+        }
+    }
+
+    /// Mark the relation on screen in the browser: the current-row rail, and
+    /// the selection so keyboard browsing starts there.
+    fn show_relation(&mut self, relation: &crate::model::RelationRef) {
+        let id = schema_nav::relation_id(relation);
+        self.tree.set_current(Some(id));
+        self.tree.selection_mut().select_only(id);
+    }
+
+    /// Rebuild the browser's model when the catalog changed shape.
+    fn sync_schema_tree(&mut self) {
+        let signature = schema_nav::signature(&self.session.schema);
+        if signature != self.schema_signature {
+            self.schema_signature = signature;
+            schema_nav::refresh(&mut self.tree, &self.session.schema);
+        }
+        let current = self
+            .session
+            .selected_relation
+            .as_ref()
+            .map(schema_nav::relation_id);
+        if self.tree.current() != current {
+            match self.session.selected_relation.clone() {
+                Some(relation) => self.show_relation(&relation),
+                None => self.tree.set_current(None),
+            }
+        }
     }
 
     fn handle_query_divider_pointer(
@@ -3043,9 +3142,6 @@ impl DbClientApp {
                 }
             }
             *handled = true;
-        } else if self.tree.rect().contains(self.cursor) {
-            self.tree.scroll(step);
-            *handled = true;
         }
     }
 
@@ -3122,7 +3218,6 @@ impl DbClientApp {
             || self.click_tab_bar(c, handled)
             || self.click_query_toolbar(c, state, handled)
             || self.click_data_tab(c, handled)
-            || self.click_schema_tree(c, handled)
         {
             return;
         }
@@ -3308,38 +3403,6 @@ impl DbClientApp {
         }
         false
     }
-
-    /// Schema tree (a sidebar widget — gated like the rest of the sidebar).
-    fn click_schema_tree(&mut self, c: Point, handled: &mut bool) -> bool {
-        if self.sidebar_interactive()
-            && let Some(click) = self.tree.hit(c)
-        {
-            match click {
-                TreeClick::ToggleTable(relation) => {
-                    self.tree.toggle(relation);
-                }
-                TreeClick::SelectTable(relation) => {
-                    self.session.select_relation(relation.clone());
-                    // Auto-switch to Data when picking a table from the tree.
-                    if self.session.tab == MainTab::Structure {
-                        // keep structure
-                    }
-                    self.tree.set_selected(relation);
-                    // On a narrow window the sidebar is an overlay; pick a
-                    // table and the flap steps aside to reveal its rows.
-                    if self.split_layout() == SplitLayout::Overlay {
-                        self.flap.close();
-                    }
-                }
-                TreeClick::ToggleSchema(name) => self.tree.toggle_schema(&name),
-            }
-            self.relayout();
-            self.dirty = true;
-            *handled = true;
-            return true;
-        }
-        false
-    }
 }
 
 // ---- drawing helpers ----
@@ -3382,8 +3445,9 @@ impl DbClientApp {
 
         self.draw_connections_footer(scene, t, tr, theme, y);
 
-        // Schema tree (its own region; draws db→schema→table→columns).
-        self.tree.draw(scene, t, tr, theme, &self.session);
+        // Schema browser (its own region; database → schema → table → columns).
+        self.tree
+            .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
     }
 
     #[allow(

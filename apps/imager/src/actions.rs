@@ -643,7 +643,7 @@ impl ResourceProvider for crate::app::ImagerApp {
 mod tests {
     use super::*;
     use crate::model::{Source, SourceKind, sample_targets};
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
     use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
@@ -782,8 +782,7 @@ mod tests {
     }
 
     /// Ctrl+K on an open customizable image publishes the customization resource
-    /// exporting the profile actions, and the one palette lists them as rows.
-    /// Drives the real resource-builder and the real [`ui::ActionPalette`].
+    /// exporting the profile actions. Drives the real resource builder.
     #[test]
     fn ctrl_k_publishes_the_customization_and_profile_actions() {
         let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
@@ -817,18 +816,6 @@ mod tests {
         assert!(
             !ids.contains(&"password"),
             "the secret is not exposed via Ctrl+K"
-        );
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("hostname")), "{labels:?}");
-        assert!(
-            labels.iter().all(|label| !label.contains("encryption")
-                && !label.contains("autologin")
-                && !label.contains("persistent")),
-            "untransported choices must not be advertised: {labels:?}"
         );
     }
 
@@ -945,104 +932,52 @@ mod tests {
         );
     }
 
-    /// A prompted field action builds the byte-identical [`EncodedAction`] the
-    /// on-screen field dispatches for the same typed value.
-    #[test]
-    fn prompted_field_builds_the_expected_action() {
-        let resources = provide_resources("Tilo 1.0", &InstallProfile::default());
-        let hostname = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "hostname")
-            .unwrap();
-        let built = match &hostname.input {
-            ActionInput::Prompted { build, .. } => build("lab01"),
-            ActionInput::Immediate(_) => panic!("hostname is a prompted action"),
-        };
-        assert_eq!(
-            built,
-            encode(&ImagerAction::SetHostname {
-                value: "lab01".into()
-            })
-        );
-
-        let filesystem = resources[0]
-            .actions
-            .iter()
-            .find(|action| action.id == "filesystem")
-            .unwrap();
-        let built = match &filesystem.input {
-            ActionInput::Prompted { build, .. } => build("xfs"),
-            ActionInput::Immediate(_) => panic!("filesystem is a prompted action"),
-        };
-        assert_eq!(
-            built,
-            encode(&ImagerAction::SetFilesystem {
-                filesystem: Filesystem::Xfs,
-            })
-        );
+    /// What a peer holding `doc` publishes: the collaborative source and
+    /// profile come from the document, the local device observations from the
+    /// sample drives with no job running.
+    fn doc_resources(doc: &AutoCommit) -> Vec<Resource> {
+        plan_resources(
+            ImagerDoc::source(doc).as_ref(),
+            &sample_targets(),
+            &crate::model::Progress::default(),
+            &ImagerDoc::profile(doc),
+        )
     }
 
-    /// The full undo covenant on the real executor path: dispatched through the
-    /// executor the action mutates the document and records exactly one undo
-    /// boundary, and Ctrl+Z (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        ImagerDoc::seed(&mut state.doc, &sample_targets());
-        state.doc.commit();
-        assert!(!ImagerDoc::profile(&state.doc).encrypt);
-        let before_heads = state.doc.get_heads();
-
-        let encoded = encode(&ImagerAction::SetEncrypt { on: true });
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert!(
-            ImagerDoc::profile(&state.doc).encrypt,
-            "the action enabled encryption"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert!(
-            !ImagerDoc::profile(&state.doc).encrypt,
-            "undo reverted the encryption change and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same value.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = seeded();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = ImagerAction::SetHostname {
-            value: "lab01".into(),
-        };
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(ImagerDoc::profile(&b).hostname, "lab01");
+    ui::action_contract_tests! {
+        seed: seeded(),
+        registry: registry(),
+        resources: |doc| doc_resources(doc),
+        palette: ["Set hostname", "Set filesystem", "Clear reviewed image"],
+        replay: [
+            set_hostname => |_| encode(&ImagerAction::SetHostname {
+                value: "lab01".into(),
+            }),
+            reselect_source => |doc| encode(&ImagerAction::SelectSource {
+                source: Box::new(crate::model::sample_recent_sources()[1].clone()),
+                previous: ImagerDoc::source(doc).map(Box::new),
+                recent_rank: ImagerDoc::next_recent_rank(doc),
+            }),
+        ],
+        undo: [
+            set_encrypt => |_| encode(&ImagerAction::SetEncrypt { on: true }),
+            clear_source => |_| encode(&ImagerAction::ClearSource),
+        ],
+        encodes: [
+            hostname => ("imager.customization", "hostname", arg: "lab01", |_, _| {
+                encode(&ImagerAction::SetHostname {
+                    value: "lab01".into(),
+                })
+            }),
+            filesystem => ("imager.customization", "filesystem", arg: "xfs", |_, _| {
+                encode(&ImagerAction::SetFilesystem {
+                    filesystem: Filesystem::Xfs,
+                })
+            }),
+            clear_source => ("imager.source", "clear-source", |_, _| {
+                encode(&ImagerAction::ClearSource)
+            }),
+        ],
     }
 
     #[test]

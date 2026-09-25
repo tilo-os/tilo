@@ -171,4 +171,16 @@ mod tests {
         }
         assert!(public.contains("Reveal"));
     }
+
+    // The vault is device-local and encrypted: Passwords publishes only view
+    // and effect operations, never document actions, so its registry is empty.
+    ui::action_contract_tests! {
+        seed: ui::automerge::AutoCommit::new(),
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| ui::widget::Widget::resources(
+            &crate::PasswordsSurface::demo(crate::ShowcaseMode::Editor),
+            doc,
+        ),
+        palette: ["New item", "Import passwords", "Generate strong password", "Copy password"],
+    }
 }

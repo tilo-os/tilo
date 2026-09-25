@@ -33,6 +33,8 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+use tilo_clock::unix_now;
+
 use crate::audit::AuditLog;
 use crate::broker::{Broker, BrokerState};
 use crate::guest::GuestPlan;
@@ -149,7 +151,7 @@ impl Session {
         seccomp_blob: PathBuf,
     ) -> std::io::Result<GuestPlan> {
         let policy = Policy::load(&self.store.policy_path());
-        let now = Some(crate::audit::now_unix());
+        let now = Some(unix_now());
         // Resolved, not as `$HOME` spells it: on an ostree system `/home` is a
         // symlink to `var/home`, and `bwrap` refuses to mount through a symlink.
         // `/var/home/you` is real, and the base's link still resolves to it too.
