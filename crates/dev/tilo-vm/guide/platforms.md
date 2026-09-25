@@ -81,11 +81,16 @@ code.sandbox.example. That token is read only for disk downloads; image pulls
 
 `tilo-vm doctor` says whether one is. If none is:
 
-- ask a human to dispatch the "Release / Dev VM disk" workflow
-  (`.forgejo/workflows/dev-disk.yml`); it needs the commit's production
-  image to be published;
-- or, if you may dispatch CI yourself: `fgj workflow run dev-disk.yml -R qos/qos`,
-  then `fgj run watch`;
+- wait for the main OS workflow to publish its same-commit base image and
+  dispatch both native QCOW2 disk lanes. When production signing is not
+  configured, this is an unsigned `tilo-ci` integration image and its disk tag
+  ends in `-ci`;
+- or dispatch "Release / Dev VM disk" (`.forgejo/workflows/dev-disk.yml`)
+  yourself for an existing same-commit base. Set `architectures=aarch64` for
+  an ARM host; the workflow's manual default is `x86_64`. Use
+  `fgj actions workflow run dev-disk.yml -R qos/qos -r main` with
+  `-f source_revision=<full SHA> -f base_image=<same-commit OCI ref>
+  -f tag=<disk tag> -f architectures=aarch64 -f formats=qcow2`;
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
 - or, when this checkout has `os/dev/build-dev-image.sh`, build a disk
   locally and pass it as `--image`. The error says whether it exists here.
