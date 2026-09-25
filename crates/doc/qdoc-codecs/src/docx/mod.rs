@@ -10,6 +10,7 @@ pub mod export;
 pub mod headers;
 pub mod meta;
 pub mod notes;
+mod paragraph;
 mod section;
 pub mod styles;
 
@@ -77,16 +78,14 @@ impl FormatProvider for DocxCodec {
             }
             // Resolve each `r:embed` rel id to its media part's bytes for the body parser to store.
             let image_map = content::build_image_map(&container);
-            content::parse_body(
-                &document,
-                &reg,
-                &foot_map,
-                &end_map,
-                &comment_map,
-                &image_map,
-                doc,
-                inputs,
-            )?;
+            let link_map = content::build_link_map(&container);
+            let maps = content::RefMaps {
+                foot: &foot_map,
+                end: &end_map,
+                comment: &comment_map,
+                links: &link_map,
+            };
+            content::parse_body(&document, &reg, &maps, &image_map, doc, inputs)?;
             // Document properties from `docProps/core.xml` + `docProps/app.xml` into `meta.props`.
             if let Some(core_xml) = container.get("docProps/core.xml") {
                 meta::import_core(core_xml, doc);

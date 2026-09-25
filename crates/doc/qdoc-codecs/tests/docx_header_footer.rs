@@ -583,9 +583,10 @@ fn first_page_header_and_page_setup_are_carried_through() {
 }
 
 #[test]
-fn headers_of_unmodeled_sections_are_dropped_cleanly() {
-    // A section break inside the body is not modeled: the document exports as one section,
-    // so the earlier section's header part and relationship must go rather than dangle.
+fn section_break_headers_follow_the_document_header() {
+    // A section break inside the body is kept, but the model has one header and footer for
+    // the whole document: the break's references point at them, and the earlier section's own
+    // header part and relationship go rather than dangle.
     let d = import(&word_docx_with_first_page_header(true));
     assert_eq!(
         header_texts(&d),
@@ -593,8 +594,16 @@ fn headers_of_unmodeled_sections_are_dropped_cleanly() {
         "the final section's default header is the imported one"
     );
     let exported = export(&d);
-    assert_eq!(assert_consistent_package(&exported).len(), 3);
+    let referenced: BTreeSet<String> = assert_consistent_package(&exported).into_iter().collect();
+    assert_eq!(referenced.len(), 3, "{referenced:?}");
     let parts = parts_of(&exported);
+    let document = text_of(&parts, "word/document.xml");
+    assert!(
+        document.contains(
+            r#"<w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#
+        ),
+        "section break kept, pointing at the document header: {document}"
+    );
     for (name, bytes) in &parts {
         assert!(
             !String::from_utf8_lossy(bytes).contains(SECTION_ONE_HEADER_TEXT),
