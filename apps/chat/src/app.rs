@@ -3140,6 +3140,10 @@ impl Widget for ChatApp {
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
         Some(self)
     }
+    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+        // A bound media endpoint wakes the event loop; sync adopts it.
+        self.media.poll_binding()
+    }
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
@@ -3194,6 +3198,11 @@ impl Widget for ChatApp {
         // The channel in view is read: advance its watermark (no-op when
         // nothing new arrived) so its unread badge stays cleared.
         self.mark_active_read(doc);
+        // The live media endpoint binds in the background; a call joined
+        // before it was ready announces its ticket now.
+        if self.media.take_bound() {
+            self.announce_call_ticket(doc);
+        }
         // While in a call, keep the media signalling handshake current: dial
         // any peer that has joined since the last frame (idempotent).
         if self.call.active {
