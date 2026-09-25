@@ -618,7 +618,7 @@ fn counter_hidden_at_representable_bound_applies() {
     assert!(
         values
             .iter()
-            .any(|(value, _)| value.to_scalar() == Some(&ScalarValue::counter(i64::MAX))),
+            .any(|(value, _)| value.as_scalar() == Some(&ScalarValue::counter(i64::MAX))),
         "{values:?}"
     );
 }
