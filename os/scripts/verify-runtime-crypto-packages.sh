@@ -145,6 +145,7 @@ pesign
 python3-dbus-next
 python3-gobject
 qatlib
+qatlib-service
 yt-dlp
 sbsigntools
 systemd-resolved'
