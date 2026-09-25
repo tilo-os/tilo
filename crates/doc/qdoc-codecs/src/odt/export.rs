@@ -407,18 +407,7 @@ fn render_inline(
             }
             cur_link = link;
         }
-        let mut want: Vec<String> = run
-            .marks
-            .iter()
-            .filter_map(|m| {
-                mark_style(m).map(|(name, props)| {
-                    used.insert(name.clone(), props);
-                    name
-                })
-            })
-            .collect();
-        want.sort();
-        want.dedup();
+        let want = span_styles(run, used);
         if want != open {
             close_spans(&mut out, &mut open);
             for name in &want {
@@ -441,6 +430,35 @@ fn render_inline(
     }
     close_inline(&mut out, &mut open, &mut cur_link);
     out
+}
+
+/// The text styles a run is wrapped in, outermost first: a kept text style, then the
+/// generated ones stating the modeled properties (registered in `used`).
+fn span_styles(
+    run: &qdoc::export::InlineRun<'_>,
+    used: &mut std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut want: Vec<String> = run
+        .marks
+        .iter()
+        .filter_map(|m| {
+            mark_style(m).map(|(name, props)| {
+                used.insert(name.clone(), props);
+                name
+            })
+        })
+        .collect();
+    want.sort();
+    want.dedup();
+    if let Some(kept) = run
+        .marks
+        .iter()
+        .find(|m| m.name == super::content::MARK_ODT_SPAN)
+        .and_then(|m| m.value.as_str())
+    {
+        want.insert(0, escape_attr(kept));
+    }
+    want
 }
 
 /// Append a run's content: its text, or — for an unmodeled inline element kept verbatim —
@@ -759,10 +777,15 @@ fn register_auto(styles: &mut Vec<ParaStyleEntry>, key: ParaStyleEntry) -> Strin
 /// an alignment override; registers any referenced named/derived automatic style as a side effect.
 fn resolve_para_style(
     b: &BlockView,
+    head: &ContentHead,
     styles: &BTreeMap<String, BTreeMap<String, AttrVal>>,
     auto: &mut Vec<ParaStyleEntry>,
     named_refs: &mut BTreeSet<String>,
 ) -> String {
+    // The imported automatic style, while the model still agrees with it.
+    if let Some(style) = head.reused_para_style(b) {
+        return format!(r#" text:style-name="{}""#, escape_attr(style));
+    }
     let named = match b.attrs.get("style") {
         Some(AttrVal::Str(s)) if styles.contains_key(s) => Some(s.clone()),
         _ => None,
@@ -911,6 +934,10 @@ struct ContentHead {
     root: Option<String>,
     prelude: String,
     automatic_styles: String,
+    /// The carried automatic styles and the preserved `styles.xml`, parsed as import does, to
+    /// tell whether a kept style reference still agrees with the model.
+    registry: super::styles::StyleRegistry,
+    automatic_names: BTreeSet<String>,
 }
 
 impl ContentHead {
@@ -919,11 +946,40 @@ impl ContentHead {
             qdoc::model::preserved_part(doc.doc, doc.c, key, &tilo_content::NoContent)
                 .and_then(|b| String::from_utf8(b).ok())
         };
+        let automatic_styles = get(super::CONTENT_AUTOMATIC_STYLES_KEY).unwrap_or_default();
+        let mut registry = super::styles::StyleRegistry::default();
+        if let Some(styles) = qdoc::model::preserved_part(doc.doc, doc.c, "odt/part/styles.xml") {
+            super::styles::parse_styles(&styles, &mut registry, true);
+        }
+        super::styles::parse_styles(automatic_styles.as_bytes(), &mut registry, false);
         Self {
             root: get(super::CONTENT_ROOT_KEY),
             prelude: get(super::CONTENT_PRELUDE_KEY).unwrap_or_default(),
-            automatic_styles: get(super::CONTENT_AUTOMATIC_STYLES_KEY).unwrap_or_default(),
+            automatic_names: style_names_in(automatic_styles.as_bytes()),
+            automatic_styles,
+            registry,
         }
+    }
+
+    /// The imported automatic paragraph style of `b`, while the block's modeled paragraph
+    /// attributes (no named style, alignment, line spacing) still agree with it.
+    fn reused_para_style<'b>(&self, b: &'b BlockView) -> Option<&'b str> {
+        let Some(AttrVal::Str(style)) = b.attrs.get(super::content::ODT_STYLE) else {
+            return None;
+        };
+        let align = match b.attrs.get("align") {
+            Some(AttrVal::Str(a)) => Some(a.clone()),
+            _ => None,
+        };
+        let line = match b.attrs.get("line_spacing") {
+            Some(AttrVal::Float(f)) => Some(*f),
+            _ => None,
+        };
+        let agrees = self.automatic_names.contains(style)
+            && !b.attrs.contains_key("style")
+            && self.registry.para_align(style) == align
+            && self.registry.para_line_height(style) == line;
+        agrees.then_some(style.as_str())
     }
 
     /// The imported root keeps its namespace declarations, so the elements carried through
@@ -1040,7 +1096,7 @@ fn build_content_xml(
     let (snap, tracked_changes) = super::changes::split_tracked_changes(snap);
     let snap = snap.as_ref();
     let mut style_attr = |b: &BlockView| -> String {
-        resolve_para_style(b, &snap.styles, &mut pstyles, &mut named_refs)
+        resolve_para_style(b, head, &snap.styles, &mut pstyles, &mut named_refs)
     };
     let mut i = 0;
     while let Some(b) = snap.blocks.get(i) {
@@ -1307,21 +1363,34 @@ fn render_table_run(
         .max()
         .unwrap_or(0)
         .saturating_add(1);
-    let _ = write!(body, r#"<table:table table:name="{tid}">"#);
-    let _ = write!(
-        body,
-        r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
-    );
     let grid = CellGrid::new(cells);
+    let ncols = grid.cols.max(ncols);
+    push_table_open(body, &tid, cells.first(), ncols);
+    // A row's style rides on its first cell.
+    let mut row_styles: BTreeMap<usize, &str> = BTreeMap::new();
+    for cell in cells {
+        if let Some(AttrVal::Str(s)) = cell.attrs.get(super::content::ODT_ROW_STYLE) {
+            row_styles.entry(snap_cell_rc(cell).0).or_insert(s.as_str());
+        }
+    }
     for r in 0..grid.rows.max(nrows) {
-        body.push_str("<table:table-row>");
-        for c in 0..grid.cols.max(ncols) {
+        match row_styles.get(&r) {
+            Some(s) => {
+                let _ = write!(
+                    body,
+                    r#"<table:table-row table:style-name="{}">"#,
+                    escape_attr(s)
+                );
+            }
+            None => body.push_str("<table:table-row>"),
+        }
+        for c in 0..ncols {
             if grid.covered.contains(&(r, c)) {
                 body.push_str("<table:covered-table-cell/>");
                 continue;
             }
             let cell = grid.at.get(&(r, c)).copied();
-            let (sa, inner, spans) = match cell {
+            let (sa, inner, mut spans) = match cell {
                 Some(cl) => (
                     style_attr(cl),
                     render_inline(&cl.text, &cl.marks, used, notes, note_ctr, comments),
@@ -1329,6 +1398,11 @@ fn render_table_run(
                 ),
                 None => (String::new(), String::new(), String::new()),
             };
+            if let Some(AttrVal::Str(s)) =
+                cell.and_then(|cl| cl.attrs.get(super::content::ODT_CELL_STYLE))
+            {
+                spans.insert_str(0, &format!(r#" table:style-name="{}""#, escape_attr(s)));
+            }
             let _ = write!(
                 body,
                 r"<table:table-cell{spans}><text:p{sa}>{inner}</text:p></table:table-cell>"
@@ -1337,6 +1411,50 @@ fn render_table_run(
         body.push_str("</table:table-row>");
     }
     body.push_str("</table:table>");
+}
+
+/// A table's start tag and columns: the style and `table:table-column` elements kept from
+/// import on its `first` cell (the columns only while they still number `ncols`), else one
+/// run of plain columns.
+fn push_table_open(body: &mut String, tid: &str, first: Option<&BlockView>, ncols: usize) {
+    let kept = |key: &str| match first.and_then(|c| c.attrs.get(key)) {
+        Some(AttrVal::Str(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let _ = write!(body, r#"<table:table table:name="{}""#, escape_attr(tid));
+    if let Some(style) = kept(super::content::ODT_TABLE_STYLE) {
+        let _ = write!(body, r#" table:style-name="{}""#, escape_attr(style));
+    }
+    body.push('>');
+    match kept(super::content::ODT_COLUMNS).filter(|cols| column_count(cols) == ncols) {
+        Some(cols) => body.push_str(cols),
+        None => {
+            let _ = write!(
+                body,
+                r#"<table:table-column table:number-columns-repeated="{ncols}"/>"#
+            );
+        }
+    }
+}
+
+/// How many grid columns a run of `table:table-column` elements declares.
+fn column_count(columns: &str) -> usize {
+    use quick_xml::events::Event;
+    let mut reader = quick_xml::Reader::from_str(columns);
+    let mut n = 0usize;
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"table:table-column" => {
+                let repeated = super::styles::attr_val(&e, b"table:number-columns-repeated")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(1);
+                n = n.saturating_add(repeated);
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    n
 }
 
 /// A cell's `colspan`/`rowspan` (1 when absent).
@@ -2017,6 +2135,62 @@ mod tests {
             Some(&AttrVal::Int(80)),
             "{:?}",
             im.attrs
+        );
+    }
+
+    #[test]
+    fn keeps_paragraph_span_and_table_styles_while_they_agree() {
+        let styles = concat!(
+            r#"<style:style style:name="P1" style:family="paragraph"><style:paragraph-properties fo:break-before="page" fo:text-align="center"/></style:style>"#,
+            r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:letter-spacing="0.1cm" fo:font-weight="bold"/></style:style>"#,
+            r#"<style:style style:name="Tbl" style:family="table"><style:table-properties style:width="10cm"/></style:style>"#,
+            r#"<style:style style:name="Col" style:family="table-column"><style:table-column-properties style:column-width="5cm"/></style:style>"#,
+            r#"<style:style style:name="Cell" style:family="table-cell"><style:table-cell-properties fo:border="0.5pt solid #000000"/></style:style>"#,
+        );
+        let body = concat!(
+            r#"<text:p text:style-name="P1">A <text:span text:style-name="T1">spaced</text:span> word</text:p>"#,
+            r#"<text:p text:style-name="P1">second</text:p>"#,
+            r#"<table:table table:name="T" table:style-name="Tbl"><table:table-column table:style-name="Col" table:number-columns-repeated="2"/>"#,
+            r#"<table:table-row><table:table-cell table:style-name="Cell"><text:p>a</text:p></table:table-cell>"#,
+            r#"<table:table-cell table:style-name="Cell"><text:p>b</text:p></table:table-cell></table:table-row></table:table>"#,
+        );
+        let mut d = Document::new();
+        OdtCodec
+            .import(&minimal_odt_styled(styles, body), &mut d.as_mut())
+            .unwrap();
+        let snap = d.materialize();
+        assert!(
+            snap.blocks[0]
+                .marks
+                .iter()
+                .any(|m| m.name == "strong" && m.start == 2 && m.end == 8)
+        );
+        // The second paragraph is realigned in the model: its style no longer agrees.
+        let second = snap.blocks[1].id.clone();
+        d.as_mut().set_attr(&second, "align", "right");
+
+        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let cont = OdtContainer::read(&exported).unwrap();
+        let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
+        for kept in [
+            r#"<text:p text:style-name="P1">A <text:span text:style-name="T1"><text:span text:style-name="qdoc-strong">spaced</text:span></text:span>"#,
+            r#"<table:table table:name="T" table:style-name="Tbl"><table:table-column table:style-name="Col" table:number-columns-repeated="2"/>"#,
+            r#"<table:table-cell table:style-name="Cell"><text:p>a</text:p>"#,
+            r#"<style:style style:name="P1" style:family="paragraph">"#,
+        ] {
+            assert!(content.contains(kept), "{kept} in {content}");
+        }
+        assert!(
+            !content.contains(r#"<text:p text:style-name="P1">second"#),
+            "{content}"
+        );
+        let mut d2 = Document::new();
+        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let again = d2.materialize();
+        assert_eq!(norm(&again)[0], norm(&snap)[0]);
+        assert_eq!(
+            again.blocks[1].attrs.get("align"),
+            Some(&AttrVal::Str("right".into()))
         );
     }
 

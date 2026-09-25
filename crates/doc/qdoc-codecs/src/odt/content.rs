@@ -511,7 +511,24 @@ struct BodyState {
     inline: Option<(usize, i32)>,
     // Grid columns the open (or covered) table cell takes: its `table:number-columns-repeated`.
     cell_repeat: usize,
+    // The current table's style and columns, and row's style, until a cell takes them.
+    table_style: Option<String>,
+    table_columns: Option<String>,
+    row_style: Option<String>,
 }
+
+/// Block attr: a paragraph's automatic style, referenced again on export while the block's
+/// modeled paragraph attributes still agree with it.
+pub(super) const ODT_STYLE: &str = "odt_style";
+/// Mark: a text style (a character style, or one with properties no mark represents) the
+/// covered text is wrapped in again on export.
+pub(super) const MARK_ODT_SPAN: &str = "odt_span";
+/// Attrs on a table's first cell (its style and `table:table-column` elements), a row's first
+/// cell (the row's style) and each cell (its style).
+pub(super) const ODT_TABLE_STYLE: &str = "odt_table_style";
+pub(super) const ODT_COLUMNS: &str = "odt_columns";
+pub(super) const ODT_ROW_STYLE: &str = "odt_row_style";
+pub(super) const ODT_CELL_STYLE: &str = "odt_cell_style";
 
 /// A table cell's `table:number-columns-repeated` (at least 1).
 fn columns_repeated(e: &BytesStart) -> usize {
@@ -850,9 +867,16 @@ impl BodyState {
             }
             b"table:covered-table-cell" if self.in_text => self.cell_repeat = columns_repeated(e),
             b"text:span" if self.in_text => {
-                let marks = attr_val(e, b"text:style-name")
-                    .map(|s| reg.text_marks(&s))
+                let style = attr_val(e, b"text:style-name");
+                let mut marks = style
+                    .as_deref()
+                    .map(|s| reg.text_marks(s))
                     .unwrap_or_default();
+                // A style that says more than its marks (a character style, unmodeled text
+                // properties) is referenced again on export.
+                if let Some(s) = style.filter(|s| reg.text_extra.contains(s)) {
+                    marks.push((MARK_ODT_SPAN.to_string(), MarkValue::Str(s)));
+                }
                 self.span_stack.push((marks, self.cur_len));
             }
             b"text:a" if self.in_text => {
@@ -903,6 +927,46 @@ impl BodyState {
             }
             _ => {}
         }
+        self.keep_styles(e, doc, reg);
+    }
+
+    /// Keep what the model does not take from a style reference: a paragraph's automatic style
+    /// (its first paragraph's, for a list item or cell) and a table's, column's, row's and
+    /// cell's styles ride on the block (see `ODT_STYLE` and friends); export references them
+    /// again while the modeled attributes still agree with them.
+    fn keep_styles(&mut self, e: &BytesStart, doc: &mut DocMut, reg: &StyleRegistry) {
+        if !self.in_text {
+            return;
+        }
+        let style = attr_val(e, b"text:style-name").or_else(|| attr_val(e, b"table:style-name"));
+        match e.name().as_ref() {
+            b"text:p" | b"text:h" => {
+                let first = !(self.in_item || self.table_id.is_some()) || self.item_paras == 1;
+                if first
+                    && let (Some(s), Some(id)) = (style, self.cur.as_deref())
+                    && reg.para.get(&s).is_some_and(|p| !p.named)
+                {
+                    doc.set_attr(id, ODT_STYLE, s.as_str());
+                }
+            }
+            b"table:table" => self.table_style = style,
+            b"table:table-row" => self.row_style = style,
+            b"table:table-cell" => {
+                if let Some(id) = self.cur.as_deref() {
+                    for (key, value) in [
+                        (ODT_TABLE_STYLE, self.table_style.take()),
+                        (ODT_COLUMNS, self.table_columns.take()),
+                        (ODT_ROW_STYLE, self.row_style.take()),
+                        (ODT_CELL_STYLE, style),
+                    ] {
+                        if let Some(value) = value {
+                            doc.set_attr(id, key, value.as_str());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Self-closing property/marker events: paragraph and heading shorthand, comment/bookmark/
@@ -919,6 +983,12 @@ impl BodyState {
         pos_before: usize,
         pos_after: usize,
     ) {
+        if self.in_text && self.table_id.is_some() && e.name().as_ref() == b"table:table-column" {
+            let raw = s.get(pos_before..pos_after).unwrap_or_default();
+            self.table_columns
+                .get_or_insert_with(String::new)
+                .push_str(raw);
+        }
         if self.is_unmodeled_para_child(e.name().as_ref())
             || (self.in_para && e.name().as_ref() == b"draw:frame")
         {
@@ -939,6 +1009,7 @@ impl BodyState {
                     reg,
                     attr_val(e, b"text:style-name").as_deref(),
                 );
+                self.keep_styles(e, doc, reg);
                 self.cur = None;
             }
             b"text:h" if self.in_text => {
@@ -1036,6 +1107,7 @@ impl BodyState {
             }
             b"table:table-cell" if self.in_text => {
                 self.open_cell(e, doc);
+                self.keep_styles(e, doc, reg);
                 self.cur = None;
                 self.tcol = self.tcol.saturating_add(self.cell_repeat);
             }
