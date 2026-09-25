@@ -1,0 +1,29 @@
+[package]
+name = "wire-frame"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Length-prefixed framing for byte streams: blocking, tokio and postcard."
+
+[lib]
+name = "wire_frame"
+path = "src/lib.rs"
+
+# std-only by default: every socket protocol in the tree frames its messages,
+# including ones in crates that must not pull in an async runtime or serde.
+[features]
+tokio = ["dep:tokio"]
+postcard = ["dep:postcard", "dep:serde"]
+
+[dependencies]
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+postcard = { workspace = true, optional = true, features = ["alloc"] }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
+
+[lints]
+workspace = true

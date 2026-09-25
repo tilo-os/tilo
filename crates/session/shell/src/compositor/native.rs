@@ -181,6 +181,7 @@ struct NativeRedrawReasons {
     capture: bool,
     keepalive: bool,
     lock_clock: bool,
+    lock_animation: bool,
 }
 
 impl NativeRedrawReasons {
@@ -198,7 +199,7 @@ impl NativeRedrawReasons {
                     || self.presentation
                     || self.capture))
             || (!session_locked && self.keepalive)
-            || (session_locked && self.lock_clock)
+            || (session_locked && (self.lock_clock || self.lock_animation))
     }
 }
 
@@ -240,23 +241,6 @@ fn native_loop_park(
         .or_else(|| (!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
 }
 
-/// A full asynchronous presenter is itself the cadence gate. Its retirement
-/// signal wakes calloop when capacity returns, so retaining an already-due
-/// frame deadline while it is full would turn that deadline into a permanent
-/// zero-timeout poll loop.
-#[allow(
-    clippy::fn_params_excessive_bools,
-    reason = "a pure predicate over four independent presenter facts; callers pass named locals"
-)]
-fn cadence_wait_needed(
-    pipe_ready: bool,
-    content_changed: bool,
-    cadence_due: bool,
-    animating: bool,
-) -> bool {
-    pipe_ready && ((content_changed && !cadence_due) || animating)
-}
-
 /// A lock-state edge replaces every pixel on screen.  Keep that edge pending
 /// until a frame is actually accepted by the presenter; consuming it while
 /// the asynchronous render queue is full would leave the previous lock or
@@ -265,18 +249,31 @@ fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
     session_changed && !frame_submitted
 }
 
-/// A widget deadline is useful only when the presenter can accept the frame it
-/// will cause us to build.  Once the bounded presenter is full, retaining an
-/// already-expired animation deadline turns every calloop dispatch into an
-/// immediate return: the paint gate correctly declines the frame, but the
-/// stale deadline immediately wakes the loop again.  Retirement already pings
-/// calloop after capacity is restored, so the deadline can be omitted while
-/// back-pressured without delaying the next paint.
+/// Whether the next park must keep the frame deadline for a pending frame.
+/// While the bounded presenter is full, an already-due frame deadline would
+/// make every park a zero timeout and spin the loop until a frame retires;
+/// the presenter's retirement ping wakes calloop as soon as capacity returns.
+fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
+    pipe_ready && frame_pending
+}
+
+/// A widget deadline only matters while the presenter can accept the frame
+/// it would cause. Under back-pressure an overdue animation deadline would
+/// turn every park into an immediate return while the paint gate keeps
+/// declining the frame; retirement pings the loop once capacity is restored.
 fn widget_deadline_for_presenter(
     pipe_ready: bool,
     widget_deadline: Option<Instant>,
 ) -> Option<Instant> {
-    pipe_ready.then_some(widget_deadline).flatten()
+    widget_deadline.filter(|_| pipe_ready)
+}
+
+// A due animation remains dirty until it paints, but is no longer a wake
+// deadline. Keeping an expired deadline here would busy-spin while waiting
+// for display cadence or presenter retirement. Those wake sources already
+// carry the pending frame; future animation deadlines still wake the idle loop.
+fn lock_animation_park_deadline(now: Instant, deadline: Option<Instant>) -> Option<Instant> {
+    deadline.filter(|deadline| *deadline > now)
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
@@ -5847,6 +5844,9 @@ pub fn run() {
     // full-scene keepalive consumed a material fraction of a software-rendered
     // VM core despite no changing pixels; every real producer already carries
     // an explicit redraw/revision/deadline edge.
+    let lock_animation_epoch = Instant::now();
+    let mut last_lock_animation_frame = lock_animation_epoch;
+    let mut lock_has_wallpaper = false;
     let mut last_lock_clock_refresh = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
@@ -7441,6 +7441,13 @@ pub fn run() {
                     .is_some_and(|portal| portal.screencast.has_streams()),
             keepalive: keepalive_due,
             lock_clock: lock_clock_due,
+            lock_animation: lock_screen::animation_deadline(
+                frame_builder.theme(),
+                session.is_locked(),
+                lock_has_wallpaper,
+                last_lock_animation_frame,
+            )
+            .is_some_and(|deadline| iter_t0 >= deadline),
         }
         .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
@@ -7461,21 +7468,12 @@ pub fn run() {
         let should_paint = content_changed && cadence_due && pipe_ready;
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
-        // deadline could strand that frame.
-        // A stale frame deadline must not become an immediate calloop timeout
-        // while the presenter is full.  That used to turn every animation
-        // frame under GPU back-pressure into a busy loop: the deadline stayed
-        // in the past until a frame could be submitted, `dispatch(0)` returned
-        // immediately, and the compositor burned tens of thousands of ticks
-        // per second instead of servicing the seat at display cadence.
-        //
-        // There is no benefit in polling for capacity here.  The presenter
-        // retirement signal wakes calloop as soon as capacity returns.  Until
-        // then, omit the stale cadence deadline; registered input/client fds
-        // still wake immediately and the bounded backend poll remains the
-        // fallback for DRM's nested event loop.
-        let cadence_needed =
-            cadence_wait_needed(pipe_ready, content_changed, cadence_due, animating);
+        // deadline could strand that frame. A full presenter is itself the
+        // gate: its retirement ping wakes the loop when capacity returns.
+        let cadence_needed = cadence_wait_needed(
+            pipe_ready,
+            (content_changed && !cadence_due) || (!session.is_locked() && animating),
+        );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -7639,12 +7637,17 @@ pub fn run() {
                         )
                     })
                 };
-                FramePaint::full(lock_screen::draw_lock_scene_with_wallpaper(
+                lock_has_wallpaper = wallpaper.is_some();
+                last_lock_animation_frame = iter_t0;
+                FramePaint::full(lock_screen::draw_lock_scene_at_time(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
                     &view,
                     wallpaper.as_ref(),
+                    iter_t0
+                        .saturating_duration_since(lock_animation_epoch)
+                        .as_secs_f64(),
                 ))
             } else {
                 let mut frame_paint = if retained_damage_supported {
@@ -8113,7 +8116,15 @@ pub fn run() {
             frame_clock.next_deadline(),
             [
                 widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
-                None,
+                lock_animation_park_deadline(
+                    park_now,
+                    lock_screen::animation_deadline(
+                        frame_builder.theme(),
+                        session.is_locked(),
+                        lock_has_wallpaper,
+                        last_lock_animation_frame,
+                    ),
+                ),
                 lock_clock_deadline,
                 run_deadline,
                 backend.next_service_deadline(),
@@ -8431,32 +8442,6 @@ mod tests {
     }
 
     #[test]
-    fn presenter_backpressure_does_not_spin_on_a_stale_frame_deadline() {
-        let now = Instant::now();
-        let stale_frame = now
-            .checked_sub(Duration::from_millis(1))
-            .expect("a monotonic instant has a predecessor");
-
-        // This is the state from the 144 Hz failure: animation remains dirty,
-        // but the bounded presenter has no capacity.  The render thread's
-        // retire fd will wake us when that changes; keeping the already-stale
-        // frame deadline active would make calloop dispatch with zero timeout
-        // indefinitely.
-        let content_changed = true;
-        let cadence_due = true;
-        let animating = true;
-        let pipe_ready = false;
-        let cadence_needed =
-            cadence_wait_needed(pipe_ready, content_changed, cadence_due, animating);
-
-        assert_eq!(
-            native_loop_park(now, true, cadence_needed, stale_frame, []),
-            None,
-            "a full presenter must sleep for its retirement wake instead of spinning on the stale frame deadline"
-        );
-    }
-
-    #[test]
     fn prepaint_stall_threshold_reports_fifty_milliseconds_and_above() {
         assert!(!slow_prepaint_phase(Duration::from_millis(49)));
         assert!(slow_prepaint_phase(Duration::from_millis(50)));
@@ -8464,38 +8449,24 @@ mod tests {
     }
 
     #[test]
-    fn full_presenter_drops_overdue_widget_deadline_instead_of_busy_spinning() {
+    fn full_presenter_parks_instead_of_spinning_on_overdue_deadlines() {
         let now = Instant::now();
-        let stale_widget = now
+        let stale = now
             .checked_sub(Duration::from_millis(1))
-            .expect("a monotonic instant has a predecessor");
-
-        assert_eq!(
-            widget_deadline_for_presenter(false, Some(stale_widget)),
-            None,
-            "a saturated presenter must not turn an overdue animation deadline into a zero-timeout wake"
-        );
-        assert_eq!(
-            widget_deadline_for_presenter(true, Some(stale_widget)),
-            Some(stale_widget),
-            "an available presenter still needs overdue widget work immediately"
-        );
-    }
-
-    #[test]
-    fn available_presenter_keeps_animation_on_display_cadence() {
-        let now = Instant::now();
-        let frame = now + Duration::from_nanos(6_944_444);
+            .expect("monotonic clock is past its origin");
+        // Animation stays dirty and both the frame and widget deadlines are
+        // already due, but the presenter has no capacity.
+        let cadence_needed = cadence_wait_needed(false, true);
         assert_eq!(
             native_loop_park(
                 now,
-                true,
-                cadence_wait_needed(true, true, false, true),
-                frame,
-                [],
+                false,
+                cadence_needed,
+                stale,
+                [widget_deadline_for_presenter(false, Some(stale))],
             ),
-            Some(Duration::from_nanos(6_944_444)),
-            "the backpressure guard must not weaken normal 144 Hz animation pacing"
+            Some(IDLE_BACKEND_POLL),
+            "a saturated presenter must wait for its retirement wake, not poll with a zero timeout"
         );
     }
 
@@ -8513,6 +8484,24 @@ mod tests {
     }
 
     #[test]
+    fn available_presenter_keeps_overdue_work_immediate() {
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
+        assert_eq!(
+            widget_deadline_for_presenter(true, Some(stale)),
+            Some(stale)
+        );
+        let frame = now + Duration::from_millis(7);
+        assert_eq!(
+            native_loop_park(now, false, cadence_wait_needed(true, true), frame, []),
+            Some(Duration::from_millis(7)),
+            "the back-pressure guard must not weaken normal animation pacing"
+        );
+    }
+
+    #[test]
     fn earliest_non_frame_deadline_wins_and_overdue_is_immediate() {
         let now = Instant::now();
         let frame = now + Duration::from_millis(8);
@@ -8524,11 +8513,11 @@ mod tests {
         );
         assert_eq!(
             native_loop_park(
-                now,
+                now + Duration::from_millis(1),
                 true,
                 false,
                 frame,
-                [now.checked_sub(Duration::from_millis(1))],
+                [Some(now)]
             ),
             Some(Duration::ZERO)
         );
@@ -8593,6 +8582,55 @@ mod tests {
         ] {
             assert!(visible_lock_edge.content_changed(true));
         }
+    }
+
+    #[test]
+    fn due_lock_animation_waits_for_cadence_or_presenter_instead_of_spinning() {
+        let due_at = Instant::now();
+        let now = due_at + Duration::from_millis(1);
+        let due = Some(due_at);
+        let frame = now + Duration::from_millis(8);
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                true,
+                frame,
+                [lock_animation_park_deadline(now, due)]
+            ),
+            Some(Duration::from_millis(8))
+        );
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                false,
+                frame,
+                [lock_animation_park_deadline(now, due)]
+            ),
+            Some(IDLE_BACKEND_POLL)
+        );
+        let future = Some(now + Duration::from_millis(42));
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                false,
+                frame,
+                [lock_animation_park_deadline(now, future)]
+            ),
+            Some(Duration::from_millis(42))
+        );
+    }
+
+    #[test]
+    fn artwork_repaints_only_while_the_lock_is_visible() {
+        let artwork = NativeRedrawReasons {
+            lock_animation: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert!(artwork.content_changed(true));
+        assert!(!artwork.content_changed(false));
     }
 
     #[test]

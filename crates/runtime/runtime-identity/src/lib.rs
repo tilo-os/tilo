@@ -55,6 +55,19 @@ pub fn collaboration_join_signing_bytes(workspace_id: &str) -> Vec<u8> {
 /// an app cannot claim another package or workspace.
 pub mod wire {
     use serde::{Deserialize, Serialize};
+    use wire_frame::Framing;
+
+    /// The launcher's [`Handshake`]: a little-endian `u32` length, then JSON.
+    pub const HANDSHAKE_FRAMING: Framing = Framing::little_endian(1024 * 1024);
+
+    /// Every [`Request`] and [`Response`] after the handshake: a little-endian
+    /// `u32` length, then postcard.
+    ///
+    /// The bound admits real document snapshots in app-controlled traffic.
+    /// Postcard keeps byte vectors compact; the preceding JSON wire
+    /// represented every byte as a decimal number and hit its 1 MiB cap much
+    /// earlier than the underlying document did.
+    pub const FRAMING: Framing = Framing::little_endian(64 * 1024 * 1024);
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct Handshake {

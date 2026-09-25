@@ -39,6 +39,20 @@ const LOCK_CLOCK_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 2);
 const LOCK_HELP_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 3);
 const LOCK_STATUS_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 4);
 
+/// Slow artwork does not need the display's full refresh rate. This deadline
+/// remains pending until an actual lock frame paints, so renderer backpressure
+/// or an off-cadence wake cannot consume the animation update.
+pub fn animation_deadline(
+    theme: &Theme,
+    locked: bool,
+    has_wallpaper: bool,
+    last_frame: std::time::Instant,
+) -> Option<std::time::Instant> {
+    (locked && !has_wallpaper && ui::auth_backdrop::needs_animation(theme))
+        .then(|| last_frame.checked_add(std::time::Duration::from_millis(42)))
+        .flatten()
+}
+
 /// Live lock-screen state to render, computed by the caller so this paint
 /// stays pure and unit-testable (no clock reads, no auth state of its own).
 #[derive(Debug, Clone, Copy, Default)]
@@ -129,75 +143,117 @@ impl LockLayout {
         // leaving these slots at their default dimensions made large type
         // encroach on the date and status rows.
         let text_scale = f64::from(theme.text_scale).clamp(0.5, 4.0);
-        let unscaled_panel_height = 222.0 + 126.0 * (text_scale - 1.0);
-        let unscaled_stack_height =
-            72.0 * text_scale + 2.0 * text_scale + 26.0 * text_scale + 24.0 + unscaled_panel_height;
-        let width_fit = ((width - edge * 2.0) / 408.0).max(0.0);
-        let height_fit = ((height - edge * 2.0) / unscaled_stack_height).max(0.0);
-        // Startup can briefly report a 1×1 output before the first modeset.
-        // Keep every rect contained even then; this is not a user-facing scale.
-        let scale = desired_scale.min(width_fit).min(height_fit).max(0.001);
-
-        let panel_width = 384.0 * scale;
+        let unscaled_panel_height = 260.0 + 130.0 * (text_scale - 1.0);
+        // On generous outputs the time and the credential surface have their
+        // own columns. Large type and compact displays retain a full-width
+        // reading order instead of squeezing the form into a narrow column.
+        let text_width_scale = text_scale.max(1.0);
+        let unscaled_panel_width = 64.0 + 352.0 * text_width_scale;
+        let wide = width >= 1100.0 * desired_scale * text_width_scale
+            && height >= 600.0 * desired_scale
+            && text_scale <= 1.5;
+        let clock_height = if wide { 160.0 } else { 120.0 } * text_scale;
+        let date_height = 30.0 * text_scale;
+        let clock_date_gap = 6.0;
+        let panel_gap = 40.0;
+        let stack_height =
+            clock_height + clock_date_gap + date_height + panel_gap + unscaled_panel_height;
+        let width_fit = ((width - edge * 2.0) / (unscaled_panel_width + 32.0)).max(0.0);
+        let height_fit = ((height - edge * 2.0)
+            / if wide {
+                unscaled_panel_height.max(clock_height + date_height + clock_date_gap)
+            } else {
+                stack_height
+            })
+        .max(0.0);
+        let scale = desired_scale
+            .min(width_fit)
+            .min(height_fit)
+            .max(f64::EPSILON);
+        let panel_width = unscaled_panel_width * scale;
         let panel_height = unscaled_panel_height * scale;
-        let clock_height = 72.0 * text_scale * scale;
-        let date_height = 26.0 * text_scale * scale;
-        let clock_date_gap = 2.0 * text_scale * scale;
-        let panel_gap = 24.0 * scale;
-        let stack_height = clock_height + clock_date_gap + date_height + panel_gap + panel_height;
-        let top = output.origin.1 + (height - stack_height) / 2.0;
-        let cx = output.origin.0 + width / 2.0;
-
-        let clock = Rect::new(
-            output.origin.0 + edge,
-            top,
-            output.origin.0 + width - edge,
-            top + clock_height,
-        );
-        let date_y = clock.y1 + clock_date_gap;
-        let date = Rect::new(clock.x0, date_y, clock.x1, date_y + date_height);
-        let panel_y = date.y1 + panel_gap;
+        let cx = output.origin.0 + width * if wide { 0.755 } else { 0.5 };
+        let top = output.origin.1
+            + if wide {
+                height * 0.30
+            } else {
+                (height - stack_height * scale) / 2.0
+            };
+        let clock = if wide {
+            Rect::new(
+                output.origin.0 + width * 0.075,
+                top,
+                output.origin.0 + width * 0.515,
+                top + clock_height * scale,
+            )
+        } else {
+            Rect::new(
+                output.origin.0 + edge,
+                top,
+                output.origin.0 + width - edge,
+                top + clock_height * scale,
+            )
+        };
+        let date_y = clock.y1 + clock_date_gap * scale;
+        let date = Rect::new(clock.x0, date_y, clock.x1, date_y + date_height * scale);
+        let panel_y = if wide {
+            output.origin.1 + (height - panel_height) / 2.0
+        } else {
+            date.y1 + panel_gap * scale
+        };
         let panel = Rect::new(
             cx - panel_width / 2.0,
             panel_y,
             cx + panel_width / 2.0,
             panel_y + panel_height,
         );
+        Self::with_panel(output_rect, clock, date, panel, scale, text_scale)
+    }
 
-        let icon_size = 34.0 * scale;
+    /// The form keeps the same row relationships in either screen composition.
+    fn with_panel(
+        output: Rect,
+        clock: Rect,
+        date: Rect,
+        panel: Rect,
+        scale: f64,
+        text_scale: f64,
+    ) -> Self {
+        let cx = panel.center().x;
+        let icon_size = 32.0 * scale;
         let icon = Rect::new(
             cx - icon_size / 2.0,
-            panel.y0 + 18.0 * scale,
+            panel.y0 + 24.0 * scale,
             cx + icon_size / 2.0,
-            panel.y0 + (18.0 * scale) + icon_size,
+            panel.y0 + 24.0 * scale + icon_size,
         );
         let title = Rect::new(
-            panel.x0 + 24.0 * scale,
-            icon.y1 + 6.0 * scale,
-            panel.x1 - 24.0 * scale,
-            icon.y1 + 34.0 * text_scale * scale,
+            panel.x0 + 28.0 * scale,
+            icon.y1 + 8.0 * scale,
+            panel.x1 - 28.0 * scale,
+            icon.y1 + (8.0 + 30.0 * text_scale) * scale,
         );
         let password = Rect::new(
-            panel.x0 + 30.0 * scale,
-            title.y1 + 12.0 * scale,
-            panel.x1 - 30.0 * scale,
-            title.y1 + 12.0 * scale + 46.0 * text_scale * scale,
+            panel.x0 + 32.0 * scale,
+            title.y1 + 20.0 * scale,
+            panel.x1 - 32.0 * scale,
+            title.y1 + (20.0 + 50.0 * text_scale) * scale,
         );
         let status = Rect::new(
             password.x0,
-            password.y1 + 8.0 * scale,
+            password.y1 + 10.0 * scale,
             password.x1,
-            password.y1 + 8.0 * scale + 26.0 * text_scale * scale,
+            password.y1 + (10.0 + 28.0 * text_scale) * scale,
         );
         let notifications = Rect::new(
             password.x0,
-            status.y1 + 2.0 * scale,
+            status.y1 + 8.0 * scale,
             password.x1,
-            panel.y1 - 10.0 * scale,
+            panel.y1 - 24.0 * scale,
         );
 
         Self {
-            output: output_rect,
+            output,
             clock,
             date,
             panel,
@@ -352,6 +408,20 @@ pub fn draw_lock_scene_with_wallpaper(
     view: &LockView<'_>,
     wallpaper: Option<&ImageData>,
 ) -> Scene {
+    draw_lock_scene_at_time(outputs, theme, text, view, wallpaper, 0.0)
+}
+
+/// Live renderer with an explicit monotonic animation time. Keeping time out
+/// of `LockView` prevents animation frames from changing authentication state
+/// or the accessibility tree, and makes offscreen frames reproducible.
+pub fn draw_lock_scene_at_time(
+    outputs: &[LockOutput],
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+    wallpaper: Option<&ImageData>,
+    elapsed_seconds: f64,
+) -> Scene {
     let mut scene = Scene::new();
 
     // 1. Opaque backdrop over the combined geometry of every output — the
@@ -393,12 +463,26 @@ pub fn draw_lock_scene_with_wallpaper(
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
-            theme.bg_app,
+            theme.bg_app.with_alpha(1.0),
             None,
             &backdrop,
         );
         if wallpaper_layer {
             scene.pop_layer();
+        }
+    }
+
+    // Each output receives its own complete composition, so a ribbon never
+    // disappears into the physical gap between displays. A user-selected
+    // private wallpaper retains its existing scrim and takes precedence.
+    if wallpaper.is_none() {
+        for output in outputs {
+            ui::auth_backdrop::draw(
+                &mut scene,
+                theme,
+                LockLayout::for_output(*output, theme).output,
+                elapsed_seconds,
+            );
         }
     }
 
@@ -433,33 +517,50 @@ fn draw_lock_widget(
     text.set_text_scale(1.0);
     let type_scale = ui::tokens::TypeScale::default();
     if !view.clock.is_empty() {
-        draw_centered_text(
+        let size = fitted_clock_size(
+            text,
+            view.clock,
+            scaled_text_size(
+                if layout.clock.x1 < layout.panel.x0 {
+                    CLOCK_BESIDE_PANEL_PX
+                } else {
+                    CLOCK_PX
+                },
+                layout.scale,
+                theme,
+            ),
+            layout.clock,
+        );
+        draw_time_text(
             scene,
             text,
             view.clock,
-            scaled_text_size(CLOCK_PX, layout.scale, theme),
+            size,
             theme.text_primary,
             layout.clock,
+            layout.clock.x1 < layout.panel.x0,
         );
     }
     if !view.date.is_empty() {
-        draw_centered_text(
+        draw_time_text(
             scene,
             text,
             view.date,
             scaled_text_size(type_scale.lg, layout.scale, theme),
-            theme.text_dim,
+            theme.text_primary,
             layout.date,
+            layout.clock.x1 < layout.panel.x0,
         );
     }
 
     // Panel role (HIG §9.1/§9.2): the credential card's corner is the Panel
-    // radius token (24) scaled with the rest of the lock chrome, its ground
+    // radius token (24) scaled with the rest of the lock chrome (the token
+    // already carries the UI scale that `layout.scale` includes), its ground
     // is `panel_ground` (walked clear of the wallpaper-dimmed desktop) and
     // its edge is the derived Panel border rather than a declared colour.
     let panel = RoundedRect::from_rect(
         layout.panel,
-        f64::from(theme.tokens.radii.xl) * layout.scale,
+        f64::from(theme.tokens.radii.xl) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
     scene.fill(
         Fill::NonZero,
@@ -480,7 +581,7 @@ fn draw_lock_widget(
     draw_centered_text(
         scene,
         text,
-        "Session locked",
+        &ui::i18n::I18nManager::lookup_plain("lock-welcome-back"),
         scaled_text_size(type_scale.xl, layout.scale, theme),
         theme.text_primary,
         layout.title,
@@ -514,6 +615,8 @@ fn draw_secondary_lock_widget(
     let renderer_scale = text.text_scale();
     text.set_text_scale(1.0);
     let type_scale = ui::tokens::TypeScale::default();
+    let text_left = layout.output.x0 + 24.0 * layout.scale;
+    let text_right = layout.output.x1 - 24.0 * layout.scale;
     if !view.clock.is_empty() {
         draw_centered_text(
             scene,
@@ -521,7 +624,7 @@ fn draw_secondary_lock_widget(
             view.clock,
             scaled_text_size(SECONDARY_CLOCK_PX, layout.scale, theme),
             theme.text_primary,
-            layout.clock,
+            Rect::new(text_left, layout.clock.y0, text_right, layout.clock.y1),
         );
     }
     if !view.date.is_empty() {
@@ -530,14 +633,14 @@ fn draw_secondary_lock_widget(
             text,
             view.date,
             scaled_text_size(type_scale.lg, layout.scale, theme),
-            theme.text_dim,
-            layout.date,
+            theme.text_primary,
+            Rect::new(text_left, layout.date.y0, text_right, layout.date.y1),
         );
     }
     let message = Rect::new(
-        layout.output.x0 + 24.0 * layout.scale,
+        text_left,
         layout.date.y1 + 26.0 * layout.scale,
-        layout.output.x1 - 24.0 * layout.scale,
+        text_right,
         layout.date.y1 + 78.0 * layout.scale,
     );
     draw_centered_text(
@@ -558,7 +661,7 @@ fn draw_secondary_lock_widget(
         text,
         "Password prompt is on the primary display",
         scaled_text_size(type_scale.sm, layout.scale, theme),
-        theme.text_dim,
+        theme.text_primary,
         Rect::new(
             message.x0,
             message.y0 + 28.0 * layout.scale,
@@ -570,9 +673,13 @@ fn draw_secondary_lock_widget(
 }
 
 /// The primary clock: a display size with no place on the compressed
-/// chrome type scale (HIG §9.6 tops out at `x4l` 40); the one authored size
-/// this surface keeps, named so it is not mistaken for a token.
-const CLOCK_PX: f32 = 56.0;
+/// chrome type scale (HIG §9.6 tops out at `x4l` 40); the authored display
+/// sizes this surface keeps, named so they are not mistaken for tokens.
+/// Stacked above the credential panel:
+const CLOCK_PX: f32 = 88.0;
+/// Beside the credential panel on a wide output, where the clock has its own
+/// column:
+const CLOCK_BESIDE_PANEL_PX: f32 = 120.0; // display type size; the chrome type scale stops at 40
 /// The secondary display's clock, a step quieter than the primary's.
 const SECONDARY_CLOCK_PX: f32 = 52.0;
 
@@ -587,6 +694,56 @@ fn scaled_text_size(base: f32, scale: f64, theme: &Theme) -> f32 {
     )]
     let scale = scale as f32;
     base * scale * theme.text_scale
+}
+
+/// Time is one visual unit: it must not wrap or paint beyond the output at
+/// the supported maximum text scale. Measure with the actual font first;
+/// preserve the requested accessible size whenever it fits its reserved row.
+fn fitted_clock_size(text: &mut TextRenderer, value: &str, size: f32, bounds: Rect) -> f32 {
+    let (width, height) = text.measure(value, size, None);
+    let fit = (bounds.width() / f64::from(width).max(1.0))
+        .min(bounds.height() / f64::from(height).max(1.0))
+        .clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "fit is bounded to [0, 1] for a screen-space font size"
+    )]
+    let fit = fit as f32;
+    size * if fit < 1.0 { fit * 0.99 } else { fit }
+}
+
+/// Wide screens anchor the time and date on one margin. Compact outputs
+/// center the same lockup over the credential surface.
+fn draw_time_text(
+    scene: &mut Scene,
+    text: &mut TextRenderer,
+    value: &str,
+    size: f32,
+    color: vello::peniko::Color,
+    bounds: Rect,
+    align_left: bool,
+) {
+    if !align_left {
+        draw_centered_text(scene, text, value, size, color, bounds);
+        return;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded output width is sufficient at f32 text precision"
+    )]
+    let width = bounds.width() as f32;
+    let (_, height) = text.measure(value, size, Some(width));
+    text.draw_text(
+        scene,
+        value,
+        size,
+        color,
+        Affine::translate((
+            bounds.x0,
+            bounds.y0 + (bounds.height() - f64::from(height)) / 2.0,
+        )),
+        Some(width),
+    );
 }
 
 fn draw_centered_text(
@@ -668,7 +825,10 @@ fn draw_password_field(
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) {
-    let field = RoundedRect::from_rect(layout.password, layout.password.height() / 2.0);
+    let field = RoundedRect::from_rect(
+        layout.password,
+        f64::from(theme.tokens.radii.md) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+    );
     scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &field);
     // A subtle border — focused colour, since the field always holds focus
     // while locked.
@@ -1100,6 +1260,73 @@ mod tests {
     }
 
     #[test]
+    fn clock_stays_inside_portrait_output_at_maximum_text_scale() {
+        let mut text = TextRenderer::new();
+        for text_scale in [1.0, 2.0, 3.0, 4.0] {
+            let theme = Theme::dark().with_text_scale(text_scale);
+            let layout = LockLayout::for_output(single(640.0, 960.0)[0], &theme);
+            let size = fitted_clock_size(
+                &mut text,
+                "21:47",
+                scaled_text_size(88.0, layout.scale, &theme),
+                layout.clock,
+            );
+            let (width, height) = text.measure("21:47", size, None);
+            assert!(
+                f64::from(width) <= layout.clock.width(),
+                "clock width at scale {text_scale}"
+            );
+            assert!(
+                f64::from(height) <= layout.clock.height(),
+                "clock height at scale {text_scale}"
+            );
+            assert_inside(layout.clock, layout.output, "portrait clock");
+            assert_inside(layout.password, layout.output, "portrait password");
+        }
+    }
+
+    #[test]
+    fn lock_animation_schedules_only_visible_motion_and_preserves_pending_deadline() {
+        use std::time::{Duration, Instant};
+        let last = Instant::now();
+        let theme = Theme::dark();
+        let deadline =
+            animation_deadline(&theme, true, false, last).expect("animated lock deadline");
+        assert!(deadline > last && deadline <= last + Duration::from_millis(50));
+        assert_eq!(
+            animation_deadline(&theme, true, false, last),
+            Some(deadline)
+        );
+        assert!(animation_deadline(&theme, false, false, last).is_none());
+        assert!(animation_deadline(&theme, true, true, last).is_none());
+        assert!(animation_deadline(&theme.with_reduce_motion(true), true, false, last).is_none());
+        assert!(animation_deadline(&Theme::high_contrast(), true, false, last).is_none());
+    }
+
+    #[test]
+    fn wide_lock_separates_clock_from_credentials_and_compact_stacks_them() {
+        let theme = Theme::dark();
+        let wide = LockLayout::for_output(single(1600.0, 900.0)[0], &theme);
+        assert!(
+            wide.clock.x1 < wide.panel.x0,
+            "wide outputs reserve a quiet credential column"
+        );
+        assert!(wide.date.x1 < wide.panel.x0);
+        let compact = LockLayout::for_output(single(800.0, 600.0)[0], &theme);
+        assert!(
+            compact.date.y1 < compact.panel.y0,
+            "compact outputs stack without collisions"
+        );
+        assert_inside(compact.panel, compact.output, "compact credentials");
+        let large = LockLayout::for_output(single(1100.0, 700.0)[0], &theme.with_text_scale(2.0));
+        assert!(
+            large.date.y1 < large.panel.y0,
+            "large type uses the full reading width"
+        );
+        assert_inside(large.password, large.panel, "large password");
+    }
+
+    #[test]
     fn responsive_layout_is_bounded_and_non_overlapping() {
         let theme = Theme::dark();
         for output in [
@@ -1138,7 +1365,7 @@ mod tests {
                 assert_inside(rect, layout.output, name);
             }
             assert!(layout.clock.y1 <= layout.date.y0);
-            assert!(layout.date.y1 <= layout.panel.y0);
+            assert!(layout.date.y1 <= layout.panel.y0 || layout.date.x1 < layout.panel.x0);
             assert!(layout.icon.y1 <= layout.title.y0);
             assert!(layout.title.y1 <= layout.password.y0);
             assert!(layout.password.y1 <= layout.status.y0);
@@ -1173,9 +1400,18 @@ mod tests {
             let layout = LockLayout::for_output(output, &theme);
             let mut text = TextRenderer::new();
             for (label, value, size, rect) in [
-                ("clock", "21:47", 56.0, layout.clock),
+                (
+                    "clock",
+                    "21:47",
+                    if layout.clock.x1 < layout.panel.x0 {
+                        120.0
+                    } else {
+                        88.0
+                    },
+                    layout.clock,
+                ),
                 ("date", "Saturday, September 5", 18.0, layout.date),
-                ("title", "Session locked", 20.0, layout.title),
+                ("title", "Welcome back", 22.0, layout.title),
                 ("password", "Enter password", 15.0, layout.password),
                 (
                     "status",
@@ -1199,7 +1435,7 @@ mod tests {
                 );
             }
             assert!(layout.clock.y1 <= layout.date.y0);
-            assert!(layout.date.y1 <= layout.panel.y0);
+            assert!(layout.date.y1 <= layout.panel.y0 || layout.date.x1 < layout.panel.x0);
             assert!(layout.icon.y1 <= layout.title.y0);
             assert!(layout.title.y1 <= layout.password.y0);
             assert!(layout.password.y1 <= layout.status.y0);
@@ -1208,6 +1444,75 @@ mod tests {
                 layout.panel.height() > normal.panel.height(),
                 "large text must receive additional panel space"
             );
+        }
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded layout widths are passed to the renderer's f32 API"
+    )]
+    #[test]
+    fn maximum_text_scale_keeps_real_credential_copy_inside_its_rows() {
+        let title = ui::i18n::I18nManager::lookup_plain("lock-welcome-back");
+        let notifications = count_label(12);
+        for text_scale in [1.5, 2.0, 3.0, 4.0] {
+            let theme = Theme::dark().with_text_scale(text_scale);
+            for size in [
+                (640.0, 960.0),
+                (800.0, 600.0),
+                (1280.0, 720.0),
+                (1650.0, 900.0),
+            ] {
+                let layout = LockLayout::for_output(
+                    LockOutput {
+                        origin: (80.0, 32.0),
+                        size,
+                        scale: 1.0,
+                    },
+                    &theme,
+                );
+                let mut text = TextRenderer::new();
+                for (value, base_size, row) in [
+                    (title.as_str(), 22.0, layout.title),
+                    ("Enter password", 15.0, layout.password),
+                    ("Press Enter to unlock", 13.0, layout.status),
+                    ("Verifying…", 14.0, layout.status),
+                    (lock_error_status("wrong password"), 12.0, layout.status),
+                    (lock_error_status(UNAVAILABLE_MSG), 12.0, layout.status),
+                    (notifications.as_str(), 13.0, layout.notifications),
+                ] {
+                    let font_size = scaled_text_size(base_size, layout.scale, &theme);
+                    let (width, _) = text.measure(value, font_size, None);
+                    let (_, height) = text.measure(value, font_size, Some(row.width() as f32));
+                    assert!(
+                        f64::from(width) <= row.width() + 0.5
+                            && f64::from(height) <= row.height() + 0.5,
+                        "credential copy {value:?} must fit at {text_scale}× on {size:?}: measured={width}×{height}, row={row:?}",
+                    );
+                    assert_inside(row, layout.panel, "credential row/panel");
+                    assert_inside(row, layout.output, "credential row/output");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_type_wide_breakpoint_reserves_room_for_both_columns() {
+        let theme = Theme::dark().with_text_scale(1.5);
+        for (width, wide) in [(1649.0, false), (1650.0, true)] {
+            let layout = LockLayout::for_output(
+                LockOutput {
+                    origin: (80.0, 32.0),
+                    size: (width, 900.0),
+                    scale: 1.0,
+                },
+                &theme,
+            );
+            assert_eq!(layout.clock.x1 < layout.panel.x0, wide);
+            assert!(layout.date.x1 < layout.panel.x0 || layout.date.y1 <= layout.panel.y0);
+            for rect in [layout.clock, layout.date, layout.panel] {
+                assert_inside(rect, layout.output, "large type composition/output");
+            }
         }
     }
 
@@ -1272,10 +1577,9 @@ mod tests {
         ] {
             let layout = LockLayout::for_output(output, &theme);
             assert_inside(layout.panel, layout.output, "panel");
-            assert_eq!(
-                layout.panel.x0 + layout.panel.x1,
-                output.origin.0 * 2.0 + output.size.0
-            );
+            assert!(layout.clock.x1 < layout.panel.x0);
+            assert_inside(layout.clock, layout.output, "clock");
+            assert_inside(layout.date, layout.output, "date");
         }
     }
 

@@ -500,7 +500,11 @@ class BackendWiringTests(unittest.TestCase):
 
     def test_guided_helper_skips_only_the_whole_table_reread_on_an_in_use_disk(self):
         guided = GUIDED.read_text()
-        self.assertIn('if [ "$IN_USE_DISK" -eq 0 ]; then\n  blockdev --rereadpt "$DISK"\nfi\npartx -u "$DISK"', guided)
+        self.assertIn('if [ "$IN_USE_DISK" -eq 0 ]; then\n  blockdev --rereadpt "$DISK"\nfi', guided)
+        self.assertIn('if [ "$IN_USE_DISK" -eq 1 ]; then\n    partx -a -n "$new_number:$new_number" "$DISK" || true\n  fi', guided)
+        self.assertIn('kernel_partition_matches "$new_node" "$new_number" "$new_start" "$new_sectors" "$new_uuid"', guided)
+        self.assertIn('blkid -p -s PART_ENTRY_UUID -o value "$node"', guided)
+        self.assertLess(guided.index('kernel_partition_matches() {'), guided.index('mkfs.vfat -n TILO-EFI'))
         self.assertIn('[ $((ROOT_START + ROOT_SIZE)) -eq $((FREE_START + FREE_SIZE)) ]', guided)
 
 

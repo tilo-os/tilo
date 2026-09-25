@@ -55,7 +55,7 @@ class CandidateReceiptTests(unittest.TestCase):
 
     def test_mutable_or_wrong_namespace_reference_and_reused_tag_fail(self):
         for field, value in [('reference', candidate.REPOSITORY + ':latest'),
-                             ('reference', self.args.reference.replace('/tilo/', '/tilo/')),
+                             ('reference', self.args.reference.replace('/qos/', '/other/')),
                              ('tag', candidate.REPOSITORY + ':latest'), ('attempt', '0'),
                              ('revision', 'main'), ('base', 'fedora:latest')]:
             original = getattr(self.args, field)
