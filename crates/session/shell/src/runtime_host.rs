@@ -81,8 +81,8 @@ impl Session {
             .workspaces
             .first_mut()
             .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        let room = workspace.room.to_string();
-        let profile = crate::identity_registry::selected_identity_profile(&room)?
+        let room_id = workspace.room.to_string();
+        let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();
         if workspace.owner.is_none() {
@@ -98,7 +98,7 @@ impl Session {
         Ok(Self {
             broker,
             _identity: identity,
-            room,
+            room: room_id,
             actor,
             identity_socket,
             blob_socket,
@@ -109,6 +109,10 @@ impl Session {
     }
 
     #[cfg(test)]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the membership handle is otherwise only held for the session's lifetime"
+    )]
     pub(crate) fn workspace_tree(&self) -> crate::shell::state::WorkspaceTreeHandle {
         self._membership.clone()
     }

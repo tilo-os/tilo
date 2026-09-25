@@ -243,7 +243,7 @@ impl DeviceFleetStore {
         // lock two concurrent redeemers could both load the nonce as unused.
         let _fleet_lock = self.lock_fleets()?;
         let mut fleet = self.load(identity_id)?;
-        self.validate_issuer(&token, &profile.user_public_key, &fleet, now_ns)?;
+        Self::validate_issuer(&token, &profile.user_public_key, &fleet, now_ns)?;
         if fleet
             .consumed_enrollments
             .iter()
@@ -331,7 +331,6 @@ impl DeviceFleetStore {
     }
 
     fn validate_issuer(
-        &self,
         token: &EnrollmentToken,
         user_key: &[u8; 32],
         fleet: &DeviceFleet,
@@ -463,6 +462,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "enrollment, listing and revocation run as one ordered scenario"
+    )]
     fn enroll_list_and_revoke_a_secondary_device() {
         let root = tempfile::tempdir().expect("temp root");
         let identity_dir = root.path().join("config/identity");

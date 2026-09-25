@@ -1418,7 +1418,7 @@ impl VelloDrmBridge {
         Ok(())
     }
 
-    /// LinuxPerPhase timeout errors are recoverable, but only after an explicit cool-down. Other
+    /// `LinuxPerPhase` timeout errors are recoverable, but only after an explicit cool-down. Other
     /// errors retain their existing fail-closed behaviour and may be retried on the next frame.
     fn note_render_failure(&mut self, error: &BridgeError) {
         let timed_out = match error {

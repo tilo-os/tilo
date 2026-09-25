@@ -44,7 +44,7 @@ impl Children {
     }
 }
 
-fn emit(value: serde_json::Value) {
+fn emit(value: &serde_json::Value) {
     println!("{value}");
 }
 
@@ -122,15 +122,15 @@ fn wait_action(
     while start.elapsed() < Duration::from_secs(45) {
         children.live()?;
         for surface in session.broker.published_action_surfaces() {
-            if surface.live && surface.app_id == app {
-                if let Some(found) = surface
+            if surface.live
+                && surface.app_id == app
+                && let Some(found) = surface
                     .actions
                     .iter()
                     .find(|entry| entry.action == action)
                     .cloned()
-                {
-                    return Ok((surface, found));
-                }
+            {
+                return Ok((surface, found));
             }
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -150,11 +150,8 @@ fn main() -> Result<()> {
     let first = args.next().ok_or("expected profile path")?;
     if first == "--edited-helper" {
         return edited_handoff_proof::helper(
-            PathBuf::from(args.next().ok_or("expected helper root")?),
-            args.next()
-                .ok_or("expected room")?
-                .to_string_lossy()
-                .into_owned(),
+            &PathBuf::from(args.next().ok_or("expected helper root")?),
+            &args.next().ok_or("expected room")?.to_string_lossy(),
             args.next().is_some_and(|arg| arg == "--denied"),
         );
     }
@@ -163,26 +160,25 @@ fn main() -> Result<()> {
     let writer = PathBuf::from(args.next().ok_or("expected Word Processor binary")?);
     let mode = args.next();
     if mode.as_deref() == Some(std::ffi::OsStr::new("--edited-handoff")) {
-        return edited_handoff_proof::run(root, photos, writer);
+        return edited_handoff_proof::run(&root, photos, writer);
     }
     let benchmark = mode.is_some_and(|arg| arg == "--benchmark");
     let runtime_start = Instant::now();
     let session = Session::start(&root)?;
-    emit(json!({"event":"runtime_ready", "elapsed_ns":runtime_start.elapsed().as_nanos()}));
+    emit(&json!({"event":"runtime_ready", "elapsed_ns":runtime_start.elapsed().as_nanos()}));
     emit(
-        json!({"event":"runtime_started", "pid":std::process::id(), "os":std::env::consts::OS, "workspace":session.room, "socket":session.broker.capnp_socket(), "implementation":"shell::shell::collab_broker::spawn_native"}),
+        &json!({"event":"runtime_started", "pid":std::process::id(), "os":std::env::consts::OS, "workspace":session.room, "socket":session.broker.capnp_socket(), "implementation":"shell::shell::collab_broker::spawn_native"}),
     );
     let captured = Arc::new(Mutex::new(Vec::new()));
     let received = captured.clone();
-    let _subscription = session.broker.subscribe_rooms(
+    let subscription = session.broker.subscribe_rooms(
         vec![session.room.clone()],
         Box::new(move |event, route| {
-            if route.app_id == WRITER {
-                if let CollabEvent::Document { envelope, .. } = event {
-                    if let Ok(mut events) = received.lock() {
-                        events.push(envelope.clone());
-                    }
-                }
+            if route.app_id == WRITER
+                && let CollabEvent::Document { envelope, .. } = event
+                && let Ok(mut events) = received.lock()
+            {
+                events.push(envelope.clone());
             }
         }),
     );
@@ -226,7 +222,7 @@ fn main() -> Result<()> {
         launched.push(Instant::now());
         let child = session.launch(id, command)?;
         emit(
-            json!({"event":"app_started", "app":id, "pid":child.id(), "runtime_pid":std::process::id(), "workspace":session.room}),
+            &json!({"event":"app_started", "app":id, "pid":child.id(), "runtime_pid":std::process::id(), "workspace":session.room}),
         );
         children.0.push(child);
     }
@@ -236,12 +232,12 @@ fn main() -> Result<()> {
     let (photo_surface, photo_action) =
         wait_action(&session, &mut children, PHOTOS, "rotate-right")?;
     emit(
-        json!({"event":"action_surface_ready", "app":PHOTOS, "elapsed_ns":photos_launched.elapsed().as_nanos(), "poll_resolution_ms":50}),
+        &json!({"event":"action_surface_ready", "app":PHOTOS, "elapsed_ns":photos_launched.elapsed().as_nanos(), "poll_resolution_ms":50}),
     );
     let (writer_surface, writer_action) =
         wait_action(&session, &mut children, WRITER, "place-image")?;
     emit(
-        json!({"event":"action_surface_ready", "app":WRITER, "elapsed_ns":writer_launched.elapsed().as_nanos(), "poll_resolution_ms":50, "observed_after_photos":true}),
+        &json!({"event":"action_surface_ready", "app":WRITER, "elapsed_ns":writer_launched.elapsed().as_nanos(), "poll_resolution_ms":50, "observed_after_photos":true}),
     );
     if photo_surface.peer_id == writer_surface.peer_id {
         return Err("apps unexpectedly share one connection".into());
@@ -260,7 +256,7 @@ fn main() -> Result<()> {
         return Err("content hash mismatch".into());
     }
     emit(
-        json!({"event":"source_discovered", "app":PHOTOS, "peer":photo_surface.peer_id, "resource":photo_action.resource, "content_hash":hash, "bytes":bytes.len()}),
+        &json!({"event":"source_discovered", "app":PHOTOS, "peer":photo_surface.peer_id, "resource":photo_action.resource, "content_hash":hash, "bytes":bytes.len()}),
     );
     let actions = session
         .broker
@@ -279,7 +275,7 @@ fn main() -> Result<()> {
     {
         return Err("ungranted caller unexpectedly invoked the app".into());
     }
-    emit(json!({"event":"unauthorized_invocation_denied"}));
+    emit(&json!({"event":"unauthorized_invocation_denied"}));
     let invocation = start_action(
         &actions,
         &session.actor,
@@ -289,7 +285,7 @@ fn main() -> Result<()> {
         Some(hash),
     )?;
     emit(
-        json!({"event":"handoff_started", "invocation":invocation.0.to_string(), "source_peer":photo_surface.peer_id, "target_peer":writer_surface.peer_id, "target_app":WRITER, "resource":writer_action.resource, "action":"place-image", "content_hash":hash}),
+        &json!({"event":"handoff_started", "invocation":invocation.0.to_string(), "source_peer":photo_surface.peer_id, "target_peer":writer_surface.peer_id, "target_app":WRITER, "resource":writer_action.resource, "action":"place-image", "content_hash":hash}),
     );
     let update = wait_terminal(
         &actions,
@@ -299,7 +295,7 @@ fn main() -> Result<()> {
         Duration::from_secs(30),
     )?;
     emit(
-        json!({"event":"invocation_completed", "invocation":invocation.0.to_string(), "status":update}),
+        &json!({"event":"invocation_completed", "invocation":invocation.0.to_string(), "status":update}),
     );
     if !matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }) {
         return Err("insertion did not succeed".into());
@@ -326,29 +322,28 @@ fn main() -> Result<()> {
                 }
             }
         }
-        if let Ok(model) = qdoc::model::open(&document, &automerge::ROOT) {
-            if let Some(block) = qdoc::model::materialize(&document, &model)
+        if let Ok(model) = qdoc::model::open(&document, &automerge::ROOT)
+            && let Some(block) = qdoc::model::materialize(&document, &model)
                 .blocks
                 .into_iter()
                 .find(|block| {
                     block.kind == "image"
                         && block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.into()))
                 })
-            {
-                std::fs::write(root.join("received.automerge"), document.save())?;
-                std::fs::write(
-                    root.join("signed-document-events.json"),
-                    serde_json::to_vec_pretty(&events)?,
-                )?;
-                emit(
-                    json!({"event":"cross_app_proof_passed", "runtime_pid":std::process::id(), "app_pids":children.0.iter().map(Child::id).collect::<Vec<_>>(), "workspace":session.room, "source_app":PHOTOS, "target_app":WRITER, "content_hash":hash, "image_block":block.id, "signed_document_events":events.len(), "both_apps_alive":true}),
-                );
-                if benchmark {
-                    drop(_subscription);
-                    runtime_benchmark::run(&session, &mut children, &root, hash)?;
-                }
-                return Ok(());
+        {
+            std::fs::write(root.join("received.automerge"), document.save())?;
+            std::fs::write(
+                root.join("signed-document-events.json"),
+                serde_json::to_vec_pretty(&events)?,
+            )?;
+            emit(
+                &json!({"event":"cross_app_proof_passed", "runtime_pid":std::process::id(), "app_pids":children.0.iter().map(Child::id).collect::<Vec<_>>(), "workspace":session.room, "source_app":PHOTOS, "target_app":WRITER, "content_hash":hash, "image_block":block.id, "signed_document_events":events.len(), "both_apps_alive":true}),
+            );
+            if benchmark {
+                drop(subscription);
+                runtime_benchmark::run(&session, &mut children, &root, hash)?;
             }
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
     }

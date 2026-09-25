@@ -266,6 +266,10 @@ pub struct RealtimeFabricOffer {
 /// It contains no transport, capture, or hardware identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each control is an independent user toggle carried on the wire as-is"
+)]
 pub struct RealtimeControlState {
     pub microphone_muted: bool,
     pub camera_muted: bool,
@@ -2334,6 +2338,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn certified_adapter_routes_two_peer_handshake_and_cutover_exactly_once() {
         let now = Instant::now();
         let source = device("laptop");

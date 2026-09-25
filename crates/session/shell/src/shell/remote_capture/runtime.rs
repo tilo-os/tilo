@@ -133,14 +133,14 @@ pub(crate) fn request_remote_capture(
         _ => return Err("remote capture request produced an invalid action".into()),
     };
     if let Err(error) = network.send_personal_fabric_action(&peer, action) {
-        if let Ok(mut runtime) = runtime.try_lock() {
-            if let Some(pending) = runtime.outbound.remove(&request_id) {
-                runtime.note_degraded(
-                    peer,
-                    pending.request.profile.kind(),
-                    RemoteCaptureDegradedReason::TransferInterrupted,
-                );
-            }
+        if let Ok(mut runtime) = runtime.try_lock()
+            && let Some(pending) = runtime.outbound.remove(&request_id)
+        {
+            runtime.note_degraded(
+                peer,
+                pending.request.profile.kind(),
+                RemoteCaptureDegradedReason::TransferInterrupted,
+            );
         }
         return Err(error);
     }
@@ -449,6 +449,10 @@ impl RemoteCaptureFabricRuntime {
 
     /// Advance worker-owned endpoint provisioning and source capture without
     /// waiting on PipeWire/V4L2 discovery from the compositor frame.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the capture pump keeps provisioning, capture and failure handling in one ordered tick"
+    )]
     pub(crate) fn pump(&mut self, now: Instant) {
         self.expire_idle(now);
         for result in self.provision_rx.try_iter() {
@@ -469,41 +473,29 @@ impl RemoteCaptureFabricRuntime {
                 self.pending_revoke.insert(session_id);
                 continue;
             };
-            match endpoint {
-                Ok(endpoint) => {
-                    let Ok(mut adapter) = self.adapter.try_lock() else {
-                        self.provisioning.insert(session_id, session);
-                        self.completed_provisioning.insert(session_id, Ok(endpoint));
-                        continue;
-                    };
-                    let prepared = self
-                        .bridge
-                        .prepare_endpoint(
-                            &session.app,
-                            &session.request,
-                            session.source.clone(),
-                            session.target.clone(),
-                            session_id,
-                            session.grant,
-                            endpoint,
-                            adapter.as_mut(),
-                        )
-                        .is_ok();
-                    drop(adapter);
-                    if prepared {
-                        self.target_sessions.insert(session_id, session);
-                    } else {
-                        self.registry.revoke(session_id, session.grant);
-                        self.note_degraded(
-                            session.source.clone(),
-                            session.request.profile.kind(),
-                            RemoteCaptureDegradedReason::ReceiverUnavailable,
-                        );
-                        self.outgoing
-                            .push((session.source, stop_action(session_id, session.grant)));
-                    }
-                }
-                Err(_) => {
+            if let Ok(endpoint) = endpoint {
+                let Ok(mut adapter) = self.adapter.try_lock() else {
+                    self.provisioning.insert(session_id, session);
+                    self.completed_provisioning.insert(session_id, Ok(endpoint));
+                    continue;
+                };
+                let prepared = self
+                    .bridge
+                    .prepare_endpoint(
+                        &session.app,
+                        &session.request,
+                        session.source.clone(),
+                        session.target.clone(),
+                        session_id,
+                        session.grant,
+                        endpoint,
+                        adapter.as_mut(),
+                    )
+                    .is_ok();
+                drop(adapter);
+                if prepared {
+                    self.target_sessions.insert(session_id, session);
+                } else {
                     self.registry.revoke(session_id, session.grant);
                     self.note_degraded(
                         session.source.clone(),
@@ -513,6 +505,15 @@ impl RemoteCaptureFabricRuntime {
                     self.outgoing
                         .push((session.source, stop_action(session_id, session.grant)));
                 }
+            } else {
+                self.registry.revoke(session_id, session.grant);
+                self.note_degraded(
+                    session.source.clone(),
+                    session.request.profile.kind(),
+                    RemoteCaptureDegradedReason::ReceiverUnavailable,
+                );
+                self.outgoing
+                    .push((session.source, stop_action(session_id, session.grant)));
             }
         }
 
@@ -573,16 +574,16 @@ impl RemoteCaptureFabricRuntime {
         let PersonalFabricAction::RemoteCaptureChunk { chunk } = action else {
             return;
         };
-        let Some(session) = self.source_sessions.get(&chunk.session_id) else {
-            return;
-        };
-        if &session.target != peer || session.grant != chunk.grant {
+        if !self
+            .source_sessions
+            .get(&chunk.session_id)
+            .is_some_and(|session| &session.target == peer && session.grant == chunk.grant)
+        {
             return;
         }
-        let session = self
-            .source_sessions
-            .remove(&chunk.session_id)
-            .expect("session was checked");
+        let Some(session) = self.source_sessions.remove(&chunk.session_id) else {
+            return;
+        };
         self.source.stop(chunk.session_id);
         self.registry.revoke(chunk.session_id, session.grant);
         self.note_degraded(
@@ -643,6 +644,10 @@ impl RemoteCaptureFabricRuntime {
         session.expires_at = grant_expiry(now);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one handler validates each remote-capture signal beside its state change"
+    )]
     fn handle_signal(
         &mut self,
         envelope: &PersonalFabricActionEnvelope,
@@ -707,16 +712,10 @@ impl RemoteCaptureFabricRuntime {
                     grant,
                     expires_at: grant_expiry(now),
                 };
+                let profile = target_session.request.profile.clone();
                 self.provisioning.insert(session_id, target_session);
                 let adapter = Arc::clone(&self.adapter);
                 let tx = self.provision_tx.clone();
-                let profile = self
-                    .provisioning
-                    .get(&session_id)
-                    .expect("inserted")
-                    .request
-                    .profile
-                    .clone();
                 if std::thread::Builder::new()
                     .name("tilo-remote-capture-provision".into())
                     .spawn(move || {
@@ -747,12 +746,12 @@ impl RemoteCaptureFabricRuntime {
                 }
             }
             RemoteCaptureSignal::Stop { session_id, grant } => {
-                if let Some(session) = self.target_sessions.get(session_id)
-                    && session.source == envelope.source
-                    && session.target == envelope.target
-                    && session.grant == *grant
+                if self.target_sessions.get(session_id).is_some_and(|session| {
+                    session.source == envelope.source
+                        && session.target == envelope.target
+                        && session.grant == *grant
+                }) && let Some(session) = self.target_sessions.remove(session_id)
                 {
-                    let session = self.target_sessions.remove(session_id).expect("present");
                     self.registry.revoke(*session_id, *grant);
                     if let Ok(mut adapter) = self.adapter.try_lock() {
                         let _ = self.bridge.revoke(
@@ -970,15 +969,12 @@ impl RemoteCaptureFabricRuntime {
                 );
             } else {
                 self.pending_revoke.insert(session_id);
-                self.pending_target_revoke.insert(session_id, session);
-                let session = self
-                    .pending_target_revoke
-                    .get(&session_id)
-                    .expect("inserted");
-                return Ok((
+                let stop = (
                     session.source.clone(),
                     stop_action(session_id, session.grant),
-                ));
+                );
+                self.pending_target_revoke.insert(session_id, session);
+                return Ok(stop);
             }
             return Ok((session.source, stop_action(session_id, session.grant)));
         }

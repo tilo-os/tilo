@@ -1,7 +1,11 @@
 //! Opt-in real typed SDK dispatch; no model and no private app hooks.
 mod pixels;
-use super::*;
+use super::{
+    Arc, Child, Children, CollabEvent, Command, Duration, File, Instant, Mutex, PHOTOS, PathBuf,
+    PublishedAction, PublishedSurface, Result, Session, Stdio, WRITER, emit, json, wait_action,
+};
 use std::path::Path;
+use std::sync::PoisonError;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
@@ -14,11 +18,11 @@ const READER: &str = "edited-proof-reader";
 
 // The helper inherits exactly the same SDK descriptors as a launched app.
 // Files carry only local test instructions/results, never caller authority.
-pub(super) fn helper(root: PathBuf, room: String, denied: bool) -> Result<()> {
+pub(super) fn helper(root: &Path, route: &str, denied: bool) -> Result<()> {
     let connection = if denied {
-        CollaborationManager::for_agent_route(CALLER, room.parse()?, None, READER)
+        CollaborationManager::for_agent_route(CALLER, route.parse()?, None, READER)
     } else {
-        CollaborationManager::for_route(CALLER, room.parse()?, None, None)
+        CollaborationManager::for_route(CALLER, route.parse()?, None, None)
     };
     let mut manager = connection.map_err(|e| format!("SDK connection unavailable: {e:?}"))?;
     for sequence in 0..32_u64 {
@@ -146,7 +150,7 @@ impl Caller {
         children: &mut Children,
         surface: &PublishedSurface,
         action: &PublishedAction,
-        arguments: serde_json::Value,
+        arguments: &serde_json::Value,
     ) -> Result<serde_json::Value> {
         let request = json!({"peer":surface.peer_id,"resource":action.resource,"action":action.action,"arguments":arguments});
         let temporary = root.join("request.tmp");
@@ -169,7 +173,7 @@ impl Caller {
             std::thread::sleep(Duration::from_millis(20));
         }
         let result = serde_json::from_slice(&std::fs::read(response)?)?;
-        emit(json!({"event":"typed_invocation_result","request":request,"result":result}));
+        emit(&json!({"event":"typed_invocation_result","request":request,"result":result}));
         Ok(result)
     }
 }
@@ -184,7 +188,7 @@ fn succeeded(value: &serde_json::Value) -> Result<tilo_actions::ActionOutput> {
     clippy::too_many_lines,
     reason = "a scripted proof run whose steps depend on each other in order"
 )]
-pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()> {
+pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
     // The isolated fixture grants only Read to a delegated, certified agent.
     // The normal Session host still owns admission and invocation policy.
     let state_path = root.join("workspace.json");
@@ -203,19 +207,19 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         shell::shell::state::Verb::Read,
     ));
     shell::shell::persist::save_tree_to(&tree, &state_path)?;
-    let session = Session::start(&root)?;
+    let session = Session::start(root)?;
     let captured = Arc::new(Mutex::new(Vec::new()));
     let received = captured.clone();
     let _subscription = session.broker.subscribe_rooms(
         vec![session.room.clone()],
         Box::new(move |event, route| {
-            if route.app_id == WRITER {
-                if let CollabEvent::Document { envelope, .. } = event {
-                    received
-                        .lock()
-                        .unwrap()
-                        .push((route.clone(), envelope.clone()));
-                }
+            if route.app_id == WRITER
+                && let CollabEvent::Document { envelope, .. } = event
+            {
+                received
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push((route.clone(), envelope.clone()));
             }
         }),
     );
@@ -273,7 +277,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     }
     std::fs::write(root.join("source-content.png"), &source_bytes)?;
     let mut command = Command::new(std::env::current_exe()?);
-    command.arg("--edited-helper").arg(&root).arg(&session.room);
+    command.arg("--edited-helper").arg(root).arg(&session.room);
     let log = File::create(root.join("typed-caller.log"))?;
     command
         .stdout(Stdio::from(log.try_clone()?))
@@ -301,7 +305,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         (&writer_surface, &place, json!({"value": source_hash})),
     ] {
         let result =
-            denied_caller.invoke(&denied_root, &mut children, surface, action, arguments)?;
+            denied_caller.invoke(&denied_root, &mut children, surface, action, &arguments)?;
         if !result
             .get("error")
             .and_then(serde_json::Value::as_str)
@@ -312,7 +316,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
             );
         }
         emit(
-            json!({"event":"typed_permission_denied", "principal":format!("agent:{READER}"), "action":action.action,"result":result}),
+            &json!({"event":"typed_permission_denied", "principal":format!("agent:{READER}"), "action":action.action,"result":result}),
         );
     }
     // Genuine missing bytes through the same production consumer dispatch.
@@ -321,11 +325,11 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         return Err("missing-byte fixture unexpectedly exists".into());
     }
     let unavailable = caller.invoke(
-        &root,
+        root,
         &mut children,
         &writer_surface,
         &place,
-        json!({"value":missing}),
+        &json!({"value":missing}),
     )?;
     if (unavailable.get("error").is_none()
         && unavailable
@@ -338,8 +342,8 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     {
         return Err(format!("expected unavailable-content rejection, got: {unavailable}").into());
     }
-    emit(json!({"event":"unavailable_consumer_content_rejected","result":unavailable}));
-    succeeded(&caller.invoke(&root, &mut children, &photo_surface, &rotate, json!({}))?)?;
+    emit(&json!({"event":"unavailable_consumer_content_rejected","result":unavailable}));
+    succeeded(&caller.invoke(root, &mut children, &photo_surface, &rotate, &json!({}))?)?;
     // Completion follows apply; wait for the refreshed action surface (reset
     // is advertised only after the edit exists) before invoking the Effect.
     wait_action(&session, &mut children, PHOTOS, "reset")?;
@@ -354,7 +358,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
     {
         return Err("edited export contract mismatch".into());
     }
-    let live_result = caller.invoke(&root, &mut children, &export_surface, &export, json!({}))?;
+    let live_result = caller.invoke(root, &mut children, &export_surface, &export, &json!({}))?;
     let output = succeeded(&live_result)?;
     let [resource] = output.resources.as_slice() else {
         return Err("producer must return exactly one content resource".into());
@@ -390,11 +394,11 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         serde_json::to_vec_pretty(&live_result)?,
     )?;
     succeeded(&caller.invoke(
-        &root,
+        root,
         &mut children,
         &writer_surface,
         &place,
-        json!({"value":hash}),
+        &json!({"value":hash}),
     )?)?;
     // Inspect the actual broker-persisted workspace, not a local reduction of
     // the live output. The producer invocation links the two observations.
@@ -431,7 +435,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
         root.join("persisted-producer-receipt.json"),
         serde_json::to_vec_pretty(&receipt)?,
     )?;
-    emit(json!({"event":"persisted_producer_receipt_verified",
+    emit(&json!({"event":"persisted_producer_receipt_verified",
         "invocation":producer_update.invocation(), "workspace":session.room,
         "status":"succeeded", "live_output_hash_absent":true}));
     let deadline = Instant::now();
@@ -515,7 +519,7 @@ pub(super) fn run(root: PathBuf, photos: PathBuf, writer: PathBuf) -> Result<()>
                     root.join("edited-proof.json"),
                     serde_json::to_vec_pretty(&evidence)?,
                 )?;
-                emit(evidence);
+                emit(&evidence);
                 return Ok(());
             }
         }
