@@ -232,7 +232,7 @@ fn connect_unix_socket_bounded(
 fn unix_connect_is_pending(error: Option<i32>) -> bool {
     matches!(
         error,
-        Some(libc::EINPROGRESS) | Some(libc::EALREADY) | Some(libc::EAGAIN)
+        Some(libc::EINPROGRESS | libc::EALREADY | libc::EAGAIN)
     )
 }
 
