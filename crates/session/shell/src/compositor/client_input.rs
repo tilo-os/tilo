@@ -1720,15 +1720,12 @@ mod tests {
         use smithay::reexports::calloop::EventLoop;
         use smithay::reexports::wayland_server::Display;
 
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let mut seed = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let first = &mut seed.desktop.workspaces[0].strips[0].window_groups[0];
+        first.maximized = true;
+        let group = first.id;
+        let tree = seed.shared();
         let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
-        let group = {
-            let chrome = fb.chrome();
-            let mut tree = chrome.tree_mut();
-            let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
-            group
-        };
         fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
         let _ = fb.paint_settled();
 
@@ -1813,9 +1810,10 @@ mod tests {
 
     #[test]
     fn focus_persistence_request_is_coalesced_and_edge_triggered() {
-        let mut input = ClientInput::default();
-        input.focus_persistence_pending = true;
-        input.focus_persistence_pending = true;
+        let mut input = ClientInput {
+            focus_persistence_pending: true,
+            ..ClientInput::default()
+        };
 
         assert!(input.take_focus_persistence_pending());
         assert!(

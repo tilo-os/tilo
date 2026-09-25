@@ -85,6 +85,11 @@ fn request_wrapper_logout_at(path: &Path) -> Result<(), String> {
 /// local file, then publishes an in-process edge. Running it on a worker can
 /// strand an otherwise-idle compositor because completing the worker does not
 /// itself wake the compositor event loop.
+///
+/// # Errors
+///
+/// Returns a description when the request path cannot be resolved or the
+/// request file cannot be written.
 pub fn request_logout() -> Result<(), String> {
     request_wrapper_logout_at(&logout_request_path()?)?;
     // The wrapper owns teardown, but it cannot observe the request until this

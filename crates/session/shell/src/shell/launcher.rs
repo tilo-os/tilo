@@ -1999,6 +1999,11 @@ pub fn launch_in_workspace(
 /// callers that need their immediate error.  Desktop activation must use this
 /// path: registry verification and identity lookup can involve cold storage or
 /// D-Bus and must never stall input or presentation.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker thread cannot be started. Later failures arrive as launch events.
 pub fn queue_launch_in_workspace(
     app: InstalledApp,
     workspace: &Workspace,
@@ -2362,8 +2367,9 @@ pub(crate) fn launch_key_for_app_id(app_id: &str) -> Option<String> {
 /// is claimed by the concrete surface during adoption, so the relationship is
 /// authoritative even when the runtime toolkit id was undeclared.
 pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
-    if let Some(key) = lock(&SURFACE_LAUNCH_KEYS).get(&surface_id).cloned() {
-        return Some(key);
+    let attributed = lock(&SURFACE_LAUNCH_KEYS).get(&surface_id).cloned();
+    if attributed.is_some() {
+        return attributed;
     }
     let pending = lock(&PENDING_PLACEMENT);
     pending

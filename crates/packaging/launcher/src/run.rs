@@ -850,7 +850,24 @@ mod system_bundle_tree_policy_tests {
         if unsafe { libc::geteuid() } != 0 {
             return;
         }
-        let temp = tempfile::tempdir().expect("temporary root");
+        // The policy walks every ancestor, so the fixture has to live below
+        // root-owned directories nobody else may write. The build output
+        // tree usually is one when tests run as root; a sticky, world-writable
+        // temporary directory never is, and there the check cannot be modelled.
+        let parent = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .unwrap_or_else(std::env::temp_dir);
+        let ancestors_secure = parent.canonicalize().is_ok_and(|parent| {
+            parent.ancestors().all(|dir| {
+                std::fs::symlink_metadata(dir)
+                    .is_ok_and(|metadata| metadata.uid() == 0 && metadata.mode() & 0o022 == 0)
+            })
+        });
+        if !ancestors_secure {
+            return;
+        }
+        let temp = tempfile::tempdir_in(&parent).expect("temporary root");
         let deployment = temp.path().join("deployment/usr/lib/tilo-runtime/test");
         std::fs::create_dir_all(&deployment).expect("deployment tree");
         // tempfile deliberately creates a private 0700 parent, whereas the

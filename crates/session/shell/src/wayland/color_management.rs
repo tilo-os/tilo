@@ -1098,33 +1098,30 @@ fn create_image_description<D>(
 ) where
     D: Dispatch<WpImageDescriptionV1, ImageDescriptionData> + 'static,
 {
-    match builder.build() {
-        Some(data) => {
-            let identity = data.identity;
-            let obj = data_init.init(image_description, data);
-            // The global is deliberately version 1, so `ready` is the only
-            // valid success event. `ready2` has opcode 2 and exists only from
-            // version 2 onward; emitting it disconnects v1 clients.
-            let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
-            builder.mark_consumed();
-        }
-        None => {
-            // The request carried a `new_id`; initialise it before the fatal
-            // error removes the client and all of its protocol objects.
-            data_init.init(
-                image_description,
-                ImageDescriptionData {
-                    colorimetry: Colorimetry::sdr_bt709(),
-                    hdr: None,
-                    identity: 0,
-                    queryable: false,
-                },
-            );
-            creator.post_error(
-                wp_image_description_creator_params_v1::Error::IncompleteSet,
-                "primaries + transfer are required before create",
-            );
-        }
+    if let Some(data) = builder.build() {
+        let identity = data.identity;
+        let obj = data_init.init(image_description, data);
+        // The global is deliberately version 1, so `ready` is the only
+        // valid success event. `ready2` has opcode 2 and exists only from
+        // version 2 onward; emitting it disconnects v1 clients.
+        let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
+        builder.mark_consumed();
+    } else {
+        // The request carried a `new_id`; initialise it before the fatal
+        // error removes the client and all of its protocol objects.
+        data_init.init(
+            image_description,
+            ImageDescriptionData {
+                colorimetry: Colorimetry::sdr_bt709(),
+                hdr: None,
+                identity: 0,
+                queryable: false,
+            },
+        );
+        creator.post_error(
+            wp_image_description_creator_params_v1::Error::IncompleteSet,
+            "primaries + transfer are required before create",
+        );
     }
 }
 

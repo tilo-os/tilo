@@ -229,8 +229,14 @@ pub struct OwnedShmFrame {
     format: wl_shm::Format,
 }
 
+/// Copy the committed contents of an SHM `buffer` out of the client's pool.
+///
+/// # Errors
+///
+/// Returns an error when the buffer is not SHM-backed or its declared
+/// geometry does not fit inside the pool.
 pub fn copy_shm_frame(buffer: &WlBuffer) -> Result<OwnedShmFrame, ReadbackError> {
-    let result = with_buffer_contents(buffer, |ptr, len, data| {
+    with_buffer_contents(buffer, |ptr, len, data| {
         let (width, height, stride) = (data.width, data.height, data.stride);
         if width <= 0 || height <= 0 || stride < width.saturating_mul(4) {
             return Err(ReadbackError::InvalidDimensions {
@@ -260,16 +266,29 @@ pub fn copy_shm_frame(buffer: &WlBuffer) -> Result<OwnedShmFrame, ReadbackError>
         // bounds above restrict the copied range to the declared buffer.
         let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
         Ok(OwnedShmFrame {
-            bytes: pool[offset..needed].to_vec(),
+            bytes: pool
+                .get(offset..needed)
+                .ok_or(ReadbackError::InvalidDimensions {
+                    width,
+                    height,
+                    stride,
+                })?
+                .to_vec(),
             width: usize::try_from(width).unwrap_or(usize::MAX),
             height: height_u,
             stride: stride_u,
             format: data.format,
         })
-    })?;
-    result
+    })?
 }
 
+/// Convert a copied SHM frame to tightly packed RGBA8 in `out`, returning
+/// its width and height.
+///
+/// # Errors
+///
+/// Returns an error when a row lies outside the copied bytes or the pixel
+/// format is unsupported.
 pub fn owned_shm_to_rgba(
     frame: &OwnedShmFrame,
     out: &mut Vec<u8>,
@@ -282,7 +301,7 @@ pub fn owned_shm_to_rgba(
         let src = frame
             .bytes
             .get(start..start.saturating_add(row_bytes))
-            .ok_or(ReadbackError::InvalidDimensions {
+            .ok_or_else(|| ReadbackError::InvalidDimensions {
                 width: i32::try_from(frame.width).unwrap_or(i32::MAX),
                 height: i32::try_from(frame.height).unwrap_or(i32::MAX),
                 stride: i32::try_from(frame.stride).unwrap_or(i32::MAX),

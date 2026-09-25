@@ -2489,6 +2489,10 @@ impl DrmRuntime {
     /// Duplicate the internal calloop poll fd so a parent loop can wait on
     /// libinput/libseat/udev readiness directly. The duplicate owns only the
     /// descriptor reference; `event_loop` remains the sole event dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS error when the descriptor cannot be duplicated.
     pub fn duplicate_event_fd(&self) -> std::io::Result<OwnedFd> {
         let raw = unsafe {
             libc::fcntl(

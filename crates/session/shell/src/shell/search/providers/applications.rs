@@ -450,7 +450,7 @@ impl ApplicationsProvider {
                 Some(subtitle),
                 presentation_score(needle, &app.package_id, score),
                 move |_doc, _root, chrome: &Chrome| {
-                    launch_resolved_installed_app(chrome, launch_app.clone())
+                    launch_resolved_installed_app(chrome, &launch_app)
                 },
             ));
         }
@@ -837,17 +837,68 @@ pub(crate) fn launch_installed_app(
     if catalogue::pending_notice(package_id).is_some() {
         return Ok(());
     }
-    let app = launcher::installed_apps()
-        .map_err(|error| ActionError::Refused(error.user_message()))?
-        .into_iter()
-        .find(|app| app.package_id == package_id)
-        .ok_or_else(|| ActionError::Refused(format!("{display_name} is no longer installed")))?;
-    launch_resolved_installed_app(chrome, app)
+    let app = launcher::installed_apps().and_then(|apps| {
+        apps.into_iter()
+            .find(|app| app.package_id == package_id)
+            .ok_or_else(|| launcher::LaunchError::NotInstalled {
+                package_id: package_id.to_string(),
+            })
+    });
+    match app {
+        Ok(app) => launch_resolved_installed_app(chrome, &app),
+        Err(err) => Err(report_refused_launch(
+            chrome,
+            package_id,
+            display_name,
+            &err,
+        )),
+    }
+}
+
+/// Surface a launch that failed before spawn: retire its opening card, post
+/// the failure notification, and describe it for callers that cannot see
+/// the screen.
+fn report_refused_launch(
+    chrome: &Chrome,
+    package_id: &str,
+    display_name: &str,
+    err: &launcher::LaunchError,
+) -> ActionError {
+    // The preflight failed before a toplevel could claim the placement
+    // note. Do not let a later app inherit this dead launch's target.
+    launcher::clear_pending_placement(package_id);
+    let message = err.user_message();
+    tracing::error!(
+        target: "tilo::app_launch",
+        package_id,
+        display_name,
+        detail = %message,
+        "application launch was refused before spawn"
+    );
+    {
+        let mut st = chrome.borrow_mut();
+        // Claimed back rather than left to expire, or the next window
+        // to paint would retire somebody else's notice.
+        if let Some(id) = catalogue::take_pending_notice(package_id) {
+            st.dismiss_notification(id);
+        }
+        st.push_notification_full(
+            Notification::new(
+                launcher::launch_failure_title(display_name),
+                err.notification_message(),
+            )
+            .with_severity(NotificationSeverity::Error)
+            .with_app_name("Applications")
+            .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+        );
+        st.bump();
+    }
+    ActionError::Refused(format!("Couldn't open {display_name}: {message}"))
 }
 
 fn launch_resolved_installed_app(
     chrome: &Chrome,
-    app: launcher::InstalledApp,
+    app: &launcher::InstalledApp,
 ) -> Result<(), ActionError> {
     let package_id = app.package_id.as_str();
     let display_name = app.display_name.as_str();
@@ -906,42 +957,8 @@ fn launch_resolved_installed_app(
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.
     let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
-    if let Err(err) = outcome {
-        // The preflight failed before a toplevel could claim the placement
-        // note. Do not let a later app inherit this dead launch's target.
-        launcher::clear_pending_placement(package_id);
-        let message = err.user_message();
-        tracing::error!(
-            target: "tilo::app_launch",
-            package_id,
-            display_name,
-            detail = %message,
-            "application launch was refused before spawn"
-        );
-        {
-            let mut st = chrome.borrow_mut();
-            // Claimed back rather than left to expire, or the next window
-            // to paint would retire somebody else's notice.
-            if let Some(id) = catalogue::take_pending_notice(package_id) {
-                st.dismiss_notification(id);
-            }
-            st.push_notification_full(
-                Notification::new(
-                    launcher::launch_failure_title(display_name),
-                    err.notification_message(),
-                )
-                .with_severity(NotificationSeverity::Error)
-                .with_app_name("Applications")
-                .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
-            );
-            st.bump();
-        }
-        // How a caller that cannot see the screen learns the launch failed.
-        return Err(ActionError::Refused(format!(
-            "Couldn't open {display_name}: {message}"
-        )));
-    }
-    Ok(())
+    // How a caller that cannot see the screen learns the launch failed.
+    outcome.map_err(|err| report_refused_launch(chrome, package_id, display_name, &err))
 }
 
 impl Default for ApplicationsProvider {

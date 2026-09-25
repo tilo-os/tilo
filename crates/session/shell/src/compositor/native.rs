@@ -212,7 +212,11 @@ fn slow_prepaint_phase(elapsed: Duration) -> bool {
 }
 
 fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Option<Instant> {
-    (!wake_registered).then(|| now + WAYLAND_CLIENT_SERVICE_FALLBACK)
+    if wake_registered {
+        None
+    } else {
+        now.checked_add(WAYLAND_CLIENT_SERVICE_FALLBACK)
+    }
 }
 
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
@@ -233,13 +237,17 @@ fn native_loop_park(
 
     semantic_deadline
         .map(|deadline| deadline.saturating_duration_since(now))
-        .or((!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
+        .or_else(|| (!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
 }
 
 /// A full asynchronous presenter is itself the cadence gate. Its retirement
 /// signal wakes calloop when capacity returns, so retaining an already-due
 /// frame deadline while it is full would turn that deadline into a permanent
 /// zero-timeout poll loop.
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "a pure predicate over four independent presenter facts; callers pass named locals"
+)]
 fn cadence_wait_needed(
     pipe_ready: bool,
     content_changed: bool,
@@ -2689,7 +2697,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
-            Ok(written) => conn.output_offset += written,
+            Ok(written) => conn.output_offset = conn.output_offset.saturating_add(written),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return PendingConnectionProgress::OutputPending;
             }
@@ -5037,7 +5045,7 @@ pub fn run() {
         tracing::error!(%error, "could not register foreign capture completion wake source");
         std::process::exit(1);
     }
-    crate::compositor::foreign::install_completion_ping(capture_ping);
+    crate::compositor::foreign::install_completion_ping(&capture_ping);
 
     // Accept readiness is also part of the outer loop. Accepted streams get
     // their own source below; this source prevents the first request from
@@ -8253,7 +8261,9 @@ mod tests {
     #[test]
     fn presenter_backpressure_does_not_spin_on_a_stale_frame_deadline() {
         let now = Instant::now();
-        let stale_frame = now - Duration::from_millis(1);
+        let stale_frame = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("a monotonic instant has a predecessor");
 
         // This is the state from the 144 Hz failure: animation remains dirty,
         // but the bounded presenter has no capacity.  The render thread's
@@ -8284,7 +8294,9 @@ mod tests {
     #[test]
     fn full_presenter_drops_overdue_widget_deadline_instead_of_busy_spinning() {
         let now = Instant::now();
-        let stale_widget = now - Duration::from_millis(1);
+        let stale_widget = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("a monotonic instant has a predecessor");
 
         assert_eq!(
             widget_deadline_for_presenter(false, Some(stale_widget)),
@@ -8344,7 +8356,7 @@ mod tests {
                 true,
                 false,
                 frame,
-                [Some(now - Duration::from_millis(1))],
+                [now.checked_sub(Duration::from_millis(1))],
             ),
             Some(Duration::ZERO)
         );

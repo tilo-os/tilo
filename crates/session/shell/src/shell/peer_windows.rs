@@ -710,8 +710,8 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nStartupWMClass=org.gnome.Rygel.Preferences\n",
         )
         .expect("desktop entry");
-        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
-        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", data.path());
         crate::shell::host_apps::invalidate_cache();
 
         let (mut tree, tab) = tree_with_local_app("org.gnome.Rygel.Preferences");
@@ -738,13 +738,7 @@ mod tests {
         assert_eq!(local_app_note(&tree, tab), "Not installed on this machine");
 
         crate::shell::host_apps::invalidate_cache();
-        unsafe {
-            if let Some(previous) = previous_data_home {
-                std::env::set_var("XDG_DATA_HOME", previous);
-            } else {
-                std::env::remove_var("XDG_DATA_HOME");
-            }
-        }
+        drop(env);
     }
 
     #[test]
@@ -828,8 +822,8 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Windowless App\nExec=/bin/true\nStartupWMClass=Windowless\n",
         )
         .expect("desktop entry");
-        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
-        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", data.path());
         crate::shell::host_apps::invalidate_cache();
 
         let (mut tree, tab) = tree_with_local_app("org.example.Windowless");
@@ -848,12 +842,6 @@ mod tests {
         );
 
         crate::shell::host_apps::invalidate_cache();
-        unsafe {
-            if let Some(previous) = previous_data_home {
-                std::env::set_var("XDG_DATA_HOME", previous);
-            } else {
-                std::env::remove_var("XDG_DATA_HOME");
-            }
-        }
+        drop(env);
     }
 }

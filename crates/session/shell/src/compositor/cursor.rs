@@ -15,14 +15,15 @@ use vello::peniko::{Color, Fill};
 /// Cursor ink comes from the shared dark desktop theme rather than bypassing
 /// the design-token contract.  Keeping the pair here also makes the hardware
 /// plane, software fallback, and captured pointer use identical colours.
-fn palette() -> (Color, Color) {
+pub(crate) fn palette() -> (Color, Color) {
     let colors = &ui::theme::Theme::dark().tokens.colors;
     (colors.text_primary, colors.surfaces.base)
 }
 
 /// Largest legacy KMS cursor plane supported by every backend we target.
 pub const PLANE_SIZE: u32 = 64;
-const DESIGN_SIZE: f64 = 24.0;
+/// Side of the square grid the cursor outline is authored on.
+const DESIGN_SIZE: u32 = 24;
 const SUPERSAMPLE: u32 = 4;
 
 /// Shapes owned by the compositor. More named shapes can be added without
@@ -70,7 +71,7 @@ pub fn bitmap(shape: CursorShape, size: u32) -> Arc<CursorBitmap> {
 /// rather than maintaining a second approximation of the pointer.
 pub fn draw_scene(scene: &mut Scene, shape: CursorShape, size: u32, hotspot: vello::kurbo::Point) {
     let size = size.clamp(24, PLANE_SIZE);
-    let scale = f64::from(size) / DESIGN_SIZE;
+    let scale = f64::from(size) / f64::from(DESIGN_SIZE);
     let transform = Affine::translate((hotspot.x, hotspot.y)).then_scale(scale);
     draw_vector(scene, shape, transform, scale.recip());
 }
@@ -78,10 +79,25 @@ pub fn draw_scene(scene: &mut Scene, shape: CursorShape, size: u32, hotspot: vel
 fn default_path() -> BezPath {
     // A compact, slightly softened modern arrow. The tip is deliberately
     // (0,0), matching the explicit hotspot and existing pointer coordinates.
-    BezPath::from_svg(
-        "M1 0.75 L1.2 19.15 L5.8 14.75 L9.65 22.25 L13.25 20.35 L9.45 13.1 L16.05 12.7 Z",
-    )
-    .expect("built-in cursor path must parse")
+    const OUTLINE: [(f64, f64); 7] = [
+        (1.0, 0.75),
+        (1.2, 19.15),
+        (5.8, 14.75),
+        (9.65, 22.25),
+        (13.25, 20.35),
+        (9.45, 13.1),
+        (16.05, 12.7),
+    ];
+    let mut path = BezPath::new();
+    let mut points = OUTLINE.into_iter();
+    if let Some(start) = points.next() {
+        path.move_to(start);
+    }
+    for point in points {
+        path.line_to(point);
+    }
+    path.close_path();
+    path
 }
 
 fn draw_vector(scene: &mut Scene, shape: CursorShape, transform: Affine, inverse_scale: f64) {
@@ -116,7 +132,7 @@ fn rasterise(shape: CursorShape, size: u32) -> CursorBitmap {
 fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
     let mut rgba =
         vec![0_u8; usize::try_from(size.saturating_mul(size).saturating_mul(4)).unwrap_or(0)];
-    let scale = f64::from(size) / DESIGN_SIZE;
+    let scale = f64::from(size) / f64::from(DESIGN_SIZE);
     let path = match shape {
         CursorShape::Default => default_path(),
     };
@@ -147,20 +163,26 @@ fn rasterise_cpu(shape: CursorShape, size: u32) -> Vec<u8> {
             } else {
                 ([0_u8, 0, 0], 0_u8)
             };
-            let offset = usize::try_from((y * size + x) * 4).unwrap_or(usize::MAX);
+            let offset = y.saturating_mul(size).saturating_add(x).saturating_mul(4);
+            let offset = usize::try_from(offset).unwrap_or(usize::MAX);
             if let Some(pixel) = rgba.get_mut(offset..offset.saturating_add(4)) {
-                pixel.copy_from_slice(&[color[0], color[1], color[2], alpha]);
+                let [r, g, b] = color;
+                pixel.copy_from_slice(&[r, g, b, alpha]);
             }
         }
     }
     rgba
 }
 
+/// Each polygon vertex paired with the one before it, wrapping around.
+fn edges(polygon: &[(f64, f64)]) -> impl Iterator<Item = ((f64, f64), (f64, f64))> + '_ {
+    let previous = polygon.last().into_iter().chain(polygon.iter());
+    polygon.iter().copied().zip(previous.copied())
+}
+
 fn point_in_polygon(point: (f64, f64), polygon: &[(f64, f64)]) -> bool {
     let mut inside = false;
-    for index in 0..polygon.len() {
-        let current = polygon[index];
-        let previous = polygon[(index + polygon.len() - 1) % polygon.len()];
+    for (current, previous) in edges(polygon) {
         if (current.1 > point.1) != (previous.1 > point.1)
             && point.0
                 < (previous.0 - current.0) * (point.1 - current.1) / (previous.1 - current.1)
@@ -173,8 +195,8 @@ fn point_in_polygon(point: (f64, f64), polygon: &[(f64, f64)]) -> bool {
 }
 
 fn polygon_distance(point: (f64, f64), polygon: &[(f64, f64)]) -> f64 {
-    (0..polygon.len())
-        .map(|index| segment_distance(point, polygon[index], polygon[(index + 1) % polygon.len()]))
+    edges(polygon)
+        .map(|(current, previous)| segment_distance(point, previous, current))
         .fold(f64::INFINITY, f64::min)
 }
 
@@ -194,34 +216,49 @@ fn segment_distance(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> f6
     ((point.0 - nearest.0).powi(2) + (point.1 - nearest.1).powi(2)).sqrt()
 }
 
+/// The four bytes at `offset`, when the whole pixel lies inside `buffer`.
+fn pixel_at(buffer: &[u8], offset: usize) -> Option<[u8; 4]> {
+    buffer.get(offset..offset.checked_add(4)?)?.try_into().ok()
+}
+
+/// `channel * alpha / 255`, the premultiplication of one 8-bit channel.
+fn premultiply(channel: u8, alpha: u8) -> u32 {
+    u32::from(channel).saturating_mul(u32::from(alpha)) / 255
+}
+
 fn downsample_premultiplied(src: &[u8], source_size: u32, size: u32) -> Vec<u8> {
     let mut out =
         vec![0_u8; usize::try_from(size.saturating_mul(size).saturating_mul(4)).unwrap_or(0)];
     let ss = usize::try_from(SUPERSAMPLE).unwrap_or(1);
     let source_size = usize::try_from(source_size).unwrap_or(0);
     let size = usize::try_from(size).unwrap_or(0);
-    let samples = u32::try_from(ss.saturating_mul(ss)).unwrap_or(1);
-    for y in 0..size {
-        for x in 0..size {
-            let mut sum = [0_u32; 4];
-            for sy in 0..ss {
-                for sx in 0..ss {
-                    let src_offset = ((y * ss + sy) * source_size + x * ss + sx) * 4;
-                    let Some(pixel) = src.get(src_offset..src_offset + 4) else {
-                        continue;
-                    };
-                    let alpha = u32::from(pixel[3]);
-                    sum[0] = sum[0].saturating_add(u32::from(pixel[0]) * alpha / 255);
-                    sum[1] = sum[1].saturating_add(u32::from(pixel[1]) * alpha / 255);
-                    sum[2] = sum[2].saturating_add(u32::from(pixel[2]) * alpha / 255);
-                    sum[3] = sum[3].saturating_add(alpha);
-                }
+    let samples = u32::try_from(ss.saturating_mul(ss)).unwrap_or(1).max(1);
+    for (index, dst) in out.chunks_exact_mut(4).enumerate() {
+        let (dst_row, dst_column) = (
+            index.checked_div(size).unwrap_or(0),
+            index.checked_rem(size).unwrap_or(0),
+        );
+        let mut sum = [0_u32; 4];
+        for sy in 0..ss {
+            for sx in 0..ss {
+                let row = dst_row.saturating_mul(ss).saturating_add(sy);
+                let column = dst_column.saturating_mul(ss).saturating_add(sx);
+                let src_offset = row
+                    .saturating_mul(source_size)
+                    .saturating_add(column)
+                    .saturating_mul(4);
+                let Some([red, green, blue, alpha]) = pixel_at(src, src_offset) else {
+                    continue;
+                };
+                let [red_sum, green_sum, blue_sum, alpha_sum] = &mut sum;
+                *red_sum = red_sum.saturating_add(premultiply(red, alpha));
+                *green_sum = green_sum.saturating_add(premultiply(green, alpha));
+                *blue_sum = blue_sum.saturating_add(premultiply(blue, alpha));
+                *alpha_sum = alpha_sum.saturating_add(u32::from(alpha));
             }
-            let dst_offset = (y * size + x) * 4;
-            for channel in 0..4 {
-                out[dst_offset + channel] =
-                    u8::try_from((sum[channel] / samples).min(255)).unwrap_or(255);
-            }
+        }
+        for (byte, total) in dst.iter_mut().zip(sum) {
+            *byte = u8::try_from(total.checked_div(samples).unwrap_or(0).min(255)).unwrap_or(255);
         }
     }
     out
@@ -253,11 +290,14 @@ pub fn composite_xrgb(
             if dx >= width || dy >= height {
                 continue;
             }
-            let src_offset = usize::try_from((y * cursor.width + x) * 4).unwrap_or(usize::MAX);
-            let Some(src) = cursor.rgba.get(src_offset..src_offset.saturating_add(4)) else {
+            let src_offset = y
+                .saturating_mul(cursor.width)
+                .saturating_add(x)
+                .saturating_mul(4);
+            let src_offset = usize::try_from(src_offset).unwrap_or(usize::MAX);
+            let Some([red, green, blue, alpha]) = pixel_at(&cursor.rgba, src_offset) else {
                 continue;
             };
-            let alpha = u32::from(src[3]);
             if alpha == 0 {
                 continue;
             }
@@ -267,18 +307,23 @@ pub fn composite_xrgb(
             let Some(pixel) = dst.get_mut(dst_offset..dst_offset.saturating_add(4)) else {
                 continue;
             };
-            let inverse = 255_u32.saturating_sub(alpha);
+            let Ok([dst_blue, dst_green, dst_red, dst_x]) = <&mut [u8; 4]>::try_from(pixel) else {
+                continue;
+            };
+            let inverse = 255_u8.saturating_sub(alpha);
+            let over = |source: u8, under: u8| {
+                u8::try_from(
+                    u32::from(source)
+                        .saturating_add(premultiply(under, inverse))
+                        .min(255),
+                )
+                .unwrap_or(u8::MAX)
+            };
             // XRGB is little-endian B,G,R,X; the source is premultiplied RGBA.
-            pixel[0] =
-                u8::try_from((u32::from(src[2]) + u32::from(pixel[0]) * inverse / 255).min(255))
-                    .unwrap_or(255);
-            pixel[1] =
-                u8::try_from((u32::from(src[1]) + u32::from(pixel[1]) * inverse / 255).min(255))
-                    .unwrap_or(255);
-            pixel[2] =
-                u8::try_from((u32::from(src[0]) + u32::from(pixel[2]) * inverse / 255).min(255))
-                    .unwrap_or(255);
-            pixel[3] = 0xff;
+            *dst_blue = over(blue, *dst_blue);
+            *dst_green = over(green, *dst_green);
+            *dst_red = over(red, *dst_red);
+            *dst_x = 0xff;
         }
     }
 }

@@ -158,6 +158,10 @@ const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
 const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent capability fact checked by one rejection rule"
+)]
 struct DirectEligibility<'a> {
     outputs: usize,
     normal_transform: bool,
@@ -392,7 +396,10 @@ mod phase_window_tests {
         let started = Instant::now();
         window.started = started;
 
-        assert!(!window.due(started + PHASE_WINDOW_INTERVAL - Duration::from_nanos(1)));
+        let just_before = (started + PHASE_WINDOW_INTERVAL)
+            .checked_sub(Duration::from_nanos(1))
+            .expect("an instant two seconds from now has a predecessor");
+        assert!(!window.due(just_before));
         assert!(window.due(started + PHASE_WINDOW_INTERVAL));
     }
 
@@ -566,25 +573,23 @@ impl DrmPresenter {
     /// capacity after this method returns, so no second frame is rendered
     /// while both double-buffered targets remain owned by KMS.
     fn retire_direct_flip(&mut self) {
-        let Some(index) = self
+        let Some(entry) = self
             .scanouts
-            .iter()
-            .position(|entry| entry.direct_targets.is_some())
+            .iter_mut()
+            .find(|entry| entry.direct_targets.is_some())
         else {
             return;
         };
-        let (retirement, completions) = self.scanouts[index]
+        let (retirement, completions) = entry
             .scanout
             .wait_flip_completions(DIRECT_RETIREMENT_TIMEOUT);
         self.phase_window.record_flip_completions(completions.len());
         for crtc in completions {
-            let entry = &mut self.scanouts[index];
             if let Some(targets) = entry.direct_targets.as_mut() {
                 entry.scanout.mark_direct_flip_complete(targets, crtc);
             }
         }
         if retirement == scanout::DirectRetirement::TimedOut {
-            let entry = &mut self.scanouts[index];
             tracing::error!(
                 timeout_ms = DIRECT_RETIREMENT_TIMEOUT.as_millis(),
                 "DRM direct page flip did not retire; disabling direct scanout"
@@ -606,7 +611,8 @@ impl DrmPresenter {
         }
         let now = Instant::now();
         if self.phase_window.due(now) {
-            let frames = self.phase_window.frames.max(1);
+            let frames = u128::from(self.phase_window.frames.max(1));
+            let average = |total: u128| total.checked_div(frames).unwrap_or(0);
             let summary = self.phase_window.summary_fields(now);
             tracing::info!(
                 target: "tilo::render_phase_summary",
@@ -615,10 +621,10 @@ impl DrmPresenter {
                 direct_dropped = summary.direct_dropped,
                 flip_completions = summary.flip_completions,
                 window_us = summary.window_us,
-                avg_submit_us = self.phase_window.submit_us / u128::from(frames),
-                avg_gpu_readback_map_us = self.phase_window.gpu_readback_map_us / u128::from(frames),
-                avg_settle_us = self.phase_window.settle_us / u128::from(frames),
-                avg_cpu_swizzle_us = self.phase_window.cpu_swizzle_us / u128::from(frames),
+                avg_submit_us = average(self.phase_window.submit_us),
+                avg_gpu_readback_map_us = average(self.phase_window.gpu_readback_map_us),
+                avg_settle_us = average(self.phase_window.settle_us),
+                avg_cpu_swizzle_us = average(self.phase_window.cpu_swizzle_us),
                 readback_bytes = summary.readback_bytes,
                 output_bytes = summary.output_bytes,
                 bridge_us = summary.bridge_us,
@@ -966,7 +972,7 @@ fn paint_scanouts(
                             }
                         }
                     } else {
-                        if let Some(window) = phase_window.as_deref_mut() {
+                        if let Some(window) = phase_window {
                             window.record_direct_drop();
                         }
                         return PaintScanoutSample::default();
