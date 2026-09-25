@@ -56,6 +56,7 @@ des = "0.9"
 # Serialises tests that exercise the process-wide clipboard, so they never
 # race each other under cargo's default parallel runner.
 serial_test.workspace = true
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

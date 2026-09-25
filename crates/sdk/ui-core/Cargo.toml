@@ -21,7 +21,7 @@ default = ["native", "broker-transport"]
 # warmup, and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["dep:arboard", "dep:open", "dep:accesskit_winit", "dep:smithay-clipboard", "dep:smithay-client-toolkit"]
+native = ["dep:arboard", "dep:open", "dep:accesskit_winit", "dep:smithay-clipboard", "dep:smithay-client-toolkit", "dep:runtime-fs"]
 # The collaboration manager's built-in transport: the qOS collab broker's
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -168,10 +168,9 @@ media = { path = "../../media/core" }
 # through `smithay-clipboard` below; `arboard`'s Wayland path needs the
 # data-control manager protocol Tilo withholds from sandboxed apps.
 arboard = { workspace = true, features = ["image-data"], optional = true }
-# The `Link` widget hands its URL to the OS's registered handler (xdg-open /
-# the desktop portal on Linux) when activated. Same crate + pin the file
-# explorer already uses to open files with the desktop default; already
-# resolved in the workspace lockfile, so this adds no registry fetch.
+# The native host's URI opener behind `portal::open_uri` for builds without
+# the XDG portal path (Windows, or Unix without the `portal` feature). Unix builds
+# with `portal` hand URIs to the OpenURI portal instead.
 open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
@@ -269,6 +268,9 @@ zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast"] }
 # Drives the location portal's update stream (`native::location`).
 futures-util = { workspace = true, optional = true }
+# Document media: the launcher's scoped content-store capability backs
+# `qdoc::blobstore` (see `native/blobs.rs`).
+runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }

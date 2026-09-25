@@ -14,6 +14,8 @@ name = "mail"
 path = "src/main.rs"
 
 [dependencies]
+hex.workspace = true
+tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Attachment export goes through the host FileChooser portal.  Mail must never
 # infer a writable Downloads path or grant itself broad filesystem authority.

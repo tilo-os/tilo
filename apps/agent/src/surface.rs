@@ -1638,4 +1638,50 @@ mod tests {
         let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");
         assert_eq!(opens(&decoded), Some("so.tilo.diffmerge"));
     }
+
+    /// The agent publishes nothing of its own: what it can do is the tree each
+    /// contract builds from its headless view of a held document. Every
+    /// immediate action in that tree is one the agent may perform, so each
+    /// must honour the action contract through the agent's registry.
+    mod chat_contract {
+        use super::*;
+
+        fn seeded() -> AutoCommit {
+            let mut doc = AutoCommit::new();
+            chat::doc::ChatDoc::seed_if_empty(&mut doc);
+            doc
+        }
+
+        fn contract() -> &'static AppContract {
+            for_app_id("so.tilo.chat").expect("chat is a contract")
+        }
+
+        ui::action_contract_tests! {
+            seed: seeded(),
+            registry: registry(),
+            resources: |doc| tree(contract(), &View::default(), doc),
+            palette: ["New channel", "Rename channel"],
+        }
+    }
+
+    mod word_processor_contract {
+        use super::*;
+
+        /// A short document built through qdoc's own editing path.
+        fn seeded() -> AutoCommit {
+            let mut document = qdoc::Document::new();
+            let heading = document.insert_block(None, "heading");
+            document.splice_text(&heading, 0, 0, "Launch plan");
+            let body = document.insert_block(Some(&heading), "paragraph");
+            document.splice_text(&body, 0, 0, "Ship the beta on Friday.");
+            AutoCommit::load(&document.save()).expect("a saved document loads")
+        }
+
+        ui::action_contract_tests! {
+            seed: seeded(),
+            registry: registry(),
+            resources: |doc| tree(&WORD_PROCESSOR, &View::default(), doc),
+            palette: ["Insert table"],
+        }
+    }
 }

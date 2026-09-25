@@ -27,6 +27,7 @@ use crate::doc::MergeDoc;
 use crate::highlight;
 use crate::model::{MergeHunk, MergeModel, Resolution};
 use ui::paint::with_alpha;
+use ui::widget::code_editor::Span;
 
 /// Minimum code-line pitch; the measured line height of `FONT_SIZE` wins
 /// when the text scale makes it taller (see [`Metrics`]).
@@ -36,7 +37,7 @@ const HEADER_H: f64 = 30.0;
 /// Minimum band a change hunk reserves under its rows for the chips
 /// (`chip_h + 6`).
 const ACTION_H: f64 = 26.0;
-const FONT_SIZE: f32 = 12.5;
+pub(crate) const FONT_SIZE: f32 = 12.5;
 const PAD_X: f64 = 8.0;
 const GAP: f64 = 6.0;
 /// Text sizes the panel paints with; [`Metrics::measure`] measures the same
@@ -182,6 +183,9 @@ pub struct MergeView {
     base_label: String,
     ours_label: String,
     theirs_label: String,
+    /// Syntax spans for each hunk's source lines; every side is tokenized as
+    /// one file across its hunks.
+    source_spans: Vec<HunkSpans>,
     rect: Rect,
     scroll_y: f64,
     /// Cached y-extent (in content space) of each hunk row in the source band.
@@ -225,6 +229,7 @@ impl MergeView {
             base_label: String::new(),
             ours_label: String::new(),
             theirs_label: String::new(),
+            source_spans: Vec::new(),
             rect: Rect::ZERO,
             scroll_y: 0.0,
             hunk_spans: Vec::new(),
@@ -261,6 +266,7 @@ impl MergeView {
             self.base_label.clear();
             self.ours_label.clear();
             self.theirs_label.clear();
+            self.source_spans.clear();
             self.pending_action = None;
             self.action_hits.clear();
             self.hunk_spans.clear();
@@ -311,6 +317,8 @@ impl MergeView {
         self.base_label = base_label.to_string();
         self.ours_label = ours_label.to_string();
         self.theirs_label = theirs_label.to_string();
+        self.source_spans =
+            HunkSpans::for_model(&self.model, [base_label, ours_label, theirs_label]);
         // Spans depend on the model as much as on the metrics; a new input
         // set at an unchanged rect must not paint against stale spans.
         self.recompute_spans();
@@ -902,18 +910,25 @@ impl MergeView {
 
             // Phones show one source at a time; tablets and desktops keep the
             // aligned three-column comparison.
+            let spans = self.source_spans.get(hi);
+            let side = |pick: fn(&HunkSpans) -> &[Vec<Span>]| spans.map_or(&[][..], pick);
+            let (base, ours, theirs) = (
+                (&h.base, side(|s| &s.base)),
+                (&h.ours, side(|s| &s.ours)),
+                (&h.theirs, side(|s| &s.theirs)),
+            );
             match compact_source {
                 Some(SourcePane::Base) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base, m);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, base, m);
                 }
                 Some(SourcePane::Ours) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.ours, m);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, ours, m);
                 }
                 Some(SourcePane::Theirs) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.theirs, m);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, theirs, m);
                 }
                 None => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base, m);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, base, m);
                     draw_lines(
                         scene,
                         transform,
@@ -921,7 +936,7 @@ impl MergeView {
                         theme,
                         r.x0 + col_w + PAD_X,
                         y,
-                        &h.ours,
+                        ours,
                         m,
                     );
                     draw_lines(
@@ -931,7 +946,7 @@ impl MergeView {
                         theme,
                         r.x0 + 2.0 * col_w + PAD_X,
                         y,
-                        &h.theirs,
+                        theirs,
                         m,
                     );
                 }
@@ -1470,8 +1485,50 @@ fn draw_header(
     }
 }
 
+/// One hunk's source lines, as syntax spans per side.
+struct HunkSpans {
+    base: Vec<Vec<Span>>,
+    ours: Vec<Vec<Span>>,
+    theirs: Vec<Vec<Span>>,
+}
+
+impl HunkSpans {
+    /// Tokenize each side as one continuous file (hunks tile it in order),
+    /// with the grammar its label names, then split the spans back per hunk.
+    fn for_model(model: &MergeModel, [base, ours, theirs]: [&str; 3]) -> Vec<Self> {
+        fn side(
+            model: &MergeModel,
+            label: &str,
+            lines: fn(&MergeHunk) -> &Vec<String>,
+        ) -> Vec<Vec<Vec<Span>>> {
+            let grammar = highlight::grammar_for_label(label);
+            let mut spans = highlight::document(
+                &grammar,
+                model
+                    .hunks
+                    .iter()
+                    .flat_map(|hunk| lines(hunk).iter().map(String::as_str)),
+            )
+            .into_iter();
+            model
+                .hunks
+                .iter()
+                .map(|hunk| spans.by_ref().take(lines(hunk).len()).collect())
+                .collect()
+        }
+        let base = side(model, base, |hunk| &hunk.base);
+        let ours = side(model, ours, |hunk| &hunk.ours);
+        let theirs = side(model, theirs, |hunk| &hunk.theirs);
+        base.into_iter()
+            .zip(ours)
+            .zip(theirs)
+            .map(|((base, ours), theirs)| Self { base, ours, theirs })
+            .collect()
+    }
+}
+
 /// Draw a list of code lines starting at `(x0, y)`, highlighted, one per
-/// measured row pitch.
+/// measured row pitch. `source` pairs the lines with their syntax spans.
 #[allow(
     clippy::too_many_arguments,
     reason = "code-line painting combines paint context, column origin, source lines and measured row pitch"
@@ -1483,39 +1540,14 @@ fn draw_lines(
     theme: &Theme,
     x0: f64,
     y0: f64,
-    lines: &[String],
+    (lines, spans): (&Vec<String>, &[Vec<Span>]),
     m: Metrics,
 ) {
     for (i, line) in lines.iter().enumerate() {
         let y = y0 + i as f64 * m.row_h + m.text_dy;
-        draw_code_segments(scene, transform, tr, theme, x0, y, line);
-    }
-}
-
-pub(crate) fn draw_code_segments(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x0: f64,
-    y: f64,
-    text: &str,
-) {
-    let mut x = x0;
-    for (seg, color) in highlight::segments(text, theme) {
-        if seg.is_empty() {
-            continue;
-        }
-        // `y` is already the glyph top: callers centre it on the row pitch.
-        tr.draw_text(
-            scene,
-            &seg,
-            FONT_SIZE,
-            color,
-            transform * Affine::translate((x, y)),
-            None,
+        let line_spans = spans.get(i).map_or(&[][..], Vec::as_slice);
+        highlight::draw_line(
+            scene, transform, tr, theme, x0, y, line, line_spans, FONT_SIZE,
         );
-        let (w, _) = tr.measure(&seg, FONT_SIZE, None);
-        x += f64::from(w);
     }
 }

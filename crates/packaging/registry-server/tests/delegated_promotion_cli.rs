@@ -19,8 +19,8 @@ use registry_types::{
     EntryAction, RegistryEntry, RegistryTarget, RegistryVersion, SignedRegistrySnapshot,
     sign_change_request,
 };
+use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
-use tilo_app_package::{Manifest, MemoryBlobStore};
 
 fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
@@ -409,7 +409,9 @@ type = "gui"
         hex::encode(identity.public_key_bytes())
     ))
     .unwrap();
-    let mut store = MemoryBlobStore::new();
-    let id = pack(&payload, &manifest, identity, &mut store).unwrap();
-    (app_registry::tapp::write_bytes(id, &store).unwrap(), id)
+    let packed = pack(&payload, &manifest, identity).unwrap();
+    (
+        tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap(),
+        packed.id(),
+    )
 }

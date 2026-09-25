@@ -21,11 +21,13 @@ use iroh_base::EndpointAddr;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
+use tilo_clock::Clock;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
+use crate::clock::DaemonClock;
 use crate::record_repository::{RecordRepository, RecordRepositoryKey};
 use crate::share_management::{
     BearerLinkRequest, MAX_TRUSTED_SHARE_ISSUERS, NamedGrantRequest, ShareManagement,
@@ -35,19 +37,6 @@ use crate::share_management::{
 pub const MAX_SHARE_CONTROL_CONNECTIONS: usize = 32;
 pub const MAX_SHARE_CONTROL_REQUESTS_PER_CONNECTION: usize = 256;
 
-pub trait ShareControlClock: Send + Sync {
-    fn now_ms(&self) -> u64;
-}
-
-#[derive(Debug, Default)]
-pub struct SystemShareControlClock;
-
-impl ShareControlClock for SystemShareControlClock {
-    fn now_ms(&self) -> u64 {
-        crate::clock::unix_now_ms()
-    }
-}
-
 /// Immutable authority context for one workspace's Files control socket.
 pub struct ShareControlServer {
     workspace_id: Uuid,
@@ -56,7 +45,7 @@ pub struct ShareControlServer {
     trusted_issuers: Vec<Ed25519PublicKey>,
     management: Arc<ShareManagement>,
     repository: Arc<RecordRepository>,
-    clock: Arc<dyn ShareControlClock>,
+    clock: Arc<dyn Clock>,
     named_outbox: Option<Arc<crate::NamedShareOutbox>>,
 }
 
@@ -82,7 +71,7 @@ impl ShareControlServer {
             trusted_issuers,
             management,
             repository,
-            Arc::new(SystemShareControlClock),
+            Arc::new(DaemonClock),
         )
     }
 
@@ -99,7 +88,7 @@ impl ShareControlServer {
         trusted_issuers: Vec<Ed25519PublicKey>,
         management: Arc<ShareManagement>,
         repository: Arc<RecordRepository>,
-        clock: Arc<dyn ShareControlClock>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, ShareControlServerError> {
         if workspace_id.is_nil() || endpoint.is_empty() {
             return Err(ShareControlServerError::InvalidConfiguration);
@@ -440,19 +429,13 @@ mod tests {
     use collab_types::{ContentHash, FileActor, FileMetadataV1, IndexStatus, generate_keypair};
     use iroh::SecretKey;
 
+    use tilo_clock::FixedClock;
+
     use super::*;
     use crate::record_publisher::RecordPublisher;
     use crate::share_authority::{ShareAuthority, ShareGrantStatus};
 
     const NOW: u64 = 20_000;
-
-    struct FixedClock;
-
-    impl ShareControlClock for FixedClock {
-        fn now_ms(&self) -> u64 {
-            NOW
-        }
-    }
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -505,7 +488,7 @@ mod tests {
                     vec![issuer_public],
                     management,
                     repository,
-                    Arc::new(FixedClock),
+                    Arc::new(FixedClock(NOW)),
                 )
                 .unwrap()
                 .with_named_delivery_outbox(Arc::new(

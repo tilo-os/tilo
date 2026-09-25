@@ -300,6 +300,10 @@ pub enum NotesAction {
         marks: Vec<(String, Vec<InlineMarkSpan>)>,
         assets: Vec<(String, Vec<u8>)>,
     },
+    /// Move images a notebook still carries inline into the device content
+    /// store and keep only their references, so the notebook stops paying
+    /// for image bytes in every replica and sync message. Idempotent.
+    MoveAssetsToContentStore { digests: Vec<String> },
 }
 
 fn update_page_tree(doc: &mut Doc, before: &[PageData], after: &[PageData]) -> Result<(), String> {
@@ -528,6 +532,12 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.notebook",
             "Notes".into(),
         ),
+        NotesAction::MoveAssetsToContentStore { .. } => (
+            "Move images to shared storage",
+            "notes.notebook".into(),
+            "notes.notebook",
+            "Notes".into(),
+        ),
         NotesAction::UpsertPage(page) => (
             "Update note",
             format!("notes.page:{}", page.id),
@@ -717,6 +727,9 @@ impl Action for NotesAction {
             }
             NotesAction::UpdatePageTree { before, after } => {
                 update_page_tree(doc, before, after).map_err(ActionError::Refused)?;
+            }
+            NotesAction::MoveAssetsToContentStore { digests } => {
+                crate::notebook::move_inline_assets(doc, digests).map_err(ActionError::Refused)?;
             }
             NotesAction::UpsertPage(data) => {
                 if let Some(meta) = data.to_meta() {
@@ -1880,20 +1893,40 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
         .into_iter()
         .take(RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT)
     {
-        let mut page_ref = Resource::new(page_resource_id(page.id), "notes.page", page_label(page));
-        if let Some(open) = view_operation_spec(
-            "open",
-            "Open note",
-            &NotesOperation::OpenPage {
-                page: page.id,
-                block_id: None,
-            },
-        ) {
-            page_ref = page_ref.with_action(open).with_view(page_editor_view());
-        }
-        resource = resource.with_child(page_ref);
+        resource = resource.with_child(tag_page_resource(tag_id, page));
     }
     resource
+}
+
+/// A tag's membership row for one note. It carries its own address: the note
+/// itself is already published once in the notebook tree, and a resource id
+/// must be unique across the whole surface.
+pub fn tag_page_resource_id(tag: TagId, page: PageId) -> String {
+    format!("notes.tag-page:{tag}:{page}")
+}
+
+fn parse_tag_page_resource_id(id: &str) -> Option<(TagId, PageId)> {
+    let (tag, page) = id.strip_prefix("notes.tag-page:")?.split_once(':')?;
+    Some((tag.parse().ok()?, page.parse().ok()?))
+}
+
+fn tag_page_resource(tag: TagId, page: &PageMeta) -> Resource {
+    let mut page_ref = Resource::new(
+        tag_page_resource_id(tag, page.id),
+        "notes.tag-page",
+        page_label(page),
+    );
+    if let Some(open) = view_operation_spec(
+        "open",
+        "Open note",
+        &NotesOperation::OpenPage {
+            page: page.id,
+            block_id: None,
+        },
+    ) {
+        page_ref = page_ref.with_action(open).with_view(page_editor_view());
+    }
+    page_ref
 }
 
 impl ResourceProvider for crate::app::NotesApp {
@@ -1916,6 +1949,16 @@ impl ResourceProvider for crate::app::NotesApp {
             && let Some(tag) = ctx.tags.iter().find(|tag| tag.id == tag_id)
         {
             return Some(tag_resource(tag, &ctx));
+        }
+        if let Some((tag_id, page_id)) = parse_tag_page_resource_id(id) {
+            if !ctx.tag_assignments.contains(&(page_id, tag_id)) {
+                return None;
+            }
+            return ctx
+                .pages
+                .iter()
+                .find(|page| page.id == page_id)
+                .map(|page| tag_page_resource(tag_id, page));
         }
         if let Some(page_id) = id.strip_prefix("notes.page:")
             && let Ok(page_id) = page_id.parse::<PageId>()
@@ -2174,13 +2217,6 @@ mod tests {
         assert_eq!(resource.children[0].actions[0].id, "open");
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
         match &spec.input {
             ActionInput::Prompted { build, .. } => build(arg),
@@ -2239,6 +2275,96 @@ mod tests {
         (doc, projects, a, b, inbox)
     }
 
+    const PROJECTS: PageId = Uuid::from_u128(0x1111);
+    const LAUNCH: PageId = Uuid::from_u128(0x2222);
+    const NOTES: PageId = Uuid::from_u128(0x3333);
+    const INBOX: PageId = Uuid::from_u128(0x4444);
+    const URGENT: TagId = Uuid::from_u128(0x5555);
+
+    fn spec_encoding_of(spec: &ActionSpec) -> EncodedAction {
+        ui::testing::action_contract::spec_encoding(spec, None)
+    }
+
+    fn dispatch(doc: &mut AutoCommit, action: &NotesAction) {
+        tilo_actions::dispatch(doc, action, encode(action), &mut LocalTransport::new()).unwrap();
+    }
+
+    /// A canonical notebook built through the actions: a Projects page with
+    /// two children and a block of text, an Inbox root, and a tag on Launch.
+    fn notebook_seed() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        crate::notebook::initialize_empty(&mut doc).unwrap();
+        for (id, parent, order, title) in [
+            (PROJECTS, None, 0, "Projects"),
+            (LAUNCH, Some(PROJECTS), 0, "Launch"),
+            (NOTES, Some(PROJECTS), 1, "Notes"),
+            (INBOX, None, 1, "Inbox"),
+        ] {
+            dispatch(&mut doc, &new_page_action(id, parent, order, title));
+        }
+        dispatch(
+            &mut doc,
+            &apply_block_ops_action(
+                PROJECTS,
+                vec![BlockEditOp::Insert {
+                    block_id: Uuid::from_u128(0x6666).to_string(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "Kickoff agenda".into(),
+                }],
+            ),
+        );
+        dispatch(&mut doc, &new_tag_action(URGENT, "urgent"));
+        dispatch(&mut doc, &set_tag_assignment_action(LAUNCH, URGENT, true));
+        doc
+    }
+
+    fn notebook_resources(doc: &AutoCommit) -> Vec<Resource> {
+        let author = ui::permissions::UserId("action-contract".into());
+        let app = crate::app::NotesApp::from_document(doc, &author).expect("a canonical notebook");
+        ResourceProvider::resources(&app, doc)
+    }
+
+    fn page_meta(doc: &AutoCommit, id: PageId) -> PageMeta {
+        NotesDoc::list_pages(doc)
+            .into_iter()
+            .find(|p| p.id == id)
+            .expect("a seeded page")
+    }
+
+    ui::action_contract_tests! {
+        seed: notebook_seed(),
+        registry: registry(),
+        resources: |doc| notebook_resources(doc),
+        palette: ["New note", "Rename note", "Delete note"],
+        replay: [
+            rename_page => |doc| encode(&rename_page_action(
+                &page_meta(doc, LAUNCH),
+                "Renamed via action",
+            )),
+            delete_subtree => |_| encode(&delete_page_action(PROJECTS)),
+            reparent_via_upsert => |doc| {
+                // Move Launch out from under Projects to a root after Inbox,
+                // the way a drag-reorder does.
+                let mut w = Workspace::new();
+                w.data.pages = NotesDoc::list_pages(doc);
+                assert!(w.move_to(LAUNCH, None, None));
+                encode(&upsert_page_action(w.get(LAUNCH).unwrap()))
+            },
+        ],
+        undo: [
+            new_page => |_| encode(&new_page_action(Uuid::from_u128(0x9999), None, 2, "Fresh")),
+        ],
+        encodes: [
+            delete_page => (&page_resource_id(PROJECTS), "delete", |_, _| {
+                encode(&delete_page_action(PROJECTS))
+            }),
+            rename_page => (&page_resource_id(PROJECTS), "rename", arg: "Renamed", |doc, _| {
+                encode(&rename_page_action(&page_meta(doc, PROJECTS), "Renamed"))
+            }),
+        ],
+    }
+
     fn ctx_from(doc: &AutoCommit) -> NotesResourceCtx {
         NotesResourceCtx {
             pages: NotesDoc::list_pages(doc),
@@ -2286,27 +2412,6 @@ mod tests {
         );
         assert_eq!(projects.children[0].label, "Launch");
         assert_eq!(projects.children[1].label, "Notes");
-
-        // The one palette surfaces the tree's actions as rows.
-        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../crates/sdk/ui-core/assets/fonts"),
-            "en-US",
-        );
-        let renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
-        let mut palette = ui::ActionPalette::with_text_renderer(renderer);
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("New note")), "{labels:?}");
-        assert!(
-            labels.iter().any(|l| l.contains("Rename note")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Delete note")),
-            "{labels:?}"
-        );
     }
 
     #[test]
@@ -2373,7 +2478,7 @@ mod tests {
             open_block_address(projects, "obj-b"),
             ActionAddress::new(&block.id.0, &open.id)
         );
-        let encoded = immediate_encode(open);
+        let encoded = spec_encoding_of(open);
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
             Some(NotesOperation::OpenPage {
@@ -2402,7 +2507,7 @@ mod tests {
             .find(|action| action.id == "copy-link")
             .expect("note publishes copy-link");
         assert_eq!(copy.kind, OperationKind::Effect);
-        let encoded = immediate_encode(copy);
+        let encoded = spec_encoding_of(copy);
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
             Some(NotesOperation::CopyPageLink { page: projects })
@@ -2412,7 +2517,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "duplicate")
             .expect("canonical note publishes duplicate");
-        let encoded = immediate_encode(duplicate);
+        let encoded = spec_encoding_of(duplicate);
         let NotesAction::DuplicateSubtree { source, pages } =
             serde_json::from_slice(&encoded.payload).unwrap()
         else {
@@ -2425,7 +2530,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "insert-image")
             .expect("note publishes image insertion");
-        let encoded = immediate_encode(insert_image);
+        let encoded = spec_encoding_of(insert_image);
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
             Some(NotesOperation::InsertImage { page: projects })
@@ -2482,7 +2587,7 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "move-up")
-            .map(immediate_encode)
+            .map(spec_encoding_of)
             .unwrap();
         tilo_actions::apply_local(
             &mut doc,
@@ -2690,127 +2795,10 @@ mod tests {
         assert_eq!(left[0].order, 0, "surviving root sibling renumbers to 0");
     }
 
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
+    /// The new-child prompt builds an `UpsertPage` under the right parent at
+    /// the right order; its freshly minted id rules out a byte comparison.
     #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let (seeded_doc, _projects, _a, _b, _inbox) = seeded();
-        let mut state = ui::State::new();
-        state.doc = seeded_doc;
-        let before_heads = state.doc.get_heads();
-        let before = NotesDoc::list_pages(&state.doc).len();
-
-        // Create a new root page via the action + host undo recording.
-        let new_id = Uuid::from_u128(0x9999);
-        let action = new_page_action(new_id, None, 2, "Fresh");
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            NotesDoc::list_pages(&state.doc).len(),
-            before + 1,
-            "the action created a note"
-        );
-        assert!(
-            NotesDoc::list_pages(&state.doc)
-                .iter()
-                .any(|p| p.id == new_id),
-            "the created note is present"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            NotesDoc::list_pages(&state.doc).len(),
-            before,
-            "undo reverted the created note and nothing else"
-        );
-        assert!(
-            !NotesDoc::list_pages(&state.doc)
-                .iter()
-                .any(|p| p.id == new_id),
-            "the created note is gone after undo"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (seeded_doc, _projects, a, _b, _inbox) = seeded();
-        let mut doc_a = seeded_doc;
-        doc_a.commit();
-        let bytes = doc_a.save();
-        let mut doc_b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            doc_a.get_heads(),
-            doc_b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Rename a page: a whole-page upsert that diff-splices the title.
-        let meta = NotesDoc::list_pages(&doc_a)
-            .into_iter()
-            .find(|p| p.id == a)
-            .unwrap();
-        let action = rename_page_action(&meta, "Renamed via action");
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            doc_a.get_heads(),
-            doc_b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(
-            NotesDoc::list_pages(&doc_b)
-                .into_iter()
-                .find(|p| p.id == a)
-                .unwrap()
-                .title,
-            "Renamed via action",
-            "the rename landed on the peer"
-        );
-    }
-
-    /// Deleting a subtree also replays byte-identically — the recursive-delete +
-    /// renumber path, not just the upsert.
-    #[test]
-    fn delete_replays_byte_identical() {
-        let (seeded_doc, projects, _a, _b, _inbox) = seeded();
-        let mut doc_a = seeded_doc;
-        doc_a.commit();
-        let bytes = doc_a.save();
-        let mut doc_b = AutoCommit::load(&bytes).unwrap();
-
-        let action = delete_page_action(projects);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            doc_a.get_heads(),
-            doc_b.get_heads(),
-            "delete replayed identically"
-        );
-        assert_eq!(NotesDoc::list_pages(&doc_b).len(), 1);
-    }
-
-    /// Single source of truth: the palette's rename / delete / new-child specs
-    /// encode byte-identically to the builders the on-screen affordances call.
-    #[test]
-    fn palette_and_builder_encode_identically() {
+    fn new_child_prompt_upserts_under_its_parent() {
         let (doc, projects, _a, _b, _inbox) = seeded();
         let resources = provide_resources(&ctx_from(&doc), &doc);
         let page = resources[0]
@@ -2818,29 +2806,6 @@ mod tests {
             .iter()
             .find(|r| r.label == "Projects")
             .unwrap();
-
-        // Delete spec == delete builder.
-        let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(delete_spec);
-        let from_builder = encode(&delete_page_action(projects));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        // Rename spec == rename builder for the same title.
-        let meta = NotesDoc::list_pages(&doc)
-            .into_iter()
-            .find(|p| p.id == projects)
-            .unwrap();
-        let rename_spec = page.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename_spec, "Renamed");
-        let from_builder = encode(&rename_page_action(&meta, "Renamed"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
 
         // New-child spec builds an UpsertPage under the right parent at the right
         // order (the minted id differs each call, so compare the stable fields).
@@ -2887,41 +2852,10 @@ mod tests {
             NotesAction::CreateAndAssignTag { .. } => {
                 panic!("new-child built the wrong action: CreateAndAssignTag")
             }
+            NotesAction::MoveAssetsToContentStore { .. } => {
+                panic!("new-child built the wrong action: MoveAssetsToContentStore")
+            }
         }
-    }
-
-    /// A move (re-parent + reorder) is expressed as `UpsertPage`s; replaying them
-    /// converges. Mirrors what the app dispatches for a drag-reorder.
-    #[test]
-    fn reparent_via_upsert_replays_identically() {
-        let (seeded_doc, projects, a, _b, inbox) = seeded();
-        let mut doc_a = seeded_doc;
-        doc_a.commit();
-        let bytes = doc_a.save();
-        let mut doc_b = AutoCommit::load(&bytes).unwrap();
-
-        // Move child `a` out from under Projects to a root sibling after Inbox.
-        let mut w = Workspace::new();
-        w.data.pages = NotesDoc::list_pages(&doc_a);
-        assert!(w.move_to(a, None, None));
-        let moved = w.get(a).unwrap().clone();
-        assert_eq!(moved.parent, None);
-
-        let action = upsert_page_action(&moved);
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            doc_a.get_heads(),
-            doc_b.get_heads(),
-            "move replayed identically"
-        );
-        let pb = NotesDoc::list_pages(&doc_b);
-        assert_eq!(pb.iter().find(|p| p.id == a).unwrap().parent, None);
-        // Untouched pages are still there.
-        assert!(pb.iter().any(|p| p.id == projects));
-        assert!(pb.iter().any(|p| p.id == inbox));
     }
 
     /// The retained accessibility tree surfaces the notebook's pages as stable
@@ -3145,7 +3079,7 @@ mod tests {
             .actions
             .iter()
             .find(|action| action.id == "move-up")
-            .map(immediate_encode)
+            .map(spec_encoding_of)
             .unwrap();
         assert_eq!(
             serde_json::from_slice::<NotesAction>(&move_up.payload).unwrap(),
@@ -3195,7 +3129,7 @@ mod tests {
         let action = resource.actions.first().expect("external link action");
         assert_eq!(action.kind, OperationKind::Effect);
         assert_eq!(action.label, "Open link: guide");
-        let encoded = immediate_encode(action);
+        let encoded = spec_encoding_of(action);
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
             Some(NotesOperation::OpenExternalLink {
@@ -3268,7 +3202,11 @@ mod tests {
         assert!(resource.actions.iter().any(|action| action.id == "open"));
         assert!(resource.actions.iter().any(|action| action.id == "rename"));
         assert!(resource.actions.iter().any(|action| action.id == "delete"));
-        assert_eq!(resource.children[0].id.as_str(), page_resource_id(projects));
+        assert_eq!(
+            resource.children[0].id.as_str(),
+            tag_page_resource_id(tag, projects),
+            "the membership row has its own address, distinct from the note's"
+        );
 
         let page = resources[0]
             .children

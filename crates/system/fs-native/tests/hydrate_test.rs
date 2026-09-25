@@ -30,6 +30,8 @@ fn start(fetcher: &Arc<PatternFetcher>, granule: u64) -> Hydrator {
         HydratorConfig {
             granule,
             workers: 8,
+            readahead_max: 0,
+            ..HydratorConfig::default()
         },
     )
     .unwrap()
@@ -101,6 +103,12 @@ fn a_full_read_makes_the_file_resident_and_unmarked() {
     assert_eq!(all.len() as u64, size);
     assert_eq!(all, pattern(3, 0, size as usize));
     assert_eq!(h.residency(&path).unwrap(), Residency::Resident);
+    let meta = fs::metadata(&path).unwrap();
+    assert_eq!(
+        (meta.mtime(), meta.mtime_nsec()),
+        (1_700_000_000, 123_456_789),
+        "hydration does not move the version's mtime"
+    );
     let xattr = fs_native_xattr(&path);
     assert!(xattr.is_none(), "residency xattr left on a resident file");
     // No mark remains: further reads raise no events.
@@ -321,5 +329,207 @@ fn time_to_first_byte_is_one_fetch() {
     assert_eq!(buf, pattern(9, 32 * MIB, 64 * 1024));
     eprintln!("placeholder TTFB with a {delay:?} source: {ttfb:?}");
     assert!(ttfb < delay + Duration::from_millis(500), "{ttfb:?}");
+    h.stop();
+}
+
+fn start_with(fetcher: &Arc<PatternFetcher>, granule: u64, readahead_max: u64) -> Hydrator {
+    Hydrator::start(
+        Arc::clone(fetcher) as Arc<dyn fs_native::hydrate::Fetcher>,
+        HydratorConfig {
+            granule,
+            workers: 8,
+            readahead_max,
+            ..HydratorConfig::default()
+        },
+    )
+    .unwrap()
+}
+
+/// Reads `path` front to back in 128 KiB `read(2)` calls, like `cat`.
+fn read_sequentially(path: &std::path::Path) -> (Vec<u8>, Duration) {
+    let t = Instant::now();
+    let mut f = File::open(path).unwrap();
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; 128 * 1024];
+    loop {
+        let n = f.read(&mut buf).unwrap();
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    (out, t.elapsed())
+}
+
+#[test]
+fn a_sequential_reader_is_fetched_ahead_and_nothing_is_fetched_twice() {
+    let Some(s) = fanotify_scratch("hydrate_readahead") else {
+        return;
+    };
+    let size = 16 * MIB;
+    let delay = Duration::from_millis(10);
+
+    let plain = PatternFetcher::new(delay);
+    let h = start_with(&plain, 256 * 1024, 0);
+    let path = s.live.join("plain");
+    h.create_placeholder(&path, &spec(11, size)).unwrap();
+    let (bytes, without) = read_sequentially(&path);
+    assert_eq!(bytes, pattern(11, 0, size as usize));
+    h.stop();
+
+    let ahead = PatternFetcher::new(delay);
+    let h = start_with(&ahead, 256 * 1024, 8 * MIB);
+    let path = s.live.join("ahead");
+    h.create_placeholder(&path, &spec(12, size)).unwrap();
+    let (bytes, with) = read_sequentially(&path);
+    assert_eq!(bytes, pattern(12, 0, size as usize));
+    let fetched: u64 = ahead.calls().iter().map(|(_, len)| len).sum();
+    let readahead = h.stats().readahead_bytes.load(Ordering::Relaxed);
+    eprintln!(
+        "16 MiB cold sequential read, {delay:?} per fetch: {without:?} in {} fetches without read-ahead, \
+         {with:?} in {} fetches with it ({} MiB fetched ahead)",
+        plain.calls().len(),
+        ahead.calls().len(),
+        readahead / MIB
+    );
+    assert_eq!(fetched, size, "every byte is fetched exactly once");
+    assert!(
+        readahead > size / 2,
+        "most of the file arrives ahead of the reader"
+    );
+    assert!(
+        ahead.calls().len() * 4 < plain.calls().len(),
+        "read-ahead batches fetches: {} vs {}",
+        ahead.calls().len(),
+        plain.calls().len()
+    );
+    assert_eq!(h.residency(&path).unwrap(), Residency::Resident);
+    h.stop();
+}
+
+#[test]
+fn replacing_a_file_with_a_placeholder_keeps_open_readers_on_the_old_version() {
+    let Some(s) = fanotify_scratch("hydrate_replace") else {
+        return;
+    };
+    let fetcher = PatternFetcher::new(Duration::ZERO);
+    let h = start(&fetcher, 64 * 1024);
+    let path = s.live.join("doc");
+    fs::write(&path, b"old version").unwrap();
+    let old = File::open(&path).unwrap();
+    h.replace_with_placeholder(&path, &spec(13, 3 * MIB))
+        .unwrap();
+    let mut before = String::new();
+    (&old).read_to_string(&mut before).unwrap();
+    assert_eq!(before, "old version", "an open reader keeps its inode");
+    let meta = fs::metadata(&path).unwrap();
+    assert_eq!(meta.len(), 3 * MIB);
+    assert_eq!(meta.permissions().mode() & 0o777, 0o640);
+    let mut buf = vec![0u8; 4096];
+    File::open(&path)
+        .unwrap()
+        .read_exact_at(&mut buf, MIB)
+        .unwrap();
+    assert_eq!(buf, pattern(13, MIB, 4096));
+    h.stop();
+}
+
+#[test]
+fn a_gated_file_refuses_writers_with_ebusy_and_still_serves_readers() {
+    let Some(s) = fanotify_scratch("hydrate_gate") else {
+        return;
+    };
+    let fetcher = PatternFetcher::new(Duration::ZERO);
+    let h = start(&fetcher, 64 * 1024);
+    let path = s.live.join("db.sqlite");
+    fs::write(&path, vec![7u8; 64 * 1024]).unwrap();
+    h.gate_writes(&path, libc::EBUSY).unwrap();
+
+    // A reader is unaffected.
+    let mut buf = vec![0u8; 4096];
+    File::open(&path)
+        .unwrap()
+        .read_exact_at(&mut buf, 0)
+        .unwrap();
+    assert_eq!(buf, vec![7u8; 4096]);
+
+    // A writer gets EBUSY from the access, not a torn file.
+    let w = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let err = w.write_at(b"x", 0).unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
+    assert!(h.stats().gated_denials.load(Ordering::Relaxed) >= 1);
+    // While this process holds a writable descriptor its reads are refused
+    // too: the kernel does not say which kind of access an event is for.
+    let mut probe = vec![0u8; 16];
+    let err = File::open(&path)
+        .unwrap()
+        .read_at(&mut probe, 0)
+        .unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(libc::EBUSY), "{err}");
+
+    // Once the lease is back, the same descriptor writes.
+    h.ungate_writes(&path).unwrap();
+    w.write_at(b"x", 0).unwrap();
+    let mut want = vec![7u8; 64 * 1024];
+    want[0] = b'x';
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        want,
+        "the refused write left no trace"
+    );
+    h.stop();
+}
+
+struct Toggle {
+    grant: std::sync::atomic::AtomicBool,
+    asked: std::sync::atomic::AtomicU64,
+}
+
+impl fs_native::hydrate::WritePolicy for Toggle {
+    fn admit_writer(&self, _file: (u64, u64)) -> Result<(), i32> {
+        self.asked.fetch_add(1, Ordering::Relaxed);
+        if self.grant.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(libc::EBUSY)
+        }
+    }
+}
+
+#[test]
+fn an_asking_gate_lets_the_write_policy_decide() {
+    let Some(s) = fanotify_scratch("hydrate_ask") else {
+        return;
+    };
+    let fetcher = PatternFetcher::new(Duration::ZERO);
+    let h = start(&fetcher, 64 * 1024);
+    let policy = Arc::new(Toggle {
+        grant: std::sync::atomic::AtomicBool::new(false),
+        asked: std::sync::atomic::AtomicU64::new(0),
+    });
+    h.set_write_policy(Arc::clone(&policy) as Arc<dyn fs_native::hydrate::WritePolicy>);
+    let path = s.live.join("wal");
+    fs::write(&path, vec![1u8; 8192]).unwrap();
+    let key = h.gate(&path, fs_native::hydrate::WriteGate::Ask).unwrap();
+    assert_eq!(key, Hydrator::file_key(&path).unwrap());
+
+    // Readers never ask.
+    let mut buf = vec![0u8; 16];
+    File::open(&path)
+        .unwrap()
+        .read_exact_at(&mut buf, 0)
+        .unwrap();
+    assert_eq!(policy.asked.load(Ordering::Relaxed), 0);
+
+    let w = OpenOptions::new().write(true).open(&path).unwrap();
+    let err = w.write_at(b"z", 0).unwrap_err();
+    assert_eq!(err.raw_os_error(), Some(libc::EBUSY));
+    policy.grant.store(true, Ordering::Relaxed);
+    w.write_at(b"z", 0).unwrap();
+    assert!(policy.asked.load(Ordering::Relaxed) >= 2);
     h.stop();
 }

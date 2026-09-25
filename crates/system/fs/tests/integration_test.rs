@@ -40,6 +40,31 @@ macro_rules! require_fuse {
     };
 }
 
+/// Wait until the FUSE session answers at `mount`: the directory then reports
+/// the mounted filesystem's device instead of its parent's, which needs the
+/// session to have served a `getattr`. Replaces a fixed pause that was either
+/// wasted time or, on a loaded machine, too short.
+async fn wait_for_mount(mount: impl AsRef<std::path::Path>) {
+    let mount = mount.as_ref().to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let parent = mount.parent().expect("a mount point has a parent");
+        let outside = std::fs::metadata(parent).expect("stat mount parent").dev();
+        let deadline = std::time::Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .expect("a 10s deadline is representable");
+        while !std::fs::metadata(&mount).is_ok_and(|meta| meta.dev() != outside) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "FUSE mount at {} did not start answering",
+                mount.display()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    })
+    .await
+    .expect("mount readiness check");
+}
+
 /// Finish every background owner before the per-test Tokio runtime exits.
 ///
 /// `BackgroundSession::drop` only requests unmounting, while an unclosed Iroh
@@ -122,7 +147,9 @@ async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>)
 /// [`fs::CapabilityFile`], for tests that swap the policy while the same
 /// `QuickFS` stays live.
 async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture {
-    let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
     let hash = store.write_content(body).await.unwrap().unwrap();
@@ -342,7 +369,9 @@ async fn identity_acl_gates_the_real_fs_access_path() {
         namespace: Arc<Mutex<Namespace>>,
         acl: Option<(WorkspaceAcl, [u8; 32])>,
     ) -> (QuickFS, Endpoint, Arc<ContentStore>) {
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let shutdown_endpoint = endpoint.clone();
         let shutdown_store = store.clone();
@@ -448,7 +477,9 @@ async fn identity_acl_gates_the_real_fs_access_path() {
 async fn fuse_mount_enforces_identity_acl_end_to_end() {
     require_fuse!();
     let _ = timeout(Duration::from_secs(20), async {
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let body = b"members only";
         let hash = store.write_content(body).await.unwrap().unwrap();
@@ -477,7 +508,7 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         cfg_a.mount_options = vec![MountOption::FSName("quickfs_acl_alice".into())];
         let sa =
             fuser::spawn_mount2(alice_fs, alice_dir.path(), &cfg_a).expect("spawn alice session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(alice_dir.path()).await;
 
         let alice_read = std::fs::read(alice_dir.path().join("secret.txt"));
         assert!(
@@ -500,7 +531,7 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
         let mut cfg_b = Config::default();
         cfg_b.mount_options = vec![MountOption::FSName("quickfs_acl_bob".into())];
         let sb = fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(bob_dir.path()).await;
 
         let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
         assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
@@ -527,7 +558,9 @@ async fn fuse_projects_tree_and_reads_real_content() {
         let mount_dir = tempdir().expect("mount temp dir");
         let mount_path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
 
         // Ingest real content into the local store and seed the namespace with it.
         let store = Arc::new(ContentStore::memory());
@@ -563,7 +596,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
         config.mount_options = options;
 
         let session = fuser::spawn_mount2(fs, &mount_path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(&mount_path).await;
 
         // Projection: the tree is visible.
         let entries = std::fs::read_dir(&mount_path)
@@ -596,7 +629,9 @@ async fn fuse_write_create_overwrite_rename_unlink() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer").unwrap()));
         let shutdown_endpoint = endpoint.clone();
@@ -608,7 +643,7 @@ async fn fuse_write_create_overwrite_rename_unlink() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_rw".to_string())];
         let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(&path).await;
 
         // create + write
         std::fs::write(path.join("hello.txt"), b"first").expect("write hello");
@@ -650,7 +685,7 @@ async fn fuse_non_utf8_name_survives_rename_and_namespace_restart() {
         let second_mount = tempdir().unwrap();
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("byte-name-peer").unwrap()));
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let shutdown_endpoint = endpoint.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
@@ -658,7 +693,7 @@ async fn fuse_non_utf8_name_survives_rename_and_namespace_restart() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_non_utf8".into())];
         let session = fuser::spawn_mount2(fs, first_mount.path(), &config).unwrap();
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        wait_for_mount(first_mount.path()).await;
 
         let mut original = first_mount.path().to_path_buf();
         original.push(std::ffi::OsString::from_vec(b"raw-\xFF.txt".to_vec()));
@@ -679,13 +714,13 @@ async fn fuse_non_utf8_name_survives_rename_and_namespace_restart() {
         let reopened = Arc::new(Mutex::new(
             Namespace::from_bytes("reopened", &snapshot).unwrap(),
         ));
-        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let shutdown_endpoint = endpoint.clone();
         let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
         let fs = QuickFS::new(reopened, hydrator, heuristics);
         let session = fuser::spawn_mount2(fs, second_mount.path(), &config).unwrap();
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        wait_for_mount(second_mount.path()).await;
         let mut after_restart = second_mount.path().to_path_buf();
         after_restart.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
         assert_eq!(std::fs::read(after_restart).unwrap(), b"exact bytes");
@@ -706,7 +741,9 @@ async fn fuse_replacement_rename_preserves_the_replaced_open_handle() {
     timeout(Duration::from_secs(20), async {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("replace-handle-peer").unwrap()));
         let shutdown_endpoint = endpoint.clone();
@@ -717,7 +754,7 @@ async fn fuse_replacement_rename_preserves_the_replaced_open_handle() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_replace_handle".to_string())];
         let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(&path).await;
 
         let source = path.join("source.bin");
         let destination = path.join("destination.bin");
@@ -765,7 +802,9 @@ async fn fuse_unlink_and_recreate_keeps_the_old_open_inode_private() {
     require_fuse!();
     timeout(Duration::from_secs(20), async {
         let mount_dir = tempdir().expect("mount temp dir");
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("unlink-handle-peer").unwrap()));
         let shutdown_endpoint = endpoint.clone();
@@ -777,7 +816,7 @@ async fn fuse_unlink_and_recreate_keeps_the_old_open_inode_private() {
         config.mount_options = vec![MountOption::FSName("quickfs_unlink_handle".to_string())];
         let session =
             fuser::spawn_mount2(fs, mount_dir.path(), &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(mount_dir.path()).await;
 
         let path = mount_dir.path().join("same-name.bin");
         std::fs::write(&path, b"old bytes").unwrap();
@@ -820,7 +859,9 @@ async fn fuse_two_writable_handles_preserve_disjoint_writes() {
     require_fuse!();
     timeout(Duration::from_secs(20), async {
         let mount_dir = tempdir().expect("mount temp dir");
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("two-writer-peer").unwrap()));
         let shutdown_endpoint = endpoint.clone();
@@ -832,7 +873,7 @@ async fn fuse_two_writable_handles_preserve_disjoint_writes() {
         config.mount_options = vec![MountOption::FSName("quickfs_two_writers".to_string())];
         let session =
             fuser::spawn_mount2(fs, mount_dir.path(), &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(mount_dir.path()).await;
 
         let path = mount_dir.path().join("shared.bin");
         std::fs::write(&path, b"abcdef").unwrap();
@@ -872,7 +913,9 @@ async fn signed_fuse_replacement_is_transactional_and_preserves_open_handles() {
     timeout(Duration::from_secs(30), async {
         let mount_dir = tempdir().expect("mount temp dir");
         let state_dir = tempdir().expect("state temp dir");
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let source_hash = store
             .write_content(b"signed source")
@@ -933,7 +976,7 @@ async fn signed_fuse_replacement_is_transactional_and_preserves_open_handles() {
         config.mount_options = vec![MountOption::FSName("quickfs_signed_replace".to_string())];
         let session = fuser::spawn_mount2(quick_fs, mount_dir.path(), &config)
             .expect("spawn signed FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(mount_dir.path()).await;
 
         let source = mount_dir.path().join("source.bin");
         let destination = mount_dir.path().join("destination.bin");
@@ -993,7 +1036,9 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
 
         // A file whose content IS ingested locally → hydrated → `local`.
@@ -1030,7 +1075,7 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_xattr".to_string())];
         let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(&path).await;
 
         assert_eq!(
             read_sync_xattr(&path.join("here.txt")).as_deref(),
@@ -1061,7 +1106,9 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer").unwrap()));
         let shutdown_endpoint = endpoint.clone();
@@ -1073,7 +1120,7 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_doc".to_string())];
         let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(&path).await;
 
         // A markdown document: recognized, stored as a CRDT, round-trips.
         std::fs::write(path.join("note.md"), b"# Title\n\nHello world\n").expect("write md");
@@ -1103,7 +1150,9 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::Minimal)
+            .await
+            .expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer").unwrap()));
         let shutdown_endpoint = endpoint.clone();
@@ -1115,7 +1164,7 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         let mut config = Config::default();
         config.mount_options = vec![MountOption::FSName("quickfs_rm".to_string())];
         let session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_for_mount(&path).await;
 
         std::fs::create_dir(path.join("dir")).expect("mkdir");
         std::fs::write(path.join("dir/inner.txt"), b"keepme").expect("write inner");
@@ -1280,7 +1329,9 @@ impl ViewFixture {
 /// Populate the tree above and mount it as `identity` under `acl`.
 /// `acl: None` mounts unfiltered, for side-by-side comparisons.
 async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> ViewFixture {
-    let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
     let hash = store.write_content(body).await.unwrap().unwrap();
@@ -1321,7 +1372,7 @@ async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> View
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName(name.to_string())];
     let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for_mount(dir.path()).await;
     ViewFixture {
         session,
         endpoint: shutdown_endpoint,
@@ -1674,7 +1725,9 @@ impl DocumentFixture {
 }
 
 async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> DocumentFixture {
-    let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let namespace = Arc::new(Mutex::new(Namespace::new("doc-view-peer").unwrap()));
     {
@@ -1700,7 +1753,7 @@ async fn document_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> 
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName(name.to_string())];
     let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    wait_for_mount(dir.path()).await;
     DocumentFixture {
         session,
         endpoint: shutdown_endpoint,

@@ -5,7 +5,6 @@ use super::{
 };
 use crate::history_mode::{checked_files::FilePreviewInput, files_session::FileController};
 use collab_types::{FileVersionId, files::CheckedHistoryOperationV1 as Operation};
-use std::fmt::Write as _;
 
 impl HistoryHost {
     pub(super) fn close_files_presentation(&mut self) {
@@ -389,14 +388,7 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
         .iter()
         .map(|version| {
             let person = version.actor.person.as_bytes();
-            let identity: String =
-                person
-                    .iter()
-                    .take(6)
-                    .fold(String::with_capacity(12), |mut label, byte| {
-                        let _ = write!(label, "{byte:02x}");
-                        label
-                    });
+            let identity = hex::encode(person.get(..6).unwrap_or(person));
             let author = if person.iter().all(|b| *b == 0) {
                 "Unknown author".to_owned()
             } else {

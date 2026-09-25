@@ -1,0 +1,5 @@
+# System-wide git configuration on Tilo OS. The defaults live in the image
+# under /usr, so an image update can change them; settings added below this
+# include are local to this machine and take precedence.
+[include]
+	path = /usr/share/tilo/git/synced-worktree.gitconfig

@@ -74,7 +74,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // Live and headless launches restore the same persistent image content.
-    configure_blob_store();
     photos::strings::install();
     let mut app = photos::PhotosApp::new_persistent();
     if args.value("--import-directory").is_some() || args.has("--library") {
@@ -88,17 +87,7 @@ fn requested_path(args: &LaunchArgs) -> Option<&str> {
         .or_else(|| args.positionals().first().map(String::as_str))
 }
 
-fn configure_blob_store() {
-    static INITIALIZED: std::sync::Once = std::sync::Once::new();
-    INITIALIZED.call_once(|| {
-        qdoc::blobstore::set_store(std::sync::Arc::new(qdoc::blobstore::FsBlobStore::new(
-            qdoc::blobstore::FsBlobStore::default_root(),
-        )));
-    });
-}
-
 fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
-    configure_blob_store();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {
         let mut opener = photos::PhotosApp::new_persistent();

@@ -40,7 +40,7 @@ mod command_palette;
 mod disk;
 mod doc;
 mod editor_view;
-mod file_tree;
+mod explorer;
 mod find;
 mod highlight;
 mod lint;

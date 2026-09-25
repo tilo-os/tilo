@@ -167,27 +167,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        // Writing to a String cannot fail.
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
+/// A writer-identity sidecar's bytes; an empty or malformed one is unreadable.
 fn unhex(text: &str) -> Option<Vec<u8>> {
-    if text.is_empty() || !text.len().is_multiple_of(2) || !text.is_ascii() {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| {
-            text.get(at..at.checked_add(2)?)
-                .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-        })
-        .collect()
+    hex::decode(text).ok().filter(|bytes| !bytes.is_empty())
 }
 
 impl From<StoreError> for SeamError {
@@ -306,8 +288,8 @@ impl FsStore {
                 Ok(Target::View(
                     self.root
                         .join(INSTANCE_VIEWS_DIR)
-                        .join(hex(device.as_bytes()))
-                        .join(hex(workspace.as_bytes()))
+                        .join(hex::encode(device.as_bytes()))
+                        .join(hex::encode(workspace.as_bytes()))
                         .join(format!("{instance}.postcard")),
                 ))
             }
@@ -944,7 +926,7 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         owner.check()?;
         if let Some(writer) = &batch.writer {
             let sidecar = owner.directory.join(ACTOR_FILE);
-            atomic_file::write(&sidecar, hex(writer).as_bytes())
+            atomic_file::write(&sidecar, hex::encode(writer).as_bytes())
                 .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
         }
         let document = owner.directory.join(DOCUMENT_FILE);
@@ -1265,7 +1247,10 @@ mod tests {
 
     #[test]
     fn hex_round_trips_and_rejects_malformed_sidecars() {
-        assert_eq!(unhex(&hex(&[0, 0xff, 0x10])), Some(vec![0, 0xff, 0x10]));
+        assert_eq!(
+            unhex(&hex::encode([0, 0xff, 0x10])),
+            Some(vec![0, 0xff, 0x10])
+        );
         for bad in ["", "a", "zz", "é0"] {
             assert_eq!(unhex(bad), None, "{bad}");
         }

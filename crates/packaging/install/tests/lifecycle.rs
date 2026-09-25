@@ -24,10 +24,7 @@ use std::process::Command;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use serde::Serialize;
-use tilo_app_package::blobs::{BlobHash, BlobStore};
-use tilo_app_package::signed::SignedRoot;
-use tilo_app_package::{Manifest, MemoryBlobStore, SigningIdentity, pack};
+use tilo_app_package::{Manifest, SigningIdentity, pack};
 
 fn install_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_tilo-install"))
@@ -80,46 +77,10 @@ fn fresh_key() -> (SigningKey, String) {
 
 /// Build a `.tapp` with the layout `tilo-app-package pack` writes.
 fn build_tapp(tapp_path: &Path, manifest: &Manifest, sk: &SigningKey, payload_dir: &Path) {
-    #[derive(Serialize)]
-    struct TappHeader {
-        package_id: String,
-        format: u32,
-    }
-
-    let mut store = MemoryBlobStore::new();
     let identity = SigningIdentity::from_signing_key(sk.clone());
-    let id = pack(payload_dir, manifest, &identity, &mut store).expect("pack");
-
-    let header_toml = toml::to_string(&TappHeader {
-        package_id: id.to_string(),
-        format: 1,
-    })
-    .unwrap();
-
-    let signed_bytes = store.get(&BlobHash(*id.as_bytes())).unwrap().unwrap();
-    let signed = SignedRoot::decode(&signed_bytes).unwrap();
-    let manifest_bytes = store.get(&signed.manifest_hash).unwrap().unwrap();
-    let collection_bytes = store.get(&signed.payload_root_hash).unwrap().unwrap();
-
+    let packed = pack(payload_dir, manifest, &identity).expect("pack");
     let file = std::fs::File::create(tapp_path).unwrap();
-    let mut tar = tar::Builder::new(file);
-    append(&mut tar, "tapp.toml", header_toml.as_bytes());
-    append(&mut tar, "signed-root", &signed_bytes);
-    append(&mut tar, "manifest.toml", &manifest_bytes);
-    append(&mut tar, "collection.qcl", &collection_bytes);
-    for (h, b) in store.iter() {
-        append(&mut tar, &format!("blobs/{h}"), b);
-    }
-    tar.finish().unwrap();
-}
-
-fn append(tar: &mut tar::Builder<std::fs::File>, name: &str, bytes: &[u8]) {
-    let mut header = tar::Header::new_gnu();
-    header.set_path(name).unwrap();
-    header.set_size(bytes.len() as u64);
-    header.set_mode(0o644);
-    header.set_cksum();
-    tar.append(&header, bytes).unwrap();
+    tilo_app_package::tapp::write(file, &packed.meta, Some(&packed)).unwrap();
 }
 
 struct Env {
@@ -146,8 +107,17 @@ impl Env {
         self.xdg_data().join("tilo-apps")
     }
 
+    /// The installed tree, as the registry records it; a path that does not
+    /// exist when the package is not installed.
     fn payload_root(&self) -> PathBuf {
-        self.tilo_apps().join("payloads/so.tilo.lifecycle")
+        package_store::Registry::load(&self.tilo_apps().join("registry.toml"))
+            .ok()
+            .and_then(|registry| {
+                registry
+                    .find("so.tilo.lifecycle")
+                    .map(|row| row.payload_root.clone())
+            })
+            .unwrap_or_else(|| self.tilo_apps().join("pkgs/not-installed"))
     }
 
     fn registry_toml(&self) -> String {
@@ -270,13 +240,14 @@ fn install_list_verify_update_uninstall() {
     assert!(out.contains("ok       so.tilo.lifecycle 1.1.0"), "{out}");
 
     // --- uninstall ---------------------------------------------------
+    let installed_tree = env.payload_root();
     let (ok, out, err) = env.cmd(&["uninstall", "so.tilo.lifecycle", "--keep-state"]);
     assert!(ok, "uninstall failed: {out}{err}");
     assert!(
         out.contains("uninstalled: so.tilo.lifecycle 1.1.0"),
         "{out}"
     );
-    assert!(!env.payload_root().exists(), "the payload must be gone");
+    assert!(!installed_tree.exists(), "the payload must be gone");
     assert!(
         !env.registry_toml().contains("so.tilo.lifecycle"),
         "the registry entry must be gone: {}",
@@ -390,7 +361,12 @@ fn verify_catches_a_modified_payload() {
     assert!(env.cmd(&["install", v1.to_str().unwrap()]).0);
     assert!(env.cmd(&["verify"]).0);
 
-    std::fs::write(env.payload_root().join("bin/app"), b"malicious").unwrap();
+    // Installed files are read-only; whoever tampers makes them writable.
+    let target = env.payload_root().join("bin/app");
+    let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+    std::fs::set_permissions(&target, permissions).unwrap();
+    std::fs::write(&target, b"malicious").unwrap();
 
     let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
     assert!(!ok, "a tampered payload must fail verification: {out}{err}");
@@ -593,4 +569,42 @@ fn info_reports_the_runtime_the_integrity_record_and_the_saved_data() {
     assert!(out.contains("integrity     : recorded"), "{out}");
     assert!(out.contains("saved data    : 2 room(s)"), "{out}");
     assert!(out.contains("personal"), "{out}");
+}
+
+/// The thin form of the full package at `full`: metadata only.
+fn thin_of(full: &Path) -> PathBuf {
+    let file = std::fs::File::open(full).unwrap();
+    let tapp = tilo_app_package::tapp::read(file, &mut tilo_app_package::DiscardBlobs).unwrap();
+    let thin = full.with_extension("thin.tapp");
+    let out = std::fs::File::create(&thin).unwrap();
+    tilo_app_package::tapp::write(out, &tapp.meta, None).unwrap();
+    thin
+}
+
+/// A thin package is metadata only: it installs when the content store
+/// already holds its payload, and is refused when nothing can supply it.
+#[test]
+fn a_thin_package_installs_from_what_the_store_holds() {
+    let env = Env::new();
+    let full = env.tapp("1.0.0", b"one", None);
+    let thin = thin_of(&full);
+    assert!(std::fs::metadata(&thin).unwrap().len() < 16 * 1024);
+
+    let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap()]);
+    assert!(
+        !ok,
+        "a thin package with no payload source must not install: {out}"
+    );
+    assert!(err.contains("payload blob"), "{err}");
+    assert!(
+        !env.payload_root().exists(),
+        "a refused install leaves nothing behind"
+    );
+
+    assert!(env.cmd(&["install", full.to_str().unwrap()]).0);
+    let (ok, out, err) = env.cmd(&["install", thin.to_str().unwrap(), "--force"]);
+    assert!(ok, "{out}{err}");
+    assert!(out.contains("already in the content store"), "{out}");
+    let (ok, out, err) = env.cmd(&["verify", "so.tilo.lifecycle"]);
+    assert!(ok, "{out}{err}");
 }

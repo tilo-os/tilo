@@ -123,7 +123,7 @@ impl CapBinding {
             &ResourceRef::FsPath(path.to_string()),
             required,
             &self.caps,
-            Some(self.fixed_now.unwrap_or_else(unix_now)),
+            Some(self.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)),
         ) == CapDecision::Allow
     }
 
@@ -166,10 +166,6 @@ fn peer_actor(peer: &IdentityKey) -> Actor {
 }
 
 /// Seconds since the Unix epoch, saturating at 0 if the clock is before it.
-fn unix_now() -> u64 {
-    crate::clock::unix_now_secs()
-}
-
 /// A workspace's per-identity access-control list. Two sources, both
 /// fail-closed: **capability bindings**
 /// ([`WorkspaceAcl::from_capabilities`], the production path) delegate
@@ -355,6 +351,29 @@ impl WorkspaceAcl {
         }
     }
 
+    /// Is the **remote** identity `peer` a member of `room`? Membership is an
+    /// ordinary capability scoped to the room (or the whole workspace),
+    /// decided by the same function as every path, so a `Restrict` bites here
+    /// too. Paths never imply membership, nor membership a path.
+    pub fn peer_is_room_member(&self, peer: &IdentityKey, room: &str) -> bool {
+        let as_peer = peer_actor(peer);
+        let resource = ResourceRef::Room(room.to_string());
+        self.bindings.iter().any(|b| {
+            let actor = if &b.identity == peer {
+                &b.actor
+            } else {
+                &as_peer
+            };
+            decide_capability(
+                actor,
+                &resource,
+                Verb::Read,
+                &b.caps,
+                Some(b.fixed_now.unwrap_or_else(crate::clock::unix_now_secs)),
+            ) == CapDecision::Allow
+        })
+    }
+
     /// Does `peer` hold a read grant on *anything* here? The admission
     /// question, deliberately the coarsest one — what the sync and content
     /// planes can answer before knowing which path a request will concern. A
@@ -457,6 +476,15 @@ impl AclHandle {
     pub fn permits_peer(&self, peer: &IdentityKey, path: &str, access: Access) -> bool {
         match self.acl.read() {
             Ok(acl) => acl.permits_peer(peer, path, access),
+            Err(_) => false,
+        }
+    }
+
+    /// Is `peer` a member of `room`, per the ACL bound *right now*?
+    /// Delegates to [`WorkspaceAcl::peer_is_room_member`].
+    pub fn peer_is_room_member(&self, peer: &IdentityKey, room: &str) -> bool {
+        match self.acl.read() {
+            Ok(acl) => acl.peer_is_room_member(peer, room),
             Err(_) => false,
         }
     }

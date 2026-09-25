@@ -10,7 +10,9 @@
 //! router; the fetch side ([`fetch_blob`]) connects to the node named
 //! in a [`BlobTicket`] and streams the blob, which iroh verifies
 //! against its hash as it arrives (bao). We additionally re-check the
-//! blake3 so the failure is explicit and local.
+//! blake3 so the failure is explicit and local. The same node serves the
+//! payload blobs of the thin packages it publishes ([`ProviderBlobs`]), so
+//! an installer fetches only the blobs its store lacks.
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
@@ -24,6 +26,7 @@ use iroh_blobs::store::mem::MemStore;
 use iroh_blobs::ticket::BlobTicket;
 use iroh_blobs::{BlobFormat, BlobsProtocol, Hash};
 use std::path::Path;
+use tilo_app_package::{BlobFetcher, BlobHash, BlobSink};
 
 /// An iroh-blobs store served over the network — the provider side of
 /// the transport. Holds the endpoint + router alive for its lifetime.
@@ -203,6 +206,75 @@ pub async fn fetch_blob(
     Ok(bytes)
 }
 
+/// The provider of a package's payload blobs: the node that served the
+/// package. A registry serves thin packages, so installing one fetches only
+/// the payload blobs the device's store lacks, by hash, from here.
+#[derive(Clone, Debug)]
+pub struct ProviderBlobs {
+    addr: EndpointAddr,
+}
+
+impl ProviderBlobs {
+    pub fn new(addr: EndpointAddr) -> Self {
+        Self { addr }
+    }
+
+    pub fn addr(&self) -> &EndpointAddr {
+        &self.addr
+    }
+
+    /// Fetch every blob in `hashes` over one connection, in order. iroh
+    /// verifies each stream against its hash as it arrives; the blake3 is
+    /// re-derived here so a mismatch is an explicit local error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider cannot be reached, lacks a blob, or
+    /// serves bytes that do not match.
+    pub async fn fetch_all(&self, hashes: &[BlobHash]) -> Result<Vec<Bytes>> {
+        let endpoint = client_endpoint().await?;
+        let conn = endpoint
+            .connect(self.addr.clone(), iroh_blobs::ALPN)
+            .await
+            .map_err(|e| anyhow!("connect to provider: {e}"))?;
+        let mut out = Vec::with_capacity(hashes.len());
+        for blob in hashes {
+            let want = Hash::from(*blob.as_bytes());
+            let (bytes, _stats) = iroh_blobs::get::request::get_blob(conn.clone(), want)
+                .bytes_and_stats()
+                .await
+                .map_err(|e| anyhow!("get payload blob {blob}: {e}"))?;
+            if blake3::hash(&bytes).as_bytes() != blob.as_bytes() {
+                bail!("provider served bytes that do not hash to payload blob {blob}");
+            }
+            out.push(bytes);
+        }
+        Ok(out)
+    }
+}
+
+impl BlobFetcher for ProviderBlobs {
+    fn fetch(&self, hashes: &[BlobHash], sink: &mut dyn BlobSink) -> std::io::Result<()> {
+        // Installers call this from synchronous code; nesting a runtime
+        // inside an async task would deadlock or panic, so refuse clearly.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(std::io::Error::other(
+                "payload fetch must not run on an async runtime thread",
+            ));
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let blobs = runtime
+            .block_on(self.fetch_all(hashes))
+            .map_err(std::io::Error::other)?;
+        for (hash, bytes) in hashes.iter().zip(blobs) {
+            sink.accept(hash, bytes.len() as u64, &mut bytes.as_ref())?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +294,31 @@ mod tests {
         let client = client_endpoint().await.unwrap();
         let got = fetch_blob(&client, &ticket, expected).await.unwrap();
         assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn a_provider_serves_payload_blobs_by_hash() {
+        let node = BlobNode::memory().await.unwrap();
+        node.add(Bytes::from_static(b"payload a")).await.unwrap();
+        node.add(Bytes::from_static(b"payload b")).await.unwrap();
+        let provider = ProviderBlobs::new(node.addr());
+        let got = provider
+            .fetch_all(&[BlobHash::of(b"payload b"), BlobHash::of(b"payload a")])
+            .await
+            .unwrap();
+        assert_eq!(
+            got,
+            vec![
+                Bytes::from_static(b"payload b"),
+                Bytes::from_static(b"payload a")
+            ]
+        );
+        assert!(
+            provider
+                .fetch_all(&[BlobHash::of(b"never published")])
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

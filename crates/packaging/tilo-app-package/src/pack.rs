@@ -1,8 +1,10 @@
-//! `pack` — walk a payload directory, write each file as a
-//! BLAKE3-keyed blob, build the [`Collection`] root, write the
-//! manifest blob, build + sign the signed-root. See [`crate::signed`]
-//! for the on-wire layout of the signed-root and what the publisher signs over.
+//! `pack` — walk a payload directory, hash each file into the
+//! [`Collection`], encode the manifest, and build + sign the signed-root.
+//! See [`crate::signed`] for the on-wire layout of the signed-root and what
+//! the publisher signs over. The payload bytes stay where they are; the
+//! result names them so a writer can stream them out later.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::Signer;
@@ -12,9 +14,10 @@ use walkdir::WalkDir;
 use collab_types::Ed25519PublicKey;
 use threshold_identity::ThresholdIdentity;
 
-use crate::blobs::{BlobStore, Collection};
+use crate::blobs::{BlobHash, BlobSource, Collection, OpenBlob};
 use crate::id::PackageId;
 use crate::manifest::Manifest;
+use crate::package::{MetaError, PackageMeta};
 use crate::signed::SignedRoot;
 use crate::validate::{ManifestError, validate_manifest_with_payload};
 
@@ -124,8 +127,8 @@ pub enum PackError {
     Walk(#[from] walkdir::Error),
     #[error("I/O: {0}")]
     Io(#[from] std::io::Error),
-    #[error("blob-store error: {0}")]
-    Store(#[from] crate::blobs::BlobStoreError),
+    #[error("packed metadata is inconsistent: {0}")]
+    Meta(#[from] MetaError),
     #[error("manifest re-encode failed: {0}")]
     ManifestEncode(#[from] crate::manifest::ManifestParseError),
     #[error("publisher identity in manifest does not match signing identity")]
@@ -140,14 +143,53 @@ pub enum PackError {
     NonUtf8Path(PathBuf),
 }
 
-/// Walk `payload_dir`, ingest every regular file as a blob, and
-/// return both the [`Collection`] and the list of relative paths
-/// (used downstream for payload-aware validation).
-pub(crate) fn walk_payload<S: BlobStore>(
-    payload_dir: &Path,
-    store: &mut S,
-) -> Result<(Collection, Vec<PathBuf>), PackError> {
+/// A signed package built from a payload directory: its metadata, plus
+/// where each payload blob's bytes are on disk. Nothing is read into
+/// memory; files are hashed as they stream past and read again only when
+/// the package is written out ([`crate::tapp::write`]) or installed.
+#[derive(Clone, Debug)]
+pub struct Packed {
+    pub meta: PackageMeta,
+    files: BTreeMap<BlobHash, PathBuf>,
+}
+
+impl Packed {
+    pub fn id(&self) -> PackageId {
+        self.meta.id
+    }
+
+    /// Payload files in `(hash, path)` order, one per distinct blob.
+    pub fn files(&self) -> impl Iterator<Item = (&BlobHash, &Path)> {
+        self.files.iter().map(|(hash, path)| (hash, path.as_path()))
+    }
+}
+
+impl BlobSource for Packed {
+    fn open_blob(&self, hash: &BlobHash) -> std::io::Result<Option<OpenBlob<'_>>> {
+        let Some(path) = self.files.get(hash) else {
+            return Ok(None);
+        };
+        let file = std::fs::File::open(path)?;
+        Ok(Some(OpenBlob {
+            len: file.metadata()?.len(),
+            reader: Box::new(file),
+        }))
+    }
+}
+
+/// A walked payload directory.
+struct Walked {
+    collection: Collection,
+    /// The source path of each distinct blob.
+    files: BTreeMap<BlobHash, PathBuf>,
+    /// Every payload path, for payload-aware manifest validation.
+    paths: Vec<PathBuf>,
+}
+
+/// Walk `payload_dir` and hash every regular file.
+fn walk_payload(payload_dir: &Path) -> Result<Walked, PackError> {
     let mut entries = Vec::new();
+    let mut files = BTreeMap::new();
     let mut paths = Vec::new();
     for entry in WalkDir::new(payload_dir).follow_links(false) {
         let entry = entry?;
@@ -168,27 +210,84 @@ pub(crate) fn walk_payload<S: BlobStore>(
         let rel_str = rel
             .to_str()
             .ok_or_else(|| PackError::NonUtf8Path(rel.clone()))?
-            .to_string();
-        let bytes = std::fs::read(abs)?;
-        let h = store.put(&bytes)?;
-        entries.push((rel_str, h));
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let (hash, _len) = BlobHash::of_reader(&mut std::fs::File::open(abs)?)?;
+        files.entry(hash).or_insert_with(|| abs.to_path_buf());
+        entries.push((rel_str, hash));
         paths.push(rel);
     }
-    let collection = Collection::from_entries(entries);
-    Ok((collection, paths))
+    Ok(Walked {
+        collection: Collection::from_entries(entries),
+        files,
+        paths,
+    })
 }
 
-/// Pack a payload directory + manifest into the given store. Returns
-/// the [`PackageId`] of the resulting (signed) bundle.
+/// Everything but the signature: the payload index and the manifest blob a
+/// root is built from.
+struct Prepared {
+    /// The root to sign, with a placeholder signature.
+    root: SignedRoot,
+    manifest_bytes: Vec<u8>,
+    collection_bytes: Vec<u8>,
+    files: BTreeMap<BlobHash, PathBuf>,
+}
+
+impl Prepared {
+    fn finish(self, signature: [u8; 64]) -> Result<Packed, PackError> {
+        let root = SignedRoot {
+            signature: Some(signature),
+            ..self.root
+        };
+        let meta = PackageMeta::from_root(root, self.manifest_bytes, self.collection_bytes)?;
+        Ok(Packed {
+            meta,
+            files: self.files,
+        })
+    }
+}
+
+fn prepare(
+    payload_dir: &Path,
+    manifest: &Manifest,
+    publisher_identity: [u8; 32],
+) -> Result<Prepared, PackError> {
+    let declared = manifest
+        .publisher
+        .identity_bytes()
+        .map_err(|e| PackError::Manifest(ManifestError::BadPublisherIdentity(e.to_string())))?;
+    if declared != publisher_identity {
+        return Err(PackError::IdentityMismatch);
+    }
+    let walked = walk_payload(payload_dir)?;
+    validate_manifest_with_payload(manifest, &walked.paths)?;
+    let collection_bytes = walked.collection.encode();
+    let mut to_sign_manifest = manifest.clone();
+    to_sign_manifest.publisher.signature.clear();
+    let manifest_bytes = to_sign_manifest.to_toml_string()?.into_bytes();
+    let root = SignedRoot {
+        manifest_hash: BlobHash::of(&manifest_bytes),
+        payload_root_hash: BlobHash::of(&collection_bytes),
+        publisher_identity,
+        // The signed prefix includes `has_signature = 1`, so the root is
+        // signed with a placeholder in place; see `crate::signed`.
+        signature: Some([0u8; 64]),
+    };
+    Ok(Prepared {
+        root,
+        manifest_bytes,
+        collection_bytes,
+        files: walked.files,
+    })
+}
+
+/// Pack a payload directory and manifest into a signed package.
 ///
-/// 1. Validate the manifest in isolation, then with the payload paths.
-/// 2. Walk `payload_dir`; ingest each file as a blob; build the
-///    [`Collection`] root and store its encoding too.
-/// 3. Re-encode the manifest with the publisher's identity hex
-///    written in but the signature still empty; ingest the manifest blob.
-/// 4. Build the unsigned [`SignedRoot`], call
-///    [`SigningIdentity::sign_signed_root`], reattach the signature,
-///    ingest the signed-root blob, return its `PackageId`.
+/// 1. Check the manifest's publisher is `identity`, validate the manifest
+///    alone and against the payload paths.
+/// 2. Hash every payload file into the [`Collection`].
+/// 3. Encode the manifest with an empty signature field.
+/// 4. Build the [`SignedRoot`] over both hashes and sign it.
 ///
 /// # Errors
 ///
@@ -196,55 +295,17 @@ pub(crate) fn walk_payload<S: BlobStore>(
 /// publisher identity does not match `identity`'s public key,
 /// [`PackError::Manifest`] if manifest validation (standalone or against the
 /// payload) fails, [`PackError::Walk`] or [`PackError::Io`] if walking or
-/// reading `payload_dir` fails, [`PackError::Store`] if writing a blob
-/// fails, [`PackError::ManifestEncode`] if re-encoding the manifest fails,
-/// or whatever [`SigningIdentity::sign_signed_root`] returns.
-pub fn pack<S: BlobStore>(
+/// reading `payload_dir` fails, [`PackError::ManifestEncode`] if re-encoding
+/// the manifest fails, or whatever [`SigningIdentity::sign_signed_root`]
+/// returns.
+pub fn pack(
     payload_dir: &Path,
     manifest: &Manifest,
     identity: &SigningIdentity,
-    store: &mut S,
-) -> Result<PackageId, PackError> {
-    // Lightweight check: manifest's declared publisher identity must match the key we'll sign with.
-    let declared = manifest
-        .publisher
-        .identity_bytes()
-        .map_err(|e| PackError::Manifest(ManifestError::BadPublisherIdentity(e.to_string())))?;
-    if declared != identity.public_key_bytes() {
-        return Err(PackError::IdentityMismatch);
-    }
-
-    // Walk payload + ingest blobs.
-    let (collection, payload_paths) = walk_payload(payload_dir, store)?;
-    validate_manifest_with_payload(manifest, &payload_paths)?;
-
-    // Ingest the collection itself.
-    let collection_bytes = collection.encode();
-    let payload_root_hash = store.put(&collection_bytes)?;
-
-    // Re-encode the manifest with signature still empty; ingest.
-    let mut to_sign_manifest = manifest.clone();
-    to_sign_manifest.publisher.signature.clear();
-    let manifest_toml = to_sign_manifest.to_toml_string()?;
-    let manifest_hash = store.put(manifest_toml.as_bytes())?;
-
-    // Build the about-to-be-signed root: has_signature byte already set
-    // to 1 so the signing-bytes view matches what `verify` reconstructs
-    // after decode; the placeholder zero-signature is overwritten with the real one below.
-    let pre_signed = SignedRoot {
-        manifest_hash,
-        payload_root_hash,
-        publisher_identity: identity.public_key_bytes(),
-        signature: Some([0u8; 64]),
-    };
-    let sig = identity.sign_signed_root(&pre_signed)?;
-    let signed = SignedRoot {
-        signature: Some(sig),
-        ..pre_signed
-    };
-    let signed_bytes = signed.encode();
-    store.put(&signed_bytes)?;
-    Ok(signed.package_id())
+) -> Result<Packed, PackError> {
+    let prepared = prepare(payload_dir, manifest, identity.public_key_bytes())?;
+    let signature = identity.sign_signed_root(&prepared.root)?;
+    prepared.finish(signature)
 }
 
 /// Pack with a pre-computed aggregated threshold signature — used by
@@ -255,35 +316,13 @@ pub fn pack<S: BlobStore>(
 ///
 /// Returns [`PackError::IdentityMismatch`] if the manifest's declared
 /// publisher identity does not match `publisher_identity`, or any of the
-/// walk/validate/store/encode errors [`pack`] can return — this variant
-/// skips only the signing step, substituting the pre-computed `signature`.
-pub fn pack_with_signature<S: BlobStore>(
+/// walk/validate/encode errors [`pack`] can return — this variant skips only
+/// the signing step, substituting the pre-computed `signature`.
+pub fn pack_with_signature(
     payload_dir: &Path,
     manifest: &Manifest,
     publisher_identity: [u8; 32],
     signature: [u8; 64],
-    store: &mut S,
-) -> Result<PackageId, PackError> {
-    let declared = manifest
-        .publisher
-        .identity_bytes()
-        .map_err(|e| PackError::Manifest(ManifestError::BadPublisherIdentity(e.to_string())))?;
-    if declared != publisher_identity {
-        return Err(PackError::IdentityMismatch);
-    }
-    let (collection, payload_paths) = walk_payload(payload_dir, store)?;
-    validate_manifest_with_payload(manifest, &payload_paths)?;
-    let payload_root_hash = store.put(&collection.encode())?;
-    let mut to_sign_manifest = manifest.clone();
-    to_sign_manifest.publisher.signature.clear();
-    let manifest_toml = to_sign_manifest.to_toml_string()?;
-    let manifest_hash = store.put(manifest_toml.as_bytes())?;
-    let signed = SignedRoot {
-        manifest_hash,
-        payload_root_hash,
-        publisher_identity,
-        signature: Some(signature),
-    };
-    store.put(&signed.encode())?;
-    Ok(signed.package_id())
+) -> Result<Packed, PackError> {
+    prepare(payload_dir, manifest, publisher_identity)?.finish(signature)
 }

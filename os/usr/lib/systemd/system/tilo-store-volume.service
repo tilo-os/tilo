@@ -1,0 +1,35 @@
+[Unit]
+Description=Tilo room store volume
+Documentation=file:///usr/libexec/tilo-store-volume
+# fs.service pulls this in and starts after it, so the store is mounted,
+# owned by the local person and announced before the daemon picks its data
+# plane. An install without a store gets an image-backed one here, once.
+# Nothing else waits for it: like fs.service it stays off the login path.
+ConditionKernelCommandLine=!tilo.install
+Wants=var-lib-tilo-store.mount
+After=local-fs.target var-lib-tilo-store.mount tilo-firstboot-user.service
+Before=fs.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Root-only runtime directory for the data-plane arguments fs.service reads.
+# /run/tilo is writable by the session's group and must never be the source
+# of a root daemon's command line.
+RuntimeDirectory=tilo-store
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/libexec/tilo-store-volume ensure
+# Creating an image is a preallocation and one mkfs; every later boot is a
+# few stat calls.
+TimeoutStartSec=5min
+UMask=0022
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+KeyringMode=private
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native

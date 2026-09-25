@@ -15,12 +15,14 @@ use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
+use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::collection_transition::{KeyedRowSnapshot, KeyedTransitionSet, RowGeometry};
 use crate::color_compat::ColorCompat;
-use crate::presence::PresenceCtx;
+use crate::icons::Icon;
+use crate::presence::{PresenceCtx, PresenceKey};
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -29,10 +31,19 @@ use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
 };
 use crate::widget::EventCtx;
+use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::data_table::{
     RowType, centered_text_top, renderer_type_size, row_estimate, text_band, type_line_height,
 };
 use crate::widget::{Element, TaffyTreeExt, Widget};
+
+mod affordances;
+mod editing;
+#[cfg(test)]
+mod editing_tests;
+
+pub use affordances::{TreeHeadingAction, TreeRowAction};
+pub use editing::TreeMove;
 
 pub type NodeId = u64;
 
@@ -86,6 +97,133 @@ pub enum TreeRowKey {
     Slot(TreeSlot),
 }
 
+/// How a pointer press activates a row (see [`TreeView::on_activate`]).
+/// Keyboard `Enter` and the accessibility `Activate` verb activate the
+/// focused row in either mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TreeClickActivation {
+    /// A single click selects; a double click activates. Suits trees where
+    /// activation is heavy or leaves the tree (a file manager opening a
+    /// document in another app).
+    #[default]
+    DoubleClick,
+    /// A single click selects and activates, as a navigator sidebar does
+    /// (click a file to open it). Arrow keys still only move focus and
+    /// selection, so browsing never opens every row it passes.
+    SingleClick,
+}
+
+/// What a [`TreeView::with_row_decoration`] callback is told about the row
+/// it decorates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeRowInfo {
+    pub id: NodeId,
+    pub depth: usize,
+    pub is_branch: bool,
+    pub expanded: bool,
+    pub selected: bool,
+    /// The row is the host's current item (see [`TreeView::set_current`]).
+    pub current: bool,
+}
+
+/// A leading glyph for a decorated row. Colours are resolved by the caller
+/// from the `Theme` handed to the decoration callback, so they track the
+/// active theme.
+#[derive(Clone, Debug)]
+pub enum TreeRowIcon {
+    /// A toolkit icon stroked in `color`.
+    Icon { icon: Icon, color: Color },
+    /// A text glyph (a symbol or a short code) painted in `color`.
+    Glyph { text: String, color: Color },
+    /// A short code on a filled chip; the ink is derived from the fill so it
+    /// stays legible on any colour.
+    Badge { text: String, fill: Color },
+}
+
+/// The label colour role of a decorated row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TreeRowTone {
+    /// Body text colour.
+    #[default]
+    Primary,
+    /// The theme's secondary text colour, for dense or subordinate rows.
+    Secondary,
+}
+
+/// Per-row presentation painted by the tree itself: a leading icon, a label
+/// tone, trailing secondary text (a count, a type) and an accessible
+/// description. Unlike [`TreeView::with_row_delegate`] nothing is mounted, so
+/// decorations are recomputed every frame at no retained cost; disclosure,
+/// selection, hover, the current-row rail, focus and semantics stay owned by
+/// the tree.
+#[derive(Clone, Debug, Default)]
+pub struct TreeRowDecoration {
+    pub icon: Option<TreeRowIcon>,
+    pub tone: TreeRowTone,
+    /// Right-aligned secondary text; the label elides before it.
+    pub trailing: Option<String>,
+    /// Spoken after the label (e.g. "View", "Folder").
+    pub description: Option<String>,
+    /// Collaborators present at this location glow the row in their colour
+    /// (the peer's "indicative mist"), so a tree shows where everyone is.
+    pub presence: Option<PresenceKey>,
+}
+
+impl TreeRowDecoration {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn icon(mut self, icon: Icon, color: Color) -> Self {
+        self.icon = Some(TreeRowIcon::Icon { icon, color });
+        self
+    }
+
+    #[must_use]
+    pub fn glyph(mut self, text: impl Into<String>, color: Color) -> Self {
+        self.icon = Some(TreeRowIcon::Glyph {
+            text: text.into(),
+            color,
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn badge(mut self, text: impl Into<String>, fill: Color) -> Self {
+        self.icon = Some(TreeRowIcon::Badge {
+            text: text.into(),
+            fill,
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn tone(mut self, tone: TreeRowTone) -> Self {
+        self.tone = tone;
+        self
+    }
+
+    #[must_use]
+    pub fn trailing(mut self, text: impl Into<String>) -> Self {
+        self.trailing = Some(text.into());
+        self
+    }
+
+    #[must_use]
+    pub fn description(mut self, text: impl Into<String>) -> Self {
+        self.description = Some(text.into());
+        self
+    }
+
+    #[must_use]
+    pub fn presence(mut self, key: PresenceKey) -> Self {
+        self.presence = Some(key);
+        self
+    }
+}
+
 /// Source-agnostic hierarchy queried by stable id. Implementations may be
 /// backed by a database, an async cache, a CRDT, or the owned [`TreeNode`]
 /// adapter. The view asks only for expanded children and visible labels.
@@ -96,6 +234,19 @@ pub trait TreeModel {
     fn contains(&self, id: NodeId) -> bool;
     fn label(&self, id: NodeId) -> Option<&str>;
     fn is_branch(&self, id: NodeId) -> bool;
+    /// Whether a drop or an indent may make `id` a parent. Defaults to
+    /// [`Self::is_branch`]; a hierarchy where any node can hold children (an
+    /// outline, a notebook) answers `true` for leaves too, while
+    /// [`Self::is_branch`] keeps deciding which rows show a disclosure.
+    fn accepts_children(&self, id: NodeId) -> bool {
+        self.is_branch(id)
+    }
+    /// A durable identity for `id` in the semantic tree (`"notes:page:<uuid>"`),
+    /// for models whose node ids are only stable within a session. Assistive
+    /// technology and automation then address the row by it across launches.
+    fn semantic_key(&self, _id: NodeId) -> Option<String> {
+        None
+    }
     /// Parent of `id`; `None` only for the root or an unknown id.
     fn parent_id(&self, id: NodeId) -> Option<NodeId>;
     /// Position of a direct child. Large/paged models should answer this from
@@ -400,10 +551,13 @@ struct ExpandedIndexNode {
 #[derive(Clone, Debug)]
 struct SparseTreeIndex {
     root: ExpandedIndexNode,
+    /// The root is always expanded and not itself a row: its children are
+    /// the top level (depth 0). See [`TreeView::hide_root`].
+    root_hidden: bool,
 }
 
 impl SparseTreeIndex {
-    fn build<M: TreeModel>(model: &M, expanded: &HashSet<NodeId>) -> Self {
+    fn build<M: TreeModel>(model: &M, expanded: &HashSet<NodeId>, root_hidden: bool) -> Self {
         let root_id = model.root_id();
         let mut grouped = HashMap::<NodeId, Vec<(usize, NodeId)>>::new();
         for id in expanded {
@@ -424,9 +578,19 @@ impl SparseTreeIndex {
             children.sort_unstable_by_key(|(position, _)| *position);
             children.dedup_by_key(|(position, _)| *position);
         }
-        Self {
-            root: Self::build_node(model, expanded, &mut grouped, root_id),
-        }
+        let root = if root_hidden && !expanded.contains(&root_id) {
+            let mut with_root = expanded.clone();
+            with_root.insert(root_id);
+            Self::build_node(model, &with_root, &mut grouped, root_id)
+        } else {
+            Self::build_node(model, expanded, &mut grouped, root_id)
+        };
+        Self { root, root_hidden }
+    }
+
+    /// Rows the hidden root would occupy ahead of every visible row.
+    fn offset(&self) -> usize {
+        usize::from(self.root_hidden)
     }
 
     fn build_node<M: TreeModel>(
@@ -468,11 +632,13 @@ impl SparseTreeIndex {
     }
 
     fn len(&self) -> usize {
-        self.root.visible_len
+        self.root.visible_len.saturating_sub(self.offset())
     }
 
     fn row_at<M: TreeModel>(&self, model: &M, index: usize) -> Option<(TreeRowKey, usize)> {
-        Self::row_in_node(model, &self.root, index, 0)
+        let offset = self.offset();
+        let (key, depth) = Self::row_in_node(model, &self.root, index.checked_add(offset)?, 0)?;
+        Some((key, depth.saturating_sub(offset)))
     }
 
     fn row_in_node<M: TreeModel>(
@@ -532,6 +698,11 @@ impl SparseTreeIndex {
     }
 
     fn index_of<M: TreeModel>(&self, model: &M, id: NodeId) -> Option<usize> {
+        self.raw_index_of(model, id)?.checked_sub(self.offset())
+    }
+
+    /// Position counting the root as row 0 whether or not it is shown.
+    fn raw_index_of<M: TreeModel>(&self, model: &M, id: NodeId) -> Option<usize> {
         if id == self.root.id {
             return Some(0);
         }
@@ -575,7 +746,7 @@ impl SparseTreeIndex {
                     .as_ref();
             }
         }
-        (index < self.len()).then_some(index)
+        (index < self.root.visible_len).then_some(index)
     }
 
     fn index_of_key<M: TreeModel>(&self, model: &M, key: TreeRowKey) -> Option<usize> {
@@ -588,7 +759,7 @@ impl SparseTreeIndex {
                 ) {
                     return None;
                 }
-                let parent_index = self.index_of(model, slot.parent)?;
+                let parent_index = self.raw_index_of(model, slot.parent)?;
                 let overlay = Self::find_overlay(&self.root, slot.parent)?;
                 if slot.index >= overlay.direct_children {
                     return None;
@@ -600,12 +771,11 @@ impl SparseTreeIndex {
                     .fold(0_usize, |total, child| {
                         total.saturating_add(child.node.visible_len.saturating_sub(1))
                     });
-                Some(
-                    parent_index
-                        .saturating_add(1)
-                        .saturating_add(slot.index)
-                        .saturating_add(extra_before),
-                )
+                parent_index
+                    .saturating_add(1)
+                    .saturating_add(slot.index)
+                    .saturating_add(extra_before)
+                    .checked_sub(self.offset())
             }
         }
     }
@@ -635,6 +805,27 @@ pub struct TreeView<T, M = TreeNode<T>> {
     on_select: Option<Box<dyn FnMut(NodeId)>>,
     on_expand: Option<Box<dyn FnMut(NodeId, bool)>>,
     on_load_request: Option<Box<dyn FnMut(TreeLoadRequest)>>,
+    on_activate: Option<Box<dyn FnMut(NodeId)>>,
+    click_activation: TreeClickActivation,
+    /// Last single-click row and time, for double-click activation.
+    last_click: Option<(NodeId, Instant)>,
+    selection_follows_focus: bool,
+    row_decoration: Option<TreeRowDecorator<M>>,
+    /// The host's current item (an open file, the table on screen).
+    current: Option<NodeId>,
+    /// Section heading painted above the rows; also the default accessible
+    /// name.
+    heading: Option<String>,
+    /// Height of the heading band, resolved from the theme at layout time.
+    heading_h: f64,
+    /// Surface the tree is painted on; `None` is `surfaces.base`.
+    ground: Option<fn(&Theme) -> Color>,
+    /// Take the height the parent allots and scroll internally.
+    fill: bool,
+    hovered: Option<TreeRowKey>,
+    /// Accessible descriptions the row decoration gave the rows painted last
+    /// frame; semantics read them without re-running the decoration.
+    row_descriptions: HashMap<NodeId, String>,
     reorder: ReorderController<NodeId>,
     reorder_validator: Option<TreeReorderValidator<M>>,
     reorder_commit: Option<TreeReorderCommit<M>>,
@@ -681,6 +872,35 @@ pub struct TreeView<T, M = TreeNode<T>> {
     /// shared model mutation can still restore the pre-mutation stable key.
     last_anchor: Option<SparseAnchor<TreeRowKey>>,
     interaction: crate::interaction::InteractionEnvironment,
+    /// Spacing tokens of the theme seen at the last layout.
+    spacing: crate::tokens::Spacing,
+    /// Leading inset of every row (see [`Self::inset_rows`]), resolved from
+    /// the theme at layout time.
+    row_inset: f64,
+    inset_rows: bool,
+    /// Gap between a row's label and its trailing content.
+    row_gap: f64,
+    /// Label type size, resolved at draw time; the rename field matches it.
+    label_size: f32,
+    on_rename: Option<Box<dyn FnMut(NodeId, String)>>,
+    rename_on_double_click: bool,
+    rename: Option<editing::RenameField>,
+    tab_indents: bool,
+    on_delete: Option<Box<dyn FnMut(NodeId)>>,
+    context_menu_items: Option<TreeContextMenu<M>>,
+    on_context_menu_item: Option<Box<dyn FnMut(Option<NodeId>, usize)>>,
+    menu: ContextMenu,
+    menu_target: Option<NodeId>,
+    row_actions: Vec<TreeRowAction>,
+    on_row_action: Option<Box<dyn FnMut(NodeId, usize)>>,
+    heading_action: Option<TreeHeadingAction>,
+    on_heading_action: Option<Box<dyn FnMut()>>,
+    row_hint: Option<String>,
+    tooltips_suppressed: bool,
+    indent_guides: bool,
+    trailing_edge: bool,
+    /// A row to reveal once a filling tree first has a viewport.
+    pending_reveal: Option<NodeId>,
 }
 
 /// Matches `theme.tokens.spacing.s4` (16.0); also the per-depth indent unit.
@@ -692,6 +912,14 @@ const DISCLOSURE_WIDTH: f64 = 16.0;
 )]
 const DEFAULT_INDENT: f64 = crate::tokens::Spacing::BASE.s4 as f64;
 const ROW_HEIGHT: f64 = 22.0;
+/// Label-to-trailing-content gap before a theme is seen: the `s2` step.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const; f32 -> f64 is exact"
+)]
+const DEFAULT_ROW_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+/// Label size before a first draw resolves the theme's `sm` step.
+const DEFAULT_LABEL_SIZE: f32 = crate::tokens::TypeScale::BASE.sm;
 const WHEEL_LINE_PX: f64 = 60.0;
 const MAX_TRANSITION_ROWS: usize = 512;
 
@@ -700,10 +928,12 @@ fn idx_to_f64(index: usize) -> f64 {
 }
 
 type TreeRowDelegate<M> = Box<dyn FnMut(&M, NodeId, usize) -> Element>;
+type TreeRowDecorator<M> = Box<dyn FnMut(&M, TreeRowInfo, &Theme) -> TreeRowDecoration>;
 type TreeSlotDelegate<M> =
     Box<dyn for<'a> FnMut(&M, TreeSlot, usize, TreeSlotState<'a>) -> Element>;
 type TreeReorderValidator<M> = Box<dyn FnMut(&M, NodeId, &DropTarget<NodeId>) -> bool>;
 type TreeReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<NodeId>) -> bool>;
+type TreeContextMenu<M> = Box<dyn FnMut(&M, Option<NodeId>) -> Vec<MenuItem>>;
 
 struct MountedTreeRow {
     key: TreeRowKey,
@@ -776,7 +1006,7 @@ impl<M: TreeModel> TreeView<(), M> {
 impl<T, M: TreeModel> TreeView<T, M> {
     fn from_source(model: M) -> Self {
         let expanded = HashSet::new();
-        let index = SparseTreeIndex::build(&model, &expanded);
+        let index = SparseTreeIndex::build(&model, &expanded, false);
         let mut viewport = SparseVirtualViewport::new(ROW_HEIGHT);
         viewport.set_overscan(viewport.estimated_height() * 2.0);
         viewport.reconcile(index.len(), |_| None, None);
@@ -791,6 +1021,18 @@ impl<T, M: TreeModel> TreeView<T, M> {
             on_select: None,
             on_expand: None,
             on_load_request: None,
+            on_activate: None,
+            click_activation: TreeClickActivation::default(),
+            last_click: None,
+            selection_follows_focus: false,
+            row_decoration: None,
+            current: None,
+            heading: None,
+            heading_h: 0.0,
+            ground: None,
+            fill: false,
+            hovered: None,
+            row_descriptions: HashMap::new(),
             reorder: ReorderController::new(),
             reorder_validator: None,
             reorder_commit: None,
@@ -819,6 +1061,29 @@ impl<T, M: TreeModel> TreeView<T, M> {
             viewport,
             last_anchor: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            spacing: crate::tokens::Spacing::BASE,
+            row_inset: 0.0,
+            inset_rows: false,
+            row_gap: DEFAULT_ROW_GAP,
+            label_size: DEFAULT_LABEL_SIZE,
+            on_rename: None,
+            rename_on_double_click: false,
+            rename: None,
+            tab_indents: false,
+            on_delete: None,
+            context_menu_items: None,
+            on_context_menu_item: None,
+            menu: ContextMenu::new(),
+            menu_target: None,
+            row_actions: Vec::new(),
+            on_row_action: None,
+            heading_action: None,
+            on_heading_action: None,
+            row_hint: None,
+            tooltips_suppressed: false,
+            indent_guides: false,
+            trailing_edge: false,
+            pending_reveal: None,
         };
         view.refresh_anchor();
         view.refresh_transition_snapshot();
@@ -851,6 +1116,185 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub fn on_load_request<F: FnMut(TreeLoadRequest) + 'static>(mut self, f: F) -> Self {
         self.on_load_request = Some(Box::new(f));
         self
+    }
+
+    /// Receive row activations — the "open this" gesture, distinct from
+    /// selection. `Enter`, the accessibility `Activate` verb and the pointer
+    /// gesture chosen by [`Self::click_activation`] activate a node; arrow
+    /// keys, `Space` and focus changes never do, so keyboard browsing cannot
+    /// open every row it passes. Activation also selects the row.
+    #[must_use]
+    pub fn on_activate<F: FnMut(NodeId) + 'static>(mut self, f: F) -> Self {
+        self.on_activate = Some(Box::new(f));
+        self
+    }
+
+    /// Choose which pointer gesture activates a row (double click by
+    /// default).
+    #[must_use]
+    pub fn click_activation(mut self, activation: TreeClickActivation) -> Self {
+        self.click_activation = activation;
+        self
+    }
+
+    /// Make keyboard focus movement (arrows, Home/End, Page Up/Down) select
+    /// the row it lands on, firing [`Self::on_select`] but never
+    /// [`Self::on_activate`] — the platform list convention for navigator
+    /// sidebars.
+    #[must_use]
+    pub fn selection_follows_focus(mut self, enabled: bool) -> Self {
+        self.selection_follows_focus = enabled;
+        self
+    }
+
+    /// Decorate built-in rows with an icon, a tone, trailing text and an
+    /// accessible description, recomputed each frame from the model and the
+    /// active theme. Rows mounted through [`Self::with_row_delegate`] are not
+    /// decorated.
+    #[must_use]
+    pub fn with_row_decoration<F>(mut self, decorate: F) -> Self
+    where
+        F: FnMut(&M, TreeRowInfo, &Theme) -> TreeRowDecoration + 'static,
+    {
+        self.row_decoration = Some(Box::new(decorate));
+        self
+    }
+
+    /// Paint a section heading above the rows (a sidebar's "Explorer" or
+    /// "Schema" label). The heading also names the tree for assistive
+    /// technology unless [`Self::with_accessible_name`] overrides it.
+    #[must_use]
+    pub fn with_heading(mut self, heading: impl Into<String>) -> Self {
+        self.heading = Some(heading.into());
+        self
+    }
+
+    /// Replace the heading (see [`Self::with_heading`]).
+    pub fn set_heading(&mut self, heading: Option<String>) {
+        self.heading = heading;
+    }
+
+    /// Paint the tree on a surface other than `surfaces.base` (a raised
+    /// sidebar). The function is resolved against the theme every frame, so
+    /// the ground tracks theme changes; hover and selection lift from it.
+    #[must_use]
+    pub fn with_ground(mut self, ground: fn(&Theme) -> Color) -> Self {
+        self.ground = Some(ground);
+        self
+    }
+
+    /// Hide the root: its children form the top level at depth 0 and it is
+    /// always expanded. Suits a project or database whose name is already
+    /// the heading.
+    #[must_use]
+    pub fn hide_root(mut self) -> Self {
+        if !self.index.root_hidden {
+            let anchor = self.capture_view_anchor();
+            self.index.root_hidden = true;
+            self.reconcile_visible(anchor.as_ref());
+        }
+        self
+    }
+
+    /// Take the height the parent allots (or the rect given to
+    /// [`Self::place_at`]) and scroll internally, instead of sizing to the
+    /// content for an outer `Scrollable`.
+    #[must_use]
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+
+    /// Mark the host's current item — the open file, the table on screen.
+    /// The current row carries a rail at its leading edge; it is independent
+    /// of selection, which follows the user's browsing.
+    pub fn set_current(&mut self, id: Option<NodeId>) {
+        self.current = id.filter(|id| self.model.contains(*id));
+    }
+
+    #[must_use]
+    pub fn current(&self) -> Option<NodeId> {
+        self.current
+    }
+
+    /// Position the tree at an externally computed `rect` without a taffy
+    /// pass — for a sidebar that slides over the content, whose geometry the
+    /// host derives each frame. Paint, hit-testing and semantics all follow
+    /// the new rect; a [`Self::fill`] tree also resizes its viewport to it.
+    /// Rows mounted through [`Self::with_row_delegate`] keep the geometry of
+    /// their last layout pass, so external placement suits built-in and
+    /// decorated rows.
+    pub fn place_at(&mut self, rect: Rect) {
+        self.rect = rect;
+        if self.fill {
+            self.fit_viewport_to_rect();
+        }
+        self.refresh_anchor();
+    }
+
+    /// Replace the expanded set without firing [`Self::on_expand`] — for a
+    /// host restoring expansion it persists itself. Unknown ids, and leaves
+    /// that cannot [hold children](TreeModel::accepts_children), are ignored.
+    pub fn restore_expanded<I>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = NodeId>,
+    {
+        let next = ids
+            .into_iter()
+            .filter(|id| self.model.is_branch(*id) || self.model.accepts_children(*id))
+            .collect::<HashSet<_>>();
+        if next != self.expanded {
+            let anchor = self
+                .last_anchor
+                .clone()
+                .or_else(|| self.capture_view_anchor());
+            self.expanded = next;
+            self.reconcile_visible(anchor.as_ref());
+        }
+    }
+
+    /// The expanded nodes, for a host persisting expansion itself.
+    pub fn expanded_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.expanded.iter().copied()
+    }
+
+    /// Scroll `id`'s row into view if it is in the visible order. A
+    /// [`Self::fill`] tree that has no viewport yet reveals the row once its
+    /// first layout sizes one.
+    pub fn reveal(&mut self, id: NodeId) {
+        if self.fill && self.viewport.viewport() <= 0.0 {
+            self.pending_reveal = Some(id);
+            return;
+        }
+        self.pending_reveal = None;
+        if let Some(index) = self.visible_index_of(id) {
+            self.viewport
+                .scroll_to_index(index, ScrollAlignment::Nearest);
+            self.mark_delegate_window_dirty();
+            self.refresh_anchor();
+        }
+    }
+
+    /// Author the row height at the default text scale (the estimate
+    /// [`Self::set_viewport`] takes, without fixing a viewport height). It
+    /// grows only once the label line itself would not fit.
+    #[must_use]
+    pub fn with_row_height(mut self, height_px: f32) -> Self {
+        self.authored_row_height = Some(f64::from(height_px));
+        self.refresh_row_estimate();
+        self
+    }
+
+    /// The painted rect of visible row `index`, clipped to nothing when it is
+    /// outside the viewport.
+    fn visible_row_rect(&self, index: usize) -> Option<Rect> {
+        let top = self.viewport.item_view_top(index)?;
+        let height = self.viewport.item_height(index)?;
+        let y0 = self.body_top() + top;
+        let y1 = y0 + height;
+        let body_bottom = self.body_top() + self.body_height();
+        (y1 > self.body_top() && y0 < body_bottom)
+            .then(|| Rect::new(self.rect.x0, y0, self.rect.x1, y1))
     }
 
     /// Enable validated before/inside/after node reordering. A successful
@@ -1049,11 +1493,44 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.focused
     }
 
+    /// Move the keyboard focus ring to `id` without selecting it — for a
+    /// host whose selection changed elsewhere, so arrow keys continue from
+    /// the row it now shows as chosen.
+    pub fn set_focused(&mut self, id: Option<NodeId>) {
+        self.focused = id
+            .filter(|id| self.model.contains(*id))
+            .map(TreeRowKey::Node);
+    }
+
+    /// Whether a row is being dragged (past the drag threshold).
+    #[must_use]
+    pub fn is_dragging(&self) -> bool {
+        self.reorder.is_active()
+    }
+
     fn reconcile_model_state(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
         let anchor = anchor.map(|anchor| self.normalize_anchor(anchor.clone()));
-        self.expanded
-            .retain(|id| self.model.contains(*id) && self.model.is_branch(*id));
+        // A node that accepts children stays expanded while it has none, so
+        // a row dropped or indented into it is revealed once the host's model
+        // catches up.
+        self.expanded.retain(|id| {
+            self.model.contains(*id)
+                && (self.model.is_branch(*id) || self.model.accepts_children(*id))
+        });
         self.selection.reconcile(|id| self.model.contains(*id));
+        if self
+            .rename
+            .as_ref()
+            .is_some_and(|field| !self.model.contains(field.id))
+        {
+            self.rename = None;
+        }
+        if self
+            .menu_target
+            .is_some_and(|target| !self.model.contains(target))
+        {
+            self.close_context_menu();
+        }
         self.focused = self.focused.filter(|key| match key {
             TreeRowKey::Node(id) => self.model.contains(*id),
             TreeRowKey::Slot(slot) => {
@@ -1283,7 +1760,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
 
     fn reconcile_visible(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
         let old_snapshot = self.transition_snapshot.clone();
-        let next = SparseTreeIndex::build(&self.model, &self.expanded);
+        let next = SparseTreeIndex::build(&self.model, &self.expanded, self.index.root_hidden);
         self.viewport.reconcile(
             next.len(),
             |key| next.index_of_key(&self.model, *key),
@@ -1421,6 +1898,31 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .count()
     }
 
+    /// Top of the row area, below the heading band.
+    fn body_top(&self) -> f64 {
+        self.rect.y0 + self.heading_h
+    }
+
+    /// Size a [`Self::fill`] tree's viewport to its rect, less the heading.
+    fn fit_viewport_to_rect(&mut self) {
+        let height = (self.rect.height() - self.heading_h).max(0.0);
+        if (self.viewport.viewport() - height).abs() > 0.25 {
+            let before = self.viewport.visible_range();
+            self.viewport.set_viewport(height);
+            self.viewport
+                .set_overscan(self.viewport.estimated_height() * 2.0);
+            if self.viewport.visible_range() != before {
+                self.mark_delegate_window_dirty();
+            }
+            self.refresh_transition_snapshot();
+        }
+        if height > 0.0
+            && let Some(id) = self.pending_reveal.take()
+        {
+            self.reveal(id);
+        }
+    }
+
     fn body_height(&self) -> f64 {
         if self.viewport.viewport() > 0.0 {
             self.viewport.viewport()
@@ -1450,6 +1952,21 @@ impl<T, M: TreeModel> TreeView<T, M> {
             default_pad: pad,
             authored_pad: pad,
         });
+        self.spacing = tokens.spacing;
+        self.row_gap = f64::from(tokens.spacing.s2);
+        self.row_inset = if self.inset_rows {
+            f64::from(tokens.spacing.s2)
+        } else {
+            0.0
+        };
+        let heading_band =
+            type_line_height(tokens.typography.scale.xs) + 2.0 * f64::from(tokens.spacing.s2);
+        self.heading_h = match (&self.heading, &self.heading_action) {
+            // An action needs a band a pressable control fits in.
+            (_, Some(_)) => heading_band.max(line + 4.0 * pad),
+            (Some(_), None) => heading_band,
+            (None, None) => 0.0,
+        };
         self.refresh_row_estimate();
     }
 
@@ -1498,7 +2015,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if !self.rect.contains(cursor) || self.index.len() == 0 {
             return None;
         }
-        let local_y = cursor.y - self.rect.y0;
+        let local_y = cursor.y - self.body_top();
         let index = self.viewport.hit_test(local_y)?;
         let (TreeRowKey::Node(id), depth) = self.index.row_at(&self.model, index)? else {
             return None;
@@ -1508,30 +2025,37 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let fraction = ((local_y - top) / height).clamp(0.0, 1.0);
         let placement = if fraction < 0.25 {
             DropPlacement::Before
-        } else if fraction > 0.75 || !self.model.is_branch(id) {
+        } else if fraction > 0.75 || !self.model.accepts_children(id) {
             DropPlacement::After
         } else {
             DropPlacement::Inside
         };
-        let indent = idx_to_f64(depth) * self.indent_px;
-        let preview = match placement {
-            DropPlacement::Before => Rect::new(
-                self.rect.x0 + indent,
-                self.rect.y0 + top - 1.0,
-                self.rect.x1,
-                self.rect.y0 + top + 1.0,
+        // The seam below an expanded branch sits above its first child: a
+        // drop there lands as that child's predecessor, where the line is
+        // drawn, not as the branch's next sibling far below.
+        let (id, placement, depth, seam) = match (placement, self.model.child_id(id, 0)) {
+            (DropPlacement::After, Some(first)) if self.is_expanded(id) => (
+                first,
+                DropPlacement::Before,
+                depth.saturating_add(1),
+                top + height,
             ),
-            DropPlacement::After => Rect::new(
+            (DropPlacement::Before, _) => (id, placement, depth, top),
+            _ => (id, placement, depth, top + height),
+        };
+        let indent = self.row_inset + idx_to_f64(depth) * self.indent_px;
+        let preview = match placement {
+            DropPlacement::Before | DropPlacement::After => Rect::new(
                 self.rect.x0 + indent,
-                self.rect.y0 + top + height - 1.0,
+                self.body_top() + seam - 1.0,
                 self.rect.x1,
-                self.rect.y0 + top + height + 1.0,
+                self.body_top() + seam + 1.0,
             ),
             DropPlacement::Inside => Rect::new(
                 self.rect.x0 + indent,
-                self.rect.y0 + top,
+                self.body_top() + top,
                 self.rect.x1,
-                self.rect.y0 + top + height,
+                self.body_top() + top + height,
             ),
         };
         Some(DropCandidate {
@@ -1548,15 +2072,34 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if !self.rect.contains(cursor) {
             return None;
         }
-        let index = self.viewport.hit_test(cursor.y - self.rect.y0)?;
+        let index = self.viewport.hit_test(cursor.y - self.body_top())?;
         let (TreeRowKey::Node(id), depth) = self.index.row_at(&self.model, index)? else {
             return None;
         };
-        let glyph_x0 = self.rect.x0 + idx_to_f64(depth) * self.indent_px;
-        (!(self.model.is_branch(id)
+        let glyph_x0 = self.rect.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px;
+        let on_disclosure = self.model.is_branch(id)
             && cursor.x >= glyph_x0
-            && cursor.x < glyph_x0 + self.disclosure_w))
-            .then_some(id)
+            && cursor.x < glyph_x0 + self.disclosure_w;
+        let on_action = self.row_actions_visible(TreeRowKey::Node(id))
+            && self.row_rect(id).is_some_and(|row| {
+                self.row_action_rects(row)
+                    .iter()
+                    .any(|r| r.contains(cursor))
+            });
+        (!on_disclosure && !on_action).then_some(id)
+    }
+
+    /// Whether the pointer is over a branch's disclosure column.
+    fn disclosure_at_cursor(&self) -> bool {
+        let Some(cursor) = self.last_cursor else {
+            return false;
+        };
+        match self.row_key_at(cursor) {
+            Some(TreeRowKey::Node(id)) if self.model.is_branch(id) => self
+                .disclosure_rect(id)
+                .is_some_and(|rect| cursor.x >= rect.x0 && cursor.x < rect.x1),
+            _ => false,
+        }
     }
 
     fn update_reorder_pointer(&mut self, cursor: Point, now: Instant) {
@@ -1578,12 +2121,21 @@ impl<T, M: TreeModel> TreeView<T, M> {
 
     fn commit_reorder(&mut self, dropped: ReorderDrop<NodeId>) -> bool {
         let anchor = self.capture_view_anchor();
+        let target = dropped.target.clone();
         let changed = self
             .reorder_commit
             .as_mut()
             .is_some_and(|commit| commit(&mut self.model, dropped));
+        // Reveal the moved row inside its new parent.
+        let opened = changed
+            && target.placement == DropPlacement::Inside
+            && self.model.accepts_children(target.key)
+            && self.expanded.insert(target.key);
         if changed {
             self.reconcile_model_state(anchor.as_ref());
+        }
+        if opened && let Some(callback) = &mut self.on_expand {
+            callback(target.key, true);
         }
         changed
     }
@@ -1650,20 +2202,31 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if pt.x < self.rect.x0 || pt.x > self.rect.x1 {
             return false;
         }
-        let Some(index) = self.viewport.hit_test(pt.y - self.rect.y0) else {
+        let Some(index) = self.viewport.hit_test(pt.y - self.body_top()) else {
             return false;
         };
         let Some((key, depth)) = self.index.row_at(&self.model, index) else {
             return false;
         };
-        let glyph_x0 = self.rect.x0 + idx_to_f64(depth) * self.indent_px;
+        let glyph_x0 = self.rect.x0 + self.row_inset + idx_to_f64(depth) * self.indent_px;
         match key {
             TreeRowKey::Node(id) => {
                 let is_branch = self.model.is_branch(id);
                 if is_branch && pt.x >= glyph_x0 && pt.x < glyph_x0 + self.disclosure_w {
                     self.toggle_expand(id);
+                } else if self.rename_on_double_click
+                    && !toggle
+                    && !extend
+                    && self.is_double_click(id)
+                    && self.begin_rename(id)
+                {
+                    // The second click renames the row the first one chose.
+                    self.last_click = None;
                 } else {
                     self.apply_selection_gesture(id, toggle, extend);
+                    if !toggle && !extend {
+                        self.register_click(id);
+                    }
                 }
             }
             TreeRowKey::Slot(slot) => {
@@ -1680,6 +2243,61 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.focused = Some(key);
         *focus_target = Some(node_id);
         true
+    }
+
+    /// Count a plain click on a node toward activation under the chosen
+    /// [`TreeClickActivation`].
+    fn register_click(&mut self, id: NodeId) {
+        let double = self.is_double_click(id);
+        self.last_click = if double {
+            None
+        } else {
+            Some((id, crate::time::now()))
+        };
+        match self.click_activation {
+            TreeClickActivation::SingleClick => self.fire_activate(id),
+            TreeClickActivation::DoubleClick if double => self.fire_activate(id),
+            TreeClickActivation::DoubleClick => {}
+        }
+    }
+
+    /// Whether a click on `id` now completes a double click.
+    fn is_double_click(&self, id: NodeId) -> bool {
+        matches!(
+            self.last_click,
+            Some((previous, at))
+                if previous == id
+                    && crate::time::now().saturating_duration_since(at)
+                        < crate::gesture::multi_click_interval()
+        )
+    }
+
+    fn fire_activate(&mut self, id: NodeId) {
+        if let Some(callback) = &mut self.on_activate {
+            callback(id);
+        }
+    }
+
+    /// Select the focused node after a keyboard move when selection follows
+    /// focus.
+    fn follow_focus(&mut self) {
+        if !self.selection_follows_focus {
+            return;
+        }
+        if let Some(id) = self.focused()
+            && self.selected() != Some(id)
+        {
+            self.select(id);
+        }
+    }
+
+    /// The row under a logical-pixel point, if it lies in the row area.
+    fn row_key_at(&self, point: Point) -> Option<TreeRowKey> {
+        if !self.rect.contains(point) || point.y < self.body_top() {
+            return None;
+        }
+        let index = self.viewport.hit_test(point.y - self.body_top())?;
+        self.index.row_at(&self.model, index).map(|(key, _)| key)
     }
 
     fn on_wheel(&mut self, delta: &MouseScrollDelta) -> bool {
@@ -1745,6 +2363,27 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     fn on_key_with_modifiers(&mut self, logical_key: &Key, toggle: bool, extend: bool) -> bool {
+        let navigation = matches!(
+            logical_key,
+            Key::Named(
+                NamedKey::ArrowUp
+                    | NamedKey::ArrowDown
+                    | NamedKey::ArrowLeft
+                    | NamedKey::ArrowRight
+                    | NamedKey::PageUp
+                    | NamedKey::PageDown
+                    | NamedKey::Home
+                    | NamedKey::End
+            )
+        );
+        let handled = self.on_key_inner(logical_key, toggle, extend);
+        if handled && navigation && !toggle && !extend {
+            self.follow_focus();
+        }
+        handled
+    }
+
+    fn on_key_inner(&mut self, logical_key: &Key, toggle: bool, extend: bool) -> bool {
         match logical_key {
             Key::Named(NamedKey::ArrowRight) => self.key_right(),
             Key::Named(NamedKey::ArrowLeft) => self.key_left(),
@@ -1788,8 +2427,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 .len()
                 .checked_sub(1)
                 .is_some_and(|index| self.focus_at(index)),
-            Key::Named(NamedKey::Enter) => self.activate_focus(),
-            Key::Character(text) if text == " " => self.activate_focus(),
+            Key::Named(NamedKey::Enter) => self.activate_focus(true),
+            Key::Character(text) if text == " " => self.activate_focus(false),
             Key::Character(text)
                 if self.multi_select
                     && toggle
@@ -1802,13 +2441,18 @@ impl<T, M: TreeModel> TreeView<T, M> {
         }
     }
 
-    fn activate_focus(&mut self) -> bool {
+    /// `Enter` (`activate`) selects and activates the focused node; `Space`
+    /// only selects it. On a placeholder slot either one retries the load.
+    fn activate_focus(&mut self, activate: bool) -> bool {
         let Some(key) = self.focused else {
             return false;
         };
         match key {
             TreeRowKey::Node(id) => {
                 self.select(id);
+                if activate {
+                    self.fire_activate(id);
+                }
                 true
             }
             TreeRowKey::Slot(slot) => {
@@ -2119,7 +2763,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.apply_type_metrics(theme);
         self.reconcile_mounted_rows();
         let height = self.body_height();
-        let disclosure_w = self.disclosure_w;
+        let disclosure_w = self.disclosure_w + self.row_inset;
         let indent_px = self.indent_px;
         let mut children = Vec::with_capacity(self.mounted_rows.len());
         for row in &mut self.mounted_rows {
@@ -2137,12 +2781,23 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             row.node = Some(child);
             children.push(child);
         }
+        let (height, min_height, grow) = if self.fill {
+            (percent(1.0_f32), length(0.0_f32), 1.0)
+        } else {
+            let content = Dimension::length(px(self.heading_h + height));
+            (content, Dimension::auto(), 0.0)
+        };
         let node = taffy.parent_node(
             Style {
                 size: Size {
                     width: percent(1.0_f32),
-                    height: Dimension::length(px(height)),
+                    height,
                 },
+                min_size: Size {
+                    width: Dimension::auto(),
+                    height: min_height,
+                },
+                flex_grow: grow,
                 overflow: taffy::Point {
                     x: taffy::Overflow::Clip,
                     y: taffy::Overflow::Clip,
@@ -2164,7 +2819,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let child_origin = Point::new(self.rect.x0, self.rect.y0);
+        if self.fill {
+            self.fit_viewport_to_rect();
+        }
+        let child_origin = Point::new(self.rect.x0, self.body_top());
         let mut measurements = Vec::with_capacity(self.mounted_rows.len());
         for row in &mut self.mounted_rows {
             let Some(child) = row.node else {
@@ -2201,6 +2859,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.request_visible_rows();
         let tokens = &theme.tokens;
         let text_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        self.label_size = text_size;
         // Every label and disclosure glyph is one line of this style, so one
         // measured line box centres every row identically.
         let (_, line_h) = text_renderer.measure("\u{25B6}", text_size, None);
@@ -2209,22 +2868,75 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         let indent_px = self.indent_px;
         let accent = tokens.colors.accent[ACCENT_PRIMARY_IDX];
         let now = crate::time::now();
+        let ground = self
+            .ground
+            .map_or(tokens.colors.surfaces.base, |ground| ground(theme));
+        let hover_fill = crate::chrome::selection_tier_on(
+            theme,
+            crate::chrome::SelectionState::new(false, true, false),
+            ground,
+        )
+        .fill;
+        let rail_w = f64::from(tokens.spacing.s1) / 2.0;
+        let gap = f64::from(tokens.spacing.s2);
 
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.base,
+            ground,
             None,
             &self.rect,
         );
+        if let Some(heading) = &self.heading {
+            let heading_size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
+            let (_, heading_line) = text_renderer.measure(heading, heading_size, None);
+            let x = self.rect.x0 + f64::from(tokens.spacing.s3);
+            let end = self
+                .heading_action_rect()
+                .map_or(self.rect.x1, |action| action.x0);
+            let max_w = (end - x - f64::from(tokens.spacing.s3)).max(0.0);
+            let heading = text_renderer.elide_to_width_weighted(
+                heading,
+                heading_size,
+                px(max_w),
+                crate::text_render::TextWeight::Semibold,
+            );
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+            )]
+            let heading_xf = transform
+                * Affine::translate((
+                    x,
+                    centered_text_top(self.rect.y0, self.heading_h, heading_line),
+                ));
+            text_renderer.draw_text_weighted(
+                scene,
+                &heading,
+                heading_size,
+                tokens.colors.text_dim,
+                heading_xf,
+                None,
+                crate::text_render::TextWeight::Semibold,
+            );
+        }
+        self.paint_heading_action(scene, transform, text_renderer, theme);
+        let guide_color = crate::surface::edge_on(ground);
+        let drag_source = self
+            .reorder
+            .is_active()
+            .then(|| self.reorder.source().copied())
+            .flatten();
+        let body = Rect::new(self.rect.x0, self.body_top(), self.rect.x1, self.rect.y1);
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             transform,
-            &self.rect,
+            &body,
         );
 
+        self.row_descriptions.clear();
         let visible = self.visible_row_range();
         for i in visible {
             let Some((key, depth)) = self.index.row_at(&self.model, i) else {
@@ -2257,20 +2969,101 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 .transitions
                 .visual(&key, RowGeometry::new(view_top, row_height), now);
             let row_height = visual.geometry.height;
-            let opacity = visual.opacity;
-            let y0 = self.rect.y0 + visual.geometry.top;
-            let y1 = (y0 + row_height).min(self.rect.y0 + self.body_height());
-            if y1 <= self.rect.y0 {
+            // The dragged row stays in place, faded, while its lifted copy
+            // follows the pointer.
+            let opacity = if matches!(key, TreeRowKey::Node(id) if drag_source == Some(id)) {
+                visual.opacity * 0.4
+            } else {
+                visual.opacity
+            };
+            let body_top = self.rect.y0 + self.heading_h;
+            let body_bottom = body_top + self.body_height();
+            let y0 = body_top + visual.geometry.top;
+            let y1 = (y0 + row_height).min(body_bottom);
+            if y1 <= body_top {
                 continue;
             }
-            if y0 >= self.rect.y0 + self.body_height() {
+            if y0 >= body_bottom {
                 break;
             }
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
+            let selected = matches!(key, TreeRowKey::Node(id) if self.selection.is_selected(&id));
+            let current = matches!(key, TreeRowKey::Node(id) if self.current == Some(id));
+            let delegated = self.mounted_rows.iter().any(|row| row.key == key);
+            let decoration = match (key, self.row_decoration.as_mut()) {
+                (TreeRowKey::Node(id), Some(decorate)) if !delegated => Some(decorate(
+                    &self.model,
+                    TreeRowInfo {
+                        id,
+                        depth,
+                        is_branch,
+                        expanded: self.expanded.contains(&id),
+                        selected,
+                        current,
+                    },
+                    theme,
+                )),
+                _ => None,
+            };
 
-            if matches!(key, TreeRowKey::Node(id) if self.selection.is_selected(&id)) {
-                crate::widget::data_table::paint_selected_row(
-                    scene, transform, theme, row_rect, opacity,
+            if selected {
+                if self.ground.is_some() {
+                    let fill = crate::chrome::selection_tier_on(
+                        theme,
+                        crate::chrome::SelectionState::active(true),
+                        ground,
+                    )
+                    .fill;
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        fill.with_alpha_factor(opacity),
+                        None,
+                        &row_rect,
+                    );
+                } else {
+                    crate::widget::data_table::paint_selected_row(
+                        scene, transform, theme, row_rect, opacity,
+                    );
+                }
+            } else if self.hovered == Some(key) && !self.reorder.is_tracking() {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    hover_fill.with_alpha_factor(opacity),
+                    None,
+                    &row_rect,
+                );
+            }
+            if let Some(key) = decoration
+                .as_ref()
+                .and_then(|decoration| decoration.presence.as_ref())
+            {
+                // Mist is painted in device space.
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "kurbo Affine application is floating-point matrix math; it cannot overflow or panic"
+                )]
+                let device = transform.transform_rect_bbox(row_rect);
+                for user in presence.peers_on(key) {
+                    presence.draw_peer_mist(scene, theme, user, device);
+                }
+            }
+            self.paint_indent_guides(
+                scene,
+                transform,
+                row_rect,
+                depth,
+                guide_color.with_alpha_factor(opacity),
+            );
+            if current {
+                let rail = Rect::new(row_rect.x0, row_rect.y0, row_rect.x0 + rail_w, row_rect.y1);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    accent.with_alpha_factor(opacity),
+                    None,
+                    &rail,
                 );
             }
 
@@ -2285,8 +3078,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             }
 
             let depth_px = idx_to_f64(depth) * indent_px;
-            let glyph_x = self.rect.x0 + depth_px;
-            let label_x = glyph_x + self.disclosure_w;
+            let glyph_x = self.rect.x0 + self.row_inset + depth_px;
+            let mut label_x = glyph_x + self.disclosure_w;
             let text_y = centered_text_top(y0, row_height, line_h);
 
             if is_branch {
@@ -2313,8 +3106,76 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 );
             }
 
-            let delegated = self.mounted_rows.iter().any(|row| row.key == key);
             if !delegated {
+                let actions_visible = self.row_actions_visible(key);
+                let mut text_color = text_color;
+                let mut label_max = self.rect.x1 - label_x - gap;
+                if let (TreeRowKey::Node(id), Some(description)) = (
+                    key,
+                    decoration
+                        .as_ref()
+                        .and_then(|decoration| decoration.description.clone()),
+                ) {
+                    self.row_descriptions.insert(id, description);
+                }
+                if let Some(decoration) = &decoration {
+                    if decoration.tone == TreeRowTone::Secondary {
+                        text_color = tokens.colors.text_dim;
+                    }
+                    if let Some(icon) = &decoration.icon {
+                        let used = paint_row_icon(
+                            scene,
+                            transform,
+                            text_renderer,
+                            theme,
+                            icon,
+                            Point::new(label_x, y0 + row_height / 2.0),
+                            line_h,
+                            opacity,
+                        );
+                        label_x += used + gap;
+                        label_max -= used + gap;
+                    }
+                    if let Some(trailing) = &decoration.trailing {
+                        let (trailing_w, _) = text_renderer.measure(trailing, text_size, None);
+                        let trailing_x =
+                            self.rect.x1 - f64::from(tokens.spacing.s3) - f64::from(trailing_w);
+                        #[allow(
+                            clippy::arithmetic_side_effects,
+                            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+                        )]
+                        let trailing_xf = transform * Affine::translate((trailing_x, text_y));
+                        text_renderer.draw_text(
+                            scene,
+                            trailing,
+                            text_size,
+                            tokens.colors.text_dim.with_alpha_factor(opacity),
+                            trailing_xf,
+                            None,
+                        );
+                        label_max = trailing_x - gap - label_x;
+                    }
+                }
+                if actions_visible {
+                    self.paint_row_actions(scene, transform, theme, row_rect, ground);
+                    if let Some(first) = self.row_action_rects(row_rect).first() {
+                        label_max = label_max.min(first.x0 - gap - label_x);
+                    }
+                }
+                if let (TreeRowKey::Node(id), Some(field)) = (key, self.rename.as_mut())
+                    && field.id == id
+                {
+                    // The field takes the label's place, at the label's size.
+                    field.input.set_font_size(text_size);
+                    field.input.apply_layout_external(Rect::new(
+                        label_x,
+                        y0,
+                        (self.rect.x1 - gap).max(label_x),
+                        y0 + row_height,
+                    ));
+                    continue;
+                }
+                let label = text_renderer.elide_to_width(label, text_size, px(label_max.max(0.0)));
                 #[allow(
                     clippy::arithmetic_side_effects,
                     reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
@@ -2322,7 +3183,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 let label_xf = transform * Affine::translate((label_x, text_y));
                 text_renderer.draw_text(
                     scene,
-                    label,
+                    &label,
                     text_size,
                     text_color.with_alpha_factor(opacity),
                     label_xf,
@@ -2363,14 +3224,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 continue;
             }
             let opacity = visual.opacity;
-            let y0 = self.rect.y0 + visual.geometry.top;
+            let y0 = self.body_top() + visual.geometry.top;
             let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y0 + visual.geometry.height);
             if payload.selected {
                 crate::widget::data_table::paint_selected_row(
                     scene, transform, theme, row_rect, opacity,
                 );
             }
-            let glyph_x = self.rect.x0 + idx_to_f64(payload.depth) * indent_px;
+            let glyph_x = self.rect.x0 + self.row_inset + idx_to_f64(payload.depth) * indent_px;
             let text_y = centered_text_top(y0, visual.geometry.height, line_h);
             if payload.is_branch {
                 let glyph = if payload.expanded { "▼" } else { "▶" };
@@ -2408,6 +3269,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 None,
             );
         }
+        if let Some(field) = self.rename.as_mut() {
+            field
+                .input
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
+        self.paint_drag_ghost(scene, transform, text_renderer, theme, text_size, line_h);
         if let Some(preview) = self.reorder.preview() {
             let color = if self
                 .reorder
@@ -2427,6 +3294,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             );
         }
         scene.pop_layer();
+        self.paint_trailing_edge(scene, transform, ground);
+        self.paint_scroll_thumb(scene, transform, theme);
+        self.paint_context_menu(scene, transform, text_renderer, theme, presence);
     }
 
     #[allow(
@@ -2443,10 +3313,38 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         let node_id = ctx.node_id;
         let taffy = ctx.taffy;
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
-            ));
+            let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor = Some(point);
+            self.hovered = self.row_key_at(point);
+        }
+        if let WindowEvent::CursorLeft { .. } = event {
+            self.hovered = None;
+        }
+        if self.route_context_menu(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
+        }
+        if self.route_rename(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        ) {
+            return;
         }
         if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
             self.route_to_delegates(
@@ -2489,21 +3387,60 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 ..
             } => {
                 self.momentum.stop();
-                let source = (self.reorder_validator.is_some() && self.reorder_commit.is_some())
+                if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                    && self.press_affordance(cursor)
+                {
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                    return;
+                }
+                let reorderable = self.reorder_validator.is_some() && self.reorder_commit.is_some();
+                let source = reorderable
                     .then(|| self.reorder_source_at_cursor())
                     .flatten();
                 let toggle = modifiers.state().control_key() || modifiers.state().super_key();
                 let extend = modifiers.state().shift_key();
-                if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
+                if reorderable && self.disclosure_at_cursor() {
+                    // Rows of a reorderable tree act on press, so its
+                    // disclosure does too.
                     *handled = self.on_left_press(node_id, focus_target, toggle, extend);
-                    self.reorder.begin(source, cursor);
-                    self.last_tick = Some(crate::time::now());
+                } else if let (Some(source), Some(cursor)) = (source, self.last_cursor) {
+                    self.on_left_press(node_id, focus_target, toggle, extend);
+                    // A double click that opened the rename field is not
+                    // the start of a drag.
+                    if self.rename.is_none() {
+                        self.reorder.begin(source, cursor);
+                        self.last_tick = Some(crate::time::now());
+                    }
                     *handled = true;
                 } else if let Some(cursor) = self.last_cursor
                     && self.rect.contains(cursor)
                 {
                     self.drag_scroll
                         .begin(cursor.y, self.scroll_offset(), crate::time::now());
+                    *focus_target = Some(node_id);
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.context_menu_items.is_some() => {
+                if let Some(cursor) = self.last_cursor
+                    && self.rect.contains(cursor)
+                {
+                    self.reorder.cancel();
+                    self.drag_scroll.cancel();
+                    match self.row_key_at(cursor) {
+                        Some(TreeRowKey::Node(id)) => {
+                            self.open_row_menu(id, cursor);
+                        }
+                        _ => {
+                            self.open_context_menu(None, cursor);
+                        }
+                    }
                     *focus_target = Some(node_id);
                     *handled = true;
                 }
@@ -2556,12 +3493,28 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                         ..
                     },
                 ..
-            } => {
+            } if self.is_focused => {
                 self.momentum.stop();
+                let mods = modifiers.state();
+                let menu_key = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+                    || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10)));
                 if *logical_key == Key::Named(NamedKey::Escape)
                     && (self.reorder.cancel() || self.drag_scroll.cancel())
                 {
                     *handled = true;
+                } else if menu_key && self.context_menu_items.is_some() {
+                    *handled = self.open_menu_from_keyboard();
+                } else if *logical_key == Key::Named(NamedKey::F2) && self.on_rename.is_some() {
+                    *handled = self.command_node().is_some_and(|id| self.begin_rename(id));
+                } else if *logical_key == Key::Named(NamedKey::Delete) && self.on_delete.is_some() {
+                    if let (Some(id), Some(callback)) = (self.command_node(), &mut self.on_delete) {
+                        callback(id);
+                        *handled = true;
+                    }
+                } else if let Some(movement) = self.key_move(logical_key, mods) {
+                    *handled = self
+                        .command_node()
+                        .is_some_and(|id| self.move_node(id, movement));
                 } else {
                     let toggle = modifiers.state().control_key() || modifiers.state().super_key();
                     let extend = modifiers.state().shift_key();
@@ -2596,14 +3549,19 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         let row = self.mounted_rows.get(child_index)?;
         let visible = self.visible_row_range();
         let absolute = self.index.index_of_key(&self.model, row.key)?;
-        visible
-            .contains(&absolute)
-            .then(|| absolute.saturating_sub(visible.start))
+        // Tree items follow the heading action's button when there is one.
+        let offset = usize::from(self.heading_action_node().is_some());
+        visible.contains(&absolute).then(|| {
+            absolute
+                .saturating_sub(visible.start)
+                .saturating_add(offset)
+        })
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.reorder.is_tracking()
             || self.drag_scroll.is_tracking()
+            || self.menu.is_open()
             || self
                 .mounted_rows
                 .iter()
@@ -2662,6 +3620,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
+        // Focus leaving the tree ends an inline rename, keeping the edit.
+        if !focused {
+            self.commit_rename();
+        }
     }
     fn is_focused(&self) -> bool {
         self.is_focused
@@ -2682,7 +3644,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .with_optional_name(
                 self.accessible_name
                     .as_deref()
-                    .map(crate::i18n::I18nManager::lookup_plain),
+                    .map(crate::i18n::I18nManager::lookup_plain)
+                    .or_else(|| self.heading.clone()),
             )
             .with_optional_value(value)
             .with_state(AccessState {
@@ -2770,30 +3733,100 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 ) {
                     item = item.with_bounds(Rect::new(
                         self.rect.x0,
-                        self.rect.y0 + top,
+                        self.body_top() + top,
                         self.rect.x1,
-                        self.rect.y0 + top + height,
+                        self.body_top() + top + height,
                     ));
                 }
+                if let TreeRowKey::Node(id) = key
+                    && let Some(description) = self.row_descriptions.get(&id)
+                {
+                    item = item.with_description(description.clone());
+                }
+                if let TreeRowKey::Node(id) = key
+                    && let Some(semantic) = self.model.semantic_key(id)
+                {
+                    item.key = Some(crate::a11y::hash_key(&semantic));
+                    item = item.with_semantic_key(semantic);
+                }
+                let mut item_children = Vec::new();
                 if let Some(child) = delegate_child {
-                    item = item.with_children(vec![child]);
+                    item_children.push(child);
+                }
+                if let TreeRowKey::Node(id) = key {
+                    let label = self.model.label(id).unwrap_or_default();
+                    item_children.extend(self.row_semantic_children(
+                        id,
+                        label,
+                        self.visible_row_rect(index),
+                    ));
+                }
+                if !item_children.is_empty() {
+                    item = item.with_children(item_children);
                 }
                 Some(item)
             })
-            .collect();
-        node = node.with_children(children);
+            .collect::<Vec<_>>();
+        let mut all = Vec::with_capacity(children.len().saturating_add(2));
+        all.extend(self.heading_action_node());
+        all.extend(children);
+        all.extend(self.menu_node());
+        node = node.with_children(all);
         Some(node)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let mut node = self.accessibility()?;
+        for index in path {
+            node = node.children.into_iter().nth(*index)?;
+        }
+        node.bounds.map(crate::a11y::AccessBounds::to_rect)
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [index] = path else {
+            return false;
+        };
+        let offset = usize::from(self.heading_action_node().is_some());
+        let Some(row) = index.checked_sub(offset) else {
+            return false;
+        };
+        let absolute = self.visible_row_range().start.saturating_add(row);
+        if !self.visible_row_range().contains(&absolute) || !self.focus_at(absolute) {
+            return false;
+        }
+        self.is_focused = true;
+        self.follow_focus();
+        true
+    }
+
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.affordance_tooltip(point)
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.rename.is_some() || self.menu.is_open() {
+            return None;
+        }
+        let on_heading_action = self
+            .heading_action_rect()
+            .is_some_and(|rect| rect.contains(point));
+        (on_heading_action || self.row_key_at(point).is_some())
+            .then_some(winit::window::CursorIcon::Pointer)
     }
 
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
     ) -> bool {
         use crate::a11y::Action;
 
+        if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
+            return performed;
+        }
         if let Some(raw) = target.strip_prefix("node:") {
             let Ok(id) = raw.parse::<NodeId>() else {
                 return false;
@@ -2811,6 +3844,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 Action::Activate => {
                     self.focused = Some(TreeRowKey::Node(id));
                     self.select(id);
+                    self.fire_activate(id);
                     true
                 }
                 Action::Expand => {
@@ -2828,13 +3862,19 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     true
                 }
                 Action::ScrollIntoView => {
-                    let Some(index) = self.visible_index_of(id) else {
+                    if self.visible_index_of(id).is_none() {
                         return false;
-                    };
-                    self.viewport
-                        .scroll_to_index(index, ScrollAlignment::Nearest);
-                    self.mark_delegate_window_dirty();
+                    }
+                    self.reveal(id);
                     true
+                }
+                Action::ShowContextMenu => {
+                    let at = self
+                        .row_rect(id)
+                        .map_or(Point::new(self.rect.x0, self.body_top()), |row| {
+                            Point::new(row.x0 + f64::from(self.spacing.s6), row.y1)
+                        });
+                    self.open_row_menu(id, at)
                 }
                 _ => false,
             }
@@ -2853,12 +3893,93 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .is_some_and(|index| self.focus_at(index)),
                 Action::Activate => {
                     self.focused = Some(TreeRowKey::Slot(slot));
-                    self.activate_focus()
+                    self.activate_focus(true)
                 }
                 _ => false,
             }
         } else {
             false
+        }
+    }
+}
+
+/// Paint a decorated row's leading icon centred vertically on `anchor.y`,
+/// starting at `anchor.x`. Returns the width it occupied.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one icon's paint context: scene, transform, text, theme, the icon, its anchor, the row's line box and the row's transition opacity"
+)]
+fn paint_row_icon(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    icon: &TreeRowIcon,
+    anchor: Point,
+    line_h: f32,
+    opacity: f32,
+) -> f64 {
+    let tokens = &theme.tokens;
+    let side = f64::from(tokens.spacing.s4).min(f64::from(line_h)).max(1.0);
+    match icon {
+        TreeRowIcon::Icon { icon, color } => {
+            let rect = Rect::new(
+                anchor.x,
+                anchor.y - side / 2.0,
+                anchor.x + side,
+                anchor.y + side / 2.0,
+            );
+            icon.draw(scene, transform, rect, color.with_alpha_factor(opacity));
+            side
+        }
+        TreeRowIcon::Glyph { text, color } => {
+            let size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+            let (w, h) = text_renderer.measure(text, size, None);
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+            )]
+            let xf = transform * Affine::translate((anchor.x, anchor.y - f64::from(h) / 2.0));
+            text_renderer.draw_text(
+                scene,
+                text,
+                size,
+                color.with_alpha_factor(opacity),
+                xf,
+                None,
+            );
+            f64::from(w).max(side)
+        }
+        TreeRowIcon::Badge { text, fill } => {
+            let size = renderer_type_size(text_renderer, tokens.typography.scale.xs);
+            let (w, h) = text_renderer.measure(text, size, None);
+            let chip_w = side.max(f64::from(w) + f64::from(tokens.spacing.s1));
+            let chip = Rect::new(
+                anchor.x,
+                anchor.y - side / 2.0,
+                anchor.x + chip_w,
+                anchor.y + side / 2.0,
+            );
+            let radius = f64::from(tokens.radii.sm);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                fill.with_alpha_factor(opacity),
+                None,
+                &chip.to_rounded_rect(radius),
+            );
+            let ink = tokens.colors.on_surface(*fill).ink;
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+            )]
+            let xf = transform
+                * Affine::translate((
+                    chip.x0 + (chip_w - f64::from(w)) / 2.0,
+                    anchor.y - f64::from(h) / 2.0,
+                ));
+            text_renderer.draw_text(scene, text, size, ink.with_alpha_factor(opacity), xf, None);
+            chip_w
         }
     }
 }
@@ -3454,7 +4575,7 @@ mod tests {
         }
     }
 
-    fn lay_out_tree<T: 'static, M: TreeModel + 'static>(
+    pub(super) fn lay_out_tree<T: 'static, M: TreeModel + 'static>(
         view: &mut TreeView<T, M>,
         width: f32,
     ) -> (TaffyTree<()>, taffy::NodeId) {
@@ -3476,14 +4597,14 @@ mod tests {
         (taffy, node)
     }
 
-    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+    pub(super) fn cursor_moved(x: f64, y: f64) -> WindowEvent {
         WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
 
-    fn mouse_press() -> WindowEvent {
+    pub(super) fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
@@ -3491,7 +4612,7 @@ mod tests {
         }
     }
 
-    fn mouse_release() -> WindowEvent {
+    pub(super) fn mouse_release() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
@@ -3499,7 +4620,7 @@ mod tests {
         }
     }
 
-    fn key_press(logical_key: Key) -> WindowEvent {
+    pub(super) fn key_press(logical_key: Key) -> WindowEvent {
         // SAFETY: KeyEvent has private fields in winit 0.30; the public
         // ones tolerate the zero bit pattern and `handle_event` only
         // inspects `logical_key` + `state`.
@@ -3537,7 +4658,7 @@ mod tests {
         );
     }
 
-    fn dispatch_laid_out<T: 'static, M: TreeModel + 'static>(
+    pub(super) fn dispatch_laid_out<T: 'static, M: TreeModel + 'static>(
         view: &mut TreeView<T, M>,
         event: &WindowEvent,
         taffy: &TaffyTree<()>,
@@ -3742,6 +4863,7 @@ mod tests {
     #[test]
     fn tree_view_arrow_right_expands_focused_node() {
         let mut view = TreeView::new(sample_tree());
+        view.set_focus(true);
         view.focused = Some(TreeRowKey::Node(1));
         assert!(!view.is_expanded(1));
 
@@ -3757,6 +4879,7 @@ mod tests {
     fn tree_view_arrow_down_moves_focus_to_next_visible_row() {
         let mut view = TreeView::new(sample_tree());
         view.toggle_expand(1);
+        view.set_focus(true);
         view.focused = Some(TreeRowKey::Node(1));
 
         dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
@@ -4036,6 +5159,7 @@ mod tests {
         let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
         view.toggle_expand(1);
         view.set_viewport(44.0, px(ROW_HEIGHT));
+        view.set_focus(true);
         view.focused = Some(TreeRowKey::Node(1));
 
         dispatch(&mut view, &key_press(Key::Named(NamedKey::End)));
@@ -4716,7 +5840,7 @@ mod tests {
         };
         let branch = HugeModel::branch_id();
         let expanded = HashSet::from([1, branch]);
-        let index = SparseTreeIndex::build(&model, &expanded);
+        let index = SparseTreeIndex::build(&model, &expanded, false);
 
         assert_eq!(index.len(), 100_000_003);
         assert_eq!(index.row_at(&model, 0), Some((TreeRowKey::Node(1), 0)));
@@ -4767,5 +5891,330 @@ mod tests {
             view.model().child_id_queries.get() < 100,
             "one frame must query only its sparse window"
         );
+    }
+
+    // --- activation, navigator configuration, decoration -------------------
+
+    pub(super) fn navigator_tree() -> TreeNode<()> {
+        TreeNode::branch(
+            1,
+            "project",
+            (),
+            vec![
+                TreeNode::branch(
+                    2,
+                    "src",
+                    (),
+                    vec![
+                        TreeNode::leaf(3, "main.rs", ()),
+                        TreeNode::leaf(4, "lib.rs", ()),
+                    ],
+                ),
+                TreeNode::leaf(5, "README.md", ()),
+            ],
+        )
+    }
+
+    type Log = Rc<RefCell<Vec<NodeId>>>;
+
+    fn logged(view: TreeView<()>) -> (TreeView<()>, Log, Log) {
+        let activated = Log::default();
+        let selected = Log::default();
+        let a = Rc::clone(&activated);
+        let s = Rc::clone(&selected);
+        let view = view
+            .on_activate(move |id| a.borrow_mut().push(id))
+            .on_select(move |id| s.borrow_mut().push(id));
+        (view, activated, selected)
+    }
+
+    pub(super) fn draw_view<T: 'static, M: TreeModel + 'static>(view: &mut TreeView<T, M>) {
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+    }
+
+    /// Centre of the visible row showing `id`.
+    pub(super) fn row_center<T, M: TreeModel>(view: &TreeView<T, M>, id: NodeId) -> Point {
+        let index = view.visible_index_of(id).expect("row is visible");
+        let top = view.viewport.item_view_top(index).expect("row is laid out");
+        let height = view.viewport.item_height(index).expect("row has a height");
+        Point::new(
+            view.rect.x0 + view.rect.width() * 0.75,
+            view.body_top() + top + height / 2.0,
+        )
+    }
+
+    fn click_row(view: &mut TreeView<()>, taffy: &TaffyTree<()>, node: taffy::NodeId, id: NodeId) {
+        let at = row_center(view, id);
+        dispatch_laid_out(view, &cursor_moved(at.x, at.y), taffy, node);
+        dispatch_laid_out(view, &mouse_press(), taffy, node);
+        dispatch_laid_out(view, &mouse_release(), taffy, node);
+    }
+
+    #[test]
+    fn enter_activates_while_space_and_arrows_only_select() {
+        let (view, activated, selected) = logged(
+            TreeView::new(navigator_tree())
+                .hide_root()
+                .selection_follows_focus(true),
+        );
+        let mut view = view;
+        view.set_focus(true);
+        view.focused = Some(TreeRowKey::Node(2));
+
+        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
+        assert_eq!(view.focused(), Some(5));
+        assert_eq!(view.selected(), Some(5), "selection follows keyboard focus");
+        assert!(activated.borrow().is_empty(), "browsing opens nothing");
+
+        dispatch(&mut view, &key_press(Key::Character(" ".into())));
+        assert!(
+            activated.borrow().is_empty(),
+            "Space selects without activating"
+        );
+
+        dispatch(&mut view, &key_press(Key::Named(NamedKey::Enter)));
+        assert_eq!(*activated.borrow(), [5], "Enter activates the focused row");
+        assert!(selected.borrow().contains(&5));
+    }
+
+    #[test]
+    fn arrows_do_not_select_unless_selection_follows_focus() {
+        let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+        view.set_focus(true);
+        view.focused = Some(TreeRowKey::Node(2));
+        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
+        assert_eq!(view.focused(), Some(5));
+        assert_eq!(view.selected(), None);
+        assert!(activated.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_unfocused_tree_leaves_keys_to_its_siblings() {
+        let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+        view.focused = Some(TreeRowKey::Node(2));
+        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowDown)));
+        dispatch(&mut view, &key_press(Key::Named(NamedKey::Enter)));
+        assert_eq!(view.focused(), Some(2), "keys reach only a focused tree");
+        assert!(activated.borrow().is_empty());
+    }
+
+    #[test]
+    fn single_click_activation_opens_on_one_click() {
+        let (view, activated, _) = logged(
+            TreeView::new(navigator_tree())
+                .hide_root()
+                .click_activation(TreeClickActivation::SingleClick),
+        );
+        let mut view = view;
+        let (taffy, node) = lay_out_tree(&mut view, 240.0);
+        click_row(&mut view, &taffy, node, 5);
+        assert_eq!(*activated.borrow(), [5]);
+        assert_eq!(view.selected(), Some(5));
+    }
+
+    #[test]
+    fn double_click_activation_needs_a_second_click() {
+        let (view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+        let mut view = view;
+        let (taffy, node) = lay_out_tree(&mut view, 240.0);
+        click_row(&mut view, &taffy, node, 5);
+        assert!(activated.borrow().is_empty(), "one click only selects");
+        assert_eq!(view.selected(), Some(5));
+        click_row(&mut view, &taffy, node, 5);
+        assert_eq!(*activated.borrow(), [5], "the second click activates");
+    }
+
+    #[test]
+    fn the_disclosure_toggles_without_activating() {
+        let (view, activated, _) = logged(
+            TreeView::new(navigator_tree())
+                .hide_root()
+                .click_activation(TreeClickActivation::SingleClick),
+        );
+        let mut view = view;
+        let (taffy, node) = lay_out_tree(&mut view, 240.0);
+        let at = Point::new(view.rect.x0 + 2.0, row_center(&view, 2).y);
+        dispatch_laid_out(&mut view, &cursor_moved(at.x, at.y), &taffy, node);
+        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+        assert!(view.is_expanded(2));
+        assert!(activated.borrow().is_empty());
+    }
+
+    #[test]
+    fn semantic_activate_selects_and_activates() {
+        let (mut view, activated, _) = logged(TreeView::new(navigator_tree()).hide_root());
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut view,
+            "node:5",
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(*activated.borrow(), [5]);
+        assert_eq!(view.selected(), Some(5));
+    }
+
+    #[test]
+    fn a_hidden_root_puts_its_children_at_the_top_level() {
+        let mut view = TreeView::new(navigator_tree()).hide_root();
+        assert_eq!(
+            view.visible_rows()
+                .into_iter()
+                .map(|(id, _, depth)| (id, depth))
+                .collect::<Vec<_>>(),
+            [(2, 0), (5, 0)]
+        );
+        view.set_expanded(2, true);
+        assert_eq!(
+            view.visible_row(1).map(|(id, _, depth)| (id, depth)),
+            Some((3, 1))
+        );
+        assert_eq!(view.visible_index_of(5), Some(3));
+        assert_eq!(view.visible_index_of(1), None, "the root is not a row");
+
+        view.set_focus(true);
+        view.focused = Some(TreeRowKey::Node(2));
+        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
+        dispatch(&mut view, &key_press(Key::Named(NamedKey::ArrowLeft)));
+        assert_eq!(
+            view.focused(),
+            Some(2),
+            "Left never walks onto the hidden root"
+        );
+    }
+
+    #[test]
+    fn the_heading_sits_above_the_rows_and_names_the_tree() {
+        let mut view = TreeView::new(navigator_tree())
+            .hide_root()
+            .with_heading("Explorer");
+        let (taffy, node) = lay_out_tree(&mut view, 240.0);
+        assert!(view.heading_h > 0.0);
+        assert!(view.get_rect().height() >= view.heading_h + view.body_height() - 0.5);
+        let in_heading = Point::new(view.rect.x0 + 40.0, view.rect.y0 + view.heading_h / 2.0);
+        assert_eq!(
+            view.row_key_at(in_heading),
+            None,
+            "the heading is not a row"
+        );
+        assert_eq!(
+            view.row_key_at(row_center(&view, 2)),
+            Some(TreeRowKey::Node(2))
+        );
+        dispatch_laid_out(
+            &mut view,
+            &cursor_moved(in_heading.x, in_heading.y),
+            &taffy,
+            node,
+        );
+        dispatch_laid_out(&mut view, &mouse_press(), &taffy, node);
+        dispatch_laid_out(&mut view, &mouse_release(), &taffy, node);
+        assert_eq!(
+            view.selected(),
+            None,
+            "a press on the heading selects nothing"
+        );
+        let semantics = Widget::accessibility(&view).unwrap();
+        assert_eq!(semantics.name.as_deref(), Some("Explorer"));
+    }
+
+    #[test]
+    fn place_at_moves_paint_hit_testing_and_a_filling_viewport() {
+        let children = (2_u64..=40)
+            .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+            .collect();
+        let mut view = TreeView::new(TreeNode::branch(1, "root", (), children))
+            .hide_root()
+            .fill();
+        view.place_at(Rect::new(-120.0, 50.0, 120.0, 250.0));
+        assert!(
+            (view.viewport.viewport() - 200.0).abs() < 0.01,
+            "the viewport is the rect"
+        );
+        assert!(view.max_scroll_offset() > 0.0, "39 rows overflow 200 px");
+        assert_eq!(
+            view.row_key_at(Point::new(0.0, 51.0)),
+            Some(TreeRowKey::Node(2)),
+            "hit-testing follows the external rect"
+        );
+        assert_eq!(view.row_key_at(Point::new(200.0, 51.0)), None);
+        view.place_at(Rect::new(0.0, 0.0, 240.0, 100.0));
+        assert!(
+            (view.viewport.viewport() - 100.0).abs() < 0.01,
+            "and follows it each frame"
+        );
+    }
+
+    #[test]
+    fn restoring_expansion_does_not_echo_to_the_host() {
+        let echoed = Rc::new(Cell::new(0));
+        let count = Rc::clone(&echoed);
+        let mut view = TreeView::new(navigator_tree())
+            .hide_root()
+            .on_expand(move |_, _| count.set(count.get() + 1));
+        view.restore_expanded([2, 5, 99]);
+        assert!(view.is_expanded(2));
+        assert!(!view.is_expanded(5), "leaves are not expandable");
+        assert_eq!(echoed.get(), 0);
+        view.set_expanded(2, false);
+        assert_eq!(echoed.get(), 1, "a user change still reports");
+    }
+
+    #[test]
+    fn decorations_see_row_state_and_describe_rows() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let log = Rc::clone(&seen);
+        let mut view = TreeView::new(navigator_tree())
+            .hide_root()
+            .with_row_decoration(move |_, row, theme| {
+                log.borrow_mut().push(row);
+                TreeRowDecoration::new()
+                    .icon(
+                        if row.is_branch {
+                            Icon::Folder
+                        } else {
+                            Icon::File
+                        },
+                        theme.tokens.colors.text_dim,
+                    )
+                    .trailing("3")
+                    .description(if row.is_branch { "Folder" } else { "File" })
+            });
+        view.set_current(Some(5));
+        view.select(2);
+        let _ = lay_out_tree(&mut view, 240.0);
+        draw_view(&mut view);
+        let rows = seen.borrow().clone();
+        let readme = rows
+            .iter()
+            .find(|row| row.id == 5)
+            .expect("README decorated");
+        assert!(readme.current && !readme.selected && !readme.is_branch);
+        let src = rows.iter().find(|row| row.id == 2).expect("src decorated");
+        assert!(src.selected && src.is_branch && !src.expanded && !src.current);
+
+        let semantics = Widget::accessibility(&view).unwrap();
+        let described: Vec<_> = semantics
+            .children
+            .iter()
+            .map(|item| item.description.clone())
+            .collect();
+        assert_eq!(
+            described,
+            [Some("Folder".to_owned()), Some("File".to_owned())]
+        );
+        assert_eq!(view.current(), Some(5));
+        view.set_current(Some(99));
+        assert_eq!(view.current(), None, "an unknown id is not current");
     }
 }

@@ -366,11 +366,11 @@ grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
 grep -Fq 'listener.local_addr()?.as_pathname() == Some(socket)' "$repo/crates/system/fs/src/main.rs"
-app_host_gc_line="$(grep -n 'let _gc = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"
+app_host_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"
 app_host_serve_line="$(grep -n 'transport::serve(listener, store' "$app_host_source" | cut -d: -f1)"
 if [ -z "$app_host_gc_line" ] || [ -z "$app_host_serve_line" ] \
    || [ "$app_host_gc_line" -ge "$app_host_serve_line" ]; then
-  echo 'socket-activated app host still blocks first use on its store GC pass' >&2
+  echo 'socket-activated app host still blocks first use on its store migration and GC pass' >&2
   exit 1
 fi
 grep -Fq 'Unit=tilo-boot-entries.service' "$repo/os/usr/lib/systemd/system/tilo-boot-entries.timer"

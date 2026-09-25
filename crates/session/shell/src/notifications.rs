@@ -1084,14 +1084,8 @@ fn systemd_escape(value: &str) -> String {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_') {
             out.push(char::from(byte));
         } else {
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            out.push('\\');
-            out.push('x');
-            for nibble in [byte >> 4, byte & 0x0f] {
-                out.push(char::from(
-                    HEX.get(usize::from(nibble)).copied().unwrap_or(b'0'),
-                ));
-            }
+            out.push_str("\\x");
+            out.push_str(&hex::encode([byte]));
         }
         out
     })

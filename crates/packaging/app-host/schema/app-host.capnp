@@ -30,19 +30,21 @@ struct PackageEntry {
     # 32-byte PackageId (raw, not `tapp:` prefixed).
     id            @0 :Data;
     pinning       @1 :Pinning;
-    # Absolute path of the eagerly-extracted payload directory the
-    # launcher can pass as `--payload-root`.
+    # Absolute path of the materialised payload tree the launcher passes
+    # as `--payload-root`.
     payloadRoot   @2 :Text;
     # Raw TOML text of the package manifest.
     manifestText  @3 :Text;
-    # On-disk size including blob store + payload tree.
+    # Bytes of the payload tree.
     sizeBytes     @4 :UInt64;
     # Unix epoch seconds of the last `markUsed` (or install time).
     lastUsedUnix  @5 :UInt64;
-    # True when this entry belongs to the per-user mutable app-host store.
+    # True when this entry belongs to the per-user mutable package store.
     # False denotes a read-only system package from /usr/share/tilo-apps;
     # system entries may be launched but cannot be pinned or removed here.
     userManaged   @6 :Bool;
+    # Absolute path of the signed manifest the launcher reads.
+    manifestPath  @7 :Text;
 }
 
 struct ByPinning {
@@ -63,9 +65,9 @@ interface AppHost {
     remove     @4 (id :Data) -> ();
     # LRU touch — updates `lastUsedUnix` to now.
     markUsed   @5 (id :Data) -> ();
-    # Parse + ingest a `.tapp`-shaped byte blob (a tar archive
-    # containing signed-root/manifest/collection/blobs — see the
-    # `install.rs` handler for the accepted layout).
+    # Install a `.tapp` into the package store: its payload goes into the
+    # content store and the tree is materialised from there. A thin
+    # `.tapp` installs when the store already holds its payload.
     # Returns the resolved 32-byte PackageId.
     # Install only when the bytes match the registry-authenticated identity
     # supplied by the Store capability. None of these fields are advisory.

@@ -14,6 +14,8 @@ name = "tube"
 path = "src/main.rs"
 
 [dependencies]
+hex.workspace = true
+tilo-clock = { path = "../../crates/system/tilo-clock" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
@@ -68,6 +70,7 @@ vello_encoding.workspace = true
 # Encode a valid PNG for the offline image-store test fixture.
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [features]
 thin = ["dep:runtime-dylib"]

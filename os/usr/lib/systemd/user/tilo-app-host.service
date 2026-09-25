@@ -5,7 +5,11 @@ PartOf=tilo-graphical-session.target
 
 [Service]
 Type=notify
-ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %S/tilo-app-host
+# The package store is the one the launcher, the shell and tilo-install
+# read and write; the daemon keeps no store of its own. Packages the daemon
+# once kept in its own state directory move into it at startup.
+ExecStartPre=+/usr/bin/mkdir -p %h/.local/share/tilo-apps
+ExecStart=/usr/libexec/tilo-app-host --socket %t/tilo/services/app-host.sock --store %h/.local/share/tilo-apps --migrate-from %S/tilo-app-host
 Restart=on-failure
 RestartSec=1
 RuntimeDirectory=tilo/services
@@ -27,4 +31,4 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 StateDirectory=tilo-app-host
 StateDirectoryMode=0700
-ReadWritePaths=%S/tilo-app-host
+ReadWritePaths=%S/tilo-app-host %h/.local/share/tilo-apps

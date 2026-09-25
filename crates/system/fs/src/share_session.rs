@@ -12,9 +12,11 @@ use collab_types::{
     FileRecordId,
 };
 use thiserror::Error;
+use tilo_clock::Clock;
 use tilo_user_identity::verify_device_cert_at;
 use uuid::Uuid;
 
+use crate::clock::DaemonClock;
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_replication::{RecordAction, RecordAuthorizer};
 use crate::share_authority::{Redemption, ShareAuthority, ShareAuthorityError};
@@ -27,21 +29,6 @@ use crate::share_authority::{Redemption, ShareAuthority, ShareAuthorityError};
 /// a connection.
 pub trait LiveActorCertification: Send + Sync {
     fn certification_is_current(&self, peer: &AuthenticatedFsPeer, now_ns: u64) -> bool;
-}
-
-/// Time source used by live authorization. Exposed so deadline behavior can
-/// be tested deterministically without weakening production clock checks.
-pub trait ShareSessionClock: Send + Sync {
-    fn now_ms(&self) -> u64;
-}
-
-#[derive(Debug, Default)]
-pub struct SystemShareSessionClock;
-
-impl ShareSessionClock for SystemShareSessionClock {
-    fn now_ms(&self) -> u64 {
-        crate::clock::unix_now_ms()
-    }
 }
 
 enum SessionGrant {
@@ -58,7 +45,7 @@ pub struct ShareSession {
     grant: SessionGrant,
     authority: Arc<ShareAuthority>,
     certification: Arc<dyn LiveActorCertification>,
-    clock: Arc<dyn ShareSessionClock>,
+    clock: Arc<dyn Clock>,
 }
 
 impl ShareSession {
@@ -85,7 +72,7 @@ impl ShareSession {
             token,
             authority,
             certification,
-            Arc::new(SystemShareSessionClock),
+            Arc::new(DaemonClock),
         )
     }
 
@@ -101,7 +88,7 @@ impl ShareSession {
         token: FileInviteV1,
         authority: Arc<ShareAuthority>,
         certification: Arc<dyn LiveActorCertification>,
-        clock: Arc<dyn ShareSessionClock>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, ShareSessionError> {
         if !matches!(token.subject, FileInviteSubject::Person(_)) {
             return Err(ShareSessionError::ExpectedNamedGrant);
@@ -139,7 +126,7 @@ impl ShareSession {
             invite,
             authority,
             certification,
-            Arc::new(SystemShareSessionClock),
+            Arc::new(DaemonClock),
         )
     }
 
@@ -156,7 +143,7 @@ impl ShareSession {
         invite: BearerFileInvite,
         authority: Arc<ShareAuthority>,
         certification: Arc<dyn LiveActorCertification>,
-        clock: Arc<dyn ShareSessionClock>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Self, ShareSessionError> {
         let now_ms = clock.now_ms();
         validate_workspace(workspace_id, &invite.token)?;
@@ -309,24 +296,18 @@ pub enum ShareSessionError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use collab_types::{FileInviteSpec, mint_bearer_file_invite, mint_file_invite};
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
+    use tilo_clock::ManualClock;
+
     use super::*;
 
     const NOW_MS: u64 = 2_000;
-
-    struct TestClock(AtomicU64);
-
-    impl ShareSessionClock for TestClock {
-        fn now_ms(&self) -> u64 {
-            self.0.load(Ordering::SeqCst)
-        }
-    }
 
     struct LiveCertification(AtomicBool);
 
@@ -346,7 +327,7 @@ mod tests {
         record: FileRecordId,
         authority: Arc<ShareAuthority>,
         live: Arc<LiveCertification>,
-        clock: Arc<TestClock>,
+        clock: Arc<ManualClock>,
     }
 
     impl Fixture {
@@ -386,7 +367,7 @@ mod tests {
                 record,
                 authority,
                 live: Arc::new(LiveCertification(AtomicBool::new(true))),
-                clock: Arc::new(TestClock(AtomicU64::new(NOW_MS))),
+                clock: Arc::new(ManualClock::new(NOW_MS)),
             }
         }
 
@@ -523,7 +504,7 @@ mod tests {
         fixture.register(&token);
         let session = fixture.open_named(token).unwrap();
         let actor = session.actor();
-        fixture.clock.0.store(5_000, Ordering::SeqCst);
+        fixture.clock.set(5_000);
         assert!(!session.allows(&actor, fixture.record, RecordAction::Read));
     }
 

@@ -3959,7 +3959,7 @@ mod tests {
         VideoDoc::write_project(&mut doc, p);
         let encoded = match arg {
             Some(a) => prompted_encode(spec, a),
-            None => immediate_encode(spec),
+            None => spec_encoding(spec, None),
         };
         let action: VideoEditorAction =
             serde_json::from_slice(&encoded.payload).expect("payload decodes");
@@ -4317,7 +4317,7 @@ mod tests {
             let sp = spec(&ctx, id);
             let encoded = match arg {
                 Some(a) => prompted_encode(&sp, a),
-                None => immediate_encode(&sp),
+                None => spec_encoding(&sp, None),
             };
             let apply_once = || {
                 let mut doc = AutoCommit::new();
@@ -4334,6 +4334,7 @@ mod tests {
     use super::*;
     use crate::app::VideoEditorApp;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use ui::testing::action_contract::{find_spec, spec_encoding};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -4350,13 +4351,6 @@ mod tests {
         let mut app = VideoEditorApp::new();
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            _ => panic!("expected an immediate action: {}", spec.id),
-        }
     }
 
     fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
@@ -4413,27 +4407,6 @@ mod tests {
         assert!(clip_actions.contains(&"delete"), "{clip_actions:?}");
         assert!(clip_actions.contains(&"ripple-delete"), "{clip_actions:?}");
         assert!(clip_actions.contains(&"set-brightness"), "{clip_actions:?}");
-
-        // The one palette surfaces the tree's actions as rows. The result
-        // list is capped, so each is asked for the way a user asks — by
-        // typing — rather than by assuming an unfiltered palette shows the
-        // whole tree at once.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        for want in [
-            "Delete clip",
-            "Rename project",
-            "Add title",
-            "Add marker at playhead",
-        ] {
-            palette.set_query(want);
-            let labels = palette.result_labels();
-            assert!(
-                labels.iter().any(|l| l.contains(want)),
-                "the palette finds {want:?}: {labels:?}",
-            );
-        }
     }
 
     /// Dispatching `DeleteClip` through the executor removes exactly that clip
@@ -4537,65 +4510,94 @@ mod tests {
         }
     }
 
-    /// The collaboration guarantee: replaying the same encoded action on a
-    /// second independent replica (from the same base state) lands on the
-    /// byte-identical document — same head hashes, not merely the same values.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let (_app, seed) = seeded();
-        let mut a = seed;
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        // Move a clip through the same narrow optimistic field patch as the
-        // ordinary editor interaction.
-        let project = VideoDoc::load_project(&a);
-        let mut clip = project.clips[0].clone();
-        clip.start += 5.0;
-        let action = clip_field_patch_action(project.clip(clip.id).unwrap(), &clip);
-        let encoded = encode(&action);
-
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert!(
-            (VideoDoc::load_project(&b).clip(clip.id).unwrap().start - clip.start).abs() < 1e-9
-        );
+    /// The editor's published tree for `doc`: a fresh editor synced to it,
+    /// exactly as the host wires one to its document.
+    fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
+        let mut app = VideoEditorApp::new();
+        let mut doc = doc.clone();
+        app.sync(&mut doc, &automerge::ROOT);
+        Widget::resources(&app, &doc)
     }
 
-    /// Single source of truth: the clip resource's `delete` spec encodes the
-    /// byte-identical action the on-screen trash button dispatches
-    /// (`delete_clip_action(id)`).
-    #[test]
-    fn palette_and_button_encode_delete_identically() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let clip = resources[0]
-            .children
+    fn clip_id(res: &Resource) -> Uuid {
+        res.id
+            .0
+            .trim_start_matches("video.clip:")
+            .parse()
+            .expect("a clip uuid")
+    }
+
+    /// The first sample clip moved `by` seconds, as one narrow field patch.
+    fn move_first_clip(doc: &AutoCommit, by: f64) -> EncodedAction {
+        let project = VideoDoc::load_project(doc);
+        let mut clip = project.clips[0].clone();
+        clip.start += by;
+        encode(&clip_field_patch_action(&project.clips[0], &clip))
+    }
+
+    /// Ripple-delete the first clip of a track that has a later neighbour.
+    fn ripple_delete_first(doc: &AutoCommit) -> EncodedAction {
+        let mut project = VideoDoc::load_project(doc);
+        let id = project
+            .tracks
             .iter()
-            .flat_map(|t| t.children.iter())
-            .find(|c| c.kind == "video.clip")
-            .unwrap();
-        let cid: Uuid = clip.id.0.trim_start_matches("video.clip:").parse().unwrap();
-        let spec = clip.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&delete_clip_action(&cid));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth"
-        );
+            .find_map(|t| {
+                let clips = project.clips_on(t.id);
+                (clips.len() >= 2).then(|| clips[0].id)
+            })
+            .expect("a track with two clips");
+        let moved_ids = project.ripple_delete(id);
+        let moved: Vec<Clip> = moved_ids
+            .iter()
+            .filter_map(|m| project.clip(*m).cloned())
+            .collect();
+        encode(&ripple_delete_action(&id, &moved))
+    }
+
+    /// Remove a placed bin media together with every clip that places it.
+    fn remove_placed_media(doc: &AutoCommit) -> EncodedAction {
+        let project = VideoDoc::load_project(doc);
+        let mid = project
+            .media
+            .iter()
+            .find(|m| project.clips.iter().any(|c| c.media == m.id))
+            .map(|m| m.id)
+            .expect("a placed media");
+        let clips: Vec<Uuid> = project
+            .clips
+            .iter()
+            .filter(|c| c.media == mid)
+            .map(|c| c.id)
+            .collect();
+        encode(&remove_media_action(&mid, &clips))
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded().1,
+        registry: registry(),
+        resources: |doc| resources_for(doc),
+        palette: [
+            "Delete clip",
+            "Rename project",
+            "Add title",
+            "Add marker at playhead",
+        ],
+        replay: [
+            move_clip => |doc| move_first_clip(doc, 5.0),
+            delete_clip => |doc| encode(&delete_clip_action(&VideoDoc::load_project(doc).clips[0].id)),
+            ripple_delete => |doc| ripple_delete_first(doc),
+            remove_media => |doc| remove_placed_media(doc),
+        ],
+        undo: [
+            move_clip => |doc| move_first_clip(doc, 7.0),
+            ripple_delete => |doc| ripple_delete_first(doc),
+            remove_media => |doc| remove_placed_media(doc),
+        ],
+        encodes: [
+            delete_clip => ("video.clip", "delete", |_, res| {
+                encode(&delete_clip_action(&clip_id(res)))
+            }),
+        ],
     }
 
     /// The prompted brightness spec builds the same narrow field patch an
@@ -4604,26 +4606,13 @@ mod tests {
     fn prompted_brightness_builds_the_expected_clip_write() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        let clip_res = resources[0]
-            .children
-            .iter()
-            .flat_map(|t| t.children.iter())
-            .find(|c| c.kind == "video.clip")
-            .unwrap();
-        let cid: Uuid = clip_res
-            .id
-            .0
-            .trim_start_matches("video.clip:")
-            .parse()
-            .unwrap();
-        let spec = clip_res
-            .actions
-            .iter()
-            .find(|a| a.id == "set-brightness")
-            .unwrap();
+        let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
         let from_spec = prompted_encode(spec, "0.9");
 
-        let before = VideoDoc::load_project(&doc).clip(cid).unwrap().clone();
+        let before = VideoDoc::load_project(&doc)
+            .clip(clip_id(clip_res))
+            .unwrap()
+            .clone();
         let mut expected = before.clone();
         expected.filters.brightness = 0.9;
         let from_builder = encode(&clip_field_patch_action(&before, &expected));
@@ -5115,7 +5104,7 @@ mod tests {
             encode(&patch_clips_fields_action(&ctx.project, &after, &[cid])).payload,
             "one clip is one narrow member patch",
         );
-        let del = immediate_encode(&spec(&ctx, "delete"));
+        let del = spec_encoding(&spec(&ctx, "delete"), None);
         assert_eq!(
             del.payload,
             encode(&delete_clip_action(&cid)).payload,
@@ -5683,7 +5672,7 @@ mod tests {
         // A move captured against [first, second] refuses after a peer has
         // already reordered it; it cannot swap whatever happens to be there.
         let move_up: VideoEditorAction = serde_json::from_slice(
-            &immediate_encode(&spec_on(&ctx, &second_resource, "move-up")).payload,
+            &spec_encoding(&spec_on(&ctx, &second_resource, "move-up"), None).payload,
         )
         .expect("move action decodes");
         let mut reordered = ctx.project.clone();
@@ -5710,7 +5699,7 @@ mod tests {
         // makes delete refuse, and a peer deleting it makes set refuse.
         let first_resource = effect_resource_id(clip_id, first);
         let remove: VideoEditorAction = serde_json::from_slice(
-            &immediate_encode(&spec_on(&ctx, &first_resource, "remove")).payload,
+            &spec_encoding(&spec_on(&ctx, &first_resource, "remove"), None).payload,
         )
         .expect("remove action decodes");
         let mut changed = ctx.project.clone();
@@ -5875,49 +5864,6 @@ mod tests {
             .clone();
         assert_eq!(written.palette, 6);
         assert!((written.curves.master.eval(0.5) - 0.8).abs() < 1e-9);
-    }
-
-    /// The full undo covenant on one action: dispatched through the executor it
-    /// mutates the doc and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        // Seed the sample into a real host State so undo is the production path.
-        let mut state = ui::State::new();
-        VideoDoc::seed_sample(&mut state.doc);
-        let before_heads = state.doc.get_heads();
-        let project = VideoDoc::load_project(&state.doc);
-        let id = project.clips[0].id;
-        let before_start = project.clip(id).unwrap().start;
-
-        // Move the clip via the action + host undo recording.
-        let mut moved = project.clip(id).unwrap().clone();
-        moved.start = before_start + 7.0;
-        let action = clip_field_patch_action(project.clip(id).unwrap(), &moved);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert!(
-            (VideoDoc::load_project(&state.doc).clip(id).unwrap().start - (before_start + 7.0))
-                .abs()
-                < 1e-9,
-            "the action moved the clip",
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        // Ctrl+Z reverts exactly this action.
-        state.undo(None, None).expect("an undo entry to pop");
-        assert!(
-            (VideoDoc::load_project(&state.doc).clip(id).unwrap().start - before_start).abs()
-                < 1e-9,
-            "undo reverted the move and nothing else",
-        );
     }
 
     // ---- trimming a mix that clipped -------------------------------------

@@ -368,6 +368,9 @@ jobs:
         if: matrix.test_packages != ''
         env:
           TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p qos-ntfs-helper') && '1' || '0' }}
+          # The builder image carries the encoders and muxers the footage
+          # tests need, so their absence here is a failure, not a skip.
+          TILO_REQUIRE_MEDIA: "1"
         run: >-
           bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --

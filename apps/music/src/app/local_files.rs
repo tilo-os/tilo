@@ -631,7 +631,8 @@ mod tests {
                 tilo_actions::InvocationUpdate::Succeeded { .. }
             ));
             assert!(app.audio.frames_rendered() > 0);
-            assert_eq!(app.audio.audio_sink_is_real(), Some(true));
+            let pcm = app.audio.capture().unwrap().snapshot();
+            assert!(pcm.peak > 0, "the cached tone reached the sink: {pcm:?}");
         } else {
             assert!(matches!(
                 update,
@@ -931,6 +932,8 @@ mod tests {
         }
     }
 
+    /// Three seconds of a 440 Hz tone, 8 kHz 16-bit mono: silence would not
+    /// show that the decoder produced the file's samples.
     fn wav(path: &std::path::Path) {
         let bytes = 48_000u32;
         let mut data = Vec::new();
@@ -946,7 +949,15 @@ mod tests {
         data.extend_from_slice(&16u16.to_le_bytes());
         data.extend_from_slice(b"data");
         data.extend_from_slice(&bytes.to_le_bytes());
-        data.resize(44 + bytes as usize, 0);
+        for i in 0..bytes / 2 {
+            let phase = f64::from(i) * 440.0 * std::f64::consts::TAU / 8000.0;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a unit sine scaled to 8000 is well inside i16"
+            )]
+            let sample = (phase.sin() * 8000.0) as i16;
+            data.extend_from_slice(&sample.to_le_bytes());
+        }
         std::fs::write(path, data).unwrap();
     }
 
@@ -967,19 +978,37 @@ mod tests {
         assert!(crate::local_file::LocalFile::open(text.to_str().unwrap(), None).is_err());
     }
 
+    /// Drive the app until the file's decoded tone reaches the sink and, when
+    /// the app is playing, the sink renders it on the pipeline clock. The
+    /// engine captures in tests, so this observes the samples themselves and
+    /// needs no sound server; between frames it waits for the next buffer
+    /// rather than sleeping a fixed time.
     #[cfg(feature = "audio")]
     fn wait_for_audio(app: &mut MusicApp) {
+        let capture = app
+            .audio
+            .capture()
+            .expect("tests capture decoded audio")
+            .clone();
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while app.audio.frames_rendered() == 0 || app.audio.needs_poll() {
+        // A playing source must also be rendering before the caller acts on
+        // it. Unlike a sound server's sink, the capture sink can stall when it
+        // is paused while still completing its switch to PLAYING.
+        let rendered_before = capture.snapshot().rendered;
+        while app.audio.frames_rendered() == 0
+            || app.audio.needs_poll()
+            || (app.pb.playing && capture.snapshot().rendered == rendered_before)
+        {
             app.tick();
             assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
             assert!(
                 std::time::Instant::now() < until,
                 "file decoder did not render PCM"
             );
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            capture.wait_for_more(std::time::Duration::from_millis(20));
         }
-        assert_eq!(app.audio.audio_sink_is_real(), Some(true));
+        let pcm = capture.snapshot();
+        assert!(pcm.peak > 0, "the decoded tone reached the sink: {pcm:?}");
         app.tick();
     }
 
@@ -1073,7 +1102,12 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "paused source did not resume output"
+                "paused source did not resume output: frames {before} -> {}, playing {}, \
+                 confirmed {}, error {:?}",
+                app.audio.frames_rendered(),
+                app.audio.is_playing_real(),
+                app.audio.is_playing_confirmed(),
+                app.playback_error,
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }

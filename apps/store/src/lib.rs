@@ -67,7 +67,6 @@ pub mod doc_actions;
 pub mod flathub_client;
 pub mod flatpakref;
 pub mod images;
-pub mod installed;
 pub mod live;
 pub mod model;
 pub mod moderation_client;

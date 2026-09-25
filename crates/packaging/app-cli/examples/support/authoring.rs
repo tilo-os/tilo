@@ -19,8 +19,8 @@
 
 use std::path::{Path, PathBuf};
 
+use tilo_app_package::Manifest;
 use tilo_app_package::pack::{SigningIdentity, pack};
-use tilo_app_package::{Manifest, MemoryBlobStore};
 
 /// Where the manifest that got packed came from, so a log identifies the published app.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,10 +187,9 @@ pub fn author(
     }
 
     let version = manifest.package.version.clone();
-    let mut store = MemoryBlobStore::new();
-    let id = pack(&payload, &manifest, identity, &mut store)
-        .map_err(|e| AuthorError::Pack(e.to_string()))?;
-    let tapp = app_registry::tapp::write_bytes(id, &store)
+    let packed =
+        pack(&payload, &manifest, identity).map_err(|e| AuthorError::Pack(e.to_string()))?;
+    let tapp = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed))
         .map_err(|e| AuthorError::WriteTapp(e.to_string()))?;
     Ok(Authored {
         tapp,

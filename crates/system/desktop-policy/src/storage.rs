@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageRoots {
+    /// The package store root (`tilo-apps`); installed apps are read from
+    /// its registry.
     pub app_payloads: Option<PathBuf>,
     pub room_data: Option<PathBuf>,
     pub app_cache: Option<PathBuf>,
@@ -26,7 +28,7 @@ impl StorageRoots {
             .filter(|p| p.is_absolute())
             .or_else(|| data.as_ref().map(|p| p.join("tilo-apps")));
         Self {
-            app_payloads: payload_root.map(|p| p.join("payloads")),
+            app_payloads: payload_root,
             room_data: data.as_ref().map(|p| p.join("tilo-rooms")),
             app_cache: cache.map(|p| p.join("tilo-apps")),
             // The sync filesystem owns this directory. Until it publishes
@@ -93,12 +95,7 @@ impl StorageSnapshot {
 
 pub fn scan_storage(roots: &StorageRoots) -> StorageSnapshot {
     let mut snapshot = StorageSnapshot::default();
-    scan_children(
-        &mut snapshot,
-        roots.app_payloads.as_deref(),
-        StorageCategory::InstalledApps,
-        false,
-    );
+    scan_installed_apps(&mut snapshot, roots.app_payloads.as_deref());
     scan_room_apps(&mut snapshot, roots.room_data.as_deref());
     scan_children(
         &mut snapshot,
@@ -147,6 +144,33 @@ fn scan_children(
             bytes,
             files,
             reclaimable,
+        });
+    }
+}
+
+/// One entry per installed package, attributed by the package store's
+/// registry: a tree is named by its package id, so only the registry knows
+/// whose it is. Payload bytes shared between packages live once in the
+/// store's content; each tree is measured as the app sees it.
+fn scan_installed_apps(snapshot: &mut StorageSnapshot, root: Option<&Path>) {
+    let Some(root) = root else {
+        snapshot.unavailable.push(StorageCategory::InstalledApps);
+        return;
+    };
+    let registry = root.join(package_store::layout::REGISTRY_FILE);
+    let Ok(registry) = package_store::Registry::load(&registry) else {
+        snapshot.unavailable.push(StorageCategory::InstalledApps);
+        return;
+    };
+    for row in registry.into_entries() {
+        let (bytes, files) = measure(&row.payload_root);
+        snapshot.entries.push(StorageEntry {
+            category: StorageCategory::InstalledApps,
+            owner: row.id,
+            path: row.payload_root,
+            bytes,
+            files,
+            reclaimable: false,
         });
     }
 }
@@ -380,14 +404,24 @@ mod tests {
     #[test]
     fn accounting_is_per_app_and_does_not_follow_symlinks() {
         let tmp = tempfile::tempdir().unwrap();
-        let payloads = tmp.path().join("payloads");
-        std::fs::create_dir_all(payloads.join("so.tilo.notes")).unwrap();
-        std::fs::write(payloads.join("so.tilo.notes/app"), vec![0u8; 20]).unwrap();
+        let store = tmp.path().join("tilo-apps");
+        let tree = store.join("pkgs").join("ab".repeat(32));
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join("app"), vec![0u8; 20]).unwrap();
+        std::fs::write(
+            store.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = \"so.tilo.notes\"\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                tree.display().to_string(),
+                tree.display().to_string()
+            ),
+        )
+        .unwrap();
         let outside = tmp.path().join("outside");
         std::fs::write(&outside, vec![0u8; 50_000]).unwrap();
-        std::os::unix::fs::symlink(&outside, payloads.join("so.tilo.notes/link")).unwrap();
+        std::os::unix::fs::symlink(&outside, tree.join("link")).unwrap();
         let snap = scan_storage(&StorageRoots {
-            app_payloads: Some(payloads),
+            app_payloads: Some(store),
             room_data: None,
             app_cache: None,
             sync_replica: None,

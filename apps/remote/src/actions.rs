@@ -551,7 +551,7 @@ impl ResourceProvider for crate::app::RemoteApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
@@ -570,11 +570,64 @@ mod tests {
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
+    const BUILD_BOX: ConnectionId = Uuid::from_u128(0xb01d);
+    const FAVOURITE_BOX: ConnectionId = Uuid::from_u128(0xfa5);
+
+    fn connection_address(id: ConnectionId) -> String {
+        format!("remote.connection:{id}")
+    }
+
+    /// Two saved connections, one favourited, written through the document
+    /// store the app persists connections with.
+    fn seeded_connections() -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        RemoteDoc::upsert(&mut doc, &sample(BUILD_BOX, "Build Box"));
+        let mut favourite = sample(FAVOURITE_BOX, "Media Server");
+        favourite.favorite = true;
+        favourite.kind = ConnectionKind::Vnc;
+        favourite.port = 5900;
+        RemoteDoc::upsert(&mut doc, &favourite);
+        doc.commit();
+        doc
+    }
+
+    ui::action_contract_tests! {
+        seed: seeded_connections(),
+        registry: registry(),
+        resources: |doc| provide_resources(doc),
+        palette: [
+            "Rename connection",
+            "Open connection settings",
+            "Add to favourites",
+            "Remove from favourites",
+            "Delete connection",
+        ],
+        replay: [
+            rename => |_| encode(&rename_action(BUILD_BOX, "Renamed")),
+            upsert_edit => |_| {
+                let mut edited = sample(FAVOURITE_BOX, "Media Server (den)");
+                edited.host = "10.0.0.42".into();
+                encode(&upsert_action(&edited))
+            },
+        ],
+        undo: [
+            favourite => |_| encode(&set_favorite_action(BUILD_BOX, true)),
+            add_connection => |_| encode(&upsert_action(&sample(Uuid::from_u128(0xadd), "New Box"))),
+        ],
+        encodes: [
+            favourite => (&connection_address(BUILD_BOX), "favorite", |_, _| {
+                encode(&set_favorite_action(BUILD_BOX, true))
+            }),
+            unfavourite => (&connection_address(FAVOURITE_BOX), "favorite", |_, _| {
+                encode(&set_favorite_action(FAVOURITE_BOX, false))
+            }),
+            delete => (&connection_address(BUILD_BOX), "delete", |_, _| {
+                encode(&delete_action(BUILD_BOX))
+            }),
+            rename => (&connection_address(BUILD_BOX), "rename", arg: "Lab Box", |_, _| {
+                encode(&rename_action(BUILD_BOX, "Lab Box"))
+            }),
+        ],
     }
 
     fn sample(id: ConnectionId, name: &str) -> Connection {
@@ -748,7 +801,7 @@ mod tests {
                 .confirmation,
             tilo_actions::ConfirmationPolicy::None
         );
-        let encoded = immediate_encode(connect);
+        let encoded = ui::testing::action_contract::spec_encoding(connect, None);
         assert_eq!(encoded.type_id, REMOTE_OPERATION_TYPE);
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -759,22 +812,10 @@ mod tests {
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(labels.iter().any(|l| l.contains("Rename")), "{labels:?}");
-        assert!(
-            labels
-                .iter()
-                .any(|l| l.contains("Open connection settings")),
-            "{labels:?}"
-        );
         assert!(
             !labels.iter().any(|l| l.ends_with(" — Connect")),
             "a gated transport must not appear invokable: {labels:?}"
         );
-        assert!(
-            labels.iter().any(|l| l.contains("favourites")),
-            "{labels:?}"
-        );
-        assert!(labels.iter().any(|l| l.contains("Delete")), "{labels:?}");
     }
 
     #[test]
@@ -935,98 +976,9 @@ mod tests {
             .unwrap();
         assert_eq!(spec.label, "Remove from favourites");
         assert_eq!(
-            immediate_encode(spec),
+            ui::testing::action_contract::spec_encoding(spec, None),
             encode(&set_favorite_action(id, false)),
             "favourited → the row flips it back off",
-        );
-    }
-
-    /// The full undo covenant on the real executor path: dispatched through the
-    /// executor the action mutates the document and records exactly one undo
-    /// boundary, and Ctrl+Z (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        let id = Uuid::new_v4();
-        RemoteDoc::upsert(&mut state.doc, &sample(id, "Box"));
-        state.doc.commit();
-        assert!(!RemoteDoc::list(&state.doc)[0].favorite);
-        let before_heads = state.doc.get_heads();
-
-        let action = set_favorite_action(id, true);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert!(
-            RemoteDoc::list(&state.doc)[0].favorite,
-            "the action set the flag"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert!(
-            !RemoteDoc::list(&state.doc)[0].favorite,
-            "undo reverted the favourite change and nothing else",
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a second
-    /// independent replica (from the same base state) lands on the byte-identical
-    /// document — same head hashes, not merely the same value.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = AutoCommit::new();
-        let id = Uuid::new_v4();
-        RemoteDoc::upsert(&mut a, &sample(id, "Box"));
-        a.commit();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = rename_action(id, "Renamed");
-        let encoded = encode(&action);
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(RemoteDoc::list(&b)[0].name, "Renamed");
-    }
-
-    /// Single source of truth: the palette's favourite + delete specs encode
-    /// byte-identically to the builders the on-screen affordances call.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        RemoteDoc::upsert(&mut doc, &sample(id, "Box")); // not favourited
-        let resources = provide_resources(&doc);
-        let actions = &resources[0].children[0].actions;
-
-        let fav = actions.iter().find(|a| a.id == "favorite").unwrap();
-        assert_eq!(
-            immediate_encode(fav),
-            encode(&set_favorite_action(id, true)),
-            "favourite is one source of truth",
-        );
-        let del = actions.iter().find(|a| a.id == "delete").unwrap();
-        assert_eq!(
-            immediate_encode(del),
-            encode(&delete_action(id)),
-            "delete is one source of truth",
         );
     }
 }

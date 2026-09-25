@@ -36,8 +36,9 @@ rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
 test -s /usr/share/tilo-apps/registry.toml
 grep -Fxq 'id = "so.tilo.settings"' /usr/share/tilo-apps/registry.toml
 grep -q '^payload_root = "/usr/lib/tilo-apps/' /usr/share/tilo-apps/registry.toml
-test -d /usr/lib/tilo-apps/payloads
-test ! -e /usr/share/tilo-apps/payloads
+test -d /usr/lib/tilo-apps/pkgs
+test ! -e /usr/share/tilo-apps/pkgs
+test ! -e /usr/lib/tilo-apps/content
 test -f /usr/lib/tilo-runtime/2026.07/bundle.toml
 test "$(stat -c %a /usr/lib/tilo-runtime/2026.07/bundle.toml)" = 644
 grep -q '/usr/lib/tilo-apps/bin' /etc/profile.d/tilo-apps.sh

@@ -294,7 +294,7 @@ then append the provider row to
 [[provider]]
 mime     = "text/markdown"
 package  = "so.tilo.qdoc-md"
-wasm     = "~/.local/share/tilo-apps/payloads/so.tilo.qdoc-md/provider.wasm"
+wasm     = "~/.local/share/tilo-apps/pkgs/<package-id>/provider.wasm"
 version  = "0.1.0"
 priority = "installed"
 trust    = []

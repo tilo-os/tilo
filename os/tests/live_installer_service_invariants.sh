@@ -14,6 +14,7 @@ bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 units=(
   os/usr/lib/systemd/system/fs.service
   os/usr/lib/systemd/system/fs-identity.path
+  os/usr/lib/systemd/system/tilo-store-volume.service
   os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.service
   os/usr/lib/systemd/system/tilo-windows-vm-egress-reaper.timer
   os/usr/lib/systemd/system/systemd-tpm2-setup.service.d/10-tilo-live-installer.conf

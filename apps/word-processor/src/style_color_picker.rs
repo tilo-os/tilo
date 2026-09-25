@@ -2,6 +2,11 @@
 //!
 //! The editor owns the document mutation; this component owns the popover's
 //! lifecycle, geometry, drawing, pointer tracking, and event routing.
+//!
+//! The shared picker runs in confirm mode: every edit previews live on the
+//! focused style, *Done* keeps it, and *Cancel* — or Escape, or a click
+//! outside the card — reverts the style to the colour the popover opened
+//! with.
 
 use std::collections::HashMap;
 
@@ -11,7 +16,7 @@ use ui::ColorCompat;
 use ui::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ColorPicker, Widget};
+use ui::widget::{ColorPicker, ColorPickerOutcome, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -21,7 +26,6 @@ use winit::keyboard::{Key, NamedKey};
 use crate::num;
 
 const WIDTH: f64 = 236.0;
-const HEIGHT: f64 = 176.0;
 
 /// Result of routing an event through an open [`StyleColorPicker`].
 pub(super) struct PickerEvent {
@@ -63,19 +67,27 @@ impl StyleColorPicker {
     }
 
     pub(super) fn open(&mut self, seed: [u8; 3], pointer: Point) {
-        self.picker = Some(ColorPicker::new(Color::from_rgb8(
-            seed[0], seed[1], seed[2],
-        )));
+        self.picker = Some(
+            ColorPicker::new(Color::from_rgb8(seed[0], seed[1], seed[2]))
+                .confirming(crate::i18n::t("panel-colour")),
+        );
         self.pointer = pointer;
     }
 
-    fn anchor(host: Rect, panel: Rect) -> Point {
+    fn height(&self) -> f64 {
+        self.picker
+            .as_ref()
+            .map_or(0.0, |picker| picker.preferred_height(WIDTH))
+    }
+
+    fn anchor(host: Rect, panel: Rect, height: f64) -> Point {
         let x = (panel.x0 - WIDTH - 12.0).max(host.x0 + 12.0);
-        let y = (panel.y0 + 150.0).min((host.y1 - HEIGHT - 48.0).max(host.y0 + 60.0));
+        let y = (panel.y0 + 150.0).min((host.y1 - height - 48.0).max(host.y0 + 60.0));
         Point::new(x, y)
     }
 
     pub(super) fn layout(&mut self, host: Rect, panel: Rect) {
+        let height = self.height();
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
@@ -88,7 +100,7 @@ impl StyleColorPicker {
             Style {
                 size: Size {
                     width: Dimension::length(num::f32_of_f64(WIDTH)),
-                    height: Dimension::length(num::f32_of_f64(HEIGHT)),
+                    height: Dimension::length(num::f32_of_f64(height)),
                 },
                 ..Default::default()
             },
@@ -97,10 +109,10 @@ impl StyleColorPicker {
             node,
             taffy::Size {
                 width: taffy::AvailableSpace::Definite(num::f32_of_f64(WIDTH)),
-                height: taffy::AvailableSpace::Definite(num::f32_of_f64(HEIGHT)),
+                height: taffy::AvailableSpace::Definite(num::f32_of_f64(height)),
             },
         );
-        picker.apply_layout(&taffy, node, Self::anchor(host, panel));
+        picker.apply_layout(&taffy, node, Self::anchor(host, panel, height));
     }
 
     pub(super) fn draw(&mut self, args: DrawArgs, host: Rect, panel: Rect) {
@@ -163,8 +175,9 @@ impl StyleColorPicker {
                 button: MouseButton::Left,
                 ..
             } => true,
-            // A click outside the popover, or Escape, both dismiss it the
-            // same way — no forwarded event, just a close.
+            // A click outside the popover, or Escape, both cancel it the same
+            // way: the picker restores the opening colour, which the change
+            // record below hands back to the editor.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -179,7 +192,9 @@ impl StyleColorPicker {
                     },
                 ..
             } => {
-                self.picker = None;
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.cancel();
+                }
                 false
             }
             _ => false,
@@ -210,14 +225,29 @@ impl StyleColorPicker {
             .as_mut()
             .and_then(ColorPicker::take_changed)
             .map(|color| [color.r(), color.g(), color.b()]);
+        // Done keeps the previewed colour; Cancel already reported its
+        // revert through `changed`. Either way the popover closes.
+        if matches!(
+            self.picker.as_mut().and_then(ColorPicker::take_outcome),
+            Some(ColorPickerOutcome::Confirmed(_) | ColorPickerOutcome::Cancelled)
+        ) {
+            self.picker = None;
+        }
         PickerEvent {
             consumed: true,
             changed,
         }
     }
 
+    /// One named part of the open picker (`color_picker.sv`,
+    /// `color_picker.done`, …), in the picker's own test-target names.
     #[cfg(test)]
-    pub(super) fn rect(&self) -> Rect {
-        self.picker.as_ref().map_or(Rect::ZERO, Widget::get_rect)
+    pub(super) fn part(&self, name: &str) -> Option<Rect> {
+        self.picker
+            .as_ref()?
+            .test_rects()
+            .into_iter()
+            .find(|(part, _)| part == name)
+            .map(|(_, rect)| rect)
     }
 }

@@ -360,15 +360,16 @@ pub fn run_app(
         && std::env::var_os("QOS_RUNTIME_RESUME_LIVE").as_deref()
             == Some(std::ffi::OsStr::new(app_id));
     let mut command = Command::new(executable);
-    command
-        .args(args)
-        .env("TILO_BLOB_STORE", profile.join("blobs"));
+    command.args(args);
     let connections = unix::Connections::prepare(
         &mut command,
         app_id,
         &status.room,
-        &profile.join("collab.sock"),
-        &profile.join("identity.sock"),
+        &unix::ServiceSockets {
+            collab: &profile.join("collab.sock"),
+            identity: &profile.join("identity.sock"),
+            blobs: &profile.join("blobs.sock"),
+        },
     )?;
     command
         .env("QOS_RUNTIME_CONNECTION_OWNER_PID", owner)

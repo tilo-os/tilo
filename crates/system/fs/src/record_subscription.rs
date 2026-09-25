@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::clock::unix_now_ms;
 use crate::share_link::{
     FILE_SHARE_LINK_V2_PREFIX, FileShareLinkV2, MAX_FILE_SHARE_LINK_V2_PAYLOAD_BYTES,
 };
@@ -124,7 +125,7 @@ impl RecordSubscriptionStore {
     /// Returns an error when state cannot be read, validated, decoded, or
     /// initialized with owner-only permissions.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, RecordSubscriptionStoreError> {
-        Self::open_at(path, now_ms())
+        Self::open_at(path, unix_now_ms())
     }
 
     /// Open and validate a subscription store at an explicit validation time.
@@ -196,7 +197,7 @@ impl RecordSubscriptionStore {
     /// Returns an error when the link is invalid, collides with an existing
     /// key, capacity is exhausted, or persistence fails.
     pub fn insert(&self, link: FileShareLinkV2) -> Result<bool, RecordSubscriptionStoreError> {
-        self.insert_at(link, now_ms())
+        self.insert_at(link, unix_now_ms())
     }
 
     /// Insert a validated V2 link at an explicit validation time.
@@ -419,10 +420,6 @@ fn validate_owner_only_permissions(
     _metadata: &std::fs::Metadata,
 ) -> Result<(), RecordSubscriptionStoreError> {
     Ok(())
-}
-
-fn now_ms() -> u64 {
-    crate::clock::unix_now_ms()
 }
 
 #[derive(Debug, Error)]

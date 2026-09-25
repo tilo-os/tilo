@@ -1,232 +1,150 @@
-//! Lightweight, theme-aware token highlighter for code in the diff/merge
-//! panels. This is deliberately language-agnostic and conservative: it tints
-//! a small set of universally-recognisable token classes (keywords, strings,
-//! comments, numbers, punctuation) so code reads as code without pulling in a
-//! full grammar engine. Every colour is derived from the [`ui::theme::Theme`]
-//! so highlighting respects the OS palette.
+//! Syntax colouring for the diff and merge panels. Tokenizing is the
+//! toolkit's grammar-backed highlighter
+//! ([`ui::widget::code_editor::SyntaxHighlighter`]), chosen from the file name
+//! a panel shows; colours come from the theme's shared syntax palette, so code
+//! reads exactly as it does in every other code surface. What stays here is
+//! specific to diffing: each side of a comparison is tokenized as one
+//! continuous document (so a block comment or a multi-line string colours
+//! correctly across aligned rows), and a line paints as coloured runs at a
+//! panel's own origin and size.
 
+use std::path::Path;
+
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use vello::peniko::Color;
+use ui::widget::code_editor::{Span, SyntaxHighlighter};
+use vello::Scene;
+use vello::kurbo::Affine;
 
-/// A classified run of characters within a single line.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Span {
-    pub start: usize,
-    pub end: usize,
-    pub class: TokenClass,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenClass {
-    Plain,
-    Keyword,
-    Str,
-    Number,
-    Comment,
-    Punct,
-    Ident,
-}
-
-impl TokenClass {
-    /// Resolve a colour from the theme. Tints are pulled from the accent and
-    /// neutral ramps + semantic colours so they harmonise with any theme.
-    pub fn color(self, theme: &Theme) -> Color {
-        let c = &theme.tokens.colors;
-        match self {
-            TokenClass::Plain | TokenClass::Ident => c.text_primary,
-            TokenClass::Keyword => c.accent[6], // lighter accent
-            TokenClass::Str => c.semantic.success,
-            TokenClass::Number => c.semantic.warning,
-            TokenClass::Comment => c.text_dim,
-            TokenClass::Punct => c.neutral[6],
-        }
-    }
-}
-
-/// Tokens recognised as keywords across the languages we ship samples for.
-const KEYWORDS: &[&str] = &[
-    "fn", "let", "mut", "pub", "use", "impl", "struct", "enum", "trait", "for", "while", "loop",
-    "if", "else", "match", "return", "self", "Self", "true", "false", "as", "in", "mod", "const",
-    "static", "ref", "move", "where", "type", "dyn", "async", "await", "crate", "super", "break",
-    "continue", "and", "or", "not", "def", "class", "import", "from", "None", "True", "False",
-    "null", "var", "function", "new", "this",
-];
-
-/// Classify one line into a sequence of spans covering every character.
-///
-/// Operates on a `Vec<char>` view of the line (not raw byte offsets), so
-/// every span boundary this returns is a char index, safe to use with
-/// `chars().collect()` on the same line — see [`segments`].
-pub fn classify(line: &str) -> Vec<Span> {
-    let chars: Vec<char> = line.chars().collect();
-    let n = chars.len();
-    let mut spans: Vec<Span> = Vec::new();
-    let mut i = 0;
-
-    while let Some(&c) = chars.get(i) {
-        // Line comments: // … or # … (toml/python/shell) or ; … (ini)
-        let next = chars.get(i + 1).copied();
-        if (c == '/' && next == Some('/')) || c == '#' || (c == '-' && next == Some('-')) {
-            // `--` only as a comment when it starts a token boundary; cheap
-            // heuristic — treat the rest of the line as a comment.
-            spans.push(Span {
-                start: i,
-                end: n,
-                class: TokenClass::Comment,
-            });
-            break;
-        }
-
-        // Strings: "…" or '…' with naive escape skipping.
-        if c == '"' || c == '\'' {
-            let quote = c;
-            let start = i;
-            i += 1;
-            while let Some(&cur) = chars.get(i) {
-                if cur == '\\' && chars.get(i + 1).is_some() {
-                    i += 2;
-                    continue;
-                }
-                if cur == quote {
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            spans.push(Span {
-                start,
-                end: i,
-                class: TokenClass::Str,
-            });
-            continue;
-        }
-
-        // Numbers.
-        if c.is_ascii_digit() {
-            let start = i;
-            while chars
-                .get(i)
-                .copied()
-                .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_')
-            {
-                i += 1;
-            }
-            spans.push(Span {
-                start,
-                end: i,
-                class: TokenClass::Number,
-            });
-            continue;
-        }
-
-        // Identifiers / keywords.
-        if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while chars
-                .get(i)
-                .copied()
-                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
-            {
-                i += 1;
-            }
-            let word: String = chars.get(start..i).unwrap_or(&[]).iter().collect();
-            let class = if KEYWORDS.contains(&word.as_str()) {
-                TokenClass::Keyword
-            } else {
-                TokenClass::Ident
-            };
-            spans.push(Span {
-                start,
-                end: i,
-                class,
-            });
-            continue;
-        }
-
-        // Whitespace stays plain.
-        if c.is_whitespace() {
-            let start = i;
-            while chars.get(i).copied().is_some_and(char::is_whitespace) {
-                i += 1;
-            }
-            spans.push(Span {
-                start,
-                end: i,
-                class: TokenClass::Plain,
-            });
-            continue;
-        }
-
-        // Punctuation run.
-        let start = i;
-        while chars.get(i).copied().is_some_and(|ch| {
-            !ch.is_alphanumeric() && ch != '_' && !ch.is_whitespace() && ch != '"' && ch != '\''
-        }) {
-            i += 1;
-        }
-        spans.push(Span {
-            start,
-            end: i,
-            class: TokenClass::Punct,
-        });
-    }
-
-    spans
-}
-
-/// Slice the original line into `(text, color)` segments using the theme.
-pub fn segments(line: &str, theme: &Theme) -> Vec<(String, Color)> {
-    let chars: Vec<char> = line.chars().collect();
-    classify(line)
-        .into_iter()
-        .map(|s| {
-            let end = s.end.min(chars.len());
-            let text: String = chars.get(s.start..end).unwrap_or(&[]).iter().collect();
-            (text, s.class.color(theme))
+/// The grammar for a panel label such as `"rate_limiter.rs · HEAD"` or a
+/// path: its file extension, else its whole file name (`Dockerfile`), else
+/// plain text.
+pub fn grammar_for_label(label: &str) -> SyntaxHighlighter {
+    let name = label.split(" · ").next().unwrap_or(label).trim();
+    let path = Path::new(name);
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(SyntaxHighlighter::for_token)
+        .or_else(|| {
+            path.file_name()
+                .and_then(|file| file.to_str())
+                .and_then(SyntaxHighlighter::for_token)
         })
+        .unwrap_or_else(SyntaxHighlighter::plain_text)
+}
+
+/// Spans for each line of one continuous document, in order.
+pub fn document<'a>(
+    grammar: &SyntaxHighlighter,
+    lines: impl IntoIterator<Item = &'a str>,
+) -> Vec<Vec<Span>> {
+    let mut state = grammar.start();
+    lines
+        .into_iter()
+        .map(|line| state.highlight_line(line))
         .collect()
+}
+
+/// Paint `text` at `(x, y)` (the glyph top) as runs coloured by `spans`. A
+/// line with no spans (its side was never tokenized) paints as body text.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one line's paint context: scene, transform, renderer, theme, origin, text, spans and size"
+)]
+pub fn draw_line(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    x: f64,
+    y: f64,
+    text: &str,
+    spans: &[Span],
+    font_size: f32,
+) {
+    let syntax = &theme.tokens.syntax;
+    if spans.is_empty() {
+        if !text.is_empty() {
+            tr.draw_text(
+                scene,
+                text,
+                font_size,
+                syntax.text,
+                transform * Affine::translate((x, y)),
+                None,
+            );
+        }
+        return;
+    }
+    let mut x = x;
+    for span in spans {
+        let Some(run) = text.get(span.range.clone()) else {
+            continue;
+        };
+        if run.is_empty() {
+            continue;
+        }
+        tr.draw_text(
+            scene,
+            run,
+            font_size,
+            syntax.color(span.kind),
+            transform * Affine::translate((x, y)),
+            None,
+        );
+        let (w, _) = tr.measure(run, font_size, None);
+        x += f64::from(w);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::code_editor::TokenKind;
 
-    #[test]
-    fn keyword_is_classified() {
-        let spans = classify("pub fn foo() {");
-        // First span "pub" is a keyword.
-        assert_eq!(spans[0].class, TokenClass::Keyword);
-    }
-
-    #[test]
-    fn string_literal_spans_quotes() {
-        let spans = classify("let s = \"hi\";");
-        assert!(spans.iter().any(|s| s.class == TokenClass::Str));
-    }
-
-    #[test]
-    fn comment_consumes_rest_of_line() {
-        let spans = classify("x = 1 // trailing");
-        let comment = spans
+    fn kinds(line: &str, spans: &[Span], kind: TokenKind) -> Vec<String> {
+        spans
             .iter()
-            .find(|s| s.class == TokenClass::Comment)
-            .unwrap();
-        // Comment runs to end of line.
-        assert_eq!(comment.end, "x = 1 // trailing".chars().count());
+            .filter(|span| span.kind == kind)
+            .filter_map(|span| line.get(span.range.clone()))
+            .map(str::to_owned)
+            .collect()
     }
 
     #[test]
-    fn number_is_classified() {
-        let spans = classify("port = 8080");
-        assert!(spans.iter().any(|s| s.class == TokenClass::Number));
+    fn the_grammar_follows_the_file_a_label_names() {
+        assert_eq!(grammar_for_label("rate_limiter.rs · HEAD").name(), "Rust");
+        assert_eq!(grammar_for_label("config.toml · ours").name(), "TOML");
+        assert_eq!(
+            grammar_for_label("/srv/app/Dockerfile").name(),
+            "Dockerfile"
+        );
+        assert_eq!(grammar_for_label("notes · draft").name(), "Plain Text");
+        assert_eq!(grammar_for_label("").name(), "Plain Text");
     }
 
     #[test]
-    fn segments_cover_full_line() {
-        let theme = Theme::dark();
-        let line = "let x = 42;";
-        let segs = segments(line, &theme);
-        let joined: String = segs.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(joined, line);
+    fn keywords_strings_and_comments_take_their_kinds() {
+        let grammar = grammar_for_label("a.rs");
+        let line = "pub fn f() { let s = \"hi\"; } // done";
+        let spans = &document(&grammar, [line])[0];
+        assert!(kinds(line, spans, TokenKind::Keyword).contains(&"pub".to_owned()));
+        assert_eq!(kinds(line, spans, TokenKind::StringLit), ["\"hi\""]);
+        assert_eq!(kinds(line, spans, TokenKind::Comment), ["// done"]);
+        let covered: usize = spans.iter().map(|span| span.range.len()).sum();
+        assert_eq!(covered, line.len(), "spans cover the whole line");
+    }
+
+    #[test]
+    fn a_side_is_one_document_so_block_comments_span_rows() {
+        let grammar = grammar_for_label("a.rs");
+        let lines = ["/* opened", "still inside", "*/ let x = 1;"];
+        let spans = document(&grammar, lines);
+        assert_eq!(
+            kinds(lines[1], &spans[1], TokenKind::Comment),
+            ["still inside"],
+            "the middle row continues the comment"
+        );
+        assert!(kinds(lines[2], &spans[2], TokenKind::Keyword).contains(&"let".to_owned()));
     }
 }

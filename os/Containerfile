@@ -1389,9 +1389,14 @@ COPY --from=builder /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
 # commands can be run by name — the only way a CLI package is meant to be run.
 COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 
-# FUSE mount service
+# Collaborative filesystem service. tilo-store-volume.service prepares the
+# room store volume (/var/lib/tilo/store) before it, giving installs without a
+# store partition an image-backed one attached by tilo-store-loop.service;
+# fs.service pulls both in, so neither needs enabling.
 COPY \
     os/usr/lib/systemd/system/fs.service \
+    os/usr/lib/systemd/system/tilo-store-volume.service \
+    os/usr/lib/systemd/system/tilo-store-loop.service \
     os/usr/lib/systemd/system/tilo-fs-start.timer \
     os/usr/lib/systemd/system/fs-identity.path \
     os/usr/lib/systemd/system/tilo-device-key-init.service \
@@ -1408,6 +1413,11 @@ COPY os/usr/lib/systemd/system/systemd-tpm2-setup-early.service.d/10-tilo-live-i
 # edited and survives image updates. See fs.service for why the subject
 # is a principal rather than a key.
 COPY os/usr/share/tilo/fs-capabilities.json /usr/share/tilo/fs-capabilities.json
+# Git compares only the stat fields that sync between devices (mtime and
+# size, not inode or ctime), so a synced repository is clean everywhere
+# without re-hashing; see the snippet and docs/device-local-state.md.
+COPY os/usr/share/tilo/git/synced-worktree.gitconfig /usr/share/tilo/git/synced-worktree.gitconfig
+COPY os/etc/gitconfig /etc/gitconfig
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
@@ -1631,9 +1641,11 @@ COPY \
 # Used by the installer (os/Containerfile.installer layers tilo-install on top of
 # this image), and afterwards on the installed system — `enrol` is also how a
 # volume is re-sealed to a replaced TPM, which is exactly the case where the
-# machine can only be reached with the recovery key.
+# machine can only be reached with the recovery key. tilo-store-volume plans and
+# formats the room store partition for the installer and runs the store at boot.
 COPY --chmod=0755 \
     os/usr/libexec/tilo-disk-encrypt \
+    os/usr/libexec/tilo-store-volume \
     os/usr/libexec/tilo-verified-boot-install-preflight \
     /usr/libexec/
 

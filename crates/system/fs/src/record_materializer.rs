@@ -121,6 +121,116 @@ impl RecordMaterializer {
         self.apply_exact(scope.record_id, envelope, snapshot, None)
     }
 
+    /// Projects one record's durable operations, as
+    /// [`Self::reconcile_repository`] does for every record, without
+    /// replaying the rest of the repository. A mesh pull that applied a
+    /// batch to one record reconciles just that record; the full pass at the
+    /// end of the pull still heals everything else.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::reconcile_repository`].
+    pub fn reconcile_record(
+        &self,
+        repository: &RecordRepository,
+        key: crate::record_repository::RecordRepositoryKey,
+    ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
+        let mut report = RecordReconciliationReport::default();
+        self.reconcile_key(repository, key, &mut report)?;
+        Ok(report)
+    }
+
+    fn reconcile_key(
+        &self,
+        repository: &RecordRepository,
+        key: crate::record_repository::RecordRepositoryKey,
+        report: &mut RecordReconciliationReport,
+    ) -> Result<(), RecordMaterializerError> {
+        let Some(batch) = repository.reconciliation_batch(key) else {
+            return Ok(());
+        };
+        debug_assert_eq!(batch.key, key);
+
+        for envelope in batch
+            .envelopes
+            .iter()
+            .filter(|envelope| matches!(&envelope.operation, RecordOperationV1::AppendVersion(_)))
+        {
+            match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
+                Ok(()) => {
+                    report.operations_replayed = report.operations_replayed.saturating_add(1);
+                }
+                Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
+                    report.unknown_or_tombstoned_records =
+                        report.unknown_or_tombstoned_records.saturating_add(1);
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(envelope) = batch.envelopes.iter().rev().find(|envelope| {
+            matches!(
+                &envelope.operation,
+                RecordOperationV1::SetContentRevision(_)
+            )
+        }) {
+            match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
+                Ok(()) => {
+                    report.operations_replayed = report.operations_replayed.saturating_add(1);
+                }
+                Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
+                    report.unknown_or_tombstoned_records =
+                        report.unknown_or_tombstoned_records.saturating_add(1);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        // Project converged metadata/previews after the content revision
+        // exists; losing metadata arrivals remain only in the signed log.
+        if let Some(envelope) = batch
+            .envelopes
+            .iter()
+            .rev()
+            .find(|envelope| matches!(&envelope.operation, RecordOperationV1::SetMetadata(_)))
+        {
+            match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
+                Ok(()) => {
+                    report.operations_replayed = report.operations_replayed.saturating_add(1);
+                }
+                Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
+                    report.unknown_or_tombstoned_records =
+                        report.unknown_or_tombstoned_records.saturating_add(1);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        for operation_kind in [0_u8, 1_u8] {
+            for envelope in batch.envelopes.iter().filter(|envelope| {
+                matches!(
+                    (&envelope.operation, operation_kind),
+                    (RecordOperationV1::AppendConflict(_), 0)
+                        | (RecordOperationV1::ResolveConflict { .. }, 1)
+                )
+            }) {
+                match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
+                    Ok(()) => {
+                        report.operations_replayed = report.operations_replayed.saturating_add(1);
+                    }
+                    Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
+                        report.unknown_or_tombstoned_records =
+                            report.unknown_or_tombstoned_records.saturating_add(1);
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        report.records_reconciled = report.records_reconciled.saturating_add(1);
+        Ok(())
+    }
+
     /// Heal any durable repository operations that were not projected before
     /// a crash. Reconciliation is bounded by the repository's record and
     /// operation limits and is idempotent for namespace state and history.
@@ -143,91 +253,7 @@ impl RecordMaterializer {
     ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
         let mut report = RecordReconciliationReport::default();
         for key in repository.reconciliation_keys(self.workspace_id) {
-            let Some(batch) = repository.reconciliation_batch(key) else {
-                continue;
-            };
-            debug_assert_eq!(batch.key, key);
-
-            for envelope in batch.envelopes.iter().filter(|envelope| {
-                matches!(&envelope.operation, RecordOperationV1::AppendVersion(_))
-            }) {
-                match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
-                    Ok(()) => {
-                        report.operations_replayed = report.operations_replayed.saturating_add(1);
-                    }
-                    Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
-                        report.unknown_or_tombstoned_records =
-                            report.unknown_or_tombstoned_records.saturating_add(1);
-                        break;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            if let Some(envelope) = batch.envelopes.iter().rev().find(|envelope| {
-                matches!(
-                    &envelope.operation,
-                    RecordOperationV1::SetContentRevision(_)
-                )
-            }) {
-                match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
-                    Ok(()) => {
-                        report.operations_replayed = report.operations_replayed.saturating_add(1);
-                    }
-                    Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
-                        report.unknown_or_tombstoned_records =
-                            report.unknown_or_tombstoned_records.saturating_add(1);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            // Project converged metadata/previews after the content revision
-            // exists; losing metadata arrivals remain only in the signed log.
-            if let Some(envelope) =
-                batch.envelopes.iter().rev().find(|envelope| {
-                    matches!(&envelope.operation, RecordOperationV1::SetMetadata(_))
-                })
-            {
-                match self.apply_exact(key.record_id, envelope, &batch.snapshot, Some(repository)) {
-                    Ok(()) => {
-                        report.operations_replayed = report.operations_replayed.saturating_add(1);
-                    }
-                    Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
-                        report.unknown_or_tombstoned_records =
-                            report.unknown_or_tombstoned_records.saturating_add(1);
-                        continue;
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            for operation_kind in [0_u8, 1_u8] {
-                for envelope in batch.envelopes.iter().filter(|envelope| {
-                    matches!(
-                        (&envelope.operation, operation_kind),
-                        (RecordOperationV1::AppendConflict(_), 0)
-                            | (RecordOperationV1::ResolveConflict { .. }, 1)
-                    )
-                }) {
-                    match self.apply_exact(
-                        key.record_id,
-                        envelope,
-                        &batch.snapshot,
-                        Some(repository),
-                    ) {
-                        Ok(()) => {
-                            report.operations_replayed =
-                                report.operations_replayed.saturating_add(1);
-                        }
-                        Err(RecordMaterializerError::UnknownOrTombstonedRecord(_)) => {
-                            report.unknown_or_tombstoned_records =
-                                report.unknown_or_tombstoned_records.saturating_add(1);
-                            break;
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-            }
-            report.records_reconciled = report.records_reconciled.saturating_add(1);
+            self.reconcile_key(repository, key, &mut report)?;
         }
         for transaction in repository
             .complete_transactions(self.workspace_id)

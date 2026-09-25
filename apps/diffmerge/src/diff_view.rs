@@ -24,6 +24,7 @@ use ui::widget::{SegmentedFace, ToggleGroup, Widget};
 use crate::highlight;
 use crate::model::{DiffModel, RowKind};
 use ui::paint::with_alpha;
+use ui::widget::code_editor::Span;
 
 /// Minimum row pitch; the measured line height of `FONT_SIZE` wins when the
 /// text scale makes it taller (see [`Metrics`]).
@@ -96,6 +97,9 @@ pub struct DiffView {
     model: DiffModel,
     left_label: String,
     right_label: String,
+    /// Syntax spans per source line of each side, tokenized as a whole file.
+    left_spans: Vec<Vec<Span>>,
+    right_spans: Vec<Vec<Span>>,
     rect: Rect,
     scroll_y: f64,
     /// Index into `model.blocks` of the most recently navigated-to change.
@@ -121,6 +125,8 @@ impl DiffView {
             model: DiffModel::default(),
             left_label: String::new(),
             right_label: String::new(),
+            left_spans: Vec::new(),
+            right_spans: Vec::new(),
             rect: Rect::ZERO,
             scroll_y: 0.0,
             active_block: None,
@@ -157,6 +163,10 @@ impl DiffView {
         self.model = DiffModel::compute(left, right);
         self.left_label = left_label.to_string();
         self.right_label = right_label.to_string();
+        self.left_spans =
+            highlight::document(&highlight::grammar_for_label(left_label), left.lines());
+        self.right_spans =
+            highlight::document(&highlight::grammar_for_label(right_label), right.lines());
         self.scroll_y = 0.0;
         self.active_block = self.model.blocks.first().map(|_| 0);
         self.dirty = true;
@@ -650,10 +660,22 @@ impl DiffView {
                 continue;
             };
             let y = body_top + index as f64 * m.row_h - self.scroll_y;
-            let (present, number, text, left) = if self.compact_show_right {
-                (row.right.is_some(), row.right_no, row.right.as_ref(), false)
+            let (present, number, text, left, spans) = if self.compact_show_right {
+                (
+                    row.right.is_some(),
+                    row.right_no,
+                    row.right.as_ref(),
+                    false,
+                    &self.right_spans,
+                )
             } else {
-                (row.left.is_some(), row.left_no, row.left.as_ref(), true)
+                (
+                    row.left.is_some(),
+                    row.left_no,
+                    row.left.as_ref(),
+                    true,
+                    &self.left_spans,
+                )
             };
             let rect = Rect::new(r.x0, y, content_right, y + m.row_h);
             if let Some(tint) = Self::row_tint(row.kind, present, left, theme) {
@@ -670,7 +692,7 @@ impl DiffView {
             }
             draw_gutter_number(scene, transform, tr, theme, r.x0, y, number, m);
             if let Some(text) = text {
-                draw_code_line(
+                highlight::draw_line(
                     scene,
                     transform,
                     tr,
@@ -678,6 +700,8 @@ impl DiffView {
                     r.x0 + m.gutter_w + PAD_X,
                     y + m.text_dy,
                     text,
+                    line_spans(spans, number),
+                    FONT_SIZE,
                 );
             }
         }
@@ -764,7 +788,7 @@ impl DiffView {
 
             // Line text, syntax-highlighted.
             if let Some(text) = &row.left {
-                draw_code_line(
+                highlight::draw_line(
                     scene,
                     transform,
                     tr,
@@ -772,10 +796,12 @@ impl DiffView {
                     left_col.x0 + m.gutter_w + PAD_X,
                     y + m.text_dy,
                     text,
+                    line_spans(&self.left_spans, row.left_no),
+                    FONT_SIZE,
                 );
             }
             if let Some(text) = &row.right {
-                draw_code_line(
+                highlight::draw_line(
                     scene,
                     transform,
                     tr,
@@ -783,6 +809,8 @@ impl DiffView {
                     right_col.x0 + m.gutter_w + PAD_X,
                     y + m.text_dy,
                     text,
+                    line_spans(&self.right_spans, row.right_no),
+                    FONT_SIZE,
                 );
             }
         }
@@ -973,33 +1001,10 @@ fn draw_gutter_number(
     }
 }
 
-/// Draw a single line of code with syntax highlighting at `(x0, y)`.
-fn draw_code_line(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x0: f64,
-    y: f64,
-    text: &str,
-) {
-    let mut x = x0;
-    for (seg, color) in highlight::segments(text, theme) {
-        if seg.is_empty() {
-            continue;
-        }
-        // Tabs/leading spaces are part of the segment text; cosmic-text
-        // renders them and advances the cursor. We measure to advance x.
-        // `y` is already the glyph top: callers centre it on the row pitch.
-        tr.draw_text(
-            scene,
-            &seg,
-            FONT_SIZE,
-            color,
-            transform * Affine::translate((x, y)),
-            None,
-        );
-        let (w, _) = tr.measure(&seg, FONT_SIZE, None);
-        x += f64::from(w);
-    }
+/// The spans of 1-based source line `number` on one side.
+fn line_spans(spans: &[Vec<Span>], number: Option<usize>) -> &[Span] {
+    number
+        .and_then(|number| number.checked_sub(1))
+        .and_then(|index| spans.get(index))
+        .map_or(&[], Vec::as_slice)
 }

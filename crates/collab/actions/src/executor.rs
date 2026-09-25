@@ -16,20 +16,12 @@
 
 use automerge::transaction::{CommitOptions, Transactable};
 use tilo_automerge::ApplyIncoming;
+use tilo_clock::unix_now_i64;
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
 use crate::context::ActionContext;
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
-
-fn now_secs() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        // `i64::MAX` seconds since the epoch is ~292 billion years out —
-        // the fallback exists only so this can't panic, not because it fires.
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-}
 
 /// Build an envelope for `action` at the doc's current heads, without
 /// applying — used by [`dispatch`] so a `ServerPreferred` action can be
@@ -46,7 +38,7 @@ fn envelope_for(
         id: ActionId::new(),
         action: encoded,
         base_heads: base.iter().map(|h| h.0).collect(),
-        timestamp: now_secs(),
+        timestamp: unix_now_i64(),
         locus: action.locus(),
         actor: actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec),
         context,

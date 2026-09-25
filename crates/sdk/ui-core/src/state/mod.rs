@@ -259,6 +259,16 @@ impl UndoLog {
         self.undo_stack.last()
     }
 
+    /// How many entries undo can pop, whoever authored them.
+    pub fn undo_depth(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    /// How many entries redo can pop, whoever authored them.
+    pub fn redo_depth(&self) -> usize {
+        self.redo_stack.len()
+    }
+
     /// Index of the entry [`undo_as`](Self::undo_as) would pop for `author`.
     ///
     /// The *one* place the author-scoping rule lives. Both the query half
@@ -922,6 +932,18 @@ impl State {
     /// Inspect the most recently pushed undo entry without popping it.
     pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
         self.undo.peek_last_undo()
+    }
+
+    /// How many entries this document's undo stack holds. See
+    /// [`UndoLog::undo_depth`].
+    pub fn undo_depth(&self) -> usize {
+        self.undo.undo_depth()
+    }
+
+    /// How many entries this document's redo stack holds. See
+    /// [`UndoLog::redo_depth`].
+    pub fn redo_depth(&self) -> usize {
+        self.undo.redo_depth()
     }
 
     /// Whether `author` has anything to undo / redo. See

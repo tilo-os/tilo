@@ -114,6 +114,25 @@ fn is_closing_punctuation(text: &str) -> bool {
     })
 }
 
+/// Where a laid-out glyph is painted: its pen position (`pen_x`, already
+/// moved for hanging punctuation) and baseline plus the shaper's GPOS offset.
+///
+/// cosmic-text keeps that offset apart from the pen position, in em units and
+/// with y pointing up. Complex scripts position mark and conjunct glyphs with
+/// it — Noto Sans Bengali moves parts of নমস্কার and বিশ্ব by more than half
+/// an em — so painting the bare pen position breaks them apart. Carets and
+/// hit-testing keep using the pen position.
+pub(crate) fn glyph_paint_origin(
+    glyph: &cosmic_text::LayoutGlyph,
+    pen_x: f32,
+    line_y: f32,
+) -> (f32, f32) {
+    (
+        pen_x + glyph.font_size * glyph.x_offset,
+        line_y + glyph.y - glyph.font_size * glyph.y_offset,
+    )
+}
+
 pub(crate) fn hanging_glyph_x(
     run: &cosmic_text::LayoutRun<'_>,
     glyph: &cosmic_text::LayoutGlyph,
@@ -2130,10 +2149,15 @@ impl TextRenderer {
                     });
                 }
                 current = Some(key);
+                let (x, y) = glyph_paint_origin(
+                    g,
+                    hanging_glyph_x(&run, g, style.hanging_punctuation),
+                    run.line_y,
+                );
                 glyphs.push(vello::Glyph {
                     id: u32::from(g.glyph_id),
-                    x: hanging_glyph_x(&run, g, style.hanging_punctuation),
-                    y: run.line_y + g.y,
+                    x,
+                    y,
                 });
             }
             if let Some((face_id, font_weight)) = current
@@ -2511,10 +2535,13 @@ impl TextRenderer {
             return;
         }
 
-        let vello_glyphs = glyphs.iter().map(|g| vello::Glyph {
-            id: u32::from(g.glyph_id),
-            x: g.x,
-            y: line_y + g.y,
+        let vello_glyphs = glyphs.iter().map(|g| {
+            let (x, y) = glyph_paint_origin(g, g.x, line_y);
+            vello::Glyph {
+                id: u32::from(g.glyph_id),
+                x,
+                y,
+            }
         });
 
         scene
@@ -2598,9 +2625,9 @@ impl TextRenderer {
             let Some(bounds) = bounds else {
                 return false;
             };
-            let x = f64::from(glyph.x);
-            // Match flush_glyphs' f32 addition before transforming the origin.
-            let y = f64::from(line_y + glyph.y);
+            // Match flush_glyphs' f32 origin before transforming it.
+            let (x, y) = glyph_paint_origin(glyph, glyph.x, line_y);
+            let (x, y) = (f64::from(x), f64::from(y));
             if !x.is_finite() || !y.is_finite() {
                 return false;
             }
@@ -2646,6 +2673,9 @@ impl TextRenderer {
         }
         let mut hyphen = marker.clone();
         hyphen.glyph_id = glyph_id;
+        // The marker's GPOS offset was shaped for U+00AD, not this glyph.
+        hyphen.x_offset = 0.0;
+        hyphen.y_offset = 0.0;
         Some(hyphen)
     }
 }

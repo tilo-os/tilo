@@ -647,11 +647,11 @@ pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
 /// edges are seconds in floating point and a trim that lands a frame short
 /// should still dissolve.
 fn outgoing_neighbour<'a>(clips: &[&'a Clip], i: usize) -> Option<&'a Clip> {
-    let c = clips.get(i)?;
-    let prev = clips.get(i.checked_sub(1)?)?;
     // Half a frame at 30fps: closer than a person can place an edge, and far
     // enough that a real gap never passes.
     const ABUT_EPSILON: f64 = 1.0 / 60.0;
+    let c = clips.get(i)?;
+    let prev = clips.get(i.checked_sub(1)?)?;
     (prev.end() >= c.start - ABUT_EPSILON).then_some(*prev)
 }
 
@@ -768,6 +768,15 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "decode")]
+    #[allow(dead_code, reason = "only the media-stack check is used here")]
+    mod generated_clip {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/generated_clip.rs"
+        ));
+    }
+
     use super::*;
     use crate::doc::sample_project;
 
@@ -1140,6 +1149,9 @@ mod tests {
     fn real_decode_extracts_a_true_frame() {
         use gstreamer as gst;
         use gstreamer::prelude::*;
+        if !generated_clip::media_stack() {
+            return;
+        }
 
         gst::init().expect("gstreamer init");
         let dir = std::env::temp_dir();

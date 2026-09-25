@@ -155,7 +155,7 @@ pub fn entry_to_app_for_channel(
     let target = &newest.target;
     let locale = preferred_locale();
     let display_name = if v.entry.name.resolve(&locale).is_none() {
-        launcher::registry::display_name_for_package_id(&v.entry.package_id)
+        package_store::display_name_for_package_id(&v.entry.package_id)
     } else {
         v.entry.name.resolve(&locale)?.to_string()
     };
@@ -247,7 +247,7 @@ fn preferred_locale() -> String {
 /// through the launcher's registry reader (same file, same
 /// `TILO_APPS_DATA_DIR` override) so the two can't disagree about what's present.
 pub fn installed_ids() -> Vec<String> {
-    launcher::registry::list_installed()
+    package_store::list_installed()
         .map(|v| v.into_iter().map(|e| e.id).collect())
         .unwrap_or_default()
 }
@@ -259,7 +259,7 @@ pub fn installed_ids() -> Vec<String> {
 /// Returns an error if the installed-app registry or the package's manifest
 /// cannot be read.
 pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
-    let Some(entry) = launcher::registry::find_installed(package_id)
+    let Some(entry) = package_store::find_installed(package_id)
         .map_err(|error| format!("could not read the installed app registry: {error}"))?
     else {
         return Ok(None);
@@ -276,7 +276,7 @@ pub fn installed_version(package_id: &str) -> Result<Option<String>, String> {
 /// Returns an error if the installed-app registry or any installed package
 /// manifest cannot be read.
 pub fn installed_versions() -> Result<std::collections::HashMap<String, String>, String> {
-    let entries = launcher::registry::list_installed()
+    let entries = package_store::list_installed()
         .map_err(|error| format!("could not read the installed app registry: {error}"))?;
     entries
         .into_iter()

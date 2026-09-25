@@ -17,6 +17,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: the client's durable view preferences (diff layout,
@@ -43,6 +44,7 @@ bounded-command = { path = "../../crates/system/bounded-command" }
 shlex = "1.3"
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 futures-util.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "macros"] }
 tempfile.workspace = true

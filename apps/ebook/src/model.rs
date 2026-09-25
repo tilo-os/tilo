@@ -25,6 +25,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tilo_clock::unix_now_ms;
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -338,7 +339,7 @@ impl Annotation {
             excerpt: String::new(),
             note: String::new(),
             color: HiColor::Yellow,
-            created: now_ms(),
+            created: unix_now_ms(),
             group: id,
         }
     }
@@ -375,14 +376,6 @@ impl Annotation {
         self.group = g;
         self
     }
-}
-
-/// Milliseconds since the Unix epoch; monotone enough for sort order.
-pub fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 // --- Reading settings + per-book progress ------------------------------------

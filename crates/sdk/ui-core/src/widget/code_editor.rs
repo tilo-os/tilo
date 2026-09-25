@@ -22,7 +22,6 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
@@ -36,9 +35,10 @@ pub mod syntax;
 pub use syntax::{SyntaxHighlighter, SyntaxState};
 
 /// The syntactic category a run of source falls into. The editor never
-/// hard-codes a colour for these — [`token_color`] resolves each to a
-/// concrete [`Color`] from the OS [`Theme`], so syntax tracks the active
-/// theme in light and dark.
+/// hard-codes a colour for these — the theme's
+/// [`SyntaxPalette`](crate::tokens::SyntaxPalette) resolves each to a
+/// concrete colour, so syntax tracks the active theme in light, dark and high
+/// contrast.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TokenKind {
     Keyword,
@@ -116,34 +116,6 @@ pub trait Highlighter {
     /// is what the following line begins with. Byte ranges in the returned
     /// spans are relative to `line`.
     fn spans(&self, line: &str, carry: HlState) -> LineSpans;
-}
-
-/// Colours are drawn from the theme's semantic/accent-ramp/text tokens —
-/// all redefined per theme — so syntax re-colours with the active theme
-/// and never hard-codes an RGB. The terminal ANSI ramp is deliberately
-/// *not* used: it is shared across light and dark.
-pub fn token_color(kind: TokenKind, theme: &Theme) -> Color {
-    // Accent ramp indices, named for legibility (the ramp is a monochromatic
-    // indigo scale, so these are lightness steps of the theme accent).
-    const ACCENT_MID: usize = 5; // the dominant accent (indigo-500 in dark)
-    const ACCENT_LIGHT: usize = 7;
-    const ACCENT_LIGHTER: usize = 6;
-    let c = &theme.tokens.colors;
-    match kind {
-        TokenKind::Keyword | TokenKind::Heading => c.accent.stops[ACCENT_MID],
-        TokenKind::Type | TokenKind::Attribute => c.semantic.warning,
-        TokenKind::Function | TokenKind::Constant => c.semantic.info,
-        TokenKind::Number | TokenKind::Raw => c.accent.stops[ACCENT_LIGHT],
-        TokenKind::StringLit | TokenKind::CharLit => c.semantic.success,
-        TokenKind::Comment | TokenKind::Punctuation => c.text_dim,
-        TokenKind::Operator
-        | TokenKind::Variable
-        | TokenKind::Emphasis
-        | TokenKind::Strong
-        | TokenKind::Text => c.text_primary,
-        TokenKind::Preprocessor => c.semantic.danger,
-        TokenKind::Math => c.accent.stops[ACCENT_LIGHTER],
-    }
 }
 
 /// A built-in language the editor ships a [`Highlighter`] for. Any other
@@ -794,6 +766,7 @@ fn next_char_len(s: &str, i: usize) -> usize {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use vello::peniko::Color;
 
     #[test]
     fn typst_heading_and_function() {
@@ -819,12 +792,12 @@ mod tests {
     #[test]
     fn token_color_changes_with_theme() {
         use crate::color_compat::ColorCompat;
-        let dark = token_color(TokenKind::Keyword, &Theme::dark());
-        let light = token_color(TokenKind::Keyword, &Theme::light());
+        let dark = Theme::dark().tokens.syntax.color(TokenKind::Keyword);
+        let light = Theme::light().tokens.syntax.color(TokenKind::Keyword);
         let rgb = |c: Color| [c.r(), c.g(), c.b()];
         assert_ne!(rgb(dark), rgb(light), "keyword colour must track the theme");
         assert_eq!(
-            rgb(token_color(TokenKind::Comment, &Theme::dark())),
+            rgb(Theme::dark().tokens.syntax.color(TokenKind::Comment)),
             rgb(Theme::dark().text_dim),
         );
     }
@@ -1146,7 +1119,7 @@ mod tests {
         ed.set_text("let x = 1");
         ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
         // Draw builds the visual lines + highlight cache and runs the
-        // real colouring path (`row_segments` → `token_color`).
+        // real colouring path (`row_segments` → the theme's syntax palette).
         draw_once(&mut ed, &theme);
         let segs = ed.inner().code_row_colors(&theme);
         let rgb = |c: Color| [c.r(), c.g(), c.b()];
@@ -1156,7 +1129,7 @@ mod tests {
             .expect("`let` is a drawn segment");
         assert_eq!(
             rgb(kw.1),
-            rgb(token_color(TokenKind::Keyword, &theme)),
+            rgb(theme.tokens.syntax.color(TokenKind::Keyword)),
             "the `let` keyword is drawn in the themed keyword colour",
         );
         assert!(

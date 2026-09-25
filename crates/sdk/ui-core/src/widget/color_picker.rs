@@ -6,21 +6,35 @@
 //! The selected colour can stay widget-local, bind to typed process-local
 //! state with [`ColorPicker::from_state`], or be observed with `on_change`
 //! for an app-owned durable mutation.
+//!
+//! Two optional parts extend the inline picker:
+//!
+//! - **Swatches** ([`ColorPicker::with_swatches`]): a palette of quick picks
+//!   below the sliders, each a radio button for assistive technology.
+//! - **Confirm mode** ([`ColorPicker::confirming`]): a titled picker whose
+//!   edits stay pending until *Done*; *Cancel* (or `Escape`) restores the
+//!   colour it opened with. The host reads the result from
+//!   [`ColorPicker::take_outcome`] or [`ColorPicker::on_outcome`].
+//!
+//! The saturation/value field and hue strip paint the real HSV gradients the
+//! pointer maps into; every chrome colour (edges, rings, labels, buttons)
+//! comes from theme tokens.
 
 use crate::color_compat::ColorCompat;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{Button, ButtonFace, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 /// Geometry constants for the inner layout. Pulled out so the test fixture
 /// and the live layout agree on rect positions without poking taffy.
@@ -34,6 +48,77 @@ const SLIDER_GAP: f64 = 6.0;
 const COMPONENT_GAP: f64 = 8.0;
 const TRACK_HEIGHT: f64 = 6.0;
 const KNOB_RADIUS: f64 = 6.0;
+/// Height of the RGB sliders and the gaps around them, below the SV square.
+const SLIDERS_HEIGHT: f64 = COMPONENT_GAP + 3.0 * SLIDER_HEIGHT + 2.0 * SLIDER_GAP;
+/// A spacing or metric token as a layout length. Layout runs without a
+/// theme (hosts may place the picker externally), so the optional rows use
+/// the unscaled token values, as the base block's geometry does.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const; f32 -> f64 is exact"
+)]
+const fn token(value: f32) -> f64 {
+    value as f64
+}
+const SPACE: crate::tokens::Spacing = crate::tokens::Spacing::BASE;
+/// How much the SV square grows when the picker is laid out wider than
+/// [`PICKER_WIDTH`] (a picker filling a sheet), one pixel per pixel.
+const SV_GROWTH_MAX: f64 = token(SPACE.s16) + token(SPACE.s4);
+/// Confirm-mode title band.
+const TITLE_HEIGHT: f64 = token(SPACE.s6);
+/// Gap between the base block and each optional row.
+const SECTION_GAP: f64 = token(SPACE.s3);
+const SWATCH_SIZE: f64 = token(SPACE.s6);
+const SWATCH_GAP: f64 = token(SPACE.s2);
+const BUTTON_HEIGHT: f64 = token(crate::tokens::Metrics::BASE.min_pointer_target);
+const BUTTON_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s6);
+const BUTTON_GAP: f64 = token(SPACE.s2);
+/// Hue stops the strip's gradient passes through (every 60°).
+const HUE_STOPS: usize = 7;
+
+/// One quick pick in a picker's swatch palette.
+#[derive(Clone, Debug)]
+pub struct ColorSwatch {
+    pub color: Color,
+    /// Spoken name; `None` speaks the `#RRGGBB` hex.
+    pub name: Option<String>,
+}
+
+impl ColorSwatch {
+    #[must_use]
+    pub fn new(color: Color) -> Self {
+        Self { color, name: None }
+    }
+
+    #[must_use]
+    pub fn named(color: Color, name: impl Into<String>) -> Self {
+        Self {
+            color,
+            name: Some(name.into()),
+        }
+    }
+
+    fn spoken_name(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| crate::color::to_hex(self.color))
+    }
+}
+
+/// How a confirming picker closed (see [`ColorPicker::confirming`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ColorPickerOutcome {
+    /// *Done*: the pending colour, now also the committed one.
+    Confirmed(Color),
+    /// *Cancel*: the picker restored the colour it opened with.
+    Cancelled,
+}
+
+/// Semantic target of the picker's colour value.
+const TARGET_VALUE: &str = "color_picker";
+const TARGET_CANCEL: &str = "color_picker.cancel";
+const TARGET_DONE: &str = "color_picker.done";
+const TARGET_SWATCH: &str = "color_picker.swatch:";
 
 /// Which sub-control owns the current pointer drag, set on press and
 /// routed `CursorMoved` to the matching `set_*` helper until release.
@@ -81,6 +166,18 @@ pub struct ColorPicker {
     /// One-shot record of the last user-driven colour change, drained by
     /// [`take_changed`] — a *programmatic* [`set_color`] does not set it.
     changed: Option<Color>,
+    swatches: Vec<ColorSwatch>,
+    swatch_rects: Vec<Rect>,
+    /// `Some` in confirm mode: the title painted above the picker.
+    confirm_title: Option<String>,
+    /// The colour *Cancel* restores: the opening colour, or the last one
+    /// confirmed.
+    committed: Color,
+    outcome: Option<ColorPickerOutcome>,
+    on_outcome: Option<Box<dyn FnMut(ColorPickerOutcome)>>,
+    title_rect: Rect,
+    cancel_rect: Rect,
+    done_rect: Rect,
 }
 
 impl ColorPicker {
@@ -109,6 +206,15 @@ impl ColorPicker {
             hex_input_force_dirty_for_test: false,
             hex_input_focus_pending: false,
             changed: None,
+            swatches: Vec::new(),
+            swatch_rects: Vec::new(),
+            confirm_title: None,
+            committed: initial,
+            outcome: None,
+            on_outcome: None,
+            title_rect: Rect::ZERO,
+            cancel_rect: Rect::ZERO,
+            done_rect: Rect::ZERO,
         };
         let hex = s.hex_string();
         s.hex_input.set_text(&hex);
@@ -134,6 +240,146 @@ impl ColorPicker {
         self.changed.take()
     }
 
+    /// Offer a palette of quick picks below the sliders. Choosing one sets
+    /// the colour (pending, in confirm mode) exactly as a drag would.
+    #[must_use]
+    pub fn with_swatches(mut self, swatches: impl IntoIterator<Item = ColorSwatch>) -> Self {
+        self.swatches = swatches.into_iter().collect();
+        self
+    }
+
+    /// Replace the swatch palette (see [`Self::with_swatches`]).
+    pub fn set_swatches(&mut self, swatches: impl IntoIterator<Item = ColorSwatch>) {
+        self.swatches = swatches.into_iter().collect();
+        if self.rect != Rect::ZERO {
+            self.apply_layout_external(self.rect);
+        }
+    }
+
+    /// Confirm mode: paint `title` above the picker and *Cancel* / *Done*
+    /// below it. Edits stay pending — [`Self::color`] follows them and
+    /// [`Self::take_changed`] still reports them for a live preview — while
+    /// [`Self::committed_color`] keeps the colour the picker opened with.
+    /// *Done* (or `Enter` while the picker has focus) confirms; *Cancel* (or
+    /// `Escape`) restores the committed colour.
+    #[must_use]
+    pub fn confirming(mut self, title: impl Into<String>) -> Self {
+        self.confirm_title = Some(title.into());
+        self
+    }
+
+    /// The colour *Cancel* restores: the opening colour, or the last one
+    /// confirmed.
+    #[must_use]
+    pub fn committed_color(&self) -> Color {
+        self.committed
+    }
+
+    /// Poll for how a confirming picker closed since the last call.
+    pub fn take_outcome(&mut self) -> Option<ColorPickerOutcome> {
+        self.outcome.take()
+    }
+
+    /// Observe confirm-mode outcomes as they happen (see
+    /// [`Self::take_outcome`] for the polling form).
+    #[must_use]
+    pub fn on_outcome<F: FnMut(ColorPickerOutcome) + 'static>(mut self, f: F) -> Self {
+        self.on_outcome = Some(Box::new(f));
+        self
+    }
+
+    /// *Done*: commit the pending colour and report
+    /// [`ColorPickerOutcome::Confirmed`].
+    pub fn confirm(&mut self) {
+        self.committed = self.color;
+        self.finish(ColorPickerOutcome::Confirmed(self.color));
+    }
+
+    /// *Cancel*: restore the committed colour (reported through
+    /// [`Self::take_changed`] when it differs, so a live preview reverts too)
+    /// and report [`ColorPickerOutcome::Cancelled`].
+    pub fn cancel(&mut self) {
+        let committed = self.committed;
+        self.set_rgb(committed.r(), committed.g(), committed.b());
+        self.sync_input();
+        self.finish(ColorPickerOutcome::Cancelled);
+    }
+
+    fn finish(&mut self, outcome: ColorPickerOutcome) {
+        self.drag_target = None;
+        self.outcome = Some(outcome);
+        if let Some(callback) = self.on_outcome.as_mut() {
+            callback(outcome);
+        }
+    }
+
+    /// The size the picker lays out at, including any swatch and confirm
+    /// rows — for hosts that place it with [`Self::apply_layout_external`].
+    #[must_use]
+    pub fn preferred_size(&self) -> (f64, f64) {
+        (PICKER_WIDTH, self.content_height(PICKER_WIDTH))
+    }
+
+    /// The height the picker needs when laid out `width` wide. Wider than
+    /// [`Self::preferred_size`] the SV square grows and swatch rows hold
+    /// more swatches, so a sheet can give the picker its full width.
+    #[must_use]
+    pub fn preferred_height(&self, width: f64) -> f64 {
+        self.content_height(width)
+    }
+
+    /// Side of the SV square (and height of the hue strip) at `width`.
+    fn sv_size(width: f64) -> f64 {
+        SV_SIZE + (width - PICKER_WIDTH).clamp(0.0, SV_GROWTH_MAX)
+    }
+
+    fn has_extras(&self) -> bool {
+        self.confirm_title.is_some() || !self.swatches.is_empty()
+    }
+
+    /// Swatches per row at `width`.
+    fn swatches_per_row(width: f64) -> usize {
+        let per = ((width + SWATCH_GAP) / (SWATCH_SIZE + SWATCH_GAP)).floor();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "floor of a positive on-screen width over a fixed pitch; clamped to at least one"
+        )]
+        let per = per.max(1.0) as usize;
+        per
+    }
+
+    fn swatch_rows(&self, width: f64) -> usize {
+        self.swatches.len().div_ceil(Self::swatches_per_row(width))
+    }
+
+    fn content_height(&self, width: f64) -> f64 {
+        let sv = Self::sv_size(width);
+        if !self.has_extras() {
+            return PICKER_HEIGHT + (sv - SV_SIZE);
+        }
+        let mut height = sv + SLIDERS_HEIGHT;
+        if self.confirm_title.is_some() {
+            height += TITLE_HEIGHT + COMPONENT_GAP + SECTION_GAP + BUTTON_HEIGHT;
+        }
+        let rows = self.swatch_rows(width);
+        if rows > 0 {
+            let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
+            height += SECTION_GAP + rows * SWATCH_SIZE + (rows - 1.0) * SWATCH_GAP;
+        }
+        height
+    }
+
+    /// Choose the swatch at `index`, as a click on it does.
+    fn choose_swatch(&mut self, index: usize) -> bool {
+        let Some(color) = self.swatches.get(index).map(|swatch| swatch.color) else {
+            return false;
+        };
+        self.set_rgb(color.r(), color.g(), color.b());
+        self.sync_input();
+        true
+    }
+
     /// Name the colour picker for assistive technology.
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
@@ -154,6 +400,7 @@ impl ColorPicker {
             return;
         }
         self.color = color;
+        self.committed = color;
         self.sync_input();
         self.publish_local_state();
     }
@@ -167,12 +414,19 @@ impl ColorPicker {
     /// Mirrors [`TextInput::apply_layout_external`].
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
-        let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+        let (x0, mut y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+        if self.confirm_title.is_some() {
+            self.title_rect = Rect::new(x0, y0, x1, y0 + TITLE_HEIGHT);
+            y0 = self.title_rect.y1 + COMPONENT_GAP;
+        } else {
+            self.title_rect = Rect::ZERO;
+        }
 
-        self.sv_rect = Rect::new(x0, y0, x0 + SV_SIZE, y0 + SV_SIZE);
+        let sv = Self::sv_size(x1 - x0);
+        self.sv_rect = Rect::new(x0, y0, x0 + sv, y0 + sv);
 
         let hue_x0 = self.sv_rect.x1 + COMPONENT_GAP;
-        self.hue_strip_rect = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + SV_SIZE);
+        self.hue_strip_rect = Rect::new(hue_x0, y0, hue_x0 + HUE_STRIP_WIDTH, y0 + sv);
 
         self.preview_rect = Rect::new(x1 - PREVIEW_SIZE, y0, x1, y0 + PREVIEW_SIZE);
 
@@ -207,6 +461,37 @@ impl ColorPicker {
             self.preview_rect.y1 + COMPONENT_GAP + text_h,
         );
         self.hex_input.apply_layout_external(self.hex_input_rect);
+
+        // Optional rows below the base block.
+        let mut bottom = self.b_slider_rect.y1;
+        self.swatch_rects.clear();
+        if !self.swatches.is_empty() {
+            let per_row = Self::swatches_per_row(x1 - x0);
+            let top = bottom + SECTION_GAP;
+            for index in 0..self.swatches.len() {
+                let row = f64::from(u32::try_from(index / per_row).unwrap_or(u32::MAX));
+                let col = f64::from(u32::try_from(index % per_row).unwrap_or(u32::MAX));
+                let sx = x0 + col * (SWATCH_SIZE + SWATCH_GAP);
+                let sy = top + row * (SWATCH_SIZE + SWATCH_GAP);
+                let swatch = Rect::new(sx, sy, sx + SWATCH_SIZE, sy + SWATCH_SIZE);
+                bottom = bottom.max(swatch.y1);
+                self.swatch_rects.push(swatch);
+            }
+        }
+        if self.confirm_title.is_some() {
+            let top = bottom + SECTION_GAP;
+            self.done_rect = Rect::new(x1 - BUTTON_WIDTH, top, x1, top + BUTTON_HEIGHT);
+            let cancel_x1 = self.done_rect.x0 - BUTTON_GAP;
+            self.cancel_rect = Rect::new(
+                cancel_x1 - BUTTON_WIDTH,
+                top,
+                cancel_x1,
+                top + BUTTON_HEIGHT,
+            );
+        } else {
+            self.cancel_rect = Rect::ZERO;
+            self.done_rect = Rect::ZERO;
+        }
     }
 
     /// Sets the embedded hex input's text directly, bypassing
@@ -432,29 +717,61 @@ impl ColorPicker {
 
     /// Draws the SV square (with focus ring and cursor) and the hue strip
     /// (with tick). Split out of `draw` to keep that function readable.
+    ///
+    /// Both paint the colours the pointer maps into: the square is the
+    /// current hue at full saturation and value, washed toward white along x
+    /// and toward black along y; the strip runs the hue circle top to bottom.
+    /// They are the subject being picked, not chrome, so they are computed
+    /// from HSV rather than read from the theme.
     fn draw_sv_and_hue(
         &self,
         scene: &mut Scene,
         transform: Affine,
-        theme: &Theme,
         colors: &crate::tokens::colors::Colors,
         radius_sm: f64,
     ) {
+        use vello::peniko::{ColorStop, Extend, Gradient};
+
         // --- SV square ---
         let sv_shape = RoundedRect::from_rect(self.sv_rect, radius_sm);
+        let (hue, sat, val) = self.current_hsv();
+        let (hr, hg, hb) = Self::hsv_to_rgb(hue, 1.0, 1.0);
+        let pure = Color::from_rgb8(hr, hg, hb);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            pure,
             None,
             &sv_shape,
         );
-        // Faint overlay hinting the square responds to clicks.
-        let sv_fill = Color::from_rgba8(self.color.r(), self.color.g(), self.color.b(), 96);
+        let ramp = |from: Point, to: Point, ink: Color| {
+            Gradient::new_linear(from, to)
+                .with_extend(Extend::Pad)
+                .with_stops(
+                    &[
+                        ColorStop {
+                            offset: 0.0,
+                            color: ink.into(),
+                        },
+                        ColorStop {
+                            offset: 1.0,
+                            color: ink.with_alpha_factor(0.0).into(),
+                        },
+                    ][..],
+                )
+        };
+        let r = self.sv_rect;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            sv_fill,
+            &ramp(Point::new(r.x0, r.y0), Point::new(r.x1, r.y0), Color::WHITE),
+            None,
+            &sv_shape,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            &ramp(Point::new(r.x0, r.y1), Point::new(r.x0, r.y0), Color::BLACK),
             None,
             &sv_shape,
         );
@@ -463,7 +780,8 @@ impl ColorPicker {
         let (sv_border_w, sv_border_c) = if self.is_focused {
             (2.0, colors.border_focus)
         } else {
-            // Derived from the raised square the tint sits on (HIG §9.5).
+            // The field holds every colour; its edge is measured against the
+            // surface the picker sits on (HIG §9.5).
             (1.0, crate::surface::edge_on(colors.surfaces.raised))
         };
         scene.stroke(
@@ -474,8 +792,8 @@ impl ColorPicker {
             &sv_shape,
         );
 
-        // SV cursor — a small ring at the (saturation, 1 - value) coordinate.
-        let (_, sat, val) = self.current_hsv();
+        // SV cursor — a ring at the (saturation, 1 - value) coordinate, its
+        // ink contrasting with the colour under it.
         let sv_cursor = Point::new(
             self.sv_rect.x0 + f64::from(sat) * self.sv_rect.width(),
             self.sv_rect.y0 + (1.0 - f64::from(val)) * self.sv_rect.height(),
@@ -484,31 +802,41 @@ impl ColorPicker {
         scene.stroke(
             &Stroke::new(2.0),
             transform,
-            colors.text_primary,
+            colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
             None,
             &sv_ring,
         );
 
-        // --- Hue strip (8 horizontal bands from `hue_stops`) ---
-        let stops = Self::hue_stops(theme);
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "stops has a fixed length of 8; i and stops.len() are always far below \
-                      f64's exact-integer range"
-        )]
-        {
-            let band_h = self.hue_strip_rect.height() / stops.len() as f64;
-            for (i, stop) in stops.iter().enumerate() {
-                let band = Rect::new(
-                    self.hue_strip_rect.x0,
-                    self.hue_strip_rect.y0 + i as f64 * band_h,
-                    self.hue_strip_rect.x1,
-                    self.hue_strip_rect.y0 + (i as f64 + 1.0) * band_h,
-                );
-                scene.fill(vello::peniko::Fill::NonZero, transform, *stop, None, &band);
-            }
-        }
-        let hue_shape = RoundedRect::from_rect(self.hue_strip_rect, radius_sm);
+        // --- Hue strip ---
+        let strip = self.hue_strip_rect;
+        let stops: Vec<ColorStop> = (0..HUE_STOPS)
+            .map(|index| {
+                #[allow(
+                    clippy::cast_precision_loss,
+                    reason = "HUE_STOPS is a small compile-time constant"
+                )]
+                let t = index as f32 / (HUE_STOPS - 1) as f32;
+                let (sr, sg, sb) = Self::hsv_to_rgb(t.min(0.999_9), 1.0, 1.0);
+                ColorStop {
+                    offset: t,
+                    color: Color::from_rgb8(sr, sg, sb).into(),
+                }
+            })
+            .collect();
+        let spectrum = Gradient::new_linear(
+            Point::new(strip.x0, strip.y0),
+            Point::new(strip.x0, strip.y1),
+        )
+        .with_extend(Extend::Pad)
+        .with_stops(&stops[..]);
+        let hue_shape = RoundedRect::from_rect(strip, radius_sm);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            &spectrum,
+            None,
+            &hue_shape,
+        );
         // The strip is a rainbow with no one colour to derive from; its edge
         // is measured against the raised picker surface around it.
         scene.stroke(
@@ -519,14 +847,8 @@ impl ColorPicker {
             &hue_shape,
         );
 
-        let (h, _, _) = self.current_hsv();
-        let tick_y = self.hue_strip_rect.y0 + f64::from(h) * self.hue_strip_rect.height();
-        let tick = Rect::new(
-            self.hue_strip_rect.x0 - 2.0,
-            tick_y - 1.0,
-            self.hue_strip_rect.x1 + 2.0,
-            tick_y + 1.0,
-        );
+        let tick_y = strip.y0 + f64::from(hue) * strip.height();
+        let tick = Rect::new(strip.x0 - 2.0, tick_y - 1.0, strip.x1 + 2.0, tick_y + 1.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -534,6 +856,82 @@ impl ColorPicker {
             None,
             &tick,
         );
+    }
+
+    fn draw_title(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(title) = &self.confirm_title else {
+            return;
+        };
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+        let (_, line) = text_renderer.measure(title, size, None);
+        let y = self.title_rect.y0 + (self.title_rect.height() - f64::from(line)) / 2.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            title,
+            size,
+            theme.tokens.colors.text_primary,
+            transform.pre_translate(Vec2::new(self.title_rect.x0, y)),
+            Some(Self::px(self.title_rect.width())),
+            TextWeight::Semibold,
+        );
+    }
+
+    fn draw_swatches(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        for (swatch, rect) in self.swatches.iter().zip(&self.swatch_rects) {
+            ColorSwatchFace::new(*rect, swatch.color, swatch.spoken_name())
+                .selected(Self::same_rgb(swatch.color, self.color))
+                .hovered(rect.contains(self.last_cursor))
+                .paint(scene, transform, text_renderer, theme);
+        }
+    }
+
+    fn draw_buttons(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.confirm_title.is_none() {
+            return;
+        }
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(self.cancel_rect, "Cancel")
+                .text_size(size)
+                .hovered(self.cancel_rect.contains(self.last_cursor)),
+        );
+        Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(self.done_rect, "Done")
+                .primary()
+                .text_size(size)
+                .weight(TextWeight::Semibold)
+                .hovered(self.done_rect.contains(self.last_cursor)),
+        );
+    }
+
+    fn same_rgb(a: Color, b: Color) -> bool {
+        a.r() == b.r() && a.g() == b.g() && a.b() == b.b()
     }
 
     /// Draws the preview swatch and the three RGB sliders (track, active
@@ -641,24 +1039,6 @@ impl ColorPicker {
             );
         }
     }
-
-    /// Hue-strip stop palette pulled from theme tokens. Falls back to
-    /// `Color::WHITE`/`Color::BLACK` for slots not represented in the
-    /// theme — tests don't pin the exact colours, only that hue clicks
-    /// change the RGB output.
-    fn hue_stops(theme: &Theme) -> [Color; 8] {
-        let c = &theme.tokens.colors;
-        [
-            c.semantic.danger,            // red-ish (top)
-            c.semantic.warning,           // amber/orange
-            c.semantic.success,           // green
-            c.semantic.info,              // cyan/blue
-            c.accent[ACCENT_PRIMARY_IDX], // indigo
-            Color::WHITE,
-            Color::BLACK,
-            c.semantic.danger, // wrap back to red
-        ]
-    }
 }
 
 impl Widget for ColorPicker {
@@ -682,7 +1062,7 @@ impl Widget for ColorPicker {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(Self::px(PICKER_WIDTH)),
-                height: Dimension::length(Self::px(PICKER_HEIGHT)),
+                height: Dimension::length(Self::px(self.content_height(PICKER_WIDTH))),
             },
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
@@ -716,8 +1096,11 @@ impl Widget for ColorPicker {
         // space between its controls, so a stroke around all of it would
         // frame dead space. Focus is already carried by the SV cursor
         // ring, hue tick, and slider knobs.
-        self.draw_sv_and_hue(scene, transform, theme, colors, radius_sm);
+        self.draw_title(scene, transform, text_renderer, theme);
+        self.draw_sv_and_hue(scene, transform, colors, radius_sm);
         self.draw_preview_and_sliders(scene, transform, colors, radius_sm);
+        self.draw_swatches(scene, transform, text_renderer, theme);
+        self.draw_buttons(scene, transform, text_renderer, theme);
 
         // --- Hex input + RGB readout --- drawn here directly since
         // `hex_input` isn't in the taffy tree.
@@ -796,7 +1179,28 @@ impl Widget for ColorPicker {
                     // the input has claimed focus + handling — don't
                     // start an SV/hue/slider drag on top of that.
                     let in_input = self.hex_input_rect.contains(self.last_cursor);
-                    if !in_input {
+                    let swatch = self
+                        .swatch_rects
+                        .iter()
+                        .position(|rect| rect.contains(self.last_cursor));
+                    if let Some(index) = swatch {
+                        if self.hex_input.is_focused() {
+                            self.hex_input.set_focus(false);
+                        }
+                        self.choose_swatch(index);
+                        *focus_target = Some(node_id);
+                        *handled = true;
+                    } else if self.confirm_title.is_some()
+                        && self.done_rect.contains(self.last_cursor)
+                    {
+                        self.confirm();
+                        *handled = true;
+                    } else if self.confirm_title.is_some()
+                        && self.cancel_rect.contains(self.last_cursor)
+                    {
+                        self.cancel();
+                        *handled = true;
+                    } else if !in_input {
                         // Click outside: release any focus the input
                         // held so keystrokes stop landing in it.
                         if self.hex_input.is_focused() {
@@ -817,6 +1221,25 @@ impl Widget for ColorPicker {
                     self.drag_target = None;
                     *handled = true;
                 }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key @ (NamedKey::Enter | NamedKey::Escape)),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.confirm_title.is_some()
+                && !*handled
+                && (self.is_focused || self.hex_input.is_focused()) =>
+            {
+                if *key == NamedKey::Enter {
+                    self.confirm();
+                } else {
+                    self.cancel();
+                }
+                *handled = true;
             }
             _ => {}
         }
@@ -856,6 +1279,24 @@ impl Widget for ColorPicker {
         Some("color_picker")
     }
 
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let mut rects = vec![
+            ("color_picker.sv".to_owned(), self.sv_rect),
+            ("color_picker.hue".to_owned(), self.hue_strip_rect),
+            ("color_picker.hex".to_owned(), self.hex_input_rect),
+            ("color_picker.cancel".to_owned(), self.cancel_rect),
+            ("color_picker.done".to_owned(), self.done_rect),
+        ];
+        rects.extend(
+            self.swatch_rects
+                .iter()
+                .enumerate()
+                .map(|(index, rect)| (format!("color_picker.swatch[{index}]"), *rect)),
+        );
+        rects.retain(|(_, rect)| rect.area() > 0.0);
+        rects
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -893,19 +1334,89 @@ impl Widget for ColorPicker {
     /// value is the chosen colour as its canonical `#RRGGBB` hex string.
     /// The SV square, hue strip and channel sliders render inline (there is
     /// no separate open/closed state), so `expanded` is left unset.
+    ///
+    /// With swatches or in confirm mode the picker is a group: the colour
+    /// value, one radio button per swatch (checked while it is the current
+    /// colour) and, in confirm mode, *Cancel* and *Done* buttons — each with
+    /// its own semantic action.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::ComboBox)
-                .with_action_target("color_picker")
-                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
-                .with_value(self.hex_string())
-                .with_state(AccessState {
-                    focusable: self.is_focusable(),
-                    focused: self.is_focused(),
-                    ..Default::default()
+        let value = AccessNode::new(Role::ComboBox)
+            .with_action_target(TARGET_VALUE)
+            .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
+            .with_value(self.hex_string())
+            .with_state(AccessState {
+                focusable: self.is_focusable(),
+                focused: self.is_focused(),
+                ..Default::default()
+            });
+        if !self.has_extras() {
+            return Some(value);
+        }
+        let mut children = vec![value];
+        children.extend(
+            self.swatches
+                .iter()
+                .zip(&self.swatch_rects)
+                .enumerate()
+                .map(|(index, (swatch, rect))| {
+                    ColorSwatchFace::new(*rect, swatch.color, swatch.spoken_name())
+                        .selected(Self::same_rgb(swatch.color, self.color))
+                        .accessibility(format!("{TARGET_SWATCH}{index}"))
                 }),
+        );
+        if self.confirm_title.is_some() {
+            for (label, target, rect) in [
+                ("Cancel", TARGET_CANCEL, self.cancel_rect),
+                ("Done", TARGET_DONE, self.done_rect),
+            ] {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(label)
+                        .with_action_target(target)
+                        .with_bounds(rect)
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
+        }
+        let name = self
+            .confirm_title
+            .clone()
+            .or_else(|| self.accessible_name.as_ref().map(|name| crate::i18n!(name)));
+        Some(
+            AccessNode::new(Role::Group)
+                .with_optional_name(name)
+                .with_bounds(self.rect)
+                .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        use crate::a11y::Action;
+        if let Some(index) = target.strip_prefix(TARGET_SWATCH) {
+            return matches!(action, Action::Activate)
+                && index
+                    .parse::<usize>()
+                    .is_ok_and(|index| self.choose_swatch(index));
+        }
+        match (target, action) {
+            (TARGET_CANCEL, Action::Activate) if self.confirm_title.is_some() => {
+                self.cancel();
+                true
+            }
+            (TARGET_DONE, Action::Activate) if self.confirm_title.is_some() => {
+                self.confirm();
+                true
+            }
+            (TARGET_VALUE, _) => self.perform_action(action, state, root),
+            _ => false,
+        }
     }
 
     fn perform_action(
@@ -1226,6 +1737,245 @@ mod tests {
         let poll = p.take_changed().expect("poll seam saw the change");
         let cb = seen.borrow().expect("callback saw the change");
         assert_eq!(poll, cb, "both seams observe the identical colour");
+    }
+
+    fn swatches() -> Vec<ColorSwatch> {
+        vec![
+            ColorSwatch::named(Color::from_rgb8(0xEF, 0x44, 0x44), "Red"),
+            ColorSwatch::new(Color::from_rgb8(0x3B, 0x82, 0xF6)),
+            ColorSwatch::new(Color::from_rgb8(0x10, 0xB9, 0x81)),
+        ]
+    }
+
+    fn laid_out(picker: ColorPicker) -> ColorPicker {
+        let mut picker = picker;
+        let (w, h) = picker.preferred_size();
+        picker.apply_layout_external(Rect::new(0.0, 0.0, w, h));
+        picker
+    }
+
+    fn click(p: &mut ColorPicker, at: Point) {
+        dispatch(p, &cursor_moved(at.x, at.y));
+        dispatch(p, &mouse_press());
+        dispatch(p, &mouse_release());
+    }
+
+    fn key(p: &mut ColorPicker, named: NamedKey) {
+        // SAFETY: KeyEvent has private fields in winit 0.30; the public ones
+        // tolerate the zero bit pattern and `handle_event` only inspects
+        // `logical_key` + `state`.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        dispatch(
+            p,
+            &WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            },
+        );
+    }
+
+    #[test]
+    fn plain_picker_keeps_its_size_and_rows() {
+        let p = ColorPicker::new(Color::from_rgb8(1, 2, 3));
+        assert_eq!(p.preferred_size(), (PICKER_WIDTH, PICKER_HEIGHT));
+        let p = laid_out(p);
+        assert!(p.swatch_rects.is_empty());
+        assert_eq!(p.done_rect, Rect::ZERO);
+    }
+
+    #[test]
+    fn swatches_lay_out_below_the_sliders_and_inside_the_picker() {
+        let p = laid_out(ColorPicker::new(Color::from_rgb8(1, 2, 3)).with_swatches(swatches()));
+        assert_eq!(p.swatch_rects.len(), 3);
+        for rect in &p.swatch_rects {
+            assert!(rect.y0 >= p.b_slider_rect.y1 + SECTION_GAP - 0.01);
+            assert!(rect.y1 <= p.rect.y1 + 0.01);
+            assert!(p.rect.contains(Point::new(rect.x1 - 0.5, rect.y1 - 0.5)));
+        }
+    }
+
+    #[test]
+    fn clicking_a_swatch_sets_the_colour_and_reports_the_change() {
+        let mut p = laid_out(ColorPicker::new(Color::from_rgb8(1, 2, 3)).with_swatches(swatches()));
+        let target = p.swatch_rects[1].center();
+        click(&mut p, target);
+        assert_eq!(p.hex_string(), "#3B82F6");
+        assert_eq!(p.take_changed().map(|c| c.b()), Some(0xF6));
+    }
+
+    #[test]
+    fn every_swatch_is_a_radio_with_its_own_action() {
+        use crate::a11y::{Action, Role};
+        let mut p = laid_out(
+            ColorPicker::new(Color::from_rgb8(0xEF, 0x44, 0x44)).with_swatches(swatches()),
+        );
+        let node = Widget::accessibility(&p).expect("picker semantics");
+        assert_eq!(node.role, Role::Group);
+        let radios: Vec<_> = node
+            .children
+            .iter()
+            .filter(|child| child.role == Role::RadioButton)
+            .collect();
+        assert_eq!(radios.len(), 3);
+        assert_eq!(radios[0].name.as_deref(), Some("Red"));
+        assert_eq!(
+            radios[0].state.checked,
+            Some(true),
+            "the current colour is checked"
+        );
+        assert_eq!(radios[1].name.as_deref(), Some("#3B82F6"));
+        assert_eq!(radios[1].state.checked, Some(false));
+
+        let mut doc = AutoCommit::new();
+        let target = format!("{TARGET_SWATCH}2");
+        assert!(Widget::perform_semantic_action(
+            &mut p,
+            &target,
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(p.hex_string(), "#10B981");
+        assert!(!Widget::perform_semantic_action(
+            &mut p,
+            &format!("{TARGET_SWATCH}9"),
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+    }
+
+    #[test]
+    fn confirm_mode_keeps_edits_pending_until_done() {
+        let opening = Color::from_rgb8(0x1A, 0x22, 0x33);
+        let mut p = laid_out(
+            ColorPicker::new(opening)
+                .with_swatches(swatches())
+                .confirming("Page colour"),
+        );
+        assert!(p.title_rect.height() > 0.0);
+        assert!(
+            p.done_rect.y0 > p.swatch_rects[0].y1,
+            "buttons sit below the swatches"
+        );
+        assert!(p.cancel_rect.x1 < p.done_rect.x0, "Cancel precedes Done");
+
+        let swatch = p.swatch_rects[0].center();
+        click(&mut p, swatch);
+        assert_eq!(
+            p.hex_string(),
+            "#EF4444",
+            "the pending colour follows the edit"
+        );
+        assert_eq!(p.committed_color().r(), 0x1A, "nothing is committed yet");
+        assert_eq!(p.take_outcome(), None);
+
+        let done = p.done_rect.center();
+        click(&mut p, done);
+        assert_eq!(
+            p.take_outcome(),
+            Some(ColorPickerOutcome::Confirmed(Color::from_rgb8(
+                0xEF, 0x44, 0x44
+            )))
+        );
+        assert_eq!(p.committed_color().r(), 0xEF);
+    }
+
+    #[test]
+    fn cancel_restores_the_opening_colour_and_reports_the_revert() {
+        let opening = Color::from_rgb8(0x1A, 0x22, 0x33);
+        let mut p = laid_out(
+            ColorPicker::new(opening)
+                .with_swatches(swatches())
+                .confirming("Text colour"),
+        );
+        let swatch = p.swatch_rects[1].center();
+        click(&mut p, swatch);
+        let _ = p.take_changed();
+        let cancel = p.cancel_rect.center();
+        click(&mut p, cancel);
+        assert_eq!(p.take_outcome(), Some(ColorPickerOutcome::Cancelled));
+        assert_eq!(p.hex_string(), "#1A2233");
+        assert_eq!(
+            p.take_changed().map(|c| c.r()),
+            Some(0x1A),
+            "a live preview is told to revert"
+        );
+    }
+
+    #[test]
+    fn enter_confirms_and_escape_cancels_while_focused() {
+        let mut p = laid_out(ColorPicker::new(Color::from_rgb8(9, 9, 9)).confirming("Accent"));
+        key(&mut p, NamedKey::Enter);
+        assert_eq!(p.take_outcome(), None, "keys only act on a focused picker");
+        p.set_focus(true);
+        p.set_rgb(0x20, 0x40, 0x60);
+        key(&mut p, NamedKey::Escape);
+        assert_eq!(p.take_outcome(), Some(ColorPickerOutcome::Cancelled));
+        assert_eq!(p.hex_string(), "#090909");
+        p.set_rgb(0x20, 0x40, 0x60);
+        key(&mut p, NamedKey::Enter);
+        assert_eq!(
+            p.take_outcome(),
+            Some(ColorPickerOutcome::Confirmed(Color::from_rgb8(
+                0x20, 0x40, 0x60
+            )))
+        );
+    }
+
+    #[test]
+    fn confirm_mode_exposes_titled_group_with_cancel_and_done_actions() {
+        use crate::a11y::{Action, Role};
+        let mut p = laid_out(ColorPicker::new(Color::from_rgb8(9, 9, 9)).confirming("Accent"));
+        let node = Widget::accessibility(&p).expect("picker semantics");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Accent"));
+        let buttons: Vec<_> = node
+            .children
+            .iter()
+            .filter(|child| child.role == Role::Button)
+            .filter_map(|child| child.name.clone())
+            .collect();
+        assert_eq!(buttons, ["Cancel", "Done"]);
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut p,
+            TARGET_DONE,
+            &Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(matches!(
+            p.take_outcome(),
+            Some(ColorPickerOutcome::Confirmed(_))
+        ));
+        assert!(Widget::perform_semantic_action(
+            &mut p,
+            TARGET_VALUE,
+            &Action::SetValue("#ABCDEF".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(p.hex_string(), "#ABCDEF");
+    }
+
+    #[test]
+    fn hue_strip_paints_the_hue_it_picks() {
+        // The strip's stops are the HSV hue circle, so the colour a press
+        // yields at a height matches the colour painted there.
+        let top = ColorPicker::hsv_to_rgb(0.0, 1.0, 1.0);
+        let third = ColorPicker::hsv_to_rgb(1.0 / 3.0, 1.0, 1.0);
+        assert_eq!(top, (255, 0, 0));
+        assert_eq!(third, (0, 255, 0));
     }
 
     #[test]

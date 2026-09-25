@@ -31,6 +31,9 @@ export PULSE_RUNTIME_PATH="$audio_dir"
 export PULSE_STATE_PATH="$audio_dir/state"
 export PULSE_COOKIE="$audio_dir/cookie"
 export PULSE_SERVER="unix:$audio_dir/native"
+# Tests that prove output through the system sink run, and fail rather than
+# skip, only where an endpoint is known to exist — which it is from here on.
+export TILO_REQUIRE_AUDIO=1
 # The socket is reachable only inside our mode-0700 temporary directory.
 # Load the output before opening the socket so readiness includes the endpoint.
 # Pulse parses module arguments itself after shell quoting has been removed.

@@ -170,12 +170,6 @@ current-thread tokio runtime just for that call; use the async one if you
 already own a runtime.
 
 ```rust
-impl FileChooser {
-    pub fn open(title: &str) -> Result<Vec<SelectedFile>, PortalError>;
-    pub async fn open_async(title: &str) -> Result<Vec<SelectedFile>, PortalError>;
-    pub fn save(/* … */) -> Result<Vec<SelectedFile>, PortalError>;
-    pub async fn save_async(/* … */) -> Result<Vec<SelectedFile>, PortalError>;
-}
 impl ScreenCast {
     pub fn start() -> Result<Vec<ScreenCastStream>, PortalError>;
     pub async fn start_async() -> Result<Vec<ScreenCastStream>, PortalError>;
@@ -189,11 +183,12 @@ impl Secret {
     pub fn retrieve() -> Result<Vec<u8>, PortalError>;
     pub async fn retrieve_async() -> Result<Vec<u8>, PortalError>;
 }
-impl OpenUri {
-    pub fn open(uri: &str) -> Result<(), PortalError>;
-    pub async fn open_async(uri: &str) -> Result<(), PortalError>;
-}
 ```
+
+File choosing and opening URIs or files are not part of this module: use
+`ui::portal` (`PickRequest`, `LaunchRequest`, `open_uri`/`send_open_uri`),
+which validates every returned URI before it becomes a path and is the one
+`OpenURI` client.
 
 The graceful-degradation contract is uniform: `PortalError::NotAvailable`
 means "no bus reachable; fall back". `PortalError::PortalNotFound` means
@@ -252,7 +247,6 @@ tilo-hello: a Tilo-native app, running.
   is_portal_available: false
   DBUS_SESSION_BUS_ADDRESS: unix:path=/run/user/1000/bus
   notifications : unavailable — graceful (no bus / launcher didn't plumb)
-  open-uri      : unavailable — graceful (no bus / launcher didn't plumb)
   secret        : unavailable — graceful (no bus / launcher didn't plumb)
 
 tilo-hello: done.

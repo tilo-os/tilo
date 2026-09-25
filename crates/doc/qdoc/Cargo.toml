@@ -9,7 +9,6 @@ license.workspace = true
 description = "CRDT-native canonical document model and format-provider API for Tilo"
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 # HTML import and export carry images as `data:…;base64,` URIs.

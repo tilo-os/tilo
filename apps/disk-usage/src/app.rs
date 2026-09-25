@@ -920,6 +920,15 @@ impl Widget for DiskUsageApp {
 mod tests {
     use super::*;
 
+    // Disk Usage publishes only effect operations (scans and navigation), so
+    // the registry decodes nothing; the sweep checks the published surface.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: ui::tilo_actions::ActionRegistry::new(),
+        resources: |doc| DiskUsageApp::sample().resources(doc),
+        palette: ["Analyze Projects", "Choose folder", "Go back"],
+    }
+
     #[test]
     fn resource_surface_exposes_common_locations() {
         let app = DiskUsageApp::new();

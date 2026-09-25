@@ -861,3 +861,107 @@ fn uniform_rich_runs_borrow_glyphs_with_exact_reference_output() {
     assert!(borrowed > 0);
     assert!(copied > 0, "fixture must cover conservative fallback");
 }
+
+/// Where the shaper placed each glyph: its pen position plus the GPOS
+/// offset, which cosmic-text keeps in em units apart from the pen position.
+fn shaped_origins(buffer: &cosmic_text::Buffer) -> Vec<(u32, f32, f32)> {
+    buffer
+        .layout_runs()
+        .flat_map(|run| {
+            run.glyphs.iter().map(move |g| {
+                let baseline = run.line_y + g.y;
+                (
+                    u32::from(g.glyph_id),
+                    g.x + g.font_size * g.x_offset,
+                    baseline - g.font_size * g.y_offset,
+                )
+            })
+        })
+        .collect()
+}
+
+fn painted_origins(scene: &Scene) -> Vec<(u32, f32, f32)> {
+    scene
+        .encoding()
+        .resources
+        .glyphs
+        .iter()
+        .map(|g| (g.id, g.x, g.y))
+        .collect()
+}
+
+fn assert_same_origins(painted: &[(u32, f32, f32)], shaped: &[(u32, f32, f32)], path: &str) {
+    assert_eq!(painted.len(), shaped.len(), "{path}: glyph count");
+    for (painted, shaped) in painted.iter().zip(shaped) {
+        assert_eq!(painted.0, shaped.0, "{path}: glyph ids");
+        assert!(
+            (painted.1 - shaped.1).abs() < 1e-3 && (painted.2 - shaped.2).abs() < 1e-3,
+            "{path}: glyph {} painted at ({}, {}) but shaped at ({}, {})",
+            painted.0,
+            painted.1,
+            painted.2,
+            shaped.1,
+            shaped.2
+        );
+    }
+}
+
+/// Bengali conjuncts are assembled from several glyphs that the shaper
+/// positions relative to each other with GPOS offsets (the below-base forms
+/// and vowel signs of নমস্কার and বিশ্ব). Painting only the pen positions
+/// leaves those pieces where the base glyph's advance put them and the
+/// conjuncts read as broken, so every paint path must place glyphs where the
+/// shaper put them.
+#[test]
+fn painted_glyphs_keep_shaped_mark_offsets_for_bengali_conjuncts() {
+    let mut renderer = renderer();
+    let style = named_style("Noto Sans Bengali");
+    let text = "নমস্কার বিশ্ব";
+
+    let buffer = renderer.shape_buffer(text, None, &style);
+    assert!(
+        buffer
+            .layout_runs()
+            .flat_map(|run| run.glyphs.iter())
+            .any(|g| g.x_offset != 0.0 || g.y_offset != 0.0),
+        "fixture must exercise GPOS mark offsets"
+    );
+    let shaped = shaped_origins(&buffer);
+    let scene = draw(&mut renderer, text, &style);
+    assert_same_origins(&painted_origins(&scene), &shaped, "plain text");
+
+    let layout = RichTextLayout::shape_styled(
+        &mut renderer.font_system,
+        &[RichSpan::new(text)],
+        &style,
+        None,
+        TextAlign::Left,
+        vec![],
+        vec![],
+    );
+    let shaped = shaped_origins(&layout.buffer);
+    for clip in [None, Some(Rect::new(-100.0, -100.0, 1000.0, 1000.0))] {
+        let mut uniform = Scene::new();
+        let mut copied = Scene::new();
+        for run in layout.buffer.layout_runs() {
+            assert!(renderer.draw_uniform_rich_run(
+                &mut uniform,
+                &run,
+                &layout,
+                Affine::IDENTITY,
+                Color::WHITE,
+                clip,
+            ));
+            renderer.draw_rich_run_copied(
+                &mut copied,
+                &run,
+                &layout,
+                Affine::IDENTITY,
+                Color::WHITE,
+                clip,
+            );
+        }
+        assert_same_origins(&painted_origins(&uniform), &shaped, "uniform rich run");
+        assert_same_origins(&painted_origins(&copied), &shaped, "copied rich run");
+    }
+}

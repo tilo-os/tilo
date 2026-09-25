@@ -610,34 +610,28 @@ fn frozen_preparation_layout_navigation_and_drop_have_no_live_store_or_transport
     }
     struct Spy(Arc<AtomicUsize>);
     impl qdoc::blobstore::BlobStore for Spy {
-        fn get(&self, _: &str) -> Option<Vec<u8>> {
+        fn put(&self, _: &[u8], _: &str) -> Result<String, qdoc::blobstore::BlobStoreError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(qdoc::blobstore::BlobStoreError::Unavailable("spy".into()))
+        }
+        fn cached(&self, _: &str) -> Option<Vec<u8>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             None
         }
-        fn put(&self, _: &str, _: &[u8]) -> bool {
+        fn fetch(&self, _: &str) -> qdoc::blobstore::Fetch {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            qdoc::blobstore::Fetch::Unavailable
+        }
+        fn has(&self, _: &str) -> bool {
             self.0.fetch_add(1, Ordering::SeqCst);
             false
         }
-        fn evict_unreferenced(
-            &self,
-            _: &std::collections::BTreeSet<String>,
-        ) -> Result<qdoc::blobstore::EvictionReport, qdoc::blobstore::BlobStoreError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(qdoc::blobstore::EvictionReport::default())
-        }
-    }
-    impl qdoc::blobstore::BlobTransport for Spy {
-        fn want(&self, _: &str) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-        fn offer(&self, _: &str, _: &[u8]) {
-            self.0.fetch_add(1, Ordering::SeqCst);
+        fn shared(&self) -> bool {
+            true
         }
     }
     let calls = Arc::new(AtomicUsize::new(0));
     qdoc::blobstore::set_store(Arc::new(Spy(calls.clone())));
-    let transport: Arc<dyn qdoc::blobstore::BlobTransport> = Arc::new(Spy(calls.clone()));
-    qdoc::blobstore::set_transport(&transport);
     let bytes = crate::pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
     let open = OpenImage::from_path("not-readable.png", 6, 4)
         .with_content(qdoc::blobstore::hash_bytes(&bytes));

@@ -4,7 +4,6 @@
 //! (`ui::rt::app()`) and receives the outcome through its wake mechanism.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use collab_types::{
     Ed25519PublicKey, FilePermission, FileRecordId, NamedGrantMetadataV1, ShareControlOperationV1,
@@ -14,6 +13,7 @@ use collab_types::{
     SHARE_CONTROL_FRAMING, SHARE_CONTROL_VERSION, ShareControlRequestV1, ShareControlResponseV1,
     ShareControlResultV1,
 };
+use tilo_clock::unix_now_ms;
 #[cfg(unix)]
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -128,7 +128,7 @@ pub async fn create_share(
     record_id: FileRecordId,
     request: ShareComposerRequest,
 ) -> Result<ShareActionResult, String> {
-    transact(socket, request.operation_at(record_id, now_ms())?).await
+    transact(socket, request.operation_at(record_id, unix_now_ms())?).await
 }
 
 /// Create a one-use, view-only bearer link for one stable record.
@@ -201,12 +201,6 @@ pub async fn create_named_share(
 /// Returns a localized error when the control-service transaction fails.
 pub async fn revoke_grant(socket: &Path, grant_id: Uuid) -> Result<ShareActionResult, String> {
     transact(socket, ShareControlOperationV1::Revoke { grant_id }).await
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
 }
 
 /// One request/response exchange with the share service. Must be polled
@@ -458,7 +452,7 @@ mod tests {
                 } => {
                     assert_eq!(requested, record_id);
                     assert_eq!(permission, FilePermission::View);
-                    assert!(expires_at_ms > now_ms());
+                    assert!(expires_at_ms > unix_now_ms());
                     assert_eq!(max_uses, Some(1));
                 }
                 other => panic!("unexpected one-time-link request: {other:?}"),

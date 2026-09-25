@@ -206,12 +206,7 @@ pub const MAX_CONTEXT_STASHES: usize = 24;
 pub const MAX_CONTEXT_REMOTES: usize = 16;
 
 fn stable_component(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
-    for byte in value.as_bytes() {
-        use std::fmt::Write as _;
-        let _ = write!(encoded, "{byte:02x}");
-    }
-    encoded
+    hex::encode(value)
 }
 
 fn change_area_name(area: ChangeArea) -> &'static str {
@@ -766,7 +761,8 @@ impl ResourceProvider for crate::app::GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_actions::LocalTransport;
+    use ui::testing::action_contract::assert_spec_encodes_as;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -782,13 +778,6 @@ mod tests {
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
         tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
     }
 
     /// A base document with the default settings seeded, as the app's first
@@ -845,8 +834,8 @@ mod tests {
     }
 
     /// Ctrl+K on an open repository publishes the repo resource exporting the
-    /// four preference actions, and the one palette lists them as rows. Drives
-    /// the real resource-builder and the real [`ui::ActionPalette`].
+    /// preference, view and repository actions in order. Drives the real
+    /// resource builder.
     #[test]
     fn ctrl_k_publishes_the_repo_and_preference_actions() {
         let doc = seeded();
@@ -875,19 +864,6 @@ mod tests {
                 "save-stash",
             ],
         );
-
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("side-by-side")),
-            "the palette offers the diff-layout toggle: {labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("syntax highlighting")),
-            "{labels:?}"
-        );
     }
 
     /// The palette's exported actions track the live document: with a non-default
@@ -910,107 +886,44 @@ mod tests {
             .find(|a| a.id == "diff-layout")
             .unwrap();
         // Currently side-by-side, so the exported action flips back to unified.
-        assert_eq!(
-            immediate_encode(spec),
-            encode(&set_diff_layout_action(DiffLayout::Unified)).unwrap(),
+        assert_spec_encodes_as(
+            spec,
+            None,
+            &encode(&set_diff_layout_action(DiffLayout::Unified)).unwrap(),
         );
         let syn = resources[0]
             .actions
             .iter()
             .find(|a| a.id == "syntax-highlight")
             .unwrap();
-        assert_eq!(
-            immediate_encode(syn),
-            encode(&GitClientAction::SetSyntaxHighlight { on: true }).unwrap(),
+        assert_spec_encodes_as(
+            syn,
+            None,
+            &encode(&GitClientAction::SetSyntaxHighlight { on: true }).unwrap(),
         );
     }
 
-    /// The full undo covenant on the real executor path: dispatched through the
-    /// executor the action mutates the document and records exactly one undo
-    /// boundary, and Ctrl+Z (the host's `undo`) reverts precisely that action.
-    #[test]
-    fn action_records_one_undo_boundary_and_reverts() {
-        let mut state = ui::State::new();
-        // Seed defaults as the app's first sync does, then bracket.
-        Settings::default().write(&mut state.doc);
-        state.doc.commit();
-        assert_eq!(
-            Settings::read_only(&state.doc).diff_layout,
-            DiffLayout::Unified
-        );
-        let before_heads = state.doc.get_heads();
-
-        let encoded = encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap();
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        state.record_committed_action(before_heads, None, None);
-
-        assert_eq!(
-            Settings::read_only(&state.doc).diff_layout,
-            DiffLayout::SideBySide,
-            "the action switched the layout"
-        );
-        assert!(
-            state.peek_last_undo().is_some(),
-            "exactly one undo boundary recorded"
-        );
-
-        state.undo(None, None).expect("an undo entry to pop");
-        assert_eq!(
-            Settings::read_only(&state.doc).diff_layout,
-            DiffLayout::Unified,
-            "undo reverted the layout change and nothing else"
-        );
-    }
-
-    /// The collaboration guarantee: replaying the same encoded action on a
-    /// second independent replica (from the same base state) lands on the
-    /// byte-identical document — same head hashes, not merely the same value.
-    #[test]
-    fn action_replays_byte_identical_on_a_peer() {
-        let mut a = seeded();
-        let bytes = a.save();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "precondition: same base state"
-        );
-
-        let action = set_diff_layout_action(DiffLayout::SideBySide);
-        let encoded = encode(&action).unwrap();
-        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
-        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "replay reproduced the identical change"
-        );
-        assert_eq!(Settings::read_only(&b).diff_layout, DiffLayout::SideBySide);
-    }
-
-    /// Single source of truth: the palette's "diff-layout" spec encodes
-    /// byte-identically to the builder the on-screen segmented control calls, for
-    /// the same target layout.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let doc = seeded(); // unified → the exported toggle targets side-by-side
-        let resources = provide_resources(&repo_model(), &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "diff-layout")
-            .unwrap();
-
-        let from_spec = immediate_encode(spec);
-        let from_builder = encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap();
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "diff-layout is one source of truth"
-        );
+    ui::action_contract_tests! {
+        seed: seeded(),
+        registry: registry(),
+        resources: |doc| provide_resources(&crate::sample::model().0, doc),
+        palette: ["side-by-side", "syntax highlighting"],
+        replay: [
+            diff_layout => |_| encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap(),
+            syntax_highlight => |_| encode(&GitClientAction::SetSyntaxHighlight { on: false }).unwrap(),
+        ],
+        undo: [
+            diff_layout => |_| encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap(),
+            wrap_lines => |_| encode(&GitClientAction::SetWrapLines { on: true }).unwrap(),
+        ],
+        encodes: [
+            diff_layout => ("git_client.repo", "diff-layout", |_, _| {
+                encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap()
+            }),
+            syntax_highlight => ("git_client.repo", "syntax-highlight", |_, _| {
+                encode(&GitClientAction::SetSyntaxHighlight { on: false }).unwrap()
+            }),
+        ],
     }
 
     #[test]
