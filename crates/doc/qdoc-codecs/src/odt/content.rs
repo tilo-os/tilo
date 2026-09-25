@@ -417,6 +417,7 @@ fn advance_tracked(
     tracked: &mut Option<(usize, i32)>,
     doc: &mut DocMut,
     change_decls: &mut BTreeMap<String, (String, ChangeKind)>,
+    deleted_texts: &mut BTreeMap<String, String>,
 ) {
     let Some((start, depth)) = tracked.as_mut() else {
         return;
@@ -429,6 +430,9 @@ fn advance_tracked(
                 let raw = s.get(*start..end_pos).unwrap_or_default().to_string();
                 for decl in super::changes::import_tracked_changes(&raw) {
                     let cid = doc.insert_change(decl.kind, &decl.author, &decl.date);
+                    if !decl.deleted.is_empty() {
+                        deleted_texts.insert(decl.xml_id.clone(), decl.deleted);
+                    }
                     change_decls.insert(decl.xml_id, (cid, decl.kind));
                 }
                 *tracked = None;
@@ -490,6 +494,8 @@ struct BodyState {
     tracked: Option<(usize, i32)>,
     // ODF `xml:id` → (qdoc change id, kind), from the parsed tracked-changes block; the body's change-start/-end/change markers reference changes by this id.
     change_decls: BTreeMap<String, (String, ChangeKind)>,
+    // ODF `xml:id` → a deletion's deleted text, spliced back in at its point marker.
+    deleted_texts: BTreeMap<String, String>,
     // Open tracked-change ranges keyed by ODF `xml:id` → (change id, kind, block, start char index), awaiting the matching `text:change-end`.
     open_changes: BTreeMap<String, (String, ChangeKind, String, usize)>,
     // (block, start, end, kind, change id) anchor marks, applied after all text is in.
@@ -998,13 +1004,21 @@ impl BodyState {
                 }
             }
             b"text:change" if self.in_text && self.cur.is_some() => {
-                // A point change marker (a deletion with no retained body text, or a collapsed insertion). Anchor a 1-char range if there's a character after it (widened on apply), else a zero-width range that drops.
+                // A point change marker. A deletion's text comes back into the body here, under a
+                // `del` mark (qdoc keeps deleted text, struck). A collapsed insertion anchors a
+                // 1-char range if there's a character after it (widened on apply), else a
+                // zero-width range that drops.
                 if let Some(id) = super::changes::marker_change_id(e)
                     && let (Some((cid, kind)), Some(b)) =
                         (self.change_decls.get(&id).cloned(), self.cur.clone())
                 {
-                    self.change_ranges
-                        .push((b, self.cur_len, self.cur_len, kind, cid));
+                    let start = self.cur_len;
+                    if kind == ChangeKind::Del
+                        && let Some(text) = self.deleted_texts.remove(&id)
+                    {
+                        append(doc, Some(b.as_str()), &mut self.cur_len, &text);
+                    }
+                    self.change_ranges.push((b, start, self.cur_len, kind, cid));
                 }
             }
             b"text:tab" if self.in_text => {
@@ -1293,6 +1307,7 @@ pub(crate) fn parse_body(
                 &mut st.tracked,
                 doc,
                 &mut st.change_decls,
+                &mut st.deleted_texts,
             );
             continue;
         }
