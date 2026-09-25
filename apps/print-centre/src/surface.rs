@@ -3493,6 +3493,24 @@ mod tests {
     use super::*;
     use automerge::ROOT;
 
+    /// The surface Print Centre publishes once a refresh has found printers,
+    /// documents and scanners.
+    fn populated_resources(doc: &AutoCommit) -> Vec<Resource> {
+        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
+        centre.snapshot = Some(demo_snapshot());
+        centre.resources(doc)
+    }
+
+    // Print Centre keeps no document: it publishes only effect and view
+    // operations, so the contract is the surface sweep (protocol validation
+    // over the dashboard and every printer, job and scanner) and Ctrl+K.
+    ui::action_contract_tests! {
+        seed: AutoCommit::new(),
+        registry: tilo_actions::ActionRegistry::new(),
+        resources: |doc| populated_resources(doc),
+        palette: ["Print a document", "Open print queue", "Find network printers", "Open printer"],
+    }
+
     fn queue(
         state: os_actions::printing::QueueState,
         accepting_jobs: bool,
