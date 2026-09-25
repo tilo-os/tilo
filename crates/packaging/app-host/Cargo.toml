@@ -39,7 +39,7 @@ capnp.workspace = true
 capnp-rpc.workspace = true
 
 # Async runtime + transport.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
+tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
 tokio-util.workspace = true
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 # capnp-rpc speaks futures-io; `io` supplies its buffered reader/writer.

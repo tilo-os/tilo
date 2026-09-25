@@ -78,6 +78,22 @@ fn run_true(profile: &Path, app: &str) -> std::process::Output {
         .output()
         .unwrap()
 }
+/// A helper app's collaboration manager once it has joined the broker.
+/// Construction returns while the connection is still being made; the
+/// helper polls until it settles.
+fn connected_manager() -> ui::collaboration::CollaborationManager {
+    let mut manager = ui::collaboration::CollaborationManager::new();
+    let started = Instant::now();
+    while manager.state() == ui::collaboration::CollaborationState::Connecting
+        && started.elapsed() < Duration::from_secs(10)
+    {
+        let _ = manager.poll();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(manager.is_connected(), "{:?}", manager.state());
+    manager
+}
+
 #[test]
 fn first_launch_reuse_and_stale_socket_recovery() {
     let profile = DaemonProfile::new();
@@ -190,8 +206,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     const TEST: &str = "runtime_host::daemon_process_tests::independent_sdk_apps_late_join_and_survive_another_app_exit";
     if let Ok(app_id) = std::env::var("QOS_NATIVE_SDK_HELPER") {
         runtime_portal::native::ensure_attached(&app_id).unwrap();
-        let mut manager = ui::collaboration::CollaborationManager::new();
-        assert!(manager.is_connected());
+        let mut manager = connected_manager();
         manager.publish_action_directory(ui::collaboration::local_app_id());
         loop {
             let _ = manager.poll();
@@ -310,8 +325,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
     const APP: &str = "dev.qos.parent-child";
     if let Ok(stage) = std::env::var("QOS_SDK_FAMILY_STAGE") {
         runtime_portal::native::ensure_attached(APP).unwrap();
-        let mut manager = ui::collaboration::CollaborationManager::new();
-        assert!(manager.is_connected());
+        let mut manager = connected_manager();
         manager.publish_action_directory(ui::collaboration::local_app_id());
         let _child = if stage == "parent" {
             // No service-environment clearing: this is ordinary Command spawn

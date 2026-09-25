@@ -8,10 +8,11 @@
 //! button, connection-status row.
 //!
 //! Plumbs `os_actions::network::{get_wifi, set_wifi,
-//! list_wifi_networks, connect_wifi}`. The network list is sampled once
-//! on construction (cached) and refreshed when the user clicks the
-//! `Refresh` button — re-scanning every frame would be wasteful and
-//! visibly stutter the UI on slow nmcli backends.
+//! list_wifi_networks, connect_wifi}`. Every `NetworkManager` query runs
+//! on the app runtime's blocking pool, never on the UI thread: the pane
+//! appears in a pending state, reads one snapshot on construction and
+//! another when the user clicks `Refresh` (or a connection changes), and
+//! applies each when it arrives through the wake.
 //
 // CRDT keys:
 //   `network.wifi_enabled` — bool, wifi toggle
@@ -252,6 +253,172 @@ fn read_vpn_connections() -> Vec<VpnInfo> {
         .collect()
 }
 
+/// Everything the pane shows from `NetworkManager`, read in one pass on the
+/// app runtime's blocking pool. `None` means the value was not read and the
+/// pane keeps what it has.
+struct NetworkSnapshot {
+    networks: Result<Vec<WifiNetworkInfo>, String>,
+    /// Read only for the first snapshot, which seeds the pane's controls.
+    wifi_enabled: Option<bool>,
+    /// Read only for the first snapshot.
+    sims: Option<Vec<os_actions::SimInfo>>,
+    wired: Option<WiredInfo>,
+    radios: Option<os_actions::RadioState>,
+    connectivity: Option<ConnectivityState>,
+    profiles: Option<Vec<SavedNetworkProfile>>,
+    profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
+    hotspot_clients: Option<Vec<os_actions::HotspotClient>>,
+    vpns: Option<Vec<VpnInfo>>,
+}
+
+impl NetworkSnapshot {
+    /// Query `NetworkManager`. Every call here may block on `nmcli` or the
+    /// system bus, so this never runs on the UI thread.
+    fn read(lister: &NetworkLister, vpn_lister: &VpnLister, initial: bool) -> Self {
+        let profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+        Self {
+            networks: lister(),
+            wifi_enabled: initial.then(|| os_actions::get_wifi().unwrap_or(true)),
+            sims: initial.then(|| os_actions::list_mobile_sims().unwrap_or_default()),
+            wired: os_actions::get_wired().ok(),
+            radios: os_actions::get_radio_state().ok(),
+            connectivity: Some(os_actions::get_connectivity().unwrap_or_default()),
+            profile_settings: load_profile_settings(&profiles),
+            profiles: Some(profiles),
+            hotspot_clients: Some(os_actions::list_hotspot_clients().unwrap_or_default()),
+            vpns: Some(vpn_lister()),
+        }
+    }
+
+    /// A query that stopped before reporting anything.
+    fn failed(error: String) -> Self {
+        Self {
+            networks: Err(error),
+            wifi_enabled: None,
+            sims: None,
+            wired: None,
+            radios: None,
+            connectivity: None,
+            profiles: None,
+            profile_settings: HashMap::new(),
+            hotspot_clients: None,
+            vpns: None,
+        }
+    }
+}
+
+/// A radio the pane switches through the dispatcher.
+#[derive(Clone, Copy, Debug)]
+enum Radio {
+    Airplane,
+    Hotspot,
+    Mobile,
+}
+
+impl Radio {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Airplane => AIRPLANE_KEY,
+            Self::Hotspot => HOTSPOT_KEY,
+            Self::Mobile => MOBILE_KEY,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Airplane => "airplane",
+            Self::Hotspot => "hotspot",
+            Self::Mobile => "mobile",
+        }
+    }
+
+    const fn operation(self, enabled: bool) -> crate::actions::NetworkOperation {
+        match self {
+            Self::Airplane => crate::actions::NetworkOperation::SetAirplaneMode { enabled },
+            Self::Hotspot => crate::actions::NetworkOperation::SetHotspot { enabled },
+            Self::Mobile => crate::actions::NetworkOperation::SetMobileBroadband { enabled },
+        }
+    }
+}
+
+/// A finished change and its result, or why it stopped before reporting.
+type ActionOutcome = Result<(NetworkAction, Result<(), String>), String>;
+
+/// A `NetworkManager` change requested from the pane. Every one may block
+/// on `nmcli` or the system bus for seconds, so they run on the app
+/// runtime's blocking pool, one at a time in the order they were asked for.
+enum NetworkAction {
+    Wifi {
+        enabled: bool,
+    },
+    Wired {
+        enabled: bool,
+    },
+    Radio {
+        radio: Radio,
+        enabled: bool,
+    },
+    Vpn {
+        name: String,
+        enabled: bool,
+    },
+    Autoconnect {
+        uuid: String,
+        name: String,
+        enabled: bool,
+    },
+    Forget {
+        uuid: String,
+        name: String,
+    },
+    Hotspot {
+        config: HotspotConfiguration,
+    },
+    Ipv4 {
+        uuid: String,
+        name: String,
+        config: IpConfiguration,
+    },
+    Policy {
+        uuid: String,
+        name: String,
+        patch: os_actions::ConnectionPolicyPatch,
+    },
+}
+
+impl NetworkAction {
+    /// Carry out the change. Never called on the UI thread.
+    fn run(&self, dispatcher: &dyn Dispatcher) -> Result<(), String> {
+        match self {
+            Self::Wifi { enabled } => dispatcher.set_wifi(*enabled),
+            Self::Wired { enabled } => dispatcher.set_wired(*enabled),
+            Self::Radio { radio, enabled } => match radio {
+                Radio::Airplane => dispatcher.set_airplane_mode(*enabled),
+                Radio::Hotspot => dispatcher.set_hotspot(*enabled),
+                Radio::Mobile => dispatcher.set_mobile_broadband(*enabled),
+            },
+            Self::Vpn { name, enabled } => dispatcher.set_vpn_connection(name, *enabled),
+            Self::Autoconnect { uuid, enabled, .. } => {
+                os_actions::set_network_autoconnect(uuid, *enabled)
+            }
+            Self::Forget { uuid, .. } => os_actions::forget_network_profile(uuid),
+            Self::Hotspot { config } => os_actions::configure_hotspot(config),
+            Self::Ipv4 { uuid, config, .. } => os_actions::configure_ipv4(uuid, config),
+            Self::Policy { uuid, patch, .. } => {
+                os_actions::configure_connection_policy_patch(uuid, patch)
+            }
+        }
+    }
+}
+
+impl Drop for NetworkAction {
+    fn drop(&mut self) {
+        if let Self::Hotspot { config } = self {
+            config.password.zeroize();
+        }
+    }
+}
+
 /// Parse the two `nmcli -t` outputs into [`VpnInfo`]s. `all` lines are
 /// `NAME:TYPE`; a connection is a VPN when its type is `vpn` or
 /// `wireguard`. `active` lines are bare `NAME`s of up connections.
@@ -333,6 +500,17 @@ pub struct NetworkPane {
     captive_portal: ui::LatestRequest<Result<(), String>>,
     /// A diagnostics read from `NetworkManager`, run on the app runtime.
     diagnostics_request: ui::LatestRequest<Result<os_actions::ConnectionDiagnostics, String>>,
+    /// The `NetworkManager` snapshot being read on the app runtime.
+    snapshot_request: ui::LatestRequest<NetworkSnapshot>,
+    /// False until the first snapshot arrives. Until then the pane shows a
+    /// pending view and acts on none of its controls.
+    loaded: bool,
+    /// A Refresh operation waiting for the next snapshot.
+    refresh_pending: bool,
+    /// Requested changes not yet started, oldest first.
+    actions: std::collections::VecDeque<NetworkAction>,
+    /// The change running on the app runtime, with its outcome.
+    action_request: ui::LatestRequest<ActionOutcome>,
     hotspot_password: Arc<Mutex<String>>,
     hotspot_ssid: String,
     hotspot_band: String,
@@ -373,71 +551,20 @@ impl Drop for NetworkPane {
 }
 
 impl NetworkPane {
+    /// The production pane. It appears at once in a pending state; the
+    /// `NetworkManager` snapshot is read on the app runtime and applied when
+    /// it arrives through the wake.
     pub fn new() -> Self {
-        let (connection_tx, connection_rx) = std::sync::mpsc::channel();
-        let lister: NetworkLister = Arc::new(os_actions::list_wifi_networks);
-        let networks = lister().unwrap_or_default();
-        let initial_wifi = os_actions::get_wifi().unwrap_or(true);
-        let wired = os_actions::get_wired().unwrap_or_default();
-        let radios = os_actions::get_radio_state().unwrap_or_default();
-        let connectivity = os_actions::get_connectivity().unwrap_or_default();
-        let profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
-        let profile_settings = load_profile_settings(&profiles);
-        let selected_wifi_profile = profiles
-            .iter()
-            .find(|p| p.kind == "802-11-wireless")
-            .map(|p| p.uuid.clone());
-        let selected_wired_profile = profiles
-            .iter()
-            .find(|p| p.kind == "802-3-ethernet")
-            .map(|p| p.uuid.clone());
-        let vpn_lister: VpnLister = Arc::new(read_vpn_connections);
-        let vpns = vpn_lister();
-        Self {
-            dispatcher: dispatcher_or_real(None),
-            lister,
-            networks,
-            wired,
-            radios,
-            connectivity,
-            profiles,
-            profile_settings,
-            selected_wifi_profile,
-            selected_wired_profile,
-            sims: os_actions::list_mobile_sims().unwrap_or_default(),
-            diagnostics: None,
-            advanced_open: false,
-            enterprise_editor_open: false,
-            vpns,
-            vpn_lister,
-            tool_opener: Arc::new(os_actions::open_tool),
-            initial_wifi_enabled: initial_wifi,
-            last_wifi_enabled: initial_wifi,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            needs_seed: true,
-            dispatched_connects: Vec::new(),
-            connection_tx,
-            connection_rx,
-            wifi_continuity: Arc::new(ProductionWifiContinuityClient),
-            connection_notice: None,
-            ca_picker_rx: None,
-            captive_portal: ui::LatestRequest::new(),
-            diagnostics_request: ui::LatestRequest::new(),
-            hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "Tilo Hotspot".into(),
-            hotspot_band: "Automatic".into(),
-            hotspot_qr_visible: false,
-            hotspot_clients: os_actions::list_hotspot_clients().unwrap_or_default(),
-            secret_buffers: initial_secret_buffers(),
-            expanded_ssid: None,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
-        }
+        let mut pane = Self::from_parts(
+            dispatcher_or_real(None),
+            Arc::new(os_actions::list_wifi_networks),
+            Arc::new(read_vpn_connections),
+            Arc::new(ProductionWifiContinuityClient),
+            true,
+            Vec::new(),
+        );
+        pane.begin_initial_load();
+        pane
     }
 
     /// Test-only constructor that pins the dispatcher, the wifi-state,
@@ -448,9 +575,43 @@ impl NetworkPane {
         initial_wifi_enabled: bool,
         networks: Vec<WifiNetworkInfo>,
     ) -> Self {
-        let (connection_tx, connection_rx) = std::sync::mpsc::channel();
         let snapshot = networks.clone();
-        let lister: NetworkLister = Arc::new(move || Ok(snapshot.clone()));
+        Self::from_parts(
+            dispatcher,
+            Arc::new(move || Ok(snapshot.clone())),
+            Arc::new(Vec::<VpnInfo>::new),
+            Arc::new(EmptyWifiContinuityClient),
+            initial_wifi_enabled,
+            networks,
+        )
+    }
+
+    /// `--shots` helper: a pane with a fixed network list and the real
+    /// dispatcher (clicks would shell out, but the render never clicks).
+    pub fn new_demo(networks: Vec<WifiNetworkInfo>) -> Self {
+        let snapshot = networks.clone();
+        let mut pane = Self::from_parts(
+            dispatcher_or_real(None),
+            Arc::new(move || Ok(snapshot.clone())),
+            Arc::new(Vec::<VpnInfo>::new),
+            Arc::new(ProductionWifiContinuityClient),
+            true,
+            networks,
+        );
+        pane.connectivity = ConnectivityState::Full;
+        pane
+    }
+
+    /// A loaded pane showing `networks` and nothing else read from the host.
+    fn from_parts(
+        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
+        lister: NetworkLister,
+        vpn_lister: VpnLister,
+        wifi_continuity: Arc<dyn WifiContinuityClient>,
+        initial_wifi_enabled: bool,
+        networks: Vec<WifiNetworkInfo>,
+    ) -> Self {
+        let (connection_tx, connection_rx) = std::sync::mpsc::channel();
         Self {
             dispatcher,
             lister,
@@ -467,7 +628,7 @@ impl NetworkPane {
             advanced_open: false,
             enterprise_editor_open: false,
             vpns: Vec::new(),
-            vpn_lister: Arc::new(Vec::<VpnInfo>::new),
+            vpn_lister,
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
@@ -480,11 +641,16 @@ impl NetworkPane {
             dispatched_connects: Vec::new(),
             connection_tx,
             connection_rx,
-            wifi_continuity: Arc::new(EmptyWifiContinuityClient),
+            wifi_continuity,
             connection_notice: None,
             ca_picker_rx: None,
             captive_portal: ui::LatestRequest::new(),
             diagnostics_request: ui::LatestRequest::new(),
+            snapshot_request: ui::LatestRequest::new(),
+            loaded: true,
+            refresh_pending: false,
+            actions: std::collections::VecDeque::new(),
+            action_request: ui::LatestRequest::new(),
             hotspot_password: Arc::new(Mutex::new(String::new())),
             hotspot_ssid: "Tilo Hotspot".into(),
             hotspot_band: "Automatic".into(),
@@ -498,56 +664,356 @@ impl NetworkPane {
         }
     }
 
-    /// `--shots` helper: a pane with a fixed network list and the real
-    /// dispatcher (clicks would shell out, but the render never clicks).
-    pub fn new_demo(networks: Vec<WifiNetworkInfo>) -> Self {
-        let (connection_tx, connection_rx) = std::sync::mpsc::channel();
-        let snapshot = networks.clone();
-        let lister: NetworkLister = Arc::new(move || Ok(snapshot.clone()));
-        Self {
-            dispatcher: dispatcher_or_real(None),
-            lister,
-            networks,
-            wired: WiredInfo::default(),
-            radios: os_actions::RadioState::default(),
-            connectivity: ConnectivityState::Full,
-            profiles: Vec::new(),
-            profile_settings: HashMap::new(),
-            selected_wifi_profile: None,
-            selected_wired_profile: None,
-            sims: Vec::new(),
-            diagnostics: None,
-            advanced_open: false,
-            enterprise_editor_open: false,
-            vpns: Vec::new(),
-            vpn_lister: Arc::new(Vec::<VpnInfo>::new),
-            tool_opener: Arc::new(os_actions::open_tool),
-            initial_wifi_enabled: true,
-            last_wifi_enabled: true,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            needs_seed: true,
-            dispatched_connects: Vec::new(),
-            connection_tx,
-            connection_rx,
-            wifi_continuity: Arc::new(ProductionWifiContinuityClient),
-            connection_notice: None,
-            ca_picker_rx: None,
-            captive_portal: ui::LatestRequest::new(),
-            diagnostics_request: ui::LatestRequest::new(),
-            hotspot_password: Arc::new(Mutex::new(String::new())),
-            hotspot_ssid: "Tilo Hotspot".into(),
-            hotspot_band: "Automatic".into(),
-            hotspot_qr_visible: false,
-            hotspot_clients: Vec::new(),
-            secret_buffers: initial_secret_buffers(),
-            expanded_ssid: None,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+    /// Show the pending state and start reading the first snapshot.
+    fn begin_initial_load(&mut self) {
+        self.loaded = false;
+        if !self.start_snapshot() {
+            self.connection_notice =
+                Some("Network status is unavailable while the window closes.".into());
+        }
+    }
+
+    /// Start reading a fresh `NetworkManager` snapshot on the app runtime.
+    /// A newer read supersedes an older one still running. Returns `false`
+    /// when the owning window is closing.
+    fn start_snapshot(&mut self) -> bool {
+        let lister = Arc::clone(&self.lister);
+        let vpn_lister = Arc::clone(&self.vpn_lister);
+        let initial = !self.loaded;
+        let started = self.snapshot_request.spawn(async move {
+            ui::rt::app()
+                .spawn_blocking(move || NetworkSnapshot::read(&lister, &vpn_lister, initial))
+                .await
+                .unwrap_or_else(|error| {
+                    NetworkSnapshot::failed(format!("the network query stopped: {error}"))
+                })
+        });
+        self.structure_dirty = true;
+        started
+    }
+
+    fn sync_snapshot_result(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if let Some(snapshot) = self.snapshot_request.try_take() {
+            self.apply_snapshot(state, root, snapshot);
+        }
+    }
+
+    /// Adopt a snapshot. The first one only fills the pane's fields; the
+    /// seed that follows writes them into the document. Later ones also
+    /// update the document keys whose controls mirror host state, so a
+    /// stale key never reads as a request to change that state.
+    fn apply_snapshot(&mut self, state: &mut AutoCommit, root: &ObjId, snapshot: NetworkSnapshot) {
+        let initial = !self.loaded;
+        let outcome = match snapshot.networks {
+            Ok(networks) => {
+                self.networks = networks;
+                Ok("Network list refreshed.".to_string())
+            }
+            Err(error) => {
+                warn!(target: "tilo::settings", op = "list_wifi_networks", %error, "network scan failed");
+                Err(format!("Could not refresh network list: {error}"))
+            }
+        };
+        if std::mem::take(&mut self.refresh_pending) {
+            self.finish_local_operation(crate::actions::NetworkOperation::Refresh, outcome);
+        }
+        if self.loaded && self.actions_busy() {
+            // Read before a queued change landed; the snapshot taken once
+            // the queue drains reports the host state.
+            self.structure_dirty = true;
+            return;
+        }
+        if let Some(enabled) = snapshot.wifi_enabled {
+            self.initial_wifi_enabled = enabled;
+            self.last_wifi_enabled = enabled;
+        }
+        if let Some(sims) = snapshot.sims {
+            self.sims = sims;
+        }
+        if let Some(wired) = snapshot.wired {
+            self.wired = wired;
+            if !initial {
+                let _ = state.put(root, WIRED_ENABLED_KEY, self.wired.connected);
+            }
+        }
+        if let Some(radios) = snapshot.radios {
+            self.radios = radios;
+            if !initial {
+                for (key, value) in [
+                    (AIRPLANE_KEY, self.radios.airplane_mode),
+                    (HOTSPOT_KEY, self.radios.hotspot_active),
+                    (MOBILE_KEY, self.radios.wwan_enabled),
+                ] {
+                    let _ = state.put(root, key, value);
+                }
+            }
+        }
+        if let Some(connectivity) = snapshot.connectivity {
+            self.connectivity = connectivity;
+        }
+        if let Some(clients) = snapshot.hotspot_clients {
+            self.hotspot_clients = clients;
+        }
+        if let Some(profiles) = snapshot.profiles {
+            self.profiles = profiles;
+            self.profile_settings = snapshot.profile_settings;
+            self.select_available_profiles();
+        }
+        if let Some(vpns) = snapshot.vpns {
+            self.vpns = vpns;
+            if !initial {
+                for vpn in &self.vpns {
+                    let _ = state.put(root, Self::vpn_key(&vpn.name), vpn.active);
+                }
+            }
+        }
+        self.loaded = true;
+        self.structure_dirty = true;
+    }
+
+    const fn radio(&self, radio: Radio) -> bool {
+        match radio {
+            Radio::Airplane => self.radios.airplane_mode,
+            Radio::Hotspot => self.radios.hotspot_active,
+            Radio::Mobile => self.radios.wwan_enabled,
+        }
+    }
+
+    const fn set_radio(&mut self, radio: Radio, enabled: bool) {
+        match radio {
+            Radio::Airplane => self.radios.airplane_mode = enabled,
+            Radio::Hotspot => self.radios.hotspot_active = enabled,
+            Radio::Mobile => self.radios.wwan_enabled = enabled,
+        }
+    }
+
+    /// Whether a requested change is still queued or running.
+    fn actions_busy(&self) -> bool {
+        !self.actions.is_empty() || self.action_request.is_pending()
+    }
+
+    /// Queue a change behind the ones already requested. The pane shows the
+    /// requested state at once and reverts it if the change fails.
+    fn queue_action(&mut self, action: NetworkAction) {
+        self.actions.push_back(action);
+        self.start_next_action();
+        self.structure_dirty = true;
+    }
+
+    /// Start the oldest queued change unless one is already running.
+    fn start_next_action(&mut self) {
+        if self.action_request.is_pending() {
+            return;
+        }
+        let Some(action) = self.actions.pop_front() else {
+            return;
+        };
+        let dispatcher = Arc::clone(&self.dispatcher);
+        let started = self.action_request.spawn(async move {
+            ui::rt::app()
+                .spawn_blocking(move || {
+                    let result = action.run(&*dispatcher);
+                    (action, result)
+                })
+                .await
+                .map_err(|error| format!("the network change stopped: {error}"))
+        });
+        if !started {
+            // The window is closing; nothing is left to report to.
+            self.actions.clear();
+        }
+    }
+
+    /// Apply finished changes in order, start the next one, and re-read
+    /// `NetworkManager` once the queue has drained.
+    fn sync_action_results(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let mut finished = false;
+        while let Some(done) = self.action_request.try_take() {
+            match done {
+                Ok((action, result)) => self.finish_action(state, root, &action, result),
+                Err(error) => {
+                    warn!(target: "tilo::settings", op = "network_action", %error, "network change stopped");
+                    self.connection_notice = Some(format!("A network change stopped: {error}"));
+                }
+            }
+            finished = true;
+            self.start_next_action();
+        }
+        if finished && !self.actions_busy() {
+            self.start_snapshot();
+        }
+        if finished {
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Report one finished change, reverting what the pane showed if it
+    /// failed.
+    fn finish_action(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        action: &NetworkAction,
+        result: Result<(), String>,
+    ) {
+        match action {
+            NetworkAction::Wifi { .. }
+            | NetworkAction::Wired { .. }
+            | NetworkAction::Radio { .. } => self.finish_switch(state, root, action, result),
+            _ => self.finish_setting(state, root, action, result),
+        }
+    }
+
+    /// Report a finished Wi-Fi, wired or radio switch and its operation.
+    fn finish_switch(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        action: &NetworkAction,
+        result: Result<(), String>,
+    ) {
+        match (action, result) {
+            (NetworkAction::Wifi { enabled }, Ok(())) => self.finish_local_operation(
+                crate::actions::NetworkOperation::SetWifiEnabled { enabled: *enabled },
+                Ok(if *enabled {
+                    "Wi-Fi enabled.".into()
+                } else {
+                    "Wi-Fi disabled.".into()
+                }),
+            ),
+            (NetworkAction::Wifi { enabled }, Err(e)) => {
+                self.last_wifi_enabled = !enabled;
+                let _ = state.put(root, WIFI_ENABLED_KEY, !enabled);
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::SetWifiEnabled { enabled: *enabled },
+                    Err(format!("Could not change Wi-Fi power: {e}")),
+                );
+                warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
+            }
+            (NetworkAction::Wired { enabled }, Ok(())) => self.finish_local_operation(
+                crate::actions::NetworkOperation::SetWiredEnabled { enabled: *enabled },
+                Ok(if *enabled {
+                    "Wired networking enabled.".into()
+                } else {
+                    "Wired networking disabled.".into()
+                }),
+            ),
+            (NetworkAction::Wired { enabled }, Err(e)) => {
+                warn!(target: "tilo::settings", op = "set_wired", error = %e, "network pane dispatch failed");
+                self.wired.connected = !enabled;
+                let _ = state.put(root, WIRED_ENABLED_KEY, !enabled);
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::SetWiredEnabled { enabled: *enabled },
+                    Err(format!("Could not change wired networking: {e}")),
+                );
+            }
+            (NetworkAction::Radio { radio, enabled }, Ok(())) => self.finish_local_operation(
+                radio.operation(*enabled),
+                Ok(format!(
+                    "{} {}.",
+                    radio.label(),
+                    if *enabled { "enabled" } else { "disabled" }
+                )),
+            ),
+            (NetworkAction::Radio { radio, enabled }, Err(e)) => {
+                warn!(target: "tilo::settings", op = radio.label(), error = %e, "radio action failed");
+                self.set_radio(*radio, !enabled);
+                let _ = state.put(root, radio.key(), !enabled);
+                self.finish_local_operation(
+                    radio.operation(*enabled),
+                    Err(format!("Could not change {} state: {e}", radio.label())),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Report a finished VPN, profile, hotspot or policy change.
+    fn finish_setting(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        action: &NetworkAction,
+        result: Result<(), String>,
+    ) {
+        match (action, result) {
+            (NetworkAction::Vpn { name, enabled }, Err(e)) => {
+                warn!(target: "tilo::settings", op = "set_vpn_connection", profile = %name, error = %e, "VPN action failed");
+                if let Some(vpn) = self.vpns.iter_mut().find(|vpn| &vpn.name == name) {
+                    vpn.active = !enabled;
+                }
+                let _ = state.put(root, Self::vpn_key(name), !enabled);
+            }
+            (
+                NetworkAction::Autoconnect {
+                    uuid,
+                    name,
+                    enabled,
+                },
+                Err(error),
+            ) => {
+                self.connection_notice = Some(format!("Could not update {name}: {error}"));
+                if let Some(saved) = self.profiles.iter_mut().find(|p| &p.uuid == uuid) {
+                    saved.autoconnect = !enabled;
+                }
+                let _ = state.put(root, profile_autoconnect_key(uuid), !enabled);
+            }
+            (NetworkAction::Forget { uuid, name }, Ok(())) => {
+                self.profiles.retain(|p| &p.uuid != uuid);
+                self.connection_notice = Some(format!("Forgot {name}."));
+            }
+            (NetworkAction::Forget { name, .. }, Err(error)) => {
+                self.connection_notice = Some(format!("Could not forget {name}: {error}"));
+            }
+            (NetworkAction::Hotspot { .. }, Ok(())) => {
+                self.radios.hotspot_active = true;
+                let _ = state.put(root, HOTSPOT_KEY, true);
+                self.connection_notice = Some("Hotspot is active.".into());
+            }
+            (NetworkAction::Hotspot { .. }, Err(error)) => {
+                self.connection_notice = Some(format!("Hotspot failed: {error}"));
+            }
+            (NetworkAction::Ipv4 { name, .. }, Ok(())) => {
+                self.connection_notice = Some(format!("Applied IP settings to {name}."));
+            }
+            (NetworkAction::Ipv4 { .. }, Err(error)) => {
+                self.connection_notice = Some(format!("IP settings were not applied: {error}"));
+            }
+            (NetworkAction::Policy { name, .. }, Ok(())) => {
+                self.connection_notice = Some(format!("Applied advanced policy to {name}."));
+            }
+            (NetworkAction::Policy { .. }, Err(e)) => {
+                self.connection_notice = Some(format!("Policy was not applied: {e}"));
+            }
+            // Enabling a VPN or autoconnect needs no report; switches are
+            // reported by `finish_switch`.
+            _ => {}
+        }
+    }
+
+    /// Keep each profile selector on a profile that still exists.
+    fn select_available_profiles(&mut self) {
+        if !self
+            .profiles
+            .iter()
+            .any(|p| Some(&p.uuid) == self.selected_wifi_profile.as_ref())
+        {
+            self.selected_wifi_profile = self
+                .profiles
+                .iter()
+                .find(|p| p.kind == "802-11-wireless")
+                .map(|p| p.uuid.clone());
+        }
+        if !self
+            .profiles
+            .iter()
+            .any(|p| Some(&p.uuid) == self.selected_wired_profile.as_ref())
+        {
+            self.selected_wired_profile = self
+                .profiles
+                .iter()
+                .find(|p| p.kind == "802-3-ethernet")
+                .map(|p| p.uuid.clone());
         }
     }
 
@@ -756,6 +1222,13 @@ impl NetworkPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        if !self.loaded {
+            let mut pending = vec![caption("Reading network status from NetworkManager…")];
+            if let Some(notice) = &self.connection_notice {
+                pending.push(caption(notice));
+            }
+            return crate::widgets::cards(vec![card("Network", rows(pending))]);
+        }
         let mut cards = vec![
             self.internet_access_card(),
             self.wifi_card(),
@@ -828,6 +1301,11 @@ impl NetworkPane {
                     wifi_rows.push(self.password_prompt(&net.ssid));
                 }
             }
+        }
+        if self.actions_busy() {
+            wifi_rows.push(caption("Applying network changes…"));
+        } else if self.snapshot_request.is_pending() {
+            wifi_rows.push(caption("Refreshing…"));
         }
         wifi_rows.push(Box::new(Row::new().push(Box::new(Spacer::new())).push(
             Box::new(Button::new(
@@ -1677,12 +2155,8 @@ impl NetworkPane {
                         || format!("Connected to {subject}."),
                         |notice| format!("Connected to {subject}. {notice}"),
                     ));
-                    if let Ok(networks) = (self.lister)() {
-                        self.networks = networks;
-                    }
-                    self.profiles = os_actions::list_saved_network_profiles()
-                        .unwrap_or_else(|_| self.profiles.clone());
-                    self.profile_settings = load_profile_settings(&self.profiles);
+                    // Re-read the list and saved profiles off the UI thread.
+                    self.start_snapshot();
                     if matches!(job, NetworkJob::Wifi(_)) {
                         self.set_expanded(state, root, None);
                     }
@@ -1917,26 +2391,9 @@ impl NetworkPane {
                 let _ = state.put(root, WIFI_ENABLED_KEY, self.last_wifi_enabled);
                 return;
             }
+            // Shown at once; `finish_action` reverts it if the change fails.
             self.last_wifi_enabled = enabled;
-            match self.dispatcher.set_wifi(enabled) {
-                Ok(()) => self.finish_local_operation(
-                    operation,
-                    Ok(if enabled {
-                        "Wi-Fi enabled.".into()
-                    } else {
-                        "Wi-Fi disabled.".into()
-                    }),
-                ),
-                Err(e) => {
-                    self.last_wifi_enabled = !enabled;
-                    let _ = state.put(root, WIFI_ENABLED_KEY, !enabled);
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Could not change Wi-Fi power: {e}")),
-                    );
-                    warn!(target: "tilo::settings", op = "set_wifi", error = %e, "network pane dispatch failed");
-                }
-            }
+            self.queue_action(NetworkAction::Wifi { enabled });
         }
 
         // Wired interface toggle. Missing hardware has no switch, and this
@@ -1952,122 +2409,39 @@ impl NetworkPane {
                 let _ = state.put(root, WIRED_ENABLED_KEY, self.wired.connected);
                 return;
             }
-            match self.dispatcher.set_wired(enabled) {
-                Ok(()) => {
-                    self.wired.connected = enabled;
-                    self.finish_local_operation(
-                        operation,
-                        Ok(if enabled {
-                            "Wired networking enabled.".into()
-                        } else {
-                            "Wired networking disabled.".into()
-                        }),
-                    );
-                }
-                Err(e) => {
-                    warn!(target: "tilo::settings", op = "set_wired", error = %e, "network pane dispatch failed");
-                    let _ = state.put(
-                        root,
-                        WIRED_ENABLED_KEY,
-                        automerge::ScalarValue::Boolean(self.wired.connected),
-                    );
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Could not change wired networking: {e}")),
-                    );
-                }
-            }
+            self.wired.connected = enabled;
+            self.queue_action(NetworkAction::Wired { enabled });
         }
     }
 
-    fn sync_radio_toggles(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        for (key, old, op) in [
-            (AIRPLANE_KEY, self.radios.airplane_mode, "airplane"),
-            (HOTSPOT_KEY, self.radios.hotspot_active, "hotspot"),
-            (MOBILE_KEY, self.radios.wwan_enabled, "mobile"),
-        ] {
-            let Some(enabled) = read_bool(state, root, key)
-                .unwrap_or(false)
-                .then_some(true)
-                .or_else(|| {
-                    state
-                        .get(root, key)
-                        .ok()
-                        .flatten()
-                        .and_then(|(v, _)| match v {
-                            Value::Scalar(s) => match s.as_ref() {
-                                automerge::ScalarValue::Boolean(b) => Some(*b),
-                                _ => None,
-                            },
-                            Value::Object(_) => None,
-                        })
-                })
-            else {
+    fn sync_radio_toggles(&mut self, state: &AutoCommit, root: &ObjId) {
+        for radio in [Radio::Airplane, Radio::Hotspot, Radio::Mobile] {
+            let Some(enabled) = read_bool(state, root, radio.key()) else {
                 continue;
             };
-            if enabled == old {
+            let previous = self.radio(radio);
+            if enabled == previous {
                 continue;
             }
-            let result = match op {
-                "airplane" => self.dispatcher.set_airplane_mode(enabled),
-                "hotspot" => self.dispatcher.set_hotspot(enabled),
-                _ => self.dispatcher.set_mobile_broadband(enabled),
-            };
-            match result {
-                Ok(()) => {
-                    let operation = match op {
-                        "airplane" => {
-                            self.radios.airplane_mode = enabled;
-                            crate::actions::NetworkOperation::SetAirplaneMode { enabled }
-                        }
-                        "hotspot" => {
-                            self.radios.hotspot_active = enabled;
-                            crate::actions::NetworkOperation::SetHotspot { enabled }
-                        }
-                        _ => {
-                            self.radios.wwan_enabled = enabled;
-                            crate::actions::NetworkOperation::SetMobileBroadband { enabled }
-                        }
-                    };
-                    self.finish_local_operation(
-                        operation,
-                        Ok(format!(
-                            "{} {}.",
-                            op,
-                            if enabled { "enabled" } else { "disabled" }
-                        )),
-                    );
-                }
-                Err(e) => {
-                    warn!(target: "tilo::settings", op, error = %e, "radio action failed");
-                    let _ = state.put(root, key, old);
-                    let operation = match op {
-                        "airplane" => crate::actions::NetworkOperation::SetAirplaneMode { enabled },
-                        "hotspot" => crate::actions::NetworkOperation::SetHotspot { enabled },
-                        _ => crate::actions::NetworkOperation::SetMobileBroadband { enabled },
-                    };
-                    self.finish_local_operation(
-                        operation,
-                        Err(format!("Could not change {op} state: {e}")),
-                    );
-                }
-            }
+            self.set_radio(radio, enabled);
+            self.queue_action(NetworkAction::Radio { radio, enabled });
         }
     }
 
-    fn sync_vpn_toggles(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync_vpn_toggles(&mut self, state: &AutoCommit, root: &ObjId) {
+        let mut changed = Vec::new();
         for vpn in &mut self.vpns {
-            let key = Self::vpn_key(&vpn.name);
-            let enabled = read_bool(state, root, &key).unwrap_or(false);
+            let enabled = read_bool(state, root, Self::vpn_key(&vpn.name)).unwrap_or(false);
             if enabled != vpn.active {
-                match self.dispatcher.set_vpn_connection(&vpn.name, enabled) {
-                    Ok(()) => vpn.active = enabled,
-                    Err(e) => {
-                        warn!(target: "tilo::settings", op = "set_vpn_connection", profile = %vpn.name, error = %e, "VPN action failed");
-                        let _ = state.put(root, key, vpn.active);
-                    }
-                }
+                vpn.active = enabled;
+                changed.push(NetworkAction::Vpn {
+                    name: vpn.name.clone(),
+                    enabled,
+                });
             }
+        }
+        for action in changed {
+            self.queue_action(action);
         }
     }
 
@@ -2075,49 +2449,25 @@ impl NetworkPane {
         let profile_snapshot = self.profiles.clone();
         for profile in profile_snapshot {
             let auto_key = profile_autoconnect_key(&profile.uuid);
-            if let Some(enabled) =
-                state
-                    .get(root, &auto_key)
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| match value {
-                        Value::Scalar(s) => match s.as_ref() {
-                            automerge::ScalarValue::Boolean(value) => Some(*value),
-                            _ => None,
-                        },
-                        Value::Object(_) => None,
-                    })
+            if let Some(enabled) = read_bool(state, root, &auto_key)
                 && enabled != profile.autoconnect
             {
-                match os_actions::set_network_autoconnect(&profile.uuid, enabled) {
-                    Ok(()) => {
-                        if let Some(saved) =
-                            self.profiles.iter_mut().find(|p| p.uuid == profile.uuid)
-                        {
-                            saved.autoconnect = enabled;
-                        }
-                    }
-                    Err(error) => {
-                        self.connection_notice =
-                            Some(format!("Could not update {}: {error}", profile.name));
-                        let _ = state.put(root, auto_key, profile.autoconnect);
-                    }
+                if let Some(saved) = self.profiles.iter_mut().find(|p| p.uuid == profile.uuid) {
+                    saved.autoconnect = enabled;
                 }
+                self.queue_action(NetworkAction::Autoconnect {
+                    uuid: profile.uuid.clone(),
+                    name: profile.name.clone(),
+                    enabled,
+                });
             }
             let forget_key = profile_forget_key(&profile.uuid);
             if read_bool(state, root, &forget_key).unwrap_or(false) {
                 let _ = state.put(root, &forget_key, false);
-                match os_actions::forget_network_profile(&profile.uuid) {
-                    Ok(()) => {
-                        self.profiles.retain(|p| p.uuid != profile.uuid);
-                        self.connection_notice = Some(format!("Forgot {}.", profile.name));
-                    }
-                    Err(error) => {
-                        self.connection_notice =
-                            Some(format!("Could not forget {}: {error}", profile.name));
-                    }
-                }
-                self.structure_dirty = true;
+                self.queue_action(NetworkAction::Forget {
+                    uuid: profile.uuid.clone(),
+                    name: profile.name.clone(),
+                });
             }
         }
     }
@@ -2169,15 +2519,10 @@ impl NetworkPane {
         self.hotspot_band =
             read_str_or_text(state, root, HOTSPOT_BAND_KEY).unwrap_or_else(|| "Automatic".into());
         match self.hotspot_config_from_values(&self.hotspot_ssid, &self.hotspot_band) {
-            Ok(config) => match os_actions::configure_hotspot(&config) {
-                Ok(()) => {
-                    self.radios.hotspot_active = true;
-                    self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
-                    let _ = state.put(root, HOTSPOT_KEY, true);
-                    self.connection_notice = Some("Hotspot is active.".into());
-                }
-                Err(error) => self.connection_notice = Some(format!("Hotspot failed: {error}")),
-            },
+            Ok(config) => {
+                self.connection_notice = Some("Starting the hotspot…".into());
+                self.queue_action(NetworkAction::Hotspot { config });
+            }
             Err(error) => self.connection_notice = Some(error),
         }
         self.structure_dirty = true;
@@ -2271,16 +2616,12 @@ impl NetworkPane {
                     })
                     .collect(),
             };
-            match os_actions::configure_ipv4(&profile.uuid, &config) {
-                Ok(()) => {
-                    self.connection_notice =
-                        Some(format!("Applied IP settings to {}.", profile.name));
-                }
-                Err(error) => {
-                    self.connection_notice = Some(format!("IP settings were not applied: {error}"));
-                }
-            }
-            self.structure_dirty = true;
+            self.connection_notice = Some(format!("Applying IP settings to {}…", profile.name));
+            self.queue_action(NetworkAction::Ipv4 {
+                uuid: profile.uuid.clone(),
+                name: profile.name.clone(),
+                config,
+            });
         }
     }
 
@@ -2440,14 +2781,12 @@ impl NetworkPane {
                     _ => None,
                 },
             };
-            match os_actions::configure_connection_policy_patch(&profile.uuid, &patch) {
-                Ok(()) => {
-                    self.connection_notice =
-                        Some(format!("Applied advanced policy to {}.", profile.name));
-                }
-                Err(e) => self.connection_notice = Some(format!("Policy was not applied: {e}")),
-            }
-            self.structure_dirty = true;
+            self.connection_notice = Some(format!("Applying advanced policy to {}…", profile.name));
+            self.queue_action(NetworkAction::Policy {
+                uuid: profile.uuid.clone(),
+                name: profile.name.clone(),
+                patch,
+            });
         }
     }
 
@@ -2642,60 +2981,16 @@ impl NetworkPane {
             return;
         }
         let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
-        match (self.lister)() {
-            Ok(nets) => {
-                self.networks = nets;
-                self.finish_local_operation(
-                    crate::actions::NetworkOperation::Refresh,
-                    Ok("Network list refreshed.".into()),
-                );
-            }
-            Err(e) => {
-                warn!(target: "tilo::settings", op = "list_wifi_networks", error = %e, "rescan failed");
-                self.finish_local_operation(
-                    crate::actions::NetworkOperation::Refresh,
-                    Err(format!("Could not refresh network list: {e}")),
-                );
-            }
-        }
-        if let Ok(wired) = os_actions::get_wired() {
-            self.wired = wired;
-            let _ = state.put(
-                root,
-                WIRED_ENABLED_KEY,
-                automerge::ScalarValue::Boolean(self.wired.connected),
+        // The rescan runs on the app runtime; `apply_snapshot` finishes the
+        // Refresh operation when it arrives.
+        self.refresh_pending = true;
+        if !self.start_snapshot() {
+            self.refresh_pending = false;
+            self.finish_local_operation(
+                crate::actions::NetworkOperation::Refresh,
+                Err("Could not refresh network list: the settings window is closing".into()),
             );
         }
-        if let Ok(radios) = os_actions::get_radio_state() {
-            self.radios = radios;
-        }
-        self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
-        self.connectivity = os_actions::get_connectivity().unwrap_or_default();
-        self.profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
-        self.profile_settings = load_profile_settings(&self.profiles);
-        if !self
-            .profiles
-            .iter()
-            .any(|p| Some(&p.uuid) == self.selected_wifi_profile.as_ref())
-        {
-            self.selected_wifi_profile = self
-                .profiles
-                .iter()
-                .find(|p| p.kind == "802-11-wireless")
-                .map(|p| p.uuid.clone());
-        }
-        if !self
-            .profiles
-            .iter()
-            .any(|p| Some(&p.uuid) == self.selected_wired_profile.as_ref())
-        {
-            self.selected_wired_profile = self
-                .profiles
-                .iter()
-                .find(|p| p.kind == "802-3-ethernet")
-                .map(|p| p.uuid.clone());
-        }
-        self.vpns = (self.vpn_lister)();
     }
 
     /// Restore the expanded-prompt SSID from the document (so it survives
@@ -2761,6 +3056,38 @@ impl NetworkPane {
             self.set_expanded(state, root, None);
         }
     }
+    /// Seed and act on the pane's controls. Runs only once the first
+    /// snapshot has arrived, so no control is compared against state the
+    /// pane has not read yet.
+    fn sync_controls(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.seed_if_needed(state, root);
+        if let Some(crate::actions::LocalPaneCommand::Network(operation)) = self.command_state.get()
+        {
+            self.command_state.set(None);
+            self.execute_local_command(state, operation);
+        }
+        self.sync_wifi_and_wired_toggles(state, root);
+        self.sync_radio_toggles(state, root);
+        self.sync_vpn_toggles(state, root);
+        self.sync_profile_autoconnect_and_forget(state, root);
+        self.sync_profile_shares(state, root);
+        self.sync_hotspot_apply(state, root);
+        self.sync_hotspot_qr(state, root);
+        self.sync_profile_selectors(state, root);
+        self.sync_ipv4_apply(state, root);
+        self.sync_mobile_create(state, root);
+        self.sync_advanced_toggle(state, root);
+        self.sync_enterprise_editor(state, root);
+        self.sync_diagnostics(state, root);
+        self.sync_profile_policy(state, root);
+        self.sync_mobile_unlock(state, root);
+        self.sync_enterprise_connect(state, root);
+        self.sync_enterprise_ca_choose(state, root);
+        self.sync_captive_portal(state, root);
+        self.sync_vpn_studio_handoff(state, root);
+        self.sync_refresh(state, root);
+        self.sync_network_connect_actions(state, root);
+    }
 }
 
 pub fn build() -> Box<dyn Widget> {
@@ -2780,33 +3107,11 @@ impl Widget for NetworkPane {
         self.sync_connection_jobs(&mut state, &root);
         self.sync_diagnostics_result();
         self.sync_captive_portal_result();
-        self.seed_if_needed(&mut state, &root);
-        if let Some(crate::actions::LocalPaneCommand::Network(operation)) = self.command_state.get()
-        {
-            self.command_state.set(None);
-            self.execute_local_command(&mut state, operation);
+        self.sync_action_results(&mut state, &root);
+        self.sync_snapshot_result(&mut state, &root);
+        if self.loaded {
+            self.sync_controls(&mut state, &root);
         }
-        self.sync_wifi_and_wired_toggles(&mut state, &root);
-        self.sync_radio_toggles(&mut state, &root);
-        self.sync_vpn_toggles(&mut state, &root);
-        self.sync_profile_autoconnect_and_forget(&mut state, &root);
-        self.sync_profile_shares(&mut state, &root);
-        self.sync_hotspot_apply(&mut state, &root);
-        self.sync_hotspot_qr(&mut state, &root);
-        self.sync_profile_selectors(&state, &root);
-        self.sync_ipv4_apply(&mut state, &root);
-        self.sync_mobile_create(&mut state, &root);
-        self.sync_advanced_toggle(&mut state, &root);
-        self.sync_enterprise_editor(&mut state, &root);
-        self.sync_diagnostics(&mut state, &root);
-        self.sync_profile_policy(&mut state, &root);
-        self.sync_mobile_unlock(&mut state, &root);
-        self.sync_enterprise_connect(&mut state, &root);
-        self.sync_enterprise_ca_choose(&mut state, &root);
-        self.sync_captive_portal(&mut state, &root);
-        self.sync_vpn_studio_handoff(&mut state, &root);
-        self.sync_refresh(&mut state, &root);
-        self.sync_network_connect_actions(&mut state, &root);
 
         if let Some(c) = &mut self.composed {
             c.sync(&mut state, &root);
@@ -3118,25 +3423,119 @@ mod tests {
         }
     }
 
+    /// Drive the syncs the host runs on each wake until every queued change
+    /// and the snapshot that follows have been applied.
+    fn settle(pane: &mut NetworkPane, doc: &mut AutoCommit, wakes: &std::sync::mpsc::Receiver<()>) {
+        let root = automerge::ROOT;
+        while pane.actions_busy() || pane.snapshot_request.is_pending() {
+            wakes
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .unwrap();
+            pane.sync(doc, &root);
+        }
+    }
+
     #[test]
     fn wifi_toggle_invokes_set_wifi() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // User flips the toggle off.
-        let _ = doc.put(
-            &root,
-            WIFI_ENABLED_KEY,
-            automerge::ScalarValue::Boolean(false),
-        );
-        pane.sync(&mut doc, &root);
-        assert_eq!(rec.calls(), vec!["set_wifi(false)"]);
+        let calls = on_ui_thread(|wakes| {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = NetworkPane::with_dispatcher(
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // User flips the toggle off.
+            let _ = doc.put(
+                &root,
+                WIFI_ENABLED_KEY,
+                automerge::ScalarValue::Boolean(false),
+            );
+            pane.sync(&mut doc, &root);
+            settle(&mut pane, &mut doc, wakes);
+            rec.calls()
+        });
+        assert_eq!(calls, vec!["set_wifi(false)"]);
+    }
+
+    /// A dispatcher whose Wi-Fi switch waits for the test and can fail, so
+    /// the pending state and the revert are observed deterministically.
+    struct GatedWifi {
+        gate: Mutex<std::sync::mpsc::Receiver<Result<(), String>>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Dispatcher for GatedWifi {
+        fn set_brightness(&self, _p: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_volume(&self, _p: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_wifi(&self, enabled: bool) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("set_wifi({enabled})"));
+            self.gate
+                .lock()
+                .unwrap()
+                .recv()
+                .unwrap_or_else(|_| Err("gate closed".into()))
+        }
+        fn set_bluetooth(&self, _e: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect_wifi(&self, _ssid: &str, _password: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Switching Wi-Fi never waits on the UI thread: the sync returns while
+    /// the switch is still running, changes run in request order, and a
+    /// failed one reverts the toggle.
+    #[test]
+    fn wifi_changes_run_off_the_ui_thread_in_order_and_revert_on_failure() {
+        let outcome = on_ui_thread(|wakes| {
+            let (release, gate) = std::sync::mpsc::channel();
+            let dispatcher = Arc::new(GatedWifi {
+                gate: Mutex::new(gate),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut pane = NetworkPane::with_dispatcher(
+                dispatcher.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
+            pane.sync(&mut doc, &root);
+            let busy_while_running = pane.actions_busy() && !pane.last_wifi_enabled;
+            let _ = doc.put(&root, WIFI_ENABLED_KEY, true);
+            pane.sync(&mut doc, &root);
+            // The first switch succeeds, the second fails.
+            release.send(Ok(())).unwrap();
+            release.send(Err("radio is blocked".into())).unwrap();
+            settle(&mut pane, &mut doc, wakes);
+            (
+                busy_while_running,
+                dispatcher.calls.lock().unwrap().clone(),
+                pane.last_wifi_enabled,
+                read_bool(&doc, &root, WIFI_ENABLED_KEY),
+            )
+        });
+        let (busy, calls, enabled, key) = outcome;
+        assert!(busy, "the sync returns while the switch is running");
+        assert_eq!(calls, ["set_wifi(false)", "set_wifi(true)"]);
+        assert!(!enabled, "the failed switch back on is reverted");
+        assert_eq!(key, Some(false));
     }
 
     #[test]
@@ -3164,28 +3563,29 @@ mod tests {
 
     #[test]
     fn wired_toggle_only_dispatches_the_primary_lan_interface() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        )
-        .with_wired(WiredInfo {
-            connected: true,
-            device: Some("enp3s0".into()),
-            speed: Some("1000 Mb/s".into()),
-            ipv4: Some("192.0.2.10".into()),
+        let (calls, wifi) = on_ui_thread(|wakes| {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = NetworkPane::with_dispatcher(
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            )
+            .with_wired(WiredInfo {
+                connected: true,
+                device: Some("enp3s0".into()),
+                speed: Some("1000 Mb/s".into()),
+                ipv4: Some("192.0.2.10".into()),
+            });
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, WIRED_ENABLED_KEY, false);
+            pane.sync(&mut doc, &root);
+            settle(&mut pane, &mut doc, wakes);
+            (rec.calls(), pane.last_wifi_enabled)
         });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, WIRED_ENABLED_KEY, false);
-        pane.sync(&mut doc, &root);
-        assert_eq!(rec.calls(), vec!["set_wired(false)"]);
-        assert!(
-            pane.last_wifi_enabled,
-            "LAN must not change the Wi-Fi radio"
-        );
+        assert_eq!(calls, vec!["set_wired(false)"]);
+        assert!(wifi, "LAN must not change the Wi-Fi radio");
     }
 
     #[test]
@@ -3221,15 +3621,32 @@ mod tests {
         assert_eq!(rec.calls(), vec!["connect_wifi(Cafe_Guest)"]);
     }
 
+    /// Run `body` on a thread marked as the UI thread, inside a bound wake
+    /// scope; `body` receives the wakes the scope delivers.
+    fn on_ui_thread<T: Send + 'static>(
+        body: impl FnOnce(&std::sync::mpsc::Receiver<()>) -> T + Send + 'static,
+    ) -> T {
+        ui::rt::spawn_thread("settings-ui-test", move || {
+            ui::rt::mark_ui_thread();
+            let mut scope = ui::WakeScope::new();
+            let (woke, wakes) = std::sync::mpsc::channel();
+            scope
+                .bind(move |_| {
+                    let _ = woke.send(());
+                })
+                .unwrap();
+            let _entry = scope.enter();
+            body(&wakes)
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+    }
+
+    /// Refresh only starts the rescan; the new list arrives through the
+    /// wake and is applied by the next sync.
     #[test]
     fn refresh_button_replaces_network_list() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        // Swap the lister to a fresh set so we can observe the refresh.
         let fresh = vec![WifiNetworkInfo {
             ssid: "NewSpot".to_string(),
             signal: 4,
@@ -3237,16 +3654,96 @@ mod tests {
             security: os_actions::WifiSecurity::Open,
             connected: false,
         }];
-        pane.lister = {
-            let f = fresh.clone();
-            Arc::new(move || Ok(f.clone()))
-        };
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, REFRESH_KEY, automerge::ScalarValue::Boolean(true));
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.networks(), fresh.as_slice());
+        let expected = fresh.clone();
+        let (before, pending, after) = on_ui_thread(move |wakes| {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = NetworkPane::with_dispatcher(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            // Swap the lister to a fresh set so we can observe the refresh.
+            pane.lister = Arc::new(move || Ok(fresh.clone()));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, REFRESH_KEY, automerge::ScalarValue::Boolean(true));
+            pane.sync(&mut doc, &root);
+            let before = pane.networks().to_vec();
+            let pending = pane.snapshot_request.is_pending();
+            // Each wake is followed by the sync the host would run.
+            while pane.snapshot_request.is_pending() {
+                wakes
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap();
+                pane.sync(&mut doc, &root);
+            }
+            (before, pending, pane.networks().to_vec())
+        });
+        assert_eq!(
+            before,
+            sample_networks(),
+            "the sync does not wait for the scan"
+        );
+        assert!(pending);
+        assert_eq!(after, expected);
+    }
+
+    /// The production pane is built without querying `NetworkManager`: it
+    /// shows a pending view and acts on no control until the first snapshot
+    /// arrives through the wake.
+    #[test]
+    fn the_first_snapshot_arrives_through_the_wake() {
+        let outcome = on_ui_thread(|wakes| {
+            // The scan waits for the test, so the pending state is observed
+            // deterministically.
+            let (release, gate) = std::sync::mpsc::channel::<()>();
+            let gate = Mutex::new(gate);
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = NetworkPane::from_parts(
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                Arc::new(move || {
+                    let _ = gate.lock().unwrap().recv();
+                    Ok(sample_networks())
+                }),
+                Arc::new(Vec::<VpnInfo>::new),
+                Arc::new(EmptyWifiContinuityClient),
+                true,
+                Vec::new(),
+            );
+            pane.begin_initial_load();
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let loading = !pane.loaded && pane.networks().is_empty();
+            let unseeded = doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_none();
+            // A control flipped before the snapshot is not acted on yet.
+            let _ = doc.put(&root, AIRPLANE_KEY, true);
+            pane.sync(&mut doc, &root);
+            let inert = rec.calls().is_empty();
+            release.send(()).unwrap();
+            while !pane.loaded {
+                wakes
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap();
+                pane.sync(&mut doc, &root);
+            }
+            (
+                loading,
+                unseeded,
+                inert,
+                pane.loaded,
+                pane.networks().to_vec(),
+                doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_some(),
+            )
+        });
+        let (loading, unseeded, inert, loaded, networks, seeded) = outcome;
+        assert!(loading, "construction does not wait for NetworkManager");
+        assert!(unseeded, "controls are not seeded from unread state");
+        assert!(inert, "no control acts before the first snapshot");
+        assert!(loaded);
+        assert_eq!(networks, sample_networks());
+        assert!(seeded, "the first snapshot seeds the controls");
     }
 
     /// A dispatcher that captures the password handed to `connect_wifi`, so
