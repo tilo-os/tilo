@@ -98,6 +98,31 @@ firmware directory. Different existing firmware is rejected rather than
 overwritten. Import failures stop before cache probes, signing or compilation.
 The workflow retains a public `firmware-import.json` receipt.
 
+### CI-built Lenovo install image
+
+`build-image.yml` accepts `hardware_profile=lenovo-83ed` on an explicit
+`main`-branch dispatch with `publish=true`. Supply the same independently
+reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256` as the
+development importer. CI imports those inert files on the native ARM64 runner,
+builds and independently rebuilds the image, closes the composefs/UKI seal by
+installing it to a disposable disk, signs its target prediction, and publishes
+the signed ARM64 image at
+`code.sandbox.example/qos/tilo:lenovo-83ed-<full-main-commit>`.
+The image binds that exact immutable tag as its update reference. The workflow
+attests the firmware artifact and manifest digest in SLSA provenance and retains
+the import receipt. Obtain the final `repo@sha256:...` child digest from the CI
+release-child artifact or registry tag and verify its Cosign signature and
+provenance before a physical install.
+
+This is an initial, generation-1 board image with an immutable update
+reference. It does not join or advance the generic multiarch `latest`/`genN`
+release series, and automatic board upgrades are not available until a
+separate dense Lenovo generation series is implemented. QEMU's `virt` machine
+cannot boot the Lenovo device tree, so CI's board path validates the disk
+install and signed image without claiming a physical boot; the generic ARM64
+image continues to run the full VM desktop gate. The first laptop boot and
+device drivers still require on-device acceptance.
+
 Local driver invocations may instead use `--hardware-profile` with already
 staged, verified firmware. Firmware transfer and hash checks establish build
 input identity, not hardware functionality or an installable image. A board
