@@ -157,11 +157,15 @@ jobs:
             fi
           else
             # Main integration images feed both native dev VM architectures.
-            # BuildKit layers and OCI export coexist, so use 100 GiB runners.
+            # BuildKit layers and OCI export coexist, so these lanes need
+            # 100 GiB of scratch. The general-class 4 CPU / 10 GiB envelope of
+            # runner-disk-100g ran out of memory while four thin-LTO release
+            # links ran concurrently (run 24082); runner-large keeps 100 GiB
+            # of scratch with 12 CPU / 16 GiB.
             if [[ $GITHUB_REF == refs/heads/main ]]; then
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"},{"arch":"aarch64","runner":"runner-disk-100g-arm64"}]}'
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"}]}'
             else
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-disk-100g"}]}'
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-large"}]}'
             fi
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
