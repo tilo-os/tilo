@@ -3,6 +3,10 @@ name: Development / build retained ARM FEX payload
 on:
   workflow_dispatch:
     inputs:
+      buildroot_candidate:
+        description: "Optional previously published ARM buildroot digest to reuse after a failed FEX build"
+        required: false
+        type: string
       sdk_candidate:
         description: "Optional previously published x86 SDK digest to reuse after a failed FEX build"
         required: false
@@ -34,9 +38,21 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build native ARM toolchain candidate
         id: publish
+        env:
+          BUILDROOT_CANDIDATE: ${{ inputs.buildroot_candidate }}
         run: |
           set -euo pipefail
           test "$(uname -m)" = aarch64
+          if [[ -n "$BUILDROOT_CANDIDATE" ]]; then
+            [[ "$BUILDROOT_CANDIDATE" =~ ^code\.podesta\.ai/qos/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::buildroot_candidate must be a retained immutable ARM buildroot digest'; exit 1;
+            }
+            docker buildx imagetools inspect --raw "$BUILDROOT_CANDIDATE" \
+              | jq -e '.schemaVersion == 2 and (.config.digest | test("^sha256:[0-9a-f]{64}$"))' >/dev/null
+            echo "ref=$BUILDROOT_CANDIDATE" >> "$GITHUB_OUTPUT"
+            echo "::notice::reusing previously published ARM buildroot $BUILDROOT_CANDIDATE"
+            exit 0
+          fi
           source os/base-snapshot.env
           bash os/dev/cache-github-assets.sh nasm-2.16.03.tar.xz
           tag="code.sandbox.example/qos/tilo-fex-buildroot-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
@@ -119,6 +135,7 @@ jobs:
           test "$(uname -m)" = aarch64
           [[ "$FEX_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]]
           [[ "$FEX_X86_SDK_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]]
+          echo "::notice::ARM runner CPUs=$(nproc); memory=$(awk '/^MemTotal:/ {print $2 " KiB"}' /proc/meminfo); Docker=$(docker info --format 'CPUs={{.NCPU}} memory={{.MemTotal}} bytes')"
           bash os/dev/fetch-fex-source.sh "$RUNNER_TEMP/fex-source"
           tag="code.sandbox.example/qos/tilo-fex-payload-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker buildx build --platform linux/arm64 --push --provenance=false \
