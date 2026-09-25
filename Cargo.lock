@@ -14310,6 +14310,10 @@ name = "tilo-automerge"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "flate2",
+ "hex",
+ "serde_json",
+ "sha2 0.11.0",
  "tilo-automerge",
 ]
 

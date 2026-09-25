@@ -1,0 +1,470 @@
+//! Generates the qOS automerge 0.8 compatibility corpus consumed by
+//! vendor/automerge/tests/resource_limits_compat_08.rs on automerge 0.12.
+//!
+//! Usage: gen08 <output-dir>
+use automerge::marks::{ExpandMark, Mark};
+use automerge::transaction::{CommitOptions, Transactable};
+use automerge::{hydrate, ActorId, AutoCommit, Change, ObjId, ObjType, ReadDoc, SaveOptions, ScalarValue, Value, ROOT};
+use serde_json::{json, Map as JMap, Value as J};
+use std::path::{Path, PathBuf};
+
+// ---- canonical dump (copied verbatim into the 0.12 test) -------------------
+fn scalar_json(value: &ScalarValue) -> J {
+    match value {
+        ScalarValue::Bytes(b) => json!({ "bytes": hex::encode(b) }),
+        ScalarValue::Str(s) => json!({ "str": s.as_str() }),
+        ScalarValue::Int(i) => json!({ "int": i }),
+        ScalarValue::Uint(u) => json!({ "uint": u }),
+        ScalarValue::F64(f) => json!({ "f64": f }),
+        ScalarValue::Counter(c) => json!({ "counter": i64::from(c) }),
+        ScalarValue::Timestamp(t) => json!({ "ts": t }),
+        ScalarValue::Boolean(b) => json!({ "bool": b }),
+        ScalarValue::Unknown { type_code, bytes } => {
+            json!({ "unknown": { "type_code": type_code, "bytes": hex::encode(bytes) } })
+        }
+        ScalarValue::Null => json!({ "null": true }),
+    }
+}
+
+fn entry_json(doc: &AutoCommit, value: Value<'_>, id: ObjId) -> J {
+    let v = match value {
+        Value::Object(kind) => walk(doc, &id, kind),
+        Value::Scalar(s) => scalar_json(&s),
+    };
+    json!({ "id": id.to_string(), "v": v })
+}
+
+fn walk(doc: &AutoCommit, obj: &ObjId, kind: ObjType) -> J {
+    match kind {
+        ObjType::Map | ObjType::Table => {
+            let mut props = JMap::new();
+            for key in doc.keys(obj) {
+                let all = doc.get_all(obj, key.as_str()).unwrap();
+                let entries: Vec<J> = all.into_iter().map(|(v, id)| entry_json(doc, v, id)).collect();
+                props.insert(key, J::Array(entries));
+            }
+            let t = if kind == ObjType::Map { "map" } else { "table" };
+            json!({ "type": t, "props": props })
+        }
+        ObjType::List => {
+            let len = doc.length(obj);
+            let items: Vec<J> = (0..len)
+                .map(|i| {
+                    let all = doc.get_all(obj, i).unwrap();
+                    J::Array(all.into_iter().map(|(v, id)| entry_json(doc, v, id)).collect())
+                })
+                .collect();
+            json!({ "type": "list", "items": items })
+        }
+        ObjType::Text => {
+            let marks: Vec<J> = doc
+                .marks(obj)
+                .unwrap()
+                .into_iter()
+                .map(|m| json!({ "name": m.name.as_str(), "value": scalar_json(&m.value), "start": m.start, "end": m.end }))
+                .collect();
+            json!({ "type": "text", "text": doc.text(obj).unwrap(), "len": doc.length(obj), "marks": marks })
+        }
+    }
+}
+
+fn hydrate_json(value: &hydrate::Value) -> J {
+    match value {
+        hydrate::Value::Scalar(s) => scalar_json(s),
+        hydrate::Value::Map(m) => {
+            let mut entries: Vec<(&String, &hydrate::MapValue)> = m.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            let mut out = JMap::new();
+            for (k, v) in entries {
+                out.insert(k.clone(), json!({ "v": hydrate_json(&v.value), "conflict": v.conflict }));
+            }
+            json!({ "map": out })
+        }
+        hydrate::Value::List(l) => {
+            let items: Vec<J> = l
+                .iter()
+                .map(|item| {
+                    let mut marks: Vec<(&String, &ScalarValue)> = item.marks.iter().collect();
+                    marks.sort_by(|a, b| a.0.cmp(b.0));
+                    let marks: JMap<String, J> = marks.into_iter().map(|(k, v)| (k.clone(), scalar_json(v))).collect();
+                    json!({ "v": hydrate_json(&item.value), "conflict": item.conflict, "marks": marks })
+                })
+                .collect();
+            json!({ "list": items })
+        }
+        hydrate::Value::Text(t) => json!({ "text": t.to_string() }),
+    }
+}
+
+fn dump(doc: &AutoCommit) -> J {
+    walk(doc, &ROOT, ObjType::Map)
+}
+fn dump_hydrated(doc: &AutoCommit) -> J {
+    hydrate_json(&doc.hydrate(ROOT, None).unwrap())
+}
+// ---------------------------------------------------------------------------
+
+struct Out {
+    dir: PathBuf,
+    manifest: Vec<J>,
+    time: i64,
+}
+
+impl Out {
+    fn write(&self, name: &str, bytes: &[u8]) {
+        std::fs::write(self.dir.join(name), bytes).unwrap();
+    }
+    fn commit(&mut self, doc: &mut AutoCommit, message: Option<&str>) {
+        self.time += 1;
+        let mut opts = CommitOptions::default().with_time(self.time);
+        if let Some(m) = message {
+            opts = opts.with_message(m);
+        }
+        doc.commit_with(opts);
+    }
+}
+
+fn actor(n: u8) -> ActorId {
+    ActorId::from(vec![n; 16])
+}
+
+fn hashes(mut h: Vec<automerge::ChangeHash>) -> Vec<String> {
+    h.sort();
+    h.iter().map(|h| h.to_string()).collect()
+}
+
+fn change_meta(changes: &[Change]) -> Vec<J> {
+    let mut v: Vec<J> = changes
+        .iter()
+        .map(|c| {
+            json!({
+                "hash": c.hash().to_string(),
+                "actor": c.actor_id().to_hex_string(),
+                "seq": c.seq(),
+                "deps": hashes(c.deps().to_vec()),
+                "message": c.message(),
+            })
+        })
+        .collect();
+    v.sort_by(|a, b| a["hash"].as_str().cmp(&b["hash"].as_str()));
+    v
+}
+
+/// Record a document: compressed save + uncompressed save + expectations.
+fn record_doc(out: &mut Out, name: &str, doc: &mut AutoCommit, orphans: bool) {
+    assert_eq!(doc.pending_ops(), 0, "{name}: commit first");
+    let compressed = doc.save_with_options(SaveOptions { deflate: true, retain_orphans: orphans });
+    let plain = doc.save_with_options(SaveOptions { deflate: false, retain_orphans: orphans });
+    let fc = format!("{name}.automerge");
+    let fp = format!("{name}.nocompress.automerge");
+    out.write(&fc, &compressed);
+    out.write(&fp, &plain);
+    let changes = doc.get_changes(&[]);
+    let heads = doc.get_heads();
+    let missing = doc.get_missing_deps(&[]);
+    // Sanity: 0.8 itself round-trips both saves.
+    for bytes in [&compressed, &plain] {
+        let mut back = AutoCommit::load(bytes).unwrap();
+        assert_eq!(back.get_heads(), heads);
+        assert_eq!(dump(&back), dump(doc));
+    }
+    let entry = json!({
+        "name": name,
+        "kind": "document",
+        "file": fc,
+        "nocompress_file": fp,
+        "compressed_differs": compressed != plain,
+        "retain_orphans": orphans,
+        "heads": hashes(heads),
+        "missing_deps": hashes(missing),
+        "changes": change_meta(&changes),
+        "dump": dump(doc),
+        "hydrate": dump_hydrated(doc),
+        "len_compressed": compressed.len(),
+        "len_plain": plain.len(),
+    });
+    out.manifest.push(entry);
+}
+
+/// Record change chunks: each individually plus concatenated. Expectations are
+/// the state of an empty document after applying all of them.
+fn record_changes(out: &mut Out, name: &str, mut changes: Vec<Change>, use_compressed: bool) {
+    let mut files = Vec::new();
+    let mut all = Vec::new();
+    for (i, c) in changes.iter_mut().enumerate() {
+        let bytes: Vec<u8> = if use_compressed { c.bytes().into_owned() } else { c.raw_bytes().to_vec() };
+        let f = format!("{name}.{i:02}.change");
+        out.write(&f, &bytes);
+        files.push(json!({ "file": f, "hash": c.hash().to_string(), "compressed": bytes[8] == 2 }));
+        all.extend_from_slice(&bytes);
+    }
+    let fa = format!("{name}.all.changes");
+    out.write(&fa, &all);
+    let mut doc = AutoCommit::new();
+    doc.load_incremental(&all).unwrap();
+    let applied = doc.get_changes(&[]);
+    let entry = json!({
+        "name": name,
+        "kind": "changes",
+        "files": files,
+        "all_file": fa,
+        "heads": hashes(doc.get_heads()),
+        "missing_deps": hashes(doc.get_missing_deps(&[])),
+        "applied_changes": change_meta(&applied),
+        "dump": dump(&doc),
+        "hydrate": dump_hydrated(&doc),
+    });
+    out.manifest.push(entry);
+}
+
+fn long_text(n: usize) -> String {
+    let words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+    let mut s = String::new();
+    let mut i = 0usize;
+    while s.len() < n {
+        s.push_str(words[i % words.len()]);
+        s.push(if i % 11 == 10 { '\n' } else { ' ' });
+        i += 1;
+    }
+    s
+}
+
+fn basic(out: &mut Out) {
+    let mut doc = AutoCommit::new().with_actor(actor(0xa1));
+    doc.put(ROOT, "string", "hello").unwrap();
+    doc.put(ROOT, "int", -42_i64).unwrap();
+    doc.put(ROOT, "uint", ScalarValue::Uint(42)).unwrap();
+    doc.put(ROOT, "f64", 3.25_f64).unwrap();
+    doc.put(ROOT, "bool", true).unwrap();
+    doc.put(ROOT, "null", ScalarValue::Null).unwrap();
+    doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![0, 1, 2, 254, 255])).unwrap();
+    doc.put(ROOT, "ts", ScalarValue::Timestamp(1_700_000_000_000)).unwrap();
+    doc.put(ROOT, "tmp", "to be deleted").unwrap();
+    let cfg = doc.put_object(ROOT, "config", ObjType::Map).unwrap();
+    doc.put(&cfg, "theme", "dark").unwrap();
+    let inner = doc.put_object(&cfg, "inner", ObjType::Map).unwrap();
+    doc.put(&inner, "depth", 2_i64).unwrap();
+    out.commit(&mut doc, Some("initial"));
+    let items = doc.put_object(ROOT, "items", ObjType::List).unwrap();
+    for i in 0..20_i64 {
+        doc.insert(&items, i as usize, i * 10).unwrap();
+    }
+    let li = doc.insert_object(&items, 5, ObjType::Map).unwrap();
+    doc.put(&li, "k", "v").unwrap();
+    let nested = doc.insert_object(&items, 0, ObjType::List).unwrap();
+    doc.insert(&nested, 0, "n0").unwrap();
+    doc.insert(&nested, 1, "n1").unwrap();
+    out.commit(&mut doc, None);
+    let notes = doc.put_object(ROOT, "notes", ObjType::Text).unwrap();
+    doc.splice_text(&notes, 0, 0, &long_text(3000)).unwrap();
+    doc.splice_text(&notes, 0, 0, "unicode héllo wörld 🌍 ").unwrap();
+    out.commit(&mut doc, None);
+    doc.delete(ROOT, "tmp").unwrap();
+    doc.delete(&items, 3).unwrap();
+    doc.delete(&items, 3).unwrap();
+    doc.splice_text(&notes, 100, 250, "[cut]").unwrap();
+    doc.put(ROOT, "string", "hello again").unwrap();
+    doc.put(&items, 0, "replaced nested list").unwrap();
+    out.commit(&mut doc, Some("edits and deletions"));
+    record_doc(out, "basic", &mut doc, false);
+}
+
+fn marks(out: &mut Out) {
+    let mut doc = AutoCommit::new().with_actor(actor(0xb2));
+    let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+    doc.splice_text(&text, 0, 0, &long_text(600)).unwrap();
+    out.commit(&mut doc, None);
+    doc.mark(&text, Mark::new("bold".into(), true, 0, 40), ExpandMark::After).unwrap();
+    doc.mark(&text, Mark::new("link".into(), "https://example.com", 20, 60), ExpandMark::None).unwrap();
+    doc.mark(&text, Mark::new("comment".into(), ScalarValue::Int(7), 100, 180), ExpandMark::Before).unwrap();
+    doc.mark(&text, Mark::new("italic".into(), true, 150, 300), ExpandMark::Both).unwrap();
+    out.commit(&mut doc, Some("marks"));
+    doc.unmark(&text, "italic", 200, 250, ExpandMark::Both).unwrap();
+    doc.splice_text(&text, 30, 0, "INSERTED").unwrap();
+    doc.splice_text(&text, 160, 10, "").unwrap();
+    doc.mark(&text, Mark::new("bold".into(), ScalarValue::Null, 10, 15), ExpandMark::None).unwrap();
+    out.commit(&mut doc, None);
+    // A second actor adds a concurrent overlapping mark.
+    let mut other = doc.fork().with_actor(actor(0xb3));
+    other.mark(&text, Mark::new("highlight".into(), "yellow", 5, 400), ExpandMark::Both).unwrap();
+    out.commit(&mut other, None);
+    doc.mark(&text, Mark::new("highlight".into(), "blue", 50, 70), ExpandMark::Both).unwrap();
+    out.commit(&mut doc, None);
+    doc.merge(&mut other).unwrap();
+    record_doc(out, "marks", &mut doc, false);
+}
+
+fn counters(out: &mut Out) {
+    let mut doc = AutoCommit::new().with_actor(actor(0xc1));
+    doc.put(ROOT, "c", ScalarValue::counter(10)).unwrap();
+    let list = doc.put_object(ROOT, "list", ObjType::List).unwrap();
+    for i in 0..5 {
+        doc.insert(&list, i, ScalarValue::counter(i as i64)).unwrap();
+    }
+    doc.put(ROOT, "gone", ScalarValue::counter(1)).unwrap();
+    out.commit(&mut doc, None);
+    for i in 1..=50 {
+        doc.increment(ROOT, "c", i).unwrap();
+    }
+    doc.increment(&list, 2, -100).unwrap();
+    doc.increment(&list, 4, i64::MAX / 4).unwrap();
+    doc.increment(ROOT, "gone", 5).unwrap();
+    out.commit(&mut doc, None);
+    let mut other = doc.fork().with_actor(actor(0xc2));
+    other.increment(ROOT, "c", 1000).unwrap();
+    other.increment(&list, 0, 3).unwrap();
+    out.commit(&mut other, None);
+    doc.increment(ROOT, "c", -7).unwrap();
+    doc.delete(ROOT, "gone").unwrap();
+    out.commit(&mut doc, None);
+    doc.merge(&mut other).unwrap();
+    doc.put(ROOT, "gone", ScalarValue::counter(99)).unwrap();
+    doc.increment(ROOT, "gone", 1).unwrap();
+    out.commit(&mut doc, None);
+    record_doc(out, "counters", &mut doc, false);
+}
+
+fn table(out: &mut Out) {
+    let mut doc = AutoCommit::new().with_actor(actor(0xd1));
+    let rows = doc.put_object(ROOT, "rows", ObjType::Table).unwrap();
+    doc.put(&rows, "r1", "scalar row").unwrap();
+    let r2 = doc.put_object(&rows, "r2", ObjType::Map).unwrap();
+    doc.put(&r2, "name", "Ada").unwrap();
+    doc.put(&r2, "age", 36_i64).unwrap();
+    let r3 = doc.put_object(&rows, "r3", ObjType::List).unwrap();
+    doc.insert(&r3, 0, 1_i64).unwrap();
+    doc.insert(&r3, 1, 2_i64).unwrap();
+    let r4 = doc.put_object(&rows, "r4", ObjType::Text).unwrap();
+    doc.splice_text(&r4, 0, 0, "row text").unwrap();
+    let sub = doc.put_object(&rows, "sub", ObjType::Table).unwrap();
+    doc.put(&sub, "x", ScalarValue::counter(1)).unwrap();
+    out.commit(&mut doc, Some("table rows"));
+    doc.delete(&rows, "r1").unwrap();
+    doc.put(&r2, "age", 37_i64).unwrap();
+    doc.increment(&sub, "x", 4).unwrap();
+    doc.put(&rows, "r5", ScalarValue::Bytes(vec![9; 8])).unwrap();
+    out.commit(&mut doc, None);
+    let mut other = doc.fork().with_actor(actor(0xd2));
+    other.put(&rows, "r5", "concurrent").unwrap();
+    out.commit(&mut other, None);
+    doc.put(&rows, "r5", "mine").unwrap();
+    out.commit(&mut doc, None);
+    doc.merge(&mut other).unwrap();
+    record_doc(out, "table", &mut doc, false);
+    record_changes(out, "table_changes", doc.get_changes(&[]), false);
+}
+
+fn multi(out: &mut Out) {
+    let mut a = AutoCommit::new().with_actor(actor(0xe1));
+    let list = a.put_object(ROOT, "list", ObjType::List).unwrap();
+    let text = a.put_object(ROOT, "text", ObjType::Text).unwrap();
+    a.splice_text(&text, 0, 0, "shared base text").unwrap();
+    a.put(ROOT, "title", "base").unwrap();
+    a.put(ROOT, "victim", "will be deleted by b, updated by c").unwrap();
+    for i in 0..3_i64 {
+        a.insert(&list, i as usize, i).unwrap();
+    }
+    out.commit(&mut a, Some("base"));
+    let mut b = a.fork().with_actor(actor(0xe2));
+    let mut c = a.fork().with_actor(actor(0xe3));
+    a.put(ROOT, "title", "from a").unwrap();
+    a.insert(&list, 1, "a-ins").unwrap();
+    a.splice_text(&text, 7, 0, "A").unwrap();
+    out.commit(&mut a, None);
+    b.put(ROOT, "title", "from b").unwrap();
+    b.insert(&list, 1, "b-ins").unwrap();
+    b.delete(ROOT, "victim").unwrap();
+    b.splice_text(&text, 7, 4, "B").unwrap();
+    out.commit(&mut b, None);
+    b.put(ROOT, "b-only", 2_i64).unwrap();
+    out.commit(&mut b, None);
+    c.put(ROOT, "title", "from c").unwrap();
+    c.insert(&list, 1, "c-ins").unwrap();
+    c.put(ROOT, "victim", "updated by c").unwrap();
+    c.delete(&list, 0).unwrap();
+    let m = c.put_object(ROOT, "title", ObjType::Map).unwrap();
+    c.put(&m, "nested", "object conflicts with scalars").unwrap();
+    out.commit(&mut c, None);
+    a.merge(&mut b).unwrap();
+    a.merge(&mut c).unwrap();
+    // No commit after merging: three concurrent heads.
+    assert_eq!(a.get_heads().len(), 3);
+    record_doc(out, "multi", &mut a, false);
+    record_changes(out, "multi_changes", a.get_changes(&[]), false);
+}
+
+fn orphans(out: &mut Out) {
+    let mut src = AutoCommit::new().with_actor(actor(0xf1));
+    src.put(ROOT, "one", 1_i64).unwrap();
+    out.commit(&mut src, None);
+    src.put(ROOT, "two", 2_i64).unwrap();
+    out.commit(&mut src, None);
+    src.put(ROOT, "three", 3_i64).unwrap();
+    out.commit(&mut src, None);
+    let changes = src.get_changes(&[]);
+    // Change chunk whose dependency (the second change) is absent.
+    record_changes(out, "orphan_changes", vec![changes[2].clone()], false);
+    // A document holding the first change with the third queued.
+    let mut doc = AutoCommit::new();
+    doc.apply_changes([changes[0].clone(), changes[2].clone()]).unwrap();
+    assert_eq!(doc.get_missing_deps(&[]).len(), 1);
+    record_doc(out, "with_orphan", &mut doc, true);
+}
+
+fn big_change(out: &mut Out) {
+    let mut doc = AutoCommit::new().with_actor(actor(0x9a));
+    let text = doc.put_object(ROOT, "big", ObjType::Text).unwrap();
+    doc.splice_text(&text, 0, 0, &long_text(8000)).unwrap();
+    doc.put(ROOT, "blob", ScalarValue::Bytes(vec![0x5a; 4096])).unwrap();
+    out.commit(&mut doc, Some("large compressible change"));
+    let mut c = doc.get_last_local_change().unwrap();
+    assert_eq!(c.bytes()[8], 2, "must produce a compressed change chunk");
+    record_changes(out, "big_compressed", vec![c], true);
+}
+
+fn incremental(out: &mut Out) {
+    let mut doc = AutoCommit::new().with_actor(actor(0x7b));
+    doc.put(ROOT, "base", "document chunk").unwrap();
+    out.commit(&mut doc, None);
+    let mut bytes = doc.save();
+    doc.put(ROOT, "inc1", 1_i64).unwrap();
+    out.commit(&mut doc, None);
+    bytes.extend(doc.save_incremental());
+    doc.put(ROOT, "inc2", ScalarValue::Bytes(vec![1; 3000])).unwrap();
+    out.commit(&mut doc, None);
+    bytes.extend(doc.save_incremental());
+    out.write("incremental.concat.automerge", &bytes);
+    let mut back = AutoCommit::load(&bytes).unwrap();
+    assert_eq!(back.get_heads(), doc.get_heads());
+    let entry = json!({
+        "name": "incremental",
+        "kind": "concat",
+        "file": "incremental.concat.automerge",
+        "heads": hashes(doc.get_heads()),
+        "missing_deps": [],
+        "changes": change_meta(&doc.get_changes(&[])),
+        "dump": dump(&doc),
+        "hydrate": dump_hydrated(&doc),
+    });
+    out.manifest.push(entry);
+}
+
+fn main() {
+    let dir = std::env::args().nth(1).expect("usage: gen08 <output-dir>");
+    let dir = Path::new(&dir).to_path_buf();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut out = Out { dir, manifest: Vec::new(), time: 1_700_000_000 };
+    basic(&mut out);
+    marks(&mut out);
+    counters(&mut out);
+    table(&mut out);
+    multi(&mut out);
+    orphans(&mut out);
+    big_change(&mut out);
+    incremental(&mut out);
+    let manifest = json!({
+        "generator": "scratchpad/am012/gen08 against qOS-patched automerge 0.8.0 (alignment branch vendor)",
+        "fixtures": out.manifest,
+    });
+    std::fs::write(out.dir.join("expected.json"), serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+}
