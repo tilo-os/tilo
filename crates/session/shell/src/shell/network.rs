@@ -10145,6 +10145,7 @@ mod tests {
                 params: Vec::new(),
                 contract: tilo_actions::ActionContract::default(),
                 input: PublishedInput::None,
+                view: None,
             }],
             live: true,
         }]);
