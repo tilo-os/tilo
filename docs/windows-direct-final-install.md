@@ -43,7 +43,8 @@ scenario still need to call them as one resumable workflow.
   ESP, then hashes each final source extent. For a Lenovo physical source it
   also requires two separately signed CI installer medium identities: the
   Lenovo install-only WHPX proof and a generic full first-boot WHPX proof.
-  The media must share CI checkout, run, and signed live base; each checked
+  The media must share CI checkout and signed live base; each has its own
+  signed CI run identity, and each checked
   host proof must bind its own medium's SHA-256. The generic ARM64 child has
   its own signature and SLSA attestation in addition to its signed index.
 - `copy-windows-direct-final-install.py execute` rechecks the CI signature,
