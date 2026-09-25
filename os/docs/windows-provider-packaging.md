@@ -2,16 +2,39 @@
 
 The OS chooses a complete provider for its native architecture. On x86_64,
 Fedora Wine and DXVK continue to come from the frozen OS RPM repository. On
-aarch64, native FEX and a complete x86 guest filesystem are required build
-inputs. Missing ARM inputs fail the build; there is no Windows feature opt-out.
+aarch64, the provider is native FEX plus a complete x86 guest filesystem, and
+the image includes it exactly when both are pinned.
+
+## Images without the provider
+
+`os/dev/windows_provider.py mode` derives `TILO_WITH_WINDOWS` from the
+architecture and the two pins. `os/dev/build-image.sh` and the `build-image`
+workflow both use it, so nobody sets it by hand:
+
+| Host    | Pins          | `TILO_WITH_WINDOWS` |
+|---------|---------------|---------------------|
+| x86_64  | any           | 1 (Fedora Wine is always present) |
+| aarch64 | both          | 1                   |
+| aarch64 | neither       | 0, with a build warning |
+| aarch64 | only one      | build fails         |
+
+An image built with `0` says so in three places: the
+`org.tilo.with-windows=0` image label, `/usr/share/tilo/windows/provider.json`
+with `"provider": "none"`, and the compatibility service, which refuses Wine
+and Proton capsule launches and installs with "Windows apps are not available
+on this Tilo image". The Windows VM fallback is unaffected. The x86_64 build
+refuses the provider-less stage. CI reads the pins from the repository
+variables `TILO_FEX_PAYLOAD_REF` and `TILO_WINDOWS_GUEST_REF`. Setting both
+turns the provider on for the next ARM build.
 
 ## ARM build inputs
 
 Set `FEX_PAYLOAD_REF` and `WINDOWS_GUEST_REF` to published OCI references of the
 form `registry/repository@sha256:<64 hexadecimal digits>` before running
 `os/dev/build-image.sh`. The script checks these before asset downloads. Direct
-Containerfile builds also require `TILO_WINDOWS_ARCH=aarch64`; the selected
-stage and final runtime installation verify the native architecture.
+Containerfile builds also require `TILO_WINDOWS_ARCH=aarch64` and
+`TILO_WITH_WINDOWS` from `windows_provider.py mode`. The selected stage and the
+final runtime installation verify the native architecture.
 The x86 guest input is selected as `linux/amd64` and never executed on ARM.
 
 No production references are supplied in this repository yet.

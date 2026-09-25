@@ -30,6 +30,8 @@ const X86_ROOTFS_HOST: &str = "/usr/lib/tilo/windows-runners/x86";
 const TRANSLATED_HELPER: &str = "/usr/libexec/tilo-windows-runtime";
 const EMULATOR_MANIFEST: &str = "/usr/share/tilo/windows/fex-emulator.json";
 const GRAPHICS_MANIFEST: &str = "/usr/share/tilo/windows/fex-graphics-provider.json";
+/// Build record of the Windows provider the image assembled (os/Containerfile).
+const PROVIDER_MANIFEST: &str = "/usr/share/tilo/windows/provider.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeBind {
@@ -123,18 +125,54 @@ pub trait RuntimeRegistry: Send + Sync {
     fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError>;
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SystemRuntimeRegistry;
+#[derive(Clone, Copy, Debug)]
+pub struct SystemRuntimeRegistry {
+    /// Where translated (ARM) runtimes learn whether the image includes them.
+    provider_manifest: Option<&'static str>,
+}
 
 impl SystemRuntimeRegistry {
     pub const fn new() -> Self {
-        Self
+        Self {
+            provider_manifest: Some(PROVIDER_MANIFEST),
+        }
+    }
+
+    /// Planning tests run on hosts that are not Tilo images.
+    #[cfg(test)]
+    pub(crate) const fn assuming_provider() -> Self {
+        Self {
+            provider_manifest: None,
+        }
+    }
+}
+
+impl Default for SystemRuntimeRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl RuntimeRegistry for SystemRuntimeRegistry {
     fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError> {
-        Self::resolve_for_host(layer, runner, std::env::consts::ARCH)
+        let image = Self::resolve_for_host(layer, runner, std::env::consts::ARCH)?;
+        if let (true, Some(manifest)) = (image.translated, self.provider_manifest) {
+            require_translated_provider(std::fs::read_to_string(manifest).ok().as_deref())?;
+        }
+        Ok(image)
+    }
+}
+
+/// An ARM image carries the translated provider only when it was built with
+/// both pinned payloads. Its build record says which; a missing or unreadable
+/// record is treated as absent rather than launching into missing files.
+fn require_translated_provider(manifest: Option<&str>) -> Result<(), PlanError> {
+    let provider = manifest
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .and_then(|value| value.get("provider")?.as_str().map(str::to_owned));
+    match provider.as_deref() {
+        Some("fex-traditional-wine") => Ok(()),
+        _ => Err(PlanError::WindowsProviderNotIncluded),
     }
 }
 
@@ -870,6 +908,11 @@ pub enum ResourceError {
 pub enum PlanError {
     #[error("Windows compatibility is not packaged for host architecture {0}")]
     UnsupportedHostArchitecture(String),
+    #[error(
+        "Windows apps are not available on this Tilo image: it was built without the x86 \
+         Windows provider for ARM. The Windows VM remains available where installed."
+    )]
+    WindowsProviderNotIncluded,
     #[error(transparent)]
     Capsule(#[from] CapsuleError),
     #[error("VM route was sent to the capsule planner")]
@@ -908,6 +951,7 @@ pub enum PlanError {
 
 #[cfg(test)]
 mod tests {
+    const TEST_REGISTRY: SystemRuntimeRegistry = SystemRuntimeRegistry::assuming_provider();
     use compat_catalogue::{
         ApplicationQuery, MatchKind, RunnerSettings, Runtime, SecurityProfileRef,
     };
@@ -1157,6 +1201,24 @@ mod tests {
     }
 
     #[test]
+    fn arm_capsules_require_the_assembled_translated_provider() {
+        assert!(
+            require_translated_provider(Some(r#"{"provider":"fex-traditional-wine"}"#)).is_ok()
+        );
+        for manifest in [
+            Some(r#"{"schema_version":1,"host_architecture":"aarch64","provider":"none"}"#),
+            Some(r#"{"provider":"native-wine"}"#),
+            Some("not json"),
+            None,
+        ] {
+            assert!(matches!(
+                require_translated_provider(manifest),
+                Err(PlanError::WindowsProviderNotIncluded)
+            ));
+        }
+    }
+
+    #[test]
     fn unknown_host_architecture_fails_closed() {
         let error = SystemRuntimeRegistry::resolve_for_host(
             Layer::Wine,
@@ -1215,7 +1277,7 @@ mod tests {
             .environment
             .insert("LD_PRELOAD".to_string(), "/home/user/evil.so".to_string());
         let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::new();
+        let registry = SystemRuntimeRegistry::assuming_provider();
         let host = session();
         let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
         let error = planner
@@ -1235,7 +1297,7 @@ mod tests {
     fn wine_plan_is_default_deny_and_uses_fixed_artifacts() {
         let route = route(Layer::Wine);
         let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::new();
+        let registry = SystemRuntimeRegistry::assuming_provider();
         let host = session();
         let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
         let command = planner
@@ -1337,7 +1399,7 @@ mod tests {
         let route = route(Layer::Wine);
         let (directory, store, state, program) = setup(&route);
         let session = session();
-        let planner = SandboxPlanner::new(&store, &SystemRuntimeRegistry, &session).unwrap();
+        let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &session).unwrap();
         let mut command = planner
             .plan(
                 &route,
@@ -1531,7 +1593,7 @@ mod tests {
             host.render_node.exists(),
             "provide a dummy render-node bind source"
         );
-        let planner = SandboxPlanner::new(&store, &SystemRuntimeRegistry, &host).unwrap();
+        let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &host).unwrap();
         let mut command = planner
             .plan(
                 &route,
@@ -1620,7 +1682,7 @@ mod tests {
         let route = route(Layer::Proton);
         let (_directory, store, state, program) = setup(&route);
         let host = session();
-        let planner = SandboxPlanner::new(&store, &SystemRuntimeRegistry, &host).unwrap();
+        let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &host).unwrap();
         let command = planner
             .plan(
                 &route,
@@ -1677,7 +1739,7 @@ mod tests {
         for layer in [Layer::Wine, Layer::Proton] {
             let route = route(layer);
             let (_directory, store, state, program) = setup(&route);
-            let registry = SystemRuntimeRegistry::new();
+            let registry = SystemRuntimeRegistry::assuming_provider();
             let host = session();
             let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
             let command = planner
@@ -1713,7 +1775,7 @@ mod tests {
     fn microphone_capsule_uses_brokered_audio_without_raw_sound_device() {
         let route = route(Layer::Wine);
         let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::new();
+        let registry = SystemRuntimeRegistry::assuming_provider();
         let host = session();
         let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
         let capabilities = CapabilityPlan {
@@ -1782,7 +1844,7 @@ mod tests {
         let data = store.root().join("capsules").join(&state.id).join("data");
         std::fs::remove_dir_all(&data).unwrap();
         symlink(outside.path(), &data).unwrap();
-        let registry = SystemRuntimeRegistry::new();
+        let registry = SystemRuntimeRegistry::assuming_provider();
         let host = session();
         let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
 
@@ -1808,7 +1870,7 @@ mod tests {
     fn proton_plan_uses_umu_and_protonpath_without_blocking_its_nested_runtime() {
         let route = route(Layer::Proton);
         let (_directory, store, state, program) = setup(&route);
-        let registry = SystemRuntimeRegistry::new();
+        let registry = SystemRuntimeRegistry::assuming_provider();
         let host = session();
         let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
         let command = planner
