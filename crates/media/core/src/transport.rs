@@ -16,6 +16,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use tilo_automerge::ApplyIncoming;
 
 /// Playhead drift (ms) beyond which a follower hard-seeks to the host instead
 /// of letting the small gap ride. Below it the follower stays in sync by simply
@@ -168,7 +169,7 @@ impl CrdtTransport {
     /// Returns the underlying automerge error if `bytes` is not a valid
     /// incremental change set.
     pub fn merge_incremental(&mut self, bytes: &[u8]) -> Result<(), automerge::AutomergeError> {
-        self.doc.load_incremental(bytes).map(|_| ())
+        self.doc.load_incoming(bytes).map(|_| ())
     }
 
     /// Merge a full saved document from a peer (the legacy / late-join
@@ -180,7 +181,7 @@ impl CrdtTransport {
     /// document, or if merging it into the local document fails.
     pub fn merge_snapshot(&mut self, bytes: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut other = AutoCommit::load(bytes)?;
-        self.doc.merge(&mut other).map(|_| ())
+        self.doc.merge_incoming(&mut other).map(|_| ())
     }
 
     fn read_u64(&self, key: &str) -> Option<u64> {

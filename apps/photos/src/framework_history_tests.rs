@@ -3,6 +3,7 @@ use crate::{
     doc::PhotosDoc,
     model::{Edits, OpenImage, PhotoLibrary},
 };
+use tilo_automerge::ApplyIncoming;
 use ui::widget::Widget;
 
 #[test]
@@ -694,7 +695,7 @@ fn supported_conflict_branches_preview_without_flattening_but_restore_refuses_co
     let mut peer = doc.fork();
     PhotosDoc::set_image(&mut doc, Some(&OpenImage::from_path("one.png", 4, 3)));
     PhotosDoc::set_image(&mut peer, Some(&OpenImage::from_path("two.png", 4, 3)));
-    doc.merge(&mut peer).unwrap();
+    doc.merge_incoming(&mut peer).unwrap();
     let heads = doc.get_heads();
     let mut controller = HistoryController::new(
         HistoryResource::new("p", "r", "so.tilo.photos", ui::RecordId::for_tab(8)),

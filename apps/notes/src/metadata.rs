@@ -133,6 +133,7 @@ mod tests {
     use super::*;
     use crate::actions::{self, NotesAction};
     use tilo_actions::Action;
+    use tilo_automerge::ApplyIncoming;
     #[allow(
         clippy::needless_pass_by_value,
         reason = "test helper models handing an owned action to the production executor"
@@ -285,8 +286,8 @@ mod tests {
         second_index.sync(&mut second);
         assert_eq!(first_index.get(page).edited, Some(200));
         assert_eq!(second_index.get(page).edited, Some(300));
-        first.merge(&mut second).unwrap();
-        second.merge(&mut first).unwrap();
+        first.merge_incoming(&mut second).unwrap();
+        second.merge_incoming(&mut first).unwrap();
         first_index.sync(&mut first);
         second_index.sync(&mut second);
         assert_eq!(
