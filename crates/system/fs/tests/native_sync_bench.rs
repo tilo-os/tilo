@@ -639,7 +639,26 @@ fn read_big(path: &Path, seed: u64, edits: &[(u64, u64, u64)], size: u64) {
         let n = BLOCK.min((size - off) as usize);
         f.read_exact(&mut got[..n]).unwrap();
         expected(seed, edits, off, &mut want[..n]);
-        assert!(got[..n] == want[..n], "bytes differ at {off}");
+        if got[..n] != want[..n] {
+            let first = got[..n]
+                .iter()
+                .zip(&want[..n])
+                .position(|(a, b)| a != b)
+                .unwrap();
+            let last = n - got[..n]
+                .iter()
+                .zip(&want[..n])
+                .rev()
+                .position(|(a, b)| a != b)
+                .unwrap();
+            let zeros = got[first..last].iter().all(|b| *b == 0);
+            panic!(
+                "bytes differ in {}..{} (read block at {off}; the wrong bytes are {})",
+                off + first as u64,
+                off + last as u64,
+                if zeros { "all zero" } else { "not zero" }
+            );
+        }
         off += n as u64;
     }
 }
