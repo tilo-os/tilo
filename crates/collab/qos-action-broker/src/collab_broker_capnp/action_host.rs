@@ -876,7 +876,7 @@ impl CapnpBrokerState {
             .find(|(workspace, _, _)| workspace.room.to_string() == room)
         else {
             return Err(ActionHostError::UnknownAction);
-        }
+        };
         if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
             && address.action == APPLICATION_OPEN_ACTION
         {

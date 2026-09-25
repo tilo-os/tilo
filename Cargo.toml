@@ -556,6 +556,9 @@ web-transport-proto = { path = "vendor/web-transport-proto" }
 # Adds `Request::from_parts` so one QUIC endpoint serves plain HTTP/3 delivery
 # requests and WebTransport. See vendor/web-transport-quinn/PROVENANCE.md.
 web-transport-quinn = { path = "vendor/web-transport-quinn" }
+# One kio: the vendored MoQ copy is a workspace member, so the registry copy
+# web-transport-quinn names would make `-p kio` ambiguous for CI selection.
+kio = { path = "vendor/moq/rs/kio" }
 # Keep native archive inputs independent of registry filesystem enumeration.
 # See vendor/openh264-sys2/TILO-PATCH.md.
 openh264-sys2 = { path = "vendor/openh264-sys2" }
