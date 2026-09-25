@@ -2155,6 +2155,10 @@ impl TopBarChrome {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_widget_editor(
         &mut self,
         scene: &mut Scene,
@@ -2633,13 +2637,13 @@ impl TopBarChrome {
         let pct_size = tokens.typography.scale.xs;
         // The unread count rides beside the bell; its width is measured
         // here so the pill is sized for it before anything is painted.
-        let badge_w = (self.notification_badge > 0)
-            .then(|| {
-                let label = Self::notification_badge_label(self.notification_badge);
-                let (w, h) = text_renderer.measure(&label, pct_size, None);
-                Self::notification_badge_size(w, h, theme).0
-            })
-            .unwrap_or(0.0);
+        let badge_w = if self.notification_badge > 0 {
+            let label = Self::notification_badge_label(self.notification_badge);
+            let (w, h) = text_renderer.measure(&label, pct_size, None);
+            Self::notification_badge_size(w, h, theme).0
+        } else {
+            0.0
+        };
 
         let has_volume = self.status.volume.is_some();
         let has_link = self.status.link.is_some();
@@ -3215,11 +3219,12 @@ impl TopBarChrome {
         center_y: f64,
         right_x: f64,
     ) -> f64 {
-        let (viewers, controllers, _) = self.sharing_summary();
-        if viewers == 0 {
+        let (_, controllers, _) = self.sharing_summary();
+        // A sharing label exists exactly when someone is viewing.
+        let Some(label) = self.sharing_label() else {
             self.sharing_indicator_rect = Rect::ZERO;
             return right_x;
-        }
+        };
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let color = if controllers > 0 {
@@ -3227,9 +3232,6 @@ impl TopBarChrome {
         } else {
             colors.accent[5]
         };
-        let label = self
-            .sharing_label()
-            .expect("a non-empty sharing summary has glance text");
         let size = tokens.typography.scale.xs;
         let available = (right_x - self.center_rect.x1 - 48.0).clamp(28.0, 180.0);
         let label = text_renderer.elide_to_width_weighted(

@@ -30,7 +30,11 @@ pub fn timecode(seconds: f64, fps: f64) -> String {
 /// frame field — the bin is a glance, not a scrub.
 pub fn clock(seconds: f64) -> String {
     let seconds = seconds.max(0.0);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to zero above; a clip longer than u64 seconds does not exist"
+    )]
     let total = seconds.round() as u64;
     ui::format::timecode(total)
 }
@@ -85,11 +89,11 @@ mod tests {
 /// refusing, because the user would not know where they had gone.
 pub fn parse(input: &str, fps: f64) -> Option<f64> {
     let fps = if fps <= 0.0 { 30.0 } else { fps };
-    let t = input.trim();
-    if t.is_empty() {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    let parts: Vec<&str> = t.split(':').collect();
+    let parts: Vec<&str> = trimmed.split(':').collect();
     if parts.len() > 4 {
         return None;
     }
@@ -97,8 +101,8 @@ pub fn parse(input: &str, fps: f64) -> Option<f64> {
         .iter()
         .map(|p| p.trim().parse::<f64>().ok().filter(|v| *v >= 0.0))
         .collect();
-    let n = nums?;
-    Some(match n.as_slice() {
+    let fields = nums?;
+    Some(match fields.as_slice() {
         [s] => *s,
         [m, s] => m * 60.0 + s,
         [m, s, f] => m * 60.0 + s + f / fps,

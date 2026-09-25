@@ -1,4 +1,4 @@
-"""Contract for the dev VM disk workflow and its request from the OS release."""
+"""Contract for publishing dev VM disks: per architecture, from the lane that booted them."""
 
 from pathlib import Path
 import re
@@ -8,6 +8,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".forgejo/workflows/dev-disk.yml"
 OS_RELEASE = ROOT / ".forgejo/workflows/build-image.yml"
+PUBLISH = ROOT / "os/dev/publish-dev-disk.sh"
+CHECK = ROOT / "os/dev/check-dev-vm.sh"
 
 
 def job(source: str, name: str) -> str:
@@ -33,7 +35,9 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("  workflow_dispatch:\n", triggers)
         for event in ("push:", "pull_request:", "schedule:"):
             self.assertNotIn(event, triggers)
-        self.assertIn("group: tilo-vm-disk\n  cancel-in-progress: false", self.source)
+        # Per-architecture requests must not replace each other while queued.
+        self.assertIn("group: tilo-vm-disk-${{ github.event.inputs.tag }}-", self.source)
+        self.assertIn("${{ github.event.inputs.architectures }}", self.source)
 
     def test_native_lanes_and_formats_are_one_entry_away(self) -> None:
         plan = job(self.source, "plan")
@@ -46,6 +50,7 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn('default: "qcow2"', self.source)
         build = job(self.source, "build")
         self.assertIn("matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}", build)
+        self.assertIn("fail-fast: false", build)
         self.assertIn('./os/dev/assert-native-arch.sh "$ARCH"', build)
 
     def test_arm_disk_build_uses_measured_native_overlay(self) -> None:
@@ -64,6 +69,15 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertLess(build.index("Use native Podman overlay"), build.index("Authenticate to the image registry"))
         self.assertIn("podman login", login)
 
+    def test_architectures_never_wait_for_each_other(self) -> None:
+        # No job joins the architectures: each lane publishes itself.
+        self.assertNotIn("\n  publish:\n", self.source)
+        self.assertNotIn("download-artifact", self.source)
+        build = job(self.source, "build")
+        publish = step(build, "Publish this architecture's dev image and disk")
+        self.assertIn("./os/dev/publish-dev-disk.sh", publish)
+        self.assertIn("CHANNEL: ${{ needs.plan.outputs.channel }}", publish)
+
     def test_dev_image_builds_on_the_verified_same_source_base(self) -> None:
         build = job(self.source, "build")
         self.assertIn("ref: ${{ needs.plan.outputs.source }}", build)
@@ -78,12 +92,15 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn('.Labels["org.opencontainers.image.revision"] // empty', verify)
         self.assertIn('== "$SOURCE_REVISION"', verify)
         image = step(build, "Build the dev image FROM the verified base")
-        self.assertIn("--file os/Containerfile.dev", image)
-        self.assertIn('--build-arg "BASE_IMAGE=$BASE_CHILD"', image)
+        # The recipe developers run, FROM the verified child digest.
+        self.assertIn("./os/dev/build-dev-image.sh", image)
+        self.assertIn('podman pull "$BASE_CHILD"', image)
+        self.assertIn('TILO_DEV_BASE="$BASE_CHILD"', image)
         self.assertIn("BASE_CHILD: ${{ steps.base.outputs.child }}", image)
+        self.assertNotIn("--file os/Containerfile.dev", self.source)
         self.assertLess(build.index("Resolve and verify"), build.index("Build the dev image"))
 
-    def test_disk_is_sealed_booted_then_published(self) -> None:
+    def test_disk_is_installed_booted_then_published(self) -> None:
         build = job(self.source, "build")
         disk = step(build, "Install the dev image to a bootable disk")
         self.assertIn('TILO_SKIP_BUILD: "1"', disk)
@@ -92,34 +109,21 @@ class DevDiskWorkflowTests(unittest.TestCase):
             "TILO_TARGET_IMGREF: code.podesta.ai/qos/tilo-vm:${{ needs.plan.outputs.tag }}",
             disk,
         )
-        smoke = step(build, "Boot the disk and reach it over SSH")
+        smoke = step(build, "Boot the disk and reach tilo-vmd over SSH")
         self.assertIn('qemu-img create -f qcow2 -F qcow2 -b "$TILO_DISK"', smoke)
-        self.assertIn("./os/dev/vm.sh ssh true", smoke)
+        self.assertIn('./os/dev/check-dev-vm.sh --arch "$ARCH" --base-digest "$BASE_CHILD_DIGEST"', smoke)
         order = [
+            "Build the dev image FROM the verified base",
             "Install the dev image to a bootable disk",
-            "Boot the disk and reach it over SSH",
-            "Push the dev image child",
-            "Convert, hash and describe the disks",
-            "Publish the immutable disks",
+            "Boot the disk and reach tilo-vmd over SSH",
+            "Publish this architecture's dev image and disk",
         ]
         positions = [build.index(f"- name: {name}") for name in order]
         self.assertEqual(positions, sorted(positions))
 
-    def test_disks_use_immutable_generic_packages(self) -> None:
-        build = job(self.source, "build")
-        convert = step(build, "Convert, hash and describe the disks")
-        self.assertIn("-O qcow2 -c -o compression_type=zstd", convert)
-        self.assertIn("-O vhdx -o subformat=dynamic", convert)
-        publish = step(build, "Publish the immutable disks")
-        self.assertIn("TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish)
-        self.assertIn('"$package_api/tilo-vm-disk/$DEV_TAG/$file"', publish)
-        self.assertIn("tools/upload_immutable_packages.sh", publish)
-        self.assertNotIn("actions/cache", self.source)
-
     def test_uploads_use_the_package_token_without_an_integration_audience(self) -> None:
-        manifest = step(job(self.source, "publish"), "Publish the disk manifest")
-        self.assertIn("TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", manifest)
-        self.assertIn("tools/upload_immutable_packages.sh", manifest)
+        publish = step(job(self.source, "build"), "Publish this architecture's dev image and disk")
+        self.assertIn("TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}", publish)
         # The token must reach the uploader only through the step environment,
         # never on a command line.
         self.assertNotIn('TILO_PACKAGE_TOKEN="', self.source)
@@ -127,27 +131,10 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertNotIn("ACTIONS_ID_TOKEN_REQUEST", self.source)
         self.assertNotIn("enable-openid-connect", self.source)
 
-    def test_manifest_commits_after_the_durable_tag_and_latest_moves_last(self) -> None:
-        publish = job(self.source, "publish")
-        order = [
-            "Assemble the tilo-vm index and disk manifest",
-            "Publish the disk manifest",
-            "Advance tilo-vm:latest",
-        ]
-        positions = [publish.index(f"- name: {name}") for name in order]
-        self.assertEqual(positions, sorted(positions))
-        assemble = step(publish, "Assemble the tilo-vm index and disk manifest")
-        self.assertIn("already binds", assemble)
-        for field in ("tag:", "baseDigest:", "arch:", "format:", "sha256:", "size:"):
-            self.assertIn(field, assemble)
-        latest = step(publish, "Advance tilo-vm:latest")
-        self.assertIn("if: needs.plan.outputs.channel == 'true'", latest)
-        self.assertIn("git merge-base --is-ancestor", latest)
-
     def test_dev_images_are_never_release_signed(self) -> None:
-        self.assertNotIn("COSIGN_KEY_REF", self.source)
-        self.assertNotRegex(self.source, r"cosign (?:sign|attest)")
-
+        for source in (self.source, PUBLISH.read_text(encoding="utf-8"), CHECK.read_text(encoding="utf-8")):
+            self.assertNotIn("COSIGN_KEY_REF", source)
+            self.assertNotRegex(source, r"cosign (?:sign|attest)")
 
     def test_base_trust_follows_the_repository(self) -> None:
         plan = job(self.source, "plan")
@@ -155,36 +142,125 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("trust=integration", plan)
         self.assertIn("suffix=-ci", plan)
         self.assertIn('[[ $trust == release || $tag == *-ci ]]', plan)
-        assemble = step(job(self.source, "publish"), "Assemble the tilo-vm index and disk manifest")
-        self.assertIn("baseTrust: $lanes[0].baseTrust", assemble)
+        # Room for the -<arch> suffix of the child tag within 128 characters.
+        self.assertIn("{0,119}$", plan)
 
 
-class OsReleaseRequestsDevDisksTests(unittest.TestCase):
+class PublishScriptTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.request = job(OS_RELEASE.read_text(encoding="utf-8"), "dispatch-dev-disk")
+        self.source = PUBLISH.read_text(encoding="utf-8")
 
-    def test_published_release_requests_disks_for_its_exact_digest(self) -> None:
-        self.assertIn("needs: [plan, promote-multiarch, promote-integration]", self.request)
-        self.assertIn("needs.promote-multiarch.result == 'success'", self.request)
-        self.assertIn("name: tilo-os-release-index", self.request)
-        self.assertIn("actions/workflows/dev-disk.yml/dispatches", self.request)
-        self.assertIn("source_revision:$source,base_image:$base,tag:$tag", self.request)
-        self.assertIn('architectures:"x86_64 aarch64",formats:"qcow2"', self.request)
+    def test_writes_child_index_disks_manifest_then_latest(self) -> None:
+        order = [
+            'podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$child_tag"',
+            'podman manifest push --all "$list" "docker://$index_tag"',
+            'TILO_PACKAGE_UPLOAD_WORKERS=2 "$REPO/tools/upload_immutable_packages.sh" "$uploads"',
+            '"$REPO/tools/upload_immutable_packages.sh" "$uploads"\nrm -f "$uploads"',
+            'skopeo copy --all "docker://$REPOSITORY@$target" "docker://$latest"',
+        ]
+        positions = [self.source.index(marker) for marker in order]
+        self.assertEqual(positions, sorted(positions))
 
-    def test_unpromoted_main_builds_request_disks_from_their_dev_trust_image(self) -> None:
-        self.assertIn("needs.promote-integration.result == 'success'", self.request)
-        self.assertIn("needs.plan.outputs.skip != 'true'", self.request)
-        self.assertIn("name: tilo-os-integration-index", self.request)
-        self.assertIn("integration-index/tilo-os-integration-index.json", self.request)
-        self.assertIn("select(.sourceRevision == $source) | .image", self.request)
-        self.assertIn('^code\\.podesta\\.ai/qos/tilo-ci@sha256:[0-9a-f]{64}$', self.request)
-        self.assertIn('tag="main-${GITHUB_SHA:0:7}-ci"', self.request)
-        source = OS_RELEASE.read_text(encoding="utf-8")
-        push = step(source, "Publish the dev-trust integration image")
-        self.assertIn("github.ref == 'refs/heads/main'", push)
+    def test_each_architecture_commits_its_own_manifest(self) -> None:
+        self.assertIn('manifest_file="tilo-vm-disk-$ARCH.json"', self.source)
+        self.assertIn('child_tag="$REPOSITORY:$DEV_TAG-$ARCH"', self.source)
+        # A committed architecture is never republished.
+        self.assertIn('already publishes $ARCH', self.source)
+        for field in ("tag:", "arch:", "sourceRevision:", "imageDigest:", "baseDigest:", "baseTrust:", "disks:"):
+            self.assertIn(field, self.source)
+
+    def test_index_is_rebuilt_from_children_until_a_read_agrees(self) -> None:
+        self.assertIn('for arch in x86_64 aarch64; do', self.source)
+        self.assertIn('== "$SOURCE_REVISION" ]] || continue', self.source)
+        self.assertIn('another $ARCH lane is publishing', self.source)
+        self.assertIn('did not converge on the published children', self.source)
+
+    def test_integration_bases_publish_only_ci_tags(self) -> None:
+        self.assertIn("integration:code.podesta.ai/qos/tilo-ci) [[ $DEV_TAG == *-ci ]]", self.source)
+        self.assertIn("release:code.podesta.ai/qos/tilo) ;;", self.source)
+
+    def test_latest_moves_only_forward_on_the_channel(self) -> None:
+        self.assertIn("[[ $CHANNEL == true ]] || exit 0", self.source)
+        self.assertIn('merge-base --is-ancestor "$1" "$SOURCE_REVISION"', self.source)
+
+    def test_disks_use_immutable_generic_packages(self) -> None:
+        self.assertIn("-O qcow2 -c -o compression_type=zstd", self.source)
+        self.assertIn("-O vhdx -o subformat=dynamic", self.source)
+        self.assertIn('package="$package_api/tilo-vm-disk/$DEV_TAG"', self.source)
+        self.assertIn("*'.svc.cluster.local'*", self.source)
+
+
+class DevVmCheckTests(unittest.TestCase):
+    def test_tilo_vmd_answers_as_root_for_the_expected_arch_and_base(self) -> None:
+        source = CHECK.read_text(encoding="utf-8")
+        self.assertIn('"method":"hello"', source)
+        self.assertIn("sudo -n tilo-vmd rpc", source)
+        self.assertIn(".result.arch == $arch", source)
+        self.assertIn(".result.base.image_digest == $base", source)
+
+
+class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = OS_RELEASE.read_text(encoding="utf-8")
+        self.lane = job(self.source, "build-and-push")
+
+    def test_no_run_waits_on_every_lane_before_a_dev_disk(self) -> None:
+        self.assertNotIn("dispatch-dev-disk:", self.source)
+
+    def test_integration_gates_the_dev_image_built_from_this_lane(self) -> None:
+        gate = step(self.lane, "Reseal, install, boot, and stage the verified image")
+        self.assertIn("DEV_GATE: ${{ steps.release-mode.outputs.dev-gate }}", gate)
+        self.assertIn('TILO_DEV_BASE="$dev_base"', gate)
+        self.assertIn("./os/dev/build-dev-image.sh", gate)
+        # No registry round trip: the base is this lane's own image.
+        self.assertIn('podman tag "$first_tag" "$dev_base"', gate)
+        self.assertNotIn("podman pull", gate)
+        # One install per lane: the prod install only in the other branch.
+        dev = gate.index("if [[ $DEV_GATE == true ]]; then")
+        prod = gate.index("./os/dev/build-image.sh", dev)
+        self.assertLess(gate.index("          else\n", dev), prod)
+        # Same desktop gate, then tilo-vmd.
+        self.assertIn("./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock", gate)
+        self.assertLess(
+            gate.index("native-atspi-smoke.sh lock"),
+            gate.index('./os/dev/check-dev-vm.sh --arch'),
+        )
+        self.assertIn('qemu-img create -f qcow2 -F qcow2 -b "$DEV_OUTPUT/qcow2/disk.qcow2" "$TILO_DISK"', gate)
+
+    def test_the_lane_publishes_its_own_architecture(self) -> None:
+        publish = step(self.lane, "Publish this architecture's dev image and disk")
+        self.assertIn("steps.release-mode.outputs.dev-gate == 'true'", publish)
+        self.assertIn("steps.dev-image.outcome == 'success'", publish)
+        self.assertIn("./os/dev/publish-dev-disk.sh", publish)
+        self.assertIn("BASE_REPOSITORY: code.podesta.ai/qos/tilo-ci", publish)
+        self.assertIn("BASE_TRUST: integration", publish)
+        self.assertIn("DEV_TAG: ${{ steps.release-mode.outputs.dev-series }}-ci", publish)
+        self.assertLess(
+            self.lane.index("- name: Reseal, install, boot, and stage the verified image"),
+            self.lane.index("- name: Publish this architecture's dev image and disk"),
+        )
+
+    def test_dev_trust_image_is_pushed_unsigned(self) -> None:
+        push = step(self.lane, "Publish the dev-trust integration image")
+        self.assertIn("steps.release-mode.outputs.dev-series != ''", push)
         self.assertIn("continue-on-error: true", push)
-        self.assertIn('ref="code.podesta.ai/qos/tilo-ci:main-${GITHUB_SHA:0:7}-$ARCH"', push)
+        self.assertIn('ref="code.podesta.ai/qos/tilo-ci:$DEV_SERIES-$ARCH"', push)
         self.assertNotRegex(push, r"cosign (?:sign|attest)")
+        mode = step(self.lane, "Select build, validation, or publication mode")
+        self.assertIn('series="main-${GITHUB_SHA:0:7}"', mode)
+        self.assertIn('echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]]', mode)
+
+    def test_publication_requests_its_architecture_from_the_signed_child(self) -> None:
+        request = step(self.lane, "Request this architecture's dev disk from the signed child")
+        self.assertIn("steps.release-mode.outputs.publish == 'true'", request)
+        self.assertIn("continue-on-error: true", request)
+        self.assertIn("IMAGE: code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}", request)
+        self.assertIn("architectures:$arch", request)
+        self.assertIn("actions/workflows/dev-disk.yml/dispatches", request)
+        self.assertLess(
+            self.lane.index("- name: Verify and describe the native release child"),
+            self.lane.index("- name: Request this architecture's dev disk from the signed child"),
+        )
 
 
 if __name__ == "__main__":

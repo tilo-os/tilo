@@ -155,7 +155,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "room.activity.open" => {
             contract = ActionContract::view();
         }
-        "identity.connect" | "identity.select" => {
+        "identity.connect" | "identity.select" | "identity.device.revoke" => {
             contract.permission = PermissionRequirement::Admin;
             contract.risk = RiskLevel::Privileged;
             contract.confirmation = ConfirmationPolicy::Confirm;
@@ -163,26 +163,19 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "identity.devices.copy" | "identity.device.enroll" | "identity.home-peer.enroll" => {
             contract.permission = PermissionRequirement::Admin;
         }
-        "identity.device.revoke" => {
-            contract.permission = PermissionRequirement::Admin;
-            contract.risk = RiskLevel::Privileged;
-            contract.confirmation = ConfirmationPolicy::Confirm;
-        }
         "peer.invite.named" | "agent.invite" => {
             contract.permission = PermissionRequirement::Invite;
         }
         "peer.invite" | "peer.connect" => contract = ActionContract::view(),
-        "text.insert" | "record.bring" => {
-            contract.permission = PermissionRequirement::Write;
-            contract.reversible = true;
-        }
-        "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => {
-            contract.permission = PermissionRequirement::Write;
-            contract.reversible = true;
-        }
         // Moving a tab between groups is layout, undone by moving it back;
         // closing one is not — its content is gone from the workspace.
-        "tab.split-right" | "tab.move-to-new-group" => {
+        "text.insert"
+        | "record.bring"
+        | "tab.new.terminal.here"
+        | "window.new.terminal"
+        | "tab.duplicate"
+        | "tab.split-right"
+        | "tab.move-to-new-group" => {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
         }
@@ -622,7 +615,7 @@ fn require_explicit_confirmation(args: &ActionArgs, action: &str) -> Result<(), 
     }
 }
 
-fn name_invited_peer(state: &mut ChromeState, args: &ActionArgs) -> Result<String, ActionError> {
+fn name_invited_peer(state: &ChromeState, args: &ActionArgs) -> Result<String, ActionError> {
     let peer = args.text("peer").unwrap_or_default().trim().to_string();
     let name = args.text("name").unwrap_or_default().trim().to_string();
     if peer.is_empty() {
@@ -1778,7 +1771,38 @@ impl SearchProvider for ActionsProvider {
     fn available_in_active_app_scope(&self) -> bool {
         true
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the catalog lists every shell action with its contract in one table-like pass"
+    )]
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
+            (
+                QS_BRIGHTNESS_ID,
+                "Set display brightness",
+                "Set this device's backlight percentage",
+            ),
+            (
+                QS_VOLUME_ID,
+                "Set output volume",
+                "Set this device's default audio output percentage",
+            ),
+            (
+                QS_WIFI_ID,
+                "Set Wi-Fi enabled state",
+                "Enable or disable this device's Wi-Fi radio",
+            ),
+            (
+                QS_POWER_ID,
+                "Set power profile",
+                "Choose saver, balanced, or performance for this device",
+            ),
+            (
+                QS_VPN_ID,
+                "Set VPN enabled state",
+                "Enable or disable one named VPN connection on this device",
+            ),
+        ];
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
@@ -1897,13 +1921,17 @@ impl SearchProvider for ActionsProvider {
                                         crate::shell::overlay_host::PeerSyncAction::PromptConnect
                                     }
                                     "peer.invite.named" => {
-                                        let name = name_invited_peer(&mut state, args)?;
+                                        let name = name_invited_peer(&state, args)?;
                                         state.bump();
                                         crate::shell::overlay_host::PeerSyncAction::IssueInviteFor {
                                             name,
                                             copy: false,
                                         }
                                     }
+                                    #[expect(
+                                        clippy::unreachable,
+                                        reason = "this closure is only built for the peer lifecycle ids matched above"
+                                    )]
                                     _ => unreachable!("matched peer lifecycle action"),
                                 };
                                 state.begin_peer_sync_request(request)
@@ -1966,33 +1994,6 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
-        const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
-            (
-                QS_BRIGHTNESS_ID,
-                "Set display brightness",
-                "Set this device's backlight percentage",
-            ),
-            (
-                QS_VOLUME_ID,
-                "Set output volume",
-                "Set this device's default audio output percentage",
-            ),
-            (
-                QS_WIFI_ID,
-                "Set Wi-Fi enabled state",
-                "Enable or disable this device's Wi-Fi radio",
-            ),
-            (
-                QS_POWER_ID,
-                "Set power profile",
-                "Choose saver, balanced, or performance for this device",
-            ),
-            (
-                QS_VPN_ID,
-                "Set VPN enabled state",
-                "Enable or disable one named VPN connection on this device",
-            ),
-        ];
         for &(id, label, subtitle) in QUICK_SETTINGS_ACTIONS {
             let Some(score) = match_score(
                 &needle_lower,

@@ -1,5 +1,9 @@
 //! Stateless paint, text-fit, and canvas geometry helpers for the editor.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 pub(super) use ui::paint::{fill_rect, fill_round, stroke_round};
 
@@ -20,7 +24,7 @@ pub(super) fn on_fill(theme: &Theme, fill: Color) -> (Color, Color) {
 /// exactly one font size and drifted the moment one changed.
 pub(super) fn text_baseline(rect: Rect, size: f32, tr: &mut TextRenderer) -> f64 {
     let (_, h) = tr.measure("Hg", size, None);
-    rect.center().y - h as f64 / 2.0
+    rect.center().y - f64::from(h) / 2.0
 }
 
 /// Top-left corner for `s` drawn centred both ways inside `rect`.
@@ -33,8 +37,8 @@ pub(super) fn text_centre(
 ) -> Point {
     let (w, h) = tr.measure_weighted(s, size, None, weight);
     Point::new(
-        rect.center().x - w as f64 / 2.0,
-        rect.center().y - h as f64 / 2.0,
+        rect.center().x - f64::from(w) / 2.0,
+        rect.center().y - f64::from(h) / 2.0,
     )
 }
 
@@ -58,9 +62,10 @@ pub(super) fn clip_inner_rect(cr: Rect) -> Rect {
 /// The file's own name, for a message about it — never the whole path, which
 /// would run off the notice line.
 pub(super) fn display_name(path: &Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    path.file_name().map_or_else(
+        || path.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Honest, human-readable summary of an import batch. Never claims a success
@@ -140,8 +145,8 @@ pub(super) fn blit_thumb(
     radius: f64,
 ) {
     use vello::peniko::ImageBrush;
-    let iw = thumb.width as f64;
-    let ih = thumb.height as f64;
+    let iw = f64::from(thumb.width);
+    let ih = f64::from(thumb.height);
     if iw <= 0.0 || ih <= 0.0 || dest.width() <= 0.0 || dest.height() <= 0.0 {
         return;
     }
@@ -181,8 +186,11 @@ pub(super) fn hatch_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect
     );
     let step = 9.0;
     let stroke = Stroke::new(2.0);
-    let mut x = rect.x0 - rect.height();
-    while x < rect.x1 {
+    let first = rect.x0 - rect.height();
+    let stripes = (0u32..)
+        .map(|k| first + f64::from(k) * step)
+        .take_while(|&x| x < rect.x1);
+    for x in stripes {
         scene.stroke(
             &stroke,
             tf,
@@ -193,10 +201,13 @@ pub(super) fn hatch_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect
                 Point::new(x + rect.height(), rect.y0),
             ),
         );
-        x += step;
     }
     scene.pop_layer();
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a paint primitive: scene and transform, colour, both endpoints and the width"
+)]
 pub(super) fn stroke_line(
     scene: &mut Scene,
     tf: Affine,
@@ -215,6 +226,10 @@ pub(super) fn stroke_line(
         &Line::new(Point::new(x0, y0), Point::new(x1, y1)),
     );
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a paint primitive: scene, text context and transform, the run, its size, colour and origin"
+)]
 pub(super) fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -258,6 +273,10 @@ pub(super) fn text_w(
 /// that own their own hit-testing — so these buttons get the fleet's fill,
 /// border, hover, press and disabled treatment instead of a local
 /// approximation that had no hover state at all.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the paint context plus the button's rect, label and state flags"
+)]
 pub(super) fn draw_button(
     scene: &mut Scene,
     tf: Affine,
@@ -308,6 +327,10 @@ pub(super) fn draw_icon_button(
 /// [`draw_button`] plus an explicit enabled flag, so a control the app cannot
 /// actually perform is painted with the toolkit's own disabled treatment
 /// instead of an inviting primary fill it will only refuse.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the paint context plus the button's rect, label and state flags"
+)]
 pub(super) fn draw_button_enabled(
     scene: &mut Scene,
     tf: Affine,
@@ -427,6 +450,10 @@ pub(super) fn draw_track(
 /// shared [`ui::widget::ToggleGroup::paint`], so the transition row and the
 /// export dialog's option groups look like every other segmented control in
 /// the fleet — including a hover state, which the local painter had none of.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the paint context plus the segments, their labels, the selection and the pointer"
+)]
 pub(super) fn draw_segmented(
     scene: &mut Scene,
     tf: Affine,
@@ -455,6 +482,10 @@ pub(super) fn draw_segmented(
 /// inspector's PROJECT section, while "shuttling backwards at 8x" is stated
 /// nowhere else at all.
 #[derive(Debug, Default, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "each field is the x position of one readout part, named for the part"
+)]
 pub(super) struct ReadoutFit {
     pub(super) big_x: Option<f64>,
     pub(super) total_x: Option<f64>,
@@ -570,7 +601,7 @@ pub(super) fn draw_key_control(
 /// one readable thing that a test can drive directly.
 pub(super) fn title_edit_verdict(
     event: &WindowEvent,
-    modifiers: &winit::event::Modifiers,
+    modifiers: winit::event::Modifiers,
 ) -> Option<bool> {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return None;
@@ -606,6 +637,7 @@ pub(super) const ANCHOR_GLYPHS: [&str; 9] = ["↖", "↑", "↗", "←", "•", 
 /// different states, and a summary that showed only the first would hide the
 /// second.
 pub(super) fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
+    use std::fmt::Write as _;
     let shaped = clip.curves.shaped_channels();
     if shaped.is_empty() {
         return None;
@@ -620,7 +652,8 @@ pub(super) fn curve_summary(clip: &Clip, at: f64) -> Option<String> {
     if mix <= 1e-9 {
         s.push_str(" · bypassed");
     } else if mix < 0.999 {
-        s.push_str(&format!(" · {:.0}%", mix * 100.0));
+        // Writing into a `String` cannot fail.
+        let _ = write!(s, " · {:.0}%", mix * 100.0);
     }
     Some(s)
 }
@@ -1143,6 +1176,10 @@ pub(super) fn paint_icon_toggle(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the paint context plus the segments, their labels, the selection, the pointer and the text size"
+)]
 pub(super) fn draw_segmented_sized(
     scene: &mut Scene,
     tf: Affine,

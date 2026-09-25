@@ -352,52 +352,6 @@ fn mark_identity_recovery() {
     unsafe { std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1") };
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{ExistingIdentityFailureAction, existing_identity_failure_action};
-    use shell::compositor::Mode;
-    use std::io;
-
-    #[test]
-    fn only_native_desktop_startup_can_defer_an_invalid_existing_chain_to_recovery() {
-        let invalid_cert = io::Error::new(
-            io::ErrorKind::InvalidData,
-            "device certificate signature is invalid",
-        );
-        let unavailable_keyring = io::Error::from_raw_os_error(libc::ENOKEY);
-
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Native, &invalid_cert),
-            ExistingIdentityFailureAction::EnterTrustedRecovery,
-        );
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
-            ExistingIdentityFailureAction::FailClosed,
-            "transient keyring unavailability must not be presented as identity corruption",
-        );
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
-            ExistingIdentityFailureAction::FailClosed,
-        );
-        assert_eq!(
-            existing_identity_failure_action(true, Mode::Native, &invalid_cert),
-            ExistingIdentityFailureAction::FailClosed,
-        );
-    }
-
-    #[test]
-    fn native_recovery_does_not_mask_unrelated_startup_failures() {
-        let permission_denied = io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "identity directory is not private",
-        );
-        assert_eq!(
-            existing_identity_failure_action(false, Mode::Native, &permission_denied),
-            ExistingIdentityFailureAction::FailClosed,
-        );
-    }
-}
-
 fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::process::ExitCode {
     if provision_requested {
         eprintln!(
@@ -650,4 +604,50 @@ fn run_portal_server_only() -> std::process::ExitCode {
         eprintln!("error: failed to start the runtime for portal-only mode: {e}");
         std::process::ExitCode::FAILURE
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExistingIdentityFailureAction, existing_identity_failure_action};
+    use shell::compositor::Mode;
+    use std::io;
+
+    #[test]
+    fn only_native_desktop_startup_can_defer_an_invalid_existing_chain_to_recovery() {
+        let invalid_cert = io::Error::new(
+            io::ErrorKind::InvalidData,
+            "device certificate signature is invalid",
+        );
+        let unavailable_keyring = io::Error::from_raw_os_error(libc::ENOKEY);
+
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Native, &invalid_cert),
+            ExistingIdentityFailureAction::EnterTrustedRecovery,
+        );
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Native, &unavailable_keyring),
+            ExistingIdentityFailureAction::FailClosed,
+            "transient keyring unavailability must not be presented as identity corruption",
+        );
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Hosted, &invalid_cert),
+            ExistingIdentityFailureAction::FailClosed,
+        );
+        assert_eq!(
+            existing_identity_failure_action(true, Mode::Native, &invalid_cert),
+            ExistingIdentityFailureAction::FailClosed,
+        );
+    }
+
+    #[test]
+    fn native_recovery_does_not_mask_unrelated_startup_failures() {
+        let permission_denied = io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity directory is not private",
+        );
+        assert_eq!(
+            existing_identity_failure_action(false, Mode::Native, &permission_denied),
+            ExistingIdentityFailureAction::FailClosed,
+        );
+    }
 }
