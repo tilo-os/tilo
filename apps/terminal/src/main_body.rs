@@ -6807,6 +6807,12 @@ pub(crate) fn resolve_login_shell_with(
     "/bin/sh".into()
 }
 
+/// The command the best-effort route runs: the user's native shell as chosen
+/// by [`resolve_login_shell`], with the process environment inherited.
+pub(crate) fn login_shell_command() -> CommandBuilder {
+    CommandBuilder::new(resolve_login_shell())
+}
+
 /// The login shell recorded for the current real user in the passwd database
 /// (`pw_shell`). `None` if the entry is missing or has an empty shell field.
 #[cfg(unix)]
@@ -6911,8 +6917,7 @@ impl TerminalBackend {
                     "terminal: Tilo app confinement is not available here; \
                      starting your login shell directly"
                 );
-                let shell = resolve_login_shell();
-                Self::with_command(CommandBuilder::new(&shell))
+                Self::with_command(login_shell_command())
             }
         }
     }
