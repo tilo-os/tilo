@@ -1,3 +1,8 @@
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "fixture layouts are built from small constant entry counts"
+)]
 use super::*;
 fn put(b: &mut [u8], at: usize, value: u32) {
     b[at..at + 4].copy_from_slice(&value.to_ne_bytes());

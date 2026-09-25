@@ -1,3 +1,9 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 use super::*;
 use crate::bundle as internal_bundle;
 use crate::cache::fixture_platform as fixture;
@@ -99,7 +105,7 @@ fn fixture_worker_hook(
                 PreferenceStore::at(std::path::PathBuf::from(
                     "/nonexistent-tilo-fixture/selection.json",
                 )),
-            )
+            );
         });
         SETUP_HOOK.with(|h| *h.borrow_mut() = None);
         fail(None);
@@ -164,6 +170,10 @@ fn ranged(offset: usize, total: usize, byte: u8) -> Vec<u8> {
         &vec![byte; total - offset],
     )
 }
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a consumer callback must return the worker's `Result`"
+)]
 fn noop(
     _: &SelectedManifest,
     _: &Cancellation<'_>,
@@ -172,11 +182,13 @@ fn noop(
 ) -> Result<(), crate::error::Failure> {
     Ok(())
 }
+/// Per-component (requested, returned) read byte totals.
+type ReadCounts = Arc<Mutex<[(u64, u64); 2]>>;
 fn transfer_hook_worker(
     root: &Path,
     transport: InternalTransport,
     hook: impl FnMut(&str, u64, &Shared) + Send + 'static,
-    counts: Option<Arc<Mutex<[(u64, u64); 2]>>>,
+    counts: Option<ReadCounts>,
 ) -> Worker {
     let root = root.to_owned();
     Worker::spawn_runner(move |shared| {
@@ -193,8 +205,8 @@ fn transfer_hook_worker(
                     PreferenceStore::at(std::path::PathBuf::from(
                         "/nonexistent-tilo-fixture/selection.json",
                     )),
-                )
-            })
+                );
+            });
         });
         if let Some(counts) = counts {
             *counts.lock().unwrap() = [read_totals("restart"), read_totals("periodic")];
@@ -331,7 +343,7 @@ fn invalid_second_prefix_prevents_any_first_payload_transfer() {
                     active_flags(&shared).pause.store(true, Ordering::Release);
                 }
                 Ok(())
-            }))
+            }));
         });
     });
     worker.start(server.release(&bytes)).unwrap();
@@ -368,7 +380,7 @@ fn cancellation_during_each_creation_settles_zero_ownership_before_return() {
                             active_flags(&shared).cancel.store(true, Ordering::Release);
                         }
                         Ok(())
-                    }))
+                    }));
                 });
             });
         worker.start(server.release(&bytes)).unwrap();
@@ -406,7 +418,7 @@ fn failures_before_and_after_each_initialization_retain_exact_residue() {
                             } else {
                                 Ok(())
                             }
-                        }))
+                        }));
                     });
                 });
             worker.start(server.release(&bytes)).unwrap();
@@ -453,8 +465,8 @@ fn failed_second_publication_retains_first_final_and_reacquires_candidate() {
                 } else {
                     Ok(())
                 }
-            }))
-        })
+            }));
+        });
     });
     worker.start(server.release(&bytes)).unwrap();
     let failed = wait(&worker, Phase::Failed);
@@ -694,7 +706,7 @@ fn lost_reset_ack_does_not_truncate_until_fresh_reacquisition() {
     wait(&first, Phase::Paused);
     first.shutdown();
     let mut reset = fixture_worker_hook(root.path(), server.transport(), noop, |_| {
-        fail(Some("lost-ack"))
+        fail(Some("lost-ack"));
     });
     reset.start(server.release(&bytes)).unwrap();
     let failed = wait(&reset, Phase::Failed);
@@ -736,7 +748,7 @@ fn actual_initialization_failures_retire_no_unknown_files_and_cancel_wins() {
                                 active_flags(&shared).cancel.store(true, Ordering::Release);
                             }
                             Ok(())
-                        }))
+                        }));
                     });
                 });
             worker.start(server.release(&bytes)).unwrap();
@@ -836,6 +848,7 @@ fn cancel_during_scoped_consumer_wins_over_its_success_or_error() {
             while !*done {
                 done = r.1.wait(done).unwrap();
             }
+            drop(done);
             if error {
                 Err("consumer error".into())
             } else {
@@ -950,8 +963,8 @@ fn publication_collision_is_retained_and_cannot_produce_ready() {
                     fs::write(&path, b"unknown collision").unwrap();
                 }
                 Ok(())
-            }))
-        })
+            }));
+        });
     });
     worker.start(server.release(&bytes)).unwrap();
     let failed = wait(&worker, Phase::Failed);
@@ -1056,6 +1069,10 @@ fn paused_ready_releases_scope_and_new_operation_reuses_both_finals() {
     assert_eq!(server.requests().len(), 4);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table-driven scenario per mutated preparation step"
+)]
 fn preparation_mutation_failure(cancel: bool) {
     for (index, first_final) in [(0, false), (1, false), (1, true)] {
         let bytes = manifest();
@@ -1126,7 +1143,7 @@ fn preparation_mutation_failure(cancel: bool) {
                         PreferenceStore::at(std::path::PathBuf::from(
                             "/nonexistent-tilo-fixture/selection.json",
                         )),
-                    )
+                    );
                 },
             );
         })
@@ -1245,7 +1262,7 @@ fn cancelled_reader_failure(verification: bool) {
                             }
                         }
                         Ok(())
-                    }))
+                    }));
                 });
             },
         );
@@ -1338,8 +1355,8 @@ fn cancelled_preference_commit_failure_keeps_publication_and_namespace_facts() {
             },
             || {
                 with_failure(Checkpoint::BeforeCommit, || {
-                    worker_loop(shared, transport, noop, store)
-                })
+                    worker_loop(shared, transport, noop, store);
+                });
             },
         );
     })

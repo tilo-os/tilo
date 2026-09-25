@@ -147,15 +147,28 @@ impl Directory {
 
     // Permission-profile admission is shared with held directory validation;
     // it does not impose the private child's owner/mode policy on ancestors.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            reason = "only Linux inspects the held directory's filesystem profile"
+        )
+    )]
     fn validate_permission_profile(&self) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         {
-            let profile = unix_fs::fstatfs(&self.file)?.f_type;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
+            )]
+            let profile = unix_fs::fstatfs(&self.file)?.f_type as u32;
             // Local POSIX DAC/access-ACL profiles only. In particular FUSE may
             // omit DAC checks. OverlayFS also requires trusted host/backing names.
             if !matches!(
-                profile as u32,
-                0xef53 | 0x9123683e | 0x58465342 | 0x01021994 | 0x794c7630
+                profile,
+                0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994 | 0x794c_7630
             ) {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
@@ -213,7 +226,7 @@ impl Directory {
         &self,
         name: &OsStr,
         privacy: Privacy,
-        _physical: &std::path::Path,
+        physical: &std::path::Path,
     ) -> io::Result<()> {
         // Component and inheritance validation happen before the submission
         // boundary in provision.rs. Every error here is a submitted result.
@@ -231,10 +244,11 @@ impl Directory {
         };
         #[cfg(feature = "test-support")]
         {
-            test_support::mkdir_result(_physical, operation)
+            test_support::mkdir_result(physical, operation)
         }
         #[cfg(not(feature = "test-support"))]
         {
+            let _ = physical;
             operation()
         }
     }
@@ -364,13 +378,13 @@ impl Stage {
                 &parent.file,
                 &name,
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::from_raw_mode(create_mode as _),
+                Mode::from_raw_mode((create_mode & 0o7777) as _),
             ) {
                 Ok(fd) => {
                     let file = File::from(fd);
                     if let Some(final_mode) = final_mode
                         && let Err(error) =
-                            unix_fs::fchmod(&file, Mode::from_raw_mode(final_mode as _))
+                            unix_fs::fchmod(&file, Mode::from_raw_mode((final_mode & 0o7777) as _))
                     {
                         drop(file);
                         let _ = unix_fs::unlinkat(&parent.file, &name, AtFlags::empty());
@@ -422,6 +436,13 @@ impl Stage {
         self.cleanup_armed = true;
     }
 
+    #[cfg_attr(
+        target_os = "macos",
+        expect(
+            clippy::cast_sign_loss,
+            reason = "mirrors std's `MetadataExt::dev` sign extension of the macOS `dev_t`"
+        )
+    )]
     fn is_still_named(&self) -> io::Result<bool> {
         let named = unix_fs::statat(&self.parent()?.file, &self.name, AtFlags::SYMLINK_NOFOLLOW)?;
         let held = self.file()?.metadata()?;
@@ -599,10 +620,12 @@ fn validate_privacy(file: &File, metadata: &Metadata, privacy: FilePolicy) -> io
     Ok(())
 }
 
-fn validate_private_security(_file: &File, metadata: &Metadata) -> io::Result<()> {
+fn validate_private_security(file: &File, metadata: &Metadata) -> io::Result<()> {
     validate_owner_mode(metadata)?;
     #[cfg(target_os = "macos")]
-    macos_acl::validate(_file)?;
+    macos_acl::validate(file)?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = file;
     Ok(())
 }
 fn validate_owner_mode(metadata: &Metadata) -> io::Result<()> {
@@ -764,13 +787,20 @@ impl From<CheckpointKind> for Checkpoint {
 
 #[cfg(feature = "test-support")]
 fn checkpoint(kind: CheckpointKind) -> io::Result<()> {
-    test_support::checkpoint(CheckpointEvent {
+    test_support::checkpoint(&CheckpointEvent {
         checkpoint: kind.into(),
         stage: None,
     })
 }
 
 #[cfg(not(feature = "test-support"))]
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the test-support build injects failures through the same signature"
+    )
+)]
 fn checkpoint(_kind: CheckpointKind) -> io::Result<()> {
     Ok(())
 }
@@ -780,13 +810,48 @@ fn checkpoint_with_stage(kind: CheckpointKind, stage: &Stage) -> io::Result<()> 
     let file = stage.file()?;
     let metadata = file.metadata()?;
     let identity = crate::FileIdentity::of(file)?;
-    test_support::checkpoint(CheckpointEvent {
+    test_support::checkpoint(&CheckpointEvent {
         checkpoint: kind.into(),
         stage: Some(StageObservation { metadata, identity }),
     })
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn bounded_stage_name(target: &OsStr, sequence: u64) -> OsString {
+    fn decimal(mut n: u64, target: &mut Vec<u8>) {
+        // u64::MAX has 20 digits, so the loop always ends by `n == 0`.
+        let mut digits = [0u8; 20];
+        let mut first = digits.len();
+        for (index, slot) in digits.iter_mut().enumerate().rev() {
+            *slot = b'0'.wrapping_add((n % 10) as u8);
+            n /= 10;
+            first = index;
+            if n == 0 {
+                break;
+            }
+        }
+        target.extend_from_slice(digits.get(first..).unwrap_or_default());
+    }
+    // '.', target, '.', pid<=10, '.', sequence<=20, '.tmp': target+37.
+    let mut bytes = Vec::with_capacity(target.as_bytes().len().saturating_add(37));
+    bytes.push(b'.');
+    bytes.extend_from_slice(target.as_bytes());
+    bytes.push(b'.');
+    decimal(u64::from(std::process::id()), &mut bytes);
+    bytes.push(b'.');
+    decimal(sequence, &mut bytes);
+    bytes.extend_from_slice(b".tmp");
+    OsString::from_vec(bytes)
+}
+
 #[cfg(not(feature = "test-support"))]
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the test-support build injects failures through the same signature"
+    )
+)]
 fn checkpoint_with_stage(_kind: CheckpointKind, _stage: &Stage) -> io::Result<()> {
     Ok(())
 }
@@ -809,31 +874,4 @@ mod tests {
         let target = OsStr::new("state.automerge");
         assert_ne!(stage_name(target, 1), stage_name(target, 2));
     }
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn bounded_stage_name(target: &OsStr, sequence: u64) -> OsString {
-    fn decimal(mut n: u64, target: &mut Vec<u8>) {
-        let mut digits = [0u8; 20];
-        let mut first = 20;
-        loop {
-            first -= 1;
-            digits[first] = b'0' + (n % 10) as u8;
-            n /= 10;
-            if n == 0 {
-                break;
-            }
-        }
-        target.extend_from_slice(&digits[first..]);
-    }
-    // '.', target, '.', pid<=10, '.', sequence<=20, '.tmp': target+37.
-    let mut bytes = Vec::with_capacity(target.as_bytes().len() + 37);
-    bytes.push(b'.');
-    bytes.extend_from_slice(target.as_bytes());
-    bytes.push(b'.');
-    decimal(u64::from(std::process::id()), &mut bytes);
-    bytes.push(b'.');
-    decimal(sequence, &mut bytes);
-    bytes.extend_from_slice(b".tmp");
-    OsString::from_vec(bytes)
 }

@@ -1,6 +1,23 @@
 //! Real localhost WebTransport tests of the live relay: no mocked carrier, no
 //! TLS bypass (the generated leaf certificate is pinned). Test identities are
 //! isolated fixtures, never native workspace authorization.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
+)]
+#![allow(
+    clippy::similar_names,
+    clippy::collection_is_never_read,
+    clippy::unused_async,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    reason = "scenario-shaped test code"
+)]
 use super::*;
 use std::sync::atomic::AtomicBool;
 
@@ -529,7 +546,7 @@ async fn revocation_resets_only_the_revoked_publishers_tracks() {
     let ended = tokio::time::timeout(TIMEOUT, async {
         tokio::select! {
             _ = a_announced.closed() => "broadcast",
-            _ = async {
+            () = async {
                 while let Ok(Some(_)) = a_at_viewer.recv_datagram().await {}
             } => "track",
         }
@@ -907,7 +924,7 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
 }
 
 /// Host presence injection into a host-fed namespace (an agent the host speaks
-/// for): reaches a MoQ subscriber, keeps latest-value sequence order, and is
+/// for): reaches a `MoQ` subscriber, keeps latest-value sequence order, and is
 /// refused while a client session owns the namespace.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_client() {

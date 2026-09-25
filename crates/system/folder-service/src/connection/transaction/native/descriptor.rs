@@ -184,6 +184,10 @@ pub(crate) struct Outcome {
     pub sequence: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(crate) enum Body {
     Intent(Intent),
     Stage(Stage),
@@ -263,7 +267,9 @@ impl Admission {
     }
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         require((CHECKSUM_BYTES..=MAX_BYTES).contains(&bytes.len()))?;
-        let (payload, checksum) = bytes.split_at(bytes.len() - CHECKSUM_BYTES);
+        let (payload, checksum) = bytes
+            .split_at_checked(bytes.len().saturating_sub(CHECKSUM_BYTES))
+            .ok_or(Error::Invalid)?;
         require(checksum == <[u8; 32]>::from(Sha256::digest(payload)))?;
         let mut c = Cursor {
             bytes: payload,
@@ -389,7 +395,9 @@ impl ConflictSnapshot {
     }
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         require((CHECKSUM_BYTES..=MAX_BYTES).contains(&bytes.len()))?;
-        let (payload, checksum) = bytes.split_at(bytes.len() - CHECKSUM_BYTES);
+        let (payload, checksum) = bytes
+            .split_at_checked(bytes.len().saturating_sub(CHECKSUM_BYTES))
+            .ok_or(Error::Invalid)?;
         require(checksum == <[u8; 32]>::from(Sha256::digest(payload)))?;
         let mut c = Cursor {
             bytes: payload,
@@ -730,7 +738,9 @@ fn require(value: bool) -> Result<()> {
 )]
 pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
     require((HEADER_BYTES + CHECKSUM_BYTES..=MAX_BYTES).contains(&bytes.len()))?;
-    let (payload, checksum) = bytes.split_at(bytes.len() - CHECKSUM_BYTES);
+    let (payload, checksum) = bytes
+        .split_at_checked(bytes.len().saturating_sub(CHECKSUM_BYTES))
+        .ok_or(Error::Invalid)?;
     let digest: [u8; 32] = Sha256::digest(payload).into();
     require(checksum == digest)?;
     let mut c = Cursor {
@@ -874,7 +884,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Descriptor> {
                 count
                     .checked_mul(38)
                     .and_then(|v| v.checked_add(8))
-                    .is_some_and(|v| v == payload.len() - c.at),
+                    .is_some_and(|v| Some(v) == payload.len().checked_sub(c.at)),
             )?;
             let mut recovery = Vec::with_capacity(count);
             for _ in 0..count {
@@ -933,7 +943,10 @@ pub(super) fn encode_created_stage(header: &Header, stage: &Stage) -> Result<Vec
         .get_mut(..4)
         .ok_or(Error::Invalid)?
         .copy_from_slice(b"QNS3");
-    let end = bytes.len() - CHECKSUM_BYTES;
+    let end = bytes
+        .len()
+        .checked_sub(CHECKSUM_BYTES)
+        .ok_or(Error::Invalid)?;
     let digest: [u8; 32] = Sha256::digest(bytes.get(..end).ok_or(Error::Invalid)?).into();
     bytes
         .get_mut(end..)
@@ -1030,7 +1043,7 @@ impl Writer {
         let units = v
             .components()
             .iter()
-            .try_fold(v.components().len() - 1, |n, c| {
+            .try_fold(v.components().len().saturating_sub(1), |n, c| {
                 n.checked_add(match c {
                     NativeName::Unix(v) => v.len(),
                     NativeName::Windows(v) => v.len(),
@@ -1506,6 +1519,10 @@ impl RecoveryFact {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use super::*;
     fn object(kind: u32) -> Vec<u8> {

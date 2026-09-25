@@ -1,4 +1,22 @@
 //! Host-only historical fixtures. No fixture supplies live endpoint authority.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::similar_names,
+    clippy::needless_collect,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    clippy::match_wildcard_for_single_variants,
+    clippy::too_many_lines,
+    reason = "fixture-building test code favours direct, scenario-shaped helpers"
+)]
 use super::*;
 use crate::connection::transaction::chain::*;
 use sha2::{Digest, Sha256};
@@ -252,7 +270,7 @@ fn chain_selection_members_observation_correlation() {
         s.validate_observations(&baseline, &source, &existing)
             .is_err()
     );
-    let mut ambiguous = source.clone();
+    let mut ambiguous = source;
     let alias = RelativePath::unix(b"A").unwrap();
     ambiguous
         .entries
@@ -316,9 +334,9 @@ fn chain_selection_members_observation_correlation() {
     reverse_bytes[218] = 1;
     resign(&mut reverse_bytes);
     let reverse = DirectoryChainSelectionV1::decode(&reverse_bytes).unwrap();
-    let mut reverse_origin = source.clone();
+    let mut reverse_origin = source;
     reverse_origin.endpoint.identity = selected.endpoints[1];
-    let mut reverse_target = destination.clone();
+    let mut reverse_target = destination;
     reverse_target.endpoint.identity = selected.endpoints[0];
     reverse
         .validate_observations(&baseline, &reverse_target, &reverse_origin)
@@ -365,7 +383,7 @@ fn chain_selection_vectors_resigned_invalid_fields_and_maxima() {
             .concat(),
         );
         let offset = b.len() - 56;
-        b[offset + 16..offset + 24].copy_from_slice(&131070u64.to_le_bytes());
+        b[offset + 16..offset + 24].copy_from_slice(&131_070_u64.to_le_bytes());
         resign(&mut b);
         let s = DirectoryChainSelectionV1::decode(&b).expect("maximal legal path");
         assert_eq!(s.encode().unwrap(), b);
@@ -526,7 +544,7 @@ fn chain_selection_vectors_json_extensions_are_strict_and_legacy_absent() {
         1,
     );
     assert!(serde_json::from_str::<format::Operation>(&duplicate).is_err());
-    let mut absent = wire.clone();
+    let mut absent = wire;
     absent
         .as_object_mut()
         .unwrap()
@@ -1323,7 +1341,7 @@ fn directory_phase_bytes(operation: &format::Operation, progress: u64) -> [Vec<u
     let mut outcome = patch_header(outcome, progress + 1);
     outcome[121..153].copy_from_slice(&intent[intent.len() - 32..]);
     outcome[153..185].copy_from_slice(&stage[stage.len() - 32..]);
-    [intent, stage.clone(), seal_directory(outcome)]
+    [intent, stage, seal_directory(outcome)]
 }
 fn phase_history(
     directory: bool,
@@ -2635,17 +2653,15 @@ fn chain_checkpoint_closure_rejects_wrong_stop_attempt_and_missing_terminal_regi
                     if terminal && matches!(row, Row::NativeRegistration(_)) {
                         return None;
                     }
-                    if !terminal {
-                        if let Row::Operation(op) = &mut row {
-                            match &mut op.directory_chain_stop_boundary.as_mut().unwrap().evidence {
-                                format::DirectoryChainStopEvidenceV1::Regular { evidence } => {
-                                    evidence.as_mut().unwrap().attempt = 8
-                                }
-                                format::DirectoryChainStopEvidenceV1::Directory {
-                                    fact: format::DirectoryBoundaryFact::Published { attempt, .. },
-                                } => *attempt = 8,
-                                _ => unreachable!(),
+                    if !terminal && let Row::Operation(op) = &mut row {
+                        match &mut op.directory_chain_stop_boundary.as_mut().unwrap().evidence {
+                            format::DirectoryChainStopEvidenceV1::Regular { evidence } => {
+                                evidence.as_mut().unwrap().attempt = 8;
                             }
+                            format::DirectoryChainStopEvidenceV1::Directory {
+                                fact: format::DirectoryBoundaryFact::Published { attempt, .. },
+                            } => *attempt = 8,
+                            _ => unreachable!(),
                         }
                     }
                     Some(row)
@@ -4093,19 +4109,19 @@ fn chain_review_fix1_stopped_requires_boundary_and_exact_schedule_relationships(
                         let mut row = row.unwrap();
                         match &mut row {
                             Row::Operation(op) if case == 0 => {
-                                op.directory_chain_stop_boundary = None
+                                op.directory_chain_stop_boundary = None;
                             }
                             Row::Operation(op) if case == 1 || case == 4 => {
                                 op.directory_chain_stop_boundary
                                     .as_mut()
                                     .unwrap()
-                                    .schedule_revision = schedule + 1
+                                    .schedule_revision = schedule + 1;
                             }
                             Row::Connection(c) if case == 2 || case == 3 => {
                                 c.directory_chain_schedule
                                     .as_mut()
                                     .unwrap()
-                                    .control_sequence = 0
+                                    .control_sequence = 0;
                             }
                             _ => (),
                         }
@@ -4155,14 +4171,14 @@ fn chain_review_fix1_terminal_and_between_member_progress_is_exact() {
                                 .as_mut()
                                 .unwrap()
                                 .cursor
-                                .progress_revision = 1
+                                .progress_revision = 1;
                         }
                         Row::Connection(c) if case == 3 => {
                             c.revision += 1;
                             c.directory_chain.as_mut().unwrap().progress_revision = c.revision;
                         }
                         Row::Connection(c) if case == 4 => {
-                            c.directory_chain.as_mut().unwrap().progress_revision = 1
+                            c.directory_chain.as_mut().unwrap().progress_revision = 1;
                         }
                         _ => (),
                     }

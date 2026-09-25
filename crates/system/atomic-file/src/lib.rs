@@ -121,7 +121,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(any(unix, windows))]
     {
-        return replace(path, bytes, Privacy::Inherit).map_err(PublicationError::into_io_error);
+        replace(path, bytes, Privacy::Inherit).map_err(PublicationError::into_io_error)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -195,12 +195,12 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
 pub fn write_creating_parent(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(unix)]
     {
-        return write_provisioned(path, bytes, None);
+        write_provisioned(path, bytes, None)
     }
     #[cfg(windows)]
     {
         create_parent(path)?;
-        return write(path, bytes);
+        write(path, bytes)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -223,13 +223,12 @@ pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> 
     publication::validate_windows_mode(mode).map_err(PublicationError::into_io_error)?;
     #[cfg(unix)]
     {
-        return write_provisioned(path, bytes, Some(mode));
+        write_provisioned(path, bytes, Some(mode))
     }
     #[cfg(windows)]
     {
         create_parent(path)?;
-        return publication::replace_with_mode(path, bytes, mode)
-            .map_err(PublicationError::into_io_error);
+        publication::replace_with_mode(path, bytes, mode).map_err(PublicationError::into_io_error)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -360,8 +359,7 @@ fn create_parent(path: &Path) -> io::Result<()> {
 pub fn write_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     #[cfg(any(unix, windows))]
     {
-        return publication::replace_with_mode(path, bytes, mode)
-            .map_err(PublicationError::into_io_error);
+        publication::replace_with_mode(path, bytes, mode).map_err(PublicationError::into_io_error)
     }
     #[cfg(not(any(unix, windows)))]
     {

@@ -119,15 +119,14 @@ impl ConnectionStore {
     ) -> Result<EntryState, StoreError> {
         let mut latest: Option<format::NativeRegistration> = None;
         for row in self.rows()? {
-            if let Row::NativeRegistration(value) = row? {
-                if value.connection == operation.connection
-                    && value.serial == operation.serial
-                    && latest
-                        .as_ref()
-                        .is_none_or(|old| old.attempt < value.attempt)
-                {
-                    latest = Some(value);
-                }
+            if let Row::NativeRegistration(value) = row?
+                && value.connection == operation.connection
+                && value.serial == operation.serial
+                && latest
+                    .as_ref()
+                    .is_none_or(|old| old.attempt < value.attempt)
+            {
+                latest = Some(value);
             }
         }
         let registration = latest.ok_or(StoreError::RecoveryRequired)?;
@@ -213,7 +212,7 @@ impl ConnectionStore {
             .log
             .metadata()?
             .len()
-            .checked_add(length + 44)
+            .checked_add(length.saturating_add(44))
             .is_none_or(|n| n > 15 * 1024 * 1024)
         {
             return Err(StoreError::LimitExceeded);
@@ -300,7 +299,7 @@ impl ConnectionStore {
                 .log
                 .metadata()?
                 .len()
-                .checked_add(length + 44)
+                .checked_add(length.saturating_add(44))
                 .is_none_or(|n| n > 15 * 1024 * 1024)
             {
                 return Err(StoreError::LimitExceeded);
@@ -519,13 +518,12 @@ impl ConnectionStore {
         let context = self.native_read_context(live, comparison.deadline(), cancel)?;
         let connection = self.connection(live.id.connection)?;
         for row in self.rows()? {
-            if let Row::Conflict(conflict) = row? {
-                if conflict.connection == connection.id
-                    && !conflict.resolved
-                    && conflict.path.to_relative()?.overlaps(&live.intent.path)
-                {
-                    return Err(StoreError::RecoveryRequired);
-                }
+            if let Row::Conflict(conflict) = row?
+                && conflict.connection == connection.id
+                && !conflict.resolved
+                && conflict.path.to_relative()?.overlaps(&live.intent.path)
+            {
+                return Err(StoreError::RecoveryRequired);
             }
         }
         let mut entries = self
@@ -632,10 +630,7 @@ impl ConnectionStore {
                 destination: connection.destination.identity,
                 initial_review: false,
             },
-            RecoveryChecks {
-                mode: VerificationMode::NativeLive(&context),
-                ..RecoveryChecks::default()
-            },
+            RecoveryChecks::new(VerificationMode::NativeLive(&context)),
             BaselineAppendCheck::Directory {
                 live,
                 comparison,
@@ -732,10 +727,7 @@ impl ConnectionStore {
                 }
                 match fact {
                     format::DirectoryBoundaryFact::Staged { .. }
-                        if operation.stage == 6 && reg.outcome.is_none() =>
-                    {
-                        ();
-                    }
+                        if operation.stage == 6 && reg.outcome.is_none() => {}
                     format::DirectoryBoundaryFact::Published { outcome, .. }
                         if matches!(operation.stage, 6 | 2 | 3) =>
                     {

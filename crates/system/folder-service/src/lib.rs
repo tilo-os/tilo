@@ -22,6 +22,16 @@
 //! let _ = DirectoryIdentity { volume: vec![], inode: 0 };
 //! ```
 
+// The native connected-folder executor exists only on Linux; other hosts
+// compile its model and store without the code paths that consume them.
+#![cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "the native connected-folder executor exists only on Linux"
+    )
+)]
+
 mod connection;
 mod destination_security;
 mod migration;
@@ -46,3 +56,10 @@ pub mod session;
 pub mod startup;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+
+/// `Instant::now() + timeout`, or `now` when the clock cannot represent that
+/// instant: an immediately expired deadline refuses rather than panicking.
+pub(crate) fn deadline_after(timeout: std::time::Duration) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    now.checked_add(timeout).unwrap_or(now)
+}

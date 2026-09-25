@@ -23,7 +23,7 @@ const AUTHORITY_FENCE: Duration = Duration::from_millis(900);
 /// satellite path (600 ms RTT) needs ~4 round trips plus a loss recovery
 /// (PTO ~1 s), so the former 3 s bound refused honest joins on such links.
 pub const HANDSHAKE_BUDGET: Duration = Duration::from_secs(8);
-/// Budget for the MoQ SETUP exchange after the CONNECT response.
+/// Budget for the `MoQ` SETUP exchange after the CONNECT response.
 pub const SETUP_BUDGET: Duration = Duration::from_secs(5);
 const EXPIRE_INTERVAL: Duration = Duration::from_millis(20);
 /// How long a revoked or expired session may stay open, carrying no media, after
@@ -36,7 +36,7 @@ pub const GOAWAY_GRACE: Duration = Duration::from_secs(1);
 ///
 /// This marker is neither authentication nor independent authority evidence.
 /// Its private field only requires callers to use [`Relay::validate_route`]
-/// before URL normalization or MoQ SETUP parsing for each accepted request.
+/// before URL normalization or `MoQ` SETUP parsing for each accepted request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceRoute(());
 
@@ -103,11 +103,19 @@ pub trait SessionAuthorization: Send + Sync {
 /// Admission runs before any origin is attached. The opaque proof is passed
 /// only here and is never included in errors, URLs, tracing or counters.
 pub trait RelayAuthority: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns [`Denied`] when the proof does not authorize a session.
     fn admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied>;
     /// Like [`admit`](Self::admit), but reports owner/state contention that
     /// occurred *before* any proof was verified or consumed as
     /// [`Admission::Busy`], so the relay may retry within a short bound.
     /// Implementations must never return `Busy` after consuming the proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Admission::Busy`] for contention before the proof was consumed,
+    /// and [`Admission::Denied`] otherwise.
     fn try_admit(&self, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Admission> {
         self.admit(proof).map_err(|_| Admission::Denied)
     }
@@ -311,7 +319,7 @@ impl Relay {
     ///
     /// This path preserves the isolated proof server. A shared raw H3 listener
     /// must validate the unnormalized route and call [`serve_accepted`](Self::serve_accepted)
-    /// so its MoQ driver remains in the host-owned task.
+    /// so its `MoQ` driver remains in the host-owned task.
     pub async fn serve_request(&self, mut request: moq_native::Request) {
         let Ok(_permit) = self.sessions.clone().try_acquire_owned() else {
             self.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -349,12 +357,12 @@ impl Relay {
             .await;
     }
 
-    /// Serve a Draft 21 MoQ request produced by a shared, H3-only WebTransport
+    /// Serve a Draft 21 `MoQ` request produced by a shared, H3-only WebTransport
     /// listener after exact raw route validation.
     ///
     /// This uses the same admission, exact namespace scoping, eight-session
     /// budget, 900 ms authority fence and cache expiry loop as [`serve_request`].
-    /// The MoQ protocol driver is retained in this future and cancelled on any
+    /// The `MoQ` protocol driver is retained in this future and cancelled on any
     /// authorization failure or caller cancellation; it is never detached.
     pub async fn serve_accepted<S>(&self, _route: VoiceRoute, mut request: moq_net::Request<S>)
     where
@@ -393,7 +401,7 @@ impl Relay {
         // session's periodic check holding the authority) is waited out for a
         // short bound instead of turning an honest join into a denial. Only a
         // Current observation admits; the bound and expiry keep this fail-closed.
-        let deadline = Instant::now() + ADMISSION_CONTENTION_WAIT;
+        let deadline = crate::later(Instant::now(), ADMISSION_CONTENTION_WAIT);
         let authorization = loop {
             match self.authority.try_admit(proof) {
                 Ok(authorization) => break authorization,
@@ -580,15 +588,15 @@ impl Relay {
         loop {
             tokio::select! {
                 _ = session.closed() => break,
-                _ = &mut retained_driver => break,
+                () = &mut retained_driver => break,
                 // Another session observed this publication's authority lapse.
-                _ = &mut revoked => {
+                () = &mut revoked => {
                     self.counters.lapsed.fetch_add(1, Ordering::Relaxed);
                     self.counters.expired.fetch_add(1, Ordering::Relaxed);
                     revoke(&session, retained_driver.as_mut()).await;
                     break;
                 },
-                _ = async {
+                () = async {
                     if let Some(deadline) = unavailable_deadline {
                         tokio::time::sleep_until(deadline.into()).await;
                     } else {
@@ -623,7 +631,7 @@ impl Relay {
                             unavailable_deadline = None;
                         }
                         AuthorizationStatus::Unavailable { expires_at } => {
-                            let deadline = (last_current + AUTHORITY_FENCE).min(expires_at);
+                            let deadline = crate::later(last_current, AUTHORITY_FENCE).min(expires_at);
                             unavailable_deadline = Some(unavailable_deadline.map_or(deadline, |old| old.min(deadline)));
                         }
                         AuthorizationStatus::Denied => {
@@ -663,6 +671,10 @@ pub struct LoopbackRelay {
 }
 impl LoopbackRelay {
     /// Must be called inside a Tokio runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the loopback server cannot be configured or bound.
     pub fn start(authority: Arc<dyn RelayAuthority>) -> Result<Self, String> {
         let mut config = moq_native::ServerConfig::default();
         config.bind = Some("127.0.0.1:0".into());
@@ -704,8 +716,8 @@ async fn revoke(
     if session.go_away(GOAWAY_GRACE) {
         tokio::select! {
             _ = session.closed() => {}
-            _ = driver => {}
-            _ = tokio::time::sleep(GOAWAY_GRACE) => {}
+            () = driver => {}
+            () = tokio::time::sleep(GOAWAY_GRACE) => {}
         }
     }
     session.abort(moq_net::Error::Unauthorized);
@@ -748,7 +760,10 @@ fn scopes_well_formed(authorization: &dyn SessionAuthorization) -> bool {
         return false;
     }
     subscriptions.iter().enumerate().all(|(index, namespace)| {
-        valid_namespace(namespace) && !subscriptions[..index].contains(namespace)
+        valid_namespace(namespace)
+            && !subscriptions
+                .get(..index)
+                .is_some_and(|prior| prior.contains(namespace))
     })
 }
 
@@ -789,7 +804,7 @@ fn combine_scope_status<A: SessionAuthorization + ?Sized>(
             AuthorizationStatus::Denied => return AuthorizationStatus::Denied,
             AuthorizationStatus::Current => {}
             AuthorizationStatus::Unavailable { expires_at } => {
-                expires = Some(expires.map_or(expires_at, |old| old.min(expires_at)))
+                expires = Some(expires.map_or(expires_at, |old| old.min(expires_at)));
             }
         }
     }

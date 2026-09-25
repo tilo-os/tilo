@@ -1,4 +1,22 @@
 //! Wire fixtures exercise historical reducer/replay, never manufacture native authority.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::similar_names,
+    clippy::needless_collect,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    clippy::match_wildcard_for_single_variants,
+    clippy::too_many_lines,
+    reason = "fixture-building test code favours direct, scenario-shaped helpers"
+)]
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -225,7 +243,7 @@ fn initial_empty_baseline_checkpoint_corruption_and_unknown_evidence_refuse() {
             0 => wire["initial_empty"]["version"] = 2.into(),
             1 => {
                 wire["initial_empty"]["preview"][1] =
-                    (wire["initial_empty"]["preview"][1].as_u64().unwrap() ^ 1).into()
+                    (wire["initial_empty"]["preview"][1].as_u64().unwrap() ^ 1).into();
             }
             2 => wire["baseline_count"] = 1.into(),
             3 => wire["baseline"] = 3.into(),

@@ -1,3 +1,9 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 use super::*;
 fn manifest() -> Vec<u8> {
     crate::bundle::tests::bytes(&crate::bundle::tests::fixture())
@@ -720,7 +726,7 @@ fn stalled_network_read_obeys_injected_timeout() {
     let worker = thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
         let mut request = [0; 4096];
-        socket.read(&mut request).unwrap();
+        assert!(socket.read(&mut request).unwrap() > 0);
         socket
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n")
             .unwrap();
@@ -791,7 +797,7 @@ fn multiple_stream_reads_can_outlast_one_timeout_and_cancel_after_received_bytes
         let worker = thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             let mut request = [0; 4096];
-            socket.read(&mut request).unwrap();
+            assert!(socket.read(&mut request).unwrap() > 0);
             socket
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\n")
                 .unwrap();
@@ -842,18 +848,18 @@ fn multiple_stream_reads_can_outlast_one_timeout_and_cancel_after_received_bytes
 }
 #[test]
 fn final_hash_cancellation_checks_first_middle_last_chunks_and_eof() {
-    let payload = vec![b'R'; 131584];
+    let payload = vec![b'R'; 131_584];
     let mut value = crate::bundle::tests::fixture();
-    value["components"][1]["byte_size"] = serde_json::json!(131584);
-    value["components"][1]["minimum_partition_bytes"] = serde_json::json!(131584);
+    value["components"][1]["byte_size"] = serde_json::json!(131_584);
+    value["components"][1]["minimum_partition_bytes"] = serde_json::json!(131_584);
     value["components"][1]["sha256"] = serde_json::json!(hex::encode(Sha256::digest(&payload)));
-    value["source_image_bytes"] = serde_json::json!(153088);
+    value["source_image_bytes"] = serde_json::json!(153_088);
     let bytes = serde_json::to_vec(&value).unwrap();
     for (stage, count) in [
         ("hash", 65536),
-        ("hash", 131072),
-        ("hash", 131584),
-        ("hash-eof", 131584),
+        ("hash", 131_072),
+        ("hash", 131_584),
+        ("hash-eof", 131_584),
     ] {
         let server = Server::new(vec![response(200, "", &payload)]);
         let selected =
@@ -878,7 +884,7 @@ fn final_hash_cancellation_checks_first_middle_last_chunks_and_eof() {
             },
         );
         assert!(cancel.load(Ordering::Acquire));
-        assert_eq!(file.metadata().unwrap().len(), 131584);
+        assert_eq!(file.metadata().unwrap().len(), 131_584);
     }
 }
 #[test]
@@ -1156,7 +1162,7 @@ fn terminal_counter_includes_successful_write_before_cancellation() {
                 server
                     .transport()
                     .transfer(&context(&server), 0, &mut file, None, &cancel, 41, |p| {
-                        events.push(p)
+                        events.push(p);
                     })
                     .is_err()
             );
@@ -1257,7 +1263,7 @@ fn scripted_write(file: &mut File, bytes: &[u8]) -> Option<std::io::Result<usize
         let step = script
             .steps
             .pop_front()
-            .or(script.always_interrupted.then_some(WriteStep::Interrupted));
+            .or_else(|| script.always_interrupted.then_some(WriteStep::Interrupted));
         Some(match step {
             Some(WriteStep::Interrupted) => {
                 script.interrupted += 1;
@@ -1293,7 +1299,7 @@ fn with_write_script(
             cancel_on_interrupt: cancel,
             attempts: 0,
             interrupted: 0,
-        })
+        });
     });
     let _reset = Reset;
     test();
@@ -1360,7 +1366,7 @@ fn interrupted_write_cancellation_prevents_retry_and_preserves_prefix() {
             let error = server
                 .transport()
                 .transfer(&selected, 0, &mut file, Some(&cp), &cancel, 52, |p| {
-                    events.push(p)
+                    events.push(p);
                 })
                 .unwrap_err();
             assert!(error.contains("cancelled"), "{error}");
@@ -1486,8 +1492,8 @@ fn persistent_success_has_linear_readback_final_verification_and_reopened_candid
     );
     CHECKPOINT_INTERVAL.set(None);
     assert_eq!(contents(&mut f), payload);
-    assert_eq!(read_totals("periodic"), (524288, 524288));
-    assert_eq!(*final_reads.lock().unwrap(), 524288);
+    assert_eq!(read_totals("periodic"), (524_288, 524_288));
+    assert_eq!(*final_reads.lock().unwrap(), 524_288);
     assert_eq!(
         std::fs::read_dir(dir.path().join("journal"))
             .unwrap()
@@ -1499,7 +1505,7 @@ fn persistent_success_has_linear_readback_final_verification_and_reopened_candid
     let (p, mut f) = DiskProvider::reopen(dir.path(), own);
     let mut session = Session::new(&selected, 1, 42, p).unwrap();
     let prepared = session.prepare(&selected, &mut f, &cancel).unwrap();
-    assert_eq!(read_totals("restart"), (524288, 524288));
+    assert_eq!(read_totals("restart"), (524_288, 524_288));
     assert!(matches!(
         server
             .transport()
@@ -1645,7 +1651,7 @@ fn persistent_cancel_wins_pause_and_final_callback_and_partial_write_retains_pre
                     .transport()
                     .transfer_persistent(prepared, &cancel, &pause, |p| {
                         if p.phase == Phase::Complete {
-                            cancel.store(true, Ordering::Release)
+                            cancel.store(true, Ordering::Release);
                         }
                     })
                     .unwrap(),
@@ -1807,7 +1813,7 @@ fn persistent_failed_full_eof_reset_allows_only_a_new_successful_response() {
             .transport()
             .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |p| {
                 if p.phase == Phase::Resetting {
-                    resets += 1
+                    resets += 1;
                 }
             })
             .unwrap(),
@@ -1837,7 +1843,7 @@ fn persistent_pause_checkpoint_failure_reports_prior_commit_and_uncertainty() {
     with_hook(
         Box::new(move |stage, _| {
             if stage == "write" {
-                signal.store(true, Ordering::Release)
+                signal.store(true, Ordering::Release);
             }
         }),
         || {
@@ -1878,7 +1884,7 @@ fn persistent_partial_pause_close_reauthenticate_reopen_resumes_one_validated_pr
         with_hook(
             Box::new(move |stage, _| {
                 if stage == "write" {
-                    signal.store(true, Ordering::Release)
+                    signal.store(true, Ordering::Release);
                 }
             }),
             || {
@@ -1904,7 +1910,7 @@ fn persistent_partial_pause_close_reauthenticate_reopen_resumes_one_validated_pr
     with_hook(
         Box::new(move |stage, n| {
             if stage == "hash-eof" {
-                *count.lock().unwrap() += n
+                *count.lock().unwrap() += n;
             }
         }),
         || {
@@ -1959,7 +1965,7 @@ fn persistent_pause_at_entry_or_request_boundary_never_starts_network_or_complet
                 .transport()
                 .transfer_persistent(prepared, &cancel, &pause, |p| {
                     if at_request && p.phase == Phase::Requesting {
-                        pause.store(true, Ordering::Release)
+                        pause.store(true, Ordering::Release);
                     }
                 })
                 .unwrap(),
@@ -1998,7 +2004,7 @@ fn persistent_pause_at_entry_or_request_boundary_never_starts_network_or_complet
     assert_eq!(server.requests().len(), 1);
 }
 
-/// Exact reader seam: the event is inside Read::read, after the caller's
+/// Exact reader seam: the event is inside `Read::read`, after the caller's
 /// pre-read stop check. Tests block this call with channels, never timing sleeps.
 pub(super) struct ResponseReader<'a> {
     pub response: &'a mut reqwest::blocking::Response,
@@ -2117,7 +2123,7 @@ fn returned_request_without_pause_still_resets_and_finishes() {
                 .transport()
                 .transfer_persistent(prepared, &cancel, &AtomicBool::new(false), |p| {
                     if p.phase == Phase::Resetting {
-                        resets += 1
+                        resets += 1;
                     }
                 })
                 .unwrap(),
@@ -2406,7 +2412,6 @@ fn pause_cannot_hide_failed_final_publication_or_lost_ack_uncertainty() {
             assert_eq!(error.committed, 0);
             assert!(error.message.contains("lost-ack"));
         }
-        drop(observer);
         assert!(pause.load(Ordering::Acquire));
         assert_eq!(contents(&mut file), vec![b'E'; 4096]);
         assert_eq!(
@@ -2479,13 +2484,13 @@ fn pause_at_last_retry_boundary_precedes_terminal_failure() {
 
 /// Scoped worker-thread interval override. The cell itself remains private.
 pub(crate) fn with_checkpoint_interval<T>(value: u64, run: impl FnOnce() -> T) -> T {
-    assert!(value > 0);
     struct Reset(Option<u64>);
     impl Drop for Reset {
         fn drop(&mut self) {
             CHECKPOINT_INTERVAL.set(self.0);
         }
     }
+    assert!(value > 0);
     let _reset = Reset(CHECKPOINT_INTERVAL.replace(Some(value)));
     run()
 }

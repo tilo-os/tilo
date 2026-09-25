@@ -212,6 +212,12 @@ pub struct DecodedDocumentMutation {
 impl DocumentMutation {
     /// Visit the exact snapshot encoding without allocating a payload buffer.
     /// The visitor owns any destination allocation or digest state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentMutationEncodeError::TooLarge`] when `bytes` exceed
+    /// [`MAX_DOCUMENT_MUTATION_BYTES`], or `Serialization` if a v1 envelope
+    /// cannot be serialized.
     pub fn visit_snapshot_encoding(
         bytes: &[u8],
         version: DocumentWireVersion,
@@ -248,6 +254,12 @@ impl DocumentMutation {
 
     /// Encode using an explicitly authenticated durable format. Callers must
     /// not choose a legacy value from an app id or an unverified payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DocumentMutationEncodeError::TooLarge`] when the Automerge
+    /// bytes exceed [`MAX_DOCUMENT_MUTATION_BYTES`], or `Serialization` if a v1
+    /// envelope cannot be serialized.
     pub fn encode_for(
         &self,
         version: DocumentWireVersion,
@@ -259,7 +271,12 @@ impl DocumentMutation {
                 max: MAX_DOCUMENT_MUTATION_BYTES,
             });
         }
-        let mut encoded = Vec::with_capacity(version.prefix().len().saturating_add(actual + 8));
+        let mut encoded = Vec::with_capacity(
+            version
+                .prefix()
+                .len()
+                .saturating_add(actual.saturating_add(8)),
+        );
         encoded.extend_from_slice(version.prefix());
         if version.is_v1() {
             encoded.extend(
@@ -294,6 +311,11 @@ impl DocumentMutation {
 
     /// Decode one of the four explicitly supported durable encodings and
     /// retain its exact version for route binding and later re-emission.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DocumentMutationError`] for an oversized, unprefixed,
+    /// truncated, segmented or otherwise malformed payload.
     pub fn decode_versioned(
         payload: &[u8],
     ) -> Result<DecodedDocumentMutation, DocumentMutationError> {
@@ -515,6 +537,12 @@ pub fn validate_document_payload_route(
 /// Validate and retain the exact durable document wire version. The artifact
 /// and attestation must select one complete known namespace, then the signed
 /// payload prefix or MLS channel must select that same namespace.
+///
+/// # Errors
+///
+/// Returns [`DocumentMutationError::RouteMismatch`] when the signed metadata
+/// does not bind the envelope to this route, or the decode error of a
+/// malformed clear payload.
 pub fn validate_document_payload_route_versioned(
     app_id: &str,
     workspace_id: &str,

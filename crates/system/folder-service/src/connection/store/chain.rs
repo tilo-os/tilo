@@ -110,6 +110,10 @@ fn member_selection(
 }
 
 impl ConnectionStore {
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "each field is compared with its own counterpart; the grouping is intended"
+    )]
     pub(super) fn install_chain_intent(
         &self,
         connection: &mut format::Connection,
@@ -214,6 +218,10 @@ use format::{
 };
 
 /// Exhaustive routing prevents a future event from silently becoming chain progress.
+#[expect(
+    clippy::match_same_arms,
+    reason = "one arm per event keeps the routing exhaustive and reviewable"
+)]
 pub(super) fn change_connection(change: &Change) -> Result<[u8; 16], StoreError> {
     Ok(match change {
         Change::InitialReviewAccepted { review, .. } => review.connection,
@@ -972,20 +980,19 @@ impl ConnectionStore {
                             {
                                 return Err(StoreError::Corrupt);
                             }
-                            if matches!(schedule.state, Schedule::Stopped { .. }) {
-                                if let Some(current) = cursor.current {
-                                    let operation = view.operation(current)?;
-                                    let stop = operation
-                                        .directory_chain_stop_boundary
-                                        .as_ref()
-                                        .ok_or(StoreError::Corrupt)?;
-                                    // Ack advanced the schedule once. Paid inspection may
-                                    // advance operation/progress afterward without a new stop.
-                                    if stop.schedule_revision.checked_add(1)
-                                        != Some(schedule.revision)
-                                    {
-                                        return Err(StoreError::Corrupt);
-                                    }
+                            if matches!(schedule.state, Schedule::Stopped { .. })
+                                && let Some(current) = cursor.current
+                            {
+                                let operation = view.operation(current)?;
+                                let stop = operation
+                                    .directory_chain_stop_boundary
+                                    .as_ref()
+                                    .ok_or(StoreError::Corrupt)?;
+                                // Ack advanced the schedule once. Paid inspection may
+                                // advance operation/progress afterward without a new stop.
+                                if stop.schedule_revision.checked_add(1) != Some(schedule.revision)
+                                {
+                                    return Err(StoreError::Corrupt);
                                 }
                             }
                             let selection = first_selection(&anchor)?;
@@ -1067,26 +1074,24 @@ impl ConnectionStore {
                     {
                         return Err(StoreError::Corrupt);
                     }
-                    if let Some(stop) = &operation.directory_chain_stop_boundary {
-                        if stop.operation_revision <= operation.expected
+                    if let Some(stop) = &operation.directory_chain_stop_boundary
+                        && (stop.operation_revision <= operation.expected
                             || stop.operation_revision > operation.revision
                             || stop.schedule_revision < 2
                             || stop.schedule_revision == u64::MAX
                             || (anchor.directory_chain_retired.is_none()
                                 && connection.directory_chain_schedule.as_ref().is_some_and(
                                     |schedule| stop.schedule_revision > schedule.revision,
-                                ))
-                        {
-                            return Err(StoreError::Corrupt);
-                        }
+                                )))
+                    {
+                        return Err(StoreError::Corrupt);
                     }
-                    if let Some(retired) = &operation.directory_chain_retired {
-                        if reference.index != 0
+                    if let Some(retired) = &operation.directory_chain_retired
+                        && (reference.index != 0
                             || retired.cursor.anchor != reference.anchor
-                            || retired.cursor.digest != selection.selection_digest
-                        {
-                            return Err(StoreError::Corrupt);
-                        }
+                            || retired.cursor.digest != selection.selection_digest)
+                    {
+                        return Err(StoreError::Corrupt);
                     }
                     if members
                         .entry((reference.anchor.connection, reference.anchor.serial))
@@ -1382,7 +1387,7 @@ impl ChainRows<'_> {
             if registration.intent.is_none()
                 || registration.stage.is_none()
                 || (operation.stage == 6 && registration.outcome.is_some())
-                || (matches!(operation.stage, 2 | 3 | 4) && registration.outcome.is_none())
+                || (matches!(operation.stage, 2..=4) && registration.outcome.is_none())
             {
                 return Err(StoreError::Corrupt);
             }

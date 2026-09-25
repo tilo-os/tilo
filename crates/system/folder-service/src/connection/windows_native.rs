@@ -38,9 +38,9 @@ fn trailing_layout(
         .ok_or_else(|| io::Error::other("native buffer overflow"))?
         .max(struct_size);
     let allocation = bytes
-        .checked_add(alignment - 1)
-        .ok_or_else(|| io::Error::other("native buffer overflow"))?
-        / alignment;
+        .checked_add(alignment.saturating_sub(1))
+        .and_then(|n| n.checked_div(alignment))
+        .ok_or_else(|| io::Error::other("native buffer overflow"))?;
     Ok((bytes, allocation))
 }
 #[cfg(test)]

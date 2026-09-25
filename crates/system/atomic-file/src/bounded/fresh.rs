@@ -1,5 +1,11 @@
 //! Fresh creation under retained privacy profiles; no administrative authority.
-use super::*;
+#![expect(
+    clippy::result_large_err,
+    reason = "custody travels inline in the error: bounded operations request no heap allocation"
+)]
+#[cfg(target_os = "macos")]
+use super::AdmissionError;
+use super::{BoundedOwnerDirectory, OsStr, OsStrExt, StorageDirectory, io, name_check};
 /// Parent provisioning admission is NOT a bounded native membership operation.
 /// Keep the original writer lease/exclusion separately; this holder grants none.
 #[cfg(target_os = "macos")]
@@ -8,8 +14,13 @@ pub struct OwnerOnlyProvisioning {
 }
 #[cfg(target_os = "macos")]
 impl OwnerOnlyProvisioning {
-    /// Ordinary OwnerOnly validation may allocate in native directory services.
+    /// Ordinary `OwnerOnly` validation may allocate in native directory services.
     /// It is intentionally separate from all bounded operation claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AdmissionError`] retaining `directory` when it is not
+    /// currently owner-only.
     pub fn admit(directory: StorageDirectory) -> Result<Self, AdmissionError> {
         match directory.validate_privacy(crate::Privacy::OwnerOnly) {
             Ok(()) => Ok(Self { directory }),
@@ -20,6 +31,11 @@ impl OwnerOnlyProvisioning {
     /// Caller-held exclusion and stable root permissions must span mkdir/open:
     /// there is no claim against hostile same-principal name replacement.
     /// Never adopts or normalizes an existing name. Errors never remove names.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FreshChildError`] whose state says whether a child was
+    /// created; created custody is retained for retry.
     pub fn create_child(&self, name: &OsStr) -> Result<FreshPrivateChild, FreshChildError> {
         create_child(&self.directory, name, ParentProfile::OrdinaryAdmitted)
     }
@@ -29,6 +45,11 @@ impl BoundedOwnerDirectory {
     /// Exclusively create an absent child using this original bounded parent.
     /// Caller retains its actual administrative owner and writer exclusion.
     /// Refusals preserve ambiguity; no existing name is adopted or removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FreshChildError`] for an invalid name, a parent that fails
+    /// validation, or a failed creation; created custody is retained for retry.
     pub fn create_fresh_child(&self, name: &OsStr) -> Result<FreshPrivateChild, FreshChildError> {
         name_check(name)
             .and_then(|()| self.validate())
@@ -80,7 +101,14 @@ fn create_child(
         created: false,
         submitted: false,
     };
-    custody.name[..custody.length].copy_from_slice(name.as_bytes());
+    // `name_check` bounds the name by the buffer; refuse rather than panic.
+    let Some(slot) = custody.name.get_mut(..custody.length) else {
+        return Err(FreshChildError {
+            source: io::ErrorKind::InvalidInput.into(),
+            custody: None,
+        });
+    };
+    slot.copy_from_slice(name.as_bytes());
     let result = (|| {
         custody.parent_profile.validate(&custody.parent)?;
         custody.submitted = true;
@@ -140,6 +168,12 @@ impl FreshChildError {
             FreshChildState::NotCreated
         }
     }
+    /// Retry normalization and commit of retained created custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` unchanged when no created child is retained, or a new
+    /// error when normalization or commit fails again.
     pub fn retry_normalize_and_commit(mut self) -> Result<BoundedOwnerDirectory, Self> {
         if self
             .custody
@@ -167,6 +201,11 @@ impl FreshPrivateChild {
     /// ACL on macOS, private mode with preserved POSIX ACLs on Linux. Sync child
     /// and original parent and verify the exact name before returning. Failure
     /// retains native custody; dropping it leaves an explicitly incomplete child.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FreshChildError`] retaining this custody when the binding
+    /// changed, the child is not empty, or a barrier fails.
     pub fn normalize_and_commit(mut self) -> Result<BoundedOwnerDirectory, FreshChildError> {
         let result = self.normalize_inner();
         match result {
@@ -186,7 +225,11 @@ impl FreshPrivateChild {
     fn binding(&self) -> io::Result<()> {
         self.parent_profile.validate(&self.parent)?;
         let child = self.child.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-        let name = OsStr::from_bytes(&self.name[..self.length]);
+        let name = OsStr::from_bytes(
+            self.name
+                .get(..self.length)
+                .ok_or(io::ErrorKind::InvalidData)?,
+        );
         let named = self.parent.inner.open_directory(name)?;
         if named.identity()? != child.inner.identity()? {
             return Err(io::ErrorKind::InvalidData.into());

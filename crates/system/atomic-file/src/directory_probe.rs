@@ -33,6 +33,12 @@ pub struct Request {
     pub components: Vec<String>,
 }
 impl Request {
+    /// Check that the request is complete and bounded before any effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` unless the request names an absolute root, the
+    /// local NTFS profile, external evidence and safe bounded components.
     pub fn validate(&self) -> io::Result<()> {
         let invalid = || {
             io::Error::new(
@@ -89,7 +95,7 @@ pub struct Outcome {
     pub qualification: &'static str,
 }
 impl Outcome {
-    pub fn from_result(result: io::Result<()>, complete: bool) -> Self {
+    pub fn from_result(result: &io::Result<()>, complete: bool) -> Self {
         Self {
             fully_observed: complete,
             candidate_calls_succeeded: result.is_ok() && complete,
@@ -148,7 +154,7 @@ mod tests {
     }
     #[test]
     fn successful_calls_without_complete_observation_do_not_pass() {
-        let outcome = Outcome::from_result(Ok(()), false);
+        let outcome = Outcome::from_result(&Ok(()), false);
         assert!(!outcome.candidate_calls_succeeded);
         assert!(!outcome.fully_observed);
         assert_eq!(outcome.qualification, "unqualified");
@@ -158,7 +164,7 @@ mod tests {
 /// Execute a bounded experiment. Success is operational observation, never qualification.
 pub fn run(request: &Request, sink: &mut Sink<'_>) -> Outcome {
     if let Err(error) = request.validate() {
-        return Outcome::from_result(Err(error), false);
+        return Outcome::from_result(&Err(error), false);
     }
     #[cfg(windows)]
     {
@@ -172,7 +178,7 @@ pub fn run(request: &Request, sink: &mut Sink<'_>) -> Outcome {
             fields: BTreeMap::from([("host".into(), std::env::consts::OS.into())]),
         });
         Outcome::from_result(
-            result.and_then(|()| {
+            &result.and_then(|()| {
                 Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "native Windows execution required; no fixture effects attempted",
@@ -228,12 +234,13 @@ pub(crate) mod observation {
         }
     }
     pub(crate) fn reparse(observation: io::Result<bool>) -> io::Result<bool> {
-        match observation? {
-            true => Ok(true),
-            false => Err(io::Error::new(
+        if observation? {
+            Ok(true)
+        } else {
+            Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "required reparse fixture is not a reparse object",
-            )),
+            ))
         }
     }
     pub(crate) fn flush(status: i32, completion: i32, information: usize) -> io::Result<bool> {
@@ -264,7 +271,7 @@ pub(crate) mod observation {
             ),
             Err(error) => (false, Err(error)),
         };
-        Outcome::from_result(result, complete)
+        Outcome::from_result(&result, complete)
     }
 
     #[cfg(test)]
@@ -323,7 +330,7 @@ pub(crate) mod observation {
         fn unknown_flush_status_and_missing_completion_are_incomplete() {
             for (status, done, info) in [
                 (1, 0x103, usize::MAX),
-                (0x40000000, 0, 0),
+                (0x4000_0000, 0, 0),
                 (0, 0x103, usize::MAX),
             ] {
                 let observed = outcome(flush(status, done, info));
@@ -358,7 +365,7 @@ pub(crate) mod observation {
                 |_| Ok(()),
             );
             assert!(outcome(collision).candidate_calls_succeeded);
-            let failed = outcome(flush(0xc0000022u32 as i32, 0x103, usize::MAX));
+            let failed = outcome(flush(0xc000_0022_u32.cast_signed(), 0x103, usize::MAX));
             assert!(failed.fully_observed);
             assert!(!failed.candidate_calls_succeeded);
             assert!(outcome(flush(0, 0, 0)).candidate_calls_succeeded);

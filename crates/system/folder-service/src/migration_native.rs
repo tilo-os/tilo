@@ -331,7 +331,8 @@ impl<T: Transport> Session<T> {
         if selected.directory || !selected.content_readable {
             return Err(changed("native selected content unreadable"));
         }
-        self.remaining -= cost;
+        // `request_cost` admitted `cost` against the remaining budget.
+        self.remaining = self.remaining.saturating_sub(cost);
         Ok(NativeFile {
             session: self,
             manifest,
@@ -380,7 +381,7 @@ impl<T: Transport> CopyFileSource for NativeFile<'_, T> {
         if !valid || (self.passes == 1 && self.offset != self.entry.size) {
             return Err(changed("native pass is incomplete"));
         }
-        self.passes += 1;
+        self.passes = self.passes.saturating_add(1);
         self.offset = 0;
         self.buffer.clear();
         self.at = 0;
@@ -392,8 +393,13 @@ impl<T: Transport> CopyFileSource for NativeFile<'_, T> {
             return Ok(0);
         }
         if self.at == self.buffer.len() {
-            let length = u32::try_from((self.entry.size - self.offset).min(u64::from(CHUNK_BYTES)))
-                .map_err(|_| changed("native range overflow"))?;
+            let length = u32::try_from(
+                self.entry
+                    .size
+                    .saturating_sub(self.offset)
+                    .min(u64::from(CHUNK_BYTES)),
+            )
+            .map_err(|_| changed("native range overflow"))?;
             let result = self
                 .session
                 .transport
@@ -405,16 +411,16 @@ impl<T: Transport> CopyFileSource for NativeFile<'_, T> {
                 return Err(changed("native range length mismatch"));
             }
         }
-        let count = out.len().min(self.buffer.len() - self.at);
+        let count = out.len().min(self.buffer.len().saturating_sub(self.at));
         out.get_mut(..count)
             .ok_or_else(|| changed("native output buffer bounds"))?
             .copy_from_slice(
                 self.buffer
-                    .get(self.at..self.at + count)
+                    .get(self.at..self.at.saturating_add(count))
                     .ok_or_else(|| changed("native range buffer bounds"))?,
             );
-        self.at += count;
-        self.offset += count as u64;
+        self.at = self.at.saturating_add(count);
+        self.offset = self.offset.saturating_add(count as u64);
         Ok(count)
     }
     fn attest(&mut self, bytes: u64, digest: [u8; 32], cancel: &AtomicBool) -> io::Result<()> {
@@ -849,7 +855,14 @@ pub fn maybe_run_command(args: &[String]) -> io::Result<Option<i32>> {
     Ok(Some(if report.complete() { 0 } else { 2 }))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use super::*;
     use std::{cell::RefCell, rc::Rc, sync::atomic::Ordering};

@@ -1,5 +1,16 @@
 //! Inert, bounded directory-chain selection. These bytes grant no authority.
-use super::super::{model::*, store::StoreError};
+#[cfg(test)]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "the test-only validator uses most of the model"
+)]
+use super::super::model::*;
+use super::super::{
+    model::{
+        ConnectionId, Encoding, EndpointIdentity, MAX_PATH_UNITS, NativeName, RelativePath, Side,
+    },
+    store::StoreError,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::connection) struct RegularContentV1 {
@@ -170,22 +181,26 @@ impl DirectoryChainSelectionV1 {
                 NativeName::Unix(v) => v.len(),
                 NativeName::Windows(v) => v.len(),
             })
-            .sum::<usize>()
-            + self.path.components().len()
-            - 1;
+            .fold(0_usize, usize::saturating_add)
+            .saturating_add(self.path.components().len().saturating_sub(1));
         let width = if self.path.encoding() == Encoding::Windows {
             2
         } else {
             1
         };
         // Every variable-length term is bounded before allocating the output.
-        let size = 263
-            + usize::from(self.baseline.is_some()) * 8
-            + usize::from(matches!(
+        let size = [
+            263,
+            usize::from(self.baseline.is_some()).saturating_mul(8),
+            usize::from(matches!(
                 self.terminal,
                 DirectoryChainTerminalV1::RegularAdd { .. }
-            )) * 41
-            + count * width;
+            ))
+            .saturating_mul(41),
+            count.saturating_mul(width),
+        ]
+        .into_iter()
+        .fold(0_usize, usize::saturating_add);
         if count > MAX_PATH_UNITS || size > MAX_SELECTION_BYTES {
             return Err(StoreError::LimitExceeded);
         }
@@ -258,7 +273,11 @@ impl DirectoryChainSelectionV1 {
         let expected = if depth == 64 {
             u64::MAX - 1
         } else {
-            (1u64.checked_shl(depth as u32).ok_or(StoreError::Corrupt)? - 1) & !1
+            (1u64
+                .checked_shl(u32::try_from(depth).map_err(|_| StoreError::Corrupt)?)
+                .ok_or(StoreError::Corrupt)?
+                .wrapping_sub(1))
+                & !1
         };
         let [a, b, c] = [
             self.baselined_prefixes,
@@ -292,7 +311,8 @@ pub(in crate::connection) struct DirectoryChainMember {
 impl DirectoryChainSelectionV1 {
     pub(in crate::connection) fn member_count(&self) -> Result<u8, StoreError> {
         self.encode()?;
-        u8::try_from(self.missing_prefixes.count_ones() + 1).map_err(|_| StoreError::Corrupt)
+        u8::try_from(self.missing_prefixes.count_ones().saturating_add(1))
+            .map_err(|_| StoreError::Corrupt)
     }
     pub(in crate::connection) fn member(
         &self,
@@ -302,7 +322,7 @@ impl DirectoryChainSelectionV1 {
         if index >= count {
             return Err(StoreError::Corrupt);
         }
-        if index == count - 1 {
+        if index == count.saturating_sub(1) {
             return Ok(DirectoryChainMember {
                 path: self.path.clone(),
                 from: self.from,
@@ -311,7 +331,8 @@ impl DirectoryChainSelectionV1 {
         }
         let mut remaining = self.missing_prefixes;
         for _ in 0..index {
-            remaining &= remaining - 1;
+            // Clear the lowest set bit.
+            remaining &= remaining.wrapping_sub(1);
         }
         let depth = remaining.trailing_zeros() as usize;
         let mut path = self.path.clone();

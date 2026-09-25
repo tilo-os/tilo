@@ -71,6 +71,10 @@ fn digest(request: &EnrollmentRequest, domain: &[u8]) -> Result<[u8; 32], String
 }
 
 /// Sign authorization and device proof without serializing either secret.
+///
+/// # Errors
+///
+/// Returns a message when the request cannot be serialized for signing.
 pub fn sign_request(
     request: &mut EnrollmentRequest,
     root: &SigningKey,
@@ -88,6 +92,11 @@ pub fn sign_request(
 }
 
 /// Verify the exact issued challenge, root authorization, and device custody.
+///
+/// # Errors
+///
+/// Returns a message when the version, challenge or expiry does not match,
+/// or when either signature does not verify.
 pub fn verify_request(
     request: &EnrollmentRequest,
     expected: &Challenge,

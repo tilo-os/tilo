@@ -11,9 +11,10 @@
 //! it does not provide private file creation, attest the sentinel's identity, or
 //! durably publish its containing directory.
 
+use advisory_lock::{FileLock, LockMode, TryLockError};
 use std::error::Error;
 use std::fmt;
-use std::fs::{File, Metadata, TryLockError};
+use std::fs::{File, Metadata};
 use std::io;
 
 /// The kind of native lease to acquire.
@@ -23,6 +24,15 @@ pub enum LeaseMode {
     Shared,
     /// Excludes both shared and exclusive leases.
     Exclusive,
+}
+
+impl From<LeaseMode> for LockMode {
+    fn from(mode: LeaseMode) -> Self {
+        match mode {
+            LeaseMode::Shared => Self::Shared,
+            LeaseMode::Exclusive => Self::Exclusive,
+        }
+    }
 }
 
 /// A failure to acquire a lease without blocking.
@@ -55,7 +65,7 @@ impl Error for AcquireError {
 /// An owned native lease released when its private file handle is dropped.
 #[derive(Debug)]
 pub struct FileLease {
-    file: File,
+    lock: FileLock,
 }
 
 impl FileLease {
@@ -66,11 +76,7 @@ impl FileLease {
     /// Returns the native I/O error when the operating system cannot acquire
     /// the requested lease.
     pub fn acquire(file: File, mode: LeaseMode) -> io::Result<Self> {
-        match mode {
-            LeaseMode::Shared => file.lock_shared()?,
-            LeaseMode::Exclusive => file.lock()?,
-        }
-        Ok(Self { file })
+        FileLock::lock(file, mode.into()).map(|lock| Self { lock })
     }
 
     /// Attempt to acquire `mode` on `file` without blocking.
@@ -80,12 +86,8 @@ impl FileLease {
     /// Returns [`AcquireError::Busy`] for a conflicting lease and preserves
     /// any native locking failure as [`AcquireError::Io`].
     pub fn try_acquire(file: File, mode: LeaseMode) -> Result<Self, AcquireError> {
-        let result = match mode {
-            LeaseMode::Shared => file.try_lock_shared(),
-            LeaseMode::Exclusive => file.try_lock(),
-        };
-        match result {
-            Ok(()) => Ok(Self { file }),
+        match FileLock::try_lock(file, mode.into()) {
+            Ok(lock) => Ok(Self { lock }),
             Err(TryLockError::WouldBlock) => Err(AcquireError::Busy),
             Err(TryLockError::Error(error)) => Err(AcquireError::Io(error)),
         }
@@ -97,7 +99,7 @@ impl FileLease {
     /// Returns the native metadata error when identity cannot be observed.
     #[cfg(any(unix, windows))]
     pub fn identity(&self) -> io::Result<crate::FileIdentity> {
-        crate::FileIdentity::of(&self.file)
+        crate::FileIdentity::of(self.lock.file())
     }
 
     /// Read metadata through the handle that owns the lease.
@@ -106,6 +108,6 @@ impl FileLease {
     ///
     /// Returns the native I/O error when metadata cannot be read.
     pub fn metadata(&self) -> io::Result<Metadata> {
-        self.file.metadata()
+        self.lock.file().metadata()
     }
 }

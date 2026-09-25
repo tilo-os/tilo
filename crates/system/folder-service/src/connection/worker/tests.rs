@@ -1,3 +1,21 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::similar_names,
+    clippy::needless_collect,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    clippy::match_wildcard_for_single_variants,
+    clippy::too_many_lines,
+    reason = "fixture-building test code favours direct, scenario-shaped helpers"
+)]
 use super::*;
 #[cfg(target_os = "linux")]
 use crate::connection::model::Conflict;
@@ -277,7 +295,7 @@ fn reopen_service(fixture: &NativeFixture) -> ConnectedService {
         match ConnectedService::open_at(&fixture.store) {
             Ok(service) => return service,
             Err(ConnectionError::Busy) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10))
+                std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => panic!("service failed to reopen: {error:?}"),
         }
@@ -444,7 +462,7 @@ fn native_facade_dropped_observer_pause_and_offline_do_not_lose_bytes() {
         match service.reopen(info.id).unwrap().wait() {
             Ok(observer) => break observer,
             Err(ConnectionError::Busy) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10))
+                std::thread::sleep(Duration::from_millis(10));
             }
             other => panic!("reopen failed: {:?}", other.err()),
         }
@@ -1026,7 +1044,7 @@ fn native_empty_baseline_review_restart_and_later_real_operations() {
         match ConnectionStore::open_at(&fixture.store) {
             Ok(store) => break store,
             Err(StoreError::Busy) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10))
+                std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => panic!("reopen: {error:?}"),
         }

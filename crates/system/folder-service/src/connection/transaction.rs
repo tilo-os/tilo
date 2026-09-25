@@ -23,6 +23,10 @@ pub(super) struct InitialPreview {
     source: super::model::ObservedTree,
     destination: super::model::ObservedTree,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(super) enum WorkerReviewed {
     Regular(ReviewedInitial),
     Empty(AcceptedEmpty),
@@ -110,6 +114,10 @@ impl InitialPreview {
         self.accept_complete_observed(store, session, fresh_source, fresh_destination, lease)
     }
     #[cfg(test)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "ownership transfer marks the one-shot value as used up by this call"
+    )]
     fn accept_complete_observed(
         self,
         store: &ConnectionStore,
@@ -712,6 +720,10 @@ fn regular_ancestor_prerequisite(
     })
 }
 /// Read-only dispatch proposal. A plan never grants native step authority.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(super) enum RegularPlan {
     InitialReview(InitialPreview),
     StructuralPending(StructuralPending),

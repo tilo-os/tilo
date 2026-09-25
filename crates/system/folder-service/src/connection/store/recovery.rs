@@ -7,18 +7,25 @@ use super::super::super::nofollow::metadata_nofollow;
 use super::File;
 #[cfg(test)]
 use super::OperationReceipt;
+#[cfg(any(windows, target_os = "linux", test))]
+use super::PreservedObject;
 use super::{
     Arc, AtomicBool, Change, ConnectionId, ConnectionStore, DurableAck, EndpointIdentity,
-    Lifecycle, OperationId, Page, PageCursor, Path, PreservedObject, RecoveryChecks, RecoveryEntry,
-    RecoveryId, RecoveryReason, RecoveryReservation, RecoveryState, RelativePath, Row, Side,
-    StoreError, VerifiedBaseline, format, storage,
+    Lifecycle, OperationId, Page, PageCursor, Path, RecoveryChecks, RecoveryEntry, RecoveryId,
+    RecoveryReason, RecoveryReservation, RecoveryState, RelativePath, Row, Side, StoreError,
+    VerifiedBaseline, format, storage,
 };
 #[cfg(any(windows, test))]
 use cap_primitives::fs::Metadata;
 use sha2::{Digest, Sha256};
+#[cfg_attr(
+    not(any(windows, target_os = "linux", test)),
+    allow(unused_imports, reason = "only native preservation writes objects")
+)]
+use std::io::Write;
 use std::{
     ffi::OsStr,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
     sync::atomic::Ordering,
     time::Instant,
 };
@@ -36,7 +43,7 @@ fn object_directory(
         Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
             let child = parent.create_child(OsStr::new(&name))?;
             storage::sync_directory(&child)?;
-            storage::sync_directory(&parent)?;
+            storage::sync_directory(parent)?;
             child
         }
         Err(error) => return Err(error.into()),
@@ -550,7 +557,7 @@ impl ConnectionStore {
             let tombstone = matches!(before.selection, d::Selection::Tombstone { .. });
             if before.selection != self.selected_descriptor(&operation, action)?
                 || stage.is_some() == tombstone
-                || entry.side != 1 - before.direction
+                || entry.side != 1 ^ before.direction
             {
                 return Err(StoreError::RecoveryRequired);
             }
@@ -1010,6 +1017,10 @@ impl ConnectionStore {
         clippy::too_many_lines,
         reason = "Publication checks retain the same recovery guards through all exact required-version joins."
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     pub(super) fn reduce_outcome(
         &self,
         id: [u8; 16],
@@ -1049,15 +1060,14 @@ impl ConnectionStore {
             }
             let mut latest_native: Option<format::NativeRegistration> = None;
             for row in self.rows()? {
-                if let Row::NativeRegistration(registration) = row? {
-                    if registration.connection == operation.connection
-                        && registration.serial == operation.serial
-                        && latest_native
-                            .as_ref()
-                            .is_none_or(|old| old.attempt < registration.attempt)
-                    {
-                        latest_native = Some(registration);
-                    }
+                if let Row::NativeRegistration(registration) = row?
+                    && registration.connection == operation.connection
+                    && registration.serial == operation.serial
+                    && latest_native
+                        .as_ref()
+                        .is_none_or(|old| old.attempt < registration.attempt)
+                {
+                    latest_native = Some(registration);
                 }
             }
             let native_intent = latest_native
@@ -1220,6 +1230,7 @@ impl ConnectionStore {
         &self,
         operation: &format::Operation,
     ) -> Result<Option<super::EntryState>, StoreError> {
+        use super::super::transaction::native::descriptor as d;
         if operation.native_kind == Some(format::NativeOperationKind::DirectoryV1) {
             return self.native_directory_baseline_value(operation).map(Some);
         }
@@ -1229,18 +1240,16 @@ impl ConnectionStore {
         if operation.decision == 0 {
             return Ok(operation.source.clone().map(Into::into));
         }
-        use super::super::transaction::native::descriptor as d;
         let mut latest = None;
         for row in self.rows()? {
-            if let Row::NativeRegistration(value) = row? {
-                if value.connection == operation.connection
-                    && value.serial == operation.serial
-                    && latest
-                        .as_ref()
-                        .is_none_or(|old: &format::NativeRegistration| old.attempt < value.attempt)
-                {
-                    latest = Some(value);
-                }
+            if let Row::NativeRegistration(value) = row?
+                && value.connection == operation.connection
+                && value.serial == operation.serial
+                && latest
+                    .as_ref()
+                    .is_none_or(|old: &format::NativeRegistration| old.attempt < value.attempt)
+            {
+                latest = Some(value);
             }
         }
         let registration = latest.ok_or(StoreError::RecoveryRequired)?;
@@ -1273,6 +1282,10 @@ impl ConnectionStore {
     #[expect(
         clippy::too_many_lines,
         reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
     )]
     pub(super) fn reduce_baseline(
         &self,
@@ -2236,7 +2249,8 @@ impl ConnectionStore {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(in super::super) fn partial_native_recovery_for_test(
     store: &mut ConnectionStore,
     reservation: &RecoveryReservation,
@@ -2746,7 +2760,7 @@ impl ConnectionStore {
                 let source =
                     d::RecoveryFact::decode(&fact.fact).map_err(|_| StoreError::Corrupt)?;
                 if source.side != version.side
-                    || source.role != version.role + 1
+                    || source.role != version.role.saturating_add(1)
                     || &source.object != object
                     || &source.content != content
                 {
@@ -2770,7 +2784,8 @@ impl ConnectionStore {
                                 snapshot.versions.get(usize::from(origin.version)).cloned()
                             })
                             .is_none_or(|version| {
-                                version.side != source.side || version.role + 1 != source.role
+                                version.side != source.side
+                                    || version.role.saturating_add(1) != source.role
                             })
                 }) || entry.state != 1
                     || entry.reason != 2
@@ -2847,7 +2862,7 @@ impl ConnectionStore {
                         snapshot.versions.get(usize::from(origin.version)).cloned()
                     })
                     .is_none_or(|version| {
-                        version.side != source.side || version.role + 1 != source.role
+                        version.side != source.side || version.role.saturating_add(1) != source.role
                     })
         }) || entry.state != 1
             || entry.reason != 2
@@ -3064,7 +3079,7 @@ impl ConnectionStore {
                         slot: entry.slot,
                     },
                     side: version.side,
-                    role: version.role + 1,
+                    role: version.role.saturating_add(1),
                     endpoint: *snapshot
                         .endpoints
                         .get(usize::from(version.side))
@@ -3199,7 +3214,7 @@ impl ConnectionStore {
                     slot: id.slot,
                 },
                 side: version.side,
-                role: version.role + 1,
+                role: version.role.saturating_add(1),
                 endpoint: *snapshot
                     .endpoints
                     .get(usize::from(version.side))
@@ -3444,7 +3459,7 @@ impl ConnectionStore {
                     || fact.slot != entry.slot
                     || fact.captured.as_ref() != Some(&origin.snapshot)
                     || source.side != version.side
-                    || source.role != version.role + 1
+                    || source.role != version.role.saturating_add(1)
                     || &source.object != object
                     || &source.content != content
                     || entry.object.as_ref().is_none_or(|artifact| {
@@ -3566,7 +3581,7 @@ impl ConnectionStore {
         context.revision = format::next(previous)?;
         context.operation_revision = context.revision;
         capture.advance_recovery(context, previous)?;
-        if let Some(reader) = selected.as_deref_mut() {
+        if let Some(reader) = selected {
             reader.advance_inspection(previous, context)?;
             reader.validate_recovery(self, context)?;
         }
@@ -3664,7 +3679,7 @@ impl ConnectionStore {
                             slot: entry.slot,
                         },
                         side: version.side,
-                        role: version.role + 1,
+                        role: version.role.saturating_add(1),
                         endpoint: *snapshot
                             .endpoints
                             .get(usize::from(version.side))
@@ -3814,7 +3829,7 @@ impl ConnectionStore {
             storage::validate_recovery_reader(&directory, &object_name, &reread, &metadata)?;
         }
         capture.validate_recovery(context)?;
-        if let Some(reader) = selected.as_deref_mut() {
+        if let Some(reader) = selected {
             reader.validate_recovery(self, context)?;
         }
         self.check_recovery_context(context)

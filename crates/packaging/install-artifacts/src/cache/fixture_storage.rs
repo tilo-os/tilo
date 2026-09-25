@@ -1,4 +1,14 @@
-use super::*;
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test fixture: an unexpected fixture failure must abort the test that selected it"
+)]
+#[cfg(test)]
+#[cfg(unix)]
+use super::{Candidate, Kind, PreparedPrefix};
+use super::{FreshProvider, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete, Provider};
 use crate::transport::SelectedManifest;
 use sha2::{Digest, Sha256};
 use std::{
@@ -35,7 +45,9 @@ pub(crate) fn read_totals(phase: &'static str) -> (u64, u64) {
         r.borrow()
             .iter()
             .filter(|r| r.0 == phase)
-            .fold((0, 0), |(a, b), r| (a + r.1, b + r.2))
+            .fold((0_u64, 0_u64), |(a, b), r| {
+                (a.saturating_add(r.1), b.saturating_add(r.2))
+            })
     })
 }
 #[cfg(test)]
@@ -202,10 +214,9 @@ impl Provider for DiskProvider {
             if let Some(n) = name
                 .strip_prefix("record-")
                 .and_then(|n| n.parse::<u64>().ok())
+                && !keep.contains(&n)
             {
-                if !keep.contains(&n) {
-                    fs::remove_file(entry.path()).unwrap();
-                }
+                fs::remove_file(entry.path()).unwrap();
             }
         }
         File::open(&self.dir)
@@ -215,7 +226,8 @@ impl Provider for DiskProvider {
         Ok(())
     }
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) fn prefix(
     prepared: &mut PreparedPrefix<'_>,
     bytes: &[u8],
@@ -246,7 +258,8 @@ type PreparationHook = Box<dyn FnMut(usize) -> Result<(), crate::error::Failure>
 thread_local! {
     static PREPARATION_HOOK: RefCell<Option<PreparationHook>> = const { RefCell::new(None) };
 }
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(crate) fn with_preparation_hook(hook: PreparationHook, run: impl FnOnce()) {
     struct Reset(Option<PreparationHook>);
     impl Drop for Reset {
@@ -258,7 +271,7 @@ pub(crate) fn with_preparation_hook(hook: PreparationHook, run: impl FnOnce()) {
     run();
 }
 
-/// Real-file common-protocol fixture. Freshness is minted only by create_new;
+/// Real-file common-protocol fixture. Freshness is minted only by `create_new`;
 /// this models provider policy, not Linux security, locking or publication.
 #[cfg(unix)]
 pub(crate) struct FreshDisk<'a> {

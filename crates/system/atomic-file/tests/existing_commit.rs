@@ -88,7 +88,7 @@ fn existing_reconciliation_commits_exact_chain_and_never_recreates() {
         *events.borrow(),
         physical
             .ancestors()
-            .map(|p| p.to_owned())
+            .map(std::borrow::ToOwned::to_owned)
             .collect::<Vec<_>>()
     );
     let error = with_provision_failure(P::BeforeSync, &physical, || {
@@ -192,6 +192,10 @@ fn held_sentinel_and_append_refuse_symlinks_nonregular_and_replaced_parent() {
 }
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a raw legacy flock holder is the interoperability peer under test"
+)]
 fn legacy_flock_child() {
     use std::io::Read;
     let Some(path) = std::env::var_os("TILO_EXISTING_FLOCK_CHILD") else {
@@ -239,6 +243,10 @@ fn legacy_flock_child() {
 }
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a raw legacy flock holder is the interoperability peer under test"
+)]
 fn held_lease_interoperates_with_legacy_flock_in_real_processes() {
     use std::io::BufRead;
     use std::process::{Command, Stdio};

@@ -24,7 +24,7 @@ fn raw_components(path: &[u8]) -> Result<Vec<&[u8]>, crate::error::Failure> {
         return Err("Unsupported absolute cache path".into());
     }
     let mut parts = Vec::new();
-    for part in path[1..].split(|b| *b == b'/') {
+    for part in path.get(1..).unwrap_or_default().split(|b| *b == b'/') {
         if parts.len() >= 64 || part.is_empty() || part.len() > 255 || part == b"." || part == b".."
         {
             return Err("Unsafe or excessive raw cache ancestry".into());
@@ -164,14 +164,22 @@ mod native {
                 }
                 return Err(io(e));
             }
-            let bytes = &bytes[..n as usize];
+            let encoding = || crate::error::Failure::unsupported("Unsupported POSIX ACL encoding");
+            let bytes = usize::try_from(n)
+                .ok()
+                .and_then(|length| bytes.get(..length))
+                .ok_or_else(encoding)?;
+            let (header, entries) = bytes.split_at_checked(4).ok_or_else(encoding)?;
             require_unsupported(
-                bytes.len() >= 4 && (bytes.len() - 4) % 8 == 0 && bytes[..4] == 2u32.to_le_bytes(),
+                entries.len() % 8 == 0 && header == 2u32.to_le_bytes(),
                 "Unsupported POSIX ACL encoding",
             )?;
-            for entry in bytes[4..].chunks_exact(8) {
-                let tag = u16::from_le_bytes(entry[..2].try_into().unwrap());
-                let perm = u16::from_le_bytes(entry[2..4].try_into().unwrap());
+            for entry in entries.chunks_exact(8) {
+                let &[tag_low, tag_high, perm_low, perm_high, ..] = entry else {
+                    return Err(encoding());
+                };
+                let tag = u16::from_le_bytes([tag_low, tag_high]);
+                let perm = u16::from_le_bytes([perm_low, perm_high]);
                 require_unsupported(
                     matches!(tag, 1 | 2 | 4 | 8 | 16 | 32) && perm <= 7,
                     "Unsupported ACL entry",
@@ -208,8 +216,13 @@ mod native {
         }
         // SAFETY: successful fstatfs initialized storage.
         let kind = unsafe { stat.assume_init() }.f_type;
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "statfs magic numbers compare as unsigned; a negative value matches none"
+        )]
+        let kind = kind as u64;
         require_unsupported(
-            matches!(kind as u64, 0xef53 | 0x58465342 | 0x9123683e),
+            matches!(kind, 0xef53 | 0x5846_5342 | 0x9123_683e),
             "Unqualified cache filesystem (requires Linux ext4/XFS/Btrfs semantics)",
         )?;
         Ok(Security {
@@ -285,6 +298,14 @@ mod native {
     }
     // A fresh open of "." gives each enumeration its own directory offset.
     fn entries(parent: &File) -> Result<Vec<Vec<u8>>> {
+        struct Dir(*mut libc::DIR);
+        impl Drop for Dir {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::closedir(self.0);
+                }
+            }
+        }
         let dot = c".";
         // SAFETY: live descriptor and static path.
         let fd = unsafe {
@@ -304,14 +325,6 @@ mod native {
                 libc::close(fd);
             }
             return Err(io(std::io::Error::last_os_error()));
-        }
-        struct Dir(*mut libc::DIR);
-        impl Drop for Dir {
-            fn drop(&mut self) {
-                unsafe {
-                    libc::closedir(self.0);
-                }
-            }
         }
         let dir = Dir(ptr);
         let mut out = Vec::new();
@@ -345,25 +358,45 @@ mod native {
     }
     struct LockedRoot {
         ancestry: Vec<Held>,
+        // Declared before `lock` so the lease is explicitly released before
+        // the sentinel descriptor closes.
+        _lease: advisory_lock::FileLock,
         lock: Held,
         payload: Held,
         journals: [Held; 2],
     }
+    /// The held ancestry always starts at `/`; losing it is a refusal, not a panic.
+    fn last_held(ancestry: &[Held]) -> Result<&File> {
+        ancestry
+            .last()
+            .map(|held| &held.file)
+            .ok_or_else(|| "Cache ancestry lost its root".into())
+    }
     impl LockedRoot {
-        fn root(&self) -> &File {
-            &self.ancestry.last().unwrap().file
+        fn root(&self) -> Result<&File> {
+            last_held(&self.ancestry)
+        }
+        fn journal(&self, index: usize) -> Result<&Held> {
+            self.journals
+                .get(index)
+                .ok_or_else(|| "Invalid cache component".into())
         }
         fn check(&self) -> Result<()> {
             for (i, held) in self.ancestry.iter().enumerate() {
-                held.check(i.checked_sub(1).map(|n| &self.ancestry[n].file))?;
+                held.check(
+                    i.checked_sub(1)
+                        .and_then(|n| self.ancestry.get(n))
+                        .map(|parent| &parent.file),
+                )?;
             }
-            self.lock.check(Some(self.root()))?;
-            self.payload.check(Some(self.root()))?;
+            let root = self.root()?;
+            self.lock.check(Some(root))?;
+            self.payload.check(Some(root))?;
             for journal in &self.journals {
-                journal.check(Some(self.root()))?;
+                journal.check(Some(root))?;
             }
             require(
-                entries(self.root())?
+                entries(root)?
                     == vec![
                         b"journal-0".to_vec(),
                         b"journal-1".to_vec(),
@@ -379,12 +412,19 @@ mod native {
         manifest: String,
     }
     impl CacheRoot {
+        #[cfg_attr(
+            test,
+            allow(
+                dead_code,
+                reason = "the unit-test build drives the fixture coordinator instead"
+            )
+        )]
         pub(crate) fn acquire(selected: &SelectedManifest) -> Result<Self> {
             let cache =
                 if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
                     std::path::PathBuf::from(raw)
                 } else {
-                    let home = dirs::home_dir().ok_or("Current-user home directory unavailable")?;
+                    let home = xdg_paths::home().ok_or("Current-user home directory unavailable")?;
                     raw_components(home.as_os_str().as_bytes())?;
                     home.join(".cache")
                 };
@@ -395,17 +435,18 @@ mod native {
             let root = File::open("/").map_err(io)?;
             let mut ancestry = vec![Held::new(root, b"", true, false)?];
             for (index, part) in parts.iter().enumerate() {
-                let parent = &ancestry.last().unwrap().file;
-                ancestry.push(directory(parent, part, index + 1 == parts.len(), false)?);
+                let parent = last_held(&ancestry)?;
+                let leaf = index.saturating_add(1) == parts.len();
+                ancestry.push(directory(parent, part, leaf, false)?);
             }
             for leaf in [
                 b"qos-internal-install".as_slice(),
                 selected.manifest_sha256().as_bytes(),
             ] {
-                let parent = &ancestry.last().unwrap().file;
+                let parent = last_held(&ancestry)?;
                 ancestry.push(directory(parent, leaf, true, true)?);
             }
-            let root = &ancestry.last().unwrap().file;
+            let root = last_held(&ancestry)?;
             // Classify before creating. The permanent lock is never unlinked.
             let known = [
                 b"ownership.lock".as_slice(),
@@ -437,15 +478,15 @@ mod native {
                 lock.file.metadata().map_err(io)?.len() == 0,
                 "Unknown lock contents",
             )?;
-            // SAFETY: live lock descriptor, nonblocking cooperative exclusive lease.
-            if unsafe { libc::flock(lock.file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                let e = std::io::Error::last_os_error();
-                return Err(if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                    crate::error::Failure::busy("Cache Busy")
-                } else {
-                    io(e)
-                });
-            }
+            // Nonblocking cooperative exclusive lease on the sentinel's open
+            // file description, released explicitly when the root drops.
+            let lease = advisory_lock::FileLock::try_exclusive(lock.file.try_clone().map_err(io)?)
+                .map_err(|error| match error {
+                    advisory_lock::TryLockError::WouldBlock => {
+                        crate::error::Failure::busy("Cache Busy")
+                    }
+                    advisory_lock::TryLockError::Error(e) => io(e),
+                })?;
             lock.check(Some(root))?;
             let payload = directory(root, b"payload", true, true)?;
             let journals = [
@@ -454,6 +495,7 @@ mod native {
             ];
             let lease = Arc::new(LockedRoot {
                 ancestry,
+                _lease: lease,
                 lock,
                 payload,
                 journals,
@@ -487,7 +529,7 @@ mod native {
         visit: &mut dyn FnMut(&[u8]) -> Result<()>,
     ) -> Result<Vec<Journal>> {
         root.check()?;
-        let parent = &root.journals[index].file;
+        let parent = &root.journal(index)?.file;
         let names = entries(parent)?;
         require(names.len() <= 3, "Excessive journal survivors")?;
         let mut found = Vec::new();
@@ -501,7 +543,8 @@ mod native {
                 len > 0 && len <= MAX_RECORD as u64,
                 "Unknown/torn/oversized journal",
             )?;
-            let mut bytes = vec![0; len as usize];
+            let mut bytes =
+                vec![0; usize::try_from(len).map_err(|_| "Unknown/torn/oversized journal")?];
             held.file.read_exact(&mut bytes).map_err(io)?;
             let mut end = [0];
             require(held.file.read(&mut end).map_err(io)? == 0, "Journal grew")?;
@@ -549,11 +592,13 @@ mod native {
                     && a.bytes == b.bytes
             })
     }
+    /// Partial leaf, parent identity digest and file identity digest.
+    type JournalCandidate = (String, [u8; 32], [u8; 32]);
     fn candidate(
         records: &[Journal],
         selected: &SelectedManifest,
         index: usize,
-    ) -> Result<Option<(String, [u8; 32], [u8; 32])>> {
+    ) -> Result<Option<JournalCandidate>> {
         let mut result = None;
         for journal in records {
             let record = Record::decode(&journal.bytes)?;
@@ -612,20 +657,24 @@ mod native {
         file.seek(SeekFrom::Start(0)).map_err(io)?;
         let mut hash = Sha256::new();
         let mut left = c.byte_size;
-        let mut buffer = [0; 64 * 1024];
+        let mut buffer = vec![0; 64 * 1024];
         while left > 0 {
             stop(cancel)?;
-            let n = file
-                .read(&mut buffer[..left.min(65536) as usize])
-                .map_err(io)?;
+            let size = buffer
+                .len()
+                .min(usize::try_from(left).unwrap_or(usize::MAX));
+            let chunk = buffer
+                .get_mut(..size)
+                .ok_or("Final component read buffer")?;
+            let n = file.read(chunk).map_err(io)?;
             require(n > 0, "Truncated final component")?;
-            hash.update(&buffer[..n]);
-            left -= n as u64;
+            hash.update(chunk.get(..n).ok_or("Final component read overrun")?);
+            left = left.saturating_sub(n as u64);
         }
         stop(cancel)?;
         let mut eof = [0];
         require(
-            file.read(&mut eof).map_err(io)? == 0 && format!("{:x}", hash.finalize()) == c.sha256,
+            file.read(&mut eof).map_err(io)? == 0 && hex::encode(hash.finalize()) == c.sha256,
             "Final component digest/EOF mismatch",
         )?;
         require(
@@ -673,12 +722,16 @@ mod native {
         let n =
             unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), libc::GRND_NONBLOCK) };
         require(
-            n == bytes.len() as isize,
+            usize::try_from(n).is_ok_and(|n| n == bytes.len()),
             "Bounded cache name entropy unavailable",
         )?;
         Ok(format!(".qos-part-{:032x}", u128::from_le_bytes(bytes)))
     }
     impl CacheRoot {
+        #[expect(
+            clippy::too_many_lines,
+            reason = "authenticate finals, classify residue, then open partials: one ordered pass"
+        )]
         pub(crate) fn bootstrap<'a>(
             self,
             selected: &'a SelectedManifest,
@@ -713,8 +766,11 @@ mod native {
             let names = entries(&self.lease.payload.file)?;
             for leaf in &names {
                 let final_known = (0..2).any(|i| {
-                    finals[i].is_some()
-                        && selected.bundle().component(i).unwrap().filename.as_bytes() == leaf
+                    finals.get(i).is_some_and(Option::is_some)
+                        && selected
+                            .bundle()
+                            .component(i)
+                            .is_some_and(|c| c.filename.as_bytes() == leaf)
                 });
                 let partial_known = candidates.iter().flatten().any(|c| c.0.as_bytes() == leaf);
                 require(
@@ -730,13 +786,15 @@ mod native {
                 if index == 1 {
                     super::tests::boundary("component-acquire-1")?;
                 }
-                if let Some(mut final_file) = finals[index].take() {
-                    final_file.residue = !scans[index].is_empty();
+                if let Some(mut final_file) = finals.get_mut(index).and_then(Option::take) {
+                    final_file.residue = scans.get(index).is_some_and(|scan| !scan.is_empty());
                     result.push(Component::Final(final_file));
                     continue;
                 }
                 let parent = &self.lease.payload.file;
-                let (held, fresh) = if let Some((leaf, parent_id, file_id)) = &candidates[index] {
+                let (held, fresh) = if let Some((leaf, parent_id, file_id)) =
+                    candidates.get(index).and_then(Option::as_ref)
+                {
                     let file = open(parent, leaf.as_bytes(), libc::O_RDWR).map_err(io)?;
                     let held = Held::new(file, leaf.as_bytes(), false, true)?;
                     held.check(Some(parent))?;
@@ -770,7 +828,7 @@ mod native {
                                 created = Some(held);
                                 break;
                             }
-                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                             Err(e) => return Err(io(e)),
                         }
                     }
@@ -781,7 +839,11 @@ mod native {
                 };
                 require(
                     held.file.metadata().map_err(io)?.len()
-                        <= selected.bundle().component(index).unwrap().byte_size,
+                        <= selected
+                            .bundle()
+                            .component(index)
+                            .ok_or("Invalid cache component")?
+                            .byte_size,
                     "Partial exceeds selected length",
                 )?;
                 let own = Ownership {
@@ -797,7 +859,7 @@ mod native {
                     index,
                     payload: held,
                     own,
-                    records: std::mem::take(&mut scans[index]),
+                    records: scans.get_mut(index).map(std::mem::take).unwrap_or_default(),
                     scanned: false,
                     prepared: false,
                     uncertain: false,
@@ -870,7 +932,7 @@ mod native {
                             .selected
                             .bundle()
                             .component(self.index)
-                            .unwrap()
+                            .ok_or("Invalid cache component")?
                             .byte_size,
                 "Borrowed payload changed",
             )
@@ -878,20 +940,20 @@ mod native {
         fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()> {
             self.revoke_preparation();
             require(!self.uncertain, "Uncertain cache operation")?;
-            let mut count = 0;
+            let mut count = 0_usize;
             let fresh = journals_visit(&self.lease, self.selected, self.index, &mut |bytes| {
                 require(
                     self.records.get(count).is_some_and(|r| r.bytes == bytes),
                     "Bootstrap journal bytes changed",
                 )?;
-                count += 1;
+                count = count.saturating_add(1);
                 visit(bytes)
             })?;
             require(
                 same_scan(&fresh, &self.records),
                 "Bootstrap journal substitution",
             )?;
-            let parent = &self.lease.journals[self.index].file;
+            let parent = &self.lease.journal(self.index)?.file;
             require(
                 entries(parent)?
                     == fresh
@@ -922,7 +984,7 @@ mod native {
                 "Journal changed before retirement",
             )?;
             self.uncertain = true;
-            let parent = &self.lease.journals[self.index].file;
+            let parent = &self.lease.journal(self.index)?.file;
             for journal in &self.records {
                 if !keep.contains(&journal.generation) {
                     unlink(parent, &journal.held)?;
@@ -964,7 +1026,7 @@ mod native {
                     "Journal changed before publication",
                 )?;
                 let leaf = format!("record-{generation:010}");
-                let parent = &self.lease.journals[self.index].file;
+                let parent = &self.lease.journal(self.index)?.file;
                 // Exclusive record leaf is the publication. Any later failure is
                 // uncertain; torn/unknown records survive for conservative recovery.
                 self.uncertain = true;
@@ -1075,7 +1137,7 @@ mod native {
                     .selected
                     .bundle()
                     .component(self.provider.index)
-                    .unwrap()
+                    .ok_or("Invalid cache component")?
                     .filename;
                 let target = name(final_name.as_bytes())?;
                 // Actual support is required. ENOSYS/EINVAL/EXDEV never fall back.
@@ -1097,7 +1159,7 @@ mod native {
                             self.provider.index,
                             cancel,
                         )?
-                        .ok_or("Final collision disappeared".into());
+                        .ok_or_else(|| "Final collision disappeared".into());
                     }
                     return Err(io(e));
                 }
@@ -1148,7 +1210,7 @@ mod native {
                 }
             })
         }
-        /// Discard only after a fresh Session::prepare validates all history and
+        /// Discard only after a fresh `Session::prepare` validates all history and
         /// prefix bytes. Failure retains exact/unknown residue and never reports
         /// clean cancellation. Resume-later simply drops the component instead.
         pub(crate) fn discard(mut self, operation: u64, cancel: &AtomicBool) -> Result<()> {
@@ -1179,6 +1241,13 @@ mod native {
 
         /// Verify once at actual consumption, then retain native guards through
         /// the callback, including its error path. Restore the original cursor.
+        #[cfg_attr(
+            test,
+            allow(
+                dead_code,
+                reason = "the unit-test build drives the fixture coordinator instead"
+            )
+        )]
         pub(crate) fn with_verified_reader<T>(
             &mut self,
             cancel: &AtomicBool,

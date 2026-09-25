@@ -1,4 +1,11 @@
 //! Ordinary-file provider for explicitly selected Unix fixtures only.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test fixture: an unexpected fixture failure must abort the test that selected it"
+)]
 use crate::cache::fixture_storage::FreshDisk;
 use crate::cache::{HeldReadSeek, Ownership, Provider, Session, initialize_fresh};
 use crate::transport::SelectedManifest;
@@ -10,9 +17,10 @@ use std::{
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
+type SetupHook = Box<dyn FnMut(usize, &str) -> Result<(), crate::error::Failure>>;
 thread_local! {
-    pub(super) static ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::new());
-    pub(super) static SETUP_HOOK: RefCell<Option<Box<dyn FnMut(usize, &str) -> Result<(), crate::error::Failure>>>> = RefCell::new(None);
+    pub(super) static ROOT: RefCell<PathBuf> = const { RefCell::new(PathBuf::new()) };
+    pub(super) static SETUP_HOOK: RefCell<Option<SetupHook>> = const { RefCell::new(None) };
 }
 pub(super) fn setup_event(index: usize, stage: &str) -> Result<(), crate::error::Failure> {
     SETUP_HOOK.with(|h| match h.borrow_mut().as_mut() {
@@ -35,6 +43,10 @@ pub(super) struct FinalHandle<'s> {
     selected: &'s SelectedManifest,
     index: usize,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "mirrors the native platform API that the shared coordinator is compiled against"
+)]
 pub(super) enum Component<'s> {
     Partial(Partial<'s>),
     Final(FinalHandle<'s>),
@@ -84,6 +96,10 @@ fn verify(
     check(cancel)
 }
 impl CacheRoot {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "mirrors the native platform API that the shared coordinator is compiled against"
+    )]
     pub(super) fn acquire(_: &SelectedManifest) -> Result<Self, crate::error::Failure> {
         Ok(Self {
             path: ROOT.with(|r| r.borrow().clone()),
@@ -136,7 +152,7 @@ impl CacheRoot {
                 (provider, file)
             };
             // Provider owns all history interpretation; no fixture prefix adoption.
-            let own = (&mut provider).ownership();
+            let own = provider.disk.ownership();
             (&mut provider).verify(&file, &own)?;
             file.rewind().unwrap();
             components.push(Component::Partial(Partial {
@@ -160,7 +176,7 @@ impl<'s> Partial<'s> {
         check(cancel)?;
         setup_event(self.index, "publish")?;
         verify(&mut self.file, self.selected, self.index, cancel)?;
-        let own = (&mut self.provider).ownership();
+        let own = self.provider.disk.ownership();
         (&mut self.provider).verify(&self.file, &own)?;
         let final_path = self.root.join("final");
         if final_path.exists() {
@@ -188,7 +204,7 @@ impl<'s> Partial<'s> {
             drop(s.prepare(self.selected, &mut self.file, cancel)?);
         }
         check(cancel)?;
-        let own = (&mut self.provider).ownership();
+        let own = self.provider.disk.ownership();
         (&mut self.provider).verify(&self.file, &own)?;
         fs::remove_file(self.root.join(own.leaf))
             .map_err(|e| crate::error::Failure::from(e.to_string()))?;
@@ -196,6 +212,10 @@ impl<'s> Partial<'s> {
     }
 }
 impl FinalHandle<'_> {
+    #[expect(
+        clippy::unused_self,
+        reason = "mirrors the native platform API that the shared coordinator is compiled against"
+    )]
     pub(super) fn has_retained_residue(&self) -> bool {
         true
     } // journal retained by this fixture
@@ -214,7 +234,7 @@ impl FinalHandle<'_> {
             .file
             .seek(SeekFrom::Start(pos))
             .map_err(|e| crate::error::Failure::from(e.to_string()))
-            .and_then(|position| setup_event(self.index, "reader-restored").map(|_| position));
+            .and_then(|position| setup_event(self.index, "reader-restored").map(|()| position));
         let held = setup_event(self.index, "reader-held");
         let root = setup_event(self.index, "reader-root");
         let stopped = check(cancel);

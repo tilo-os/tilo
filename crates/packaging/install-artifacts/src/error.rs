@@ -57,6 +57,10 @@ impl Error {
             uncertain: false,
         }
     }
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the `map_err` adapters built on this hand over the error by value"
+    )]
     pub(crate) fn io(error: std::io::Error) -> Self {
         let kind = match error.kind() {
             std::io::ErrorKind::PermissionDenied => ErrorKind::PermissionDenied,

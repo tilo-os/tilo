@@ -1,3 +1,7 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert,

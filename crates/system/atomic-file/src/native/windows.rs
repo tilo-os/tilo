@@ -598,7 +598,7 @@ fn checkpoint(kind: CheckpointKind, file: &File) -> io::Result<()> {
         CheckpointKind::BeforeCommit => Checkpoint::BeforeCommit,
         CheckpointKind::Committed => Checkpoint::Committed,
     };
-    test_support::checkpoint(CheckpointEvent {
+    test_support::checkpoint(&CheckpointEvent {
         checkpoint,
         stage: Some(StageObservation {
             metadata: file.metadata()?,

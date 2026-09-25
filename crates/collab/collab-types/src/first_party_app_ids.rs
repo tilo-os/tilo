@@ -283,7 +283,6 @@ pub fn current_package_id_for_legacy(app_id: &str) -> Option<&'static str> {
 }
 
 /// The exact finite family used for definition/catalogue lookup.
-#[must_use]
 pub fn first_party_app_id_lookup_candidates(app_id: &str) -> impl Iterator<Item = &'static str> {
     RENAMED_FIRST_PARTY_APP_IDS
         .iter()

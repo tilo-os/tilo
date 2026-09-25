@@ -1,6 +1,23 @@
 //! Revocation drains a real localhost WebTransport session: forwarding stops when
 //! authority is lost, and GOAWAY makes the client close before the relay does. The
 //! transport stays open for at most `GOAWAY_GRACE`, carrying no media.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
+)]
+#![allow(
+    clippy::similar_names,
+    clippy::collection_is_never_read,
+    clippy::unused_async,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    reason = "scenario-shaped test code"
+)]
 
 use qos_moq::relay::{
     Denied, Direction, GOAWAY_GRACE, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH,

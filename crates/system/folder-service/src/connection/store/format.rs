@@ -617,7 +617,7 @@ impl NativeBudget {
     pub fn validate(&self) -> Result<(), StoreError> {
         if self.version != 1
             || self.reserved > READ_LIMIT
-            || self.reserved % READ_QUANTUM != 0
+            || !self.reserved.is_multiple_of(READ_QUANTUM)
             || self.sequence > 256
             || (self.sequence == 0) != (self.reserved == 0)
             || self
@@ -650,21 +650,21 @@ impl BoundaryEvidence {
         if !(1..=8).contains(&self.attempt) {
             return Err(StoreError::Corrupt);
         }
-        if let Some(bytes) = &self.displaced {
-            if !matches!(
+        if let Some(bytes) = &self.displaced
+            && !matches!(
                 d::decode(bytes).map_err(|_| StoreError::Corrupt)?.body,
                 d::Body::Displaced(_)
-            ) {
-                return Err(StoreError::Corrupt);
-            }
+            )
+        {
+            return Err(StoreError::Corrupt);
         }
-        if let Some(bytes) = &self.outcome {
-            if !matches!(
+        if let Some(bytes) = &self.outcome
+            && !matches!(
                 d::decode(bytes).map_err(|_| StoreError::Corrupt)?.body,
                 d::Body::Outcome(_)
-            ) {
-                return Err(StoreError::Corrupt);
-            }
+            )
+        {
+            return Err(StoreError::Corrupt);
         }
         Ok(())
     }
@@ -710,21 +710,18 @@ impl DirectoryBoundaryFact {
             Self::Published {
                 outcome: Some(bytes),
                 ..
-            } => {
-                if !matches!(
-                    (if historical {
-                        super::super::transaction::native::descriptor::directory::decode_history(
-                            bytes,
-                        )
-                    } else {
-                        super::super::transaction::native::descriptor::directory::decode(bytes)
-                    })
-                    .map_err(|_| StoreError::Corrupt)?
-                    .body,
-                    super::super::transaction::native::descriptor::directory::Body::Outcome(_)
-                ) {
-                    return Err(StoreError::Corrupt);
-                }
+            } if !matches!(
+                (if historical {
+                    super::super::transaction::native::descriptor::directory::decode_history(bytes)
+                } else {
+                    super::super::transaction::native::descriptor::directory::decode(bytes)
+                })
+                .map_err(|_| StoreError::Corrupt)?
+                .body,
+                super::super::transaction::native::descriptor::directory::Body::Outcome(_)
+            ) =>
+            {
+                return Err(StoreError::Corrupt);
             }
             _ => (),
         }
@@ -962,7 +959,7 @@ impl Operation {
             Decision::RecoverDeletion {
                 at: Side::Destination,
             } => 4,
-            Decision::Conflict(kind) => 10 + conflict_code(kind),
+            Decision::Conflict(kind) => conflict_code(kind).saturating_add(10),
             _ => return Err(StoreError::RecoveryRequired),
         };
         Ok(Self {
@@ -1024,10 +1021,10 @@ impl Operation {
         Ok(())
     }
     fn validate_native_identity(&self) -> Result<(), StoreError> {
+        use super::super::transaction::native::descriptor as d;
         if self.native_kind == Some(NativeOperationKind::DirectoryV1) {
             return self.validate_directory_identity();
         }
-        use super::super::transaction::native::descriptor as d;
         let Some(bytes) = &self.native_identity else {
             return Ok(());
         };
@@ -1084,25 +1081,23 @@ impl Operation {
     )]
     pub fn decode(&self) -> Result<OperationReceipt, StoreError> {
         if let Some(bytes) = &self.native_capture {
+            use super::super::transaction::native::descriptor as d;
             let capture =
                 super::super::transaction::native::descriptor::ConflictSnapshot::decode(bytes)
                     .map_err(|_| StoreError::Corrupt)?;
             self.validate_capture(&capture)?;
-            use super::super::transaction::native::descriptor as d;
             if let Some(SelectedAction::Restore {
                 target, replace, ..
             }) = &self.action
-            {
-                if *replace
+                && (*replace
                     || !matches!(self.stage, 0 | 1 | 10)
                     || capture.versions.len() != 2
                     || capture.versions.iter().any(|version| version.role != 0)
                     || !capture.versions.iter().any(|version| {
                         version.side == *target && matches!(version.state, d::State::Regular { .. })
-                    })
-                {
-                    return Err(StoreError::Corrupt);
-                }
+                    }))
+            {
+                return Err(StoreError::Corrupt);
             }
             if self.native_capture_displaced.len()
                 != capture
@@ -1163,15 +1158,14 @@ impl Operation {
         if let Some(budget) = &self.native_budget {
             budget.validate()?;
         }
-        if let Some(review) = &self.initial_review {
-            if self.native_budget.is_none()
+        if let Some(review) = &self.initial_review
+            && (self.native_budget.is_none()
                 || self.baseline.is_some()
                 || review.preview == [0; 32]
                 || review.selection == [0; 32]
-                || review.revision != self.expected
-            {
-                return Err(StoreError::Corrupt);
-            }
+                || review.revision != self.expected)
+        {
+            return Err(StoreError::Corrupt);
         }
         let decision = match self.decision {
             0 => Decision::VerifyEqual,
@@ -1184,7 +1178,7 @@ impl Operation {
                 at: Side::Destination,
             },
             5 if self.action.is_some() => Decision::InitialPreview,
-            10..=14 => Decision::Conflict(conflict_from(self.decision - 10)?),
+            10..=14 => Decision::Conflict(conflict_from(self.decision.saturating_sub(10))?),
             _ => return Err(StoreError::Corrupt),
         };
         let stage = match self.stage {
@@ -1518,7 +1512,7 @@ impl NativeRegistration {
             || intent.header.admission != self.admission
             || intent.header.baseline != self.baseline
             || intent.header.fence != self.fence
-            || self.side != 1 - body.direction
+            || self.side != 1 ^ body.direction
         {
             return Err(StoreError::Corrupt);
         }
@@ -1616,6 +1610,10 @@ impl NativeRecoveryFact {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "table", content = "value", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(super) enum Row {
     InitialChainReview(InitialChainReviewV1),
     InitialChainReviewEntry(InitialChainReviewEntryV1),
@@ -1729,6 +1727,10 @@ pub(in crate::connection) struct InitialEmptyBaselineV1 {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(super) enum Change {
     InitialReviewAccepted {
         review: InitialChainReviewV1,
@@ -2083,7 +2085,7 @@ impl PageNode {
                     first: first.first.clone(),
                     last: last.last.clone(),
                     count,
-                    level: first.level + 1,
+                    level: first.level.saturating_add(1),
                 })
             }
         }
@@ -2094,10 +2096,11 @@ pub(super) fn digest(bytes: &[u8]) -> [u8; 32] {
 }
 pub(super) fn hex(bytes: &[u8]) -> String {
     fn digit(value: u8) -> char {
+        // `value` is one nibble, so neither offset can overflow.
         char::from(if value < 10 {
-            b'0' + value
+            b'0'.wrapping_add(value)
         } else {
-            b'a' + value - 10
+            b'a'.wrapping_add(value.wrapping_sub(10))
         })
     }
     bytes

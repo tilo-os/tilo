@@ -1,3 +1,9 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 pub(crate) use super::fixture_storage::*;
 use super::*;
 use crate::catalog::InternalRelease;
@@ -485,7 +491,7 @@ fn bounded_scan_conflicting_histories_and_generation_exhaustion_refuse_without_m
         if case == 3 {
             fs::remove_file(dir.path().join("journal/record-1")).unwrap();
             let mut b = latest.clone();
-            b[147..155].copy_from_slice(&(u32::MAX as u64).to_le_bytes());
+            b[147..155].copy_from_slice(&u64::from(u32::MAX).to_le_bytes());
             rewrite_checksum(&mut b);
             fs::write(dir.path().join("journal/record-2"), b).unwrap();
         }
@@ -714,10 +720,18 @@ fn standalone_epoch_record(kind: u8, generation: u64, epoch: u64) -> Vec<u8> {
 fn impossible_nonreset_epoch_is_rejected_without_a_predecessor() {
     use super::checkpoint::Record;
     for kind in [1, 3] {
-        for (generation, epoch) in [(3, 1), (4, 2), (u32::MAX as u64, u32::MAX as u64 - 2)] {
+        for (generation, epoch) in [
+            (3, 1),
+            (4, 2),
+            (u64::from(u32::MAX), u64::from(u32::MAX) - 2),
+        ] {
             assert!(Record::decode(&standalone_epoch_record(kind, generation, epoch)).is_ok());
         }
-        for (generation, epoch) in [(2, 1), (3, 2), (u32::MAX as u64, u32::MAX as u64 - 1)] {
+        for (generation, epoch) in [
+            (2, 1),
+            (3, 2),
+            (u64::from(u32::MAX), u64::from(u32::MAX) - 1),
+        ] {
             assert!(
                 Record::decode(&standalone_epoch_record(kind, generation, epoch)).is_err(),
                 "kind={kind}, generation={generation}, epoch={epoch}"
@@ -831,6 +845,10 @@ impl Provider for &mut LifecycleProvider<'_> {
         self.complete = false;
         self.events.push("revoke");
     }
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the test provider asserts the preparation proof it receives"
+    )]
     fn prepared(&mut self, proof: PreparationComplete<'_>) -> Result<(), crate::error::Failure> {
         assert!(proof.authorizes(self.selected, 0, &self.disk.own)?);
         assert!(!proof.authorizes(self.selected, 1, &self.disk.own)?);

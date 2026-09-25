@@ -1,3 +1,9 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 use super::*;
 
 #[test]
@@ -63,7 +69,7 @@ mod native {
     fn directory() -> tempfile::TempDir {
         // No /tmp fallback: native fixtures need the qualified current-user
         // cache filesystem and safe ancestry, just like the production provider.
-        tempfile::tempdir_in(dirs::cache_dir().unwrap()).unwrap()
+        tempfile::tempdir_in(xdg_paths::cache_dir().unwrap()).unwrap()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
         path.join("qos-internal-install").join(s.manifest_sha256())
@@ -75,7 +81,7 @@ mod native {
             .unwrap()
             .map(|c| match c {
                 Component::Partial(p) => p,
-                _ => panic!("expected partial"),
+                Component::Final(_) => panic!("expected partial"),
             })
     }
     #[test]
@@ -420,8 +426,8 @@ mod native {
                 .unwrap();
             match a {
                 Component::Final(mut f) => f.verify(&AtomicBool::new(false)).unwrap(),
-                _ => panic!("final recovery required"),
-            };
+                Component::Partial(_) => panic!("final recovery required"),
+            }
             drop(b);
         }
     }
@@ -488,7 +494,7 @@ mod native {
                 )
             };
             assert!(count >= 0, "{}", std::io::Error::last_os_error());
-            bytes[..count as usize].to_vec()
+            bytes[..usize::try_from(count).unwrap()].to_vec()
         }
         // Independent ordinary no-ACL positive control.
         let ordinary = directory();
@@ -602,9 +608,8 @@ mod native {
                 if case == 0 {
                     assert!(result.is_ok());
                 } else {
-                    let error = match result {
-                        Err(e) => e,
-                        Ok(_) => panic!("rejected history prepared"),
+                    let Err(error) = result else {
+                        panic!("rejected history prepared")
                     };
                     assert!(error.contains(if case == 1 {
                         "Conflicting checkpoint history"
@@ -659,12 +664,12 @@ mod native {
             let [mut a, mut b] = parts(dir.path(), &s);
             prepare(&mut b, &s, 1);
             {
+                use sha2::{Digest, Sha256};
                 let mut session = Session::new(&s, 0, 1, &mut a.provider).unwrap();
                 let mut prepared = session
                     .prepare(&s, &mut a.file, &AtomicBool::new(false))
                     .unwrap();
                 crate::cache::tests::start_prefix(&mut prepared, b"EEEE");
-                use sha2::{Digest, Sha256};
                 prepared
                     .observer
                     .boundary(
@@ -811,10 +816,10 @@ thread_local! { static CANCEL_AT: std::cell::RefCell<Option<(&'static str, std::
 #[cfg(target_os = "linux")]
 pub(super) fn boundary(stage: &'static str) -> Result<(), crate::error::Failure> {
     CANCEL_AT.with(|slot| {
-        if let Some((at, cancel)) = slot.borrow().as_ref() {
-            if *at == stage {
-                cancel.store(true, std::sync::atomic::Ordering::Release);
-            }
+        if let Some((at, cancel)) = slot.borrow().as_ref()
+            && *at == stage
+        {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
         }
     });
     FAIL_AT.with(|slot| {

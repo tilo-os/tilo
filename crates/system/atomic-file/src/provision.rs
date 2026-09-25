@@ -44,7 +44,9 @@ enum Attempt {
 pub struct ProvisionError {
     state: DirectoryState,
     source: io::Error,
-    attempt: Attempt,
+    // Boxed so the retained chain does not make every `Result` carrying this
+    // error as large as the whole chain.
+    attempt: Box<Attempt>,
 }
 impl ProvisionError {
     pub fn state(&self) -> DirectoryState {
@@ -60,27 +62,30 @@ impl ProvisionError {
     /// Replay all real barriers only for a completely admitted requested chain.
     /// A partial attempt is returned unchanged: start a fresh provision call to
     /// reconcile the namespace. Retry never creates or cleans up directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` unchanged for a partial attempt, or with the new native
+    /// error when revalidation or any barrier fails again.
     pub fn retry_commit(mut self) -> Result<StorageDirectory, Self> {
-        let Attempt::ReadyToCommit(chain) = &self.attempt else {
+        let Attempt::ReadyToCommit(chain) = &mut *self.attempt else {
             return Err(self);
         };
         if let Err(source) = chain.commit() {
             self.source = source;
             return Err(self);
         }
-        let Attempt::ReadyToCommit(mut chain) = self.attempt else {
-            unreachable!()
-        };
-        Ok(chain
-            .nodes
-            .pop()
-            .expect("complete chain includes requested leaf")
-            .directory)
+        if let Some(leaf) = chain.nodes.pop() {
+            Ok(leaf.directory)
+        } else {
+            self.source = lost_node();
+            Err(self)
+        }
     }
 }
 impl fmt::Debug for ProvisionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (ready, chain) = match &self.attempt {
+        let (ready, chain) = match &*self.attempt {
             Attempt::Partial(c) => (false, c),
             Attempt::ReadyToCommit(c) => (true, c),
         };
@@ -118,10 +123,15 @@ pub fn directory_state(error: &io::Error) -> Option<DirectoryState> {
 /// lookup; missing suffixes must contain only normal components. An unresolved
 /// `missing/../other` is rejected before mutation. This is trusted-host ambient
 /// admission, not hostile-path confinement. The host must maintain namespace,
-/// mount topology and ACL stability. OwnerOnly validates newly created/adopted
+/// mount topology and ACL stability. `OwnerOnly` validates newly created/adopted
 /// suffix components and the requested leaf, not existing traversal ancestors;
 /// no permissions are repaired. Permission admission is not storage qualification.
 /// Every fresh call repeats all barriers, including already-existing ancestors.
+///
+/// # Errors
+///
+/// Returns a [`ProvisionError`] carrying the known [`DirectoryState`] and any
+/// retained commit authority when admission, creation or a barrier fails.
 pub fn provision_directory(
     path: &Path,
     privacy: Privacy,
@@ -140,28 +150,36 @@ pub fn provision_directory(
         return Err(ProvisionError {
             state,
             source,
-            attempt: Attempt::Partial(chain),
+            attempt: Box::new(Attempt::Partial(chain)),
         });
     }
-    let attempt = Attempt::ReadyToCommit(chain);
-    let Attempt::ReadyToCommit(chain) = &attempt else {
-        unreachable!()
-    };
     if let Err(source) = chain.commit() {
         return Err(ProvisionError {
             state,
             source,
-            attempt,
+            attempt: Box::new(Attempt::ReadyToCommit(chain)),
         });
     }
-    let Attempt::ReadyToCommit(mut chain) = attempt else {
-        unreachable!()
-    };
-    Ok(chain
-        .nodes
-        .pop()
-        .expect("complete chain includes requested leaf")
-        .directory)
+    match chain.nodes.pop() {
+        Some(leaf) => Ok(leaf.directory),
+        None => Err(ProvisionError {
+            state,
+            source: lost_node(),
+            attempt: Box::new(Attempt::Partial(chain)),
+        }),
+    }
+}
+
+/// The chain always holds `/` once preparation succeeds; losing it is a bug,
+/// reported as data corruption rather than a panic.
+fn lost_node() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "directory chain lost a held node",
+    )
+}
+fn last(nodes: &[Node]) -> io::Result<&Node> {
+    nodes.last().ok_or_else(lost_node)
 }
 
 impl Chain {
@@ -173,7 +191,12 @@ impl Chain {
     ) -> io::Result<()> {
         let directory = StorageDirectory { inner: directory };
         let identity = directory.identity()?;
-        // Retain the opened child even when its privacy check later fails.
+        let privacy = if private {
+            directory.validate_privacy(self.privacy)
+        } else {
+            Ok(())
+        };
+        // Retain the opened child even when its privacy check failed.
         self.nodes.push(Node {
             directory,
             path,
@@ -181,14 +204,7 @@ impl Chain {
             private,
         });
         self.pending_child = None;
-        if private {
-            self.nodes
-                .last()
-                .expect("just pushed")
-                .directory
-                .validate_privacy(self.privacy)?;
-        }
-        Ok(())
+        privacy
     }
     fn prepare(&mut self, state: &mut DirectoryState) -> io::Result<()> {
         self.prepare_mode(state, false)
@@ -248,7 +264,7 @@ impl Chain {
         )?;
         for component in canonical.components() {
             if let Component::Normal(name) = component {
-                let parent = self.nodes.last().expect("root held");
+                let parent = last(&self.nodes)?;
                 let path = parent.path.join(name);
                 let child = parent
                     .directory
@@ -258,10 +274,20 @@ impl Chain {
                 self.push(child, path, false)?;
             }
         }
-        self.binding = Some((prefix, self.nodes.len() - 1));
+        self.binding = Some((prefix, self.nodes.len().saturating_sub(1)));
         self.validate_binding()?;
+        self.create_suffix(suffix, state)?;
+        let leaf = self.nodes.last_mut().ok_or_else(lost_node)?;
+        leaf.private = self.privacy == Privacy::OwnerOnly;
+        self.validate()
+    }
+    fn create_suffix(
+        &mut self,
+        suffix: Vec<OsString>,
+        state: &mut DirectoryState,
+    ) -> io::Result<()> {
         for name in suffix.into_iter().rev() {
-            let parent = self.nodes.last().expect("root held");
+            let parent = last(&self.nodes)?;
             let physical = parent.path.join(&name);
             let mut created = false;
             let child = match parent.directory.inner.open_directory(&name) {
@@ -292,13 +318,11 @@ impl Chain {
             };
             self.push(child, physical, self.privacy == Privacy::OwnerOnly)?;
             if created {
-                let node = self.nodes.last().expect("created child held");
+                let node = last(&self.nodes)?;
                 checkpoint(Kind::Created, &node.path, Some(&node.identity))?;
             }
         }
-        let leaf = self.nodes.last_mut().expect("root held");
-        leaf.private = self.privacy == Privacy::OwnerOnly;
-        self.validate()
+        Ok(())
     }
     fn observe_binding(&self, error: io::Error, path: &Path) -> io::Error {
         if self.existing_only {
@@ -313,7 +337,7 @@ impl Chain {
                 &StorageDirectory::open(path)
                     .map_err(|e| self.observe_binding(e, path))?
                     .identity()?,
-                &self.nodes[*index].identity,
+                &self.nodes.get(*index).ok_or_else(lost_node)?.identity,
                 path,
             )?;
         }
@@ -323,22 +347,28 @@ impl Chain {
         self.validate_binding()?;
         same(
             &StorageDirectory::open(Path::new("/"))?.identity()?,
-            &self.nodes[0].identity,
+            &self.nodes.first().ok_or_else(lost_node)?.identity,
             Path::new("/"),
         )?;
         for pair in self.nodes.windows(2) {
-            let name = pair[1].path.file_name().expect("non-root edge");
-            let opened = pair[0]
+            let [parent, child] = pair else {
+                return Err(lost_node());
+            };
+            let name = child
+                .path
+                .file_name()
+                .ok_or_else(|| invalid("held non-root directory has no name"))?;
+            let opened = parent
                 .directory
                 .inner
                 .open_directory(name)
-                .map_err(|e| self.observe_binding(e, &pair[1].path))?;
+                .map_err(|e| self.observe_binding(e, &child.path))?;
             same(
                 &FileIdentity {
                     inner: opened.identity()?,
                 },
-                &pair[1].identity,
-                &pair[1].path,
+                &child.identity,
+                &child.path,
             )?;
         }
         for node in &self.nodes {
@@ -350,7 +380,7 @@ impl Chain {
             &StorageDirectory::open(&self.requested)
                 .map_err(|e| self.observe_binding(e, &self.requested))?
                 .identity()?,
-            &self.nodes.last().expect("leaf held").identity,
+            &last(&self.nodes)?.identity,
             &self.requested,
         )
     }
@@ -381,6 +411,13 @@ enum Kind {
     BeforeSync,
     Synced,
 }
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the test-support build injects failures through the same signature"
+    )
+)]
 fn checkpoint(kind: Kind, path: &Path, identity: Option<&FileIdentity>) -> io::Result<()> {
     #[cfg(feature = "test-support")]
     {
@@ -391,7 +428,7 @@ fn checkpoint(kind: Kind, path: &Path, identity: Option<&FileIdentity>) -> io::R
             Kind::BeforeSync => P::BeforeSync,
             Kind::Synced => P::Synced,
         };
-        test_support::provision_checkpoint(ProvisionEvent {
+        test_support::provision_checkpoint(&ProvisionEvent {
             checkpoint,
             path: path.to_owned(),
             identity: identity.cloned(),
@@ -437,7 +474,8 @@ impl DirectoryReconcileError {
         self.inner
             .source
             .get_ref()
-            .is_some_and(|e| e.is::<BindingChanged>())
+            .and_then(|e| e.downcast_ref::<BindingChanged>())
+            .is_some()
     }
     pub fn io_error(&self) -> &io::Error {
         self.inner.io_error()
@@ -446,6 +484,11 @@ impl DirectoryReconcileError {
         io::Error::new(self.io_error().kind(), self)
     }
     /// Revalidate retained bindings and repeat every barrier, without creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` with the new native error when revalidation or any
+    /// barrier fails again, or unchanged when admission never completed.
     pub fn retry_commit(self) -> Result<(), Self> {
         self.inner
             .retry_commit()
@@ -466,6 +509,11 @@ impl Error for DirectoryReconcileError {
 
 /// Admit an entirely existing physical chain bound to the held leaf, then commit
 /// every retained ancestor. Never creates, replaces or removes any name.
+///
+/// # Errors
+///
+/// Returns a [`DirectoryReconcileError`] retaining the admitted chain when the
+/// existing binding changed, admission failed, or a barrier failed.
 pub fn reconcile_directory(
     path: &Path,
     expected: &StorageDirectory,
@@ -484,7 +532,7 @@ pub fn reconcile_directory(
         .prepare_mode(&mut DirectoryState::Unchanged, true)
         .and_then(|()| {
             same(
-                &chain.nodes.last().expect("existing leaf held").identity,
+                &last(&chain.nodes)?.identity,
                 &expected.identity()?,
                 &chain.requested,
             )
@@ -494,7 +542,7 @@ pub fn reconcile_directory(
             inner: ProvisionError {
                 state: DirectoryState::Unchanged,
                 source,
-                attempt: Attempt::Partial(chain),
+                attempt: Box::new(Attempt::Partial(chain)),
             },
         });
     }
@@ -504,7 +552,7 @@ pub fn reconcile_directory(
             inner: ProvisionError {
                 state: DirectoryState::Unchanged,
                 source,
-                attempt: Attempt::ReadyToCommit(chain),
+                attempt: Box::new(Attempt::ReadyToCommit(chain)),
             },
         }),
     }

@@ -58,6 +58,9 @@ impl NativePath {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the encoding does not decode to a path on this host.
     pub fn decode(&self) -> Result<PathBuf, String> {
         let units = match self {
             Self::Unix(units) => units.len(),
@@ -138,7 +141,7 @@ impl StoredReport {
             verified_count: report.verified_files.len(),
             verified_files: Vec::new(),
             verified_bytes: report.verified_bytes,
-            issue_count: report.skipped.len() + report.failed.len(),
+            issue_count: report.skipped.len().saturating_add(report.failed.len()),
             details: None,
             skipped: report
                 .skipped
@@ -197,9 +200,10 @@ impl OperationRecord {
     }
 
     pub fn issue_count(&self) -> usize {
-        self.report
-            .as_ref()
-            .map_or(0, |r| r.issue_count.max(r.skipped.len() + r.failed.len()))
+        self.report.as_ref().map_or(0, |r| {
+            r.issue_count
+                .max(r.skipped.len().saturating_add(r.failed.len()))
+        })
     }
 
     pub fn retain_detail_reference(&mut self, saved: &Self) {
@@ -221,7 +225,7 @@ impl OperationRecord {
             report.verified_files.clear();
             report.issue_count = report
                 .issue_count
-                .max(report.skipped.len() + report.failed.len());
+                .max(report.skipped.len().saturating_add(report.failed.len()));
             report.skipped.truncate(ISSUE_PREVIEW);
             report
                 .failed
@@ -240,14 +244,23 @@ impl OperationRecord {
         &self.id
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the stored path encoding does not decode on this host.
     pub fn source(&self) -> Result<PathBuf, String> {
         self.source.decode()
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the stored path encoding does not decode on this host.
     pub fn destination(&self) -> Result<PathBuf, String> {
         self.destination.decode()
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the stored path encoding does not decode on this host.
     pub fn journal(&self) -> Result<PathBuf, String> {
         self.journal.decode()
     }
@@ -269,14 +282,17 @@ impl OperationRecord {
     pub fn verified_file_count(&self) -> usize {
         self.report.as_ref().map_or_else(
             || {
-                self.progress
-                    .as_ref()
-                    .map_or(0, |p| p.verified_files as usize)
+                self.progress.as_ref().map_or(0, |p| {
+                    usize::try_from(p.verified_files).unwrap_or(usize::MAX)
+                })
             },
             |r| r.verified_count.max(r.verified_files.len()),
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the recorded progress path does not decode on this host.
     pub fn current_relative_path(&self) -> Result<Option<PathBuf>, String> {
         self.progress
             .as_ref()
@@ -284,6 +300,9 @@ impl OperationRecord {
             .transpose()
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when a recorded issue path does not decode on this host.
     pub fn issues(&self) -> Result<Vec<(PathBuf, String)>, String> {
         let Some(report) = &self.report else {
             return Ok(Vec::new());
@@ -313,6 +332,10 @@ impl OperationRecord {
         self.state = OperationState::Ready;
     }
 
+    /// # Errors
+    ///
+    /// Returns a message unless the operation is ready and its current review is
+    /// approved, or when the job cannot be built from the stored paths.
     pub fn start_job(&self) -> Result<MigrationJob, String> {
         if self.state != OperationState::Ready
             || self.approved_revision != Some(self.review_revision)
@@ -327,6 +350,10 @@ impl OperationRecord {
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns a message unless the operation is retryable and its current review
+    /// is approved, or when the retry job cannot be built.
     pub fn retry_job(&self) -> Result<MigrationJob, String> {
         if self.approved_revision != Some(self.review_revision)
             || !matches!(
@@ -348,6 +375,10 @@ impl OperationRecord {
         .retry()
     }
 
+    /// # Errors
+    ///
+    /// Returns a message unless the operation may start from its current state
+    /// with an approved review.
     pub fn mark_running(&mut self) -> Result<(), String> {
         if self.approved_revision != Some(self.review_revision)
             || !matches!(
@@ -413,19 +444,27 @@ pub struct MigrationStore {
     root_path: PathBuf,
     root: Arc<PinnedDirectory>,
     // The descriptor lock survives while any live worker owns this store.
-    ownership: fs::File,
+    ownership: advisory_lock::FileLock,
     ownership_identity: Metadata,
 }
 
 impl MigrationStore {
+    /// # Errors
+    ///
+    /// Returns a message when no private local data directory exists or the store
+    /// cannot be opened there.
     pub fn open_default() -> Result<Self, String> {
-        let root = dirs::data_local_dir()
+        let root = xdg_paths::data_local_dir()
             .ok_or_else(|| "no private local data directory is available".to_string())?
             .join("qos-imager")
             .join("migrations");
         Self::open_at(&root)
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the store root cannot be created, admitted as private
+    /// or exclusively owned.
     pub fn open_at(path: &Path) -> Result<Self, String> {
         let root = ensure_private_root(path).map_err(|error| {
             format!(
@@ -468,8 +507,7 @@ impl MigrationStore {
         if !same_directory_identity(&expected, &ownership_identity) {
             return Err("migration ownership lock was replaced".into());
         }
-        ownership
-            .try_lock()
+        let ownership = advisory_lock::FileLock::try_exclusive(ownership)
             .map_err(|e| format!("folder imports are busy in another window or process: {e}"))?;
         let current = metadata_nofollow(&root.file, name).map_err(|e| e.to_string())?;
         if !same_directory_identity(&current, &ownership_identity) {
@@ -502,6 +540,11 @@ impl MigrationStore {
     }
 
     /// Continuation shares the index's pinned root and exclusive ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when ownership or the pinned root no longer validates, or
+    /// the continuation file cannot be read.
     pub fn load_continuation_bytes(&self) -> Result<Option<Vec<u8>>, String> {
         self.validate_ownership()?;
         self.root
@@ -538,6 +581,10 @@ impl MigrationStore {
         Ok(Some(bytes))
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when ownership or the pinned root no longer validates, or
+    /// the continuation cannot be durably written.
     pub fn save_continuation_bytes(&self, bytes: &[u8]) -> Result<(), String> {
         if bytes.len() > 256 * 1024 {
             return Err("continuation exceeds bounds".into());
@@ -565,6 +612,10 @@ impl MigrationStore {
         migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when ownership no longer validates or the index cannot be
+    /// read or decoded.
     pub fn load(&self) -> Result<Vec<OperationRecord>, String> {
         self.validate_ownership()?;
         self.root
@@ -657,6 +708,10 @@ impl MigrationStore {
         Ok(name)
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when ownership no longer validates or the issue file is
+    /// missing, changed or malformed.
     pub fn issue_page(
         &self,
         operation: &OperationRecord,
@@ -725,7 +780,7 @@ impl MigrationStore {
             if bytes.len() as u64 > MAX_ISSUE_BYTES + 1 || bytes.last() != Some(&b'\n') {
                 return Err("invalid bounded copy issue record".into());
             }
-            next += bytes.len() as u64;
+            next = next.saturating_add(bytes.len() as u64);
             let issue: StoredIssue = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             issues.push((issue.path.decode()?, issue.message));
         }
@@ -763,7 +818,7 @@ impl MigrationStore {
                 operation.journal()?,
             )?;
             if let Some(report) = &operation.report {
-                let count = report.skipped.len() + report.failed.len();
+                let count = report.skipped.len().saturating_add(report.failed.len());
                 if count > ISSUE_PREVIEW && count >= report.issue_count {
                     let name = self.save_issues(operation)?;
                     if let Some(report) = &mut operation.report {
@@ -819,6 +874,9 @@ pub struct StoreWriter {
     sender: std::sync::mpsc::Sender<SaveRequest>,
 }
 impl StoreWriter {
+    /// # Errors
+    ///
+    /// Returns a message when the writer thread cannot be spawned.
     pub fn new(store: Arc<MigrationStore>) -> Result<Self, String> {
         let (sender, receiver) = std::sync::mpsc::channel::<SaveRequest>();
         std::thread::Builder::new()
@@ -849,6 +907,9 @@ impl StoreWriter {
         Ok(Self { sender })
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the writer thread has stopped.
     pub fn save(
         &self,
         operations: Vec<OperationRecord>,
@@ -860,6 +921,9 @@ impl StoreWriter {
         Ok(receiver)
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when the writer stopped or the durable save failed.
     pub fn checkpoint(
         &self,
         operations: Vec<OperationRecord>,
@@ -913,6 +977,15 @@ pub(super) fn ensure_private_root(path: &Path) -> io::Result<Arc<PinnedDirectory
 }
 
 #[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::unnecessary_wraps,
+    clippy::panic_in_result_fn,
+    reason = "test fixture hooks: an unexpected fixture state must abort the test"
+)]
 pub(super) mod test_support {
     use std::{
         collections::HashMap,
@@ -937,7 +1010,7 @@ pub(super) mod test_support {
         let hook = {
             let mut hooks = HOOKS.get_or_init(Mutex::default).lock().unwrap();
             if let Some((nth, _, _)) = hooks.get_mut(path) {
-                *nth -= 1;
+                *nth = (*nth).saturating_sub(1);
                 if *nth == 0 { hooks.remove(path) } else { None }
             } else {
                 None

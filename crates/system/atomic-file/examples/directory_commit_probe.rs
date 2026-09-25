@@ -105,16 +105,16 @@ fn parse(args: impl IntoIterator<Item = String>) -> io::Result<Arguments> {
     })
 }
 fn evidence(text: &str) -> io::Result<AnchorEvidence> {
-    let value: Evidence = serde_json::from_str(text).map_err(invalid_json)?;
+    let value: Evidence = serde_json::from_str(text).map_err(|error| invalid(error.to_string()))?;
     if value.file_id.len() != 32 || !value.file_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid(
             "file_id must contain exactly 32 hexadecimal digits",
         ));
     }
     let mut id = [0u8; 16];
-    for (i, slot) in id.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&value.file_id[i * 2..i * 2 + 2], 16)
-            .map_err(|_| invalid("invalid identity"))?;
+    for (slot, pair) in id.iter_mut().zip(value.file_id.as_bytes().chunks_exact(2)) {
+        let pair = std::str::from_utf8(pair).map_err(|_| invalid("invalid identity"))?;
+        *slot = u8::from_str_radix(pair, 16).map_err(|_| invalid("invalid identity"))?;
     }
     if value.establishment_record.trim().is_empty() || value.storage_profile.trim().is_empty() {
         return Err(invalid(
@@ -127,9 +127,6 @@ fn evidence(text: &str) -> io::Result<AnchorEvidence> {
         establishment_record: value.establishment_record,
         storage_profile: value.storage_profile,
     })
-}
-fn invalid_json(error: serde_json::Error) -> io::Error {
-    invalid(error.to_string())
 }
 fn under(path: &Path, root: &Path) -> bool {
     // Windows names are case-insensitive in the admitted fixture profile. Prefix

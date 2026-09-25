@@ -1,3 +1,21 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::similar_names,
+    clippy::needless_collect,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    clippy::match_wildcard_for_single_variants,
+    clippy::too_many_lines,
+    reason = "fixture-building test code favours direct, scenario-shaped helpers"
+)]
 use super::super::*;
 
 fn control_wire() -> serde_json::Value {
@@ -237,7 +255,7 @@ fn whole_review_complete_siblings_and_equality_replay() {
     let (_temp, path, mut store, record) = fixture();
     let (review, entries) = review_fixture(&store, &record);
     let original = review.original.clone();
-    history_write(&mut store, accepted_event(review.clone()));
+    history_write(&mut store, accepted_event(review));
     drop(store);
     let opened = ConnectionStore::open_at(&path);
     assert!(
@@ -773,7 +791,9 @@ fn whole_review_canonical_preimage_ordinals_and_full_closure_refuse_mutations() 
             if damage == 4 {
                 assert!(entries[0].validate().is_ok());
             }
-            if damage != 4 {
+            if damage == 4 {
+                review.count = 3;
+            } else {
                 review.root = storage::build_pages(
                     &store.storage,
                     entries
@@ -782,8 +802,6 @@ fn whole_review_canonical_preimage_ordinals_and_full_closure_refuse_mutations() 
                 )
                 .unwrap()
                 .unwrap();
-            } else {
-                review.count = 3;
             }
         }
         assert!(store.read_review(&review).is_err(), "damage={damage}");
@@ -1038,28 +1056,25 @@ fn whole_review_fault_cuts_never_publish_partial_cursor_or_reissue_consent() {
         drop(reset);
         drop(store);
         let mut store = ConnectionStore::open_at(&path).unwrap();
-        match store.owned_review(record.id.0).unwrap() {
-            Some(fact) => {
-                durable_after_error += usize::from(failed);
-                store.read_review(&fact).unwrap();
-                assert_eq!(
-                    store
-                        .review_cursor(record.id.0, 1)
-                        .unwrap()
-                        .progress_revision,
-                    2
-                );
-                assert!(store.transaction_session(record.id).is_err());
-            }
-            None => {
-                assert!(
-                    store
-                        .row(&format::key(9, record.id.0, 1))
-                        .unwrap()
-                        .is_none()
-                );
-                assert_eq!(store.load_connection(record.id).unwrap().revision, 1);
-            }
+        if let Some(fact) = store.owned_review(record.id.0).unwrap() {
+            durable_after_error += usize::from(failed);
+            store.read_review(&fact).unwrap();
+            assert_eq!(
+                store
+                    .review_cursor(record.id.0, 1)
+                    .unwrap()
+                    .progress_revision,
+                2
+            );
+            assert!(store.transaction_session(record.id).is_err());
+        } else {
+            assert!(
+                store
+                    .row(&format::key(9, record.id.0, 1))
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(store.load_connection(record.id).unwrap().revision, 1);
         }
         assert_eq!(store.executor_position(record.id).unwrap(), (None, None));
     }
@@ -1355,7 +1370,7 @@ fn whole_review_canonical_policy_actual_encoding_boundary_is_visible() {
     let mut low = 1;
     let mut high = 4096;
     while high - low > 1 {
-        let mid = (low + high) / 2;
+        let mid = usize::midpoint(low, high);
         if fits(mid) { low = mid } else { high = mid }
     }
     assert_eq!(high, low + 1);
@@ -1389,7 +1404,7 @@ fn whole_review_canonical_policy_actual_encoding_boundary_is_visible() {
     let event = Event {
         schema: 1,
         predecessor: store.digest,
-        change: accepted_event(fact.clone()),
+        change: accepted_event(fact),
     };
     eprintln!(
         "whole-review Canonical last-key boundary={low}, refused={}, actual-event-bytes={}",
@@ -1411,7 +1426,7 @@ fn whole_review_maximum_native_row_and_aggregate_bytes_are_bounded() {
         .flat_map(|n| {
             let mut part = vec![u16::MAX; 240];
             if n != 16 {
-                part.push(92)
+                part.push(92);
             }
             part
         })
@@ -1450,7 +1465,7 @@ fn whole_review_maximum_native_row_and_aggregate_bytes_are_bounded() {
     let mut entries = Vec::new();
     for _ in 0..16 {
         if !parent.is_empty() {
-            parent.push(b'/')
+            parent.push(b'/');
         }
         parent.extend([255; 240]);
         entries.push((RelativePath::unix(&parent).unwrap(), EntryState::Directory));
@@ -1687,11 +1702,11 @@ fn whole_review_empty_log_closure_joins_equality_admission_to_original_endpoints
         match damage {
             0 => {
                 op.source_binding.root[0] ^= 1;
-                admission.endpoints[0][32] ^= 1
+                admission.endpoints[0][32] ^= 1;
             }
             1 => {
                 op.destination_binding.root[0] ^= 1;
-                admission.endpoints[1][32] ^= 1
+                admission.endpoints[1][32] ^= 1;
             }
             2 => admission.fence = 1,
             _ => unreachable!(),

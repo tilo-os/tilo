@@ -48,7 +48,7 @@ fn query(file: &File, common: u32, volume: u32, output: &mut [u8]) -> io::Result
     if unsafe {
         fgetattrlist(
             file.as_raw_fd(),
-            &attrs,
+            &raw const attrs,
             output.as_mut_ptr().cast(),
             output.len(),
             0,
@@ -66,11 +66,17 @@ fn invalid() -> io::Error {
 fn word(bytes: &[u8], offset: usize) -> io::Result<u32> {
     Ok(u32::from_ne_bytes(
         bytes
-            .get(offset..offset + 4)
+            .get(offset..offset.checked_add(4).ok_or_else(invalid)?)
             .ok_or_else(invalid)?
             .try_into()
             .map_err(|_| invalid())?,
     ))
+}
+/// Offset of ACL entry `i`'s flags word within the attribute buffer.
+fn entry_offset(i: usize) -> io::Result<usize> {
+    i.checked_mul(24)
+        .and_then(|n| n.checked_add(92))
+        .ok_or_else(invalid)
 }
 fn capabilities(bytes: &[u8]) -> io::Result<()> {
     if bytes.len() != CAP_BYTES
@@ -131,11 +137,12 @@ fn layout(bytes: &[u8]) -> io::Result<Option<(usize, u32)>> {
         };
     }
     let count = count as usize;
-    if count > MAX_ENTRIES || length != 44 + count * 24 {
+    if count > MAX_ENTRIES || Some(length) != count.checked_mul(24).and_then(|n| n.checked_add(44))
+    {
         return Err(invalid());
     }
     for i in 0..count {
-        let flags = word(bytes, 92 + i * 24)?;
+        let flags = word(bytes, entry_offset(i)?)?;
         if !matches!(flags & 0xf, 1 | 2) || flags & !0x1ff != 0 {
             return Err(io::ErrorKind::Unsupported.into());
         }
@@ -149,7 +156,7 @@ fn security(bytes: &[u8]) -> io::Result<()> {
             return Err(io::ErrorKind::Unsupported.into());
         }
         for i in 0..count {
-            if word(bytes, 92 + i * 24)? & 0xf != 2 {
+            if word(bytes, entry_offset(i)?)? & 0xf != 2 {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
         }
@@ -188,7 +195,7 @@ fn empty(file: &File) -> io::Result<()> {
     if unsafe {
         fgetattrlist(
             file.as_raw_fd(),
-            &attrs,
+            &raw const attrs,
             result.as_mut_ptr().cast(),
             result.len(),
             0,
@@ -232,7 +239,7 @@ pub(crate) fn normalize_fresh_empty(file: &File) -> io::Result<()> {
     if unsafe {
         fsetattrlist(
             file.as_raw_fd(),
-            &attrs,
+            &raw const attrs,
             input.as_ptr().cast(),
             input.len(),
             0,
@@ -252,13 +259,16 @@ fn normalized_input(current: &[u8]) -> io::Result<[u8; 52]> {
     let private_flags = layout(current)?.map_or(0, |(_, flags)| flags & 0xffff);
     let mut input = [0u8; 52];
     for (offset, value) in [
-        (0, 8u32),
+        (0_usize, 8u32),
         (4, 44),
         (8, MAGIC),
         (44, 0),
         (48, 0x0002_0000 | private_flags),
     ] {
-        input[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+        input
+            .get_mut(offset..offset.saturating_add(4))
+            .ok_or_else(invalid)?
+            .copy_from_slice(&value.to_ne_bytes());
     }
     Ok(input)
 }

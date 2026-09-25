@@ -1,23 +1,29 @@
 //! Protocol-free WebTransport server that reproduces the Chromium renderer
-//! crash seen by the voice lane: a peer STOP_SENDING / RESET_STREAM carrying a
+//! crash seen by the voice lane: a peer `STOP_SENDING` / `RESET_STREAM` carrying a
 //! WebTransport application error code for a stream the page is using.
 //!
-//! No MoQ, no product code. The page picks the server behaviour with the URL
+//! No `MoQ`, no product code. The page picks the server behaviour with the URL
 //! path (`/stop`, `/reset`, `/drain`) and the error code with `?code=N`.
 //!
-//!   cargo run -p qos-moq --example wt_stream_signal_repro -- 127.0.0.1:19950 cert.pem key.pem
+//! ```text
+//! cargo run -p qos-moq --example wt_stream_signal_repro -- 127.0.0.1:19950 cert.pem key.pem
+//! ```
 //!
 //! * `/stop`:  for every page-opened unidirectional stream, read the first
-//!   chunk, then send STOP_SENDING(code) (the page decides whether it already
+//!   chunk, then send `STOP_SENDING(code)` (the page decides whether it already
 //!   closed its writer).
 //! * `/reset`: every 20 ms open a unidirectional stream, write 100 bytes, and
-//!   RESET_STREAM(code) after `?after=MS` (default 30 ms), whatever the page's
+//!   `RESET_STREAM(code)` after `?after=MS` (default 30 ms), whatever the page's
 //!   reader is doing.
 //! * `/mix`:   `/stop` for page streams plus `/drain`-style server streams.
 //! * `/mixreset`: `/stop` for page streams plus `/reset` server streams.
 //! * `?close=MS`: additionally close the session (code 3) after MS.
 //! * `/drain`: control. Read page streams to the end; open, write and FIN
 //!   server streams; never send a stream signal.
+#![allow(
+    clippy::expect_used,
+    reason = "a manual repro tool: bad arguments or a failed bind abort with a message"
+)]
 
 use std::time::Duration;
 
@@ -73,7 +79,7 @@ async fn main() {
                 tokio::spawn(async move {
                     let mut n = 0u64;
                     while let Ok(mut recv) = session.accept_uni().await {
-                        n += 1;
+                        n = n.saturating_add(1);
                         let mode = mode.clone();
                         tokio::spawn(async move {
                             let mut buf = [0u8; 2048];
@@ -88,7 +94,9 @@ async fn main() {
                     println!("ACCEPTED {n}");
                 })
             };
-            if mode != "/stop" {
+            if mode == "/stop" {
+                let _ = session.closed().await;
+            } else {
                 let mut tick = tokio::time::interval(Duration::from_millis(20));
                 loop {
                     tick.tick().await;
@@ -107,8 +115,6 @@ async fn main() {
                         });
                     }
                 }
-            } else {
-                let _ = session.closed().await;
             }
             reader.abort();
             println!("CLOSED {url}");

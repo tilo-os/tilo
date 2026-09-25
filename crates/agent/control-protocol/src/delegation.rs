@@ -55,7 +55,7 @@ impl OperationClass {
             Self::View => declared == DeclaredKind::View,
             // Writer's read-text is published as an Effect today.
             Self::Query => matches!(declared, DeclaredKind::View | DeclaredKind::Effect),
-            Self::AppOpen => declared == DeclaredKind::Effect,
+            // AppOpen and every other class are published as Effects.
             _ => declared == DeclaredKind::Effect,
         }
     }
@@ -913,13 +913,14 @@ mod tests {
             required: GrantVerb::Write,
         };
         // Without a covered open, the record is outside the task.
-        let without = scopes_with_opened_records(&[writer.clone()], &opened, &r, &digest);
+        let without =
+            scopes_with_opened_records(std::slice::from_ref(&writer), &opened, &r, &digest);
         assert!(
             !without
                 .iter()
                 .any(|s| s.covers(&target(OperationClass::Document)))
         );
-        let with = scopes_with_opened_records(&[writer.clone(), desktop], &opened, &r, &digest);
+        let with = scopes_with_opened_records(&[writer, desktop], &opened, &r, &digest);
         assert!(
             with.iter()
                 .any(|s| s.covers(&target(OperationClass::Document)))

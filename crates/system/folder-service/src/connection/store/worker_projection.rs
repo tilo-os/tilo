@@ -1,5 +1,15 @@
 //! Bounded, read-only service projection; no receipt or native handle construction.
+// Unit-test submodules reach the parent's items through this module.
+#[cfg(test)]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "unit-test submodules import through this module"
+)]
 use super::*;
+use super::{
+    Arc, BTreeMap, ConnectionId, ConnectionStore, Page, PageCursor, RecoveryEntry, RecoveryId, Row,
+    StoreError, format, recovery, storage,
+};
 impl ConnectionStore {
     pub(in crate::connection) fn worker_recovery_entry(
         &self,
@@ -95,7 +105,7 @@ impl ConnectionStore {
             .checked_add(requested)
             .filter(|bytes| *bytes <= budget.read_cap)
             .ok_or(StoreError::LimitExceeded)?;
-        budget.stats.requests += 1;
+        budget.stats.requests = budget.stats.requests.saturating_add(1);
         Ok(())
     }
     pub(super) fn worker_projection_validate(&self) -> Result<(), StoreError> {
@@ -156,7 +166,7 @@ impl ConnectionStore {
                 if budget.stats.pages >= PAGE_CAP {
                     return Err(StoreError::LimitExceeded);
                 }
-                budget.stats.pages += 1;
+                budget.stats.pages = budget.stats.pages.saturating_add(1);
             }
             let page = Arc::new(
                 self.storage
@@ -207,7 +217,9 @@ impl ConnectionStore {
                 format::Node::Leaf(rows) => {
                     self.projection_work(rows.len())?;
                     return match rows.binary_search_by(|row| row.key().as_slice().cmp(key)) {
-                        Ok(index) => self.projection_row_copy(&rows[index]).map(Some),
+                        Ok(index) => self
+                            .projection_row_copy(rows.get(index).ok_or(StoreError::Corrupt)?)
+                            .map(Some),
                         Err(_) => Ok(None),
                     };
                 }
@@ -243,7 +255,7 @@ impl ConnectionStore {
         // The table byte is 2 or 3, so a lexicographic successor always exists.
         for byte in upper.iter_mut().rev() {
             if *byte != u8::MAX {
-                *byte += 1;
+                *byte = (*byte).saturating_add(1);
                 break;
             }
             *byte = 0;
@@ -447,6 +459,15 @@ impl Iterator for RangeRows<'_> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::unnecessary_wraps,
+    clippy::panic_in_result_fn,
+    reason = "test fixture hooks: an unexpected fixture state must abort the test"
+)]
 pub(in crate::connection) mod test_support {
     use super::*;
     use std::sync::{Mutex, mpsc};
@@ -459,10 +480,10 @@ pub(in crate::connection) mod test_support {
         receiver
     }
     pub(super) fn record(path: &std::path::Path, stats: ReadStats) {
-        if let Some((wanted, sender)) = WATCH.lock().unwrap().as_ref() {
-            if wanted == path {
-                let _ = sender.try_send(stats);
-            }
+        if let Some((wanted, sender)) = WATCH.lock().unwrap().as_ref()
+            && wanted == path
+        {
+            let _ = sender.try_send(stats);
         }
     }
     pub(in crate::connection) fn fail_next_read(path: &std::path::Path, unwind: bool) {

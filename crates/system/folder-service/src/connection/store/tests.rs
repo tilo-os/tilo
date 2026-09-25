@@ -1,3 +1,21 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::similar_names,
+    clippy::needless_collect,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    clippy::match_wildcard_for_single_variants,
+    clippy::too_many_lines,
+    reason = "fixture-building test code favours direct, scenario-shaped helpers"
+)]
 use super::*;
 use sha2::Digest;
 
@@ -1329,6 +1347,7 @@ fn baseline_fault_boundaries_never_expose_mixed_pages() {
 }
 #[test]
 fn killed_owner_leaves_durable_pending_intent() {
+    use std::io::BufRead;
     if let Ok(path) = std::env::var("QOS_CONNECTED_CRASH_PATH") {
         let mut store = ConnectionStore::open_at(Path::new(&path)).unwrap();
         let record = create(&mut store, 9);
@@ -1350,7 +1369,6 @@ fn killed_owner_leaves_durable_pending_intent() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    use std::io::BufRead;
     let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
     let mut ready = false;
     for _ in 0..16 {
@@ -2368,10 +2386,7 @@ fn native_recovery_fact_requires_actual_version_and_full_artifact() {
     assert!(matches!(
         store.reduce(
             &premature,
-            &mut RecoveryChecks {
-                mode: VerificationMode::NativeLive(&context),
-                ..RecoveryChecks::default()
-            }
+            &mut RecoveryChecks::new(VerificationMode::NativeLive(&context))
         ),
         Err(StoreError::RecoveryRequired)
     ));
@@ -2404,10 +2419,7 @@ fn native_recovery_fact_requires_actual_version_and_full_artifact() {
         store
             .reduce(
                 &accounted,
-                &mut RecoveryChecks {
-                    mode: VerificationMode::NativeLive(&context),
-                    ..RecoveryChecks::default()
-                }
+                &mut RecoveryChecks::new(VerificationMode::NativeLive(&context))
             )
             .is_ok()
     );
@@ -5510,7 +5522,7 @@ fn native_conflict_quarantine_clue_survives_checkpoint_before_private_copy() {
         store
             .reduce_native_capture(
                 &wrong_stage.encode().unwrap(),
-                &[displaced.clone()],
+                std::slice::from_ref(&displaced),
                 live.revision(),
                 0
             )
@@ -6070,11 +6082,11 @@ fn native_captured_drain_retains_pre_fence_origin_without_clearing_pending() {
 )]
 fn native_captured_drain_bytes_require_exact_origin_and_paid_private_reread() {
     use super::super::transaction::native::descriptor as d;
+    use sha2::Digest;
     let (_temp, path) = fixture();
     let mut store = ConnectionStore::open_at(&path).unwrap();
     let record = create(&mut store, 921);
     let session = store.transaction_session(record.id).unwrap();
-    use sha2::Digest;
     let mut proposal = intent(&record);
     proposal.source_before = Some(EntryState::File {
         sha256: sha2::Sha256::digest(b"abc").into(),
@@ -6350,6 +6362,7 @@ fn native_selected_untouched_accounts_only_atomic_history_with_paid_choice() {
 )]
 fn reviewed_restore_case(boundary: u8) {
     for (replace, target_absent) in [(false, false), (true, false), (false, true)] {
+        use super::super::model::{Endpoint, NamePolicy, Observation, ObservedTree};
         if boundary > 1 && !replace && !target_absent {
             continue;
         }
@@ -6456,7 +6469,6 @@ fn reviewed_restore_case(boundary: u8) {
                 from: Side::Destination,
             };
         }
-        use super::super::model::{Endpoint, NamePolicy, Observation, ObservedTree};
         let observe = |identity, state: Option<EntryState>| {
             ObservedTree::new(
                 Endpoint {
@@ -6765,10 +6777,7 @@ fn reviewed_restore_case(boundary: u8) {
                 let paid = store
                     .recovery_read_context(&context, deadline, &cancel)
                     .unwrap();
-                let mut checks = RecoveryChecks {
-                    mode: VerificationMode::NativeLive(&paid),
-                    ..RecoveryChecks::default()
-                };
+                let mut checks = RecoveryChecks::new(VerificationMode::NativeLive(&paid));
                 assert!(
                     checks
                         .verify_stopped_selected(&store, &store.operation(live.id()).unwrap())
@@ -7112,10 +7121,8 @@ fn reviewed_restore_case(boundary: u8) {
                 registration.validate().unwrap();
                 for verified in [false, true] {
                     let paid = store.native_read_context(&live, deadline, &cancel).unwrap();
-                    let mut checks = RecoveryChecks {
-                        mode: super::VerificationMode::NativeLive(&paid),
-                        ..RecoveryChecks::default()
-                    };
+                    let mut checks =
+                        RecoveryChecks::new(super::VerificationMode::NativeLive(&paid));
                     let chosen_path = path
                         .join("recovery")
                         .join(format::hex(&record.id.0))
@@ -7422,10 +7429,7 @@ fn reviewed_restore_case(boundary: u8) {
                             destination: record.destination.identity.into(),
                             initial_review: false,
                         },
-                        RecoveryChecks {
-                            mode: VerificationMode::NativeLive(&payer),
-                            ..RecoveryChecks::default()
-                        },
+                        RecoveryChecks::new(VerificationMode::NativeLive(&payer)),
                         BaselineAppendCheck::Host(&probe)
                     ),
                     Err(StoreError::RecoveryRequired)
@@ -7806,6 +7810,7 @@ fn native_selected_collision_stopped_drain_retains_choice_and_pending() {
     reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
 )]
 fn selected_collision_case(stopped: bool) {
+    use super::super::transaction::native::descriptor as d;
     let (_temp, path) = fixture();
     let mut store = ConnectionStore::open_at(&path).unwrap();
     let record = create(&mut store, 924);
@@ -7896,7 +7901,6 @@ fn selected_collision_case(stopped: bool) {
         .unwrap()
         .accept();
 
-    use super::super::transaction::native::descriptor as d;
     let cancel = AtomicBool::new(false);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let session = store.transaction_session(record.id).unwrap();
@@ -7993,7 +7997,7 @@ fn selected_collision_case(stopped: bool) {
         else {
             panic!("copy");
         };
-        let captured = &snapshot.versions[usize::from(version)];
+        let captured = &snapshot.versions[version];
         let d::State::Regular {
             object, content, ..
         } = &captured.state
@@ -8343,6 +8347,7 @@ fn account_selected_boundary_case(
         .reserve_recovery_reads(&mut context, 4 * 1024 * 1024, deadline, &cancel)
         .unwrap();
     let kind = if kind == 4 {
+        use super::super::transaction::native::descriptor as d;
         let operation = store.operation(live.id()).unwrap();
         let entry = format::Recovery {
             captured: None,
@@ -8394,7 +8399,6 @@ fn account_selected_boundary_case(
             store.row(&entry.key()).unwrap(),
             Some(Row::Recovery(entry.clone()))
         );
-        use super::super::transaction::native::descriptor as d;
         let directory_name = format::hex(&current.id.0);
         let metadata = super::super::super::nofollow::metadata_nofollow(
             &store.storage.recovery.file,
@@ -8605,10 +8609,7 @@ fn account_selected_boundary_case(
         let paid = store
             .recovery_read_context(&context, deadline, &cancel)
             .unwrap();
-        let mut checks = RecoveryChecks {
-            mode: VerificationMode::NativeLive(&paid),
-            ..RecoveryChecks::default()
-        };
+        let mut checks = RecoveryChecks::new(VerificationMode::NativeLive(&paid));
         assert!(
             checks
                 .verify_stopped_selected(&store, &store.operation(live.id()).unwrap())
@@ -8926,6 +8927,7 @@ fn native_selected_tombstone_collision_retains_original_choice_for_later_review(
     reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
 )]
 fn selected_tombstone_case(stopped: u8) {
+    use super::super::model::{Encoding, Endpoint, NamePolicy, Observation, ObservedTree};
     use super::super::transaction::native::descriptor as d;
     let (_temp, path) = fixture();
     let mut store = ConnectionStore::open_at(&path).unwrap();
@@ -9469,7 +9471,6 @@ fn selected_tombstone_case(stopped: u8) {
         store.reduce_intent(&candidate_operation).is_ok(),
         "fresh exact two-sided absence may verify the chosen tombstone"
     );
-    use super::super::model::{Encoding, Endpoint, NamePolicy, Observation, ObservedTree};
     let observation = |identity| {
         ObservedTree::new(
             Endpoint {
@@ -9660,7 +9661,7 @@ fn account_tombstone_boundary(
             displaced: registration.outcome_displaced.clone().unwrap(),
         };
         let event = Change::SelectedDrain {
-            entry: entry,
+            entry,
             source: format::BoundaryEvidence {
                 attempt: registration.attempt,
                 displaced: registration.outcome_displaced.clone(),
@@ -9918,7 +9919,7 @@ fn account_tombstone_collision(
     assert_eq!(&store.conflict_record(original.id).unwrap(), original);
     let choices = store.tombstone_choices(id).unwrap();
     assert!(
-        choices.contains(&chosen),
+        choices.contains(chosen),
         "later collision exposes the original absence even when its revision differs"
     );
     let sequence = store.sequence;
@@ -9936,7 +9937,7 @@ fn account_tombstone_collision(
     drop(store);
     let mut store = ConnectionStore::open_at(path).unwrap();
     assert_eq!(&store.conflict_record(original.id).unwrap(), original);
-    assert!(store.tombstone_choices(id).unwrap().contains(&chosen));
+    assert!(store.tombstone_choices(id).unwrap().contains(chosen));
     let retained = store
         .recovery_page(id.connection, None, 16)
         .unwrap()
@@ -10088,7 +10089,7 @@ fn account_tombstone_collision(
     let store = ConnectionStore::open_at(path).unwrap();
     assert_eq!(&store.conflict_record(original.id).unwrap(), original);
     assert_eq!(std::fs::read(actual).unwrap(), b"abc");
-    assert!(store.tombstone_choices(id).unwrap().contains(&chosen));
+    assert!(store.tombstone_choices(id).unwrap().contains(chosen));
 }
 
 #[test]
@@ -10188,7 +10189,7 @@ fn native_executor_reuses_only_the_exact_unprepared_reservation() {
     );
     assert!(
         store
-            .reusable_native_namespace(&mut live, Side::Source)
+            .reusable_native_namespace(&live, Side::Source)
             .is_err()
     );
     let prepared = native_prepared_facts(&live, &reused);
@@ -10201,7 +10202,7 @@ fn native_executor_reuses_only_the_exact_unprepared_reservation() {
     live.revision += 1;
     assert!(
         store
-            .reusable_native_namespace(&mut live, Side::Destination)
+            .reusable_native_namespace(&live, Side::Destination)
             .is_err(),
         "prepared evidence must resume through inspection, never new preparation"
     );
@@ -10646,10 +10647,7 @@ fn native_baseline_final_validation_refuses_before_event_after_checkpoint_prepar
                     destination: record.destination.identity.into(),
                     initial_review: false,
                 },
-                RecoveryChecks {
-                    mode: VerificationMode::NativeLive(&payer),
-                    ..RecoveryChecks::default()
-                },
+                RecoveryChecks::new(VerificationMode::NativeLive(&payer)),
                 BaselineAppendCheck::Host(&probe),
             );
             if reject_call == 2 {
@@ -11442,7 +11440,7 @@ fn selected_attention_ordinary_join_keeps_earlier_capture_and_revision_history()
     );
     store.overlay.insert(
         format::key(1, next.connection, 1),
-        Row::Operation(operation.clone()),
+        Row::Operation(operation),
     );
     assert!(
         store.ordinary_conflict_join(&conflict).is_ok(),

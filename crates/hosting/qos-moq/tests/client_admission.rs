@@ -1,5 +1,22 @@
 //! The native client reports Live only after the relay admitted the session
 //! (the relay sends its Draft 21 SETUP only after host admission).
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
+)]
+#![allow(
+    clippy::similar_names,
+    clippy::collection_is_never_read,
+    clippy::unused_async,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    reason = "scenario-shaped test code"
+)]
 
 use qos_moq::client::{Client, ClientAuthority, Connection, ConnectionScope, Status};
 use qos_moq::relay::{Denied, Direction, LoopbackRelay, RelayAuthority, SessionAuthorization};

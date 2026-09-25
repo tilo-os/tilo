@@ -1,4 +1,22 @@
 //! Public-command regressions; portable cases never create native authority.
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
+#![allow(
+    clippy::needless_pass_by_value,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::similar_names,
+    clippy::needless_collect,
+    clippy::format_collect,
+    clippy::default_trait_access,
+    clippy::match_wildcard_for_single_variants,
+    clippy::too_many_lines,
+    reason = "fixture-building test code favours direct, scenario-shaped helpers"
+)]
 use super::*;
 #[cfg(target_os = "linux")]
 use crate::connected::ConflictChoice;
@@ -305,7 +323,7 @@ fn native_recovery_commands_refuse_changed_bytes_revision_pause_and_foreign_work
         .unwrap();
     std::fs::write(fixture.destination.join("document"), b"new unreviewed edit").unwrap();
     assert_eq!(
-        service.replace(preview.review.clone()).unwrap().wait(),
+        service.replace(preview.review).unwrap().wait(),
         Err(ConnectionError::StaleReview)
     );
     assert_eq!(
@@ -836,7 +854,7 @@ fn recovery_projection_budget_exhaustion_and_unwind_release_the_scope() {
         worker_projection_tests::fail_next_read(&path, unwind);
         let request = service.recovery(id, None, 1).unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            worker.command(receiver.recv().unwrap())
+            worker.command(receiver.recv().unwrap());
         }));
         if unwind {
             assert!(result.is_err());

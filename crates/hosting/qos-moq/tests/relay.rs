@@ -1,4 +1,21 @@
 //! Real localhost WebTransport tests: no mocked carrier or TLS bypass.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
+)]
+#![allow(
+    clippy::similar_names,
+    clippy::collection_is_never_read,
+    clippy::unused_async,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    reason = "scenario-shaped test code"
+)]
 
 use qos_moq::relay::{Denied, Direction, Relay, RelayAuthority, SessionAuthorization, VOICE_PATH};
 use qos_moq::voice::{FRAME_SAMPLES, VoiceObject};
@@ -328,7 +345,8 @@ async fn a_publish_grant_does_not_authorize_descendants_or_changed_namespaces() 
     let incoming = moq_net::Origin::random().produce();
     let outgoing = moq_net::Origin::random().produce();
     let mut publications = Vec::new();
-    for path in ["opaque-call/a"] {
+    {
+        let path = "opaque-call/a";
         let mut broadcast = outgoing
             .create_broadcast(path, moq_net::broadcast::Route::new().with_announce(true))
             .unwrap();

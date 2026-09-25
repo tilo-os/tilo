@@ -6,8 +6,9 @@ use crate::{
     catalog::InternalRelease,
     transport::{InternalTransport, PersistentOutcome, SelectedManifest},
 };
+use std::fmt::Write as _;
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Arc, Condvar, Mutex, MutexGuard, PoisonError,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread::{self, JoinHandle};
@@ -54,6 +55,18 @@ pub(super) struct Shared {
     mailbox: Mutex<Mailbox>,
     wake: Condvar,
 }
+impl Shared {
+    /// The mailbox holds only plain state, so a panicked holder cannot leave it
+    /// half-updated in a way later readers must refuse.
+    fn lock(&self) -> MutexGuard<'_, Mailbox> {
+        self.mailbox.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn wait<'a>(&self, guard: MutexGuard<'a, Mailbox>) -> MutexGuard<'a, Mailbox> {
+        self.wake
+            .wait(guard)
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 /// One latest request, one Ready action and one coalesced status. Replacing a
 /// request cancels the old operation out of band, even during blocked transport.
@@ -92,7 +105,7 @@ impl Worker {
         self.submit(release, None, Some(bytes))
     }
     pub(crate) fn preference(&self) -> PreferenceState {
-        self.shared.mailbox.lock().unwrap().preference.clone()
+        self.shared.lock().preference.clone()
     }
     /// A new authenticated cleanup operation and a NEW cancellation flag. The
     /// transfer's cancellation latch is never cleared. Verified finals remain.
@@ -109,18 +122,17 @@ impl Worker {
         target: Option<&Token>,
         saved_key: Option<Vec<u8>>,
     ) -> Result<Token, crate::error::Failure> {
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.lock();
         if m.shutdown {
             return Err(crate::error::Failure::closed("Worker is shut down"));
         }
-        if let Some(target) = target {
-            if m.active.as_ref().is_none_or(|(t, _)| t != target)
-                || target.selection != release.manifest_sha256()
-            {
-                return Err(crate::error::Failure::stale(
-                    "Stale cleanup selection/operation",
-                ));
-            }
+        if let Some(target) = target
+            && (m.active.as_ref().is_none_or(|(t, _)| t != target)
+                || target.selection != release.manifest_sha256())
+        {
+            return Err(crate::error::Failure::stale(
+                "Stale cleanup selection/operation",
+            ));
         }
         let operation = next_operation(&NEXT_OPERATION)?;
         let token = Token {
@@ -141,6 +153,7 @@ impl Worker {
         });
         m.action = None;
         m.status = Some(Status::new(token.clone()));
+        drop(m);
         self.shared.wake.notify_all();
         Ok(token)
     }
@@ -151,7 +164,7 @@ impl Worker {
         self.stop(token, true)
     }
     fn stop(&self, token: &Token, cancel: bool) -> Result<(), crate::error::Failure> {
-        let m = self.shared.mailbox.lock().unwrap();
+        let m = self.shared.lock();
         if m.shutdown {
             return Err(crate::error::Failure::closed("Worker is shut down"));
         }
@@ -170,6 +183,7 @@ impl Worker {
         } else {
             flags.pause.store(true, Ordering::Release);
         }
+        drop(m);
         self.shared.wake.notify_all();
         Ok(())
     }
@@ -187,7 +201,7 @@ impl Worker {
         self.action(token, Action::Release)
     }
     fn action(&self, token: &Token, action: Action) -> Result<(), crate::error::Failure> {
-        let mut m = self.shared.mailbox.lock().unwrap();
+        let mut m = self.shared.lock();
         if m.shutdown {
             return Err(crate::error::Failure::closed("Worker is shut down"));
         }
@@ -204,41 +218,44 @@ impl Worker {
             ));
         }
         m.action = Some(action);
+        drop(m);
         self.shared.wake.notify_all();
         Ok(())
     }
     pub(crate) fn status(&self) -> Option<Status> {
-        self.shared.mailbox.lock().unwrap().status.clone()
+        self.shared.lock().status.clone()
     }
     pub(crate) fn close(&mut self) -> Result<(), crate::error::Failure> {
         let mut panicked = false;
         {
-            let mut m = self.shared.mailbox.lock().unwrap();
+            let mut m = self.shared.lock();
             m.shutdown = true;
             if let Some((_, flags)) = &m.active {
                 flags.cancel.store(true, Ordering::Release);
             }
             m.pending = None;
+            drop(m);
             self.shared.wake.notify_all();
         }
-        if let Some(thread) = self.thread.take() {
-            if thread.join().is_err() {
-                panicked = true;
-                if let Some(status) = &mut self.shared.mailbox.lock().unwrap().status {
-                    status.phase = Phase::Failed;
-                    status.failure_kind = Some(crate::ErrorKind::Failed);
-                    status.error = Some("Download worker panicked; cache may be retained".into());
-                    status.residue = true;
-                    status.uncertain = true;
-                }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            panicked = true;
+            if let Some(status) = &mut self.shared.lock().status {
+                status.phase = Phase::Failed;
+                status.failure_kind = Some(crate::ErrorKind::Failed);
+                status.error = Some("Download worker panicked; cache may be retained".into());
+                status.residue = true;
+                status.uncertain = true;
             }
         }
-        let mut m = self.shared.mailbox.lock().unwrap();
-        if let Some(status) = &mut m.status {
-            if !terminal(status.phase) {
-                status.phase = Phase::Cancelled;
-            }
+        let mut m = self.shared.lock();
+        if let Some(status) = &mut m.status
+            && !terminal(status.phase)
+        {
+            status.phase = Phase::Cancelled;
         }
+        drop(m);
         if panicked {
             Err(
                 crate::error::Failure::from("Download worker panicked; cache may be retained")
@@ -259,7 +276,7 @@ impl Drop for Worker {
 }
 
 fn publish_preference_failure(shared: &Shared, failure: &PreferenceFailure) {
-    shared.mailbox.lock().unwrap().preference = PreferenceState::Failed(failure.clone());
+    shared.lock().preference = PreferenceState::Failed(failure.clone());
     shared.wake.notify_all();
 }
 fn preference_operation_error(failure: PreferenceFailure) -> crate::Error {
@@ -289,9 +306,10 @@ fn terminal(phase: Phase) -> bool {
     )
 }
 fn report(shared: &Shared, status: &Status) {
-    let mut m = shared.mailbox.lock().unwrap();
+    let mut m = shared.lock();
     if m.active.as_ref().is_some_and(|(t, _)| *t == status.token) {
         m.status = Some(status.clone());
+        drop(m);
         shared.wake.notify_all();
     }
 }
@@ -304,6 +322,10 @@ fn stop(flags: &Flags) -> Result<(), crate::error::Failure> {
         Ok(())
     }
 }
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the worker thread's entry point owns its shared state for the thread's lifetime"
+)]
 pub(super) fn worker_loop(
     shared: Arc<Shared>,
     transport: InternalTransport,
@@ -320,19 +342,22 @@ pub(super) fn worker_loop(
             Ok(bytes) => PreferenceState::Loaded(bytes),
             Err(failure) => PreferenceState::Failed(failure),
         };
-        shared.mailbox.lock().unwrap().preference = loaded;
+        shared.lock().preference = loaded;
         shared.wake.notify_all();
     }
     loop {
         let request = {
-            let mut m = shared.mailbox.lock().unwrap();
+            let mut m = shared.lock();
             while m.pending.is_none() && !m.shutdown {
-                m = shared.wake.wait(m).unwrap();
+                m = shared.wait(m);
             }
             if m.shutdown {
                 return;
             }
-            m.pending.take().unwrap()
+            match m.pending.take() {
+                Some(request) => request,
+                None => continue,
+            }
         };
         let mut status = Status::new(request.token.clone());
         // selected is external to every borrowed handle/Ready, on this stack.
@@ -377,22 +402,23 @@ pub(super) fn worker_loop(
             };
         }
         if let Err(error) = result {
-            status.failure_kind.get_or_insert(error.kind());
+            status.failure_kind.get_or_insert_with(|| error.kind());
             status.uncertain |= error.uncertain();
             status.error.get_or_insert_with(|| error.to_string());
         }
         // Scope has ended: no Session, component, Ready or root lease is live.
-        let mut m = shared.mailbox.lock().unwrap();
-        if let Some((token, flags)) = &m.active {
-            if *token == status.token {
-                // Same lock as stop admission: an accepted cancel wins even in
-                // the last interval between scoped completion and publication.
-                if flags.cancel.load(Ordering::Acquire) {
-                    status.phase = Phase::Cancelled;
-                }
-                m.status = Some(status);
-                shared.wake.notify_all();
+        let mut m = shared.lock();
+        if let Some((token, flags)) = &m.active
+            && *token == status.token
+        {
+            // Same lock as stop admission: an accepted cancel wins even in
+            // the last interval between scoped completion and publication.
+            if flags.cancel.load(Ordering::Acquire) {
+                status.phase = Phase::Cancelled;
             }
+            m.status = Some(status);
+            drop(m);
+            shared.wake.notify_all();
         }
     }
 }
@@ -421,8 +447,12 @@ impl Ready<'_> {
     }
 }
 
-fn run_selected<'s>(
-    selected: &'s SelectedManifest,
+#[expect(
+    clippy::too_many_lines,
+    reason = "the acquire, transfer, publish and Ready hand-off order is one audited sequence"
+)]
+fn run_selected(
+    selected: &SelectedManifest,
     request: &Request,
     transport: &InternalTransport,
     shared: &Shared,
@@ -446,7 +476,9 @@ fn run_selected<'s>(
         .inspect_err(|_| status.uncertain = true)?;
     for (i, component) in components.iter().enumerate() {
         if let platform::Component::Final(final_handle) = component {
-            status.finals[i] = true;
+            if let Some(held) = status.finals.get_mut(i) {
+                *held = true;
+            }
             status.residue |= final_handle.has_retained_residue();
         }
     }
@@ -541,10 +573,17 @@ fn run_selected<'s>(
         ],
     };
     status.phase = Phase::Ready;
-    status.residue = ready.finals.iter().any(|f| f.has_retained_residue());
+    // This file is compiled once per platform module; the final-handle type
+    // differs between them, so no single method path names it.
+    #[allow(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the handle type depends on which platform module includes this file"
+    )]
+    let residue = ready.finals.iter().any(|f| f.has_retained_residue());
+    status.residue = residue;
     report(shared, status);
     let action = {
-        let mut m = shared.mailbox.lock().unwrap();
+        let mut m = shared.lock();
         loop {
             stop(flags)?;
             if m.shutdown || m.active.as_ref().is_none_or(|(t, _)| *t != request.token) {
@@ -553,7 +592,7 @@ fn run_selected<'s>(
             if let Some(action) = m.action.take() {
                 break action;
             }
-            m = shared.wake.wait(m).unwrap();
+            m = shared.wait(m);
         }
     };
     stop(flags)?;
@@ -562,21 +601,21 @@ fn run_selected<'s>(
         Action::Consume => {
             status.phase = Phase::Consuming;
             report(shared, status);
-            let consumed = ready.consume(&flags.cancel, &mut |selection, cancel, a, b| {
-                let result = consumer(selection, cancel, a, b);
+            let outcome = ready.consume(&flags.cancel, &mut |manifest, cancel, first, second| {
+                let result = consumer(manifest, cancel, first, second);
                 if let Err(error) = &result {
                     status.error = Some(error.to_string());
                 }
                 result
             });
-            if let Err(error) = consumed {
+            if let Err(error) = outcome {
                 // Verification, cursor restoration and native guards can fail
                 // alongside cancellation. Conservatively retain that uncertainty.
                 status.uncertain = true;
-                if let Some(callback_error) = &mut status.error {
-                    if *callback_error != error.to_string() {
-                        callback_error.push_str(&format!("; held-reader boundary: {error}"));
-                    }
+                if let Some(callback_error) = &mut status.error
+                    && *callback_error != error.to_string()
+                {
+                    let _ = write!(callback_error, "; held-reader boundary: {error}");
                 }
                 return Err(error);
             }
@@ -597,6 +636,11 @@ fn split(
         platform::Component::Final(f) => (None, Some(f)),
     }
 }
+fn set_committed(status: &mut Status, index: usize, committed: u64) {
+    if let Some(slot) = status.committed.get_mut(index) {
+        *slot = committed;
+    }
+}
 fn transfer(
     transport: &InternalTransport,
     prepared: crate::cache::PreparedPrefix<'_>,
@@ -614,11 +658,11 @@ fn transfer(
     });
     match result {
         Ok(PersistentOutcome::Complete(done)) => {
-            status.committed[index] = done.byte_size();
+            set_committed(status, index, done.byte_size());
             Ok(())
         }
         Ok(PersistentOutcome::Paused { committed }) => {
-            status.committed[index] = committed;
+            set_committed(status, index, committed);
             Err("Internal transfer paused".into())
         }
         Ok(PersistentOutcome::Cancelled {
@@ -626,7 +670,7 @@ fn transfer(
             error,
             uncertain,
         }) => {
-            status.committed[index] = committed;
+            set_committed(status, index, committed);
             status.uncertain |= uncertain;
             if let Some(error) = error {
                 status.failure_kind = Some(error.kind());
@@ -636,13 +680,14 @@ fn transfer(
             Err("Internal transfer cancelled".into())
         }
         Err(failure) => {
-            status.committed[index] = failure.committed;
+            set_committed(status, index, failure.committed);
             status.uncertain |= failure.uncertain;
             Err(failure.message)
         }
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[path = "coordinator/tests.rs"]
 mod tests;

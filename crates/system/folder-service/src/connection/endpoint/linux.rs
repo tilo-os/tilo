@@ -29,9 +29,13 @@ fn slice(bytes: &[u8], start: usize, end: usize) -> Result<&[u8], EndpointError>
 }
 fn number(bytes: &[u8], start: usize) -> Result<u64, EndpointError> {
     Ok(u64::from_ne_bytes(
-        slice(bytes, start, start + 8)?
-            .try_into()
-            .map_err(|_| EndpointError::Unsupported)?,
+        slice(
+            bytes,
+            start,
+            start.checked_add(8).ok_or(EndpointError::Unsupported)?,
+        )?
+        .try_into()
+        .map_err(|_| EndpointError::Unsupported)?,
     ))
 }
 fn btrfs_uuid(file: &File) -> Result<([u8; 16], u64), EndpointError> {
@@ -567,7 +571,7 @@ fn device_identity(device: u64, depth: usize) -> Result<Vec<u8>, EndpointError> 
             major.parse().map_err(|_| EndpointError::Unsupported)?,
             minor.parse().map_err(|_| EndpointError::Unsupported)?,
         );
-        let mut result = device_identity(parent, depth + 1)?;
+        let mut result = device_identity(parent, depth.saturating_add(1))?;
         result.extend_from_slice(&uuid);
         return Ok(result);
     }
@@ -588,7 +592,7 @@ fn device_identity(device: u64, depth: usize) -> Result<Vec<u8>, EndpointError> 
         } else {
             file.metadata()?.dev()
         };
-        let mut result = device_identity(underlying, depth + 1)?;
+        let mut result = device_identity(underlying, depth.saturating_add(1))?;
         result.extend_from_slice(&uuid);
         // Ordinary backing files don't support subvolume ioctl on all kernels;
         // generation-bearing kernel export handle already includes the tree.
@@ -691,11 +695,11 @@ pub(super) fn check_metadata(file: &File, directory: bool) -> Result<bool, Endpo
         return Err(EndpointError::LimitExceeded);
     }
     if count != 0 {
-        let mut names = vec![0_u8; count as usize];
+        let mut names = vec![0_u8; usize::try_from(count).map_err(|_| EndpointError::Unstable)?];
         // SAFETY: live fd and a buffer exactly sized from the bounded first query.
         let size =
             unsafe { libc::flistxattr(file.as_raw_fd(), names.as_mut_ptr().cast(), names.len()) };
-        if size < 0 || size as usize != names.len() {
+        if usize::try_from(size).ok() != Some(names.len()) {
             return Err(EndpointError::Unstable);
         }
         // SELinux labels are local enforcement policy, not portable content.
@@ -735,6 +739,11 @@ pub(super) fn object_generation(file: &File) -> Result<Vec<u8>, EndpointError> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod clone_tests {
     use super::*;
 

@@ -23,7 +23,7 @@ impl driver::Worker {
                 transport,
                 consumer,
                 crate::preference::PreferenceStore::live(),
-            )
+            );
         })
     }
 }

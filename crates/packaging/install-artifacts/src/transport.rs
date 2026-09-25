@@ -33,8 +33,15 @@ impl SelectedManifest {
         release: &InternalRelease,
         bytes: Vec<u8>,
     ) -> Result<Self, crate::error::Failure> {
-        Self::checked(release, bytes, &production_origin())
+        Self::checked(release, bytes, &production_origin()?)
     }
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::needless_pass_by_value,
+            reason = "test builds retain the authenticated manifest bytes"
+        )
+    )]
     pub(crate) fn checked(
         release: &InternalRelease,
         bytes: Vec<u8>,
@@ -67,18 +74,18 @@ impl SelectedManifest {
             .component(index)
             .ok_or_else(|| "Invalid component index".into())
     }
-    fn component_url(&self, component: ComponentView<'_>) -> Url {
+    fn component_url(&self, component: ComponentView<'_>) -> Result<Url, crate::error::Failure> {
         let mut url = self.asset.clone();
         url.path_segments_mut()
-            .expect("checked hierarchical asset")
+            .map_err(|()| "Selected asset URL is not hierarchical")?
             .pop()
             .push(component.filename);
-        url
+        Ok(url)
     }
 }
 #[cfg(any(test, windows, target_os = "linux"))]
-fn production_origin() -> Url {
-    Url::parse("https://code.podesta.ai/").expect("literal URL")
+fn production_origin() -> Result<Url, crate::error::Failure> {
+    Url::parse("https://code.podesta.ai/").map_err(|e| crate::error::Failure::from(e.to_string()))
 }
 fn same_origin(url: &Url, origin: &Url) -> bool {
     url.scheme() == origin.scheme()
@@ -94,7 +101,7 @@ fn asset_url(value: &str, origin: &Url) -> Result<Url, crate::error::Failure> {
     if !same_origin(&url, origin)
         || url
             .path_segments()
-            .and_then(|s| s.last())
+            .and_then(|mut s| s.next_back())
             .is_none_or(str::is_empty)
     {
         return Err(crate::error::Failure::invalid_input(
@@ -136,10 +143,10 @@ pub(crate) struct InternalTransport {
 impl InternalTransport {
     #[cfg(any(windows, all(target_os = "linux", not(test))))]
     pub(crate) fn new() -> Result<Self, crate::error::Failure> {
-        Self::client(production_origin(), Duration::from_secs(30))
+        Self::client(production_origin()?, Duration::from_secs(30))
     }
     pub(crate) fn client(origin: Url, timeout: Duration) -> Result<Self, crate::error::Failure> {
-        let client = Client::builder()
+        let client = tilo_net::http::blocking_client()
             .connect_timeout(Duration::from_secs(10))
             .timeout(timeout)
             .no_gzip()
@@ -169,14 +176,14 @@ impl InternalTransport {
         }
         let mut response = self
             .request(url, 0, cancel, None)
-            .map_err(|e| e.message())?;
+            .map_err(RequestError::message)?;
         cancelled(cancel)?;
         self.response_identity(&response)?;
         if response.status() != reqwest::StatusCode::OK {
             return Err("Manifest response must be 200".into());
         }
         declared_length(response.headers(), expected)?;
-        let mut bytes = Vec::with_capacity(expected as usize);
+        let mut bytes = Vec::with_capacity(usize::try_from(expected).unwrap_or_default());
         if let BodyEnd::Interrupted(error) = read_body(&mut response, expected, cancel, |chunk| {
             bytes.extend_from_slice(chunk);
             Ok(())
@@ -235,12 +242,17 @@ impl InternalTransport {
                 .get_all(header::LOCATION)
                 .iter()
                 .collect();
-            if hops == 5 || locations.len() != 1 {
+            let [location] = locations.as_slice() else {
+                return Err(RequestError::Fatal(
+                    "Invalid redirect or hop limit exceeded".into(),
+                ));
+            };
+            if hops == 5 {
                 return Err(RequestError::Fatal(
                     "Invalid redirect or hop limit exceeded".into(),
                 ));
             }
-            let location = locations[0]
+            let location = location
                 .to_str()
                 .map_err(|_| RequestError::Fatal("Invalid redirect Location".into()))?;
             url = url
@@ -252,7 +264,10 @@ impl InternalTransport {
                 ));
             }
         }
-        unreachable!("bounded redirect loop returns")
+        // The loop's last hop always returns; keep a refusal rather than a panic.
+        Err(RequestError::Fatal(
+            "Invalid redirect or hop limit exceeded".into(),
+        ))
     }
     fn response_identity(
         &self,
@@ -265,16 +280,15 @@ impl InternalTransport {
         // prefer chunked over Content-Length. Enforce our narrower policy while
         // the original response fields remain visible, before any redirect/reset.
         let mut framing = response.headers().get_all(header::TRANSFER_ENCODING).iter();
-        if let Some(value) = framing.next() {
-            if framing.next().is_some()
+        if let Some(value) = framing.next()
+            && (framing.next().is_some()
                 || response.version() != reqwest::Version::HTTP_11
                 || response.headers().contains_key(header::CONTENT_LENGTH)
                 || !value
                     .to_str()
-                    .is_ok_and(|value| value.trim().eq_ignore_ascii_case("chunked"))
-            {
-                return Err("Unsupported or ambiguous Transfer-Encoding framing".into());
-            }
+                    .is_ok_and(|value| value.trim().eq_ignore_ascii_case("chunked")))
+        {
+            return Err("Unsupported or ambiguous Transfer-Encoding framing".into());
         }
         let values: Vec<_> = response
             .headers()
@@ -291,6 +305,10 @@ impl InternalTransport {
     /// handle; this API never discovers, replaces, deletes or publishes a path.
     /// On failure bytes remain on that handle; no returned pathname is authority.
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the test entrance mirrors the persistent transfer's full context"
+    )]
     pub(crate) fn transfer(
         &self,
         selected: &SelectedManifest,
@@ -393,6 +411,11 @@ impl InternalTransport {
             }
         }
     }
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one retry loop owns the response, checkpoint and durable state together"
+    )]
     fn transfer_inner(
         &self,
         selected: &SelectedManifest,
@@ -408,7 +431,7 @@ impl InternalTransport {
         if !same_origin(&selected.asset, &self.origin) {
             return Err("Selected context origin mismatch".into());
         }
-        let url = selected.component_url(component);
+        let url = selected.component_url(component)?;
         // Do not clone untrusted checkpoint strings before validating their bounds.
         let mut checkpoint = checkpoint.map(Cow::Borrowed);
         let mut last_error: crate::error::Failure = "Incomplete response".into();
@@ -429,10 +452,10 @@ impl InternalTransport {
             } else {
                 validate_prefix(selected, component, file, checkpoint.as_deref(), cancel)?
             };
-            if let Some(d) = durable.as_deref_mut() {
-                if d.stop(file, component.byte_size, cancel)? {
-                    return Err("Internal transfer paused".into());
-                }
+            if let Some(d) = durable.as_deref_mut()
+                && d.stop(file, component.byte_size, cancel)?
+            {
+                return Err("Internal transfer paused".into());
             }
             if offset == component.byte_size {
                 return finish_persistent(component, file, cancel, events, durable.as_deref_mut());
@@ -440,10 +463,10 @@ impl InternalTransport {
             cancelled(cancel)?;
             events.emit(Phase::Requesting, 0, true);
             cancelled(cancel)?;
-            if let Some(d) = durable.as_deref_mut() {
-                if d.stop(file, component.byte_size, cancel)? {
-                    return Err("Internal transfer paused".into());
-                }
+            if let Some(d) = durable.as_deref_mut()
+                && d.stop(file, component.byte_size, cancel)?
+            {
+                return Err("Internal transfer paused".into());
             }
             let pause = durable.as_ref().map(|d| d.pause);
             let mut response = match self.request(url.clone(), offset, cancel, pause) {
@@ -553,7 +576,7 @@ impl InternalTransport {
                     return Err("Internal transfer paused".into());
                 }
                 BodyEnd::Complete => {
-                    last_error = "Partial range ended before complete component".into()
+                    last_error = "Partial range ended before complete component".into();
                 }
                 BodyEnd::Interrupted(error) => last_error = error,
             }
@@ -582,10 +605,10 @@ impl InternalTransport {
             events.emit(Phase::Retrying, 0, true);
         }
         cancelled(cancel)?;
-        if let Some(d) = durable.as_deref_mut() {
-            if d.stop(file, component.byte_size, cancel)? {
-                return Err("Internal transfer paused".into());
-            }
+        if let Some(d) = durable
+            && d.stop(file, component.byte_size, cancel)?
+        {
+            return Err("Internal transfer paused".into());
         }
         Err(format!(
             "Component incomplete after 3 attempts ({} held bytes): {last_error}",
@@ -651,15 +674,20 @@ fn read_body_stoppable(
     pause: impl Fn() -> bool,
     mut chunk: impl FnMut(&[u8]) -> Result<(), crate::error::Failure>,
 ) -> Result<BodyEnd, crate::error::Failure> {
-    let mut buffer = [0; BUFFER];
-    let mut received = 0;
+    let mut buffer = vec![0; BUFFER];
+    let mut received: u64 = 0;
     loop {
         cancelled(cancel)?;
         if pause() {
             return Ok(BodyEnd::Paused);
         }
-        let limit = ((expected - received + 1).min(BUFFER as u64)) as usize;
-        let read = reader.read(&mut buffer[..limit]);
+        // One byte past the remaining boundary detects an overlong body.
+        let wanted = expected.saturating_sub(received).saturating_add(1);
+        let limit = buffer
+            .len()
+            .min(usize::try_from(wanted).unwrap_or(usize::MAX));
+        let window = buffer.get_mut(..limit).ok_or("Response read buffer")?;
+        let read = reader.read(window);
         cancelled(cancel)?;
         // A stop requested while this read was in flight precedes EOF/error.
         if pause() {
@@ -681,12 +709,12 @@ fn read_body_stoppable(
                 BodyEnd::Interrupted("Response truncated".into())
             });
         }
-        if count as u64 > expected - received {
+        if count as u64 > expected.saturating_sub(received) {
             return Err("Response exceeds authenticated byte boundary".into());
         }
-        chunk(&buffer[..count])?;
+        chunk(window.get(..count).ok_or("Response read overrun")?)?;
         cancelled(cancel)?;
-        received += count as u64;
+        received = received.saturating_add(count as u64);
     }
 }
 
@@ -776,7 +804,7 @@ fn hash_file_stoppable(
     completion_stop(cancel, pause)?;
     let mut hash = Sha256::new();
     #[cfg(test)]
-    let mut count = 0;
+    let mut count = 0_u64;
     let end = {
         #[cfg(test)]
         let mut measured = tests::HashReader(file);
@@ -793,7 +821,7 @@ fn hash_file_stoppable(
                 hash.update(chunk);
                 #[cfg(test)]
                 {
-                    count += chunk.len() as u64;
+                    count = count.saturating_add(chunk.len() as u64);
                     tests::event("hash", count);
                 }
                 completion_stop(cancel, pause)
@@ -813,6 +841,10 @@ fn hash_file_stoppable(
     }
     Ok(hex::encode(hash.finalize()))
 }
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "each checkpoint field is compared with its own selected counterpart"
+)]
 fn validate_prefix(
     selected: &SelectedManifest,
     component: ComponentView<'_>,
@@ -853,14 +885,17 @@ fn range_size(headers: &header::HeaderMap, offset: u64, total: u64) -> Option<u6
     if values.len() != 1 {
         return None;
     }
-    let value = values[0].to_str().ok()?.strip_prefix("bytes ")?;
+    let [value] = values.as_slice() else {
+        return None;
+    };
+    let value = value.to_str().ok()?.strip_prefix("bytes ")?;
     let (range, full) = value.split_once('/')?;
     let (start, end) = range.split_once('-')?;
     let (start, end, full) = (decimal(start)?, decimal(end)?, decimal(full)?);
     if start != offset || end < start || end >= total || full != total {
         return None;
     }
-    let count = end - start + 1;
+    let count = end.checked_sub(start)?.checked_add(1)?;
     declared_length(headers, count).ok()?;
     Some(count)
 }
@@ -907,7 +942,7 @@ fn write_chunk(
             Ok(count) => count,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                 cancelled(cancel)?;
-                interrupted += 1;
+                interrupted = interrupted.saturating_add(1);
                 if interrupted == 8 {
                     return Err(format!("Working-file write interrupted 8 times: {error}").into());
                 }
@@ -918,8 +953,8 @@ fn write_chunk(
         if count == 0 {
             return Err(io_error(std::io::ErrorKind::WriteZero.into()));
         }
-        events.received += count as u64;
-        remaining = &remaining[count..];
+        events.received = events.received.saturating_add(count as u64);
+        remaining = remaining.get(count..).ok_or("Working-file write overrun")?;
         #[cfg(test)]
         tests::event("write", count as u64);
         cancelled(cancel)?;
@@ -1117,23 +1152,23 @@ fn finish_persistent(
     events: &mut Events<impl FnMut(Progress)>,
     mut durable: Option<&mut DurableTransfer<'_>>,
 ) -> Result<CompletedComponent, crate::error::Failure> {
-    if let Some(d) = durable.as_deref_mut() {
-        if d.stop(file, component.byte_size, cancel)? {
-            return Err("Internal transfer paused".into());
-        }
+    if let Some(d) = durable.as_deref_mut()
+        && d.stop(file, component.byte_size, cancel)?
+    {
+        return Err("Internal transfer paused".into());
     }
     let pause = durable.as_ref().map(|d| d.pause);
     let result = finish(component, file, cancel, events, pause);
-    if let Some(d) = durable.as_deref_mut() {
-        if d.stop(file, component.byte_size, cancel)? {
-            return Err("Internal transfer paused".into());
-        }
+    if let Some(d) = durable.as_deref_mut()
+        && d.stop(file, component.byte_size, cancel)?
+    {
+        return Err("Internal transfer paused".into());
     }
     let done = result?;
-    if let Some(d) = durable {
-        if !d.final_candidate {
-            d.commit(file, cancel, cache::Kind::Final)?;
-        }
+    if let Some(d) = durable
+        && !d.final_candidate
+    {
+        d.commit(file, cancel, cache::Kind::Final)?;
     }
     cancelled(cancel)?;
     Ok(done)

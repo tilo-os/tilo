@@ -1,3 +1,10 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "test fixture: an unexpected fixture failure must abort the test that selected it"
+)]
 use crate::cache::fixture_platform as platform;
 #[path = "coordinator.rs"]
 pub(crate) mod driver;
@@ -23,7 +30,7 @@ impl driver::Worker {
                         crate::refuse_protected_staging(selected, cancel, first, second)
                     },
                     preference,
-                )
+                );
             });
         })
         .expect("fixture worker")

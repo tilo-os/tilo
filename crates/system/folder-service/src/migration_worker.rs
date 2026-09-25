@@ -15,6 +15,10 @@ const FINISHED: u8 = 2;
 
 /// Whether this platform currently has the native directory-entry durability
 /// required by journaled copying. Callers must surface the refusal verbatim.
+///
+/// # Errors
+///
+/// Returns a message describing why durable copy is unsupported on this host.
 pub fn durable_copy_available() -> Result<(), String> {
     migration_durability::supported().map_err(|error| error.to_string())
 }
@@ -43,6 +47,11 @@ pub struct MigrationJob {
 impl MigrationJob {
     /// Construct a new operation. This validates representation only; the copy
     /// engine pins and revalidates every filesystem grant on the worker thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the source, destination or journal path is not an
+    /// acceptable absolute path.
     pub fn fresh(
         operation_id: impl Into<String>,
         source: PathBuf,
@@ -71,6 +80,7 @@ impl MigrationJob {
         })
     }
 
+    #[must_use]
     pub fn with_reviewed_identities(
         mut self,
         source: migration_durability::Identity,
@@ -102,6 +112,10 @@ impl MigrationJob {
     }
 
     /// Build an explicit resume request against the existing private journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when this job cannot be resumed from its journal.
     pub fn retry(&self) -> Result<Self, String> {
         if !self.journal.is_file() {
             return Err(
@@ -141,10 +155,17 @@ pub struct MigrationWorker {
 
 impl MigrationWorker {
     /// Start one real copy or resume operation on a named background thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when durable copy is unavailable or the worker cannot start.
     pub fn start(job: MigrationJob) -> Result<Self, String> {
         Self::start_inner(job, None)
     }
 
+    /// # Errors
+    ///
+    /// Returns a message when durable copy is unavailable or the worker cannot start.
     pub fn start_persisted(
         job: MigrationJob,
         writer: StoreWriter,
@@ -310,6 +331,12 @@ impl Drop for MigrationWorker {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use std::fs;
     use std::sync::mpsc;

@@ -15,7 +15,7 @@ pub enum Checkpoint {
     BeforePublish,
     PublishSubmitted,
     /// Failure here models a lost rename acknowledgment after native execution.
-    /// Both backends report PublicationUnknown; BeforeCommit instead models
+    /// Both backends report `PublicationUnknown`; `BeforeCommit` instead models
     /// failure after known publication and retains commit-only retry authority.
     AfterPublish,
     BeforeCommit,
@@ -87,6 +87,10 @@ pub fn with_failure<T>(checkpoint: Checkpoint, operation: impl FnOnce() -> T) ->
 ///
 /// Other matching occurrences proceed normally. Nested scopes restore the
 /// previous failure and its remaining occurrence count, including on unwind.
+///
+/// # Panics
+///
+/// Panics when `occurrence` is zero or `checkpoint` is observation-only.
 pub fn with_failure_on_nth<T>(
     checkpoint: Checkpoint,
     occurrence: usize,
@@ -135,10 +139,10 @@ pub fn with_observer<T>(
     output
 }
 
-pub(crate) fn checkpoint(event: CheckpointEvent) -> io::Result<()> {
+pub(crate) fn checkpoint(event: &CheckpointEvent) -> io::Result<()> {
     let observer = HOOKS.with(|hooks| hooks.borrow().observer.clone());
     if let Some(observer) = observer {
-        observer(&event);
+        observer(event);
     }
     let fail = HOOKS.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
@@ -152,7 +156,7 @@ pub(crate) fn checkpoint(event: CheckpointEvent) -> io::Result<()> {
             None => true,
             Some(0) => false,
             Some(remaining) => {
-                *remaining -= 1;
+                *remaining = remaining.saturating_sub(1);
                 *remaining == 0
             }
         }
@@ -193,21 +197,21 @@ mod tests {
             stage: None,
         };
         with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-            checkpoint(event()).unwrap();
+            checkpoint(&event()).unwrap();
             with_failure_on_nth(Checkpoint::BeforePublish, 1, || {
-                assert!(checkpoint(event()).is_err());
+                assert!(checkpoint(&event()).is_err());
             });
             let panic = std::panic::catch_unwind(|| {
                 with_failure_on_nth(Checkpoint::BeforePublish, 3, || {
-                    checkpoint(event()).unwrap();
+                    checkpoint(&event()).unwrap();
                     panic!("restore outer occurrence count");
                 });
             });
             assert!(panic.is_err());
-            assert!(checkpoint(event()).is_err());
-            checkpoint(event()).unwrap();
+            assert!(checkpoint(&event()).is_err());
+            checkpoint(&event()).unwrap();
         });
-        checkpoint(event()).unwrap();
+        checkpoint(&event()).unwrap();
     }
 
     #[test]
@@ -217,14 +221,14 @@ mod tests {
             stage: None,
         };
         with_failure(Checkpoint::BeforePublish, || {
-            assert!(checkpoint(event()).is_err());
+            assert!(checkpoint(&event()).is_err());
             with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-                checkpoint(event()).unwrap();
-                assert!(checkpoint(event()).is_err());
-                checkpoint(event()).unwrap();
+                checkpoint(&event()).unwrap();
+                assert!(checkpoint(&event()).is_err());
+                checkpoint(&event()).unwrap();
             });
-            assert!(checkpoint(event()).is_err());
-            assert!(checkpoint(event()).is_err());
+            assert!(checkpoint(&event()).is_err());
+            assert!(checkpoint(&event()).is_err());
         });
     }
 
@@ -240,7 +244,7 @@ mod tests {
             with_failure(Checkpoint::BeforePublish, || panic!("stop"));
         });
         assert!(panic.is_err());
-        checkpoint(CheckpointEvent {
+        checkpoint(&CheckpointEvent {
             checkpoint: Checkpoint::BeforePublish,
             stage: None,
         })
@@ -261,7 +265,7 @@ mod tests {
             || {
                 with_failure(Checkpoint::BeforeCommit, || {
                     assert!(
-                        checkpoint(CheckpointEvent {
+                        checkpoint(&CheckpointEvent {
                             checkpoint: Checkpoint::BeforeCommit,
                             stage: None,
                         })
@@ -358,6 +362,10 @@ pub fn with_provision_observer<T>(
     provision_scope(|hooks| hooks.observer = Some(Rc::new(observer)), operation)
 }
 /// Fail the exact physical path/checkpoint, after its observer has run.
+///
+/// # Panics
+///
+/// Panics when `checkpoint` is the observation-only `Synced`.
 #[cfg(unix)]
 pub fn with_provision_failure<T>(
     checkpoint: ProvisionCheckpoint,
@@ -386,10 +394,10 @@ pub fn with_mkdir_result<T>(
     )
 }
 #[cfg(unix)]
-pub(crate) fn provision_checkpoint(event: ProvisionEvent) -> io::Result<()> {
+pub(crate) fn provision_checkpoint(event: &ProvisionEvent) -> io::Result<()> {
     let observer = PROVISION_HOOKS.with(|hooks| hooks.borrow().observer.clone());
     if let Some(observer) = observer {
-        observer(&event);
+        observer(event);
     }
     let fail = PROVISION_HOOKS.with(|hooks| {
         hooks

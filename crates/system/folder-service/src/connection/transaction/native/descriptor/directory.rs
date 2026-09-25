@@ -30,6 +30,10 @@ pub(crate) struct Stage {
     pub target_parent: Object,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(crate) enum Body {
     Intent(Intent),
     Stage(Stage),
@@ -98,7 +102,9 @@ pub(crate) struct Descriptor {
 }
 fn payload(bytes: &[u8], cap: usize) -> Result<Cursor<'_>> {
     require((40..=cap).contains(&bytes.len()))?;
-    let (body, checksum) = bytes.split_at(bytes.len() - 32);
+    let (body, checksum) = bytes
+        .split_at_checked(bytes.len().saturating_sub(32))
+        .ok_or(Error::Invalid)?;
     require(checksum == <[u8; 32]>::from(Sha256::digest(body)))?;
     require(
         u32::from_le_bytes(
@@ -155,7 +161,7 @@ fn header(c: &mut Cursor<'_>, mode: ParseMode) -> Result<Header> {
             && value.session != [0; 16]
             && value.admission > 0
             && value.progress >= value.admission
-            && valid_baseline(value.baseline, value.admission - 1, mode),
+            && valid_baseline(value.baseline, value.admission.saturating_sub(1), mode),
     )?;
     Ok(value)
 }
@@ -172,7 +178,7 @@ fn decode_with_mode(bytes: &[u8], mode: ParseMode) -> Result<Descriptor> {
             let endpoints = [c.array()?, c.array()?];
             let direction = c.side()?;
             let decision = c.u8()?;
-            require(decision == direction + 1)?;
+            require(Some(decision) == direction.checked_add(1))?;
             let namespace = directory(&mut c)?;
             let admission = c.array()?;
             require(admission != [0; 32])?;
@@ -195,7 +201,7 @@ fn decode_with_mode(bytes: &[u8], mode: ParseMode) -> Result<Descriptor> {
                     .ok_or(Error::Invalid)?
                     .is_some()
                     && states
-                        .get(1 - usize::from(direction))
+                        .get(1 ^ usize::from(direction))
                         .ok_or(Error::Invalid)?
                         .is_none(),
             )?;
@@ -246,7 +252,7 @@ fn decode_with_mode(bytes: &[u8], mode: ParseMode) -> Result<Descriptor> {
         header,
         body,
         digest: bytes
-            .get(bytes.len() - 32..)
+            .get(bytes.len().saturating_sub(32)..)
             .ok_or(Error::Invalid)?
             .try_into()
             .map_err(|_| Error::Invalid)?,
@@ -279,7 +285,7 @@ impl Descriptor {
                 && Some(&stage.target_parent)
                     == before
                         .chains
-                        .get(1 - usize::from(before.direction))
+                        .get(1 ^ usize::from(before.direction))
                         .ok_or(Error::Invalid)?
                         .last(),
         )
@@ -313,7 +319,7 @@ impl Descriptor {
                         .as_ref()
                         .ok_or(Error::Invalid)?
                         .object
-                && outcome.states.get(1 - side).ok_or(Error::Invalid)? == &prepared.created,
+                && outcome.states.get(1 ^ side).ok_or(Error::Invalid)? == &prepared.created,
         )
     }
 }
@@ -482,7 +488,7 @@ impl HistoricalAdmission {
         let endpoints = [c.array()?, c.array()?];
         let direction = c.side()?;
         let decision = c.u8()?;
-        require(decision == direction + 1)?;
+        require(Some(decision) == direction.checked_add(1))?;
         let path = c.path()?;
         let chains = [
             c.chain(path.components().len())?,
@@ -501,7 +507,7 @@ impl HistoricalAdmission {
                 .ok_or(Error::Invalid)?
                 .is_some()
                 && states
-                    .get(1 - usize::from(direction))
+                    .get(1 ^ usize::from(direction))
                     .ok_or(Error::Invalid)?
                     .is_none()
                 && c.at == c.bytes.len(),

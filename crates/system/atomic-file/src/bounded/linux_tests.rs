@@ -1,3 +1,7 @@
+#![expect(
+    clippy::result_large_err,
+    reason = "the tests return the production custody-carrying errors from closures"
+)]
 use super::*;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -13,10 +17,13 @@ fn xfs_fixture() -> tempfile::TempDir {
     assert!(metadata.is_dir());
     assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
     assert_eq!(metadata.mode() & 0o777, 0o700);
-    assert_eq!(
-        rustix::fs::fstatfs(&held).unwrap().f_type as u32,
-        0x58465342
-    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
+    )]
+    let magic = rustix::fs::fstatfs(&held).unwrap().f_type as u32;
+    assert_eq!(magic, 0x5846_5342);
     let temp = tempfile::tempdir_in(base).unwrap();
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     temp
@@ -230,9 +237,8 @@ fn bounded_linux_retry_keeps_original_errors_and_rechecks_parent_and_file() {
 fn bounded_linux_descriptor_and_filesystem_refusals_do_not_allocate() {
     use allocations::measure;
     let proc = StorageDirectory::open(std::path::Path::new("/proc")).unwrap();
-    let error = match measure(0, || BoundedOwnerDirectory::admit(proc)) {
-        Ok(_) => panic!("procfs admitted"),
-        Err(error) => error,
+    let Err(error) = measure(0, || BoundedOwnerDirectory::admit(proc)) else {
+        panic!("procfs admitted")
     };
     assert_eq!(error.io_error().kind(), io::ErrorKind::Unsupported);
     let root = xfs_fixture();
@@ -319,9 +325,8 @@ fn bounded_fresh_admin_existing_names_are_never_adopted() {
     std::os::unix::fs::symlink("directory", temp.path().join("link")).unwrap();
     let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
     for name in ["directory", "file", "link"] {
-        let error = match measure(0, || root.create_fresh_child(OsStr::new(name))) {
-            Ok(_) => panic!("adopted existing name"),
-            Err(error) => error,
+        let Err(error) = measure(0, || root.create_fresh_child(OsStr::new(name))) else {
+            panic!("adopted existing name")
         };
         assert_eq!(error.state(), FreshChildState::NotCreated);
         assert_eq!(error.io_error().kind(), std::io::ErrorKind::AlreadyExists);
@@ -350,9 +355,8 @@ fn bounded_fresh_admin_parent_change_prevents_submission() {
     let temp = xfs_fixture();
     let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o750)).unwrap();
-    let error = match measure(0, || root.create_fresh_child(OsStr::new("absent"))) {
-        Ok(_) => panic!("created under widened parent"),
-        Err(error) => error,
+    let Err(error) = measure(0, || root.create_fresh_child(OsStr::new("absent"))) else {
+        panic!("created under widened parent")
     };
     assert_eq!(error.state(), FreshChildState::NotCreated);
     assert_eq!(
@@ -385,17 +389,15 @@ fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_custody() {
     let temp = xfs_fixture();
     let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
     let fresh = measure(0, || root.create_fresh_child(OsStr::new("sender"))).unwrap();
-    let error = match super::fresh::with_failure(super::fresh::FreshCheckpoint::Child, || {
+    let Err(error) = super::fresh::with_failure(super::fresh::FreshCheckpoint::Child, || {
         fresh.normalize_and_commit()
-    }) {
-        Ok(_) => panic!("missing child barrier failure"),
-        Err(error) => error,
+    }) else {
+        panic!("missing child barrier failure")
     };
     assert_eq!(error.state(), FreshChildState::CreatedUncommitted);
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o750)).unwrap();
-    let error = match measure(0, || error.retry_normalize_and_commit()) {
-        Ok(_) => panic!("retry ignored changed parent"),
-        Err(error) => error,
+    let Err(error) = measure(0, || error.retry_normalize_and_commit()) else {
+        panic!("retry ignored changed parent")
     };
     assert_eq!(
         error.io_error().kind(),
@@ -403,9 +405,8 @@ fn bounded_fresh_admin_parent_and_nonempty_retry_keep_original_custody() {
     );
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(temp.path().join("sender/.new"), b"preserve").unwrap();
-    let error = match measure(0, || error.retry_normalize_and_commit()) {
-        Ok(_) => panic!("retry reused EOF or erased new entry"),
-        Err(error) => error,
+    let Err(error) = measure(0, || error.retry_normalize_and_commit()) else {
+        panic!("retry reused EOF or erased new entry")
     };
     assert_eq!(
         error.io_error().kind(),
@@ -439,9 +440,8 @@ fn bounded_fresh_admin_replaced_child_is_not_normalized() {
         fs::Permissions::from_mode(0o750),
     )
     .unwrap();
-    let error = match measure(0, || fresh.normalize_and_commit()) {
-        Ok(_) => panic!("adopted replacement child"),
-        Err(error) => error,
+    let Err(error) = measure(0, || fresh.normalize_and_commit()) else {
+        panic!("adopted replacement child")
     };
     assert_eq!(error.state(), FreshChildState::CreatedUncommitted);
     assert_eq!(
@@ -460,17 +460,15 @@ fn bounded_fresh_admin_ambiguous_mkdir_never_recovers_by_name() {
     use allocations::measure;
     let temp = xfs_fixture();
     let root = BoundedOwnerDirectory::admit(StorageDirectory::open(temp.path()).unwrap()).unwrap();
-    let error = match super::fresh::with_failure(super::fresh::FreshCheckpoint::AfterMkdir, || {
+    let Err(error) = super::fresh::with_failure(super::fresh::FreshCheckpoint::AfterMkdir, || {
         root.create_fresh_child(OsStr::new("sender"))
-    }) {
-        Ok(_) => panic!("missing mkdir uncertainty"),
-        Err(error) => error,
+    }) else {
+        panic!("missing mkdir uncertainty")
     };
     assert!(temp.path().join("sender").is_dir());
     assert_eq!(error.state(), FreshChildState::CreationUnknown);
-    let error = match measure(0, || error.retry_normalize_and_commit()) {
-        Ok(_) => panic!("adopted unknown child"),
-        Err(error) => error,
+    let Err(error) = measure(0, || error.retry_normalize_and_commit()) else {
+        panic!("adopted unknown child")
     };
     assert_eq!(error.state(), FreshChildState::CreationUnknown);
     assert!(measure(0, || root.create_fresh_child(OsStr::new("sender"))).is_err());
@@ -492,9 +490,8 @@ fn bounded_fresh_admin_each_barrier_failure_retries_original_child() {
             .unwrap()
             .identity()
             .unwrap();
-        let error = match super::fresh::with_failure(at, || fresh.normalize_and_commit()) {
-            Ok(_) => panic!("missing barrier refusal"),
-            Err(error) => error,
+        let Err(error) = super::fresh::with_failure(at, || fresh.normalize_and_commit()) else {
+            panic!("missing barrier refusal")
         };
         assert_eq!(error.state(), FreshChildState::CreatedUncommitted);
         let child = measure(0, || error.retry_normalize_and_commit()).unwrap();
@@ -521,9 +518,8 @@ fn bounded_fresh_admin_nonempty_child_preserves_each_entry() {
         } else {
             fs::write(&entry, b"untouched").unwrap();
         }
-        let error = match measure(0, || fresh.normalize_and_commit()) {
-            Ok(_) => panic!("normalized nonempty child"),
-            Err(error) => error,
+        let Err(error) = measure(0, || fresh.normalize_and_commit()) else {
+            panic!("normalized nonempty child")
         };
         assert_eq!(
             error.io_error().kind(),
@@ -601,9 +597,8 @@ fn bounded_fresh_admin_linux_widened_child_refuses_before_chmod() {
         fs::Permissions::from_mode(0o750),
     )
     .unwrap();
-    let error = match measure(0, || fresh.normalize_and_commit()) {
-        Ok(_) => panic!("normalized widened child"),
-        Err(error) => error,
+    let Err(error) = measure(0, || fresh.normalize_and_commit()) else {
+        panic!("normalized widened child")
     };
     assert_eq!(
         error.io_error().kind(),

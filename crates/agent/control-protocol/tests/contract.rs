@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::cast_possible_truncation,
+    reason = "fixture-driven contract assertions: a malformed fixture must fail the test"
+)]
 use qos_agent_control_protocol::{
     AgentBinding, AgentResponseKind, ExpectedResponse, MAX_REQUEST_FRAME_BYTES,
     MAX_RESPONSE_FRAME_BYTES, ValidationError, canonical_request, compare_revisions,

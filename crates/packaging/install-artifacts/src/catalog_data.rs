@@ -12,7 +12,8 @@ pub struct Catalog {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum CatalogRelease {
-    Media(MediaRelease),
+    // Boxed: media entries are several times larger than internal ones.
+    Media(Box<MediaRelease>),
     Internal(InternalMetadata),
 }
 
@@ -141,6 +142,11 @@ fn trusted_catalog_url(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Strictly parse and validate a published release catalog.
+///
+/// # Errors
+///
+/// Returns a message for an oversized, malformed or inconsistent catalog.
 pub fn parse_catalog(raw: &str) -> Result<Catalog, String> {
     if raw.len() > 1024 * 1024 {
         return Err("Release catalog exceeds size limit.".into());

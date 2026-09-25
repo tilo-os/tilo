@@ -1,4 +1,20 @@
 //! Explicit dev-only fixtures. These are not native-host or provenance evidence.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::missing_panics_doc,
+    clippy::missing_errors_doc,
+    reason = "test fixture: an unexpected fixture failure must abort the test that selected it"
+)]
+#![cfg_attr(
+    not(feature = "test-support"),
+    allow(
+        dead_code,
+        reason = "unit tests compile the whole fixture API and each uses only part of it"
+    )
+)]
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 // Same sizes, offsets, identities and payloads as Python valid_fixture().
@@ -161,7 +177,7 @@ mod server {
                             let _ = socket.write_all(&response);
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(Duration::from_millis(2))
+                            thread::sleep(Duration::from_millis(2));
                         }
                         Err(e) => panic!("{e}"),
                     }
@@ -222,7 +238,7 @@ thread_local! {
 }
 #[cfg(unix)]
 pub(crate) fn fixture_interval() -> Option<u64> {
-    FIXTURE_INTERVAL.with(|value| value.get())
+    FIXTURE_INTERVAL.with(std::cell::Cell::get)
 }
 #[cfg(unix)]
 pub(crate) fn with_fixture_interval(run: impl FnOnce()) {

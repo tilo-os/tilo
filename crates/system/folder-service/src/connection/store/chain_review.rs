@@ -2,7 +2,17 @@
 #[cfg(test)]
 mod tests;
 
+// Unit-test submodules reach the parent's items through this module.
+#[cfg(test)]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "unit-test submodules import through this module"
+)]
 use super::*;
+use super::{
+    BTreeMap, Change, ConnectionId, ConnectionStore, Encoding, EndpointIdentity, EntryState,
+    RelativePath, Row, Side, StoreError, format, storage,
+};
 use format::{
     DirectoryChainScheduleState as Schedule, InitialReviewControlTransitionV1 as Control,
 };
@@ -65,12 +75,12 @@ impl format::InitialChainReviewV1 {
     }
     fn endpoint(&self, side: usize) -> Result<super::super::model::Endpoint, StoreError> {
         use super::super::model::{Endpoint, NamePolicy, Observation, ObservedTree};
-        let encoding = match self.encodings[side] {
+        let encoding = match self.encodings.get(side).ok_or(StoreError::Corrupt)? {
             1 => Encoding::Unix,
             2 => Encoding::Windows,
             _ => return Err(StoreError::Corrupt),
         };
-        let names = match &self.policies[side] {
+        let names = match self.policies.get(side).ok_or(StoreError::Corrupt)? {
             format::ReviewNamePolicyV1::Exact {} => NamePolicy::Exact,
             format::ReviewNamePolicyV1::Canonical { keys } => {
                 if keys.len() > super::super::model::MAX_PLAN_ENTRIES {
@@ -93,9 +103,12 @@ impl format::InitialChainReviewV1 {
             }
         };
         let endpoint = Endpoint {
-            identity: EndpointIdentity {
-                volume: self.endpoints[side].volume,
-                root: self.endpoints[side].root,
+            identity: {
+                let endpoint = self.endpoints.get(side).ok_or(StoreError::Corrupt)?;
+                EndpointIdentity {
+                    volume: endpoint.volume,
+                    root: endpoint.root,
+                }
             },
             encoding,
             names,
@@ -119,10 +132,10 @@ impl format::InitialChainReviewEntryV1 {
         }
         self.path.to_relative()?;
         for side in &self.sides {
-            if let format::InitialReviewEntrySideV1::Present { entry } = side {
-                if entry.ordinal >= 4096 {
-                    return Err(StoreError::Corrupt);
-                }
+            if let format::InitialReviewEntrySideV1::Present { entry } = side
+                && entry.ordinal >= 4096
+            {
+                return Err(StoreError::Corrupt);
             }
         }
         Ok(())
@@ -273,15 +286,14 @@ impl ConnectionStore {
             if review_connection(&row).is_some_and(|owner| owner == id.0) {
                 return Err(StoreError::RecoveryRequired);
             }
-            if let Row::Operation(operation) = row {
-                if operation.connection == id.0
-                    && (operation.directory_chain_anchor.is_some()
-                        || operation.directory_chain_ref.is_some()
-                        || operation.directory_chain_retired.is_some()
-                        || operation.directory_chain_stop_boundary.is_some())
-                {
-                    return Err(StoreError::RecoveryRequired);
-                }
+            if let Row::Operation(operation) = row
+                && operation.connection == id.0
+                && (operation.directory_chain_anchor.is_some()
+                    || operation.directory_chain_ref.is_some()
+                    || operation.directory_chain_retired.is_some()
+                    || operation.directory_chain_stop_boundary.is_some())
+            {
+                return Err(StoreError::RecoveryRequired);
             }
         }
         Ok(())
@@ -343,14 +355,12 @@ impl ConnectionStore {
                 return Err(StoreError::Corrupt);
             }
             previous = Some(path.clone());
-            for side in 0..2 {
-                if let format::InitialReviewEntrySideV1::Present { entry: value } =
-                    &entry.sides[side]
-                {
-                    if value.ordinal as usize != trees[side].len() {
+            for (side_entry, tree) in entry.sides.iter().zip(trees.iter_mut()) {
+                if let format::InitialReviewEntrySideV1::Present { entry: value } = side_entry {
+                    if usize::try_from(value.ordinal).ok() != Some(tree.len()) {
                         return Err(StoreError::Corrupt);
                     }
-                    trees[side].push((path.clone(), value.state.clone().into()));
+                    tree.push((path.clone(), value.state.clone().into()));
                 }
             }
             entries.push(entry);
@@ -358,12 +368,16 @@ impl ConnectionStore {
         if entries.len() != fact.count as usize {
             return Err(StoreError::Corrupt);
         }
-        for (side, tree) in trees.into_iter().enumerate() {
-            if tree.len() != fact.counts[side] as usize {
+        for ((side, tree), (side_byte, count)) in trees
+            .into_iter()
+            .enumerate()
+            .zip([0_u8, 1].into_iter().zip(fact.counts))
+        {
+            if usize::try_from(count).ok() != Some(tree.len()) {
                 return Err(StoreError::Corrupt);
             }
-            hash.update([side as u8]);
-            hash.update(u64::from(fact.counts[side]).to_le_bytes());
+            hash.update([side_byte]);
+            hash.update(u64::from(count).to_le_bytes());
             // Validate exact original per-side order/encoding/ancestors and policy.
             let observed = super::super::model::ObservedTree::new(
                 fact.endpoint(side)?,
@@ -444,6 +458,10 @@ impl ConnectionStore {
             Row::InitialReviewCursor(cursor.clone()),
         ])
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence whose steps share state; splitting it would scatter its invariants"
+    )]
     pub(super) fn validate_review_history(&self, replacements: &[Row]) -> Result<(), StoreError> {
         let mut rows = BTreeMap::new();
         for row in self.rows()? {
@@ -546,7 +564,7 @@ impl ConnectionStore {
                                     _ => return Err(StoreError::Corrupt),
                                 }
                             }
-                            _ => None,
+                            LinkKind::Equality { .. } => None,
                         };
                         view.validate_link(link, op, anchor)?;
                         if cursor.state != Schedule::Disconnected {
@@ -591,7 +609,7 @@ impl ConnectionStore {
                                     return Err(StoreError::Corrupt);
                                 }
                             }
-                            _ => return Err(StoreError::Corrupt),
+                            Current::None { .. } => return Err(StoreError::Corrupt),
                         }
                     }
                 }
@@ -645,15 +663,14 @@ impl ConnectionStore {
         }
         for row in rows.values() {
             self.storage.review_charge(0, 0, 1, 1)?;
-            if let Row::Operation(op) = row {
-                if owners.contains(&op.connection)
-                    && !matches!(
-                        rows.get(&format::key(10, op.connection, op.serial)),
-                        Some(Row::InitialReviewLink(_))
-                    )
-                {
-                    return Err(StoreError::Corrupt);
-                }
+            if let Row::Operation(op) = row
+                && owners.contains(&op.connection)
+                && !matches!(
+                    rows.get(&format::key(10, op.connection, op.serial)),
+                    Some(Row::InitialReviewLink(_))
+                )
+            {
+                return Err(StoreError::Corrupt);
             }
         }
         Ok(())
@@ -718,6 +735,14 @@ impl ConnectionStore {
     }
     /// Consumes explicit fresh consent and returns only a durable metadata acknowledgement.
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence whose steps share state; splitting it would scatter its invariants"
+    )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "ownership transfer marks the one-shot value as used up by this call"
+    )]
     pub(in crate::connection) fn accept_initial_set(
         &mut self,
         owner: super::super::transaction::ReviewedInitialSet,
@@ -757,7 +782,7 @@ impl ConnectionStore {
                     version: 1,
                     connection: owner.record().id.0,
                     origin: owner.record().revision,
-                    ordinal: ordinal as u32,
+                    ordinal: u32::try_from(ordinal).unwrap_or(u32::MAX),
                     path: path.into(),
                     sides,
                 })
@@ -808,7 +833,7 @@ impl ConnectionStore {
                 }
             }),
             policies: [policy(trees[0]), policy(trees[1])],
-            counts: trees.map(|tree| tree.entries().len() as u32),
+            counts: trees.map(|tree| u32::try_from(tree.entries().len()).unwrap_or(u32::MAX)),
             count,
             root: [255; 32],
             original: owner.original().to_vec(),
@@ -875,12 +900,11 @@ impl ConnectionStore {
     ) -> Result<Option<format::InitialChainReviewV1>, StoreError> {
         let mut found = None;
         for row in self.rows()? {
-            if let Row::InitialChainReview(review) = row? {
-                if review.connection == id {
-                    if found.replace(review).is_some() {
-                        return Err(StoreError::Corrupt);
-                    }
-                }
+            if let Row::InitialChainReview(review) = row?
+                && review.connection == id
+                && found.replace(review).is_some()
+            {
+                return Err(StoreError::Corrupt);
             }
         }
         Ok(found)
@@ -1176,16 +1200,21 @@ impl ReviewView {
                         .is_ok_and(|candidate| candidate == path)
                 })
                 .ok_or(StoreError::Corrupt)?;
-            if !matches!(&original.sides[side],S::Present {entry} if entry.state==format::State::Directory)
+            if !matches!(original.sides.get(side), Some(S::Present {entry}) if entry.state==format::State::Directory)
             {
                 return Err(StoreError::RecoveryRequired);
             }
             let bit = 1u64
-                .checked_shl(path.components().len() as u32)
+                .checked_shl(
+                    u32::try_from(path.components().len())
+                        .map_err(|_| StoreError::LimitExceeded)?,
+                )
                 .ok_or(StoreError::LimitExceeded)?;
-            match &original.sides[1 - side] {
-                S::Present { entry } if entry.state == format::State::Directory => existing |= bit,
-                S::Absent {} => missing |= bit,
+            match original.sides.get(1 ^ side) {
+                Some(S::Present { entry }) if entry.state == format::State::Directory => {
+                    existing |= bit;
+                }
+                Some(S::Absent {}) => missing |= bit,
                 _ => return Err(StoreError::RecoveryRequired),
             }
             parent = path.parent();
@@ -1272,7 +1301,7 @@ impl ReviewView {
                 }
                 let sides = entry.sides.clone().map(|side| match side {
                     format::InitialReviewEntrySideV1::Present { entry } => Some(entry.state),
-                    _ => None,
+                    format::InitialReviewEntrySideV1::Absent { .. } => None,
                 });
                 if !matches!(&sides[0], Some(format::State::File { .. }))
                     || sides[0] != sides[1]
@@ -1307,6 +1336,10 @@ fn original_equality_intent_digest(operation: &format::Operation) -> Result<[u8;
     Ok(format::digest(&format::encode(&original)?))
 }
 impl ConnectionStore {
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "each field is compared with its own counterpart; the grouping is intended"
+    )]
     fn validate_saved_equality_stop(
         &self,
         view: &ReviewView,
@@ -1417,8 +1450,10 @@ impl ConnectionStore {
                 Row::Operation(op) => {
                     op.stage = operation.stage;
                     op.native_boundary = operation.native_boundary;
-                    op.native_boundary_evidence = operation.native_boundary_evidence.clone();
-                    op.native_directory_boundary = operation.native_directory_boundary.clone();
+                    op.native_boundary_evidence
+                        .clone_from(&operation.native_boundary_evidence);
+                    op.native_directory_boundary
+                        .clone_from(&operation.native_directory_boundary);
                 }
                 _ => return Err(StoreError::Corrupt),
             }

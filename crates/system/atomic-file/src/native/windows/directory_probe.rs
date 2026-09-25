@@ -115,7 +115,7 @@ pub(crate) fn run(request: &Request, sink: &mut Sink<'_>) -> Outcome {
     let result = experiment(request, &mut log);
     let mut outcome = observation::outcome(result);
     if let Err(e) = log.event("terminal", vec![("fully_observed",outcome.fully_observed.to_string()),("candidate_calls_succeeded",outcome.candidate_calls_succeeded.to_string()),("result",outcome.terminal.clone()),("qualification","unqualified; fixture premise does not establish production anchor or crash durability".into())]) {
-        outcome = Outcome::from_result(Err(e), false);
+        outcome = Outcome::from_result(&Err(e), false);
     }
     outcome
 }

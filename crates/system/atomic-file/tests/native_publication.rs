@@ -7,12 +7,10 @@
 
 #[cfg(unix)]
 mod unix_tests {
-    use atomic_file::{
-        FileIdentity, Privacy, PublicationState, PublishMode, StorageDirectory, publication_state,
-    };
+    use atomic_file::{FileIdentity, Privacy, PublicationState, PublishMode, StorageDirectory};
     #[cfg(feature = "test-support")]
     use atomic_file::{
-        PublicationError,
+        PublicationError, publication_state,
         test_support::{Checkpoint, with_failure, with_observer},
     };
     use std::ffi::OsStr;
@@ -1015,7 +1013,7 @@ mod windows_publication_tests {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "test-support"))]
 #[test]
 fn retained_publication_retry_observes_real_commit_failure() {
     use atomic_file::test_support::{Checkpoint, with_failure};

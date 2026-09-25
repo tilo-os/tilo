@@ -59,7 +59,9 @@ fn serial_identity(
         }
         identity.extend_from_slice(label);
         identity.push(0);
-        identity.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        // Bounded to 4096 bytes above.
+        let length = u32::try_from(value.len()).map_err(|_| EndpointError::Unsupported)?;
+        identity.extend_from_slice(&length.to_le_bytes());
         identity.extend_from_slice(value);
     }
     Ok(identity)
@@ -78,7 +80,8 @@ fn windows_metadata_policy(
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", test))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[path = "endpoint/linux/ntfs.rs"]
 pub mod ntfs;
 
@@ -194,14 +197,16 @@ pub enum Access {
 #[derive(Default)]
 pub struct EndpointContext {
     locators: BTreeMap<([u8; 32], [u8; 32]), EndpointLocator>,
-    #[cfg(all(target_os = "linux", test))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     ntfs: BTreeMap<([u8; 32], [u8; 32]), Arc<ntfs::NtfsReadEndpoint>>,
 }
 impl EndpointContext {
     /// Register one authenticated administrative session without granting public safe-read support.
     /// # Errors
     /// Refuses identity mismatch, duplicate live authorities and resource exhaustion.
-    #[cfg(all(target_os = "linux", test))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub fn register_ntfs_session(
         &mut self,
         client: Arc<std::sync::Mutex<qos_ntfs_protocol::client::Client>>,
@@ -234,7 +239,8 @@ impl EndpointContext {
         &self,
         expected: &EndpointIdentity,
     ) -> Result<ReadEndpoint, EndpointError> {
-        #[cfg(all(target_os = "linux", test))]
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
         if let Some(endpoint) = self.ntfs.get(&(expected.volume, expected.root)) {
             return Ok(ReadEndpoint::Ntfs(Arc::clone(endpoint)));
         }
@@ -252,11 +258,13 @@ impl EndpointContext {
         expected: EndpointIdentity,
     ) -> Result<(), EndpointError> {
         let key = (expected.volume, expected.root);
-        #[cfg(all(target_os = "linux", test))]
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
         if self.ntfs.contains_key(&key) {
             return Err(EndpointError::AmbiguousIdentity);
         }
-        #[cfg(all(target_os = "linux", test))]
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
         if self.locators.len().saturating_add(self.ntfs.len()) >= MAX_ENDPOINTS
             && !self.locators.contains_key(&key)
         {
@@ -288,7 +296,8 @@ impl EndpointContext {
         expected: &EndpointIdentity,
         access: Access,
     ) -> Result<PinnedEndpoint, EndpointError> {
-        #[cfg(all(target_os = "linux", test))]
+        #[cfg(test)]
+        #[cfg(target_os = "linux")]
         if self.ntfs.contains_key(&(expected.volume, expected.root)) {
             return Err(if access == Access::Write {
                 EndpointError::ReadOnly
@@ -671,19 +680,19 @@ impl Scan<'_> {
         let iterator = Dir::from_std_file(readable_directory(&dir.file)?).entries()?;
         for entry in iterator {
             self.check()?;
-            self.visited += 1;
+            self.visited = self.visited.saturating_add(1);
             let entry = entry?;
             let name = entry.file_name();
             let child_path = path.join(&name);
             let key = relative(&child_path)?;
             #[cfg(target_os = "linux")]
-            if depth == 0 {
-                if let Some(owned) = self.owned {
-                    match owned.excludes(&NativeDirectory(Arc::clone(dir)), &name) {
-                        Ok(true) => continue,
-                        Ok(false) => {}
-                        Err(error) => self.issue(Some(key.clone()), error),
-                    }
+            if depth == 0
+                && let Some(owned) = self.owned
+            {
+                match owned.excludes(&NativeDirectory(Arc::clone(dir)), &name) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => self.issue(Some(key.clone()), error),
                 }
             }
 
@@ -695,7 +704,7 @@ impl Scan<'_> {
                     let child = dir.child(&name)?;
                     native::same_mount(&dir.file, &child.file)?;
                     self.entries.insert(key.clone(), EntryState::Directory);
-                    self.directory(&child, &child_path, depth + 1)
+                    self.directory(&child, &child_path, depth.saturating_add(1))
                 } else {
                     let state = self.file(dir, &name, &meta, &child_path)?;
                     self.entries.insert(key.clone(), state);
@@ -773,8 +782,8 @@ impl Scan<'_> {
             if count == 0 {
                 break;
             }
-            bytes += count as u64;
-            self.bytes += count as u64;
+            bytes = bytes.saturating_add(count as u64);
+            self.bytes = self.bytes.saturating_add(count as u64);
             if self.bytes > MAX_HASH_BYTES {
                 return Err(EndpointError::LimitExceeded);
             }
@@ -855,10 +864,10 @@ fn observe_inner(
         snapshots: Vec::new(),
     };
     #[cfg(target_os = "linux")]
-    if let Some(owned) = owned {
-        if let Err(error) = owned.validate_all(&NativeDirectory(Arc::clone(&endpoint.root))) {
-            scan.issue(None, error);
-        }
+    if let Some(owned) = owned
+        && let Err(error) = owned.validate_all(&NativeDirectory(Arc::clone(&endpoint.root)))
+    {
+        scan.issue(None, error);
     }
     if let Err(error) = scan.directory(&endpoint.root, Path::new(""), 0) {
         scan.issue(None, error);
@@ -882,10 +891,10 @@ fn observe_inner(
         };
     }
     #[cfg(target_os = "linux")]
-    if let Some(owned) = owned {
-        if let Err(error) = owned.validate_all(&NativeDirectory(Arc::clone(&endpoint.root))) {
-            scan.issue(None, error);
-        }
+    if let Some(owned) = owned
+        && let Err(error) = owned.validate_all(&NativeDirectory(Arc::clone(&endpoint.root)))
+    {
+        scan.issue(None, error);
     }
     let observation = if scan.issues.is_empty() {
         Observation::Complete
@@ -900,131 +909,9 @@ fn observe_inner(
         observation,
     }
 }
+
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn pin_detects_replaced_directory_and_never_adopts_new_contents() {
-        let temp = tempfile::tempdir().unwrap();
-        let selected = temp.path().canonicalize().unwrap().join("selected");
-        std::fs::create_dir(&selected).unwrap();
-        let pin = Pin::open(&selected).unwrap();
-        std::fs::rename(&selected, temp.path().join("old")).unwrap();
-        std::fs::create_dir(&selected).unwrap();
-        assert_eq!(pin.validate(), Err(EndpointError::IdentityChanged));
-    }
-
-    #[test]
-    #[cfg(not(target_os = "linux"))]
-    fn diagnostic_write_cannot_promote_unverified_platform_capabilities() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().canonicalize().unwrap();
-        let refused = Capabilities {
-            safe_read: Capability::Available,
-            safe_write: Capability::Refused(EndpointError::Unverified),
-            durable_transactions: Capability::Refused(EndpointError::Unverified),
-        };
-        let endpoint = PinnedEndpoint {
-            locator: EndpointLocator::new(&path).unwrap(),
-            root: Pin::open(&path).unwrap(),
-            evidence: NativeEvidence {
-                identity: EndpointIdentity {
-                    volume: [1; 32],
-                    root: [2; 32],
-                },
-                mount: vec![],
-                capabilities: refused,
-                names: NamePolicy::Exact,
-            },
-            invalidated: AtomicBool::new(false),
-            write_verified: AtomicBool::new(true),
-        };
-        assert_eq!(endpoint.capabilities(), refused);
-    }
-    #[test]
-    fn unresolved_clone_evidence_requires_reselection() {
-        for error in [
-            EndpointError::Unsupported,
-            EndpointError::Offline,
-            EndpointError::UnsafeVolume,
-            EndpointError::PermissionDenied,
-            EndpointError::IdentityChanged,
-        ] {
-            assert_eq!(
-                reject_clone_candidate(&[1; 16], Err(error)),
-                Err(EndpointError::AmbiguousIdentity),
-                "{error:?}"
-            );
-        }
-        assert_eq!(
-            reject_clone_candidate(&[1; 16], Ok([1; 16])),
-            Err(EndpointError::AmbiguousIdentity)
-        );
-        assert_eq!(reject_clone_candidate(&[1; 16], Ok([2; 16])), Ok(()));
-    }
-    #[test]
-    fn serial_without_manufacturer_and_model_is_not_identity() {
-        for (vendor, model) in [
-            (None, None),
-            (Some(b"vendor".as_slice()), None),
-            (None, Some(b"model".as_slice())),
-            (Some(b"".as_slice()), Some(b"model".as_slice())),
-        ] {
-            assert_eq!(
-                serial_identity(b"123", vendor, model),
-                Err(EndpointError::Unsupported)
-            );
-        }
-        assert_ne!(
-            serial_identity(b"123", Some(b"AB"), Some(b"C")).unwrap(),
-            serial_identity(b"123", Some(b"A"), Some(b"BC")).unwrap()
-        );
-    }
-    #[test]
-    fn windows_portability_policy_refuses_links_directory_streams_and_custom_acl() {
-        assert_eq!(windows_metadata_policy(false, 1, false, true), Ok(()));
-        assert_eq!(windows_metadata_policy(true, 1, false, true), Ok(()));
-        for (directory, links, stream, acl) in [
-            (false, 2, false, true),
-            (true, 1, true, true),
-            (false, 1, false, false),
-            (true, 1, false, false),
-        ] {
-            assert_eq!(
-                windows_metadata_policy(directory, links, stream, acl),
-                Err(EndpointError::Unsupported)
-            );
-        }
-    }
-    #[test]
-    fn validation_detects_a_previously_hashed_file_changed_later() {
-        let temp = tempfile::tempdir().unwrap();
-        let base = temp.path().canonicalize().unwrap();
-        let path = base.join("early");
-        std::fs::write(&path, b"old").unwrap();
-        let file = File::open(&path).unwrap();
-        let snapshot = Snapshot {
-            path: PathBuf::from("early"),
-            metadata: metadata(&file).unwrap(),
-            token: change_token(&file).unwrap(),
-        };
-        std::fs::write(&path, b"newer").unwrap();
-        assert_eq!(
-            validate_snapshot(&Pin::open(&base).unwrap(), &snapshot),
-            Err(EndpointError::Unstable)
-        );
-    }
-    #[cfg(unix)]
-    #[test]
-    fn pin_refuses_symlink_ancestor() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::create_dir(temp.path().join("real")).unwrap();
-        std::os::unix::fs::symlink(temp.path().join("real"), temp.path().join("link")).unwrap();
-        assert!(Pin::open(&temp.path().join("link")).is_err());
-    }
-}
-
-#[cfg(all(test, any(target_os = "linux", windows)))]
+#[cfg(any(target_os = "linux", windows))]
 mod native_tests {
     use super::*;
     fn fixture() -> tempfile::TempDir {
@@ -1245,7 +1132,8 @@ fn validate_write_namespace(pin: &Pin) -> Result<(), EndpointError> {
     Ok(())
 }
 
-#[cfg(all(test, any(target_os = "linux", windows)))]
+#[cfg(test)]
+#[cfg(any(target_os = "linux", windows))]
 mod write_native_tests {
     use super::*;
     #[test]
@@ -1285,7 +1173,8 @@ mod write_native_tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod linux_fixture_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -1300,20 +1189,20 @@ mod linux_fixture_tests {
     #[test]
     #[ignore = "ordinary-user disposable native volume required"]
     fn native_permission_denial_and_custom_xattrs_are_not_absence() {
+        use std::os::fd::AsRawFd;
         let root = std::env::var_os("QOS_ENDPOINT_FIXTURE").unwrap();
         let fixture = tempfile::tempdir_in(root).unwrap();
         let denied = fixture.path().join("denied");
         std::fs::create_dir(&denied).unwrap();
         std::fs::write(denied.join("private"), b"secret").unwrap();
         let endpoint = open(fixture.path());
-        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o0)).unwrap();
         let result = observe(&endpoint, &AtomicBool::new(false));
         std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
             matches!(result.observation(), Observation::Incomplete(issues) if issues.iter().any(|i| i.reason == PendingReason::PermissionDenied))
         );
         let file = File::open(denied.join("private")).unwrap();
-        use std::os::fd::AsRawFd;
         // SAFETY: selected private fixture file, valid fixed C name and bytes.
         assert_eq!(
             unsafe {
@@ -1401,7 +1290,8 @@ mod linux_fixture_tests {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_fixture_tests {
     use super::*;
     use std::os::windows::ffi::OsStrExt;
@@ -1520,3 +1410,126 @@ pub(super) fn native_object_generation(file: &File) -> Result<Vec<u8>, EndpointE
 pub(super) use native::{
     connected_metadata, connected_root_binding, connected_volume_binding, connected_volume_path,
 };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pin_detects_replaced_directory_and_never_adopts_new_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let selected = temp.path().canonicalize().unwrap().join("selected");
+        std::fs::create_dir(&selected).unwrap();
+        let pin = Pin::open(&selected).unwrap();
+        std::fs::rename(&selected, temp.path().join("old")).unwrap();
+        std::fs::create_dir(&selected).unwrap();
+        assert_eq!(pin.validate(), Err(EndpointError::IdentityChanged));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn diagnostic_write_cannot_promote_unverified_platform_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().canonicalize().unwrap();
+        let refused = Capabilities {
+            safe_read: Capability::Available,
+            safe_write: Capability::Refused(EndpointError::Unverified),
+            durable_transactions: Capability::Refused(EndpointError::Unverified),
+        };
+        let endpoint = PinnedEndpoint {
+            locator: EndpointLocator::new(&path).unwrap(),
+            root: Pin::open(&path).unwrap(),
+            evidence: NativeEvidence {
+                identity: EndpointIdentity {
+                    volume: [1; 32],
+                    root: [2; 32],
+                },
+                mount: vec![],
+                capabilities: refused,
+                names: NamePolicy::Exact,
+            },
+            invalidated: AtomicBool::new(false),
+            write_verified: AtomicBool::new(true),
+        };
+        assert_eq!(endpoint.capabilities(), refused);
+    }
+    #[test]
+    fn unresolved_clone_evidence_requires_reselection() {
+        for error in [
+            EndpointError::Unsupported,
+            EndpointError::Offline,
+            EndpointError::UnsafeVolume,
+            EndpointError::PermissionDenied,
+            EndpointError::IdentityChanged,
+        ] {
+            assert_eq!(
+                reject_clone_candidate(&[1; 16], Err(error)),
+                Err(EndpointError::AmbiguousIdentity),
+                "{error:?}"
+            );
+        }
+        assert_eq!(
+            reject_clone_candidate(&[1; 16], Ok([1; 16])),
+            Err(EndpointError::AmbiguousIdentity)
+        );
+        assert_eq!(reject_clone_candidate(&[1; 16], Ok([2; 16])), Ok(()));
+    }
+    #[test]
+    fn serial_without_manufacturer_and_model_is_not_identity() {
+        for (vendor, model) in [
+            (None, None),
+            (Some(b"vendor".as_slice()), None),
+            (None, Some(b"model".as_slice())),
+            (Some(b"".as_slice()), Some(b"model".as_slice())),
+        ] {
+            assert_eq!(
+                serial_identity(b"123", vendor, model),
+                Err(EndpointError::Unsupported)
+            );
+        }
+        assert_ne!(
+            serial_identity(b"123", Some(b"AB"), Some(b"C")).unwrap(),
+            serial_identity(b"123", Some(b"A"), Some(b"BC")).unwrap()
+        );
+    }
+    #[test]
+    fn windows_portability_policy_refuses_links_directory_streams_and_custom_acl() {
+        assert_eq!(windows_metadata_policy(false, 1, false, true), Ok(()));
+        assert_eq!(windows_metadata_policy(true, 1, false, true), Ok(()));
+        for (directory, links, stream, acl) in [
+            (false, 2, false, true),
+            (true, 1, true, true),
+            (false, 1, false, false),
+            (true, 1, false, false),
+        ] {
+            assert_eq!(
+                windows_metadata_policy(directory, links, stream, acl),
+                Err(EndpointError::Unsupported)
+            );
+        }
+    }
+    #[test]
+    fn validation_detects_a_previously_hashed_file_changed_later() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let path = base.join("early");
+        std::fs::write(&path, b"old").unwrap();
+        let file = File::open(&path).unwrap();
+        let snapshot = Snapshot {
+            path: PathBuf::from("early"),
+            metadata: metadata(&file).unwrap(),
+            token: change_token(&file).unwrap(),
+        };
+        std::fs::write(&path, b"newer").unwrap();
+        assert_eq!(
+            validate_snapshot(&Pin::open(&base).unwrap(), &snapshot),
+            Err(EndpointError::Unstable)
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn pin_refuses_symlink_ancestor() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("real"), temp.path().join("link")).unwrap();
+        assert!(Pin::open(&temp.path().join("link")).is_err());
+    }
+}

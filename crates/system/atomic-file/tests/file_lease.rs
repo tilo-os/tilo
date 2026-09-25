@@ -147,7 +147,7 @@ fn native_io_failure_is_distinguishable_from_contention() {
 #[test]
 fn native_io_failure_is_distinguishable_from_contention() {
     // Stable Linux UAPI value on the supported x86_64 and aarch64 targets.
-    const O_PATH: i32 = 0o10000000;
+    const O_PATH: i32 = 0o10_000_000;
 
     let _serial = serialize_native_lock_tests();
     let directory = tempfile::tempdir().unwrap();

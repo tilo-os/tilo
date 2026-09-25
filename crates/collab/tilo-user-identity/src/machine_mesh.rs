@@ -13,7 +13,7 @@ pub struct MeshChallenge {
     pub room: String,
     pub root_public_key: [u8; 32],
     pub host_certificate: DeviceCert,
-    /// Exact serialized EndpointAddr; opaque to browser and control plane.
+    /// Exact serialized `EndpointAddr`; opaque to browser and control plane.
     pub action_address: String,
     pub nonce: [u8; 32],
     pub expires_at_ns: u64,
@@ -48,6 +48,12 @@ fn digest(request: &MeshRequest) -> Result<[u8; 32], String> {
     ))
 }
 
+/// Sign a bilateral link request with both machines' root keys.
+///
+/// # Errors
+///
+/// Returns a message when either key is not the root named by its challenge,
+/// or when the request cannot be serialized for signing.
 pub fn sign_request(
     request: &mut MeshRequest,
     source: &SigningKey,
@@ -64,6 +70,12 @@ pub fn sign_request(
     Ok(())
 }
 
+/// Verify a bilateral link request against both challenges at `now`.
+///
+/// # Errors
+///
+/// Returns a message for a malformed or expired request, or when either root
+/// signature does not verify.
 pub fn verify_request(request: &MeshRequest, now: u64) -> Result<(), String> {
     if request.version != 1
         || !matches!(request.kind.as_str(), "link" | "unlink")

@@ -24,7 +24,10 @@ pub(crate) fn validate_leaf(
 ) -> Result<(), crate::error::Failure> {
     if leaf.len() != 42
         || !leaf.starts_with(".qos-part-")
-        || !leaf.as_bytes()[10..]
+        || !leaf
+            .as_bytes()
+            .get(10..)
+            .unwrap_or_default()
             .iter()
             .copied()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -69,7 +72,7 @@ impl PreparationComplete<'_> {
     }
 }
 /// Native implementations remain private. All methods are synchronous.
-/// `scan` must bound each entry BEFORE allocation/read to MAX_RECORD and stop on
+/// `scan` must bound each entry BEFORE allocation/read to `MAX_RECORD` and stop on
 /// visitor error, including unknown entries. Never remove undecodable entries.
 /// `publish` must exclusively create/write/flush/publish one bounded record and
 /// sync its namespace according to the native contract before returning Ok.
@@ -257,36 +260,46 @@ impl Record {
         b
     }
     pub(super) fn decode(b: &[u8]) -> Result<Self, crate::error::Failure> {
-        // Exact fixed layout rejects trailing, missing, unknown and noncanonical forms.
-        if b.len() != RECORD_LEN
-            || b.len() > MAX_RECORD
-            || &b[..8] != b"QOSCP001"
-            || Sha256::digest(&b[..b.len() - 32])[..] != b[b.len() - 32..]
-        {
-            return Err("Invalid bounded checkpoint record".into());
+        const INVALID: &str = "Invalid bounded checkpoint record";
+        fn take<const N: usize>(
+            b: &[u8],
+            offset: &mut usize,
+        ) -> Result<[u8; N], crate::error::Failure> {
+            let end = offset.checked_add(N).ok_or(INVALID)?;
+            let value = b
+                .get(*offset..end)
+                .and_then(|field| field.try_into().ok())
+                .ok_or(INVALID)?;
+            *offset = end;
+            Ok(value)
         }
-        let kind = match b[8] {
-            1 => Kind::Prefix,
-            2 => Kind::Reset,
-            3 => Kind::Final,
+        // Exact fixed layout rejects trailing, missing, unknown and noncanonical forms.
+        if b.len() != RECORD_LEN || b.len() > MAX_RECORD {
+            return Err(INVALID.into());
+        }
+        let (body, checksum) = b
+            .split_at_checked(b.len().saturating_sub(32))
+            .ok_or(INVALID)?;
+        if !body.starts_with(b"QOSCP001") || Sha256::digest(body)[..] != *checksum {
+            return Err(INVALID.into());
+        }
+        let mut offset = 8;
+        let kind = match take::<1>(b, &mut offset)? {
+            [1] => Kind::Prefix,
+            [2] => Kind::Reset,
+            [3] => Kind::Final,
             _ => return Err("Unknown checkpoint kind".into()),
         };
-        let mut offset = 9;
-        fn take<const N: usize>(b: &[u8], offset: &mut usize) -> [u8; N] {
-            let v = b[*offset..*offset + N].try_into().unwrap();
-            *offset += N;
-            v
-        }
-        let binding = take(b, &mut offset);
-        let parent = take(b, &mut offset);
-        let file = take(b, &mut offset);
-        let leaf = String::from_utf8(take::<42>(b, &mut offset).to_vec())
+        let binding = take(b, &mut offset)?;
+        let parent = take(b, &mut offset)?;
+        let file = take(b, &mut offset)?;
+        let leaf = String::from_utf8(take::<42>(b, &mut offset)?.to_vec())
             .map_err(|_| "Invalid leaf encoding")?;
-        let generation = u64::from_le_bytes(take(b, &mut offset));
-        let epoch = u64::from_le_bytes(take(b, &mut offset));
-        let length = u64::from_le_bytes(take(b, &mut offset));
-        let full_size = u64::from_le_bytes(take(b, &mut offset));
-        let digest = take(b, &mut offset);
+        let generation = u64::from_le_bytes(take(b, &mut offset)?);
+        let epoch = u64::from_le_bytes(take(b, &mut offset)?);
+        let length = u64::from_le_bytes(take(b, &mut offset)?);
+        let full_size = u64::from_le_bytes(take(b, &mut offset)?);
+        let digest = take(b, &mut offset)?;
         if generation == 0
             || generation > MAX_GENERATION
             || epoch >= generation
@@ -343,7 +356,7 @@ pub(crate) struct BoundaryId {
 pub(crate) struct Ack {
     pub id: BoundaryId,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Candidate {
     pub length: u64,
     pub digest: [u8; 32],
@@ -392,6 +405,10 @@ impl<P: Provider> Session<P> {
             recovered: false,
         })
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "history admission is one ordered sequence of refusals"
+    )]
     pub fn prepare<'a>(
         &'a mut self,
         selected: &'a SelectedManifest,
@@ -406,9 +423,9 @@ impl<P: Provider> Session<P> {
         }
         self.provider.verify(file, &self.base.ownership)?;
         let mut records = Vec::new();
-        let mut count = 0;
+        let mut count = 0_usize;
         self.provider.scan(&mut |bytes| {
-            count += 1;
+            count = count.saturating_add(1);
             if count > MAX_SCAN {
                 return Err("Checkpoint scan limit exceeded".into());
             }
@@ -427,10 +444,12 @@ impl<P: Provider> Session<P> {
         }
         records.sort_by_key(|r| r.generation);
         for pair in records.windows(2) {
-            let (a, b) = (&pair[0], &pair[1]);
+            let [a, b] = pair else {
+                return Err("Checkpoint survivor pairing".into());
+            };
             if a.kind == Kind::Final
-                || b.generation != a.generation + 1
-                || (b.kind == Kind::Reset && b.epoch != a.epoch + 1)
+                || Some(b.generation) != a.generation.checked_add(1)
+                || (b.kind == Kind::Reset && Some(b.epoch) != a.epoch.checked_add(1))
                 || (b.kind != Kind::Reset && (b.epoch != a.epoch || b.length <= a.length))
             {
                 return Err("Conflicting checkpoint history".into());
@@ -530,11 +549,7 @@ impl<P: Provider> Session<P> {
             generation: self.base.generation,
         }
     }
-    fn publish(
-        &mut self,
-        file: &mut File,
-        candidate: Candidate,
-    ) -> Result<(), crate::error::Failure> {
+    fn publish(&mut self, file: &File, candidate: Candidate) -> Result<(), crate::error::Failure> {
         self.provider.verify(file, &self.base.ownership)?;
         let generation = self
             .base
@@ -585,7 +600,9 @@ impl<P: Provider> Observer for Session<P> {
             || !self.recovered
             || id != self.id(id.attempt)
             || id.attempt >= 3
-            || self.attempt.is_some_and(|a| id.attempt != a + 1)
+            || self
+                .attempt
+                .is_some_and(|a| Some(id.attempt) != a.checked_add(1))
             || (self.attempt.is_none() && id.attempt != 0)
         {
             return Err("Stale checkpoint attempt".into());
@@ -655,22 +672,26 @@ impl Hashes {
         let mut valid = true;
         // Check each retained current-epoch digest at its byte boundary during
         // the same prefix pass. Older reset epochs intentionally have no authority.
-        while checkpoints.peek().is_some_and(|p| p.0 == 0) {
-            valid &= checkpoints.next().unwrap().1 == empty_digest();
+        while let Some((_, expected)) = checkpoints.next_if(|p| p.0 == 0) {
+            valid &= *expected == empty_digest();
         }
         read_range(file, 0, length, cancel, phase, |mut bytes| {
             while !bytes.is_empty() {
+                // A boundary already behind the cursor can never match; read on
+                // and let the final "no unconsumed checkpoint" check refuse it.
                 let take = checkpoints.peek().map_or(bytes.len(), |p| {
-                    (p.0 - offset).min(bytes.len() as u64) as usize
+                    p.0.checked_sub(offset).map_or(bytes.len(), |gap| {
+                        usize::try_from(gap).unwrap_or(usize::MAX).min(bytes.len())
+                    })
                 });
-                stream.update(&bytes[..take]);
-                readback.update(&bytes[..take]);
-                offset += take as u64;
-                bytes = &bytes[take..];
-                while checkpoints.peek().is_some_and(|p| p.0 == offset) {
-                    let expected = checkpoints.next().unwrap().1;
-                    valid &= <[u8; 32]>::from(stream.clone().finalize()) == expected
-                        && <[u8; 32]>::from(readback.clone().finalize()) == expected;
+                let (chunk, rest) = bytes.split_at_checked(take).unwrap_or((bytes, &[]));
+                stream.update(chunk);
+                readback.update(chunk);
+                offset = offset.saturating_add(chunk.len() as u64);
+                bytes = rest;
+                while let Some((_, expected)) = checkpoints.next_if(|p| p.0 == offset) {
+                    valid &= <[u8; 32]>::from(stream.clone().finalize()) == *expected
+                        && <[u8; 32]>::from(readback.clone().finalize()) == *expected;
                 }
             }
         })?;
@@ -690,7 +711,7 @@ impl Hashes {
     }
     pub fn written(&mut self, bytes: &[u8]) {
         self.stream.update(bytes);
-        self.length += bytes.len() as u64;
+        self.length = self.length.saturating_add(bytes.len() as u64);
     }
     pub fn digest(&self) -> [u8; 32] {
         self.stream.clone().finalize().into()
@@ -707,7 +728,7 @@ impl Hashes {
         Ok(())
     }
     pub fn pending(&self) -> u64 {
-        self.length - self.watermark
+        self.length.saturating_sub(self.watermark)
     }
     pub fn verify_tail(
         &mut self,
@@ -728,7 +749,7 @@ impl Hashes {
         }
         let mut next = self.readback.clone();
         read_range(file, self.watermark, self.length, cancel, "periodic", |b| {
-            next.update(b)
+            next.update(b);
         })?;
         if <[u8; 32]>::from(next.clone().finalize()) != self.digest() {
             return Err("Checkpoint independent readback mismatch".into());
@@ -753,11 +774,16 @@ fn read_range(
     let result = (|| {
         file.seek(SeekFrom::Start(start)).map_err(io)?;
         let mut pos = start;
-        let mut buffer = [0; 64 * 1024];
+        let mut buffer = vec![0; 64 * 1024];
         while pos < end {
             stopped(cancel)?;
-            let requested = (end - pos).min(buffer.len() as u64) as usize;
-            let n = file.read(&mut buffer[..requested]).map_err(io)?;
+            let requested = buffer
+                .len()
+                .min(usize::try_from(end.saturating_sub(pos)).unwrap_or(usize::MAX));
+            let chunk = buffer
+                .get_mut(..requested)
+                .ok_or("Checkpoint read buffer")?;
+            let n = file.read(chunk).map_err(io)?;
             #[cfg(test)]
             super::tests::read_event(phase, requested as u64, n as u64);
             #[cfg(not(test))]
@@ -765,8 +791,8 @@ fn read_range(
             if n == 0 {
                 return Err("Checkpoint prefix truncated".into());
             }
-            consume(&buffer[..n]);
-            pos += n as u64;
+            consume(chunk.get(..n).ok_or("Checkpoint read overrun")?);
+            pos = pos.saturating_add(n as u64);
         }
         stopped(cancel)
     })();
@@ -788,7 +814,7 @@ pub(crate) struct PreparedPrefix<'a> {
     pub(super) final_candidate: bool,
 }
 
-/// Transport may consume this state, but cannot construct a PreparedPrefix.
+/// Transport may consume this state, but cannot construct a `PreparedPrefix`.
 pub(crate) struct TransferParts<'a> {
     pub selected: &'a SelectedManifest,
     pub index: usize,

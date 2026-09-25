@@ -88,7 +88,13 @@ impl RelativePath {
                 let stem: Vec<u16> = units
                     .iter()
                     .take_while(|u| **u != 46)
-                    .map(|u| if (97..=122).contains(u) { u - 32 } else { *u })
+                    .map(|u| {
+                        if (97..=122).contains(u) {
+                            u.wrapping_sub(32)
+                        } else {
+                            *u
+                        }
+                    })
                     .collect();
                 let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
                 let numbered = matches!(stem.as_slice(), [67, 79, 77, number] | [76, 80, 84, number]
@@ -144,7 +150,9 @@ impl RelativePath {
                 NativeName::Windows(v) => v.len(),
             })
             .sum();
-        if units + path.components.len() - 1 > MAX_PATH_UNITS {
+        // Separators between components count toward the path budget.
+        let separators = path.components.len().saturating_sub(1);
+        if units.saturating_add(separators) > MAX_PATH_UNITS {
             return Err(ModelError::LimitExceeded);
         }
         Ok(path)
@@ -293,7 +301,10 @@ impl ObservedTree {
                 {
                     return Err(ModelError::InvalidKeys);
                 }
-                total_bytes += key.iter().map(Vec::len).sum::<usize>();
+                total_bytes = key
+                    .iter()
+                    .map(Vec::len)
+                    .fold(total_bytes, usize::saturating_add);
                 if total_bytes > MAX_CANONICAL_KEY_BYTES {
                     return Err(ModelError::LimitExceeded);
                 }
@@ -517,8 +528,7 @@ mod tests {
     }
     #[test]
     fn entry_and_issue_limits_reject_instead_of_truncating() {
-        let entries =
-            || (0..MAX_ENTRIES + 1).map(|n| (path(&format!("{n}")), EntryState::Directory));
+        let entries = || (0..=MAX_ENTRIES).map(|n| (path(&format!("{n}")), EntryState::Directory));
         assert_eq!(
             ObservedTree::new(endpoint(), entries(), Observation::Complete),
             Err(ModelError::LimitExceeded)

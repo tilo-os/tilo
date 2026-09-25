@@ -73,7 +73,11 @@ impl SourceInventory {
                         "Source review exceeds depth 128; select a smaller folder.",
                     ));
                 }
-                self.walk(&directory.open_child(&name, &metadata)?, &path, depth + 1)?;
+                self.walk(
+                    &directory.open_child(&name, &metadata)?,
+                    &path,
+                    depth.saturating_add(1),
+                )?;
             } else {
                 self.insert(&path, &metadata)?;
             }
@@ -126,7 +130,8 @@ impl SourceInventory {
     }
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     #[test]
@@ -138,10 +143,9 @@ mod tests {
             path.push("d");
             std::fs::create_dir(&path).unwrap();
         }
-        let error = match SourceInventory::capture(&PinnedDirectory::open_absolute(&root).unwrap())
-        {
-            Ok(_) => panic!("deep inventory must require a smaller selection"),
-            Err(error) => error,
+        let Err(error) = SourceInventory::capture(&PinnedDirectory::open_absolute(&root).unwrap())
+        else {
+            panic!("deep inventory must require a smaller selection")
         };
         assert!(error.to_string().contains("select a smaller folder"));
     }

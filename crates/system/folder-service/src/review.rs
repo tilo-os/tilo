@@ -4,6 +4,9 @@ pub use crate::migration_durability::Identity as DirectoryIdentity;
 use crate::{migration::PinnedDirectory, migration_durability};
 use std::path::{Component, Path, PathBuf};
 
+/// # Errors
+///
+/// Returns a message when the directory cannot be opened or identified.
 pub fn directory_identity(path: &Path) -> Result<migration_durability::Identity, String> {
     if !path.is_absolute()
         || path
@@ -21,6 +24,9 @@ pub fn directory_identity(path: &Path) -> Result<migration_durability::Identity,
     migration_durability::identity(&readable).map_err(|e| e.to_string())
 }
 
+/// # Errors
+///
+/// Returns a message when the path cannot be inspected.
 pub fn path_is_absent(path: &Path) -> Result<bool, String> {
     let parent = PinnedDirectory::open_absolute(path.parent().ok_or("copy path has no parent")?)
         .map_err(|e| e.to_string())?;
@@ -48,6 +54,9 @@ impl CopyReview {
     }
 }
 
+/// # Errors
+///
+/// Returns a message when either folder cannot be opened or inspected safely.
 pub fn inspect_copy_review(source: &Path, destination: &Path) -> Result<CopyReview, String> {
     let parent = destination.parent().ok_or("destination has no parent")?;
     let pin = PinnedDirectory::open_absolute(parent).map_err(|e| e.to_string())?;
@@ -62,8 +71,12 @@ pub fn inspect_copy_review(source: &Path, destination: &Path) -> Result<CopyRevi
     })
 }
 
+/// # Errors
+///
+/// Returns a message when the managed import parent cannot be created or
+/// admitted.
 pub fn prepare_managed_import_parent() -> Result<PathBuf, String> {
-    let parent = dirs::data_local_dir()
+    let parent = xdg_paths::data_local_dir()
         .ok_or("No local user data directory")?
         .join("qos/files");
     crate::migration_store::ensure_private_root(&parent).map_err(|e| e.to_string())?;

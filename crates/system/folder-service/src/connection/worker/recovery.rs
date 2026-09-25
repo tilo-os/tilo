@@ -1,6 +1,14 @@
 //! Bounded recovery commands. Durable metadata never supplies native authority.
 use super::super::{model::EntryState, store};
-use super::*;
+// Unit-test submodules reach the parent's items through this module.
+#[cfg(target_os = "linux")]
+use super::transaction;
+use super::{
+    Arc, AtomicBool, ConflictCursor, ConflictPage, ConnectionError, ConnectionId, ConnectionRecord,
+    ConnectionStore, Lifecycle, PAGE_LIMIT, Pending, Phase, Pins, RecoveryCursor, ReviewId, Side,
+    StoreError, Worker, endpoint, endpoint_error, endpoint_refused, pin_pair, set_phase,
+    store_error, supported,
+};
 use crate::connected::{
     ConflictChoice, ConflictInfo, RecoveryAvailability, RecoveryId, RecoveryInfo, RecoveryPage,
     RecoveryReason, RetentionEligibility, SelectionPreview, SelectionReviewId,
@@ -90,6 +98,10 @@ fn recovery_info(entry: store::RecoveryEntry, record: &ConnectionRecord) -> Reco
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "ownership transfer marks the one-shot value as used up by this call"
+)]
 pub(super) fn conflict_info(
     store: &ConnectionStore,
     record: store::ConflictRecord,
@@ -379,7 +391,7 @@ impl Worker {
         };
         active.selection = Some(SelectionReview {
             token,
-            deadline: Instant::now() + Duration::from_secs(REVIEW_SECONDS),
+            deadline: crate::deadline_after(Duration::from_secs(REVIEW_SECONDS)),
             preview,
             candidate,
             target,
@@ -388,6 +400,10 @@ impl Worker {
         Ok(result)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "ownership transfer marks the one-shot value as used up by this call"
+    )]
     pub(super) fn restore_selection(
         &mut self,
         token: SelectionReviewId,

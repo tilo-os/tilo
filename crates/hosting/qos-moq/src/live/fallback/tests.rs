@@ -1,5 +1,22 @@
-//! Fallback carrier bridged against real localhost WebTransport MoQ peers
+//! Fallback carrier bridged against real localhost WebTransport `MoQ` peers
 //! (pinned generated certificate, no TLS bypass). Isolated test identities.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "in a test these are the assertion; fixture arithmetic is small and bounded"
+)]
+#![allow(
+    clippy::similar_names,
+    clippy::collection_is_never_read,
+    clippy::unused_async,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    reason = "scenario-shaped test code"
+)]
 use super::*;
 
 const TIMEOUT: Duration = Duration::from_secs(5);

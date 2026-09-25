@@ -102,6 +102,10 @@ pub(in crate::connection) enum NativeSafeBoundary<'e> {
     Uncertain,
 }
 #[cfg(target_os = "linux")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(in crate::connection) enum OwnedBoundary<'e> {
     Regular(RecoveredEvidence<'e>),
     Deletion(RecoveredDeletion<'e>),
@@ -343,14 +347,14 @@ impl Admission {
             epoch: self.epoch,
             request: self.next,
             guard: if code == Code::Acquire {
-                self.guards + 1
+                self.guards.saturating_add(1)
             } else {
                 0
             },
             code,
         };
         self.pending = Some(frame);
-        self.next += 1;
+        self.next = self.next.saturating_add(1);
         Ok(frame)
     }
     fn accept(&mut self, reply: Frame) -> Result<(), ()> {
@@ -371,7 +375,7 @@ impl Admission {
             return Err(());
         }
         if reply.code == Code::Acquired {
-            self.guards += 1;
+            self.guards = self.guards.saturating_add(1);
         }
         self.pending = None;
         Ok(())

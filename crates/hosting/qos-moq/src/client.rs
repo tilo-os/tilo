@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -118,11 +118,10 @@ impl State {
             let _ = sent.group.abort(moq_net::Error::Cancel);
         }
         // Never reuse a partially transmitted group after mute or expiry.
-        if self.sequence % voice::FRAMES_PER_GROUP != 0 {
-            self.sequence = self
-                .sequence
-                .checked_add(voice::FRAMES_PER_GROUP - self.sequence % voice::FRAMES_PER_GROUP)
-                .unwrap_or(u64::MAX);
+        if !self.sequence.is_multiple_of(voice::FRAMES_PER_GROUP) {
+            self.sequence = self.sequence.saturating_add(
+                voice::FRAMES_PER_GROUP.saturating_sub(self.sequence % voice::FRAMES_PER_GROUP),
+            );
         }
     }
     fn end(&mut self, status: Status) {
@@ -144,13 +143,14 @@ impl State {
     }
     fn expire(&mut self, now: Instant) {
         while self.groups.front().is_some_and(|sent| sent.expires <= now) {
-            let sent = self.groups.pop_front().unwrap();
+            let Some(sent) = self.groups.pop_front() else {
+                break;
+            };
             let _ = sent.group.abort(moq_net::Error::Cancel);
             if sent.count < voice::FRAMES_PER_GROUP {
-                self.sequence = self
-                    .sequence
-                    .checked_add(voice::FRAMES_PER_GROUP - self.sequence % voice::FRAMES_PER_GROUP)
-                    .unwrap_or(u64::MAX);
+                self.sequence = self.sequence.saturating_add(
+                    voice::FRAMES_PER_GROUP.saturating_sub(self.sequence % voice::FRAMES_PER_GROUP),
+                );
             }
         }
         for queue in self.received.values_mut() {
@@ -184,7 +184,10 @@ impl Shared {
     }
     fn check(&self) -> Result<(), ClientError> {
         if !self.current() {
-            self.state.lock().unwrap().end(Status::Denied);
+            self.state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .end(Status::Denied);
             return Err(ClientError::Denied);
         }
         Ok(())
@@ -197,6 +200,13 @@ pub struct Client {
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl Client {
+    /// Validate `connection` and start the native client on the current runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Invalid`] for a malformed connection scope and
+    /// [`ClientError::Unavailable`] outside a Tokio runtime or when the native
+    /// client cannot be configured.
     pub fn start(
         connection: Connection,
         authority: Arc<dyn ClientAuthority>,
@@ -231,7 +241,10 @@ impl Client {
                 .map_err(|_| ClientError::Invalid)?,
         ];
         config.timeout = Some(CONNECT_TIMEOUT);
-        config.tls.fingerprint = shared.scope.fingerprints.clone();
+        config
+            .tls
+            .fingerprint
+            .clone_from(&shared.scope.fingerprints);
         let mut native = config
             .init()
             .map_err(|_| ClientError::Unavailable)?
@@ -251,9 +264,10 @@ impl Client {
                     moq_net::track::Info::default().with_latency_max(SEND_AGE),
                 )
                 .map_err(|_| ClientError::Unavailable)?;
-            let mut state = shared.state.lock().unwrap();
+            let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.track = Some(track);
             state.broadcast = Some(broadcast);
+            drop(state);
             let scoped = shared
                 .outgoing
                 .consume()
@@ -286,27 +300,50 @@ impl Client {
     }
     pub fn status(&self) -> Status {
         let _ = self.shared.check();
-        self.shared.state.lock().unwrap().status
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .status
     }
     /// Called only after the shell's independent local capture consent/lease.
     /// This operation cannot widen the owner's granted publication direction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::Denied`] without a publication grant and
+    /// [`ClientError::Unavailable`] unless the session is live.
     pub fn enable_publication(&self) -> Result<(), ClientError> {
         self.shared.check()?;
         if self.shared.scope.publication.is_none() {
             return Err(ClientError::Denied);
         }
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if state.status != Status::Live {
             return Err(ClientError::Unavailable);
         }
         state.muted = false;
+        drop(state);
         Ok(())
     }
     /// No outage backlog: non-live or muted frames are rejected synchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is not live, publication is muted, the
+    /// frame is stale, or the group cannot accept it.
     pub fn try_send(&self, frame: CapturedOpus) -> Result<(), ClientError> {
         self.shared.check()?;
         let now = Instant::now();
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if state.status != Status::Live {
             return Err(ClientError::Unavailable);
         }
@@ -350,27 +387,32 @@ impl Client {
                 })
                 .map_err(|_| ClientError::Capacity)?;
             state.groups.push_back(SentGroup {
-                expires: frame.captured_at + SEND_AGE,
+                expires: crate::later(frame.captured_at, SEND_AGE),
                 group,
                 count: 0,
             });
         }
-        let sent = state.groups.back_mut().unwrap();
-        sent.expires = sent.expires.min(frame.captured_at + SEND_AGE);
+        let sent = state.groups.back_mut().ok_or(ClientError::Unavailable)?;
+        sent.expires = sent.expires.min(crate::later(frame.captured_at, SEND_AGE));
         sent.group
             .write_frame(timestamp, bytes)
             .map_err(|_| ClientError::Capacity)?;
-        sent.count += 1;
+        sent.count = sent.count.saturating_add(1);
         if sent.count == voice::FRAMES_PER_GROUP {
             sent.group.finish().map_err(|_| ClientError::Unavailable)?;
         }
         state.sequence = next;
         state.counters.sent = state.counters.sent.saturating_add(1);
+        drop(state);
         Ok(())
     }
     pub fn try_recv(&self) -> Option<ReceivedOpus> {
         self.shared.check().ok()?;
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         state.expire(Instant::now());
         if state.status != Status::Live {
             return None;
@@ -384,7 +426,11 @@ impl Client {
         state.received.get_mut(&name)?.pop_front()
     }
     pub fn counters(&self) -> Counters {
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         state.expire(Instant::now());
         Counters {
             queued_received: state.received.values().map(VecDeque::len).sum(),
@@ -392,11 +438,24 @@ impl Client {
         }
     }
     pub fn stop_publication(&self) {
-        self.shared.state.lock().unwrap().clear_publication();
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear_publication();
     }
     pub fn close(&self) {
-        self.shared.state.lock().unwrap().end(Status::Closed);
-        if let Some(task) = self.task.lock().unwrap().take() {
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .end(Status::Closed);
+        let task = self
+            .task
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(task) = task {
             task.abort();
         }
     }
@@ -418,14 +477,16 @@ fn origin(age: Duration) -> moq_net::origin::Producer {
         .produce()
 }
 fn valid_namespace(name: &str) -> bool {
+    let hex = |part: &str| {
+        part.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
+    let nonzero = |part: &str| part.bytes().any(|b| b != b'0');
+    // `owner/track`: 64 lowercase hex digits on each side of the one separator.
     name.len() == 129
-        && name.as_bytes()[64] == b'/'
-        && name
-            .bytes()
-            .enumerate()
-            .all(|(i, b)| i == 64 || b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        && name[..64].bytes().any(|b| b != b'0')
-        && name[65..].bytes().any(|b| b != b'0')
+        && name.split_once('/').is_some_and(|(owner, track)| {
+            owner.len() == 64 && hex(owner) && hex(track) && nonzero(owner) && nonzero(track)
+        })
 }
 fn validate(connection: &Connection) -> Result<url::Url, ClientError> {
     let scope = &connection.scope;
@@ -469,9 +530,13 @@ fn validate(connection: &Connection) -> Result<url::Url, ClientError> {
     let mut names = scope.publication.iter().chain(scope.subscriptions.iter());
     let first = names.next().ok_or(ClientError::Invalid)?;
     if !valid_namespace(first)
-        || names.any(|name| !valid_namespace(name) || name[..64] != first[..64])
+        || names.any(|name| !valid_namespace(name) || name.get(..64) != first.get(..64))
         || scope.subscriptions.iter().enumerate().any(|(index, name)| {
-            scope.publication.as_ref() == Some(name) || scope.subscriptions[..index].contains(name)
+            scope.publication.as_ref() == Some(name)
+                || scope
+                    .subscriptions
+                    .get(..index)
+                    .is_some_and(|prior| prior.contains(name))
         })
     {
         return Err(ClientError::Invalid);
@@ -479,12 +544,13 @@ fn validate(connection: &Connection) -> Result<url::Url, ClientError> {
     Ok(url)
 }
 async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
-    let session = match native.connect(url).await {
-        Ok(session) => session,
-        Err(_) => {
-            shared.state.lock().unwrap().end(Status::Failed);
-            return;
-        }
+    let Ok(session) = native.connect(url).await else {
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .end(Status::Failed);
+        return;
     };
     if session.version().as_str() != "moq-transport-21" || shared.check().is_err() {
         session.abort(moq_net::Error::Cancel);
@@ -493,12 +559,16 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
     // The relay sends its SETUP only after host admission; until then the
     // transport is merely open, not live.
     let admitted = tokio::select! {
-        _ = session.setup_received() => true,
+        () = session.setup_received() => true,
         _ = session.closed() => false,
-        _ = tokio::time::sleep(CONNECT_TIMEOUT) => false,
+        () = tokio::time::sleep(CONNECT_TIMEOUT) => false,
     };
     if !admitted {
-        shared.state.lock().unwrap().end(Status::Failed);
+        shared
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .end(Status::Failed);
         session.abort(moq_net::Error::Cancel);
         return;
     }
@@ -507,7 +577,7 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
         return;
     }
     {
-        let mut state = shared.state.lock().unwrap();
+        let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.status != Status::Connecting {
             session.abort(moq_net::Error::Cancel);
             return;
@@ -526,10 +596,10 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
-            _ = session.closed() => { shared.state.lock().unwrap().end(Status::Failed); break; }
+            _ = session.closed() => { shared.state.lock().unwrap_or_else(PoisonError::into_inner).end(Status::Failed); break; }
             _ = tick.tick() => {
                 if shared.check().is_err() { break; }
-                let mut state = shared.state.lock().unwrap();
+                let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state.status != Status::Live { break; }
                 state.expire(Instant::now());
                 drop(state);
@@ -539,7 +609,7 @@ async fn run(shared: Arc<Shared>, native: moq_native::Client, url: url::Url) {
                 // A closed remote publication can return under the same exact
                 // namespace with a restarted sequence. Retire this carrier so
                 // its owner obtains a fresh proof/generation and decoder state.
-                shared.state.lock().unwrap().end(Status::Failed);
+                shared.state.lock().unwrap_or_else(PoisonError::into_inner).end(Status::Failed);
                 break;
             }
         }
@@ -580,8 +650,8 @@ async fn receive(shared: Arc<Shared>, name: String) {
     match datagrams {
         Some(datagrams) => {
             tokio::select! {
-                _ = groups => {}
-                _ = receive_datagrams(&shared, &name, datagrams, &last) => {}
+                () = groups => {}
+                () = receive_datagrams(&shared, &name, datagrams, &last) => {}
             }
         }
         None => groups.await,
@@ -596,23 +666,26 @@ fn deliver(
     object: VoiceObject,
     last: &Mutex<Option<u64>>,
 ) -> bool {
-    let mut state = shared.state.lock().unwrap();
+    let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
     if state.status != Status::Live {
         return false;
     }
-    let mut last = last.lock().unwrap();
+    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
     if last.is_some_and(|prior| object.sequence <= prior) {
         state.counters.duplicate_dropped = state.counters.duplicate_dropped.saturating_add(1);
         return true;
     }
     *last = Some(object.sequence);
+    drop(last);
     state.expire(Instant::now());
     if state
         .received
         .get(name)
         .is_some_and(|queue| queue.len() >= RECEIVE_FRAMES)
     {
-        state.received.get_mut(name).unwrap().pop_front();
+        if let Some(queue) = state.received.get_mut(name) {
+            queue.pop_front();
+        }
         state.counters.capacity_dropped = state.counters.capacity_dropped.saturating_add(1);
     }
     // Per-frame arrival: each frame's 200 ms receive budget (and its latency
@@ -630,7 +703,7 @@ fn deliver(
             group,
             object,
             received_at: arrived,
-            expires_at: arrived + RECEIVE_AGE,
+            expires_at: crate::later(arrived, RECEIVE_AGE),
         });
     state.counters.received = state.counters.received.saturating_add(1);
     true
@@ -671,24 +744,25 @@ async fn receive_groups(
 ) {
     let mut next = track.recv_group().await;
     while let Ok(Some(mut group)) = next {
-        let expires_at = Instant::now() + RECEIVE_AGE;
-        let mut count = 0;
+        let expires_at = crate::later(Instant::now(), RECEIVE_AGE);
+        let mut count: u64 = 0;
         loop {
             tokio::select! {
                 biased;
                 fresh = track.recv_group() => { next = fresh; break; }
-                _ = tokio::time::sleep_until(expires_at.into()) => { next = track.recv_group().await; break; }
+                () = tokio::time::sleep_until(expires_at.into()) => { next = track.recv_group().await; break; }
                 value = group.read_frame() => {
                     let Ok(Some(frame)) = value else { next = track.recv_group().await; break; };
                     if shared.check().is_err() { return; }
-                    count += 1;
+                    count = count.saturating_add(1);
                     let Ok(object) = VoiceObject::decode(&frame.payload) else { return; };
                     if count > voice::FRAMES_PER_GROUP || object.sequence / voice::FRAMES_PER_GROUP != group.sequence { return; }
                     // The group deadline bounds the read.
                     if Instant::now() >= expires_at {
-                        let mut state = shared.state.lock().unwrap();
+                        let mut state = shared.state.lock().unwrap_or_else(PoisonError::into_inner);
                         if state.status != Status::Live { return; }
-                        state.counters.late_dropped = state.counters.late_dropped.saturating_add(1); continue;
+                        state.counters.late_dropped = state.counters.late_dropped.saturating_add(1);
+                        drop(state); continue;
                     }
                     if !deliver(shared, name, group.sequence, object, last) { return; }
                 }

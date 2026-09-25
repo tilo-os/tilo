@@ -1,5 +1,5 @@
 //! Private Windows installer cache. Cooperative current-user boundary only.
-//! FlushFileBuffers orders data, not guaranteed power-loss persistence of directory entries.
+//! `FlushFileBuffers` orders data, not guaranteed power-loss persistence of directory entries.
 #[cfg(windows)]
 fn require_permission_denied(
     ok: bool,
@@ -45,22 +45,27 @@ fn windows_directory_leaf_supported(name: &[u16]) -> bool {
         .copied()
         .take_while(|&unit| unit != u16::from(b'.'))
         .map(|unit| match unit {
-            0x61..=0x7a => unit - 0x20,
+            0x61..=0x7a => unit.wrapping_sub(0x20),
             _ => unit,
         })
         .collect();
     while stem.last() == Some(&u16::from(b' ')) {
         stem.pop();
     }
+    let numbered_device = match stem.as_slice() {
+        [prefix @ .., digit] if prefix.len() == 3 => {
+            ["COM", "LPT"]
+                .iter()
+                .any(|name| prefix.iter().copied().eq(name.encode_utf16()))
+                // Include DOS digit aliases and Windows superscript ¹, ² and ³.
+                && matches!(digit, 0x30..=0x39 | 0xb9 | 0xb2 | 0xb3)
+        }
+        _ => false,
+    };
     !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
         .iter()
         .any(|reserved| stem.iter().copied().eq(reserved.encode_utf16()))
-        && !(stem.len() == 4
-            && ["COM", "LPT"]
-                .iter()
-                .any(|prefix| stem[..3].iter().copied().eq(prefix.encode_utf16()))
-            // Include DOS digit aliases and Windows superscript ¹, ² and ³.
-            && matches!(stem[3], 0x30..=0x39 | 0xb9 | 0xb2 | 0xb3))
+        && !numbered_device
 }
 
 fn windows_directory_path(
@@ -69,15 +74,19 @@ fn windows_directory_path(
     // Validate raw units before Path::components can normalize aliases. One
     // extra unit detects overflow without collecting an unbounded input.
     let raw: Vec<_> = raw.into_iter().take(4097).collect();
+    let refused = "require a bounded ordinary absolute Windows drive path";
+    let [drive, colon, separator, rest @ ..] = raw.as_slice() else {
+        return Err(refused.into());
+    };
     require(
-        (3..=4096).contains(&raw.len())
-            && matches!(raw[0], 0x41..=0x5a | 0x61..=0x7a)
-            && raw[1..3] == [u16::from(b':'), u16::from(b'\\')],
-        "require a bounded ordinary absolute Windows drive path",
+        raw.len() <= 4096
+            && matches!(drive, 0x41..=0x5a | 0x61..=0x7a)
+            && [*colon, *separator] == [u16::from(b':'), u16::from(b'\\')],
+        refused,
     )?;
     let mut names = Vec::new();
-    if raw.len() > 3 {
-        for name in raw[3..].split(|&unit| unit == u16::from(b'\\')) {
+    if !rest.is_empty() {
+        for name in rest.split(|&unit| unit == u16::from(b'\\')) {
             require(
                 names.len() < 64 && windows_directory_leaf_supported(name),
                 "unsupported Windows directory component",
@@ -86,7 +95,7 @@ fn windows_directory_path(
         }
     }
     Ok(WindowsDirectoryPath {
-        root: [raw[0], raw[1], raw[2]],
+        root: [*drive, *colon, *separator],
         names,
     })
 }
@@ -102,11 +111,12 @@ fn windows_cache_path(
         ["qos-internal-install", &"0".repeat(64), "payload"]
             .map(|s| s.encode_utf16().collect::<Vec<_>>()),
     );
-    let length = 3 + final_names
+    let length = final_names
         .iter()
-        .map(|n| n.len() + 1)
-        .sum::<usize>()
-        .saturating_sub(1);
+        .map(|n| n.len().saturating_add(1))
+        .fold(0_usize, usize::saturating_add)
+        .saturating_sub(1)
+        .saturating_add(3);
     require(
         final_names.len() <= 64 && length <= 4096,
         "Cache suffix exceeds verifier ancestry bounds",
@@ -875,7 +885,7 @@ mod native {
     }
     impl CacheRoot {
         pub(crate) fn acquire(selected: &SelectedManifest) -> Result<Self> {
-            let cache = dirs::cache_dir().ok_or("Current-user LocalAppData cache unavailable")?;
+            let cache = xdg_paths::cache_dir().ok_or("Current-user LocalAppData cache unavailable")?;
             Self::acquire_at(&cache, selected)
         }
         fn acquire_at(cache: &Path, selected: &SelectedManifest) -> Result<Self> {
@@ -1112,7 +1122,7 @@ mod native {
         stop(cancel)?;
         let mut eof = [0];
         require(
-            file.read(&mut eof).map_err(io)? == 0 && format!("{:x}", hash.finalize()) == c.sha256,
+            file.read(&mut eof).map_err(io)? == 0 && hex::encode(hash.finalize()) == c.sha256,
             "Final component digest/EOF mismatch",
         )?;
         require(

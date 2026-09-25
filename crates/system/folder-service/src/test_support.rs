@@ -1,4 +1,8 @@
 //! Narrow integration-test hooks, absent from normal builds.
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "integration-test hooks return the wrapped operation's own errors"
+)]
 
 use crate::copy::{CopyProgress, CopyReport, MigrationStore, OperationRecord};
 use crate::review::DirectoryIdentity;

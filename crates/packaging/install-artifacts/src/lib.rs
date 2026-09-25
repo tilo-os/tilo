@@ -23,6 +23,17 @@
 //! The `test-support` feature exposes bounded localhost and filesystem
 //! fixtures for development tests; it is absent from normal artifacts and does
 //! not change normal client construction.
+#![cfg_attr(
+    not(any(windows, target_os = "linux", test, feature = "test-support")),
+    allow(
+        dead_code,
+        unused_variables,
+        clippy::needless_pass_by_value,
+        clippy::needless_pass_by_ref_mut,
+        clippy::uninhabited_references,
+        reason = "unsupported hosts compile the facade with no cache engine, so every backend path is absent"
+    )
+)]
 mod bundle;
 mod catalog;
 pub mod catalog_data;
@@ -84,6 +95,11 @@ impl Client {
     /// does not accept caller-provided paths, origins, backends, or authority.
     /// This compatibility constructor remains subject to the documented G02
     /// host-integration removal gate.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unsupported-host error where no production cache backend
+    /// exists, or the worker start failure.
     pub fn open_legacy_imager() -> Result<Self, Error> {
         #[cfg(any(windows, all(target_os = "linux", not(test))))]
         {
@@ -105,6 +121,11 @@ impl Client {
     /// Preference bytes are opaque to this service and are limited to 4096
     /// bytes. A successful return admits the request; observe [`Self::status`]
     /// and [`Self::preference`] for its eventual outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-input error for oversized preference bytes, or an
+    /// error when the worker is shut down or refuses the request.
     pub fn start(&self, selection: ReleaseSelection, saved_key: Vec<u8>) -> Result<Token, Error> {
         if saved_key.len() > preference::MAX_PREFERENCE_BYTES {
             return Err(Error::invalid_input(
@@ -114,6 +135,10 @@ impl Client {
         self.engine.start(selection.release, Some(saved_key))
     }
     /// Starts the selected release without rewriting the saved preference.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker is shut down or refuses the request.
     pub fn resume(&self, selection: ReleaseSelection) -> Result<Token, Error> {
         self.engine.start(selection.release, None)
     }
@@ -122,18 +147,38 @@ impl Client {
         self.engine.preference()
     }
     /// Requests that the matching operation pause at a cooperative boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale error for a terminal or replaced operation, or an error
+    /// when the worker is shut down.
     pub fn pause(&self, token: &Token) -> Result<(), Error> {
         self.engine.pause(token)
     }
     /// Requests cancellation of the matching operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale error for a terminal or replaced operation, or an error
+    /// when the worker is shut down.
     pub fn cancel(&self, token: &Token) -> Result<(), Error> {
         self.engine.cancel(token)
     }
     /// Releases retained verified artifacts for later use without consuming them.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale error unless `token` names a held Ready operation, or an
+    /// error when the worker is shut down.
     pub fn release(&self, token: &Token) -> Result<(), Error> {
         self.engine.release(token)
     }
     /// Discards the matching operation's revalidated partial data and starts a fresh token.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale error when `token` or `selection` does not name the
+    /// active operation, or an error when the worker is shut down.
     pub fn discard(&self, token: &Token, selection: ReleaseSelection) -> Result<Token, Error> {
         self.engine.discard(token, selection.release)
     }
@@ -142,6 +187,11 @@ impl Client {
         self.engine.status()
     }
     /// Shuts down and joins the owned worker. Repeated calls are successful.
+    ///
+    /// # Errors
+    ///
+    /// Returns an uncertain failure when the worker panicked; the cache may be
+    /// retained.
     pub fn close(&mut self) -> Result<(), Error> {
         self.engine.close()
     }
@@ -172,6 +222,11 @@ impl Drop for Client {
 ///
 /// This compatibility verifier does not grant access, retain a verified reader,
 /// stage data, or install anything.
+///
+/// # Errors
+///
+/// Returns a failure for unsupported hosts, unsafe or replaced files,
+/// cancellation, or mismatched bytes.
 pub fn verify_local_components(
     bundle: &format::InternalBundle,
     path: &std::path::Path,
@@ -180,7 +235,8 @@ pub fn verify_local_components(
     bundle::verify_internal_components(bundle, path, cancel).map_err(Error::failed)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod constructor_tests {
     #[test]
     fn unit_build_normal_constructor_never_implicitly_uses_fixture() {
@@ -379,13 +435,25 @@ impl Engine {
     }
 }
 
-#[cfg(all(test, unix))]
+fn refuse_protected_staging(
+    _: &transport::SelectedManifest,
+    _: &download::Cancellation<'_>,
+    _: &mut dyn cache::HeldReadSeek,
+    _: &mut dyn cache::HeldReadSeek,
+) -> Result<(), error::Failure> {
+    Err("Protected staging is not available; verified download data was retained.".into())
+}
+
+#[cfg(test)]
+#[cfg(unix)]
 mod facade_tests {
     use super::*;
     use crate::test_support::{Server, manifest_bytes, manifest_value, response};
 
     fn wait(client: &Client, phase: Phase) -> Status {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(10))
+            .unwrap();
         loop {
             if let Some(status) = client.status() {
                 if status.phase == phase {
@@ -444,13 +512,4 @@ mod facade_tests {
             vec![b'R'; 8192]
         );
     }
-}
-
-fn refuse_protected_staging(
-    _: &transport::SelectedManifest,
-    _: &download::Cancellation<'_>,
-    _: &mut dyn cache::HeldReadSeek,
-    _: &mut dyn cache::HeldReadSeek,
-) -> Result<(), error::Failure> {
-    Err("Protected staging is not available; verified download data was retained.".into())
 }

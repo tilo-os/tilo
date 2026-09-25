@@ -1,4 +1,11 @@
 #![cfg(all(unix, feature = "test-support"))]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::exit,
+    reason = "in a test these are the assertion, not a hazard; the restart child exits on purpose"
+)]
 use std::{fs, path::Path};
 
 #[test]
@@ -411,7 +418,7 @@ fn admitted_alias_succeeds_but_retargeting_and_new_suffix_symlinks_fail() {
     symlink(base.join("target"), &alias).unwrap();
     let leaf = alias.join("nested");
     provision_directory(&leaf, Privacy::Inherit).unwrap();
-    let changed_alias = alias.clone();
+    let changed_alias = alias;
     let other = base.join("other");
     let physical_leaf = base.join("target/nested");
     let failure = error(with_provision_observer(
@@ -722,9 +729,9 @@ fn provision_hooks_restore_outer_scope_after_unwind() {
                         || {
                             with_provision_failure(P::BeforeCreate, &leaf, || {
                                 let _ = provision_directory(&leaf, Privacy::Inherit);
-                            })
+                            });
                         },
-                    )
+                    );
                 });
                 assert!(nested.is_err());
                 let restored = error(provision_directory(&leaf, Privacy::Inherit));

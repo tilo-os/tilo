@@ -74,7 +74,8 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: successful fstatfs initialized the structure.
-    if unsafe { status.assume_init() }.f_type as u64 == 0x9123_683e {
+    let kind = unsafe { status.assume_init() }.f_type;
+    if u64::try_from(kind).ok() == Some(0x9123_683e) {
         return btrfs_volume(file);
     }
     // Linux UAPI fsuuid2: u8 len; u8 uuid[16]. _IOR(0x15, 0, fsuuid2).
@@ -88,10 +89,11 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
         )
     } == 0
     {
-        let len = usize::from(result[0]);
-        if (1..=16).contains(&len) && result[1..=len].iter().any(|b| *b != 0) {
+        let [len, uuid @ ..] = &result;
+        let uuid = uuid.get(..usize::from(*len)).unwrap_or_default();
+        if (1..=16).contains(len) && uuid.iter().any(|b| *b != 0) {
             let mut volume = vec![1];
-            volume.extend_from_slice(&result[1..=len]);
+            volume.extend_from_slice(uuid);
             return Ok(volume);
         }
     }
@@ -99,7 +101,9 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
     // A different boot refuses resume, rather than treating dev_t as durable.
     let boot = std::fs::read("/proc/sys/kernel/random/boot_id")?;
     if boot.len() != 37
-        || !boot[..36]
+        || !boot
+            .get(..36)
+            .unwrap_or_default()
             .iter()
             .all(|b| b.is_ascii_hexdigit() || *b == b'-')
     {
@@ -143,7 +147,9 @@ fn btrfs_volume(file: &File) -> io::Result<Vec<u8>> {
             io::Error::last_os_error()
         )));
     }
-    let tree = u64::from_ne_bytes(subvolume[..8].try_into().unwrap());
+    let tree = u64::from_ne_bytes(*subvolume.first_chunk::<8>().ok_or_else(|| {
+        io::Error::other("Btrfs subvolume identity unavailable; reselect folders")
+    })?);
     if filesystem[16..32].iter().all(|b| *b == 0)
         || tree == 0
         || (tree != 5 && subvolume[296..312].iter().all(|b| *b == 0))
@@ -194,7 +200,8 @@ pub(super) fn readable_directory(file: &File) -> io::Result<File> {
     cap_primitives::fs::open(file, std::path::Path::new("."), &options)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     #[test]

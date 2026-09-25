@@ -33,6 +33,11 @@ impl ExistingCommitError {
         io::Error::new(self.source.kind(), self)
     }
     /// Revalidate and repeat data/name barriers using retained authority only.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` unchanged without retained custody, or with the new error
+    /// when revalidation or a barrier fails again.
     pub fn retry_commit(mut self) -> Result<(), Self> {
         let Some(custody) = &self.custody else {
             return Err(self);
@@ -74,11 +79,11 @@ fn observed(error: io::Error) -> (io::Error, bool) {
     (error, changed)
 }
 fn unchanged(
-    actual: FileIdentity,
+    actual: &FileIdentity,
     expected: &FileIdentity,
     privacy: native::FilePolicy,
 ) -> Result<(), (io::Error, bool)> {
-    if &actual == expected {
+    if actual == expected {
         Ok(())
     } else {
         Err((
@@ -94,7 +99,7 @@ impl Custody {
             self.parent.validate_bounded().map_err(|e| (e, false))?;
         }
         unchanged(
-            FileIdentity::of(&self.file).map_err(|e| (e, false))?,
+            &FileIdentity::of(&self.file).map_err(|e| (e, false))?,
             &self.expected,
             self.privacy,
         )?;
@@ -103,7 +108,7 @@ impl Custody {
             .open_read_policy(&self.name, self.privacy)
             .map_err(observed)?;
         unchanged(
-            FileIdentity::of(&named).map_err(|e| (e, false))?,
+            &FileIdentity::of(&named).map_err(|e| (e, false))?,
             &self.expected,
             self.privacy,
         )
@@ -169,6 +174,13 @@ pub(crate) fn commit_policy(
             custody: Some(custody),
         })
 }
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the test-support build injects failures through the same signature"
+    )
+)]
 fn checkpoint(namespace: bool) -> io::Result<()> {
     #[cfg(feature = "test-support")]
     {

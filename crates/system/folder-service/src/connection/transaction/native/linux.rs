@@ -68,6 +68,11 @@ pub(in crate::connection::transaction) fn restore_preview(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use super::*;
     use crate::connection::endpoint::{
@@ -729,8 +734,8 @@ mod tests {
                 Some(&baseline_value)
             );
             if restart <= 1 {
-                let mut store = store;
                 use crate::connection::model::Side as ModelSide;
+                let mut store = store;
                 let selected_side = if absent == Some(0) || restore_reverse {
                     ModelSide::Destination
                 } else {
@@ -1065,7 +1070,7 @@ mod tests {
                     if phase >= 53 {
                         if (54..=58).contains(&phase) {
                             restore
-                                .relocate_selected(&mut store, &mut live, &session, &cancel)
+                                .relocate_selected(&store, &live, &session, &cancel)
                                 .unwrap();
                         }
                         if phase == 55 {
@@ -2174,7 +2179,7 @@ mod tests {
                     let namespace = paths[target_index].join(restore.namespace_name().unwrap());
                     if restore_restart == 27 || restore_restart >= 29 {
                         restore
-                            .relocate_selected(&mut store, &mut live, &session, &cancel)
+                            .relocate_selected(&store, &live, &session, &cancel)
                             .unwrap();
                     }
                     let partial = if restore_restart == 29 {
@@ -2617,7 +2622,7 @@ mod tests {
                     || (matches!(restore_restart, 5 | 6) && absent != Some(target_index))
                 {
                     restore
-                        .relocate_selected(&mut store, &mut live, &session, &cancel)
+                        .relocate_selected(&store, &live, &session, &cancel)
                         .unwrap();
                     if matches!(restore_restart, 4..=6) {
                         restore
@@ -2695,7 +2700,7 @@ mod tests {
                 let session = store.transaction_session(record.id).unwrap();
                 if restore_restart == 5 {
                     restore
-                        .publish_selected_bytes(&mut store, &mut live, &session, &cancel)
+                        .publish_selected_bytes(&store, &live, &session, &cancel)
                         .unwrap();
                 }
                 if restore_restart == 6 {
@@ -2706,7 +2711,7 @@ mod tests {
                     });
                     let interrupted =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            restore.publish_selected_bytes(&mut store, &mut live, &session, &cancel)
+                            restore.publish_selected_bytes(&store, &live, &session, &cancel)
                         }));
                     assert!(interrupted.is_err());
                     assert!(
@@ -3275,6 +3280,13 @@ mod tests {
         reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
     )]
     fn native_executor_process_restart_boundaries() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
         use crate::connection::{
             store::ConnectionStore,
             transaction::{TransactionOutcome, execute_next_regular},
@@ -3296,13 +3308,6 @@ mod tests {
                 _ => panic!("unknown crash fixture"),
             }
             panic!("requested crash boundary was not reached");
-        }
-        struct Child(std::process::Child);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
         }
         for reverse in [false, true] {
             for case in (0..=8)
@@ -4133,8 +4138,11 @@ mod tests {
             }
             4 => {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(paths[0].join("file"), std::fs::Permissions::from_mode(0))
-                    .unwrap();
+                std::fs::set_permissions(
+                    paths[0].join("file"),
+                    std::fs::Permissions::from_mode(0o0),
+                )
+                .unwrap();
             }
             _ => {}
         }
@@ -4283,6 +4291,12 @@ mod tests {
         reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
     )]
     fn native_executor_requires_review_and_progresses_two_regular_files() {
+        use crate::connection::{
+            model::{Decision, EntryState, Side as ModelSide},
+            store::{ConnectionPolicy, ConnectionStore, EndpointBinding, OperationIntent},
+            transaction::{TransactionOutcome, execute_next_regular, execute_reviewed_initial},
+        };
+        use std::sync::atomic::AtomicBool;
         native_count_and_guard_limits_case();
         for reverse in [false, true] {
             for equal in [false, true] {
@@ -4304,12 +4318,6 @@ mod tests {
                 executor_verified_equality_case(stopped, damage);
             }
         }
-        use crate::connection::{
-            model::{Decision, EntryState, Side as ModelSide},
-            store::{ConnectionPolicy, ConnectionStore, EndpointBinding, OperationIntent},
-            transaction::{TransactionOutcome, execute_next_regular, execute_reviewed_initial},
-        };
-        use std::sync::atomic::AtomicBool;
         let tree = fixture();
         let left = tree.path().join("left");
         let right = tree.path().join("right");
@@ -5378,7 +5386,6 @@ mod tests {
             let mut proof = recovered.safe_boundary(&context, &cancel).unwrap();
             let mut reader = proof.drain_reader(&store, &context).unwrap();
             let drained = store.drain_native_recovery(&mut context, &mut reader, &cancel);
-            drop(reader);
             if drained.is_ok() {
                 terminal_receipt = Some(
                     store
@@ -6643,7 +6650,7 @@ mod tests {
                                 .transaction_session(deletion_live.id().connection)
                                 .unwrap();
                             crate::connection::store::after_native_bytes_for_test(move || {
-                                disconnect_session.request_disconnect()
+                                disconnect_session.request_disconnect();
                             });
                             assert!(
                                 reopened
@@ -6900,6 +6907,10 @@ mod tests {
         clippy::too_many_lines,
         reason = "Keep real-state boundary setup, continuation/refusal and exact retained-byte assertions together."
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     fn finish_reopened_deletion_case(
         tree: &std::path::Path,
         source_path: &std::path::Path,
@@ -6929,7 +6940,7 @@ mod tests {
                 &mut context,
                 32 * 1024 * 1024,
                 Instant::now() + std::time::Duration::from_secs(30),
-                &cancel,
+                cancel,
             )
             .unwrap();
         let record = reopened
@@ -6938,11 +6949,10 @@ mod tests {
             .into_iter()
             .find(|record| record.name() == deletion_name)
             .unwrap();
-        let epoch =
-            NativeEpoch::begin_recovery(&context, source_endpoint, target_endpoint, &cancel)
-                .unwrap();
+        let epoch = NativeEpoch::begin_recovery(&context, source_endpoint, target_endpoint, cancel)
+            .unwrap();
         let mut recovered = epoch
-            .inspect_deletion(&context, &record, &reopened, &cancel)
+            .inspect_deletion(&context, &record, &reopened, cancel)
             .unwrap();
         if let Some(fence) = fence {
             let mut boundary = recovered.safe_boundary(&context, cancel).unwrap();
@@ -7081,19 +7091,19 @@ mod tests {
         }
         let session = reopened.transaction_session(current.id).unwrap();
         let mut live = reopened
-            .resume_native_deletion(&context, &mut recovered, &session, &cancel)
+            .resume_native_deletion(&context, &mut recovered, &session, cancel)
             .unwrap();
         let mut outcome = recovered
-            .complete_deletion(&mut reopened, &mut live, &session, &cancel)
+            .complete_deletion(&mut reopened, &mut live, &session, cancel)
             .unwrap();
         if !matches!(restart, 3..=5) {
             reopened
-                .record_native_deletion(&mut live, &mut outcome, false, &cancel)
+                .record_native_deletion(&mut live, &mut outcome, false, cancel)
                 .unwrap();
         }
         if !matches!(restart, 4 | 5) {
             reopened
-                .record_native_deletion(&mut live, &mut outcome, true, &cancel)
+                .record_native_deletion(&mut live, &mut outcome, true, cancel)
                 .unwrap();
         }
         assert_eq!(
@@ -7105,12 +7115,12 @@ mod tests {
                 .len(),
             1
         );
-        let mut comparison = outcome.comparison(&reopened, &live, &cancel).unwrap();
+        let mut comparison = outcome.comparison(&reopened, &live, cancel).unwrap();
         let candidate = reopened
-            .prepare_baseline(&live, &mut comparison, &cancel)
+            .prepare_baseline(&live, &mut comparison, cancel)
             .unwrap();
         reopened
-            .commit_baseline(&mut live, candidate, &mut comparison, &cancel)
+            .commit_baseline(&mut live, candidate, &mut comparison, cancel)
             .unwrap();
         assert!(
             reopened
@@ -7123,7 +7133,7 @@ mod tests {
         assert!(!source_path.join("file").exists());
         assert!(!target_path.join("file").exists());
         assert_eq!(
-            std::fs::read(target_path.join(&deletion_name).join("displaced")).unwrap(),
+            std::fs::read(target_path.join(deletion_name).join("displaced")).unwrap(),
             b"new bytes"
         );
         let connection_name: String =
@@ -7197,11 +7207,6 @@ mod tests {
         reason = "The real-tree fixture retains all guards while testing byte preservation, refusal and observer substitution."
     )]
     fn connected_preservation_case(case: PreservationCase) {
-        let reverse = matches!(
-            case,
-            PreservationCase::CapturedQuarantine { reverse: true, .. }
-        );
-        let stop_after_bytes = matches!(case, PreservationCase::DisconnectAfterBytes);
         use crate::connection::transaction::StepKind;
         use crate::connection::{
             model::{Decision, EntryState, Side as ModelSide},
@@ -7210,6 +7215,11 @@ mod tests {
             },
         };
         use std::sync::atomic::AtomicBool;
+        let reverse = matches!(
+            case,
+            PreservationCase::CapturedQuarantine { reverse: true, .. }
+        );
+        let stop_after_bytes = matches!(case, PreservationCase::DisconnectAfterBytes);
         let tree = fixture();
         let source_path = tree.path().join("source-tree");
         let target_path = tree.path().join("target-tree");
@@ -7853,6 +7863,10 @@ mod tests {
     }
     #[test]
     #[ignore = "authorized Linux filesystem and QOS_LEASE_HELPER executable required"]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn native_publication_is_actual_and_barrier_failure_preserves_every_name() {
         for fail in [false, true] {
             let tree = fixture();
@@ -7907,6 +7921,10 @@ mod tests {
     }
     #[test]
     #[ignore = "authorized Linux filesystem and QOS_LEASE_HELPER executable required"]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn native_raced_writable_inode_is_preserved_as_actual_quarantine() {
         let tree = fixture();
         std::fs::write(tree.path().join("live"), b"old").unwrap();
@@ -7997,6 +8015,10 @@ mod tests {
     }
     #[test]
     #[ignore = "authorized Linux filesystem and QOS_LEASE_HELPER executable required"]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn native_revocation_during_namespace_drain_keeps_accounted_quarantine() {
         let tree = fixture();
         std::fs::write(tree.path().join("live"), b"old").unwrap();
@@ -8045,6 +8067,10 @@ mod tests {
     }
     #[test]
     #[ignore = "authorized Linux filesystem and QOS_LEASE_HELPER executable required"]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn native_exclusive_stage_and_absent_publication_preserve_raced_live() {
         let tree = fixture();
         std::fs::write(tree.path().join("source"), b"proposal").unwrap();
@@ -8094,6 +8120,10 @@ mod tests {
     }
     #[test]
     #[ignore = "authorized Linux filesystem and QOS_LEASE_HELPER executable required"]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn native_actual_displacement_keeps_unexpected_directory_and_old_bytes() {
         let tree = fixture();
         std::fs::write(tree.path().join("live"), b"old").unwrap();
@@ -8186,6 +8216,21 @@ pub(in crate::connection::transaction) struct Failure {
     _os_error: Option<i32>,
 }
 type Result<T> = std::result::Result<T, Failure>;
+/// A recovered descriptor's attempt, bytes and optional outcome bytes.
+type DescriptorFacts = (u32, Vec<u8>, Option<Vec<u8>>);
+/// A recovered directory descriptor's side, attempt, bytes and optional outcome bytes.
+/// A recorded attempt with its optional descriptor and outcome bytes.
+type RecordedFacts = (u32, Option<Vec<u8>>, Option<Vec<u8>>);
+/// A captured version and the guard retained for it, when one exists.
+type GuardedVersion = (d::CapturedVersion, Option<StableFileGuard>);
+type DirectoryFacts = (u8, u32, Option<Vec<u8>>, Option<Vec<u8>>);
+/// The borrowed pieces of a relocated displacement.
+type RelocatedParts<'a, 'e> = (
+    &'a mut NativeEpoch<'e>,
+    &'a PrivateNamespace,
+    &'a RelocatedObject,
+    &'a StableFileGuard,
+);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::connection::transaction) enum Side {
     Source,
@@ -8348,7 +8393,7 @@ pub(super) fn random_id() -> io::Result<[u8; 16]> {
     let mut bytes = [0; 16];
     // SAFETY: correctly sized writable buffer; kernel entropy, no path fallback.
     let result = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
-    if result != bytes.len() as isize || bytes == [0; 16] {
+    if usize::try_from(result).ok() != Some(bytes.len()) || bytes == [0; 16] {
         return Err(io::Error::last_os_error());
     }
     Ok(bytes)
@@ -8489,10 +8534,10 @@ impl<'a> NativeEpoch<'a> {
             _binding: binding,
             nonce,
             leases,
-            deadline: Instant::now() + lease_process::WORK,
+            deadline: crate::deadline_after(lease_process::WORK),
             read_budget: Arc::new(super::ReadBudget {
                 reads,
-                deadline: Instant::now() + lease_process::WORK,
+                deadline: crate::deadline_after(lease_process::WORK),
             }),
             lifetime: Arc::new(()),
             boundary: Boundary::Untouched,
@@ -8517,6 +8562,10 @@ impl<'a> NativeEpoch<'a> {
     fn ep<T>(&mut self, result: std::result::Result<T, EndpointError>) -> Result<T> {
         result.map_err(|e| self.failure(e))
     }
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn io<T>(&mut self, result: io::Result<T>) -> Result<T> {
         result.map_err(|e| {
             let os_error = e.raw_os_error();
@@ -8589,30 +8638,30 @@ impl<'a> NativeEpoch<'a> {
         path: &RelativePath,
     ) -> Result<ParentGuard> {
         self.check()?;
-        if let Some(proof) = &self.directory_ancestors {
-            if &proof.admission.path == path {
-                return proof.parent(side);
-            }
+        if let Some(proof) = &self.directory_ancestors
+            && &proof.admission.path == path
+        {
+            return proof.parent(side);
         }
-        if let Some(proof) = &self.ancestors {
-            if &proof.admission.path == path {
-                let original = proof
-                    .parents
-                    .get(usize::from(side == Side::Target))
-                    .ok_or_else(|| Failure {
-                        _cause: EndpointError::Unverified,
-                        _boundary: self.boundary,
-                        _os_error: None,
-                    })?;
-                return Ok(ParentGuard {
-                    directory: original.directory.clone(),
-                    name: original.name.clone(),
-                    epoch: original.epoch,
-                    side,
-                    chain: original.chain.clone(),
-                    path: original.path.clone(),
-                });
-            }
+        if let Some(proof) = &self.ancestors
+            && &proof.admission.path == path
+        {
+            let original = proof
+                .parents
+                .get(usize::from(side == Side::Target))
+                .ok_or(Failure {
+                    _cause: EndpointError::Unverified,
+                    _boundary: self.boundary,
+                    _os_error: None,
+                })?;
+            return Ok(ParentGuard {
+                directory: original.directory.clone(),
+                name: original.name.clone(),
+                epoch: original.epoch,
+                side,
+                chain: original.chain.clone(),
+                path: original.path.clone(),
+            });
         }
         self.pin_parent_sample(side, path).map(|(guard, _)| guard)
     }
@@ -8811,7 +8860,12 @@ impl<'a> NativeEpoch<'a> {
         self.check()
     }
     #[cfg(test)]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn create_namespace(&mut self, target: &ParentGuard) -> Result<PrivateNamespace> {
+        use std::fmt::Write as _;
         self.check()?;
         self.parent_check(target)?;
         if self._binding.is_none() || target.side != Side::Target || self.namespace_created {
@@ -8819,7 +8873,6 @@ impl<'a> NativeEpoch<'a> {
         }
         let random = self.io(random_id())?;
         let mut label = String::from(".qos-operation-");
-        use std::fmt::Write as _;
         for byte in random {
             write!(label, "{byte:02x}").map_err(|_| self.failure(EndpointError::Unsupported))?;
         }
@@ -8970,8 +9023,8 @@ impl<'a> NativeEpoch<'a> {
                 d::decode(intent_bytes).map_err(|_| self.failure(EndpointError::Unstable))?;
             let body = d::Body::Stage(d::Stage {
                 intent: decoded.digest,
-                object: descriptor_object(&created),
-                content: descriptor_content(&bytes),
+                object: descriptor_object(created),
+                content: descriptor_content(bytes),
                 source: d::Source::Endpoint {
                     side: intent.direction,
                     parent: descriptor_object(&self.ep(object(source.parent.directory.file()))?),
@@ -9363,7 +9416,7 @@ impl<'e> NativeEpoch<'e> {
                 && matches!(live.intent().decision, Decision::RecoverDeletion { .. })
                 && !live.deletion_baseline_checked())
             || Some(&source.identity()) != live.endpoints().get(direction)
-            || Some(&target.identity()) != live.endpoints().get(1 - direction)
+            || Some(&target.identity()) != live.endpoints().get(1 ^ direction)
         {
             return Err(failure());
         }
@@ -9541,7 +9594,7 @@ impl<'e> NativeEpoch<'e> {
             let result = self
                 .witness
                 .as_mut()
-                .ok_or_else(|| Failure {
+                .ok_or(Failure {
                     _cause: EndpointError::Unverified,
                     _boundary: self.boundary,
                     _os_error: None,
@@ -9560,7 +9613,7 @@ impl<'e> NativeEpoch<'e> {
     ) -> Result<()> {
         if self.witness.is_some() {
             let current = self.descriptor_snapshot(directory, name, expected)?;
-            let witness = self.witness.as_mut().ok_or_else(|| Failure {
+            let witness = self.witness.as_mut().ok_or(Failure {
                 _cause: EndpointError::Unverified,
                 _boundary: self.boundary,
                 _os_error: None,
@@ -9588,7 +9641,7 @@ impl<'e> NativeEpoch<'e> {
         if before.length > d::MAX_BYTES as u64 || before.length != expected.len() as u64 {
             return Err(self.failure(EndpointError::Unstable));
         }
-        let mut bytes = vec![0; expected.len() + 1];
+        let mut bytes = vec![0; expected.len().saturating_add(1)];
         self.charge(bytes.len() as u64)?;
         let count = self.io(file.read_at(&mut bytes, 0))?;
         if count != expected.len()
@@ -9606,6 +9659,10 @@ impl<'e> NativeEpoch<'e> {
             .map_err(|()| self.failure(EndpointError::LimitExceeded))?;
         Ok(())
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     pub(in crate::connection::transaction) fn create_registered_namespace(
         &mut self,
         live: &LiveOperation,
@@ -9661,6 +9718,10 @@ impl<'e> NativeEpoch<'e> {
         clippy::needless_pass_by_value,
         reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     fn create_connected_namespace(
         &mut self,
         live: &LiveOperation,
@@ -9691,7 +9752,7 @@ impl<'e> NativeEpoch<'e> {
         let direction = self
             .connected
             .as_ref()
-            .ok_or_else(|| Failure {
+            .ok_or(Failure {
                 _cause: EndpointError::Unverified,
                 _boundary: self.boundary,
                 _os_error: None,
@@ -9734,7 +9795,7 @@ impl<'e> NativeEpoch<'e> {
             .get_mut(direction)
             .ok_or_else(|| self.failure(EndpointError::Unverified))? = source_state;
         *expected
-            .get_mut(1 - direction)
+            .get_mut(1 ^ direction)
             .ok_or_else(|| self.failure(EndpointError::Unverified))? = target_state;
         if !Self::matches_plan(&expected[0], live.intent().source_before.as_ref())
             || !Self::matches_plan(&expected[1], live.intent().destination_before.as_ref())
@@ -9761,12 +9822,13 @@ impl<'e> NativeEpoch<'e> {
             .ok_or_else(|| self.failure(EndpointError::Unverified))? =
             source.chain.iter().map(descriptor_object).collect();
         *chains
-            .get_mut(1 - direction)
+            .get_mut(1 ^ direction)
             .ok_or_else(|| self.failure(EndpointError::Unverified))? =
             target.chain.iter().map(descriptor_object).collect();
         let intent = d::Intent {
             endpoints: live.endpoints().map(descriptor_endpoint),
-            direction: direction as u8,
+            direction: u8::try_from(direction)
+                .map_err(|_| self.failure(EndpointError::Unverified))?,
             decision: if source_guard.is_some() {
                 if direction == 0 { 1 } else { 2 }
             } else if direction == 0 {
@@ -9920,6 +9982,10 @@ impl super::NativePrepared<'_, '_> {
 }
 
 impl<'e> NativeEpoch<'e> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     pub(in crate::connection::transaction) fn relocate_connected(
         &mut self,
         live: &LiveOperation,
@@ -9941,6 +10007,10 @@ impl<'e> NativeEpoch<'e> {
             step,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     pub(in crate::connection::transaction) fn relocate_deletion(
         &mut self,
         live: &LiveOperation,
@@ -9961,6 +10031,10 @@ impl<'e> NativeEpoch<'e> {
     #[expect(
         clippy::needless_pass_by_value,
         reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
     )]
     fn relocate_connected_inner(
         &mut self,
@@ -10025,7 +10099,7 @@ impl<'e> NativeEpoch<'e> {
                 object: descriptor_object(&actual.actual),
                 stamp: descriptor_stamp(&stamp),
                 matches_expected: actual.matches_guard,
-                side: 1 - intent.direction,
+                side: 1 ^ intent.direction,
                 parent: descriptor_object(&private.intended_parent),
                 leaf: NativeName::Unix(private.intended_name.to_bytes().to_vec()),
                 barriers: 3,
@@ -10102,7 +10176,7 @@ impl<'e> NativeEpoch<'e> {
             .validate(live, self.nonce)
             .map_err(|_| self.failure(EndpointError::Unverified))?;
         if fact.intent != decoded.digest
-            || fact.side != 1 - intent.direction
+            || fact.side != 1 ^ intent.direction
             || Some(&fact.endpoint) != intent.endpoints.get(usize::from(fact.side))
             || fact.object != descriptor_object(&guard.actual)
             || fact.content != content
@@ -10113,7 +10187,7 @@ impl<'e> NativeEpoch<'e> {
         self.read_descriptor(
             &private.directory,
             c"displaced-intent",
-            displaced.descriptor.as_ref().ok_or_else(|| Failure {
+            displaced.descriptor.as_ref().ok_or(Failure {
                 _cause: EndpointError::Unverified,
                 _boundary: self.boundary,
                 _os_error: None,
@@ -10269,7 +10343,7 @@ impl super::NativeRecoveryReader<'_, '_> {
         {
             return Err(StoreError::StaleRevision);
         }
-        let side = 1 - intent.direction;
+        let side = 1 ^ intent.direction;
         let fact = d::RecoveryFact {
             intent: descriptor.digest,
             recovery: d::Recovery {
@@ -10317,17 +10391,18 @@ impl NativeEpoch<'_> {
         let direction = self
             .connected
             .as_ref()
-            .ok_or_else(|| Failure {
+            .ok_or(Failure {
                 _cause: EndpointError::Unverified,
                 _boundary: self.boundary,
                 _os_error: None,
             })?
             .direction;
-        let model_side = if side == Side::Source {
+        let model_side = u8::try_from(if side == Side::Source {
             direction
         } else {
-            1 - direction
-        } as u8;
+            1 ^ direction
+        })
+        .map_err(|_| self.failure(EndpointError::Unverified))?;
         let root = if side == Side::Source {
             self.source_root.clone()
         } else {
@@ -10368,7 +10443,7 @@ fn after_owned_reads() {
         match hook.as_mut() {
             Some((0, _)) => hook.take().map(|(_, callback)| callback),
             Some((remaining, _)) => {
-                *remaining -= 1;
+                *remaining = (*remaining).saturating_sub(1);
                 None
             }
             None => None,
@@ -10448,7 +10523,7 @@ impl super::NativeOwnedNames {
             return Err(EndpointError::LimitExceeded);
         }
         let length = usize::try_from(before.length).map_err(|_| EndpointError::LimitExceeded)?;
-        let mut bytes = vec![0; length + 1];
+        let mut bytes = vec![0; length.saturating_add(1)];
         self.charge(bytes.len() as u64)?;
         let count = file.read_at(&mut bytes, 0)?;
         if count != length || Stamp::new(&file.metadata()?) != before {
@@ -10729,6 +10804,10 @@ impl<'e> NativeEpoch<'e> {
         reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
     )]
     #[cfg(test)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     pub(in crate::connection::transaction) fn publish_connected<'a>(
         &'a mut self,
         live: &LiveOperation,
@@ -10766,6 +10845,10 @@ impl<'e> NativeEpoch<'e> {
             &step,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     fn outcome_from_publication<'a>(
         &'a mut self,
         live: &LiveOperation,
@@ -10909,7 +10992,7 @@ impl super::NativeOutcome<'_, '_> {
                 return Err(self.epoch.failure(EndpointError::Unverified));
             };
             if body.states.get(direction) != Some(&self.epoch.state(self.source)?)
-                || body.states.get(1 - direction)
+                || body.states.get(1 ^ direction)
                     != Some(&self.epoch.state(&self.publication.guard)?)
             {
                 return Err(self.epoch.failure(EndpointError::Unstable));
@@ -10923,9 +11006,7 @@ impl super::NativeOutcome<'_, '_> {
         })();
         result.map_err(|_| StoreError::RecoveryRequired)
     }
-    pub(in crate::connection) fn facts(
-        &self,
-    ) -> std::result::Result<(u32, Vec<u8>, Option<Vec<u8>>), StoreError> {
+    pub(in crate::connection) fn facts(&self) -> std::result::Result<DescriptorFacts, StoreError> {
         let value = d::decode(&self.descriptor).map_err(|_| StoreError::Corrupt)?;
         Ok((
             u32::try_from(value.header.attempt).map_err(|_| StoreError::Corrupt)?,
@@ -10956,6 +11037,10 @@ impl<'e> NativeEpoch<'e> {
     #[expect(
         clippy::needless_pass_by_value,
         reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
     )]
     fn deletion_outcome_with_existing<'a>(
         &'a mut self,
@@ -11081,9 +11166,7 @@ impl super::NativeDeletion<'_, '_> {
         })();
         result.map_err(|_| StoreError::RecoveryRequired)
     }
-    pub(in crate::connection) fn facts(
-        &self,
-    ) -> std::result::Result<(u32, Vec<u8>, Option<Vec<u8>>), StoreError> {
+    pub(in crate::connection) fn facts(&self) -> std::result::Result<DescriptorFacts, StoreError> {
         let value = d::decode(&self.descriptor).map_err(|_| StoreError::Corrupt)?;
         Ok((
             u32::try_from(value.header.attempt).map_err(|_| StoreError::Corrupt)?,
@@ -11313,7 +11396,7 @@ impl<'e> NativeEpoch<'e> {
                     .load(std::sync::atomic::Ordering::Acquire))
             || context.lifetime().strong_count() == 0
             || Some(&source.identity()) != context.endpoints().get(direction)
-            || Some(&target.identity()) != context.endpoints().get(1 - direction)
+            || Some(&target.identity()) != context.endpoints().get(1 ^ direction)
         {
             return Err(failure());
         }
@@ -11418,11 +11501,12 @@ impl<'e> NativeEpoch<'e> {
         let Some(direction) = self.connected.as_ref().map(|binding| binding.direction) else {
             return Err(self.failure(EndpointError::Unverified));
         };
-        let model_side = if side == Side::Source {
+        let model_side = u8::try_from(if side == Side::Source {
             direction
         } else {
-            1 - direction
-        } as u8;
+            1 ^ direction
+        })
+        .map_err(|_| self.failure(EndpointError::Unverified))?;
         let root = if side == Side::Source {
             self.source_root.clone()
         } else {
@@ -11529,7 +11613,7 @@ impl<'e> NativeEpoch<'e> {
         let direction = usize::from(body.direction);
         if !matches!(body.decision, 1 | 2)
             || direction > 1
-            || record.side() != (1 - direction) as u8
+            || Some(record.side()) != u8::try_from(1 ^ direction).ok()
             || intent.header.connection != context.id().connection.0
             || intent.header.operation != context.id().serial
             || intent.header.admission != context.admission()
@@ -11565,7 +11649,7 @@ impl<'e> NativeEpoch<'e> {
                 .collect::<Vec<_>>()
                 != *body
                     .chains
-                    .get(1 - direction)
+                    .get(1 ^ direction)
                     .ok_or_else(|| self.failure(EndpointError::Unverified))?
         {
             return Err(self.failure(EndpointError::IdentityChanged));
@@ -11618,7 +11702,7 @@ impl<'e> NativeEpoch<'e> {
                 shape.displaced_intent,
                 shape.outcome,
             ],
-            body.expected.get(1 - direction) != Some(&d::State::Absent),
+            body.expected.get(1 ^ direction) != Some(&d::State::Absent),
         )
         .map_err(|_| self.failure(EndpointError::Unverified))?;
         let mut inventory = vec![b"intent".as_slice(), b"staged-intent"];
@@ -11637,7 +11721,7 @@ impl<'e> NativeEpoch<'e> {
         let result = self
             .witness
             .as_mut()
-            .ok_or_else(|| Failure {
+            .ok_or(Failure {
                 _cause: EndpointError::Unverified,
                 _boundary: self.boundary,
                 _os_error: None,
@@ -11666,7 +11750,7 @@ impl<'e> NativeEpoch<'e> {
                 || (!shape.stage
                     && *body
                         .expected
-                        .get(1 - direction)
+                        .get(1 ^ direction)
                         .ok_or_else(|| self.failure(EndpointError::Unverified))?
                         != d::State::Absent)
             {
@@ -11696,7 +11780,7 @@ impl<'e> NativeEpoch<'e> {
             && displaced.is_none()
             && *body
                 .expected
-                .get(1 - direction)
+                .get(1 ^ direction)
                 .ok_or_else(|| self.failure(EndpointError::Unverified))?
                 != d::State::Absent
         {
@@ -11704,7 +11788,7 @@ impl<'e> NativeEpoch<'e> {
             if self.state(&guard)?
                 != *body
                     .expected
-                    .get(1 - direction)
+                    .get(1 ^ direction)
                     .ok_or_else(|| self.failure(EndpointError::Unverified))?
             {
                 return Err(self.failure(EndpointError::Unstable));
@@ -11818,7 +11902,7 @@ impl<'e> NativeEpoch<'e> {
             0;
             usize::try_from(before.length)
                 .map_err(|_| self.failure(EndpointError::LimitExceeded))?
-                + 1
+                .saturating_add(1)
         ];
         self.charge(bytes.len() as u64)?;
         let read = self.io(file.read_at(&mut bytes, 0))?;
@@ -11902,7 +11986,7 @@ struct RegularNames {
     displaced: bool,
     displaced_intent: bool,
 }
-impl<'e> super::RecoveredEvidence<'e> {
+impl super::RecoveredEvidence<'_> {
     fn expected_names(&self) -> RegularNames {
         RegularNames {
             stage: self.staged.is_some(),
@@ -11981,7 +12065,7 @@ impl<'e> super::RecoveredEvidence<'e> {
                         if self.epoch.state(guard)?
                             != *body
                                 .expected
-                                .get(1 - usize::from(body.direction))
+                                .get(1 ^ usize::from(body.direction))
                                 .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?
                         {
                             return Err(self.epoch.failure(EndpointError::Unstable));
@@ -12025,7 +12109,7 @@ impl<'e> super::RecoveredEvidence<'e> {
                     != self.epoch.state(&self.source)?
                     || *outcome
                         .states
-                        .get(1 - direction)
+                        .get(1 ^ direction)
                         .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?
                         != self.epoch.state(guard)?
                 {
@@ -12045,9 +12129,9 @@ impl<'e> super::RecoveredEvidence<'e> {
                 )?;
                 if displaced.actual != guard.actual
                     || descriptor_content(&self.epoch.capture(guard)?)
-                        != match &*body
+                        != match body
                             .expected
-                            .get(1 - usize::from(body.direction))
+                            .get(1 ^ usize::from(body.direction))
                             .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?
                         {
                             d::State::Regular { content, .. } => content.clone(),
@@ -12065,6 +12149,9 @@ impl<'e> super::RecoveredEvidence<'e> {
         })();
         result.map_err(|_| StoreError::RecoveryRequired)
     }
+}
+#[cfg(test)]
+impl<'e> super::RecoveredEvidence<'e> {
     #[expect(
         clippy::needless_pass_by_value,
         reason = "Consume the one-shot admission or candidate even when validation only borrows its fields."
@@ -12143,9 +12230,9 @@ impl NativeEpoch<'_> {
             object: expected,
             stamp,
             content,
-        } = &*body
+        } = body
             .expected
-            .get(1 - usize::from(body.direction))
+            .get(1 ^ usize::from(body.direction))
             .ok_or_else(|| self.failure(EndpointError::Unverified))?
         else {
             return Err(self.failure(EndpointError::Unverified));
@@ -12191,7 +12278,7 @@ impl NativeEpoch<'_> {
                 object: descriptor_object(&guard.actual),
                 stamp: current,
                 matches_expected: true,
-                side: 1 - body.direction,
+                side: 1 ^ body.direction,
                 parent: descriptor_object(&private.intended_parent),
                 leaf: NativeName::Unix(private.intended_name.to_bytes().to_vec()),
                 barriers: 3,
@@ -12426,7 +12513,7 @@ impl<'e> NativeEpoch<'e> {
         if stage.is_some()
             || !matches!(body.decision, 3 | 4)
             || direction > 1
-            || record.side() != (1 - direction) as u8
+            || Some(record.side()) != u8::try_from(1 ^ direction).ok()
             || intent.header.connection != context.id().connection.0
             || intent.header.operation != context.id().serial
             || intent.header.admission != context.admission()
@@ -12467,7 +12554,7 @@ impl<'e> NativeEpoch<'e> {
                 .collect::<Vec<_>>()
                 != *body
                     .chains
-                    .get(1 - direction)
+                    .get(1 ^ direction)
                     .ok_or_else(|| self.failure(EndpointError::Unverified))?
         {
             return Err(self.failure(EndpointError::IdentityChanged));
@@ -12514,7 +12601,7 @@ impl<'e> NativeEpoch<'e> {
             if self.state(&guard)?
                 != *body
                     .expected
-                    .get(1 - direction)
+                    .get(1 ^ direction)
                     .ok_or_else(|| self.failure(EndpointError::Unverified))?
             {
                 return Err(self.failure(EndpointError::Unstable));
@@ -12640,7 +12727,7 @@ impl<'e> super::RecoveredDeletion<'e> {
                     || self.epoch.state(guard)?
                         != *body
                             .expected
-                            .get(1 - usize::from(body.direction))
+                            .get(1 ^ usize::from(body.direction))
                             .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?
                 {
                     return Err(self.epoch.failure(EndpointError::Unstable));
@@ -12658,9 +12745,9 @@ impl<'e> super::RecoveredDeletion<'e> {
                     c"displaced-intent",
                     bytes,
                 )?;
-                let d::State::Regular { content, .. } = &*body
+                let d::State::Regular { content, .. } = body
                     .expected
-                    .get(1 - usize::from(body.direction))
+                    .get(1 ^ usize::from(body.direction))
                     .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?
                 else {
                     return Err(self.epoch.failure(EndpointError::Unverified));
@@ -13310,7 +13397,7 @@ pub(in crate::connection::transaction) fn admission_metadata<'e>(
     {
         return Err(StoreError::IdentityChanged);
     }
-    let deadline = Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = crate::deadline_after(std::time::Duration::from_secs(30));
     let left = AdmissionPath::capture(
         source,
         &intent.path,
@@ -13459,7 +13546,7 @@ impl<'e> NativeEpoch<'e> {
                 .collect::<Vec<_>>()
                 != *identity
                     .chains
-                    .get(1 - direction)
+                    .get(1 ^ direction)
                     .ok_or_else(|| self.failure(EndpointError::Unverified))?
         {
             return Err(self.failure(EndpointError::IdentityChanged));
@@ -13478,7 +13565,7 @@ impl<'e> NativeEpoch<'e> {
         };
         let target_guard = match *identity
             .states
-            .get(1 - direction)
+            .get(1 ^ direction)
             .ok_or_else(|| self.failure(EndpointError::Unverified))?
         {
             d::State::Absent => {
@@ -13554,8 +13641,7 @@ impl super::NeverBegun<'_> {
             (
                 &self.source,
                 &self.source_guard,
-                &*self
-                    .identity
+                self.identity
                     .states
                     .get(direction)
                     .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?,
@@ -13563,10 +13649,9 @@ impl super::NeverBegun<'_> {
             (
                 &self.target,
                 &self.target_guard,
-                &*self
-                    .identity
+                self.identity
                     .states
-                    .get(1 - direction)
+                    .get(1 ^ direction)
                     .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?,
             ),
         ] {
@@ -13706,7 +13791,7 @@ mod never_begun_tests {
                 &mut live,
                 &session,
                 4 * 1024 * 1024,
-                Instant::now() + std::time::Duration::from_secs(30),
+                crate::deadline_after(std::time::Duration::from_secs(30)),
                 &cancel,
             )
             .unwrap();
@@ -13764,7 +13849,7 @@ mod never_begun_tests {
             .reserve_recovery_reads(
                 &mut context,
                 16 * 1024 * 1024,
-                Instant::now() + std::time::Duration::from_secs(30),
+                crate::deadline_after(std::time::Duration::from_secs(30)),
                 &cancel,
             )
             .unwrap();
@@ -13980,8 +14065,7 @@ impl super::NativeSafeBoundary<'_> {
         &mut self,
         store: &crate::connection::store::ConnectionStore,
         context: &crate::connection::store::RecoveryContext,
-    ) -> std::result::Result<(u8, Option<(u32, Option<Vec<u8>>, Option<Vec<u8>>)>), StoreError>
-    {
+    ) -> std::result::Result<(u8, Option<RecordedFacts>), StoreError> {
         use super::{NativeSafeBoundary as Boundary, OwnedBoundary};
         let (kind, proof) = match self {
             Boundary::NeverBegun(proof) => {
@@ -14045,17 +14129,7 @@ impl super::NativeSafeBoundary<'_> {
 }
 
 impl<'e> super::NativeSafeBoundary<'e> {
-    fn drain_parts(
-        &mut self,
-    ) -> std::result::Result<
-        (
-            &mut NativeEpoch<'e>,
-            &PrivateNamespace,
-            &RelocatedObject,
-            &StableFileGuard,
-        ),
-        StoreError,
-    > {
+    fn drain_parts(&mut self) -> std::result::Result<RelocatedParts<'_, 'e>, StoreError> {
         use super::{NativeSafeBoundary as Boundary, OwnedBoundary};
         let (Boundary::DisplacedAccounted(proof) | Boundary::PublishedAccounted(proof)) = self
         else {
@@ -14180,7 +14254,7 @@ impl super::NativeDrainReader<'_, '_> {
                 .descriptor
                 .clone()
                 .ok_or(StoreError::RecoveryRequired)?,
-            1 - intent.direction,
+            1 ^ intent.direction,
         ))
     }
     pub(in crate::connection) fn fact(
@@ -14199,7 +14273,7 @@ impl super::NativeDrainReader<'_, '_> {
             return Err(StoreError::StaleRevision);
         }
         let descriptor = d::decode(bytes).map_err(|_| StoreError::Corrupt)?;
-        let side = 1 - intent.direction;
+        let side = 1 ^ intent.direction;
         Ok(d::RecoveryFact {
             intent: descriptor.digest,
             recovery: d::Recovery {
@@ -14684,13 +14758,7 @@ impl NativeEpoch<'_> {
         fence: u64,
         path: &RelativePath,
         parents: &[ParentGuard; 2],
-    ) -> std::result::Result<
-        (
-            Vec<CaptureNamespace>,
-            Vec<(d::CapturedVersion, Option<StableFileGuard>)>,
-        ),
-        StoreError,
-    > {
+    ) -> std::result::Result<(Vec<CaptureNamespace>, Vec<GuardedVersion>), StoreError> {
         let mut namespaces = Vec::new();
         let mut extra = Vec::new();
         for record in records {
@@ -14722,7 +14790,7 @@ impl NativeEpoch<'_> {
                 || intent.header.namespace_name() != record.name()
                 || body.path != *path
                 || body.endpoints != self.identities.map(descriptor_endpoint)
-                || side != 1 - usize::from(body.direction)
+                || side != 1 ^ usize::from(body.direction)
                 || parents.iter().enumerate().any(|(index, parent)| {
                     body.chains.get(index).is_none_or(|chain| {
                         parent
@@ -14953,7 +15021,7 @@ impl<'e> NativeEpoch<'e> {
         if identity.endpoints != live.endpoints().map(descriptor_endpoint) {
             return Err(StoreError::IdentityChanged);
         }
-        let direction = usize::from(1 - target_side);
+        let direction = usize::from(1 ^ target_side);
         let (source, target) = if direction == 0 {
             (left, right)
         } else {
@@ -14962,7 +15030,7 @@ impl<'e> NativeEpoch<'e> {
         if *live.endpoints().get(direction).ok_or(StoreError::Corrupt)? != source.identity()
             || *live
                 .endpoints()
-                .get(1 - direction)
+                .get(1 ^ direction)
                 .ok_or(StoreError::Corrupt)?
                 != target.identity()
         {
@@ -15009,7 +15077,7 @@ impl<'e> NativeEpoch<'e> {
             let side = if parent.side == Side::Source {
                 direction
             } else {
-                1 - direction
+                1 ^ direction
             };
             if parent
                 .chain
@@ -15098,7 +15166,7 @@ impl super::NativeRestore<'_> {
         }
         self.reader.validate(store, live)?;
         let (target, _, _, selection) = store.selected_native_scope(live)?;
-        self.validate_native(live, usize::from(1 - target), &selection)
+        self.validate_native(live, usize::from(1 ^ target), &selection)
     }
     #[expect(
         clippy::too_many_lines,
@@ -15114,7 +15182,7 @@ impl super::NativeRestore<'_> {
             self.epoch.connected_check(live)?;
             for (parent, guard, index) in [
                 (&self.source, self.source_guard.as_ref(), direction),
-                (&self.target, self.target_guard.as_ref(), 1 - direction),
+                (&self.target, self.target_guard.as_ref(), 1 ^ direction),
             ] {
                 self.epoch.parent_check(parent)?;
                 if self.published && parent.side == Side::Target {
@@ -15162,7 +15230,7 @@ impl super::NativeRestore<'_> {
                     self.epoch.read_descriptor(
                         &private.directory,
                         c"displaced-intent",
-                        displaced.descriptor.as_ref().ok_or_else(|| Failure {
+                        displaced.descriptor.as_ref().ok_or(Failure {
                             _cause: EndpointError::Unverified,
                             _boundary: Boundary::Uncertain,
                             _os_error: None,
@@ -15208,7 +15276,7 @@ impl super::NativeRestore<'_> {
                             &self
                                 .staged
                                 .as_ref()
-                                .ok_or_else(|| Failure {
+                                .ok_or(Failure {
                                     _cause: EndpointError::Unverified,
                                     _boundary: Boundary::Uncertain,
                                     _os_error: None,
@@ -15218,7 +15286,7 @@ impl super::NativeRestore<'_> {
                     };
                     if *body
                         .states
-                        .get(1 - direction)
+                        .get(1 ^ direction)
                         .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))?
                         != target
                     {
@@ -15288,6 +15356,10 @@ impl super::NativeRestore<'_> {
         Ok((intent.clone(), stage))
     }
     #[cfg(test)]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "underscore-named evidence fields are retained for diagnostics and read only here"
+    )]
     fn namespace_name(&self) -> std::result::Result<&str, StoreError> {
         self.private
             .as_ref()
@@ -15319,7 +15391,7 @@ impl super::NativeRestore<'_> {
             live.revision(),
             StepKind::Namespace,
         )?;
-        let direction = usize::from(1 - target_side);
+        let direction = usize::from(1 ^ target_side);
         let header = reserved.header(live, self.epoch.nonce)?;
         let result = (|| {
             self.epoch.connected_check(live)?;
@@ -15332,7 +15404,7 @@ impl super::NativeRestore<'_> {
             }
             if let Some(guard) = &self.target_guard {
                 *expected
-                    .get_mut(1 - direction)
+                    .get_mut(1 ^ direction)
                     .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))? =
                     self.epoch.state(guard)?;
             }
@@ -15342,7 +15414,7 @@ impl super::NativeRestore<'_> {
                 .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))? =
                 self.source.chain.iter().map(descriptor_object).collect();
             *chains
-                .get_mut(1 - direction)
+                .get_mut(1 ^ direction)
                 .ok_or_else(|| self.epoch.failure(EndpointError::Unverified))? =
                 self.target.chain.iter().map(descriptor_object).collect();
             let name = CString::new(reserved.name())
@@ -15361,7 +15433,8 @@ impl super::NativeRestore<'_> {
             let identity = self.epoch.ep(object(directory.file()))?;
             let intent = d::Intent {
                 endpoints: live.endpoints().map(descriptor_endpoint),
-                direction: direction as u8,
+                direction: u8::try_from(direction)
+                    .map_err(|_| self.epoch.failure(EndpointError::Unverified))?,
                 decision,
                 namespace: descriptor_object(&identity),
                 path: live.intent().path.clone(),
@@ -15705,7 +15778,7 @@ impl super::NativeRestore<'_> {
                     &self
                         .staged
                         .as_ref()
-                        .ok_or_else(|| Failure {
+                        .ok_or(Failure {
                             _cause: EndpointError::Unverified,
                             _boundary: Boundary::Uncertain,
                             _os_error: None,
@@ -15720,35 +15793,34 @@ impl super::NativeRestore<'_> {
             };
             header.progress = live.revision();
             let mut references = Vec::new();
-            let displaced =
-                if let Some(sealed) = &self.sealed {
-                    self.epoch.sealed_check(live, private, sealed)?;
-                    let fact = sealed
-                        .recovery
-                        .value()
-                        .validate(live, self.epoch.nonce)
-                        .map_err(|_| self.epoch.failure(EndpointError::Unverified))?;
-                    references.push(d::Reference {
-                        slot: fact.recovery.slot,
-                        side: fact.side,
-                        role: fact.role,
-                        binding: fact
-                            .binding_digest()
-                            .map_err(|_| self.epoch.failure(EndpointError::Unverified))?,
-                    });
-                    Some(
-                        d::decode(sealed.displaced.descriptor.as_deref().ok_or_else(|| {
-                            Failure {
-                                _cause: EndpointError::Unverified,
-                                _boundary: Boundary::Uncertain,
-                                _os_error: None,
-                            }
-                        })?)
+            let displaced = if let Some(sealed) = &self.sealed {
+                self.epoch.sealed_check(live, private, sealed)?;
+                let fact = sealed
+                    .recovery
+                    .value()
+                    .validate(live, self.epoch.nonce)
+                    .map_err(|_| self.epoch.failure(EndpointError::Unverified))?;
+                references.push(d::Reference {
+                    slot: fact.recovery.slot,
+                    side: fact.side,
+                    role: fact.role,
+                    binding: fact
+                        .binding_digest()
                         .map_err(|_| self.epoch.failure(EndpointError::Unverified))?,
-                    )
-                } else {
-                    None
-                };
+                });
+                Some(
+                    d::decode(sealed.displaced.descriptor.as_deref().ok_or({
+                        Failure {
+                            _cause: EndpointError::Unverified,
+                            _boundary: Boundary::Uncertain,
+                            _os_error: None,
+                        }
+                    })?)
+                    .map_err(|_| self.epoch.failure(EndpointError::Unverified))?,
+                )
+            } else {
+                None
+            };
             let body = d::Body::Outcome(d::Outcome {
                 intent: intent.digest,
                 stage: staged.as_ref().map(|value| value.digest),
@@ -15852,7 +15924,7 @@ impl super::NativeRestore<'_> {
                     object: descriptor_object(&displaced.actual),
                     stamp: descriptor_stamp(&stamp),
                     matches_expected: displaced.matches_guard,
-                    side: 1 - body.direction,
+                    side: 1 ^ body.direction,
                     parent: descriptor_object(&private.intended_parent),
                     leaf: NativeName::Unix(private.intended_name.to_bytes().to_vec()),
                     barriers: 3,
@@ -15927,7 +15999,7 @@ impl<'e> NativeEpoch<'e> {
         if context.recovery_only() != stopped {
             return Err(StoreError::RecoveryRequired);
         }
-        let direction = usize::from(1 - target_side);
+        let direction = usize::from(1 ^ target_side);
         let (source, target) = if direction == 0 {
             (left, right)
         } else {
@@ -15940,7 +16012,7 @@ impl<'e> NativeEpoch<'e> {
             != source.identity()
             || *context
                 .endpoints()
-                .get(1 - direction)
+                .get(1 ^ direction)
                 .ok_or(StoreError::Corrupt)?
                 != target.identity()
         {
@@ -16045,7 +16117,7 @@ impl<'e> NativeEpoch<'e> {
                     .collect::<Vec<_>>()
                     != *body
                         .chains
-                        .get(1 - direction)
+                        .get(1 ^ direction)
                         .ok_or_else(|| epoch.failure(EndpointError::Unverified))?
             {
                 return Err(epoch.failure(EndpointError::IdentityChanged));
@@ -16088,7 +16160,7 @@ impl<'e> NativeEpoch<'e> {
                         && !shape.stage
                         && *body
                             .expected
-                            .get(1 - direction)
+                            .get(1 ^ direction)
                             .ok_or_else(|| epoch.failure(EndpointError::Unverified))?
                             != d::State::Absent)
                 {
@@ -16099,7 +16171,7 @@ impl<'e> NativeEpoch<'e> {
             let displaced_descriptor = relocated
                 .as_ref()
                 .map(|(value, _)| {
-                    d::decode(value.descriptor.as_deref().ok_or_else(|| Failure {
+                    d::decode(value.descriptor.as_deref().ok_or(Failure {
                         _cause: EndpointError::Unverified,
                         _boundary: Boundary::Uncertain,
                         _os_error: None,
@@ -16129,7 +16201,7 @@ impl<'e> NativeEpoch<'e> {
                 None
             };
             let mut guards = Vec::new();
-            for (parent, side) in [(&source, direction), (&target, 1 - direction)] {
+            for (parent, side) in [(&source, direction), (&target, 1 ^ direction)] {
                 if parent.side == Side::Target
                     && (relocated.is_some()
                         || if tombstone {
@@ -16301,7 +16373,7 @@ impl super::NativeRestore<'_> {
                 (
                     &self.source,
                     self.source_guard.as_ref(),
-                    usize::from(1 - target),
+                    usize::from(1 ^ target),
                 ),
                 (
                     &self.target,
@@ -16366,7 +16438,7 @@ impl super::NativeRestore<'_> {
                 self.epoch.read_descriptor(
                     &private.directory,
                     c"displaced-intent",
-                    displaced.descriptor.as_deref().ok_or_else(|| Failure {
+                    displaced.descriptor.as_deref().ok_or(Failure {
                         _cause: EndpointError::Unverified,
                         _boundary: Boundary::Uncertain,
                         _os_error: None,
@@ -16592,7 +16664,7 @@ impl<'e> super::NativeRestore<'e> {
                     .map_err(|_| StoreError::RecoveryRequired)?
             } else {
                 self.epoch
-                    .check_absent(&*parents.get(index).ok_or(StoreError::Corrupt)?)
+                    .check_absent(parents.get(index).ok_or(StoreError::Corrupt)?)
                     .map_err(|_| StoreError::RecoveryRequired)?;
                 d::State::Absent
             };
@@ -16881,7 +16953,7 @@ impl super::NativeSelectedBoundary<'_> {
         &mut self,
         store: &crate::connection::store::ConnectionStore,
         context: &crate::connection::store::RecoveryContext,
-    ) -> std::result::Result<(u8, u32, Option<Vec<u8>>, Option<Vec<u8>>), StoreError> {
+    ) -> std::result::Result<DirectoryFacts, StoreError> {
         if !context.recovery_only() {
             return Err(StoreError::RecoveryRequired);
         }
@@ -16931,7 +17003,7 @@ impl super::NativeSelectedBoundary<'_> {
             .descriptor
             .as_ref()
             .ok_or(StoreError::RecoveryRequired)?;
-        let target = 1 - body.direction;
+        let target = 1 ^ body.direction;
         let selection = body.selection.clone();
         self.proof
             .validate_recovery_native(context, target, &selection)
@@ -16939,17 +17011,7 @@ impl super::NativeSelectedBoundary<'_> {
 }
 
 impl<'e> super::NativeSelectedBoundary<'e> {
-    fn drain_parts(
-        &mut self,
-    ) -> std::result::Result<
-        (
-            &mut NativeEpoch<'e>,
-            &PrivateNamespace,
-            &RelocatedObject,
-            &StableFileGuard,
-        ),
-        StoreError,
-    > {
+    fn drain_parts(&mut self) -> std::result::Result<RelocatedParts<'_, 'e>, StoreError> {
         self.proof.reader.retained_check()?;
         let (displaced, guard) = self
             .proof
@@ -16992,17 +17054,7 @@ impl<'e> super::NativeDrainBoundary<'_, 'e> {
             Self::Selected(proof) => proof.validate(store, context).map(|_| ()),
         }
     }
-    fn drain_parts(
-        &mut self,
-    ) -> std::result::Result<
-        (
-            &mut NativeEpoch<'e>,
-            &PrivateNamespace,
-            &RelocatedObject,
-            &StableFileGuard,
-        ),
-        StoreError,
-    > {
+    fn drain_parts(&mut self) -> std::result::Result<RelocatedParts<'_, 'e>, StoreError> {
         match self {
             Self::Ordinary(proof) => proof.drain_parts(),
             Self::Selected(proof) => proof.drain_parts(),
@@ -17088,7 +17140,7 @@ impl<'e> NativeEpoch<'e> {
             != source.identity()
             || *context
                 .endpoints()
-                .get(1 - direction)
+                .get(1 ^ direction)
                 .ok_or(StoreError::Corrupt)?
                 != target.identity()
         {
@@ -17277,7 +17329,7 @@ pub(in crate::connection) fn execute_reviewed_initial(
             &mut live,
             session,
             EXECUTOR_READ_WINDOW,
-            Instant::now() + std::time::Duration::from_secs(30),
+            crate::deadline_after(std::time::Duration::from_secs(30)),
             cancel,
         )?;
         execute_admitted(store, live, session, left, right, cancel)
@@ -17303,7 +17355,7 @@ pub(in crate::connection) fn resolve_regular(
             &mut live,
             session,
             EXECUTOR_READ_WINDOW,
-            Instant::now() + std::time::Duration::from_secs(30),
+            crate::deadline_after(std::time::Duration::from_secs(30)),
             cancel,
         )?;
         execute_selected_admitted(store, live, session, left, right, cancel)
@@ -17365,7 +17417,7 @@ fn execute_next_inner_mode(
         store.reserve_recovery_reads(
             &mut context,
             EXECUTOR_READ_WINDOW,
-            Instant::now() + std::time::Duration::from_secs(30),
+            crate::deadline_after(std::time::Duration::from_secs(30)),
             cancel,
         )?;
         let mut epoch = NativeEpoch::begin_observation(&context, left, right, cancel)
@@ -17377,19 +17429,17 @@ fn execute_next_inner_mode(
             absent()
         };
         (source, destination, baseline)
+    } else if record.baseline_revision.is_some() {
+        store.operationless_baseline(id)?;
+        let (source, destination) =
+            initial_baseline::observe_current(store, id, session, left, right, cancel)?;
+        (source, destination, store.load_baseline(id)?)
     } else {
-        if record.baseline_revision.is_some() {
-            store.operationless_baseline(id)?;
-            let (source, destination) =
-                initial_baseline::observe_current(store, id, session, left, right, cancel)?;
-            (source, destination, store.load_baseline(id)?)
-        } else {
-            (
-                endpoint::observe(left, cancel),
-                endpoint::observe(right, cancel),
-                absent(),
-            )
-        }
+        (
+            endpoint::observe(left, cancel),
+            endpoint::observe(right, cancel),
+            absent(),
+        )
     };
     if record.baseline_revision.is_some() {
         use crate::connection::transaction::directory::{DirectoryPlan, plan_directory};
@@ -17408,7 +17458,7 @@ fn execute_next_inner_mode(
                     &mut live,
                     session,
                     EXECUTOR_READ_WINDOW,
-                    Instant::now() + std::time::Duration::from_secs(30),
+                    crate::deadline_after(std::time::Duration::from_secs(30)),
                     cancel,
                 )?;
                 return directory::execute_admitted(store, live, session, left, right, cancel);
@@ -17442,7 +17492,7 @@ fn execute_next_inner_mode(
                 &mut live,
                 session,
                 EXECUTOR_READ_WINDOW,
-                Instant::now() + std::time::Duration::from_secs(30),
+                crate::deadline_after(std::time::Duration::from_secs(30)),
                 cancel,
             )?;
             execute_admitted(store, live, session, left, right, cancel)
@@ -17686,7 +17736,7 @@ fn execute_admitted(
             store.prepare_native(&mut live, reservation, prepared)?;
         }
         Decision::RecoverDeletion { .. } => {
-            epoch.verify_deletion_scope(store, &mut live, cancel)?;
+            epoch.verify_deletion_scope(store, &live, cancel)?;
             let target_guard = epoch
                 .guard_regular(&target)
                 .map_err(|_| StoreError::RecoveryRequired)?;
@@ -17787,7 +17837,7 @@ fn execute_pending(
         store.reserve_recovery_reads(
             &mut context,
             EXECUTOR_READ_WINDOW,
-            Instant::now() + std::time::Duration::from_secs(30),
+            crate::deadline_after(std::time::Duration::from_secs(30)),
             cancel,
         )?;
     }
@@ -18002,7 +18052,7 @@ impl NativeEpoch<'_> {
         if !(1..=64).contains(&depth) || self.ancestor_chains >= 256 {
             return Err(self.failure(EndpointError::LimitExceeded));
         }
-        self.ancestor_chains += 1;
+        self.ancestor_chains = self.ancestor_chains.saturating_add(1);
         Ok(())
     }
     fn prove_existing_ancestors(&mut self, bytes: Option<&[u8]>) -> Result<()> {
@@ -18030,7 +18080,7 @@ impl NativeEpoch<'_> {
                 != Some(&descriptor_endpoint(self.identities[0]))
             || admission
                 .endpoints
-                .get(1 - usize::from(admission.direction))
+                .get(1 ^ usize::from(admission.direction))
                 != Some(&descriptor_endpoint(self.identities[1]))
         {
             return Err(self.failure(EndpointError::IdentityChanged));
@@ -18069,7 +18119,7 @@ impl NativeEpoch<'_> {
                 let logical = if index == 0 {
                     usize::from(proof.admission.direction)
                 } else {
-                    1 - usize::from(proof.admission.direction)
+                    1 ^ usize::from(proof.admission.direction)
                 };
                 let expected = proof
                     .admission
@@ -18258,7 +18308,7 @@ mod initial_parent_tests {
                         &mut live,
                         &session,
                         EXECUTOR_READ_WINDOW,
-                        Instant::now() + std::time::Duration::from_secs(30),
+                        crate::deadline_after(std::time::Duration::from_secs(30)),
                         &cancel,
                     )
                     .unwrap();

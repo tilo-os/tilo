@@ -190,7 +190,12 @@ impl RelativePath {
     }
     fn decode(&self) -> io::Result<PathBuf> {
         if self.components.len() > 128
-            || self.components.iter().map(|n| n.len() + 1).sum::<usize>() > 4096
+            || self
+                .components
+                .iter()
+                .map(|n| n.len().saturating_add(1))
+                .fold(0_usize, usize::saturating_add)
+                > 4096
         {
             return Err(changed("journal path exceeds bounds"));
         }
@@ -337,7 +342,7 @@ pub struct MigrationJournal {
     sequence: u64,
     parent: Arc<PinnedDirectory>,
     name: OsString,
-    file: File,
+    file: advisory_lock::FileLock,
     identity: Metadata,
     resume: bool,
     seen: BTreeSet<PathBuf>,
@@ -466,10 +471,10 @@ impl MigrationJournal {
         let mut sequence = 0;
         let mut end = 8;
         let mut document = if modern {
-            let Some(Record::Header { document }) = read_record(&mut file, sequence)? else {
+            let Some(Record::Header { document }) = read_record(&mut *file, sequence)? else {
                 return Err(changed("journal header missing"));
             };
-            sequence += 1;
+            sequence = sequence.saturating_add(1);
             end = file.stream_position()?;
             if document.version != 2 || !document.receipts.is_empty() || document.outcome.is_some()
             {
@@ -478,7 +483,7 @@ impl MigrationJournal {
             document
         } else {
             let mut data = Vec::new();
-            (&mut file).take(MAX_JOURNAL + 1).read_to_end(&mut data)?;
+            (&mut *file).take(MAX_JOURNAL + 1).read_to_end(&mut data)?;
             if data.len() as u64 > MAX_JOURNAL {
                 return Err(changed("legacy journal exceeds size bound"));
             }
@@ -501,9 +506,9 @@ impl MigrationJournal {
         }
         if modern {
             let mut pending = None;
-            while let Some(record) = read_record(&mut file, sequence)? {
+            while let Some(record) = read_record(&mut *file, sequence)? {
                 Self::replay_record(&mut document, &mut index, &mut pending, record)?;
-                sequence += 1;
+                sequence = sequence.saturating_add(1);
                 end = file.stream_position()?;
             }
         }
@@ -849,10 +854,7 @@ impl MigrationJournal {
             Self::write_outcome(&mut temporary.file, &mut sequence, outcome)?;
         }
         durability::sync_file(&temporary.file)?;
-        temporary
-            .file
-            .try_lock()
-            .map_err(|e| changed(&format!("journal is busy: {e}")))?;
+        let locked = super::migration_journal_log::lock_journal(temporary.file.try_clone()?)?;
         self.validate()?;
         #[cfg(test)]
         persistence_injection::fail_at("legacy_before_replace")?;
@@ -863,7 +865,7 @@ impl MigrationJournal {
             Path::new(&self.name),
         )?;
         durability::sync_directory(&self.parent.file)?;
-        self.file = temporary.file.try_clone()?;
+        self.file = locked;
         self.identity = Metadata::from_file(&self.file)?;
         self.sequence = sequence;
         self.document.version = 2;
@@ -1250,7 +1252,8 @@ pub fn resume_folder(
     let destination = absolute(&journal.document.destination).map_err(|e| e.to_string())?;
     migration::copy_folder_internal(&source, &destination, cancelled, progress, Some(journal))
 }
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod tests {
     use super::*;
     use std::{fs, path::PathBuf, sync::atomic::Ordering};
@@ -2052,7 +2055,7 @@ pub(super) mod crash_injection {
             .parse::<usize>()
             .unwrap();
         COUNT.with(|count| {
-            count.set(count.get() + 1);
+            count.set(count.get().saturating_add(1));
             if count.get() == nth {
                 std::process::exit(73);
             }
@@ -2060,7 +2063,8 @@ pub(super) mod crash_injection {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_tests {
     #[test]
     fn journaled_copy_refuses_before_mutation_until_native_durability_is_available() {
@@ -2119,7 +2123,7 @@ pub(super) mod persistence_injection {
             if let Some((target, nth)) = &mut *f
                 && *target == boundary
             {
-                *nth -= 1;
+                *nth = (*nth).saturating_sub(1);
                 if *nth == 0 {
                     *f = None;
                     return Err(io::Error::new(

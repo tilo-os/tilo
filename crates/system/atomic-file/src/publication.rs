@@ -94,6 +94,11 @@ impl PublicationError {
     ///
     /// The retained native file and parent handles are reused. No rename is
     /// issued. Other states return this error unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` unchanged for other states, or with the new native error
+    /// when the commit fails again.
     pub fn retry_commit(mut self) -> Result<(), Self> {
         let Some(guard) = self.pending_commit.as_ref() else {
             return Err(self);
@@ -141,11 +146,21 @@ pub fn publication_state(error: &io::Error) -> Option<PublicationState> {
 }
 
 /// Durably replace `path` through an opened parent directory.
+///
+/// # Errors
+///
+/// Returns a [`PublicationError`] carrying the known publication state when
+/// the parent cannot be opened or staging, rename or a barrier fails.
 pub fn replace(path: &Path, bytes: &[u8], privacy: Privacy) -> Result<(), PublicationError> {
     publish_path(path, bytes, PublishMode::Replace, privacy, None)
 }
 
 /// Durably publish `path` only when the target name is absent.
+///
+/// # Errors
+///
+/// Returns a [`PublicationError`]; an existing target is reported as
+/// `AlreadyExists` without publication.
 pub fn publish_if_absent(
     path: &Path,
     bytes: &[u8],

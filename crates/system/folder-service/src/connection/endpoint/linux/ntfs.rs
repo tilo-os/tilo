@@ -57,6 +57,10 @@ impl NtfsReadEndpoint {
     pub(super) fn same_session(&self, client: &Arc<Mutex<Client>>) -> bool {
         Arc::ptr_eq(&self.client, client)
     }
+    #[expect(
+        clippy::unused_self,
+        reason = "a capability query on the live session, like every other endpoint's"
+    )]
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             safe_read: Capability::Refused(EndpointError::Unverified),

@@ -208,8 +208,16 @@ pub(super) struct DisconnectFence {
 }
 
 use super::super::migration_journal_log as framing;
+pub(super) use format::ExistingAncestorPatchV1;
 use format::{Change, Connection, Event, Row};
-pub(super) use format::{DirectoryAncestorPatchV1, DirectoryBoundaryFact, ExistingAncestorPatchV1};
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        unused_imports,
+        reason = "only the Linux executor consumes these patch types"
+    )
+)]
+pub(super) use format::{DirectoryAncestorPatchV1, DirectoryBoundaryFact};
 #[cfg(test)]
 use std::io::Read;
 use std::{
@@ -436,7 +444,7 @@ fn baseline_phase_estimate(old_count: u32, new_count: u32) -> Result<u64, StoreE
         Ok(if count == 0 {
             0
         } else {
-            u64::from(count) * 8 + 1
+            u64::from(count).saturating_mul(8).saturating_add(1)
         })
     };
     pages(old_count)?
@@ -585,7 +593,7 @@ impl ConnectionStore {
     }
 
     pub(super) fn open_default() -> Result<Self, StoreError> {
-        let path = dirs::data_local_dir()
+        let path = xdg_paths::data_local_dir()
             .ok_or(StoreError::UnsupportedDurability)?
             .join("qos-imager")
             .join("connections-v1");
@@ -1912,12 +1920,11 @@ impl ConnectionStore {
             return Ok(false);
         }
         for row in self.rows()? {
-            if let Row::NativeRegistration(registration) = row? {
-                if registration.connection == operation.connection
-                    && registration.serial == operation.serial
-                {
-                    return Ok(false);
-                }
+            if let Row::NativeRegistration(registration) = row?
+                && registration.connection == operation.connection
+                && registration.serial == operation.serial
+            {
+                return Ok(false);
             }
         }
         Ok(true)
@@ -2221,6 +2228,10 @@ impl ConnectionStore {
             false,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     fn reduce_boundary_rows(
         &self,
         id: OperationId,
@@ -2272,6 +2283,10 @@ impl ConnectionStore {
     #[expect(
         clippy::too_many_lines,
         reason = "One canonical typed accounting predicate is shared by ordinary reduction and historical closure."
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
     )]
     fn validate_regular_boundary(
         &self,
@@ -2330,13 +2345,12 @@ impl ConnectionStore {
             {
                 return Err(StoreError::StaleRevision);
             }
-            if let Some(action) = &operation.action {
-                if body.selection != self.selected_descriptor(operation, action)?
+            if let Some(action) = &operation.action
+                && (body.selection != self.selected_descriptor(operation, action)?
                     || registration.side
-                        != 1u8.checked_sub(body.direction).ok_or(StoreError::Corrupt)?
-                {
-                    return Err(StoreError::RecoveryRequired);
-                }
+                        != 1u8.checked_sub(body.direction).ok_or(StoreError::Corrupt)?)
+            {
+                return Err(StoreError::RecoveryRequired);
             }
             let parse = |bytes: &Option<Vec<u8>>| {
                 bytes
@@ -2424,6 +2438,10 @@ impl ConnectionStore {
             })
             .collect()
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
+    )]
     fn reduce_read_reserve(
         &self,
         id: OperationId,
@@ -2823,7 +2841,7 @@ impl ConnectionStore {
             native_kind: self.operation(live.id)?.native_kind,
             connection: live.id.connection.0,
             serial: live.id.serial,
-            attempt: attempts + 1,
+            attempt: attempts.saturating_add(1),
             nonce,
             side: u8::from(side != Side::Source),
             admission: live.admission,
@@ -2880,13 +2898,13 @@ impl ConnectionStore {
         complete_selected: bool,
         recovery_checks: &mut RecoveryChecks<'_>,
     ) -> Result<Vec<Row>, StoreError> {
+        use super::transaction::native::descriptor as d;
         if registration.native_kind == Some(format::NativeOperationKind::DirectoryV1) {
             if complete_selected {
                 return Err(StoreError::Corrupt);
             }
             return self.reduce_directory_outcome(registration, expected, verified, reconstructed);
         }
-        use super::transaction::native::descriptor as d;
         registration.validate()?;
         let connection = self.connection(ConnectionId(registration.connection))?;
         if connection.lifecycle != 0 || connection.fence != registration.fence {
@@ -2980,14 +2998,12 @@ impl ConnectionStore {
                 body: d::Body::Displaced(actual),
                 ..
             }) = &displaced
+                && fact.role == 0
+                && fact.object == actual.object
+                && fact.side == actual.side
+                && registration.outcome_displaced.as_ref() == Some(&bound.displaced)
             {
-                if fact.role == 0
-                    && fact.object == actual.object
-                    && fact.side == actual.side
-                    && registration.outcome_displaced.as_ref() == Some(&bound.displaced)
-                {
-                    accounted_displaced = true;
-                }
+                accounted_displaced = true;
             }
         }
         if !accounted_displaced {
@@ -3011,7 +3027,7 @@ impl ConnectionStore {
             } = action;
             let tombstone = matches!(before.selection, d::Selection::Tombstone { .. });
             if *target != registration.side
-                || usize::from(*target) != 1 - usize::from(before.direction)
+                || usize::from(*target) != 1 ^ usize::from(before.direction)
                 || ((body.kind == 1 || displaced.is_some()) && !replace)
                 || (body.kind == 2) != tombstone
                 || (tombstone
@@ -3074,6 +3090,10 @@ impl ConnectionStore {
     #[expect(
         clippy::too_many_lines,
         reason = "Keep operation/action/revision joins and the complete atomic durable-row transition together."
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is separately admitted state the step consumes; a bundle would hide which"
     )]
     fn reduce_selected_applied(
         &self,
@@ -3422,7 +3442,7 @@ impl ConnectionStore {
                     let tombstone =
                         matches!(intent.selection, descriptor::Selection::Tombstone { .. });
                     if intent.selection != self.selected_descriptor(&operation, action)?
-                        || intent.direction != 1 - registration.side
+                        || intent.direction != 1 ^ registration.side
                         || registration.stage.is_some() == tombstone
                     {
                         return Err(StoreError::Corrupt);
@@ -3478,7 +3498,10 @@ impl ConnectionStore {
                     }
                 }
             }
-            if count >= 128 || attempts >= 8 || registration.attempt != attempts + 1 {
+            if count >= 128
+                || attempts >= 8
+                || Some(registration.attempt) != attempts.checked_add(1)
+            {
                 return Err(StoreError::LimitExceeded);
             }
         }
@@ -3542,7 +3565,7 @@ impl ConnectionStore {
         })?;
         Ok(self.ack(self.load_connection(fence.value.connection)?))
     }
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
         reason = "One exhaustive event dispatch preserves the shared preconditions and recovery guard owner."
     )]
@@ -3570,6 +3593,10 @@ impl ConnectionStore {
     }
     // Canonical row derivation only. Wrappers add their complete outer rows before
     // the single common prospective-history epilogue above.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence whose steps share state; splitting it would scatter its invariants"
+    )]
     fn reduce_rows(
         &self,
         change: &Change,
@@ -4140,7 +4167,7 @@ impl ConnectionStore {
                 connection: operation.connection,
                 serial: operation.serial,
                 revision: operation.revision,
-                kind: operation.decision - 10,
+                kind: operation.decision.saturating_sub(10),
                 path: operation.path.clone(),
                 source: operation.source.clone(),
                 destination: operation.destination.clone(),
@@ -4262,10 +4289,10 @@ impl ConnectionStore {
     }
     fn commit_rows(&mut self, prepared: PreparedRows) {
         for row in prepared.rows {
-            if let Row::Connection(record) = &row {
-                if let Some(gate) = self.native_gates.get(&record.id) {
-                    gate.set_progress(record.revision);
-                }
+            if let Row::Connection(record) = &row
+                && let Some(gate) = self.native_gates.get(&record.id)
+            {
+                gate.set_progress(record.revision);
             }
             self.overlay.insert(row.key(), row);
         }
@@ -4293,7 +4320,7 @@ impl ConnectionStore {
             reads: Arc::clone(&live.reads),
             lifetime: live.lifetime.clone(),
             gate: Arc::clone(gate),
-            deadline: deadline.min(std::time::Instant::now() + std::time::Duration::from_secs(30)),
+            deadline: deadline.min(crate::deadline_after(std::time::Duration::from_secs(30))),
             cancel,
             inspection_only: false,
             recovery_only: false,
@@ -4317,7 +4344,7 @@ impl ConnectionStore {
             reads: Arc::clone(&recovery.reads),
             lifetime: recovery.lifetime.clone(),
             gate: Arc::clone(gate),
-            deadline: deadline.min(std::time::Instant::now() + std::time::Duration::from_secs(30)),
+            deadline: deadline.min(crate::deadline_after(std::time::Duration::from_secs(30))),
             cancel,
             inspection_only: true,
             recovery_only: recovery.recovery_only,
@@ -4461,10 +4488,7 @@ impl ConnectionStore {
             }
             _ => VerificationMode::Legacy,
         };
-        Ok(RecoveryChecks {
-            mode,
-            ..RecoveryChecks::default()
-        })
+        Ok(RecoveryChecks::new(mode))
     }
     fn validate_verification_mode(
         &self,
@@ -4511,10 +4535,7 @@ impl ConnectionStore {
     ) -> Result<(), StoreError> {
         self.append_checked(
             change,
-            RecoveryChecks {
-                mode: VerificationMode::NativeLive(context),
-                ..RecoveryChecks::default()
-            },
+            RecoveryChecks::new(VerificationMode::NativeLive(context)),
         )
     }
     fn append(&mut self, change: Change) -> Result<(), StoreError> {
@@ -4527,6 +4548,10 @@ impl ConnectionStore {
     ) -> Result<(), StoreError> {
         self.append_checked_with_baseline(change, recovery_checks, BaselineAppendCheck::none())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence whose steps share state; splitting it would scatter its invariants"
+    )]
     fn append_checked_with_baseline(
         &mut self,
         change: Change,
@@ -4572,7 +4597,8 @@ impl ConnectionStore {
             )?;
             let mut prepared = self.prepare_rows(self.reduce(&event, &mut recovery_checks)?)?;
             let bytes = format::encode(&event)?;
-            if matches!(event.change, Change::Fence { .. }) && bytes.len() + 44 > 512 {
+            if matches!(event.change, Change::Fence { .. }) && bytes.len().saturating_add(44) > 512
+            {
                 return Err(StoreError::LimitExceeded);
             }
             if !prepared.fits_overlay() || self.log.metadata()?.len() > 8 * 1024 * 1024 {
@@ -4607,7 +4633,8 @@ impl ConnectionStore {
             let mut sequence = committed_sequence;
             // All page/recovery rereads and any checkpoint/second reduction are
             // finished. A read-budget context alone is not endpoint authority.
-            #[cfg(all(test, target_os = "linux"))]
+            #[cfg(test)]
+            #[cfg(target_os = "linux")]
             baseline.before_write_for_test();
             baseline.validate(self, &event.change)?;
             touched = true;
@@ -4807,6 +4834,10 @@ pub(super) struct VerifiedRecoveryRead<'a> {
 }
 /// Current selected-source correlation. Tombstones retain checked historical
 /// metadata; only separate paid native guards establish current endpoint authority.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "values are handled one at a time by value; boxing would add an allocation per record without lowering peak memory"
+)]
 pub(super) enum VerifiedSelection<'a> {
     Recovery(VerifiedRecoveryRead<'a>),
     Tombstone(VerifiedTombstoneRead<'a>),
@@ -4884,6 +4915,10 @@ enum BaselineAppendCheck<'a, 'proof> {
     Historical(&'a chain_tests::HistoricalAppendProbe),
 }
 impl BaselineAppendCheck<'_, '_> {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(clippy::unused_self, reason = "only Linux has initial-empty checks")
+    )]
     fn initial_empty(&self) -> bool {
         #[cfg(target_os = "linux")]
         if matches!(self, Self::InitialEmpty(_)) {
@@ -4891,6 +4926,13 @@ impl BaselineAppendCheck<'_, '_> {
         }
         false
     }
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "only test builds carry historical views"
+        )
+    )]
     fn live_append(&self) -> bool {
         #[cfg(test)]
         if matches!(self, Self::Historical(_)) {
@@ -4901,7 +4943,8 @@ impl BaselineAppendCheck<'_, '_> {
     fn none() -> Self {
         Self::None(std::marker::PhantomData)
     }
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     fn before_write_for_test(&mut self) {
         if let Self::InitialEmpty(proof) = self {
             BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
@@ -5022,6 +5065,15 @@ struct RecoveryChecks<'a> {
     mode: VerificationMode<'a>,
     #[cfg(windows)]
     readers: Vec<storage::RecoveryReader>,
+}
+impl<'a> RecoveryChecks<'a> {
+    fn new(mode: VerificationMode<'a>) -> Self {
+        Self {
+            mode,
+            #[cfg(windows)]
+            readers: Vec::new(),
+        }
+    }
 }
 
 impl ConnectionStore {
@@ -5160,6 +5212,10 @@ impl ConnectionStore {
         };
         recovery::ancestor_patch(&self.operation(live.id)?, &entries)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence whose steps share state; splitting it would scatter its invariants"
+    )]
     pub(super) fn prepare_baseline(
         &mut self,
         live: &LiveOperation,
@@ -5315,10 +5371,7 @@ impl ConnectionStore {
                 destination: connection.destination.identity,
                 initial_review,
             },
-            RecoveryChecks {
-                mode: VerificationMode::NativeLive(&context),
-                ..RecoveryChecks::default()
-            },
+            RecoveryChecks::new(VerificationMode::NativeLive(&context)),
             BaselineAppendCheck::Native {
                 live,
                 comparison,
@@ -5619,13 +5672,16 @@ impl ConnectionStore {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 thread_local! { static AFTER_NATIVE_BYTES: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None); }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) fn after_native_bytes_for_test(hook: impl FnOnce() + 'static) {
     AFTER_NATIVE_BYTES.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 fn run_after_native_bytes() {
     AFTER_NATIVE_BYTES.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -5634,16 +5690,20 @@ fn run_after_native_bytes() {
     });
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) use recovery::partial_native_recovery_for_test;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 thread_local! { static AFTER_CAPTURE_CHUNK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None); }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) fn after_capture_chunk_for_test(hook: impl FnOnce() + 'static) {
     AFTER_CAPTURE_CHUNK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 fn run_after_capture_chunk() {
     AFTER_CAPTURE_CHUNK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -5801,14 +5861,17 @@ impl ConnectionStore {
             || operation.source != conflict.source
             || operation.destination != conflict.destination
             || conflict.revision < format::next(operation.expected)?
-            || conflict.preserved.windows(2).any(|pair| pair[0] >= pair[1])
+            || conflict
+                .preserved
+                .windows(2)
+                .any(|pair| matches!(pair, [a, b] if a >= b))
         {
             return Err(StoreError::Corrupt);
         }
         match (&operation.native_capture, &conflict.native_capture) {
             (None, None)
                 if matches!(operation.decision, 10..=14)
-                    && conflict.kind == operation.decision - 10 => {}
+                    && Some(conflict.kind) == operation.decision.checked_sub(10) => {}
             (Some(recorded), Some(captured)) if recorded == captured => {
                 let snapshot =
                     super::transaction::native::descriptor::ConflictSnapshot::decode(recorded)
@@ -5922,8 +5985,7 @@ impl ConnectionStore {
         if let format::SelectedVersion::Recovery {
             operation, slot, ..
         } = selected
-        {
-            if !self.conflict_contains_selection(
+            && !self.conflict_contains_selection(
                 conflict,
                 RecoveryId {
                     operation: OperationId {
@@ -5932,9 +5994,9 @@ impl ConnectionStore {
                     },
                     slot: *slot,
                 },
-            )? {
-                return Err(StoreError::Corrupt);
-            }
+            )?
+        {
+            return Err(StoreError::Corrupt);
         }
         Ok(origin.native_capture.is_none()
             || (origin.action.is_none() && origin.stage == 8)
@@ -6726,16 +6788,19 @@ impl ConnectionStore {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 struct NativeBaselineWriteHook {
     revoke: bool,
     action: Box<dyn FnOnce()>,
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 thread_local! {
     static BEFORE_NATIVE_BASELINE_WRITE: std::cell::RefCell<Option<NativeBaselineWriteHook>> = const { std::cell::RefCell::new(None) };
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) fn before_native_baseline_write_for_test(revoke: bool, hook: impl FnOnce() + 'static) {
     BEFORE_NATIVE_BASELINE_WRITE.with(|slot| {
         *slot.borrow_mut() = Some(NativeBaselineWriteHook {
@@ -6744,7 +6809,8 @@ pub(super) fn before_native_baseline_write_for_test(revoke: bool, hook: impl FnO
         });
     });
 }
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 impl ConnectionStore {
     pub(super) fn selected_attention_snapshot_for_test(
         &self,
@@ -6772,7 +6838,8 @@ impl ConnectionStore {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 impl ConnectionStore {
     pub(super) fn native_budget_for_test(
         &self,
@@ -6786,12 +6853,14 @@ impl ConnectionStore {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) fn clear_native_baseline_write_for_test() {
     BEFORE_NATIVE_BASELINE_WRITE.with(|slot| *slot.borrow_mut() = None);
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 pub(super) fn storage_fault_for_test(point: Option<usize>) {
     tests::FAULT.with(|slot| slot.set(point.map(|point| (point, false))));
 }

@@ -16,7 +16,7 @@ pub(crate) struct PreferenceStore {
 impl PreferenceStore {
     #[cfg(any(windows, all(target_os = "linux", not(test))))]
     pub(crate) fn live() -> Self {
-        let path = dirs::data_local_dir()
+        let path = xdg_paths::data_local_dir()
             .filter(|root| root.is_absolute())
             .map(|root| root.join("qos/setup/internal-download-selection.json"))
             .ok_or_else(invalid_preference_path);

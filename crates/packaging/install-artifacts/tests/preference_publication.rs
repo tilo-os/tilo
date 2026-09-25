@@ -9,6 +9,12 @@ fn preference_surface_keeps_opaque_bytes_and_resume_separate() {
     ) -> Result<tilo_install_artifacts::Token, tilo_install_artifacts::Error> = Client::start;
 }
 #[cfg(all(unix, feature = "test-support"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 mod worker {
     use super::*;
     use std::time::{Duration, Instant};
@@ -17,12 +23,12 @@ mod worker {
         test_support::{Server, manifest_bytes, manifest_value, response},
     };
     fn wait(client: &Client, phase: Phase) -> Status {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
         loop {
-            if let Some(status) = client.status() {
-                if status.phase == phase {
-                    return status;
-                }
+            if let Some(status) = client.status()
+                && status.phase == phase
+            {
+                return status;
             }
             assert!(
                 Instant::now() < until,
@@ -50,7 +56,7 @@ mod worker {
         assert!(path.exists());
     }
     fn loaded(client: &Client) -> PreferenceState {
-        let until = Instant::now() + Duration::from_secs(10);
+        let until = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
         loop {
             let state = client.preference();
             if state != PreferenceState::Loading {

@@ -262,10 +262,10 @@ impl<'a> NativeJournal<'a> {
         let budget = HistoryBudget::for_plan(plan)?;
         let mut log = Log::open(path, *MAGIC)?;
         budget.check_log(&log)?;
-        let Some(Record::Header { header }) = read_record(&mut log.file, log.sequence)? else {
+        let Some(Record::Header { header }) = read_record(&mut *log.file, log.sequence)? else {
             return Err(changed("native journal header missing"));
         };
-        log.sequence += 1;
+        log.sequence = log.sequence.saturating_add(1);
         if header.mapping_version != 1
             || header.fidelity_version != 1
             || header.operation.is_empty()
@@ -597,7 +597,7 @@ fn replay(
     loop {
         check_cancel(cancel)?;
         budget.check_log(log)?;
-        let Some(record) = read_record(&mut log.file, log.sequence)? else {
+        let Some(record) = read_record(&mut *log.file, log.sequence)? else {
             break;
         };
         check_cancel(cancel)?;
@@ -662,18 +662,18 @@ fn replay(
                 {
                     return Err(changed("invalid native outcome path"));
                 }
-                details += 1;
+                details = details.saturating_add(1);
             }
             Record::Fidelity { path, .. } if outcome && details < 32768 => {
                 if !plan.entries.iter().any(|e| e.entry.path == path) {
                     return Err(changed("unknown native fidelity path"));
                 }
-                details += 1;
+                details = details.saturating_add(1);
             }
             Record::CommitOutcome if outcome => outcome = false,
             _ => return Err(changed("invalid native journal record order or bounds")),
         }
-        log.sequence += 1;
+        log.sequence = log.sequence.saturating_add(1);
         end = log.file.stream_position()?;
     }
     if !sealed {
@@ -700,7 +700,8 @@ pub(super) fn open_file(
     Ok(file)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::{io::Write, os::unix::fs::PermissionsExt};

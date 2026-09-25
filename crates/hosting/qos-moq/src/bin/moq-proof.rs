@@ -116,7 +116,10 @@ impl ProofAuthority {
             {
                 return Err("invalid proof directions");
             }
-            if fixture.identities[..index]
+            if fixture
+                .identities
+                .get(..index)
+                .unwrap_or_default()
                 .iter()
                 .any(|prior| prior.proof == identity.proof)
             {
@@ -211,7 +214,7 @@ async fn run() -> Result<(), &'static str> {
     tokio::pin!(serving);
     loop {
         tokio::select! {
-            _ = &mut serving => return Err("WebTransport listener ended"),
+            () = &mut serving => return Err("WebTransport listener ended"),
             _ = counters.tick() => println!("COUNTERS {}",serde_json::to_string(&relay.counters()).map_err(|_| "counter serialization failed")?),
             result = tokio::signal::ctrl_c() => {
                 result.map_err(|_| "cannot observe shutdown signal")?;

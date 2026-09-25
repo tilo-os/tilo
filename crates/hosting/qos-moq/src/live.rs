@@ -1,5 +1,5 @@
-//! LIVE_V1 relay: ephemeral multiplayer presence and ordered ops carried as
-//! MoQ Draft 21 tracks over WebTransport at [`LIVE_PATH`], beside voice.
+//! `LIVE_V1` relay: ephemeral multiplayer presence and ordered ops carried as
+//! `MoQ` Draft 21 tracks over WebTransport at [`LIVE_PATH`], beside voice.
 //!
 //! The relay never stores, orders durably or authorizes content. The native
 //! host supplies a [`LiveAuthority`] that verifies the host-signed live grant
@@ -30,7 +30,7 @@ use crate::relay::{
 };
 use std::collections::HashMap;
 use std::sync::{
-    Arc, Mutex, Weak,
+    Arc, Mutex, PoisonError, Weak,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -112,6 +112,11 @@ pub trait LiveSession: Send + Sync {
 /// not block on network I/O.
 pub trait LiveAuthority: Send + Sync {
     /// Verify the Authorization Token. `Busy` only before any state is consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Admission::Busy`] for transient contention before any state is
+    /// consumed, and [`Admission::Denied`] otherwise.
     fn try_admit(&self, token: &[u8]) -> Result<Arc<dyn LiveSession>, Admission>;
     /// Validate one presence frame; returns its per-publisher sequence.
     fn presence_seq(&self, frame: &[u8]) -> Option<u64>;
@@ -328,6 +333,10 @@ impl LiveRelay {
     /// signed change) into `ops/<record>` of `(room, publisher)`. Never blocks.
     /// Creates a host-fed namespace if absent; the frame reaches only current
     /// subscribers of that track (dropped otherwise: nothing is stored).
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard must stay held across the dependent state updates below"
+    )]
     pub fn inject_ops(&self, room: &str, publisher: &str, record: &str, frame: &[u8]) -> bool {
         let inner = &self.0;
         let Some(path) = namespace_path(room, publisher) else {
@@ -347,7 +356,7 @@ impl LiveRelay {
                 .fetch_add(1, Ordering::Relaxed);
             return false;
         };
-        let mut state = slot.state.lock().unwrap();
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.host_active = Some(Instant::now());
         let name = format!("{OPS_PREFIX}{record}");
         let Some(entry) = state.ops.get_mut(&name) else {
@@ -383,7 +392,7 @@ impl LiveRelay {
     /// Refused while a client session owns the namespace: the host never
     /// speaks inside a live member's own presence. The frame is validated like
     /// client presence (authority codec, size, strictly increasing sequence,
-    /// the namespace's presence rate bucket) and reaches MoQ and HTTPS
+    /// the namespace's presence rate bucket) and reaches `MoQ` and HTTPS
     /// fallback subscribers through the same egress track. Counted in
     /// `injected` / `injected_dropped`.
     pub fn inject_presence(&self, room: &str, publisher: &str, frame: &[u8]) -> bool {
@@ -406,14 +415,19 @@ impl LiveRelay {
         };
         // Never create (or announce) a namespace a client currently owns.
         if let Some(slot) = inner.slot(&path, false)
-            && slot.state.lock().unwrap().client.is_some()
+            && slot
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .client
+                .is_some()
         {
             return dropped();
         }
         let Some(slot) = inner.slot(&path, true) else {
             return dropped();
         };
-        let mut state = slot.state.lock().unwrap();
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.client.is_some() {
             return dropped();
         }
@@ -436,6 +450,7 @@ impl LiveRelay {
             return dropped();
         }
         state.last_seq = Some(seq);
+        drop(state);
         inner.counters.injected.fetch_add(1, Ordering::Relaxed);
         true
     }
@@ -444,11 +459,11 @@ impl LiveRelay {
     pub fn maintain(&self) {
         let now = Instant::now();
         let idle: Vec<String> = {
-            let slots = self.0.slots.lock().unwrap();
+            let slots = self.0.slots.lock().unwrap_or_else(PoisonError::into_inner);
             slots
                 .iter()
                 .filter(|(_, slot)| {
-                    let state = slot.state.lock().unwrap();
+                    let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
                     state.client.is_none()
                         && state
                             .host_active
@@ -497,9 +512,10 @@ impl LiveRelay {
             && request.query().is_none()
             && request.version().as_str() == "moq-transport-21";
         let token = request.authorization().map(<[u8]>::to_vec);
-        let scopes = match webtransport {
-            true => self.scopes(request.version(), token.as_deref()).await,
-            false => None,
+        let scopes = if webtransport {
+            self.scopes(request.version(), token.as_deref()).await
+        } else {
+            None
         };
         let Some(mut scopes) = scopes else {
             self.0.counters.rejected.fetch_add(1, Ordering::Relaxed);
@@ -553,12 +569,12 @@ impl LiveRelay {
             return None;
         }
         let token = token.filter(|token| !token.is_empty() && token.len() <= MAX_TOKEN_BYTES)?;
-        let deadline = Instant::now() + ADMISSION_CONTENTION_WAIT;
+        let deadline = crate::later(Instant::now(), ADMISSION_CONTENTION_WAIT);
         let session = loop {
             match self.0.authority.try_admit(token) {
                 Ok(session) => break session,
                 Err(Admission::Busy) if Instant::now() < deadline => {
-                    tokio::time::sleep(ADMISSION_RETRY).await
+                    tokio::time::sleep(ADMISSION_RETRY).await;
                 }
                 Err(_) => return None,
             }
@@ -573,28 +589,28 @@ impl LiveRelay {
                 AuthorizationStatus::Unavailable { expires_at }
                     if Instant::now() < deadline.min(expires_at) =>
                 {
-                    tokio::time::sleep(ADMISSION_RETRY).await
+                    tokio::time::sleep(ADMISSION_RETRY).await;
                 }
                 _ => return None,
             }
         }
-        let ingress = match session.publish() {
-            true => Some(
+        let ingress = if session.publish() {
+            Some(
                 moq_net::origin::Info::new(moq_net::Origin::random())
                     .with_pool(moq_net::cache::Pool::new(INGRESS_POOL_BYTES))
                     .with_cache_duration(OPS_WINDOW)
                     .with_latency_default(OPS_WINDOW)
                     .produce()
                     .scope_exact(&[path.as_str().into()])?,
-            ),
-            false => None,
+            )
+        } else {
+            None
         };
-        let egress = match session.subscribe() {
-            true => {
-                let room = format!("{NAMESPACE_ROOT}/{}", session.room());
-                Some(self.0.egress.consume().scope(&[room.as_str().into()])?)
-            }
-            false => None,
+        let egress = if session.subscribe() {
+            let room = format!("{NAMESPACE_ROOT}/{}", session.room());
+            Some(self.0.egress.consume().scope(&[room.as_str().into()])?)
+        } else {
+            None
         };
         Some(Scopes {
             session,
@@ -610,6 +626,12 @@ impl LiveRelay {
         driver: Option<moq_net::Driver>,
         scopes: Scopes,
     ) {
+        struct Active<'a>(&'a Counters);
+        impl Drop for Active<'_> {
+            fn drop(&mut self) {
+                self.0.active.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
         let inner = &self.0;
         if session.version().as_str() != "moq-transport-21" {
             session.abort(moq_net::Error::Unauthorized);
@@ -619,15 +641,9 @@ impl LiveRelay {
         let id = inner.next_session.fetch_add(1, Ordering::Relaxed);
         inner.counters.accepted.fetch_add(1, Ordering::Relaxed);
         inner.counters.active.fetch_add(1, Ordering::Relaxed);
-        struct Active<'a>(&'a Counters);
-        impl Drop for Active<'_> {
-            fn drop(&mut self) {
-                self.0.active.fetch_sub(1, Ordering::Relaxed);
-            }
-        }
         let _active = Active(&inner.counters);
         // Attach the client's own announced broadcast (re-announcements included).
-        let _attach = scopes.ingress.clone().map(|ingress| {
+        let attach = scopes.ingress.clone().map(|ingress| {
             let relay = self.clone();
             let path = scopes.path.clone();
             Task::spawn(async move {
@@ -662,8 +678,8 @@ impl LiveRelay {
         let revoked = loop {
             tokio::select! {
                 _ = session.closed() => break false,
-                _ = &mut retained_driver => break false,
-                _ = async {
+                () = &mut retained_driver => break false,
+                () = async {
                     match unavailable {
                         Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
                         None => std::future::pending::<()>().await,
@@ -685,7 +701,7 @@ impl LiveRelay {
                 }
             }
         };
-        drop(_attach);
+        drop(attach);
         if revoked {
             inner.counters.revoked.fetch_add(1, Ordering::Relaxed);
             // Only this publisher's tracks end (subscriber stream resets).
@@ -703,7 +719,7 @@ impl LiveRelay {
                     if let Some(inner) = relay.upgrade()
                         && let Some(slot) = inner.slot(&path, true)
                     {
-                        let mut state = slot.state.lock().unwrap();
+                        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
                         state.host_active.get_or_insert_with(Instant::now);
                     }
                 });
@@ -713,8 +729,8 @@ impl LiveRelay {
             if session.go_away(GOAWAY_GRACE) {
                 tokio::select! {
                     _ = session.closed() => {}
-                    _ = &mut retained_driver => {}
-                    _ = tokio::time::sleep(GOAWAY_GRACE) => {}
+                    () = &mut retained_driver => {}
+                    () = tokio::time::sleep(GOAWAY_GRACE) => {}
                 }
             }
             session.abort(moq_net::Error::Unauthorized);
@@ -728,7 +744,7 @@ impl LiveRelay {
 impl Inner {
     /// The namespace slot, created with its egress broadcast when `create`.
     fn slot(self: &Arc<Self>, path: &str, create: bool) -> Option<Arc<Slot>> {
-        let mut slots = self.slots.lock().unwrap();
+        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(slot) = slots.get(path) {
             return Some(slot.clone());
         }
@@ -769,15 +785,23 @@ impl Inner {
                 }
             })
         };
-        slot.state.lock().unwrap().handler = Some(handler);
+        slot.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .handler = Some(handler);
         slots.insert(path.to_owned(), slot.clone());
+        drop(slots);
         Some(slot)
     }
 
     /// A subscriber asked for a track this namespace does not yet carry.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard must stay held across the dependent state updates below"
+    )]
     fn on_request(self: &Arc<Self>, slot: &Arc<Slot>, request: moq_net::track::Request) {
         let name = request.name().to_owned();
-        let mut state = slot.state.lock().unwrap();
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
         if ops_record(&name).is_none()
             || state.ops.len() >= MAX_EGRESS_OPS_TRACKS
             || state.broadcast.is_none()
@@ -809,7 +833,7 @@ impl Inner {
                     let idle = tokio::select! {
                         biased;
                         unused = watched.unused() => unused.is_ok(),
-                        _ = std::future::ready(()) => false,
+                        () = std::future::ready(()) => false,
                     };
                     if idle {
                         break;
@@ -817,7 +841,7 @@ impl Inner {
                 }
                 if let Some(slot) = weak.upgrade() {
                     let removed = {
-                        let mut state = slot.state.lock().unwrap();
+                        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
                         if let Some(broadcast) = state.broadcast.as_mut() {
                             let _ = broadcast.remove_track(&name);
                         }
@@ -827,12 +851,12 @@ impl Inner {
                         let OpsEntry {
                             producer,
                             pump,
-                            _watch,
+                            _watch: watch,
                         } = entry;
                         drop(pump);
                         let _ = producer.abort(moq_net::Error::Cancel);
                         // This is the watch task itself, finishing now.
-                        _watch.detach();
+                        watch.detach();
                     }
                 }
             })
@@ -861,10 +885,12 @@ impl Inner {
                 .fetch_add(1, Ordering::Relaxed);
             return;
         }
-        state.pump_ids += 1;
+        state.pump_ids = state.pump_ids.wrapping_add(1);
         let pump_id = state.pump_ids;
         let broadcast = client.broadcast.clone();
-        let entry = state.ops.get_mut(name).expect("checked entry");
+        let Some(entry) = state.ops.get_mut(name) else {
+            return;
+        };
         let producer = entry.producer.clone();
         let task = Task::spawn(ops_pump(
             Arc::downgrade(self),
@@ -878,6 +904,10 @@ impl Inner {
     }
 
     /// Newest session wins the namespace: a reload replaces its older session.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the guard must stay held across the dependent state updates below"
+    )]
     fn attach_client(
         self: &Arc<Self>,
         path: &str,
@@ -887,7 +917,7 @@ impl Inner {
         let Some(slot) = self.slot(path, true) else {
             return;
         };
-        let mut state = slot.state.lock().unwrap();
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.client = Some(Client {
             session,
             broadcast: broadcast.clone(),
@@ -914,7 +944,7 @@ impl Inner {
             return;
         };
         let withdraw = {
-            let mut state = slot.state.lock().unwrap();
+            let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state
                 .client
                 .as_ref()
@@ -942,12 +972,12 @@ impl Inner {
     /// Returns whether the removed namespace was recently host-fed.
     fn remove_slot(&self, path: &str, session: Option<u64>) -> bool {
         let slot = {
-            let mut slots = self.slots.lock().unwrap();
+            let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(slot) = slots.get(path) else {
                 return false;
             };
             if let Some(session) = session {
-                let state = slot.state.lock().unwrap();
+                let state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
                 if state
                     .client
                     .as_ref()
@@ -959,7 +989,7 @@ impl Inner {
             slots.remove(path)
         };
         let Some(slot) = slot else { return false };
-        let mut state = slot.state.lock().unwrap();
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.presence_pump = None;
         state.client = None;
         for (_, entry) in state.ops.drain() {
@@ -995,7 +1025,7 @@ impl Inner {
         let seq = valid
             .then(|| self.authority.presence_seq(&payload))
             .flatten();
-        let mut state = slot.state.lock().unwrap();
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state
             .client
             .as_ref()
@@ -1008,16 +1038,15 @@ impl Inner {
             && state.presence_bucket.take(now);
         if forward {
             state.last_seq = seq;
-            if let Some(track) = state.presence.as_mut() {
-                if track
+            if let Some(track) = state.presence.as_mut()
+                && track
                     .append_datagram(moq_net::Timestamp::ZERO, payload)
                     .is_ok()
-                {
-                    self.counters
-                        .presence_forwarded
-                        .fetch_add(1, Ordering::Relaxed);
-                    return true;
-                }
+            {
+                self.counters
+                    .presence_forwarded
+                    .fetch_add(1, Ordering::Relaxed);
+                return true;
             }
         }
         self.counters
@@ -1026,14 +1055,14 @@ impl Inner {
         true
     }
 
-    fn release_pump(&self, slot: &Slot, name: &str, pump_id: u64) {
-        let mut state = slot.state.lock().unwrap();
-        if let Some(entry) = state.ops.get_mut(name) {
-            if entry.pump.as_ref().is_some_and(|(id, _)| *id == pump_id) {
-                // The task is finishing on its own; do not abort it from inside.
-                if let Some((_, task)) = entry.pump.take() {
-                    task.detach();
-                }
+    fn release_pump(slot: &Slot, name: &str, pump_id: u64) {
+        let mut state = slot.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = state.ops.get_mut(name)
+            && entry.pump.as_ref().is_some_and(|(id, _)| *id == pump_id)
+        {
+            // The task is finishing on its own; do not abort it from inside.
+            if let Some((_, task)) = entry.pump.take() {
+                task.detach();
             }
         }
     }
@@ -1046,10 +1075,10 @@ async fn presence_pump(
     broadcast: moq_net::broadcast::Consumer,
 ) {
     let mut subscriber = loop {
-        if let Ok(track) = broadcast.track(PRESENCE_TRACK) {
-            if let Ok(subscriber) = track.subscribe(None).await {
-                break subscriber;
-            }
+        if let Ok(track) = broadcast.track(PRESENCE_TRACK)
+            && let Ok(subscriber) = track.subscribe(None).await
+        {
+            break subscriber;
         }
         if broadcast.is_closed() {
             return;
@@ -1086,7 +1115,7 @@ async fn presence_pump(
                     Ok(Some(next)) => offer(next.payload),
                     _ => break,
                 },
-                _ = std::future::ready(()) => break,
+                () = std::future::ready(()) => break,
             }
         }
         let Some(payload) = latest else { continue };
@@ -1106,8 +1135,9 @@ async fn ops_pump(
     egress: moq_net::track::Producer,
 ) {
     let release = || {
-        if let (Some(inner), Some(slot)) = (inner.upgrade(), slot.upgrade()) {
-            inner.release_pump(&slot, &name, pump_id);
+        // Only a live relay still owns the slot's pump bookkeeping.
+        if let (Some(_relay), Some(slot)) = (inner.upgrade(), slot.upgrade()) {
+            Inner::release_pump(&slot, &name, pump_id);
         }
     };
     let mut subscription = moq_net::track::Subscription::default();
@@ -1174,7 +1204,12 @@ async fn copy_group(
         };
         let admitted = frame.payload.len() <= MAX_STREAM_FRAME_BYTES
             && inner.authority.ops_valid(&record, &frame.payload)
-            && slot.state.lock().unwrap().ops_bucket.take(Instant::now());
+            && slot
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ops_bucket
+                .take(Instant::now());
         if !admitted
             || out
                 .write_frame(moq_net::Timestamp::ZERO, frame.payload)
@@ -1197,7 +1232,10 @@ async fn copy_group(
 fn seal_later(mut track: moq_net::track::Producer, sequence: u64) {
     tokio::spawn(async move {
         let mut expected = sequence;
-        for wait in [SEAL_AFTER, EGRESS_RETAIN + Duration::from_millis(100)] {
+        for wait in [
+            SEAL_AFTER,
+            EGRESS_RETAIN.saturating_add(Duration::from_millis(100)),
+        ] {
             tokio::time::sleep(wait).await;
             if track.is_closed() || track.latest() != Some(expected) {
                 return;
@@ -1221,6 +1259,10 @@ pub struct LoopbackLive {
 }
 impl LoopbackLive {
     /// Must be called inside a Tokio runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the loopback server cannot be configured or bound.
     pub fn start(authority: Arc<dyn LiveAuthority>) -> Result<Self, String> {
         let mut config = moq_native::ServerConfig::default();
         config.bind = Some("127.0.0.1:0".into());

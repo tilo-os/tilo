@@ -8,6 +8,11 @@ use std::{
 
 /// Read-only confirmation from the live trusted compositor. The UI runs this
 /// off-thread; a missing, unauthentic or incomplete session keeps work pending.
+///
+/// # Errors
+///
+/// Returns a message when the trusted session is missing, unauthentic or
+/// incomplete.
 #[cfg(target_os = "linux")]
 pub fn trusted_identity_complete() -> Result<(), String> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
@@ -94,7 +99,8 @@ fn authenticate_session_peer(
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
     let mut peer = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let mut len = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
+        .map_err(|_| "peer credential size does not fit socklen_t".to_string())?;
     // SAFETY: socket is live; peer and len are correctly sized writable storage.
     if unsafe {
         libc::getsockopt(
@@ -160,7 +166,8 @@ fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStr
     if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
         return Err(std::io::Error::other("invalid readiness socket path"));
     }
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX)
+        .map_err(|_| std::io::Error::other("AF_UNIX does not fit sa_family_t"))?;
     for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
         *slot = *byte as libc::c_char;
     }
@@ -185,7 +192,8 @@ fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStr
         libc::connect(
             owned.as_raw_fd(),
             (&raw const address).cast(),
-            std::mem::size_of_val(&address) as libc::socklen_t,
+            libc::socklen_t::try_from(std::mem::size_of_val(&address))
+                .map_err(|_| std::io::Error::other("socket address size does not fit socklen_t"))?,
         )
     } != 0
     {
@@ -196,7 +204,8 @@ fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStr
     Ok(stream)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 fn bounded_listener(path: &Path, backlog: libc::c_int) -> std::io::Result<std::os::fd::OwnedFd> {
     use std::os::{
         fd::{AsRawFd, FromRawFd, OwnedFd},
@@ -208,7 +217,8 @@ fn bounded_listener(path: &Path, backlog: libc::c_int) -> std::io::Result<std::o
     if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
         return Err(std::io::Error::other("invalid readiness socket path"));
     }
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    address.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX)
+        .map_err(|_| std::io::Error::other("AF_UNIX does not fit sa_family_t"))?;
     for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
         *slot = *byte as libc::c_char;
     }
@@ -224,7 +234,8 @@ fn bounded_listener(path: &Path, backlog: libc::c_int) -> std::io::Result<std::o
         libc::bind(
             listener.as_raw_fd(),
             (&raw const address).cast(),
-            std::mem::size_of_val(&address) as libc::socklen_t,
+            libc::socklen_t::try_from(std::mem::size_of_val(&address))
+                .map_err(|_| std::io::Error::other("socket address size does not fit socklen_t"))?,
         )
     } != 0
     {
@@ -237,12 +248,18 @@ fn bounded_listener(path: &Path, backlog: libc::c_int) -> std::io::Result<std::o
     Ok(listener)
 }
 
+/// Trusted sessions exist only on Linux.
+///
+/// # Errors
+///
+/// Always returns a message asking the user to continue on Linux.
 #[cfg(not(target_os = "linux"))]
 pub fn trusted_identity_complete() -> Result<(), String> {
     Err("Continue the saved Desktop imports after logging into Tilo on Linux.".into())
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use std::fs;

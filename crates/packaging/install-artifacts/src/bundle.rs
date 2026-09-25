@@ -104,7 +104,10 @@ pub(crate) fn canonical_digest(value: &str, length: usize) -> bool {
 pub(crate) fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
-        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
         && value
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
@@ -136,7 +139,7 @@ fn efi_path(value: &str) -> bool {
                 return false;
             };
             return !stem.is_empty()
-                && stem.as_bytes()[0] != b'.'
+                && !stem.starts_with('.')
                 && stem
                     .bytes()
                     .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c));
@@ -216,7 +219,7 @@ fn validate_cmdline(boot: &BootBinding) -> Result<&'static str, String> {
             "qos.generation" | "tilo.generation" => {
                 !value.is_empty()
                     && value.len() <= 10
-                    && value.as_bytes()[0] != b'0'
+                    && !value.starts_with('0')
                     && value.bytes().all(|c| c.is_ascii_digit())
             }
             _ => false,
@@ -235,6 +238,10 @@ fn validate_cmdline(boot: &BootBinding) -> Result<&'static str, String> {
 /// Parse the exact schema-1 exporter contract, without authenticating its origin.
 /// # Errors
 /// Rejects ambiguous JSON, unsupported profiles and inconsistent or unbounded facts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear pass over the exporter schema reads best in contract order"
+)]
 pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, String> {
     require(
         !manifest.is_empty() && manifest.len() <= MAX_MANIFEST_BYTES,
@@ -351,11 +358,14 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
     ranges.sort_unstable();
     let mut end = 0;
     for (offset, size) in ranges {
+        let extent_end = offset
+            .checked_add(size)
+            .ok_or("overlapping or out-of-bounds extents")?;
         require(
-            offset >= end && offset + size <= data.source_image_bytes,
+            offset >= end && extent_end <= data.source_image_bytes,
             "overlapping or out-of-bounds extents",
         )?;
-        end = offset + size;
+        end = extent_end;
     }
     let boot = &data.boot_binding;
     let root = data
@@ -421,21 +431,29 @@ fn verify_bytes(
     use std::io::Read;
     let mut remaining = component.byte_size;
     let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = vec![0_u8; 64 * 1024];
     while remaining > 0 {
         check_cancel(cancel)?;
-        let size = remaining.min(buffer.len() as u64) as usize;
-        let count = file.read(&mut buffer[..size]).map_err(|e| e.to_string())?;
+        let size = buffer
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let chunk = buffer.get_mut(..size).ok_or("component read buffer")?;
+        let count = file.read(chunk).map_err(|e| e.to_string())?;
         check_cancel(cancel)?;
         require(count > 0, "truncated component")?;
-        hash.update(&buffer[..count]);
-        remaining -= count as u64;
+        hash.update(chunk.get(..count).ok_or("component read overrun")?);
+        remaining = remaining.saturating_sub(count as u64);
         #[cfg(test)]
-        tests::event("read", &component.filename, component.byte_size - remaining);
+        tests::event(
+            "read",
+            &component.filename,
+            component.byte_size.saturating_sub(remaining),
+        );
     }
     check_cancel(cancel)?;
+    let mut probe = [0_u8; 1];
     require(
-        file.read(&mut buffer[..1]).map_err(|e| e.to_string())? == 0,
+        file.read(&mut probe).map_err(|e| e.to_string())? == 0,
         "long component",
     )?;
     #[cfg(test)]
@@ -449,7 +467,7 @@ fn verify_bytes(
 
 #[cfg(unix)]
 mod unix {
-    use super::*;
+    use super::{AtomicBool, InternalBundle, Path, check_cancel, require, verify_bytes};
     use std::{
         fs::{self, File, Metadata, OpenOptions},
         os::{
@@ -573,7 +591,10 @@ fn windows_leaf_supported(name: &str) -> bool {
         "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
     ) && !((stem.starts_with("COM") || stem.starts_with("LPT"))
         && stem.len() == 4
-        && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+        && stem
+            .as_bytes()
+            .get(3)
+            .is_some_and(|digit| matches!(digit, b'1'..=b'9')))
 }
 
 #[cfg(any(windows, test))]
@@ -601,22 +622,27 @@ fn windows_directory_leaf_supported(name: &[u16]) -> bool {
         .copied()
         .take_while(|&unit| unit != u16::from(b'.'))
         .map(|unit| match unit {
-            0x61..=0x7a => unit - 0x20,
+            0x61..=0x7a => unit.wrapping_sub(0x20),
             _ => unit,
         })
         .collect();
     while stem.last() == Some(&u16::from(b' ')) {
         stem.pop();
     }
+    let numbered_device = match stem.as_slice() {
+        [prefix @ .., digit] if prefix.len() == 3 => {
+            ["COM", "LPT"]
+                .iter()
+                .any(|name| prefix.iter().copied().eq(name.encode_utf16()))
+                // Include DOS digit aliases and Windows superscript ¹, ² and ³.
+                && matches!(digit, 0x30..=0x39 | 0xb9 | 0xb2 | 0xb3)
+        }
+        _ => false,
+    };
     !["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
         .iter()
         .any(|reserved| stem.iter().copied().eq(reserved.encode_utf16()))
-        && !(stem.len() == 4
-            && ["COM", "LPT"]
-                .iter()
-                .any(|prefix| stem[..3].iter().copied().eq(prefix.encode_utf16()))
-            // Include DOS digit aliases and Windows superscript ¹, ² and ³.
-            && matches!(stem[3], 0x30..=0x39 | 0xb9 | 0xb2 | 0xb3))
+        && !numbered_device
 }
 
 #[cfg(any(windows, test))]
@@ -626,15 +652,19 @@ fn windows_directory_path(
     // Validate raw units before Path::components can normalize aliases. One
     // extra unit detects overflow without collecting an unbounded input.
     let raw: Vec<_> = raw.into_iter().take(4097).collect();
+    let refused = "require a bounded ordinary absolute Windows drive path";
+    let [drive, colon, separator, rest @ ..] = raw.as_slice() else {
+        return Err(refused.into());
+    };
     require(
-        (3..=4096).contains(&raw.len())
-            && matches!(raw[0], 0x41..=0x5a | 0x61..=0x7a)
-            && raw[1..3] == [u16::from(b':'), u16::from(b'\\')],
-        "require a bounded ordinary absolute Windows drive path",
+        raw.len() <= 4096
+            && matches!(drive, 0x41..=0x5a | 0x61..=0x7a)
+            && [*colon, *separator] == [u16::from(b':'), u16::from(b'\\')],
+        refused,
     )?;
     let mut names = Vec::new();
-    if raw.len() > 3 {
-        for name in raw[3..].split(|&unit| unit == u16::from(b'\\')) {
+    if !rest.is_empty() {
+        for name in rest.split(|&unit| unit == u16::from(b'\\')) {
             require(
                 names.len() < 64 && windows_directory_leaf_supported(name),
                 "unsupported Windows directory component",
@@ -643,7 +673,7 @@ fn windows_directory_path(
         }
     }
     Ok(WindowsDirectoryPath {
-        root: [raw[0], raw[1], raw[2]],
+        root: [*drive, *colon, *separator],
         names,
     })
 }
@@ -1180,7 +1210,7 @@ pub(crate) mod tests {
                     assert!(
                         verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false))
                             .is_err()
-                    )
+                    );
                 },
             );
         }
@@ -1190,7 +1220,7 @@ pub(crate) mod tests {
         use std::sync::{Arc, atomic::Ordering};
         let (dir, _) = ordinary_bundle();
         // Three reads, with the final read shorter than the fixed buffer.
-        let payload = vec![b'R'; 131584];
+        let payload = vec![b'R'; 131_584];
         std::fs::write(dir.path().join("staging-root.img"), &payload).unwrap();
         let mut manifest = fixture();
         manifest["components"][1]["byte_size"] = json!(payload.len());
@@ -1203,10 +1233,10 @@ pub(crate) mod tests {
         for (stage, count) in [
             ("opened", 0),
             ("read", 65536),
-            ("read", 131072),
-            ("read", 131584),
-            ("eof", 131584),
-            ("readback", 131584),
+            ("read", 131_072),
+            ("read", 131_584),
+            ("eof", 131_584),
+            ("readback", 131_584),
         ] {
             let cancel = Arc::new(AtomicBool::new(false));
             let signal = cancel.clone();
@@ -1220,7 +1250,7 @@ pub(crate) mod tests {
                     assert!(
                         verify_internal_components(&bundle, dir.path(), &cancel).is_err(),
                         "missed {stage}/{count}"
-                    )
+                    );
                 },
             );
         }
@@ -1244,14 +1274,17 @@ pub(crate) mod tests {
             "COM¹safe",
         ] {
             let parsed = windows_path(&format!("C:\\Users\\{name}\\cache")).unwrap();
-            assert_eq!(parsed.root, [b'C' as u16, b':' as u16, b'\\' as u16]);
+            assert_eq!(
+                parsed.root,
+                [u16::from(b'C'), u16::from(b':'), u16::from(b'\\')]
+            );
             assert_eq!(parsed.names[1], name.encode_utf16().collect::<Vec<_>>());
         }
         assert!(windows_path("c:\\").unwrap().names.is_empty());
         let composed = windows_path("C:\\é").unwrap();
         let decomposed = windows_path("C:\\e\u{301}").unwrap();
         assert_eq!(composed.names, vec![vec![0xe9]]);
-        assert_eq!(decomposed.names, vec![vec![b'e' as u16, 0x301]]);
+        assert_eq!(decomposed.names, vec![vec![u16::from(b'e'), 0x301]]);
         assert_ne!(composed, decomposed);
     }
 
@@ -1275,14 +1308,14 @@ pub(crate) mod tests {
     #[test]
     fn windows_unicode_raw_collection_is_bounded() {
         let mut consumed = 0;
-        let raw = std::iter::repeat(b'a' as u16).inspect(|_| consumed += 1);
+        let raw = std::iter::repeat(u16::from(b'a')).inspect(|_| consumed += 1);
         assert!(windows_directory_path(raw).is_err());
         assert_eq!(consumed, 4097);
     }
 
     #[test]
     fn windows_unicode_unpaired_surrogates_are_preserved() {
-        let name = vec![0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00];
+        let name = vec![0xd800, u16::from(b'a'), 0xdc00, 0xd83d, 0xde00];
         let mut raw: Vec<_> = "C:\\".encode_utf16().collect();
         raw.extend_from_slice(&name);
         assert_eq!(windows_directory_path(raw).unwrap().names, vec![name]);
@@ -1458,7 +1491,7 @@ pub(crate) mod tests {
             || {
                 assert!(
                     verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_err()
-                )
+                );
             },
         );
     }

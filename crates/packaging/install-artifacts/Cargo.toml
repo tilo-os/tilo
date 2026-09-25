@@ -12,14 +12,19 @@ test-support = ["atomic-file/test-support"]
 [dependencies]
 hex.workspace = true
 atomic-file = { path = "../../system/atomic-file" }
-dirs.workspace = true
+xdg-paths = { path = "../../system/xdg-paths" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
+# reqwest carries no bundled crypto provider; tilo-net installs it first.
+tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 
 [target.'cfg(windows)'.dependencies]
 cap-fs-ext = "3.4.6"

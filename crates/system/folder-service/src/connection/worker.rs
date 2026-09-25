@@ -598,6 +598,10 @@ impl Worker {
         }
     }
     #[cfg(target_os = "linux")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence whose steps share state; splitting it would scatter its invariants"
+    )]
     fn outcome(&mut self, outcome: transaction::TransactionOutcome) {
         let Some(active) = self.active.as_mut() else {
             return;

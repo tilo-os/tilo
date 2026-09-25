@@ -76,7 +76,7 @@ fn rejects_truncated_extra_oversized_and_malformed_objects() {
 fn browser_codec_encodes_and_decodes_the_same_golden_and_u64_edges() {
     let profile = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../browser/qos-browser-runtime/web/media-voice-profile.mjs");
-    let script = r#"
+    let script = r"
         const {encodeVoiceObject, decodeVoiceObject} = await import(process.argv[1]);
         for (const [sequence, timestamp, payload] of [
             [0x0102030405060708n, 0x1112131415161718n, [248,255,254]],
@@ -86,7 +86,7 @@ fn browser_codec_encodes_and_decodes_the_same_golden_and_u64_edges() {
             const decoded = decodeVoiceObject(encoded);
             process.stdout.write(JSON.stringify({bytes:[...encoded], sequence:decoded.sequence.toString(), timestamp:decoded.timestamp.toString()})+'\n');
         }
-    "#;
+    ";
     let output = std::process::Command::new("node")
         .args(["--input-type=module", "-e", script])
         .arg(profile)

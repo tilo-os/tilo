@@ -176,6 +176,10 @@ pub(super) fn verified_current(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unreachable,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use super::*;
     use crate::connection::{
@@ -359,7 +363,7 @@ mod tests {
                         }
                         3 => {
                             std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000))
-                                .unwrap()
+                                .unwrap();
                         }
                         4 => stop.store(true, Ordering::Release),
                         5 => gate.close(),

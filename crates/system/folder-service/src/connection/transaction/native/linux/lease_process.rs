@@ -72,7 +72,7 @@ fn poll(fd: RawFd, events: i16, deadline: Instant) -> io::Result<()> {
             libc::poll(
                 &raw mut item,
                 1,
-                remaining.min(POLL).as_millis().max(1) as i32,
+                i32::try_from(remaining.min(POLL).as_millis().max(1)).unwrap_or(i32::MAX),
             )
         };
         if result < 0 {
@@ -97,6 +97,7 @@ fn send(socket: RawFd, frame: Frame, descriptor: Option<RawFd>) -> io::Result<()
         iov_len: bytes.len(),
     };
     // Native-word storage provides cmsghdr alignment. Only one fd is sent.
+    let fd_bytes = u32::try_from(std::mem::size_of::<RawFd>()).map_err(|_| invalid())?;
     let mut control = [0_usize; 8];
     // SAFETY: all-zero msghdr is valid before filling pointer/length pairs.
     let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -105,14 +106,13 @@ fn send(socket: RawFd, frame: Frame, descriptor: Option<RawFd>) -> io::Result<()
     if let Some(fd) = descriptor {
         message.msg_control = control.as_mut_ptr().cast();
         // SAFETY: space calculation for one native fd fits control.
-        message.msg_controllen =
-            unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) } as usize;
+        message.msg_controllen = unsafe { libc::CMSG_SPACE(fd_bytes) } as usize;
         // SAFETY: aligned live control buffer and correctly sized cmsg.
         unsafe {
             let header = libc::CMSG_FIRSTHDR(&raw const message);
             (*header).cmsg_level = libc::SOL_SOCKET;
             (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as usize;
+            (*header).cmsg_len = libc::CMSG_LEN(fd_bytes) as usize;
             std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<RawFd>(), fd);
         }
     }
@@ -124,7 +124,7 @@ fn send(socket: RawFd, frame: Frame, descriptor: Option<RawFd>) -> io::Result<()
             libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
         )
     };
-    if sent != bytes.len() as isize {
+    if usize::try_from(sent).ok() != Some(bytes.len()) {
         return Err(if sent < 0 {
             io::Error::last_os_error()
         } else {
@@ -168,12 +168,12 @@ fn receive(socket: RawFd) -> io::Result<(Frame, Vec<OwnedFd>)> {
                 bad = true;
                 break;
             }
-            let length = (*header).cmsg_len - base;
+            let length = (*header).cmsg_len.saturating_sub(base);
             if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
                 if !length.is_multiple_of(std::mem::size_of::<RawFd>()) {
                     bad = true;
                 }
-                for index in 0..length / std::mem::size_of::<RawFd>() {
+                for index in 0..length.div_euclid(std::mem::size_of::<RawFd>()) {
                     let fd = std::ptr::read_unaligned(
                         libc::CMSG_DATA(header).cast::<RawFd>().add(index),
                     );
@@ -188,8 +188,12 @@ fn receive(socket: RawFd) -> io::Result<(Frame, Vec<OwnedFd>)> {
     if bad || length == 0 {
         return Err(invalid());
     } // RAII closes every received fd.
-    let frame =
-        Frame::decode(bytes.get(..length as usize).ok_or_else(invalid)?).map_err(|()| invalid())?;
+    let frame = Frame::decode(
+        bytes
+            .get(..usize::try_from(length).map_err(|_| invalid())?)
+            .ok_or_else(invalid)?,
+    )
+    .map_err(|()| invalid())?;
     Ok((frame, descriptors))
 }
 
@@ -250,7 +254,9 @@ impl Receiver {
                 cvt(libc::fcntl(CHILD_FD, libc::F_SETFD, 0))?;
                 // CLOEXEC all unrelated descriptors, including ambient non-CLOEXEC
                 // handles. Unsupported close_range refuses spawn; no weaker fallback.
-                cvt(libc::syscall(libc::SYS_close_range, 4_u32, u32::MAX, 4_u32) as i32)?;
+                // Any result outside `c_int` is treated as a refusal.
+                let closed = libc::syscall(libc::SYS_close_range, 4_u32, u32::MAX, 4_u32);
+                cvt(i32::try_from(closed).unwrap_or(-1))?;
                 Ok(())
             });
         }
@@ -262,7 +268,7 @@ impl Receiver {
             child: Some(child),
             state: Admission::new(epoch),
             files: Vec::new(),
-            deadline: Instant::now() + WORK,
+            deadline: crate::deadline_after(WORK),
         };
         let hello = Frame {
             epoch,
@@ -275,7 +281,7 @@ impl Receiver {
             poll(
                 receiver.socket.as_raw_fd(),
                 libc::POLLIN,
-                Instant::now() + STARTUP,
+                crate::deadline_after(STARTUP),
             )?;
             let (reply, fds) = receive(receiver.socket.as_raw_fd())?;
             if reply != hello || !fds.is_empty() {
@@ -337,7 +343,7 @@ impl Receiver {
             poll(
                 self.socket.as_raw_fd(),
                 libc::POLLIN,
-                (Instant::now() + ACK).min(self.deadline),
+                crate::deadline_after(ACK).min(self.deadline),
             )?;
             let (reply, fds) = receive(self.socket.as_raw_fd())?;
             if !fds.is_empty() {
@@ -363,7 +369,7 @@ impl Drop for Receiver {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        let deadline = Instant::now() + SHUTDOWN;
+        let deadline = crate::deadline_after(SHUTDOWN);
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => return,
@@ -463,7 +469,7 @@ fn no_signal(fd: RawFd) -> io::Result<()> {
 }
 fn valid_channel(fd: RawFd) -> io::Result<()> {
     let mut kind: i32 = 0;
-    let mut len = std::mem::size_of_val(&kind) as libc::socklen_t;
+    let mut len = libc::socklen_t::try_from(std::mem::size_of_val(&kind)).map_err(|_| invalid())?;
     // SAFETY: correctly sized getsockopt output.
     cvt(unsafe {
         libc::getsockopt(
@@ -479,7 +485,7 @@ fn valid_channel(fd: RawFd) -> io::Result<()> {
     }
     // SAFETY: zeroed credential output populated by kernel.
     let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    len = std::mem::size_of_val(&credentials) as libc::socklen_t;
+    len = libc::socklen_t::try_from(std::mem::size_of_val(&credentials)).map_err(|_| invalid())?;
     // SAFETY: correctly sized credential output; peer must be the spawning parent.
     cvt(unsafe {
         libc::getsockopt(
@@ -510,7 +516,7 @@ fn valid_channel(fd: RawFd) -> io::Result<()> {
 fn run_receiver(socket: &OwnedFd) -> io::Result<()> {
     valid_channel(socket.as_raw_fd())?;
     let signals = signal_fd()?; // before any descriptor/lease can be accepted.
-    let startup = Instant::now() + STARTUP;
+    let startup = crate::deadline_after(STARTUP);
     poll(socket.as_raw_fd(), libc::POLLIN, startup)?;
     let (hello, fds) = receive(socket.as_raw_fd())?;
     if hello.code != Code::Hello
@@ -525,7 +531,7 @@ fn run_receiver(socket: &OwnedFd) -> io::Result<()> {
     send(socket.as_raw_fd(), hello, None)?;
     let mut state = Admission::new(hello.epoch);
     let mut files: Vec<Arc<File>> = Vec::new();
-    let deadline = Instant::now() + WORK;
+    let deadline = crate::deadline_after(WORK);
     let result = (|| {
         loop {
             no_signal(signals.as_raw_fd())?;
@@ -546,7 +552,8 @@ fn run_receiver(socket: &OwnedFd) -> io::Result<()> {
                 },
             ];
             // SAFETY: two initialized descriptors and bounded timeout.
-            let status = unsafe { libc::poll(polls.as_mut_ptr(), 2, POLL.as_millis() as i32) };
+            let timeout = i32::try_from(POLL.as_millis()).unwrap_or(i32::MAX);
+            let status = unsafe { libc::poll(polls.as_mut_ptr(), 2, timeout) };
             if status < 0 {
                 if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                     continue;
@@ -637,6 +644,12 @@ pub(super) fn maybe_run(args: &[String]) -> Option<i32> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use super::*;
     use std::os::unix::fs::OpenOptionsExt;
@@ -989,7 +1002,7 @@ mod tests {
                 libc::poll(
                     &raw mut item,
                     1,
-                    remaining.min(POLL).as_millis().max(1) as i32,
+                    i32::try_from(remaining.min(POLL).as_millis().max(1)).unwrap_or(i32::MAX),
                 )
             };
             if status < 0 {

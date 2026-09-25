@@ -154,7 +154,7 @@ impl Transcript {
         self.bytes = self.bytes.checked_add(bytes.len()).ok_or(Lost)?;
         require(self.bytes <= 256 * 1024)?;
         while !bytes.is_empty() {
-            self.records += 1;
+            self.records = self.records.saturating_add(1);
             require(self.records <= 1024)?;
             let header = bytes.get(..16).ok_or(Lost)?;
             let wd = i32::from_ne_bytes(header.get(..4).ok_or(Lost)?.try_into().map_err(|_| Lost)?);
@@ -176,11 +176,12 @@ impl Transcript {
             ) as usize;
             require(
                 length <= 256
-                    && length % 4 == 0
+                    && length.is_multiple_of(4)
                     && mask & (OVERFLOW | IGNORED | UNMOUNT) == 0
                     && mask & !(MASK | ISDIR) == 0,
             )?;
-            let record = bytes.get(..16 + length).ok_or(Lost)?;
+            let end = length.checked_add(16).ok_or(Lost)?;
+            let record = bytes.get(..end).ok_or(Lost)?;
             let padded = record.get(16..).ok_or(Lost)?;
             let name = if padded.is_empty() {
                 padded
@@ -213,7 +214,7 @@ impl Transcript {
                 cookie == 0
             })?;
             self.observe_roles(wd, mask, cookie, name)?;
-            bytes = bytes.get(16 + length..).ok_or(Lost)?;
+            bytes = bytes.get(end..).ok_or(Lost)?;
         }
         Ok(())
     }
@@ -288,7 +289,7 @@ impl Inventory {
             .map(<[u8]>::to_vec)
             .collect();
         let failed = names.len() > 6
-            || expected.len() != names.len() + 2
+            || Some(expected.len()) != names.len().checked_add(2)
             || names.iter().any(|name| !component(name));
         Self {
             expected: Some(expected),
@@ -311,7 +312,7 @@ impl Inventory {
     }
     /// Called once for every actual positive-size request, including failed and EOF requests.
     pub fn response(&mut self, result: Result<&[u8]>) -> Result<bool> {
-        self.requests += 1;
+        self.requests = self.requests.saturating_add(1);
         let value = self.response_inner(result);
         if value.is_err() {
             self.failed = true;
@@ -324,7 +325,7 @@ impl Inventory {
         require(bytes.len() <= 4096)?;
         let eof = bytes.is_empty();
         while !bytes.is_empty() {
-            self.records += 1;
+            self.records = self.records.saturating_add(1);
             require(self.records <= if self.expected.is_some() { 8 } else { 170 })?;
             let header = bytes.get(..19).ok_or(Lost)?;
             let length = usize::from(u16::from_ne_bytes(
@@ -377,7 +378,7 @@ impl Passes {
             self.failed = true;
             return Err(Lost);
         }
-        self.used += 1;
+        self.used = self.used.saturating_add(1);
         Ok(())
     }
 }
@@ -417,6 +418,11 @@ impl RepairBinding {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use super::*;
     fn event(wd: i32, mask: u32, cookie: u32, name: &[u8]) -> Vec<u8> {

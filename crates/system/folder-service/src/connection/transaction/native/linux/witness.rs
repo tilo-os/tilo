@@ -141,7 +141,7 @@ impl NamespaceWitness {
             self.passes
                 .enter()
                 .map_err(|_| epoch.failure(EndpointError::LimitExceeded))?;
-            let deadline = Instant::now() + std::time::Duration::from_secs(1);
+            let deadline = crate::deadline_after(std::time::Duration::from_secs(1));
             for watch in &self.watches {
                 epoch.ep(watch.directory.validate())?;
                 if epoch.ep(object(watch.directory.file()))? != watch.identity {
@@ -318,14 +318,13 @@ impl NamespaceWitness {
         Ok(())
     }
     pub(super) fn create(&mut self, name: &CStr) -> io::Result<()> {
-        if let Some(phase) = self.directory_phase {
-            if !matches!(
+        if let Some(phase) = self.directory_phase
+            && (!matches!(
                 name.to_bytes(),
                 b"intent" | b"staged-intent" | b"stage" | b"outcome"
-            ) || (name == c"outcome") != (phase == rules::DirectoryPhase::Published)
-            {
-                return Err(invalid());
-            }
+            ) || (name == c"outcome") != (phase == rules::DirectoryPhase::Published))
+        {
+            return Err(invalid());
         }
         rules::creation_phase(&self.inventory, name.to_bytes()).map_err(|_| invalid())?;
         if self.failed
@@ -494,7 +493,7 @@ impl NamespaceWitness {
             .map_err(|_| epoch.failure(EndpointError::LimitExceeded))?;
         #[cfg(test)]
         test_cut("checkpoint", &epoch.io(self.role(Role::Namespace))?, c".");
-        let deadline = Instant::now() + std::time::Duration::from_secs(1);
+        let deadline = crate::deadline_after(std::time::Duration::from_secs(1));
         self.sample(epoch, true)?;
         let namespace = epoch.io(self.role(Role::Namespace))?;
         for watch in &self.watches {
@@ -719,7 +718,7 @@ impl NativeEpoch<'_> {
         {
             return Err(self.failure(EndpointError::Unstable));
         }
-        let mut bytes = vec![0; expected.len() + 1];
+        let mut bytes = vec![0; expected.len().saturating_add(1)];
         self.charge(bytes.len() as u64)?;
         let count = self.io(file.read_at(&mut bytes, 0))?;
         if count != expected.len()
@@ -861,6 +860,10 @@ pub(super) fn set_test_cut(hook: Option<CutHook>) {
     CUT_HOOK.with(|slot| *slot.borrow_mut() = hook);
 }
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "test arithmetic on small fixtures; an overflow or unexpected arm fails the test"
+)]
 mod tests {
     use super::*;
     use crate::connection::{

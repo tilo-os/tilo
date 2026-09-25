@@ -1,4 +1,4 @@
-use tilo_install_artifacts::{Availability, Client, Error, ErrorKind, ReleaseSelection, Token};
+use tilo_install_artifacts::{Availability, Client, Error, ReleaseSelection, Token};
 
 #[test]
 fn normal_facade_has_semantic_controls_only() {
@@ -24,7 +24,7 @@ fn normal_constructor_does_not_select_fixture() {
         assert_eq!(availability, Availability::UnsupportedHost);
         assert_eq!(
             Client::open_legacy_imager().err().unwrap().kind(),
-            ErrorKind::Unsupported
+            tilo_install_artifacts::ErrorKind::Unsupported
         );
     }
 }
@@ -91,10 +91,10 @@ fn explicit_fixture_keeps_finals_and_close_refuses_new_operations() {
             .start(server.selection(&manifest), b"key".to_vec())
             .unwrap_err()
             .kind(),
-        ErrorKind::Closed
+        tilo_install_artifacts::ErrorKind::Closed
     );
     assert_eq!(
         client.release(&token).unwrap_err().kind(),
-        ErrorKind::Closed
+        tilo_install_artifacts::ErrorKind::Closed
     );
 }

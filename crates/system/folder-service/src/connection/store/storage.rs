@@ -23,7 +23,8 @@ mod windows;
 #[cfg(windows)]
 pub(super) use super::super::windows_native::WindowsDirectory as Directory;
 use serde::{Deserialize, Serialize};
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
@@ -106,12 +107,13 @@ impl ReadLease {
             .budget
             .lock()
             .map_err(|_| StoreError::RecoveryRequired)?;
-        if std::time::Instant::now() >= budget.deadline
+        let exhausted = std::time::Instant::now() >= budget.deadline
             || budget.used.bytes > budget.limits.bytes
             || budget.used.pages > budget.limits.pages
             || budget.used.rows > budget.limits.rows
-            || budget.used.work > budget.limits.work
-        {
+            || budget.used.work > budget.limits.work;
+        drop(budget);
+        if exhausted {
             return Err(StoreError::LimitExceeded);
         }
         Ok(())
@@ -130,8 +132,8 @@ impl ReadLease {
     }
 }
 
-/// Preserve the store refusal outside io::Error: the shared framing reader may
-/// treat UnexpectedEof as a torn last frame, but never a refused read allowance.
+/// Preserve the store refusal outside `io::Error`: the shared framing reader may
+/// treat `UnexpectedEof` as a torn last frame, but never a refused read allowance.
 struct LogRead<'a, R> {
     storage: &'a Storage,
     reader: &'a mut R,
@@ -169,7 +171,7 @@ pub(super) struct Storage {
     pub quarantine: Arc<Directory>,
     pub path: PathBuf,
     pub identity: Identity,
-    lock: File,
+    lock: advisory_lock::FileLock,
     lock_identity: Metadata,
 }
 
@@ -178,7 +180,8 @@ fn attest(path: &Path) -> Result<Identity, StoreError> {
     if super::tests::identity_unavailable() {
         return Err(StoreError::UnsupportedDurability);
     }
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(test)]
+    #[cfg(target_os = "macos")]
     {
         // Host source tests only: real volume UUID/inode, never runtime admission.
         let pin = PinnedDirectory::open_absolute(path)?;
@@ -331,7 +334,7 @@ impl Storage {
         }
         let lock = open_file(&root, "ownership.lock", fresh)?;
         let lock_identity = regular(&lock)?;
-        lock.try_lock().map_err(|_| StoreError::Busy)?;
+        let lock = advisory_lock::FileLock::try_exclusive(lock).map_err(|_| StoreError::Busy)?;
         validate_file(&root, "ownership.lock", &lock, &lock_identity)?;
         if fresh {
             sync_file(&lock)?;
@@ -729,7 +732,7 @@ impl Storage {
             0,
             match &page.node {
                 format::Node::Leaf(rows) => rows.len() as u64,
-                _ => 0,
+                format::Node::Index(_) => 0,
             },
             match &page.node {
                 format::Node::Leaf(rows) => rows.len() as u64,
@@ -775,7 +778,7 @@ impl Storage {
             0,
             match &page.node {
                 format::Node::Leaf(rows) => rows.len() as u64,
-                _ => 0,
+                format::Node::Index(_) => 0,
             },
             match &page.node {
                 format::Node::Leaf(rows) => rows.len() as u64,
@@ -922,7 +925,7 @@ impl<'a> TreeIter<'a> {
             page_limit: if count == 0 {
                 0
             } else {
-                u64::from(count) * 8 + 1
+                u64::from(count).saturating_mul(8).saturating_add(1)
             },
             meter: Some(meter),
         })
@@ -1299,6 +1302,10 @@ impl Storage {
     // Every incoming Child is compared before cached membership can skip a
     // descent. This preserves range/count validation for duplicate references
     // without retaining their unbounded keys in memory.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "ownership transfer marks the one-shot value as used up by this call"
+    )]
     fn collect_reachable_child(
         &self,
         child: format::Child,
@@ -1670,7 +1677,7 @@ impl super::ConnectionStore {
             #[cfg(windows)]
             drop(file);
             self.finish_gc(&intent)?;
-            removed += 1;
+            removed = removed.saturating_add(1);
         }
         self.gc_scan = Some(scan);
         Ok(removed)
@@ -1695,6 +1702,10 @@ impl super::ConnectionStore {
             Err(error) => Err(error.into()),
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered sequence whose steps share state; splitting it would scatter its invariants"
+    )]
     fn finish_gc(&self, intent: &GcIntent) -> Result<(), StoreError> {
         self.validate()?;
         component(&intent.name)?;
@@ -1846,7 +1857,8 @@ fn mutation_file(parent: &Arc<Directory>, name: &str) -> Result<File, StoreError
         windows::mutation_file(parent, name)
     }
 }
-#[cfg(all(windows, test))]
+#[cfg(test)]
+#[cfg(windows)]
 pub(super) fn capture_no_replace(
     parent: &Arc<Directory>,
     name: &str,

@@ -138,7 +138,7 @@ impl<'a> NativeDirectoryAdmission<'a> {
         {
             return Err(StoreError::IdentityChanged);
         }
-        let deadline = Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = crate::deadline_after(std::time::Duration::from_secs(30));
         let paths = [
             DirectoryPath::capture(left, &intent.path, side == Side::Source, deadline, cancel)?,
             DirectoryPath::capture(
@@ -198,7 +198,7 @@ impl<'a> NativeDirectoryAdmission<'a> {
                 descriptor_endpoint(self.record.destination.identity),
             ],
             direction: self.direction,
-            decision: self.direction + 1,
+            decision: self.direction.saturating_add(1),
             path: intent.path.clone(),
             chains: [left.chain.clone(), right.chain.clone()],
             states: [left.state(), right.state()],
@@ -266,10 +266,10 @@ impl<'a> NativeEpoch<'a> {
         Self::begin_recovery_mode(context, source, target, cancel, false)
     }
     pub(super) fn admit_directory_descriptor(&mut self) -> super::Result<()> {
-        if let Some(used) = &self.directory_requests {
-            if charge_directory_request(used).is_err() {
-                return Err(self.failure(EndpointError::LimitExceeded));
-            }
+        if let Some(used) = &self.directory_requests
+            && charge_directory_request(used).is_err()
+        {
+            return Err(self.failure(EndpointError::LimitExceeded));
         }
         Ok(())
     }
@@ -294,7 +294,7 @@ impl<'a> NativeEpoch<'a> {
             || usize::from(admission.direction) != binding.direction
             || admission.endpoints.get(binding.direction)
                 != Some(&descriptor_endpoint(self.identities[0]))
-            || admission.endpoints.get(1 - binding.direction)
+            || admission.endpoints.get(1 ^ binding.direction)
                 != Some(&descriptor_endpoint(self.identities[1]))
         {
             return Err(self.failure(EndpointError::IdentityChanged));
@@ -332,7 +332,7 @@ impl<'a> NativeEpoch<'a> {
                 let logical = if index == 0 {
                     usize::from(proof.admission.direction)
                 } else {
-                    1 - usize::from(proof.admission.direction)
+                    1 ^ usize::from(proof.admission.direction)
                 };
                 let expected = proof.admission.chains.get(logical).ok_or(Failure {
                     _cause: EndpointError::Unverified,
@@ -494,7 +494,7 @@ impl<'a> DirectoryPrepared<'a> {
         let source = epoch.source_directory(&source_parent, &expected.object)?;
         for (parent, index) in [
             (&source_parent, usize::from(admission.direction)),
-            (&target_parent, 1 - usize::from(admission.direction)),
+            (&target_parent, 1 ^ usize::from(admission.direction)),
         ] {
             if admission.chains.get(index)
                 != Some(
@@ -754,7 +754,7 @@ impl NativeEpoch<'_> {
             0;
             usize::try_from(before.length)
                 .map_err(|_| self.failure(EndpointError::LimitExceeded))?
-                + 1
+                .saturating_add(1)
         ];
         self.charge(bytes.len() as u64)?;
         let count = self.io(file.read_at(&mut bytes, 0))?;
@@ -820,7 +820,7 @@ impl<'a> DirectoryContinuation<'a> {
         let target_parent = epoch.pin_parent(super::Side::Target, &admission.path)?;
         for (parent, index) in [
             (&source_parent, usize::from(admission.direction)),
-            (&target_parent, 1 - usize::from(admission.direction)),
+            (&target_parent, 1 ^ usize::from(admission.direction)),
         ] {
             if admission.chains.get(index)
                 != Some(
@@ -1140,7 +1140,7 @@ impl DirectoryOutcome<'_> {
                 let logical = if side == super::Side::Source {
                     usize::from(self.owner.admission.direction)
                 } else {
-                    1 - usize::from(self.owner.admission.direction)
+                    1 ^ usize::from(self.owner.admission.direction)
                 };
                 if self.owner.admission.chains.get(logical)
                     != Some(
@@ -1424,7 +1424,7 @@ impl<'a> DirectoryUntouched<'a> {
             let logical = if index == 0 {
                 usize::from(self.admission.direction)
             } else {
-                1 - usize::from(self.admission.direction)
+                1 ^ usize::from(self.admission.direction)
             };
             // History binds the source generation, not its old child-change timestamps.
             // The fresh path above retains and validates its own full stamp without refresh.
