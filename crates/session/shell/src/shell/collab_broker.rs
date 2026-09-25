@@ -732,7 +732,7 @@ fn spawn_inner(
             Ok(vault) => {
                 let vault = Arc::new(vault);
                 if let Ok(mut state) = channels.lock() {
-                    state.install_mls_vault(Arc::clone(&vault));
+                    state.install_mls_vault(vault.clone());
                 }
                 if let Some(workspaces) = membership.clone() {
                     match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
