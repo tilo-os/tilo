@@ -163,6 +163,21 @@ fn connect_power_message(percent: u8) -> String {
     )
 }
 
+fn alongside_install_impact(guided: bool, dev: &str) -> String {
+    let change = if guided {
+        format!(
+            "Three new Tilo partitions (EFI, boot, and encrypted root) will be created and formatted only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved."
+        )
+    } else {
+        format!(
+            "Only the prepared Tilo boot and root partitions on {dev} will be formatted. The existing EFI partition and other OS partitions are preserved."
+        )
+    };
+    format!(
+        "{change} Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
     Erase,
@@ -2931,15 +2946,7 @@ impl InstallerApp {
         }
 
         let impact = if self.install_method == InstallMethod::Alongside {
-            if self.uses_guided_alongside() {
-                format!(
-                    "Two new Tilo partitions will be created only in the reviewed unallocated space on {dev}. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
-                )
-            } else {
-                format!(
-                    "Only the prepared Tilo root partition on {dev} is formatted. Existing OS partitions are preserved. Firmware/Secure Boot changes can still trigger a Windows BitLocker recovery prompt; save that recovery key before continuing."
-                )
-            }
+            alongside_install_impact(self.uses_guided_alongside(), &dev)
         } else {
             format!("This will ERASE {dev} and all data on it.")
         };
@@ -4738,6 +4745,20 @@ mod tests {
         assert!(!app.destructive_confirmation_ready());
         app.erase_confirmation = root;
         assert!(app.destructive_confirmation_ready());
+    }
+
+    #[test]
+    fn alongside_review_describes_each_partition_it_changes() {
+        let guided = alongside_install_impact(true, "/dev/nvme0n1");
+        assert!(guided.contains("Three new Tilo partitions (EFI, boot, and encrypted root)"));
+        assert!(guided.contains("created and formatted only in the reviewed unallocated space"));
+        assert!(guided.contains("BitLocker recovery prompt"));
+
+        let prepared = alongside_install_impact(false, "/dev/nvme0n1");
+        assert!(prepared.contains("prepared Tilo boot and root partitions"));
+        assert!(prepared.contains("will be formatted"));
+        assert!(prepared.contains("existing EFI partition and other OS partitions are preserved"));
+        assert!(prepared.contains("BitLocker recovery prompt"));
     }
 
     #[test]
