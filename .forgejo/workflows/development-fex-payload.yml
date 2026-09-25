@@ -136,12 +136,20 @@ jobs:
           [[ "$FEX_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-buildroot-candidate@sha256:[0-9a-f]{64}$ ]]
           [[ "$FEX_X86_SDK_REF" =~ ^code\.podesta\.ai/qos/tilo-fex-x86-sdk-candidate@sha256:[0-9a-f]{64}$ ]]
           echo "::notice::ARM runner CPUs=$(nproc); memory=$(awk '/^MemTotal:/ {print $2 " KiB"}' /proc/meminfo); Docker=$(docker info --format 'CPUs={{.NCPU}} memory={{.MemTotal}} bytes')"
+          docker_memory_bytes="$(docker info --format '{{.MemTotal}}')"
+          [[ "$docker_memory_bytes" =~ ^[0-9]+$ ]]
+          payload_jobs=2
+          if (( $(nproc) >= 4 && docker_memory_bytes >= 17179869184 )); then
+            payload_jobs=4
+          fi
+          echo "::notice::FEX payload build jobs=$payload_jobs (bounded by runner CPUs and 16 GiB Docker memory)"
           bash os/dev/fetch-fex-source.sh "$RUNNER_TEMP/fex-source"
           tag="code.sandbox.example/qos/tilo-fex-payload-candidate:${GITHUB_SHA}-${GITHUB_RUN_ID}"
           docker buildx build --platform linux/arm64 --push --provenance=false \
             --metadata-file fex-metadata.json --file os/Containerfile.fex-payload \
             --build-arg "FEX_BUILDROOT_REF=$FEX_BUILDROOT_REF" \
             --build-arg "FEX_X86_SDK_REF=$FEX_X86_SDK_REF" \
+            --build-arg "BUILD_JOBS=$payload_jobs" \
             --build-context "fex-source=$RUNNER_TEMP/fex-source" \
             --label org.tilo.development-only=true \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
