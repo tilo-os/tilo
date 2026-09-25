@@ -18,6 +18,157 @@ use automerge::{
     ScalarValue, ROOT,
 };
 use serde_json::{json, Value};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::{Cell, RefCell};
+
+// ===========================================================================
+// Per-thread allocation meter (the same technique as
+// resource_limits_admission.rs and qos-peer-state's assert_precharged).
+// ===========================================================================
+#[derive(Clone, Copy, Default, Debug)]
+struct Allocations {
+    live: usize,
+    peak: usize,
+    unmatched_free: bool,
+    unreserved_peak: usize,
+    first_unreserved: Option<(usize, usize, usize)>,
+    watched_requests: usize,
+    largest_request: usize,
+}
+
+thread_local! {
+    static METER: Cell<Option<Allocations>> = const { Cell::new(None) };
+    static CHECK_ALLOWANCE: RefCell<Option<(NativeAllowance, usize)>> = const { RefCell::new(None) };
+    static WATCH_ALLOCATION_BYTES: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+struct MeasuredSystem;
+
+fn allocated(bytes: usize) {
+    let _ = METER.try_with(|meter| {
+        if let Some(mut state) = meter.get() {
+            if WATCH_ALLOCATION_BYTES.try_with(|watch| watch.get() == Some(bytes)).unwrap_or(false) {
+                state.watched_requests += 1;
+            }
+            state.largest_request = state.largest_request.max(bytes);
+            state.live = state.live.saturating_add(bytes);
+            state.peak = state.peak.max(state.live);
+            let _ = CHECK_ALLOWANCE.try_with(|check| {
+                if let Ok(check) = check.try_borrow() {
+                    if let Some((allowance, initial)) = &*check {
+                        let reserved = initial.saturating_sub(allowance.available_bytes());
+                        if state.live > reserved && state.first_unreserved.is_none() {
+                            state.first_unreserved = Some((bytes, state.live, reserved));
+                        }
+                        state.unreserved_peak = state.unreserved_peak.max(state.live.saturating_sub(reserved));
+                    }
+                }
+            });
+            meter.set(Some(state));
+        }
+    });
+}
+
+fn released(bytes: usize) {
+    let _ = METER.try_with(|meter| {
+        if let Some(mut state) = meter.get() {
+            if let Some(remaining) = state.live.checked_sub(bytes) {
+                state.live = remaining;
+            } else {
+                state.live = 0;
+                state.unmatched_free = true;
+            }
+            meter.set(Some(state));
+        }
+    });
+}
+
+// SAFETY: every operation delegates unchanged to System; the thread-local
+// meter holds only Copy scalars (and a RefCell read) and never allocates.
+unsafe impl GlobalAlloc for MeasuredSystem {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: forwards the caller's valid layout.
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() {
+            allocated(layout.size());
+        }
+        pointer
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: forwards the caller's valid layout.
+        let pointer = unsafe { System.alloc_zeroed(layout) };
+        if !pointer.is_null() {
+            allocated(layout.size());
+        }
+        pointer
+    }
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        released(layout.size());
+        // SAFETY: forwards the original allocation and layout.
+        unsafe { System.dealloc(pointer, layout) };
+    }
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        // SAFETY: forwards the original allocation, layout and size.
+        let grown = unsafe { System.realloc(pointer, layout, size) };
+        if !grown.is_null() {
+            // Conservative old/new overlap for a moving reallocation.
+            allocated(size);
+            released(layout.size());
+        }
+        grown
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: MeasuredSystem = MeasuredSystem;
+
+fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            METER.with(|meter| meter.set(None));
+        }
+    }
+    METER.with(|meter| {
+        assert!(meter.get().is_none(), "nested measure");
+        meter.set(Some(Allocations::default()));
+    });
+    let _reset = Reset;
+    let value = operation();
+    let allocations = METER.with(|meter| meter.replace(None).unwrap());
+    (value, allocations)
+}
+
+/// Measures `operation` and asserts every allocation it made was already
+/// reserved on `allowance` when it happened.
+fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CHECK_ALLOWANCE.with(|check| *check.borrow_mut() = None);
+        }
+    }
+    // The clone is made before metering starts so it is not itself measured.
+    let entry = (allowance.clone(), allowance.available_bytes());
+    CHECK_ALLOWANCE.with(|check| {
+        assert!(check.borrow().is_none());
+        *check.borrow_mut() = Some(entry);
+    });
+    let _reset = Reset;
+    let result = measure(operation);
+    assert_eq!(
+        result.1.unreserved_peak, 0,
+        "every allocation must already be reserved (bytes, live, reserved): {:?}",
+        result.1.first_unreserved
+    );
+    result
+}
+
+fn assert_precharged<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> T {
+    measure_under(allowance, operation).0
+}
+
+
 
 const MIB: usize = 1024 * 1024;
 
@@ -506,12 +657,14 @@ fn bounded_apply(source: &mut AutoCommit, incoming: &[u8]) -> Result<AutoCommit,
         let original_heads = original.base_heads_bounded(&turn)?.as_slice().to_vec();
         let candidate = original.clone_bounded(&mut registry, &turn)?;
         let input = turn.normalize_input(incoming, &NativeLimits::default())?;
-        let result = candidate.apply_checked_bounded(
-            input,
-            NativeDependencyPolicy::RequireComplete,
-            &mut registry,
-            &turn,
-        );
+        let result = assert_precharged(&allowance, || {
+            candidate.apply_checked_bounded(
+                input,
+                NativeDependencyPolicy::RequireComplete,
+                &mut registry,
+                &turn,
+            )
+        });
         assert_eq!(original.base_heads_bounded(&turn)?.as_slice(), original_heads);
         match result? {
             NativeApplyResult::Applied { document, .. } => {
@@ -551,9 +704,10 @@ fn bounded_candidate_policies() {
         let mut run = |input: &[u8], policy| {
             let candidate = original.clone_bounded(&mut registry, &turn).unwrap();
             let input = turn.normalize_input(input, &NativeLimits::default()).unwrap();
-            candidate
-                .apply_checked_bounded(input, policy, &mut registry, &turn)
-                .unwrap()
+            assert_precharged(&allowance, || {
+                candidate.apply_checked_bounded(input, policy, &mut registry, &turn)
+            })
+            .unwrap()
         };
         assert!(matches!(
             run(&second, NativeDependencyPolicy::RequireComplete),
@@ -932,3 +1086,88 @@ fn fuzz_mutated_change_bytes_never_panic() {
     eprintln!("byte fuzz: {accepted} accepted");
 }
 
+
+#[test]
+fn bounded_apply_is_precharged_for_rich_history_and_refusals() {
+    let mut doc = base();
+    let heads = doc.get_heads();
+    let mut peer = doc.fork().with_actor(actor(5));
+    let text = peer.get(&ROOT, "text").unwrap().unwrap().1;
+    let list = peer.get(&ROOT, "list").unwrap().unwrap().1;
+    for i in 0..200 {
+        peer.splice_text(&text, i % 5, 0, "t").unwrap();
+        if i % 7 == 0 {
+            peer.insert(&list, 0, i as i64).unwrap();
+            peer.increment(&ROOT, "count", 1).unwrap();
+        }
+        if i % 50 == 0 {
+            peer.mark(
+                &text,
+                automerge::marks::Mark::new("bold".into(), true, 0, 3),
+                automerge::marks::ExpandMark::After,
+            )
+            .unwrap();
+        }
+        peer.commit();
+    }
+    let bytes = changes_bytes(&peer.get_changes(&heads));
+    let mut restored = bounded_apply(&mut doc, &bytes).expect("rich history applies");
+    assert_eq!(restored.get_heads(), peer.get_heads());
+    // Refusals are precharged too.
+    let a = a1();
+    let change = crafted(&mut doc, |v| v["ops"][0]["pred"] = json!([format!("998@{a}")]));
+    assert!(matches!(
+        bounded_apply(&mut doc, change.raw_bytes()),
+        Err(NativeMutationError::InvalidOperation)
+    ));
+    let (mut dup, x, y) = forked_sequences();
+    dup.apply_changes([x]).unwrap();
+    assert!(matches!(
+        bounded_apply(&mut dup, y.raw_bytes()),
+        Err(NativeMutationError::DuplicateSequence)
+    ));
+}
+
+#[test]
+fn typed_history_applies_within_one_allowance() {
+    // 4_000 single-character splices committed every third keystroke.
+    let mut writer = AutoCommit::new().with_actor(actor(6));
+    let text = writer.put_object(&ROOT, "text", ObjType::Text).unwrap();
+    writer.commit();
+    let mut target = writer.fork().with_actor(actor(1));
+    let heads = writer.get_heads();
+    for i in 0..4_000usize {
+        let len = writer.length(&text);
+        writer.splice_text(&text, (i * 7) % (len + 1), 0, "k").unwrap();
+        if i % 3 == 2 {
+            writer.commit();
+        }
+    }
+    writer.commit();
+    let changes = writer.get_changes(&heads);
+    let bytes = changes_bytes(&changes);
+    let started = std::time::Instant::now();
+    let limits = NativeLimits {
+        max_chunks: 1 << 16,
+        max_heads: 1 << 16,
+        max_actors: 1 << 16,
+        ..NativeLimits::default()
+    };
+    let credit = allowance();
+    assert_eq!(
+        target
+            .apply_incoming_checked(&bytes, &limits, &credit, NativeDependencyPolicy::RequireComplete)
+            .unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    eprintln!("typed history: {} changes in {:?}", changes.len(), started.elapsed());
+    assert_eq!(target.text(&text).unwrap(), writer.text(&text).unwrap());
+    // One more change onto the now-large document is cheap.
+    let heads = writer.get_heads();
+    writer.splice_text(&text, 0, 0, "!").unwrap();
+    writer.commit();
+    let started = std::time::Instant::now();
+    let one = changes_bytes(&writer.get_changes(&heads));
+    incoming(&mut target, &one, NativeDependencyPolicy::RequireComplete).unwrap();
+    eprintln!("one keystroke onto it: {:?}", started.elapsed());
+}
