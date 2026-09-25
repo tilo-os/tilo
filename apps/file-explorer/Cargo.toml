@@ -27,10 +27,8 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
-reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
-roxmltree.workspace = true
-zeroize.workspace = true
+# Remote WebDAV/Nextcloud files: the shared bounded DAV client.
+tilo-dav = { path = "../../crates/system/tilo-dav" }
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }

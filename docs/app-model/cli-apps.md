@@ -238,5 +238,5 @@ commands = ["notes"]
 Both binaries live inside the same signed payload and share the same
 sandbox.
 
-Next: [`formats.md`](./formats.md) — WASM Component providers for file
+Next: [`formats.md`](./formats.md) — sandboxed WebAssembly providers for file
 formats.

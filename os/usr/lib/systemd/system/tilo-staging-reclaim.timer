@@ -1,0 +1,14 @@
+[Unit]
+Description=Reclaim the temporary Tilo installer space after first sign-in
+ConditionPathExists=/var/lib/tilo/staging-reclaim.json
+
+[Timer]
+# Late enough that the first session has settled; retried until the first user
+# session exists, the space is reclaimed and the record is gone.
+OnBootSec=3min
+OnUnitInactiveSec=10min
+AccuracySec=1min
+Unit=tilo-staging-reclaim.service
+
+[Install]
+WantedBy=timers.target

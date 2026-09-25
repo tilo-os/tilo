@@ -64,22 +64,8 @@ impl Metrics {
     }
 }
 
-/// Immutable copy of every counter for status reports.
-#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
-pub struct MetricsSnapshot {
-    /// See [`Metrics::inc_conns_accepted`].
-    pub conns_accepted: u64,
-    /// See [`Metrics::inc_conns_authed`].
-    pub conns_authed: u64,
-    /// See [`Metrics::inc_auth_rejected`].
-    pub auth_rejected: u64,
-    /// See [`Metrics::inc_deltas_received`].
-    pub deltas_received: u64,
-    /// See [`Metrics::add_bytes_queued`].
-    pub bytes_queued: u64,
-    /// See [`Metrics::add_deltas_fanned_out`].
-    pub deltas_fanned_out: u64,
-}
+/// The persisted counter schema, shared with status readers.
+pub use tilo_relay_protocol::metrics::MetricsSnapshot;
 
 #[cfg(test)]
 mod tests {

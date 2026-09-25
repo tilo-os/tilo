@@ -8,6 +8,11 @@ publish.workspace = true
 description = "Tilo host + relay daemon: authenticated iroh transport for workspace CRDT ops, pins WorkspaceDirectory, store-and-forwards for offline peers."
 license = "MIT OR Apache-2.0"
 
+# cargo-machete cannot see serde_bytes: it is only named in
+# `#[serde(with = "serde_bytes")]` attributes (compute_transport.rs).
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
+
 [lib]
 name = "tilo_relay"
 path = "src/lib.rs"
@@ -61,6 +66,13 @@ install = { path = "../../packaging/install" }
 # its workspace tickets rather than asking the operator to duplicate ids.
 fs = { path = "../../system/fs" }
 collab-types = { path = "../../collab/collab-types" }
+# Handshake and wire messages plus the mesh, configuration, registry and
+# metrics records shared with the relay's clients; re-exported so the daemon's
+# own module paths stay unchanged.
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+# Federation dials other relays as a client, and both ends of every relay
+# stream use its frame codec.
+tilo-relay-client = { path = "../tilo-relay-client" }
 # Iroh 1.0.x — pinned to the same versions the `crates/system/fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay

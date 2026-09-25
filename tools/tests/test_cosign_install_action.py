@@ -11,7 +11,7 @@ CONSUMERS = {
     "build-image.yml": 1,
     "build-kernel.yml": 2,
     "snapshot-rpms.yml": 1,
-    "snapshot-wpe-buildroot.yml": 2,
+    "snapshot-wpe-buildroot.yml": 3,
     "tilo-relay.yaml": 2,
 }
 
