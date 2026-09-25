@@ -67,6 +67,11 @@ impl ChangeQueue {
         self.changes.iter()
     }
 
+    /// qOS bounded admission: allocation-free queued-hash lookup.
+    pub(crate) fn has_hash(&self, hash: &ChangeHash) -> bool {
+        self.hashes.contains(hash)
+    }
+
     /// Remove queued changes at or after an incompatible actor sequence,
     /// together with changes which transitively depend on that branch.
     pub(crate) fn remove_actor_branch_from(&mut self, actor: &ActorId, seq: u64) {
