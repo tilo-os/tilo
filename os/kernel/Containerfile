@@ -156,6 +156,8 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # One ephemeral signing identity per kernel build. Only the public
 # certificate is compiled into the kernel; the key is deleted before publish.
 COPY os/kernel/build-support.sh /work/kernel-build-support.sh
+COPY os/kernel/cc-wrapper.sh /work/kernel-cc-wrapper.sh
+COPY os/kernel/check-signing-identity.py /work/check-signing-identity.py
 RUN sh /work/kernel-build-support.sh signing-key "$(uname -m)" /work/module-signing
 
 # ---- Merge our config fragment on top of Fedora's --------------------------

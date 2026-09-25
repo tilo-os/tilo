@@ -332,10 +332,12 @@ case "$command" in
         positive_jobs "$jobs"
         cd "$ksrc"
         # An optional compiler launcher (sccache in CI) wraps the target and
-        # host compiler for both the tree and the out-of-tree module.
+        # host compiler for both the tree and the out-of-tree module. Bypass it
+        # for system_certificates.S, whose .incbin input changes with each
+        # ephemeral signing key and is not reliably part of a cache key.
         if [ -n "${TILO_KERNEL_CC_LAUNCHER:-}" ]; then
-            make -j"$jobs" CC="$TILO_KERNEL_CC_LAUNCHER gcc" HOSTCC="$TILO_KERNEL_CC_LAUNCHER gcc" all
-            make -C "$ksrc" M="$extmod" -j"$jobs" CC="$TILO_KERNEL_CC_LAUNCHER gcc" HOSTCC="$TILO_KERNEL_CC_LAUNCHER gcc" modules
+            make -j"$jobs" CC="sh /work/kernel-cc-wrapper.sh gcc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" all
+            make -C "$ksrc" M="$extmod" -j"$jobs" CC="sh /work/kernel-cc-wrapper.sh gcc" HOSTCC="sh /work/kernel-cc-wrapper.sh gcc" modules
         else
             make -j"$jobs" all
             make -C "$ksrc" M="$extmod" -j"$jobs" modules
@@ -353,6 +355,11 @@ case "$command" in
         jobs=${8:?expected a job count}
         positive_jobs "$jobs"
         case "$stage" in /*) ;; *) echo "kernel staging directory must be absolute" >&2; exit 1 ;; esac
+        # A module's cryptographic self-check alone cannot prove that the
+        # kernel was linked with the same per-build signer. Check the exact
+        # certificate bytes in vmlinux before packaging or deleting the key.
+        python3 /work/check-signing-identity.py "$ksrc/vmlinux" \
+          "$ksrc/certs/signing_key.x509" "$signing/signing-cert.der"
         rm -rf "$stage"
         mkdir -p "$stage/lib/modules/$kver"
         # bootc / ostree find the boot artifacts alongside the modules,
