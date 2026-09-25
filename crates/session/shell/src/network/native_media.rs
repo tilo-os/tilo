@@ -34,7 +34,7 @@ pub(crate) use registry::Registry;
 
 /// The fields and operation variants stay inside this module. Apps cannot
 /// construct signing requests or substitute an owner on an existing ticket.
-pub(crate) struct Command {
+pub struct Command {
     operation: Operation,
     reply: tokio::sync::oneshot::Sender<Result<Reply, String>>,
 }
@@ -67,8 +67,6 @@ enum Action {
     Renew,
     Relay,
     Refresh,
-    CloseRelay,
-    Leave,
     Abandon,
     RetireCarrier,
     Bootstrap,
@@ -126,7 +124,6 @@ struct Stops {
 struct Ticket {
     owner: NativeWorkspaceOwner,
     room: RoomId,
-    target: CallTarget,
     alive: AtomicBool,
     leaving: AtomicBool,
     // Set only around the synchronous finish of this ticket's opaque bootstrap.

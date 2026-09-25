@@ -10326,7 +10326,7 @@ mod tests {
 
     #[test]
     fn action_enumeration_preserves_directory_resource_hierarchy() {
-        use crate::shell::collab_broker_capnp::{ActionDirectoryRoot, CapnpBrokerState};
+        use crate::shell::collab_broker_capnp::ActionDirectoryRoot;
         use crate::shell::search::providers::live_app_actions::fixture_with_directory_page;
 
         let mut fb = FrameBuilder::new((800, 600));

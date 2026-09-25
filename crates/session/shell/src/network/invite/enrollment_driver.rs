@@ -76,7 +76,7 @@ fn cancel_pending(owner: &NativeWorkspaceOwner, local: WorkspaceId) -> Result<()
     }
     Ok(())
 }
-pub(crate) struct Command {
+pub struct Command {
     attempt: Attempt,
     invitation: String,
     receiver: watch::Receiver<bool>,

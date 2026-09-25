@@ -8,7 +8,7 @@ use qos_peer_state::{NeighbourMsg, TransportOrigin, join::TransportHint};
 use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 
 #[derive(Clone)]
-pub(crate) struct Connect {
+pub struct Connect {
     owner: NativeWorkspaceOwner,
     room: RoomId,
 }
@@ -112,7 +112,7 @@ impl Scope {
 /// Only the authenticated relay pump can construct this. Generic gossip messages
 /// cannot become `RelayDelta` evidence through the shell event dispatcher.
 #[derive(Clone)]
-pub(crate) struct Input {
+pub struct Input {
     scope: Arc<Scope>,
     author: [u8; 32],
     retained: bool,
@@ -130,6 +130,7 @@ impl Input {
     pub(crate) fn room(&self) -> RoomId {
         self.scope.connect.room
     }
+    #[cfg(test)]
     pub(crate) fn author(&self) -> [u8; 32] {
         self.author
     }

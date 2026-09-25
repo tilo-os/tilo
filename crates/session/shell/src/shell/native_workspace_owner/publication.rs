@@ -66,6 +66,7 @@ pub(crate) struct NativeOutgoing<'a> {
     allowed: [bool; MAX_VISIBLE_ENTRIES],
 }
 pub(crate) struct NativeOutgoingEntry<'a>(&'a StoredOutgoing);
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct NativeOutgoingStatus {
     pub pending: usize,
@@ -73,9 +74,6 @@ pub(crate) struct NativeOutgoingStatus {
     pub legacy_history: bool,
 }
 impl<'a> NativeOutgoing<'a> {
-    pub(crate) fn revision(&self) -> u64 {
-        self.state.revision
-    }
     pub(crate) fn entries(&self) -> impl Iterator<Item = NativeOutgoingEntry<'a>> {
         let allowed = self.allowed;
         self.state
@@ -90,9 +88,6 @@ impl<'a> NativeOutgoing<'a> {
 impl<'a> NativeOutgoingEntry<'a> {
     pub(crate) fn id(&self) -> [u8; 32] {
         self.0.id
-    }
-    pub(crate) fn ordinal(&self) -> u64 {
-        self.0.ordinal
     }
     pub(crate) fn bytes(&self) -> &'a [u8] {
         &self.0.bytes
@@ -201,6 +196,7 @@ fn state(view: &NativeCommittedView) -> Result<&StoredPublication, String> {
         .as_ref()
         .ok_or_else(|| "native publication migration is not committed".into())
 }
+#[cfg(test)]
 fn status(view: &NativeCommittedView, now: SystemTime) -> Result<NativeOutgoingStatus, String> {
     let publication = state(view)?;
     let allowed = allowed(view, now)?;
@@ -705,6 +701,7 @@ impl NativeWorkspaceOwner {
             )
         })
     }
+    #[cfg(test)]
     pub(crate) fn outgoing_status(
         &self,
         room: RoomId,
@@ -717,7 +714,7 @@ impl NativeWorkspaceOwner {
         room: RoomId,
         key: &SigningKey,
         now: SystemTime,
-    ) -> Result<NativeOutgoingStatus, String> {
+    ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
@@ -766,6 +763,11 @@ impl NativeWorkspaceOwner {
                 .ok_or("native owner generation exhausted")?;
             self.publish_room(room, candidate, None)?;
         }
-        self.outgoing_status(room, now)
+        // Re-read the committed room so a publication that cannot be served is reported.
+        self.with_current(room, |view| {
+            state(view)?;
+            allowed(view, now)?;
+            Ok(())
+        })
     }
 }

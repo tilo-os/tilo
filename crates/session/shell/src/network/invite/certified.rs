@@ -5,7 +5,7 @@ use qos_peer_state::join::{
     TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint, VerifiedJoin,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tilo_relay::workspace_join::{
     DeliveryOriginLocatorV1, IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES,
     TRANSPORT_DELIVERY_ORIGIN_V1, WorkspaceHostMode,
@@ -48,13 +48,6 @@ impl VerifiedNativeEnrollmentIntent {
     )]
     pub(crate) fn transport_hint(&self) -> &TransportHint {
         &self.join.grant().transport[self.record.hint_index as usize]
-    }
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "u64 nanoseconds span under 585 years, always representable after the Unix epoch"
-    )]
-    pub(crate) fn prepared_at(&self) -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_nanos(self.record.prepared_at_ns)
     }
     #[allow(
         clippy::expect_used,
@@ -288,9 +281,6 @@ impl VerifiedNativeEnrollment {
     )]
     pub(crate) fn delivery_hint(&self) -> Option<&TransportHint> {
         None
-    }
-    pub(crate) fn delivery_host(&self) -> Option<&DeviceCert> {
-        self.intent.delivery_host()
     }
     pub(crate) fn pending_id(&self) -> &PendingEnrollmentId {
         &self.pending_id

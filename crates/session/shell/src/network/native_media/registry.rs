@@ -22,7 +22,7 @@ impl Registry {
         let result = match identity {
             None => Err("native device identity unavailable".into()),
             Some(identity) => match command.operation {
-                Operation::Open { owner, target } => self.open(owner, target, identity),
+                Operation::Open { owner, target } => self.open(owner, &target, identity),
                 Operation::Advance {
                     ticket,
                     serial,
@@ -64,7 +64,7 @@ impl Registry {
     fn open(
         &mut self,
         owner: NativeWorkspaceOwner,
-        target: CallTarget,
+        target: &CallTarget,
         identity: &HostIdentity,
     ) -> Result<Reply, String> {
         if self.tickets.len() >= 16 {
@@ -123,7 +123,6 @@ impl Registry {
         let ticket = Arc::new(Ticket {
             owner,
             room,
-            target,
             alive: AtomicBool::new(true),
             leaving: AtomicBool::new(false),
             own_bootstrap: AtomicBool::new(false),
@@ -453,16 +452,6 @@ fn act(ticket: &Arc<Ticket>, action: Action, identity: &HostIdentity) -> Result<
                 handle,
                 carrier.ok_or("native carrier absent")?,
             )?),
-            Action::CloseRelay => Step::Request(control.close_relay(
-                &signing,
-                handle,
-                carrier.ok_or("native carrier absent")?,
-            )?),
-            Action::Leave => {
-                ticket.leaving.store(true, Ordering::SeqCst);
-                ticket.pause();
-                control.leave(&signing, handle)?
-            }
             Action::RetireCarrier => {
                 if let Some(carrier) = carrier {
                     control.retire_carrier(carrier);
@@ -621,10 +610,6 @@ fn apply_step(state: &mut State, step: Step, now: Instant) -> Result<Reply, Stri
                 carrier.expires = grant.expires;
             }
             Ok(Reply::Refreshed)
-        }
-        Step::RelayClosed => {
-            state.carrier = None;
-            Ok(Reply::Closed)
         }
         Step::Left => {
             state.grant = None;

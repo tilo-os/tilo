@@ -87,6 +87,7 @@ pub(super) fn restore(
     Ok(view)
 }
 impl NativeWorkspaceOwner {
+    #[cfg(test)]
     pub(crate) fn prepare_enrollment(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
