@@ -309,8 +309,8 @@ impl CaptureKind {
 /// Camera's single recent capture handoff.
 ///
 /// A capture may have a local projection (`path`) and/or a verified portable
-/// media identity (`media_id`). Peers materialize the latter via qdoc's blob
-/// transport; they never receive a filesystem path from the document.
+/// media identity (`media_id`). The latter names bytes in the content store;
+/// peers never receive a filesystem path from the document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capture {
     /// Stable identity — the file name for disk-backed items.

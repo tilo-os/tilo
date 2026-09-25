@@ -16,8 +16,8 @@ path = "src/bin/tilo-pdf-helper.rs"
 
 [features]
 default = []
-# `Engine::open_blob`: open a document from qdoc's content-addressed store.
-blobstore = ["dep:qdoc"]
+# `Engine::open_content`: open a document from a content store by its address.
+content = ["dep:tilo-content"]
 # Only for `examples/gen_fixtures.rs`, which typesets the test fixtures.
 fixture-gen = ["dep:typst", "dep:typst-pdf", "dep:typst-layout", "dep:typst-assets"]
 
@@ -51,7 +51,7 @@ hayro-syntax = { version = "0.7.2", default-features = false, features = ["std"]
 flate2.workspace = true
 # Decodes images wrapped as pages — inside the sandboxed helper.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff"] }
-qdoc = { path = "../qdoc", optional = true }
+tilo-content = { path = "../../system/content", default-features = false, optional = true }
 typst = { version = "0.15", optional = true }
 typst-pdf = { version = "0.15", optional = true }
 typst-layout = { version = "0.15", optional = true }

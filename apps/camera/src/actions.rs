@@ -1,6 +1,6 @@
 //! Camera's exported **actions** and the **resource tree** it publishes to Ctrl+K.
 //!
-//! The camera's *pixels* are verified qdoc blobs with an optional local file
+//! The camera's *pixels* are verified content-store bytes with an optional local file
 //! projection — a shutter press writes a PNG/JPEG, a recording writes a clip
 //! — and the *device I/O* around them
 //! (opening a lens, decoding a QR out of a frame, the live viewfinder) is
@@ -101,7 +101,7 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<CameraOp
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraAction {
     /// Atomically publish a bounded capture metadata row pointing only at
-    /// verified qdoc bytes. This is the peer-replayable capture boundary.
+    /// verified content-store bytes. This is the peer-replayable capture boundary.
     RegisterCapture {
         id: String,
         media_id: String,
@@ -986,7 +986,10 @@ mod tests {
             }),
             register_capture => |_| encoded(&CameraAction::RegisterCapture {
                 id: "IMG_peer.jpg".into(),
-                media_id: crate::media::store(b"portable camera bytes").unwrap(),
+                media_id: crate::media::store(
+                    &tilo_content::ContentStore::memory(),
+                    b"portable camera bytes",
+                ).unwrap(),
                 kind: crate::model::CaptureKind::Photo,
                 ts: 42,
                 w: 64,

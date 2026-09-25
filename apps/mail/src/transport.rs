@@ -74,7 +74,11 @@ fn parse_single_addr(s: &str) -> Addr {
 /// Returns `Err` if serialisation fails or any portable attachment cannot be
 /// materialized and re-verified. In particular, it never silently omits a
 /// missing attachment and then reports a successful send.
-pub fn build_mime(from: &Addr, draft: &Draft) -> Result<Vec<u8>, String> {
+pub fn build_mime(
+    content: &tilo_content::ContentStore,
+    from: &Addr,
+    draft: &Draft,
+) -> Result<Vec<u8>, String> {
     let to = parse_addr_list(&draft.to);
     let cc = parse_addr_list(&draft.cc);
     let bcc = parse_addr_list(&draft.bcc);
@@ -104,7 +108,7 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> Result<Vec<u8>, String> {
     }
 
     for attachment in &draft.attachments {
-        let bytes = crate::attachment_store::materialize(attachment)?;
+        let bytes = crate::attachment_store::materialize(content, attachment)?;
         builder = builder.attachment(attachment.mime.clone(), attachment.filename.clone(), bytes);
     }
     if let Some(calendar_ics) = &draft.calendar_ics {
@@ -348,8 +352,10 @@ mod tests {
 
     #[test]
     fn build_mime_produces_valid_rfc5322() {
+        let content = tilo_content::ContentStore::memory();
         let attachment =
-            crate::attachment_store::stage_bytes(b"%PDF-1.4 report body", "report.pdf").unwrap();
+            crate::attachment_store::stage_bytes(&content, b"%PDF-1.4 report body", "report.pdf")
+                .unwrap();
         let from = Addr::new("Me", "me@example.test");
         let draft = Draft {
             to: "you@there.example".into(),
@@ -358,7 +364,7 @@ mod tests {
             attachments: vec![attachment],
             ..Default::default()
         };
-        let bytes = build_mime(&from, &draft).unwrap();
+        let bytes = build_mime(&content, &from, &draft).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("Subject: Hello"));
         assert!(text.to_ascii_lowercase().contains("multipart/mixed"));
@@ -455,6 +461,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     #[test]
     fn build_then_parse_round_trips_headers() {
+        let content = tilo_content::ContentStore::memory();
         // Prove the two libraries interoperate: build a message, parse it
         // back, and confirm the headers survive.
         let from = Addr::new("Ada", "ada@analytical.example");
@@ -464,7 +471,7 @@ Content-Type: text/html; charset=utf-8\r\n\
             body: "The Engine weaves algebraic patterns.".into(),
             ..Default::default()
         };
-        let bytes = build_mime(&from, &draft).unwrap();
+        let bytes = build_mime(&content, &from, &draft).unwrap();
         let msg = parse_eml(&bytes, 1000, Folder::Inbox).unwrap();
         assert_eq!(msg.subject, "Notes from the Analytical Engine");
         assert_eq!(msg.from.email, "ada@analytical.example");
@@ -473,7 +480,9 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     #[test]
     fn build_mime_embeds_verified_portable_attachment_bytes() {
+        let content = tilo_content::ContentStore::memory();
         let attachment = crate::attachment_store::stage_bytes(
+            &content,
             b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02",
             "report.txt",
         )
@@ -486,7 +495,7 @@ Content-Type: text/html; charset=utf-8\r\n\
             attachments: vec![attachment],
             ..Default::default()
         };
-        let bytes = build_mime(&from, &draft).unwrap();
+        let bytes = build_mime(&content, &from, &draft).unwrap();
         let parsed = parse_eml(&bytes, 0, Folder::Inbox).unwrap();
         assert_eq!(parsed.attachments.len(), 1);
         assert_eq!(parsed.attachments[0].filename, "report.txt");
@@ -498,6 +507,7 @@ Content-Type: text/html; charset=utf-8\r\n\
 
     #[test]
     fn calendar_invitation_attachment_declares_the_itip_method() {
+        let content = tilo_content::ContentStore::memory();
         let draft = Draft {
             to: "guest@example.com".into(),
             subject: "Invitation".into(),
@@ -505,13 +515,14 @@ Content-Type: text/html; charset=utf-8\r\n\
             calendar_ics: Some("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n".into()),
             ..Default::default()
         };
-        let bytes = build_mime(&Addr::new("Me", "me@example.com"), &draft).unwrap();
+        let bytes = build_mime(&content, &Addr::new("Me", "me@example.com"), &draft).unwrap();
         let wire = String::from_utf8_lossy(&bytes);
         assert!(wire.contains("text/calendar; method=REQUEST"), "{wire}");
     }
 
     #[test]
     fn build_mime_refuses_missing_portable_attachment() {
+        let content = tilo_content::ContentStore::memory();
         // A missing blob must not be silently omitted from an otherwise
         // successful-looking send.
         let draft = Draft {
@@ -526,7 +537,7 @@ Content-Type: text/html; charset=utf-8\r\n\
             }],
             ..Default::default()
         };
-        assert!(build_mime(&Addr::new("Me", "me@x.example"), &draft).is_err());
+        assert!(build_mime(&content, &Addr::new("Me", "me@x.example"), &draft).is_err());
     }
 
     #[test]

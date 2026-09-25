@@ -30,7 +30,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["po
 # The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }
-qdoc = { path = "../../crates/doc/qdoc" }
+tilo-content = { path = "../../crates/system/content" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

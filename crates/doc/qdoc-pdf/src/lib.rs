@@ -46,6 +46,7 @@ use qdoc::{BlockView, DocSnapshot};
 use std::fmt;
 
 use pdf::{ObjId, PdfWriter, escape_pdf_text};
+use tilo_content::ContentSource;
 
 /// Errors that can arise while rendering a snapshot to PDF.
 #[derive(Debug)]
@@ -301,11 +302,11 @@ impl Layout {
 /// image blob, a missing blob hash) degrades to a placeholder box instead of
 /// propagating. The `Result` is kept so a future encoding failure has
 /// somewhere to surface without a signature change.
-pub fn render_pdf(snap: &DocSnapshot) -> Result<Vec<u8>, DocPdfError> {
+pub fn render_pdf(snap: &DocSnapshot, content: &dyn ContentSource) -> Result<Vec<u8>, DocPdfError> {
     let mut layout = Layout::new();
 
     for block in &snap.blocks {
-        render_block(&mut layout, snap, block);
+        render_block(&mut layout, content, block);
     }
 
     Ok(finish(layout))
@@ -313,11 +314,11 @@ pub fn render_pdf(snap: &DocSnapshot) -> Result<Vec<u8>, DocPdfError> {
 
 // ---- block dispatch ---------------------------------------------------------
 
-fn render_block(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
+fn render_block(layout: &mut Layout, content: &dyn ContentSource, block: &BlockView) {
     match ExportBlock::new(block).kind() {
         BlockKind::Heading => render_heading(layout, block),
         BlockKind::ListItem => render_list_item(layout, block),
-        BlockKind::Image => render_image(layout, snap, block),
+        BlockKind::Image => render_image(layout, content, block),
         BlockKind::Table => render_table(layout, block),
         BlockKind::Paragraph | BlockKind::Quote | BlockKind::Code => {
             render_paragraph(layout, block);
@@ -415,18 +416,18 @@ fn render_list_item(layout: &mut Layout, block: &BlockView) {
     }
 }
 
-fn render_image(layout: &mut Layout, snap: &DocSnapshot, block: &BlockView) {
+fn render_image(layout: &mut Layout, content: &dyn ContentSource, block: &BlockView) {
     let hash = if let Some(AttrVal::Str(s)) = block.attrs.get("blob") {
         s.clone()
     } else {
         placeholder(layout, "image (no blob)");
         return;
     };
-    let Some(bytes) = snap.blobs.get(&hash) else {
+    let Some(bytes) = content.content(&hash) else {
         placeholder(layout, "image (missing blob)");
         return;
     };
-    match decode_image(bytes) {
+    match decode_image(&bytes) {
         Ok(img) => place_image(layout, &img),
         Err(_) => placeholder(layout, "image (undecodable)"),
     }

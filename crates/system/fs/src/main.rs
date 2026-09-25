@@ -3108,7 +3108,8 @@ async fn run_mount(
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
     let fs = QuickFS::new(namespace, hydrator, heuristics)
-        .with_checked_history_workspace(checked_history_workspace);
+        .with_checked_history_workspace(checked_history_workspace)
+        .with_document_content(tilo_content::ContentStore::for_app());
     let fs = if allow_legacy_record_migration {
         fs
     } else {
@@ -3470,6 +3471,7 @@ async fn seed_from_dir(
     root: &Path,
 ) -> Result<()> {
     let registry = qdoc_codecs::builtin_registry();
+    let document_content = tilo_content::ContentStore::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
@@ -3499,7 +3501,7 @@ async fn seed_from_dir(
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
-                        ns.import_document(ino, &registry, &data, unix_now_ms());
+                        ns.import_document(ino, &registry, &data, unix_now_ms(), &document_content);
                     }
                 } else {
                     let size = data.len() as u64;

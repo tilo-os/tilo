@@ -4,6 +4,7 @@
 
 use super::container::DocxContainer;
 use crate::format::CodecError;
+use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr, push_text};
 use qdoc::export::InlinePlan;
 use qdoc::model::DocRef;
@@ -13,6 +14,7 @@ use qdoc::schema::{
 };
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
+use tilo_content::ContentSource;
 // `write!` into a `String` cannot fail; the discarded `Result` is the
 // `fmt::Write` contract, not a swallowed error.
 use std::fmt::Write as _;
@@ -74,12 +76,13 @@ struct PartFlags {
 /// and capturing the original `docProps/core.xml`/`app.xml` bytes for [`merge_styles_xml`]-style merging.
 fn copy_preserved_parts(
     doc: &DocRef,
+    content: &dyn ContentSource,
     c: &mut DocxContainer,
 ) -> (PartFlags, Option<Vec<u8>>, Option<Vec<u8>>) {
     let mut flags = PartFlags::default();
     let mut original_core: Option<Vec<u8>> = None;
     let mut original_app: Option<Vec<u8>> = None;
-    for (key, bytes) in qdoc::model::preserved_parts(doc.doc, doc.c) {
+    for (key, bytes) in qdoc::model::preserved_parts(doc.doc, doc.c, content) {
         if let Some(name) = key.strip_prefix("docx/part/") {
             flags.had_content_types |= name == "[Content_Types].xml";
             flags.had_root_rels |= name == "_rels/.rels";
@@ -401,7 +404,7 @@ fn write_lists_and_styles(
     has_styles: bool,
     numbering: &Numbering,
     named_refs: &BTreeSet<String>,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     doc_lang: Option<&str>,
 ) {
     if has_lists {
@@ -428,13 +431,14 @@ fn write_lists_and_styles(
     clippy::needless_pass_by_value,
     reason = "DocRef is two Copy pointers handed down by value from FormatProvider::export; re-borrowing buys nothing"
 )]
-pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
-    let snap = doc.materialize();
+pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
+    let snapshot = doc.materialize();
+    let snap = &Resolved::new(&snapshot, content);
     let hf_parts = super::headers::export_parts(&doc);
     let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
 
     let mut c = DocxContainer { parts: Vec::new() };
-    let (flags, original_core, original_app) = copy_preserved_parts(&doc, &mut c);
+    let (flags, original_core, original_app) = copy_preserved_parts(&doc, content, &mut c);
 
     // The imported section properties arrive as a body fidelity block; they are rebuilt around
     // qdoc's header/footer and columns rather than copied, and header/footer parts carried
@@ -456,7 +460,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
     let notes = super::notes::export_notes(&doc);
     let comments = super::comments::export_comments(&doc);
     let (document, named_refs, numbering, images) = build_document_xml(
-        &snap,
+        snap,
         &sectpr,
         &notes.id_map,
         &notes.kind_map,
@@ -507,7 +511,7 @@ pub(crate) fn export(doc: DocRef) -> Result<Vec<u8>, CodecError> {
         has_styles,
         &numbering,
         &named_refs,
-        &snap,
+        snap,
         doc_lang.as_deref(),
     );
 
@@ -1289,11 +1293,11 @@ fn image_extent_emu(b: &BlockView) -> (i64, i64) {
 }
 
 /// Build the `w:drawing` XML, registering its blob with `imgs`; inline emits `wp:inline`, floating emits `wp:anchor` + `wp:wrap*`.
-fn image_drawing_xml(b: &BlockView, snap: &DocSnapshot, imgs: &mut ImageExport) -> Option<String> {
+fn image_drawing_xml(b: &BlockView, snap: &Resolved<'_>, imgs: &mut ImageExport) -> Option<String> {
     let Some(AttrVal::Str(hash)) = b.attrs.get("blob") else {
         return None;
     };
-    let bytes = snap.blobs.get(hash)?;
+    let bytes = snap.image(hash)?;
     let rel_id = imgs.add(bytes);
     let (cx, cy) = image_extent_emu(b);
     let docpr_id = imgs.images.len(); // unique per drawing
@@ -1335,7 +1339,7 @@ fn index_to_i64(i: usize) -> i64 {
 
 /// Renders one contiguous run of `cell` blocks sharing a `table` id as a `w:tbl`, returning the
 /// index just past the run.
-fn render_table_block(body: &mut String, snap: &DocSnapshot, i: usize, ids: &RunIds) -> usize {
+fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &RunIds) -> usize {
     let Some(b) = snap.blocks.get(i) else {
         return i.saturating_add(1);
     };
@@ -1392,7 +1396,7 @@ fn render_table_block(body: &mut String, snap: &DocSnapshot, i: usize, ids: &Run
 /// index of the next unprocessed block.
 fn render_block(
     body: &mut String,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     i: usize,
     numbering: &mut Numbering,
     imgs: &mut ImageExport,
@@ -1473,7 +1477,7 @@ fn render_block(
 
 /// Build `word/document.xml`, collecting referenced style ids, the numbering plan, and each note id's docx id + kind.
 fn build_document_xml(
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     sectpr: &str,
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, qdoc::model::NoteKind>,
@@ -1540,6 +1544,24 @@ mod tests {
     use qdoc::{AttrVal, DocSnapshot, Document};
     use std::collections::BTreeMap;
 
+    /// Import `bytes` into `doc`, dropping any binary inputs (these tests reference none).
+    fn import_docx(bytes: &[u8], doc: &mut Document) {
+        DocxCodec
+            .import(
+                bytes,
+                &mut doc.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+    }
+
+    /// Export `doc` with no binary content available.
+    fn export_docx(doc: &Document) -> Vec<u8> {
+        DocxCodec
+            .export(doc.as_ref(), &tilo_content::NoContent)
+            .unwrap()
+    }
+
     type Norm = Vec<(
         String,
         String,
@@ -1588,17 +1610,17 @@ mod tests {
         );
         let docx = minimal_docx_styled("", body);
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        import_docx(&docx, &mut d);
         let m1 = norm(&d.materialize());
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let c = DocxContainer::read(&exported).unwrap();
         assert!(c.get("word/document.xml").is_some());
         assert!(c.get("[Content_Types].xml").is_some());
         assert!(c.get("_rels/.rels").is_some());
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let m2 = norm(&d2.materialize());
         assert_eq!(m1, m2, "model round-trips through .docx export then import");
     }
@@ -1620,7 +1642,8 @@ mod tests {
         let img = d.insert_block(Some(&p1), "image");
         let p3 = d.insert_block(Some(&img), "paragraph");
         d.splice_text(&p3, 0, 0, "after");
-        let hash = d.put_blob(&TINY_PNG).expect("test fixture fits blob quota");
+        let mut inputs = tilo_content::ContentInputs::new();
+        let hash = d.attach(&TINY_PNG, &mut inputs);
         {
             let mut dm = d.as_mut();
             dm.set_attr(&img, "blob", hash.as_str());
@@ -1628,7 +1651,7 @@ mod tests {
             dm.set_attr(&img, "height", 48_i64);
         }
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let media = cont
             .parts
@@ -1658,7 +1681,10 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let mut reimported = tilo_content::ContentInputs::new();
+        DocxCodec
+            .import(&exported, &mut d2.as_mut(), &mut reimported)
+            .unwrap();
         let snap = d2.materialize();
         let im = snap
             .blocks
@@ -1671,7 +1697,7 @@ mod tests {
         };
         assert_eq!(blob_hash, hash, "blake3 hash stable across round-trip");
         assert_eq!(
-            snap.blobs.get(&blob_hash).map(std::vec::Vec::as_slice),
+            reimported.get(&blob_hash),
             Some(&TINY_PNG[..]),
             "blob bytes survive"
         );
@@ -1701,7 +1727,8 @@ mod tests {
         let p1 = d.insert_block(None, "paragraph");
         d.splice_text(&p1, 0, 0, "text");
         let img = d.insert_block(Some(&p1), "image");
-        let hash = d.put_blob(&TINY_PNG).expect("test fixture fits blob quota");
+        let mut inputs = tilo_content::ContentInputs::new();
+        let hash = d.attach(&TINY_PNG, &mut inputs);
         {
             let mut dm = d.as_mut();
             dm.set_attr(&img, "blob", hash.as_str());
@@ -1711,7 +1738,7 @@ mod tests {
             dm.set_attr(&img, "height", 80_i64);
         }
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = DocxCodec.export(d.as_ref(), &inputs).unwrap();
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
         assert!(
@@ -1724,7 +1751,10 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        let mut reimported = tilo_content::ContentInputs::new();
+        DocxCodec
+            .import(&exported, &mut d2.as_mut(), &mut reimported)
+            .unwrap();
         let snap = d2.materialize();
         let im = snap
             .blocks
@@ -1773,9 +1803,9 @@ mod tests {
             dm.add_mark(&p, 0, 6, "underline", true);
         }
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(snap.blocks[0].kind, "heading");
         assert_eq!(snap.blocks[0].attrs.get("level"), Some(&AttrVal::Int(3)));
@@ -1815,7 +1845,7 @@ mod tests {
             dm.set_attr(&id, "line_spacing", 1.5_f64);
         }
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let c = DocxContainer::read(&exported).unwrap();
         let xml = std::str::from_utf8(c.get("word/document.xml").unwrap()).unwrap();
         assert!(
@@ -1832,7 +1862,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.text, "E=mc2");
@@ -1867,9 +1897,9 @@ mod tests {
         d.splice_text(&id, 0, 0, "H2O");
         d.as_mut().add_mark(&id, 1, 2, "sub", true);
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert!(
@@ -1892,7 +1922,7 @@ mod tests {
         d.splice_text(&src, 0, 0, "see above");
         d.add_cross_ref(&src, 4, 9, "intro"); // "above" → #intro
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
         assert!(
@@ -1909,7 +1939,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(
             snap.bookmarks.len(),
@@ -1964,9 +1994,9 @@ mod tests {
             dm.set_attr(&b, "ordered", false);
         }
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         let items: Vec<_> = snap
             .blocks
@@ -1997,7 +2027,7 @@ mod tests {
             }
         }
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let numbering = std::str::from_utf8(cont.get("word/numbering.xml").unwrap()).unwrap();
         assert!(
@@ -2010,7 +2040,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         let items: Vec<_> = snap
             .blocks
@@ -2039,9 +2069,9 @@ mod tests {
             );
         }
 
-        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_docx(&d2);
         let mut d3 = Document::new();
-        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_docx(&exported2, &mut d3);
         assert_eq!(
             norm(&d2.materialize()),
             norm(&d3.materialize()),
@@ -2061,7 +2091,7 @@ mod tests {
             dm.add_mark(&p, 0, 6, "fontFamily", "serif");
             dm.add_mark(&p, 0, 6, "fontSize", 20_i64);
         }
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
         assert!(
@@ -2070,7 +2100,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let b = &d2.materialize().blocks[0];
         assert_eq!(b.text, "styled");
         assert_eq!(
@@ -2117,9 +2147,9 @@ mod tests {
             }
             prev = Some(id);
         }
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         let cells: Vec<_> = snap.blocks.iter().filter(|b| b.kind == "cell").collect();
         assert_eq!(
@@ -2155,7 +2185,7 @@ mod tests {
             dm.set_attr(&p, "style", "Fancy");
         }
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
         assert!(
@@ -2190,7 +2220,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         let b = &snap.blocks[0];
         assert_eq!(b.text, "fancy");
@@ -2214,9 +2244,9 @@ mod tests {
         assert_eq!(st.get("align"), Some(&AttrVal::Str("center".into())));
         assert_eq!(st.get("space_after"), Some(&AttrVal::Float(12.0)));
 
-        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_docx(&d2);
         let mut d3 = Document::new();
-        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_docx(&exported2, &mut d3);
         assert_eq!(
             norm(&d2.materialize()),
             norm(&d3.materialize()),
@@ -2238,7 +2268,7 @@ mod tests {
         d.set_doc_prop("modified", "2021-06-07T08:09:10Z");
         d.set_doc_prop("generator", "qdoc/1.0");
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let core =
             std::str::from_utf8(cont.get("docProps/core.xml").expect("core.xml written")).unwrap();
@@ -2285,7 +2315,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let props = d2.doc_props();
         assert_eq!(props.get("title").map(String::as_str), Some("My Title"));
         assert_eq!(
@@ -2311,9 +2341,9 @@ mod tests {
         assert_eq!(props.get("generator").map(String::as_str), Some("qdoc/1.0"));
         assert_eq!(d2.materialize().blocks[0].text, "body");
 
-        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_docx(&d2);
         let mut d3 = Document::new();
-        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_docx(&exported2, &mut d3);
         assert_eq!(
             d2.doc_props(),
             d3.doc_props(),
@@ -2332,7 +2362,7 @@ mod tests {
         let docx = c.write().unwrap();
 
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        import_docx(&docx, &mut d);
         assert_eq!(
             d.doc_prop("title").as_deref(),
             Some("Old"),
@@ -2340,7 +2370,7 @@ mod tests {
         );
         d.set_doc_prop("title", "New");
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let out = DocxContainer::read(&exported).unwrap();
         let core_out = std::str::from_utf8(out.get("docProps/core.xml").unwrap()).unwrap();
         assert!(
@@ -2362,7 +2392,7 @@ mod tests {
         let mut d = Document::new();
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "plain");
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         assert!(
             cont.get("docProps/core.xml").is_none(),
@@ -2387,7 +2417,7 @@ mod tests {
         d.splice_footer_text(&f, 0, 0, "Page ");
         d.insert_footer_page_number(&f, 5);
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let hdr = std::str::from_utf8(cont.get("word/header1.xml").expect("header1.xml written"))
             .unwrap();
@@ -2427,7 +2457,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         assert_eq!(d2.materialize().blocks[0].text, "body", "body intact");
         let header = d2.header();
         assert_eq!(header.len(), 1, "header block present: {header:?}");
@@ -2454,9 +2484,9 @@ mod tests {
         assert_eq!(field.value, MarkValue::Str(FIELD_PAGE_NUMBER.into()));
 
         // Idempotent across a second round-trip (block ids are volatile; compare text+marks, not BlockView).
-        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_docx(&d2);
         let mut d3 = Document::new();
-        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_docx(&exported2, &mut d3);
         assert_eq!(
             norm_region(&d2.header()),
             norm_region(&d3.header()),
@@ -2503,7 +2533,7 @@ mod tests {
         let docx = c.write().unwrap();
 
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        import_docx(&docx, &mut d);
         let header = d.header();
         assert_eq!(header.len(), 1, "{header:?}");
         // "p. " + a single placeholder; the cached "7" result is dropped.
@@ -2550,7 +2580,7 @@ mod tests {
         let docx = c.write().unwrap();
 
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        import_docx(&docx, &mut d);
         let snap = d.materialize();
         let p = &snap.blocks[0];
         assert_eq!(
@@ -2603,7 +2633,7 @@ mod tests {
         let eb = d.insert_note_block(&endnote_id, None, "paragraph").unwrap();
         d.splice_note_text(&endnote_id, &eb, 0, 0, "an endnote");
 
-        DocxCodec.export(d.as_ref()).unwrap()
+        export_docx(&d)
     }
 
     /// Asserts the exported `.docx` carries both note parts, their refs, and
@@ -2649,7 +2679,7 @@ mod tests {
         use qdoc::schema::MARK_NOTE_REF;
 
         let mut d2 = Document::new();
-        DocxCodec.import(exported, &mut d2.as_mut()).unwrap();
+        import_docx(exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(
             snap.blocks[0]
@@ -2695,9 +2725,9 @@ mod tests {
 
         let d2 = assert_footnote_endnote_reimport(&exported);
 
-        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_docx(&d2);
         let mut d3 = Document::new();
-        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_docx(&exported2, &mut d3);
         let kinds_texts = |snap: &DocSnapshot| {
             let mut v: Vec<(String, String)> = snap
                 .notes
@@ -2747,7 +2777,7 @@ mod tests {
         let docx = c.write().unwrap();
 
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
+        import_docx(&docx, &mut d);
         let snap = d.materialize();
         let p = &snap.blocks[0];
         assert_eq!(
@@ -2790,7 +2820,7 @@ mod tests {
         d.splice_text(&p, 0, 0, "please fix this word now");
         d.add_comment(&p, 11, 20, "Ada Lovelace", "note: fix"); // over "this word"
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let cmts =
             std::str::from_utf8(cont.get("word/comments.xml").expect("comments.xml written"))
@@ -2825,7 +2855,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         assert_eq!(snap.blocks[0].text, "please fix this word now");
         let cm = snap.blocks[0]
@@ -2852,9 +2882,9 @@ mod tests {
         assert_eq!(cmt.blocks[0].text, "note: fix");
         assert_eq!(cmt.range, Some((snap.blocks[0].id.clone(), 11, 20)));
 
-        let exported2 = DocxCodec.export(d2.as_ref()).unwrap();
+        let exported2 = export_docx(&d2);
         let mut d3 = Document::new();
-        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_docx(&exported2, &mut d3);
         let authors_texts = |snap: &DocSnapshot| {
             let mut v: Vec<CommentTuple> = snap
                 .comments
@@ -2978,13 +3008,13 @@ mod tests {
         let del = d.track_delete(&p, 12, 17, "Bob", "2021-03-04T00:00:00Z"); // "world"
         let _ = (ins, del);
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let cont = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(cont.get("word/document.xml").unwrap()).unwrap();
         assert_docx_shows_tracked_changes(document);
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let snap = d2.materialize();
         let (ins_id, del_id) = assert_import_recovers_changes(&snap);
 
@@ -2998,9 +3028,9 @@ mod tests {
         );
         assert!(after.changes.is_empty(), "both changes resolved");
 
-        let exported2 = DocxCodec.export(d.as_ref()).unwrap();
+        let exported2 = export_docx(&d);
         let mut d3 = Document::new();
-        DocxCodec.import(&exported2, &mut d3.as_mut()).unwrap();
+        import_docx(&exported2, &mut d3);
         let summary = |snap: &DocSnapshot| {
             let mut v: Vec<ChangeTuple> = snap
                 .changes
@@ -3017,7 +3047,7 @@ mod tests {
             v
         };
         let mut d_re = Document::new();
-        DocxCodec.import(&exported, &mut d_re.as_mut()).unwrap();
+        import_docx(&exported, &mut d_re);
         assert_eq!(
             summary(&d_re.materialize()),
             summary(&d3.materialize()),
@@ -3033,8 +3063,8 @@ mod tests {
         let docx = c.write().unwrap();
 
         let mut d = Document::new();
-        DocxCodec.import(&docx, &mut d.as_mut()).unwrap();
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        import_docx(&docx, &mut d);
+        let exported = export_docx(&d);
 
         let out = DocxContainer::read(&exported).unwrap();
         assert_eq!(
@@ -3054,7 +3084,7 @@ mod tests {
         d.splice_text(&p, 0, 0, "flows across columns");
         d.set_columns(2, Some(24.0)); // 24 px gap → 360 twips
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let out = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
         assert!(
@@ -3071,7 +3101,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         let (count, gap) = d2.columns();
         assert_eq!(count, 2, "column count survives .docx round-trip");
         assert_eq!(gap, Some(24.0), "column gap (px) survives .docx round-trip");
@@ -3092,7 +3122,7 @@ mod tests {
         d.splice_header_text(&h, 0, 0, "Header");
         d.set_columns(3, None);
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let out = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
         assert_eq!(
@@ -3110,7 +3140,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         assert_eq!(
             d2.columns().0,
             3,
@@ -3130,7 +3160,7 @@ mod tests {
         let p = d.insert_block(None, "paragraph");
         d.splice_text(&p, 0, 0, "plain");
 
-        let exported = DocxCodec.export(d.as_ref()).unwrap();
+        let exported = export_docx(&d);
         let out = DocxContainer::read(&exported).unwrap();
         let document = std::str::from_utf8(out.get("word/document.xml").unwrap()).unwrap();
         assert!(
@@ -3139,7 +3169,7 @@ mod tests {
         );
 
         let mut d2 = Document::new();
-        DocxCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        import_docx(&exported, &mut d2);
         assert_eq!(d2.columns(), (1, None), "single-column default round-trips");
     }
 }

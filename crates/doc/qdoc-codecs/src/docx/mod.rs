@@ -16,6 +16,7 @@ pub mod styles;
 use crate::format::{CodecError, Confidence, FormatProvider};
 use qdoc::model::{DocMut, DocRef};
 use qdoc::schema::SCHEMA_ID;
+use tilo_content::{ContentInputs, ContentSource};
 
 pub struct DocxCodec;
 
@@ -33,7 +34,12 @@ impl FormatProvider for DocxCodec {
         }
     }
 
-    fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
+    fn import(
+        &self,
+        bytes: &[u8],
+        doc: &mut DocMut,
+        inputs: &mut ContentInputs,
+    ) -> Result<(), CodecError> {
         doc.bulk(|doc| {
             let container = container::DocxContainer::read(bytes)?;
             let document = container
@@ -76,6 +82,7 @@ impl FormatProvider for DocxCodec {
                 &comment_map,
                 &image_map,
                 doc,
+                inputs,
             )?;
             // Document properties from `docProps/core.xml` + `docProps/app.xml` into `meta.props`.
             if let Some(core_xml) = container.get("docProps/core.xml") {
@@ -104,14 +111,14 @@ impl FormatProvider for DocxCodec {
             // including docProps (export merges canonical properties back into a copy of them).
             for (name, part) in &container.parts {
                 if name != "word/document.xml" {
-                    crate::preserve::set_preserved(doc, &format!("docx/part/{name}"), part);
+                    crate::preserve::set_preserved(doc, &format!("docx/part/{name}"), part, inputs);
                 }
             }
             Ok(())
         })
     }
 
-    fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        export::export(doc)
+    fn export(&self, doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
+        export::export(doc, content)
     }
 }

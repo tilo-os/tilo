@@ -577,11 +577,11 @@ impl Edits {
 
 /// The photograph currently open: its portable identity and dimensions.
 ///
-/// Deliberately carries no bytes. The document names the file; the pixels are
-/// loaded beside it and are never written into the CRDT — the same separation
-/// `crates/doc/qdoc/src/blobstore.rs` enforces for a document's images, and for
-/// the same reason: an oversized change is dropped by the sync transport and
-/// freezes every peer's replica at the change before it.
+/// Deliberately carries no bytes. The document names the original by content
+/// hash; the bytes live in the app's content store (`tilo-content`) and the
+/// pixels are decoded beside the document, never written into the CRDT: an
+/// oversized change is dropped by the sync transport and freezes every peer's
+/// replica at the change before it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpenImage {
     /// Legacy path or portable display-name hint.

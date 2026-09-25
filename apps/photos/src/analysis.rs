@@ -7,6 +7,7 @@
 use crate::model::{AnalysisProvenance, ImageAnalysis, OpenImage};
 use crate::people::{VerifiedFaceCluster, VerifiedFaceClusterBatch};
 use crate::{doc, pixels};
+use tilo_content::ContentStore;
 
 /// Maximum text retained from an OCR engine.  This is deliberately below the
 /// CRDT's practical change budget and prevents a pathological scan becoming a
@@ -19,11 +20,15 @@ pub const MAX_OCR_CHARS: usize = 32 * 1024;
 /// Returns a stable, non-sensitive error when the bytes are unavailable, not
 /// decodable, or OCR cannot run. Engine diagnostics and source paths never
 /// cross this boundary.
-pub fn recognize_text(open: &OpenImage, language: &str) -> Result<ImageAnalysis, String> {
+pub fn recognize_text(
+    open: &OpenImage,
+    language: &str,
+    store: &ContentStore,
+) -> Result<ImageAnalysis, String> {
     if !valid_language(language) {
         return Err("OCR language must be a short ASCII language code".to_owned());
     }
-    let bytes = doc::bytes_of(open).ok_or_else(|| {
+    let bytes = doc::bytes_of(open, store).ok_or_else(|| {
         "This photograph is not available on this device yet; retry after it syncs".to_owned()
     })?;
     let rgba = pixels::decode(&bytes).ok_or_else(|| {
@@ -68,8 +73,9 @@ pub fn recognize_text(open: &OpenImage, language: &str) -> Result<ImageAnalysis,
 pub fn analyze_image(
     open: &OpenImage,
     capability: &tilo_vision::LocalVisionCapability,
+    store: &ContentStore,
 ) -> Result<ImageAnalysis, String> {
-    let bytes = doc::bytes_of(open).ok_or_else(|| {
+    let bytes = doc::bytes_of(open, store).ok_or_else(|| {
         "This photograph is not available on this device yet; retry after it syncs".to_owned()
     })?;
     let rgba = pixels::decode(&bytes)
@@ -97,13 +103,14 @@ pub fn analyze_image(
 pub fn detect_people(
     images: Vec<(String, OpenImage)>,
     capability: &tilo_vision::LocalFaceCapability,
+    store: &ContentStore,
 ) -> Result<VerifiedFaceClusterBatch, String> {
     if images.is_empty() || images.len() > tilo_vision::MAX_FACE_BATCH {
         return Err("People recognition can scan up to 12 photographs at a time".to_owned());
     }
     let mut prepared = Vec::with_capacity(images.len());
     for (photo_id, open) in images {
-        let bytes = doc::bytes_of(&open).ok_or_else(|| {
+        let bytes = doc::bytes_of(&open, store).ok_or_else(|| {
             "A selected photograph is not available on this device yet; retry after it syncs"
                 .to_owned()
         })?;
@@ -128,7 +135,7 @@ pub fn detect_people(
                 // library batches before it enters the local review store.
                 id: format!(
                     "face:{}",
-                    qdoc::blobstore::hash_bytes(
+                    tilo_content::hash_bytes(
                         format!(
                             "{}\0{}\0{}\0{}",
                             capability.model_id,
@@ -199,7 +206,7 @@ mod tests {
     #[test]
     fn invalid_language_is_refused_before_reading_pixels() {
         let open = OpenImage::from_path("/not/read.png", 1, 1);
-        assert!(recognize_text(&open, "eng; rm -rf").is_err());
+        assert!(recognize_text(&open, "eng; rm -rf", &ContentStore::memory()).is_err());
     }
 
     #[test]

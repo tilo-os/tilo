@@ -17,6 +17,7 @@ pub mod styles;
 use crate::format::{CodecError, Confidence, FormatProvider};
 use qdoc::model::{DocMut, DocRef};
 use qdoc::schema::SCHEMA_ID;
+use tilo_content::{ContentInputs, ContentSource};
 
 pub struct OdtCodec;
 
@@ -34,7 +35,12 @@ impl FormatProvider for OdtCodec {
         }
     }
 
-    fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
+    fn import(
+        &self,
+        bytes: &[u8],
+        doc: &mut DocMut,
+        inputs: &mut ContentInputs,
+    ) -> Result<(), CodecError> {
         doc.bulk(|doc| {
             let container = container::OdtContainer::read(bytes)?;
             let content = container
@@ -50,7 +56,7 @@ impl FormatProvider for OdtCodec {
             styles::parse_styles(&content, &mut reg, false);
             // The container is threaded through so `draw:frame`/`draw:image` can read the
             // referenced `Pictures/*` bytes and so named paragraph styles are lifted into the qdoc styles container.
-            content::parse_body(&content, &reg, &container, doc)?;
+            content::parse_body(&content, &reg, &container, doc, inputs)?;
             if let Some(meta_xml) = container.get("meta.xml") {
                 meta::import_meta(meta_xml, doc);
             }
@@ -69,14 +75,14 @@ impl FormatProvider for OdtCodec {
             // export round-trips them losslessly; meta.xml is included so its unmodeled fields survive.
             for (name, part) in &container.parts {
                 if name != "content.xml" {
-                    crate::preserve::set_preserved(doc, &format!("odt/part/{name}"), part);
+                    crate::preserve::set_preserved(doc, &format!("odt/part/{name}"), part, inputs);
                 }
             }
             Ok(())
         })
     }
 
-    fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {
-        export::export(doc)
+    fn export(&self, doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
+        export::export(doc, content)
     }
 }

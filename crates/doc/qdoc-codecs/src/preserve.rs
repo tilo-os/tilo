@@ -5,10 +5,31 @@
 //! other; for XML that means one atom per element at the first level where the tree branches.
 
 use qdoc::model::DocMut;
+use tilo_content::ContentInputs;
 
-/// Preserve `bytes` under `key`, split into mergeable atoms by [`split_atoms`].
-pub fn set_preserved(doc: &mut DocMut<'_>, key: &str, bytes: &[u8]) {
-    doc.set_preserved_atoms(key, &split_atoms(bytes));
+/// Preserve `bytes` under `key`. A text part (XML, the ODF `mimetype`) is kept in the document, split
+/// into mergeable atoms by [`split_atoms`]; a binary part (an image, a font, an embedded object) is a
+/// binary input: it goes into `inputs` for the caller's content store and the document keeps only
+/// its address.
+pub fn set_preserved(doc: &mut DocMut<'_>, key: &str, bytes: &[u8], inputs: &mut ContentInputs) {
+    if std::str::from_utf8(bytes).is_ok() {
+        doc.set_preserved_atoms(key, &split_atoms(bytes));
+    } else {
+        let meta = tilo_content::sniff(bytes);
+        let hash = inputs.add(bytes);
+        doc.set_preserved_content(key, &hash, &meta);
+    }
+}
+
+/// Whether a part starts like XML (an `<?xml` prologue or a leading tag, after whitespace).
+fn looks_like_xml(bytes: &[u8]) -> bool {
+    let head: &[u8] = bytes.get(..bytes.len().min(64)).unwrap_or(bytes);
+    let trimmed = head
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .and_then(|p| head.get(p..))
+        .unwrap_or(head);
+    trimmed.starts_with(b"<")
 }
 
 /// Split a preserved part into independently-mergeable atoms whose concatenation is the original bytes verbatim.
@@ -18,16 +39,7 @@ pub fn set_preserved(doc: &mut DocMut<'_>, key: &str, bytes: &[u8]) {
 pub fn split_atoms(bytes: &[u8]) -> Vec<Vec<u8>> {
     // Only XML parts (`<?xml` prologue or a leading `<` tag) get split; everything
     // else (images, the mimetype literal, binary settings) is one atom.
-    let looks_xml = {
-        let head: &[u8] = bytes.get(..bytes.len().min(64)).unwrap_or(bytes);
-        let trimmed = head
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .and_then(|p| head.get(p..))
-            .unwrap_or(head);
-        trimmed.starts_with(b"<?xml") || trimmed.starts_with(b"<")
-    };
-    if !looks_xml {
+    if !looks_like_xml(bytes) {
         return vec![bytes.to_vec()];
     }
     match split_xml_top_level(bytes) {

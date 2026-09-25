@@ -73,10 +73,10 @@ fn rich_document_round_trips_through_docx() {
     wp.model_mut().insert_str(&mut state.doc, "X");
 
     // --- Save as `.docx` via the editor's export path. ---
-    save_document(&state, &path, WpFormat::Docx).unwrap();
+    save_document(&state, &path, WpFormat::Docx, &tilo_content::NoContent).unwrap();
 
     // --- Reopen into a fresh ui::State and inspect the canonical structure. ---
-    let (state2, _wp2, fmt) = open_document(&path).unwrap();
+    let (state2, _wp2, fmt) = open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     assert_eq!(fmt, WpFormat::Docx);
     let c = qdoc::model::open(&state2.doc, &state2.root).unwrap();
     let snap = qdoc::model::materialize(&state2.doc, &c);

@@ -20,6 +20,7 @@ filesystem = [
     "dep:tilo-automerge",
     "dep:qdoc",
     "dep:qdoc-codecs",
+    "dep:tilo-content",
     "dep:collab-types",
     "dep:ed25519-dalek",
     "dep:thumbnail",
@@ -94,6 +95,7 @@ iroh-gossip = { workspace = true, optional = true }
 automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
 qdoc = { path = "../../doc/qdoc", optional = true }
+tilo-content = { path = "../content", optional = true }
 qdoc-codecs = { path = "../../doc/qdoc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
 collab-types = { path = "../../collab/collab-types", optional = true }
 getrandom = { workspace = true, optional = true }

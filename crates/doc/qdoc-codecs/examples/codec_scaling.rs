@@ -38,7 +38,15 @@ fn time<T>(f: impl FnOnce() -> T) -> (T, Duration) {
 fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> (Document, Duration) {
     if std::env::var_os("HOST").is_none() {
         let mut doc = Document::new();
-        let ((), t) = time(|| codec.import(bytes, &mut doc.as_mut()).unwrap());
+        let ((), t) = time(|| {
+            codec
+                .import(
+                    bytes,
+                    &mut doc.as_mut(),
+                    &mut tilo_content::ContentInputs::new(),
+                )
+                .unwrap();
+        });
         return (doc, t);
     }
     let mut am = AutoCommit::new();
@@ -55,7 +63,9 @@ fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> (Document, Duration) {
             c: &c,
             ids: &mut ids,
         };
-        codec.import(bytes, &mut dm).unwrap();
+        codec
+            .import(bytes, &mut dm, &mut tilo_content::ContentInputs::new())
+            .unwrap();
     });
     am.commit();
     (Document::load(&am.save()).unwrap(), t)
@@ -87,7 +97,11 @@ fn main() {
         let _ = peak_mib();
         let (doc, t_imp) = import(&MarkdownCodec, &md);
         let peak = peak_mib();
-        let (out, t_exp) = time(|| MarkdownCodec.export(doc.as_ref()).unwrap());
+        let (out, t_exp) = time(|| {
+            MarkdownCodec
+                .export(doc.as_ref(), &tilo_content::NoContent)
+                .unwrap()
+        });
         println!(
             "md    size={size:>9} import={t_imp:>12.3?} export={t_exp:>12.3?} out={} peak={peak}MiB",
             out.len()
@@ -99,7 +113,11 @@ fn main() {
             if !want(name) {
                 continue;
             }
-            let (bytes, t_exp) = time(|| codec.export(doc.as_ref()).unwrap());
+            let (bytes, t_exp) = time(|| {
+                codec
+                    .export(doc.as_ref(), &tilo_content::NoContent)
+                    .unwrap()
+            });
             let (_, t_imp) = import(codec, &bytes);
             println!(
                 "{name:<5} size={size:>9} import={t_imp:>12.3?} export={t_exp:>12.3?} out={}",
@@ -107,7 +125,13 @@ fn main() {
             );
         }
         if want("html") {
-            let (html, t_exp) = time(|| render_html(&doc.materialize(), HtmlOptions::default()));
+            let (html, t_exp) = time(|| {
+                render_html(
+                    &doc.materialize(),
+                    HtmlOptions::default(),
+                    &tilo_content::NoContent,
+                )
+            });
             let (_, t_imp) = import(&HtmlCodec, html.as_bytes());
             println!(
                 "html  size={size:>9} import={t_imp:>12.3?} export={t_exp:>12.3?} out={}",

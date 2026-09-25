@@ -8,10 +8,10 @@
 //! ├── "facing"    (Str)   # back | front | wide
 //! ├── "settings"  (Map)   # scalar settings (see Settings)
 //! ├── "scans"     (List)  # [ { raw, ts } ] newest-first scan history
-//! └── "recent_capture" (Map) # one portable qdoc-backed handoff
+//! └── "recent_capture" (Map) # one portable content-addressed handoff
 //! ```
 //!
-//! The photo/video *pixels* travel as verified qdoc blobs (see
+//! The photo/video *pixels* live as verified bytes in the app's content store (see
 //! [`crate::media`]); a local capture file is merely an optional projection.
 //! The CRDT stores collaborative metadata and its content-addressed media ID,
 //! plus scan history and capture preferences. Camera deliberately retains one
@@ -25,8 +25,8 @@ use crate::model::{
     CaptureKind, CaptureMode, Facing, PhotoFormat, Resolution, ScanEntry, Screen, Settings, Timer,
 };
 
-/// Portable capture metadata. Pixel bytes live under `media_id` in qdoc's
-/// verified blob transport; the document deliberately contains no path.
+/// Portable capture metadata. Pixel bytes live under `media_id` in the app's
+/// content store, verified on read; the document deliberately contains no path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedCapture {
     pub id: String,

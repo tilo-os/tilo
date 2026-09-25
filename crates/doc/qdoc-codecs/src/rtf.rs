@@ -17,6 +17,7 @@
 //! `FormatProvider` doesn't get).
 use crate::format::{CodecError, Confidence, FormatProvider};
 use qdoc::model::{DocMut, DocRef};
+use tilo_content::{ContentInputs, ContentSource};
 
 pub struct RtfCodec;
 
@@ -43,7 +44,12 @@ impl FormatProvider for RtfCodec {
         }
     }
 
-    fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
+    fn import(
+        &self,
+        bytes: &[u8],
+        doc: &mut DocMut,
+        _inputs: &mut ContentInputs,
+    ) -> Result<(), CodecError> {
         doc.bulk(|doc| {
             // RTF is ASCII-with-escapes; non-ASCII only appears inside `\'XX`/`\uN`, which
             // we decode ourselves — map each byte to a char (Latin-1-ish) so char index == byte index.
@@ -53,7 +59,7 @@ impl FormatProvider for RtfCodec {
         })
     }
 
-    fn export(&self, _doc: DocRef) -> Result<Vec<u8>, CodecError> {
+    fn export(&self, _doc: DocRef, _content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
         // The RTF writer renders a materialized `DocSnapshot`, not a `DocRef`.
         Err(CodecError::Unsupported(
             "RTF export is provided by qdoc::export_rtf::render_rtf, not the qdoc codec"
@@ -762,7 +768,13 @@ mod tests {
 
     fn import(src: &str) -> DocSnapshot {
         let mut d = Document::new();
-        RtfCodec.import(src.as_bytes(), &mut d.as_mut()).unwrap();
+        RtfCodec
+            .import(
+                src.as_bytes(),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         d.materialize()
     }
 
@@ -957,7 +969,9 @@ mod tests {
     #[test]
     fn export_is_unsupported() {
         let d = Document::new();
-        let err = RtfCodec.export(d.as_ref()).unwrap_err();
+        let err = RtfCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap_err();
         assert!(matches!(err, CodecError::Unsupported(_)), "got {err:?}");
     }
 

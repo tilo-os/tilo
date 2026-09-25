@@ -38,6 +38,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_content::ContentStore;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::portal::{
@@ -283,6 +284,9 @@ impl Drop for PendingSetupValidation {
 )]
 pub struct MailApp {
     shared: Shared,
+    /// Where draft attachment bytes live; drafts carry only their content id.
+    /// The engine worker holds a clone to build outgoing MIME.
+    content: ContentStore,
     /// One retained catalogue per mailbox revision. Palette providers clone
     /// this Arc-backed handle; typing never rebuilds the loaded-mail index.
     mail_search_provider: crate::search_provider::MailSearchProvider,
@@ -370,7 +374,7 @@ pub struct MailApp {
     /// polled from `sync`, never awaited on the UI thread.
     attachment_save_rx: Option<PortalChannel>,
     /// One portal-open attachment staging request. The returned descriptor is
-    /// copied straight into qdoc; its original path is never retained.
+    /// copied straight into the content store; its original path is never retained.
     compose_attachment_rx: Option<OpenFileChannel>,
     pending_attachment_save: Option<PendingAttachmentSave>,
     /// A typed resource operation must not claim success before the chooser
@@ -409,7 +413,12 @@ impl MailApp {
     /// sample corpus, no engine, deterministic "now".
     pub fn new_sample() -> Self {
         let shared = MailState::shared(MailState::new_sample(avatar_store_offline()));
-        Self::assemble(shared, None, AccountsPersist::sandbox())
+        Self::assemble(
+            shared,
+            ContentStore::memory(),
+            None,
+            AccountsPersist::sandbox(),
+        )
     }
 
     /// The live constructor: a real account list loaded from disk and the
@@ -417,9 +426,15 @@ impl MailApp {
     pub fn new_live() -> Self {
         let accounts = load_account_store();
         let shared = MailState::shared(MailState::new_live(accounts, avatar_store()));
-        let (tx, rx) = crate::engine::spawn();
+        let content = ContentStore::for_app();
+        let (tx, rx) = crate::engine::spawn(content.clone());
         // Only the live app writes the user's real account store.
-        Self::assemble(shared, Some(EngineHandle { tx, rx }), AccountsPersist::Real)
+        Self::assemble(
+            shared,
+            content,
+            Some(EngineHandle { tx, rx }),
+            AccountsPersist::Real,
+        )
     }
 
     /// A first-run constructor with no configured account and no engine —
@@ -431,11 +446,17 @@ impl MailApp {
             AccountStore::new(),
             avatar_store_offline(),
         ));
-        Self::assemble(shared, None, AccountsPersist::sandbox())
+        Self::assemble(
+            shared,
+            ContentStore::memory(),
+            None,
+            AccountsPersist::sandbox(),
+        )
     }
 
     fn assemble(
         shared: Shared,
+        content: ContentStore,
         engine: Option<EngineHandle>,
         accounts_persist: AccountsPersist,
     ) -> Self {
@@ -465,6 +486,7 @@ impl MailApp {
         let compose_format = accounts_persist.load_compose_format();
         Self {
             shared,
+            content,
             mail_search_provider,
             nav,
             shell_theme: Theme::dark(),
@@ -949,7 +971,7 @@ impl MailApp {
 
     /// Drain descriptor-only portal selection. A cancel/failure/disconnect is
     /// terminal and leaves the draft unchanged; staged content is verified by
-    /// qdoc before metadata becomes visible in the composer.
+    /// the content store before metadata becomes visible in the composer.
     fn drain_compose_attachment(&mut self) {
         let outcome = self
             .compose_attachment_rx
@@ -966,8 +988,9 @@ impl MailApp {
                     return;
                 }
                 let name = source.display_name().to_string();
-                let result = crate::attachment_store::stage_file(source.into_file(), &name)
-                    .and_then(|attachment| self.compose.add_attachment(attachment));
+                let result =
+                    crate::attachment_store::stage_file(&self.content, source.into_file(), &name)
+                        .and_then(|attachment| self.compose.add_attachment(attachment));
                 self.shared.borrow_mut().status = Some(match result {
                     Ok(()) => format!("Attached {name}"),
                     Err(error) => format!("Couldn’t attach {name}: {error}"),
@@ -1315,7 +1338,7 @@ impl MailApp {
             return;
         }
         let from = Addr::new(acct.display_name.clone(), acct.email.clone());
-        match crate::transport::build_mime(&from, &draft) {
+        match crate::transport::build_mime(&self.content, &from, &draft) {
             Ok(_) => {
                 let to = crate::transport::parse_addr_list(&draft.to);
                 let now = self.shared.borrow().now_min;
@@ -7512,8 +7535,9 @@ mod tests {
             ..Default::default()
         };
         app.compose.reattach(&draft);
-        let attachment = crate::attachment_store::stage_bytes(b"draft agenda", "agenda.txt")
-            .expect("stage portable attachment");
+        let attachment =
+            crate::attachment_store::stage_bytes(&app.content, b"draft agenda", "agenda.txt")
+                .expect("stage portable attachment");
         app.compose
             .add_attachment(attachment.clone())
             .expect("attach to draft");
@@ -7612,13 +7636,18 @@ mod tests {
             .local_preferences_path()
             .expect("sandbox has a local preference path");
         let first_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
-        let mut first = MailApp::assemble(first_state, None, persistence.clone());
+        let mut first = MailApp::assemble(
+            first_state,
+            ContentStore::memory(),
+            None,
+            persistence.clone(),
+        );
         first.compose.set_format(ComposeFormat::Text);
         first.persist_compose_format_if_changed();
         assert!(preference_path.is_file(), "format is persisted locally");
 
         let second_state = MailState::shared(MailState::new_sample(avatar_store_offline()));
-        let second = MailApp::assemble(second_state, None, persistence);
+        let second = MailApp::assemble(second_state, ContentStore::memory(), None, persistence);
         assert_eq!(
             second.compose.format(),
             ComposeFormat::Text,

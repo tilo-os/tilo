@@ -364,6 +364,9 @@ pub struct CameraApp {
     node: Option<NodeId>,
 
     storage: Storage,
+    /// Where capture bytes live; documents carry only their `media_id`. The
+    /// worker holds a clone.
+    content: tilo_content::ContentStore,
     initial_screen: Screen,
 
     // CRDT-backed caches (refreshed every sync)
@@ -500,10 +503,19 @@ impl CameraApp {
         let selected_scanner = scanner_devices
             .first()
             .map(|scanner| scanner.device.clone());
+        // The hermetic sample keeps its bytes in memory, like everything else it does, and so do
+        // unit tests that capture to a scratch library: they must not write the user's store.
+        let content = match &storage {
+            Storage::Sample => tilo_content::ContentStore::memory(),
+            Storage::Disk(_) if cfg!(test) => tilo_content::ContentStore::memory(),
+            Storage::Disk(_) => tilo_content::ContentStore::for_app(),
+        };
         Self {
             rect: Rect::ZERO,
             node: None,
             storage,
+            worker: crate::worker::CameraWorker::new(content.clone()),
+            content,
             initial_screen,
             screen: initial_screen,
             mode: CaptureMode::Photo,
@@ -544,7 +556,6 @@ impl CameraApp {
             thumb_failed: HashSet::new(),
             scan_generation: 0,
             pending_scan: None,
-            worker: crate::worker::CameraWorker::new(),
             pending_capture: None,
             pending_video: None,
             pending_scan_import: None,
@@ -1941,10 +1952,12 @@ impl CameraApp {
             self.toast = Some("Take a capture before opening it".into());
             return;
         };
-        let media_id = capture
-            .media_id
-            .clone()
-            .or_else(|| capture.path.as_deref().and_then(crate::media::store_file));
+        let media_id = capture.media_id.clone().or_else(|| {
+            capture
+                .path
+                .as_deref()
+                .and_then(|path| crate::media::store_file(&self.content, path))
+        });
         let Some(media_id) = media_id else {
             self.toast = Some("Latest capture is not available as portable media".into());
             return;
@@ -1953,7 +1966,7 @@ impl CameraApp {
             self.toast = Some("Latest capture has an invalid portable media identity".into());
             return;
         };
-        if crate::media::read(&media_id).is_none() {
+        if crate::media::read(&self.content, &media_id).is_none() {
             self.toast = Some("Latest capture bytes are unavailable on this device".into());
             return;
         }
