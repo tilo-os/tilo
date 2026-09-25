@@ -1764,11 +1764,18 @@ pub trait Widget {
     /// perform its effect and dispatch the exact replayable metadata action in
     /// one host-owned turn instead of publishing a permanently disabled UI.
     ///
-    /// The default preserves a widget's existing read-only admission override.
-    /// Transparent containers that host mutable handlers must forward this
-    /// method to their children (as `Column`, `Row`, `Container` and `TileHost` do).
-    /// They must not then call the read-only fallback: that would visit a
-    /// declining handler twice. Custom containers retain this forwarding duty.
+    /// The default offers the operation to every retained child with the
+    /// mutable document first, so a handler nested under any container —
+    /// including one that only reports [`children_mut`](Self::children_mut) —
+    /// receives mutable admission. When no child starts it, the widget's own
+    /// read-only admission ([`Self::start_resource_operation`]) runs, which
+    /// keeps an existing read-only override on this widget working.
+    ///
+    /// That fallback offers the operation to children a second time, read-only;
+    /// a child that declined the mutable offer declines again, so the result is
+    /// the same. Pure layout containers that own no handler (`Column`, `Row`,
+    /// `Container`, `TileHost`) override this to stop after the mutable pass and
+    /// offer each handler exactly once.
     ///
     /// # Errors
     ///
@@ -1783,6 +1790,13 @@ pub trait Widget {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
+        for child in self.children_mut() {
+            if let Some(started) = child.start_resource_operation_with_document(
+                invocation, kind, type_id, payload, doc, path,
+            )? {
+                return Ok(Some(started));
+            }
+        }
         self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
     }
 
@@ -1866,11 +1880,17 @@ pub trait Widget {
 
     /// True if this subtree's structural composition (children
     /// inserted/removed) changed since the last frame; the App rebuilds the
-    /// taffy tree when so. Default `false` is correct for leaves but WRONG
-    /// for any container storing child widgets — MUST forward or the
-    /// recursion breaks.
+    /// taffy tree when so. Reading clears it. The default drains every
+    /// retained child (no short-circuit, so no child keeps a stale flag) and
+    /// reports whether any was dirty; a leaf has no children and reports
+    /// `false`. A container that changes its own child list sets its own flag
+    /// and ORs it with this traversal.
     fn take_structure_dirty(&mut self) -> bool {
-        false
+        let mut dirty = false;
+        for child in self.children_mut() {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
     }
 
     /// Work already requested by this view whose completion will replace a
@@ -2330,6 +2350,9 @@ impl TaffyTreeExt for TaffyTree<()> {
 }
 
 pub type Element = Box<dyn Widget>;
+
+pub mod decorator;
+pub use decorator::Decorator;
 
 pub(crate) mod layout;
 pub use layout::{
