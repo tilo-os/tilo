@@ -2740,6 +2740,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
+        // Honour system/presentation roots before the first visible configure.
+        // The normal reconcile path still owns output selection and later changes.
+        self.app.reconcile_fullscreen(&window);
         tilo_startup_metrics::mark("primary-window-show-start");
         window.set_visible(true);
         tilo_startup_metrics::mark("primary-window-show-done");
@@ -3334,9 +3337,7 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
-        if self.history.is_none() {
-            self.enable_document_history_chrome();
-        }
+        self.prepare_native_presentation();
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
         #[cfg(target_os = "macos")]

@@ -12,7 +12,7 @@ The reference implementation is `apps/ebook/src/actions.rs` (Books).
 
 ## Classify each interaction
 
-Split every interaction into exactly one of two buckets:
+Classify every interaction before implementing it:
 
 - **Document-mutating** → an `Action`. It changes the shared CRDT (creating a
   highlight, editing a note, renaming a track, deleting a row). It must replay
@@ -20,6 +20,12 @@ Split every interaction into exactly one of two buckets:
 - **Presentation / view state** → plain app code, *never* an action. Which book
   is open, the scroll position, the current selection, an overlay being open.
   Nothing to replicate; dispatching it as an action would be wrong.
+- **A reusable resource view** → a `ResourceViewSpec` bound to explicit
+  `OperationKind::View` actions. “Editor”, “Reader”, “Map”, and “Timeline” are
+  stable presentations another workspace surface can discover and open; a view
+  may also declare how a host mounts it. The declaration is shared; caret,
+  scroll, zoom, selection, and which view is locally selected remain local
+  presentation state.
 
 An operation that only opens a panel belongs to presentation state.
 
@@ -94,6 +100,26 @@ for a in annotations_for(doc, book_id) {                    // nested sub-resour
 }
 vec![root]
 ```
+
+When the resource has a reusable presentation, declare it independently from
+its ordinary actions. The stable view id is not the action id:
+
+```rust
+root = root.with_view(
+    ResourceViewSpec::new("reader", "Reader", "open-reader")
+        .with_primary(true)
+        .with_mount(ResourceViewMountSpec::new(
+            "mount-reader",
+            "slot_capability",
+            "slot_view",
+        )),
+);
+```
+
+`open-reader` and `mount-reader` are still permission-checked actions, but the
+view catalogue is the authority for what counts as a composable view. Do not
+infer views from `OperationKind::View`, parameter names, or an action named
+`open`. Sibling views need distinct, localised human labels.
 
 - `ActionSpec::immediate(id, label, type_id, &action)` — fires a pre-encoded action.
 - `ActionSpec::prompted(id, label, arg_label, placeholder, locus, |text| …)` —

@@ -689,6 +689,7 @@ mod tests {
                 contract: tilo_actions::ActionContract::default(),
                 params,
                 input,
+                view: None,
             },
         }
     }
@@ -762,6 +763,7 @@ mod tests {
                     contract: tilo_actions::ActionContract::default(),
                     params: Vec::new(),
                     input: InputSpec::None,
+                    view: None,
                 },
             }],
             facts: vec![],

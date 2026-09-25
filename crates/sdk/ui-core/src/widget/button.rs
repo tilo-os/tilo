@@ -43,6 +43,8 @@ pub struct Button {
     icon: Option<crate::icons::Icon>,
     /// Defaults to 120×40.
     size: Option<(f32, f32)>,
+    /// Optional target-height floor independent of intrinsic content sizing.
+    min_height: Option<f32>,
     /// Stretch to the containing column while retaining an explicit height.
     /// This is distinct from `fit_content`, which derives a compact width
     /// from the label.
@@ -118,6 +120,7 @@ impl Button {
             is_focused: false,
             icon: None,
             size: None,
+            min_height: None,
             fill_width: false,
             style: ButtonStyle::Neutral,
             on_click_path: on_click_path.map(std::string::ToString::to_string),
@@ -280,6 +283,14 @@ impl Button {
         self.fill_width = false;
         self.fit_content = false;
         self.content_sized = false;
+        self
+    }
+
+    /// Keep at least this logical target height without capping intrinsic
+    /// content. Negative values clamp to zero; non-finite values clear the floor.
+    #[must_use]
+    pub fn with_min_height(mut self, height: f32) -> Self {
+        self.min_height = height.is_finite().then_some(height.max(0.0));
         self
     }
 
@@ -1136,7 +1147,7 @@ impl Widget for Button {
             flex_shrink: if self.content_sized { 1.0 } else { 0.0 },
             min_size: Size {
                 width: Dimension::length(0.0),
-                height: Dimension::auto(),
+                height: self.min_height.map_or(Dimension::auto(), Dimension::length),
             },
             max_size: Size {
                 width: if self.content_sized {
@@ -2004,6 +2015,76 @@ mod tests {
         );
         let rect = harness.inspection().root.children[0].rect;
         Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+    }
+
+    #[test]
+    fn content_sized_minimum_height_keeps_targets_and_grows_for_large_text() {
+        let ordinary = measured_button_rect(
+            Button::new("ordinary", "Restart", None).content_sized(),
+            1.0,
+        );
+        let minimum = measured_button_rect(
+            Button::new("minimum", "Restart", None)
+                .content_sized()
+                .with_min_height(44.0),
+            1.0,
+        );
+        assert_eq!(ordinary.height(), 40.0, "default sizing stays unchanged");
+        assert_eq!(
+            minimum.height(),
+            44.0,
+            "explicit floor preserves the target"
+        );
+
+        let label = "Restart the computer";
+        let theme = Theme::dark().with_text_scale(4.0);
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(
+                        Button::new("restart", label, None)
+                            .with_icon(crate::icons::Icon::Refresh)
+                            .content_sized()
+                            .with_min_height(44.0),
+                    )),
+            ),
+            (220, 1000),
+            theme.clone(),
+        );
+        let rect = harness.inspection().root.children[0].rect;
+        let mut text = TextRenderer::new();
+        text.set_text_scale(4.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded logical test viewport"
+        )]
+        let available = rect[2] as f32 - theme.padding_standard * 2.0 - 28.0;
+        let (_, label_height) = text.measure(label, 14.0, Some(available));
+        assert!(label_height > 60.0, "the real scaled label must wrap");
+        assert!(rect[2] <= 220.0 && rect[3] > 44.0);
+        assert!(
+            rect[3] >= f64::from(label_height + theme.padding_standard),
+            "minimum must not cap intrinsic wrapped height: {rect:?}, text={label_height}"
+        );
+    }
+
+    #[test]
+    fn invalid_minimum_heights_leave_finite_usable_targets() {
+        for minimum in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -20.0] {
+            let rect = measured_button_rect(
+                Button::new("minimum", "Restart", None)
+                    .content_sized()
+                    .with_min_height(minimum),
+                1.0,
+            );
+            assert!(
+                rect.height().is_finite() && rect.height() >= 40.0,
+                "invalid floor must not poison layout: {minimum:?}, {rect:?}"
+            );
+        }
     }
 
     #[test]

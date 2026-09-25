@@ -3267,6 +3267,18 @@ async fn dispatch_sdk_request(
                     operation_kind: action.operation_kind,
                     params_json: action.params_json,
                     contract_json: action.contract_json,
+                    view: action.view.map(|view| runtime_collab::ExportedView {
+                        id: view.id,
+                        label: view.label,
+                        description: view.description,
+                        open_action: view.open_action,
+                        primary: view.primary,
+                        mount: view.mount.map(|mount| runtime_collab::ExportedViewMount {
+                            action: mount.action,
+                            capability_param: mount.capability_param,
+                            view_param: mount.view_param,
+                        }),
+                    }),
                     input: match action.input {
                         ExportedInput::None => runtime_collab::ExportedInput::None,
                         ExportedInput::Text {

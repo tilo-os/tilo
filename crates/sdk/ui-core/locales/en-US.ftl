@@ -48,3 +48,9 @@ block-editor-code-keyboard-hint = Ctrl+Enter: write below · Ctrl+Shift+Enter: w
 widget-block-indent = Indent block and children
 widget-block-text = Block text
 widget-block-outdent = Outdent block and children
+
+# Authentication surfaces share the system theme and catalog.
+greeter-welcome-back = Welcome back to Tilo
+greeter-sign-in = Sign in to continue
+greeter-passcode-intro = Enter your passcode to open your desktop.
+lock-welcome-back = Welcome back
