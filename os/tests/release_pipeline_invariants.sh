@@ -177,7 +177,7 @@ fi
 if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
+   && grep -Fq "format('type=registry,ref=code.podesta.ai/qos/tilo-kernel-buildcache:{0}', matrix.arch)" "$kernel_workflow" \
    && grep -Fq "variable=\"KERNEL_RPMS_\$(printf '%s' '\${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF\"" "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;' "$kernel_workflow" \
    && ! grep -Fq 'variable=KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
