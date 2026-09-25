@@ -10,37 +10,17 @@
 //! produced by [`encode`], so a queued entry is written to a peer verbatim.
 
 use tilo_relay_protocol::transport::{Envelope, MAX_FRAME_BYTES};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
+use wire_frame::Framing;
+pub use wire_frame::{FrameError, PREFIX_BYTES};
 
-/// Size of the length prefix in front of every frame.
-pub const PREFIX_BYTES: usize = 4;
-
-/// Errors from reading a frame.
-#[derive(Debug, thiserror::Error)]
-pub enum FrameError {
-    /// Underlying I/O.
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    /// A frame declared length 0. The wire protocol never uses
-    /// zero-length frames so this indicates a peer bug.
-    #[error("empty frame on the wire")]
-    EmptyFrame,
-    /// Frame length exceeds the reader's bound.
-    #[error("frame size {0} exceeds max")]
-    TooLarge(usize),
-    /// The frame bytes did not decode as an `Envelope`.
-    #[error("decode: {0}")]
-    Decode(postcard::Error),
+/// Relay frames read with a bound of `max` bytes. Empty frames are a peer bug.
+const fn bounded(max: usize) -> Framing {
+    Framing::little_endian(max).reject_empty()
 }
 
-impl From<FrameError> for std::io::Error {
-    fn from(error: FrameError) -> Self {
-        match error {
-            FrameError::Io(error) => error,
-            other => Self::new(std::io::ErrorKind::InvalidData, other),
-        }
-    }
-}
+/// Outgoing frames: bounded only by what the `u32` prefix can express.
+const OUTGOING: Framing = Framing::little_endian(u32::MAX as usize);
 
 /// Prefix `payload` with its length, ready for a single `write_all`.
 ///
@@ -49,16 +29,7 @@ impl From<FrameError> for std::io::Error {
 /// Returns [`std::io::ErrorKind::InvalidInput`] if `payload` is longer than
 /// `u32::MAX` bytes and so cannot be represented in the prefix.
 pub fn frame(payload: &[u8]) -> Result<Vec<u8>, std::io::Error> {
-    let len = u32::try_from(payload.len()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "frame too large to encode a u32 length prefix",
-        )
-    })?;
-    let mut out = Vec::with_capacity(PREFIX_BYTES.saturating_add(payload.len()));
-    out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(payload);
-    Ok(out)
+    Ok(OUTGOING.encode(payload)?)
 }
 
 /// Write one frame carrying `payload`.
@@ -71,7 +42,7 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     payload: &[u8],
 ) -> Result<(), std::io::Error> {
-    writer.write_all(&frame(payload)?).await
+    Ok(OUTGOING.write_async(writer, payload).await?)
 }
 
 /// Read the next frame, or `None` if the stream ends cleanly before one
@@ -85,25 +56,7 @@ pub async fn read_frame_or_eof<R: AsyncRead + Unpin>(
     reader: &mut R,
     max: usize,
 ) -> Result<Option<Vec<u8>>, FrameError> {
-    let mut prefix = [0u8; PREFIX_BYTES];
-    let (first, rest) = prefix.split_at_mut(1);
-    match reader.read(first).await {
-        Ok(0) => return Ok(None),
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(FrameError::Io(error)),
-    }
-    reader.read_exact(rest).await?;
-    let len = u32::from_le_bytes(prefix) as usize;
-    if len == 0 {
-        return Err(FrameError::EmptyFrame);
-    }
-    if len > max {
-        return Err(FrameError::TooLarge(len));
-    }
-    let mut payload = vec![0u8; len];
-    reader.read_exact(&mut payload).await?;
-    Ok(Some(payload))
+    bounded(max).read_async(reader).await
 }
 
 /// Read the next frame's payload, at most `max` bytes.
@@ -130,8 +83,12 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
 /// Returns an error if `envelope` fails to postcard-serialize, or if the
 /// serialized payload is longer than `u32::MAX` bytes.
 pub fn encode(envelope: &Envelope) -> Result<Vec<u8>, postcard::Error> {
-    let payload = postcard::to_allocvec(envelope)?;
-    frame(&payload).map_err(|_| postcard::Error::SerializeBufferFull)
+    OUTGOING
+        .encode_value(envelope)
+        .map_err(|error| match error {
+            FrameError::Encode(error) => error,
+            _ => postcard::Error::SerializeBufferFull,
+        })
 }
 
 /// Decode an envelope from a frame's payload (WITHOUT the length prefix).
@@ -144,25 +101,27 @@ pub fn decode(payload: &[u8]) -> Result<Envelope, postcard::Error> {
 }
 
 /// Reads one [`Envelope`] per [`read_next`](Self::read_next) from any
-/// `AsyncRead`, bounded by [`MAX_FRAME_BYTES`].
+/// `AsyncRead`, bounded by [`MAX_FRAME_BYTES`], reusing one payload buffer.
 pub struct FrameReader<R> {
-    inner: R,
+    inner: wire_frame::FrameReader<R>,
 }
 
 impl<R> FrameReader<R> {
     /// Wrap `inner` in a framing reader.
-    pub fn new(inner: R) -> Self {
-        Self { inner }
+    pub const fn new(inner: R) -> Self {
+        Self {
+            inner: wire_frame::FrameReader::new(inner, bounded(MAX_FRAME_BYTES)),
+        }
     }
 
     /// Consume + return the wrapped reader.
     pub fn into_inner(self) -> R {
-        self.inner
+        self.inner.into_inner()
     }
 
     /// Access the underlying reader mutably.
-    pub fn inner_mut(&mut self) -> &mut R {
-        &mut self.inner
+    pub const fn inner_mut(&mut self) -> &mut R {
+        self.inner.inner_mut()
     }
 }
 
@@ -175,10 +134,7 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
     /// declared length is zero or exceeds [`MAX_FRAME_BYTES`], or the frame's
     /// bytes don't decode as a valid `Envelope`.
     pub async fn read_next(&mut self) -> Result<Option<Envelope>, FrameError> {
-        read_frame_or_eof(&mut self.inner, MAX_FRAME_BYTES)
-            .await?
-            .map(|payload| decode(&payload).map_err(FrameError::Decode))
-            .transpose()
+        self.inner.read_value_async().await
     }
 }
 
