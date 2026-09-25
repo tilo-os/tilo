@@ -592,6 +592,7 @@ where
 mod tests {
     use super::*;
     use automerge::ROOT;
+    use tilo_automerge::ApplyIncoming;
 
     #[test]
     fn unchanged_writes_produce_no_operations() {
@@ -618,7 +619,7 @@ mod tests {
         let mut right = base.fork();
         write_key(&mut left, &ROOT, "body", &"hello brave world".to_owned()).unwrap();
         write_key(&mut right, &ROOT, "body", &"hello world!".to_owned()).unwrap();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         assert_eq!(
             read_key::<String>(&left, &ROOT, "body").unwrap(),
             "hello brave world!"

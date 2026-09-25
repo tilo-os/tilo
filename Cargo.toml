@@ -135,6 +135,7 @@ members = [
     "crates/doc/format-provider-abi",
     "crates/doc/qdoc",
     "crates/doc/qdoc-pdf",
+    "crates/doc/tilo-automerge",
 
     # Hosting
     "crates/hosting/tilo-relay",
@@ -311,6 +312,8 @@ wgpu = "29"
 taffy = "0.10.1"
 winit = "0.30.13"
 automerge = "0.12.0"
+# Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
+tilo-automerge = { path = "crates/doc/tilo-automerge" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
 cosmic-text = { version = "0.19.0", default-features = false }

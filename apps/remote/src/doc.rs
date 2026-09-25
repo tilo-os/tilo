@@ -228,6 +228,7 @@ fn presence_from_tag(s: &str) -> Presence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming;
     use uuid::Uuid;
 
     fn conn(name: &str, kind: ConnectionKind) -> Connection {
@@ -328,7 +329,7 @@ mod tests {
         RemoteDoc::upsert(&mut b, &conn("B", ConnectionKind::Tilo));
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
 
         let names: Vec<_> = RemoteDoc::list(&a).into_iter().map(|c| c.name).collect();
         assert!(names.contains(&"A".to_string()));

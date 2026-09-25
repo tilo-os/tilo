@@ -1,4 +1,5 @@
 use super::*;
+use tilo_automerge::ApplyIncoming;
 
 #[test]
 fn location_action_reports_the_real_portal_terminal_result() {
@@ -169,7 +170,10 @@ fn local_pan_cannot_overwrite_a_peer_bookmark() {
     MapsDoc::set_place_saved(&mut peer, &id, true);
     app.pan_by(96.0, 0.0);
     app.sync(&mut state.doc, &state.root);
-    state.doc.merge(&mut peer).expect("merge peer action");
+    state
+        .doc
+        .merge_incoming(&mut peer)
+        .expect("merge peer action");
     app.sync(&mut state.doc, &state.root);
     assert!(
         MapsDoc::load(&state.doc)
