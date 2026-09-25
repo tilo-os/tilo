@@ -52,7 +52,7 @@ start=$((101 * mib)), size=$((1024 * mib)), type=ebd0a0a2-b9e5-4433-87c0-68b6b72
 start=$((1126 * mib)), size=$((256 * mib)), type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=$target_esp_uuid
 start=$((1382 * mib)), size=$((2048 * mib)), type=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab, uuid=$target_root_uuid
 start=$((3430 * mib)), size=$((256 * mib)), type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, uuid=$esp_uuid
-start=$((3686 * mib)), size=$((2048 * mib)), type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=$root_uuid
+start=$((3686 * mib)), size=$((2048 * mib)), type=d4c4daf6-f72c-43ee-b8e3-5ba32550311d, uuid=$root_uuid
 start=$((5734 * mib)), size=$((100 * mib)), type=ebd0a0a2-b9e5-4433-87c0-68b6b72699c7, uuid=$recovery_uuid
 EOF
 partx -u "$loop"

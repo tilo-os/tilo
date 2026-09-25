@@ -1,5 +1,7 @@
-# Resolve the Tilo root by its dedicated GPT type on the physical disk that owns
-# the ESP which booted this UKI. No target partition UUID enters the signed UKI,
-# so one release prediction applies to every device while dual-boot disks still
-# fail closed on zero or ambiguous Tilo roots.
+# Resolve the root by its dedicated GPT type on the physical disk that owns the
+# ESP which booted this UKI: the Tilo root for an installed UKI; for the live
+# installer UKI (tilo.install) the Tilo staging root the Imager wrote, else the
+# live medium's own Tilo root (/usr/libexec/tilo-root-discover). No partition
+# UUID enters the signed UKI, so one release prediction applies to every device
+# while dual-boot disks still fail closed on zero or ambiguous roots.
 kargs = ["root=tilo-auto", "rd.luks.options=tpm2-device=auto,fido2-device=auto"]
