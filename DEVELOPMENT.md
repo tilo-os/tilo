@@ -527,6 +527,12 @@ return errors. Delete uses
 the Windows recycle bin, but in-app recycle-bin browsing and per-item restoration
 are not implemented. Projection-dependent screenshot scenarios also fail explicitly.
 
+The `--test-threads=1` runs below work around tests that share process-wide
+state (environment, working directory, fixture guards) inside one test
+process. On Linux, CI and `scripts/test-local.sh` run each test in its own
+process with nextest instead; drop these flags once the tests no longer share
+that state.
+
 Run File Explorer tests serially because its fixture guard observes process-wide
 filesystem access:
 
@@ -1038,8 +1044,9 @@ cargo check -p shell --tests                 # before finishing
 The developer image (`dist/dev/Containerfile.fedora44`) carries the suite's
 runtime — GStreamer plugins, fonts, lavapipe, PulseAudio, PDFium, the test
 subjects and `cargo-nextest` — from `dist/ci/install-build-deps.sh fedora test`.
-`tools/test-env.sh COMMAND...` gives the command CI's test environment: no
-desktop session, a private `XDG_RUNTIME_DIR`, lavapipe as the only Vulkan
+`tools/test-env.sh COMMAND...` gives the command CI's test environment: the
+clean locale, `HOME` and session of `tools/with-test-environment.sh` (see
+[Running tests like CI](#running-tests-like-ci)), lavapipe as the only Vulkan
 adapter, cached native NTFS fixtures and a private audio endpoint. CI's test
 jobs call it too. The visual goldens run separately on an idle renderer:
 
@@ -1082,6 +1089,55 @@ calls outside `tilo-test-env`, and the PR lint gate fails on any new site. Use a
 injected path or `ScopedEnv`; only production code that must change its own
 environment (for example clearing systemd's `LISTEN_*` before any thread starts)
 takes a narrow `#[allow]` whose reason says why that is safe there.
+
+### Running tests like CI
+
+CI runs tests with `cargo nextest run --profile ci`: every test in its own
+process, one retry, a JUnit report in `target/nextest/ci/junit.xml`. The job
+summary lists every test that only passed on retry (FLAKY) or was retried
+before failing; treat a FLAKY entry as a bug, not as noise. Each run goes
+through `tools/with-test-environment.sh` (directly, or via `tools/test-env.sh`),
+which sets `LANG=C.UTF-8` and
+`TZ=UTC`, points `HOME` and every XDG base directory at a fresh temporary tree
+and removes the desktop session (D-Bus session bus, display, keyring socket).
+GPU tests use Mesa's llvmpipe Vulkan driver and audio tests an isolated
+PulseAudio endpoint (`tools/with-headless-audio.sh`).
+
+Reproduce that locally with:
+
+```bash
+scripts/test-local.sh                            # the workspace, visual goldens excluded
+scripts/test-local.sh -p fs -p tilo-ui           # selected packages
+scripts/test-local.sh -p fs -- checked_restore   # arguments after -- go to nextest run
+scripts/test-local.sh --goldens                  # only the visual goldens
+CARGO=rcargo scripts/test-local.sh -p fs         # compile remotely, run here
+```
+
+It compiles in your environment, then runs the compiled tests (through
+nextest's build metadata, without Cargo) from a cleared one (`env -i`), so a
+test cannot see your identity, preferences, installed apps, locale or live
+session. A test that passes under plain `cargo test` but not
+here depends on one of those.
+
+**Capability-gated tests.** A test that needs a GPU adapter, audio output,
+media codecs, `/dev/fuse` or fanotify uses `tilo_test_env::require_capability!`
+instead of printing "skipping" and returning:
+
+```rust
+let mut renderer = require_capability!(
+    Gpu,
+    try_new_renderer(width, height),
+    "no wgpu adapter available for offscreen render"
+);
+```
+
+It skips with a message where the capability is missing, and fails when
+`TILO_REQUIRE_<CAP>=1` (`GPU`, `AUDIO`, `MEDIA`, `FUSE`, `FANOTIFY`) says the
+environment provides it. CI test lanes set `TILO_REQUIRE_GPU` and
+`TILO_REQUIRE_AUDIO`, the FUSE lane `TILO_REQUIRE_FUSE`; `scripts/test-local.sh`
+sets the first two when llvmpipe and pulseaudio are installed. Existing
+`eprintln!("skipping …"); return;` sites move to the macro when their file is
+next changed.
 
 Full OS image, which needs rootless `podman` for the container step and `sudo`
 for the disk-image step:

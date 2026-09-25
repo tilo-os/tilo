@@ -3,6 +3,8 @@
 jobs = 4
 # Use the reproducible x86-64-v3 baseline and frame pointers for profiling.
 # Keep hardening in target lists: Cargo does not merge target and build flags.
+# RUSTFLAGS replaces all of them; CI adds `-D warnings` through
+# CARGO_TARGET_<TRIPLE>_RUSTFLAGS instead, which Cargo joins with these.
 # IBT is disabled because stable Rust does not emit the required landing pads.
 
 [target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']

@@ -4,13 +4,14 @@
 //! without a gate they bit-rot the next time someone tweaks the wire
 //! format or renames a `test_id`.
 //!
-//! `#[ignore]` by default: spawns a real `tilo-desktop --backend headless`
-//! child, needing a wgpu adapter that CI runners without a
-//! software-rasterizer Mesa lack. Opt-in:
+//! `#[ignore]` by default: spawns a real `shell --backend headless` child,
+//! needing a wgpu adapter (Mesa llvmpipe is enough). Nightly runs them;
+//! opt in locally with:
 //! ```text
-//! cargo build -p tilo-desktop --bin tilo-desktop
-//! cargo test -p tilo-desktop --test headless_examples_smoke -- --ignored --test-threads 1
+//! cargo test -p shell --test it headless_examples_smoke:: -- --ignored --test-threads 1
 //! ```
+//! The scripts are pointed at the compositor Cargo built for this test run
+//! through `TILO_SHELL_BINARY`, not at a possibly stale `target/debug/shell`.
 
 #![allow(
     clippy::unwrap_used,
@@ -34,17 +35,15 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn assert_binary_exists() {
-    let bin = repo_root()
-        .join("target")
-        .join("debug")
-        .join("tilo-desktop");
+/// The compositor Cargo built for this integration-test run.
+fn shell_binary() -> PathBuf {
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_shell"));
     assert!(
-        bin.exists(),
-        "expected compositor binary at {} — run \
-         `cargo build -p tilo-desktop --bin tilo-desktop` before this test",
-        bin.display()
+        binary.exists(),
+        "expected compositor binary at {}",
+        binary.display()
     );
+    binary
 }
 
 fn run_script(script_name: &str) -> std::process::Output {
@@ -54,6 +53,7 @@ fn run_script(script_name: &str) -> std::process::Output {
         .join(script_name);
     Command::new("python3")
         .arg(&script)
+        .env("TILO_SHELL_BINARY", shell_binary())
         .current_dir(repo_root())
         .output()
         .expect("spawn python3")
@@ -62,7 +62,6 @@ fn run_script(script_name: &str) -> std::process::Output {
 #[test]
 #[ignore = "spawns a real headless compositor; opt in with --ignored"]
 fn full_loop_writes_two_pngs() {
-    assert_binary_exists();
     // Pre-clean so we know the script produced the artefacts itself.
     let _ = std::fs::remove_file("/tmp/full-loop-palette.png");
     let _ = std::fs::remove_file("/tmp/full-loop-final.png");
@@ -84,7 +83,6 @@ fn full_loop_writes_two_pngs() {
 #[test]
 #[ignore = "spawns a real headless compositor; opt in with --ignored"]
 fn library_demo_writes_two_pngs_via_tilo_client() {
-    assert_binary_exists();
     let _ = std::fs::remove_file("/tmp/library-demo-palette.png");
     let _ = std::fs::remove_file("/tmp/library-demo-final.png");
 
