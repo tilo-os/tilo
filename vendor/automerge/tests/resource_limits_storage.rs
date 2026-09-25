@@ -104,14 +104,17 @@ fn measure<T>(watch: Option<usize>, f: impl FnOnce() -> T) -> (T, Meter) {
 }
 
 /// Runs `f` asserting every allocation was already reserved on `allowance`.
+#[track_caller]
 fn precharged<T>(allowance: &NativeAllowance, f: impl FnOnce() -> T) -> T {
     CHECK.with(|c| *c.borrow_mut() = Some((allowance.clone(), allowance.available_bytes())));
     let (value, meter) = measure(None, f);
     CHECK.with(|c| *c.borrow_mut() = None);
     assert!(
         meter.unreserved <= 0,
-        "allocated {} bytes beyond the reservation",
-        meter.unreserved
+        "allocated {} bytes beyond the reservation (peak {}) at {}",
+        meter.unreserved,
+        meter.peak,
+        std::panic::Location::caller()
     );
     value
 }
