@@ -15135,6 +15135,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tilo-actions",
+ "tilo-automerge",
  "uuid",
 ]
 
