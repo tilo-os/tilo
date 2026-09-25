@@ -161,7 +161,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
             state,
             Box::new(wp),
             args.viewport.unwrap_or((1000, 700)),
-            ui::launch::shot_theme(args),
+            &ui::launch::shot_theme(args),
             out,
         )?;
         return Ok(());
@@ -201,7 +201,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         state,
         Box::new(wp),
         args.viewport.unwrap_or((1000, 700)),
-        ui::launch::shot_theme(args),
+        &ui::launch::shot_theme(args),
         out,
     )?;
     Ok(())
@@ -521,7 +521,7 @@ fn render_shot(
     mut state: State,
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
-    theme: Theme,
+    theme: &Theme,
     out: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
@@ -533,7 +533,7 @@ fn render_shot(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     widget.sync(&mut state.doc, &state.root);
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -567,14 +567,14 @@ fn render_shot(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
     // A real frame always runs the widget's top-layer pass after its body.
     // Keep shots honest: this is where recovery/error toasts, menus, and other
     // transient surfaces are painted.
-    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

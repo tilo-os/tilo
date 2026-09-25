@@ -327,10 +327,10 @@ impl TimelineProjection {
             if let Some(index) = self.days.iter().position(|day| day.key == key) {
                 if ids.is_empty() {
                     self.days.remove(index);
-                } else {
-                    self.days[index].ids = ids;
+                } else if let Some(day) = self.days.get_mut(index) {
+                    day.ids = ids;
                     if let Some(geometry) = self.geometry {
-                        Self::layout_day(&mut self.days[index], &self.photos, geometry);
+                        Self::layout_day(day, &self.photos, geometry);
                     }
                 }
             } else if !ids.is_empty() {
@@ -381,9 +381,9 @@ impl TimelineProjection {
                 } else {
                     MAX_ROW_ITEMS
                 };
-                while end < day.ids.len() {
+                for id in day.ids.iter().skip(start) {
                     aspect_sum += photos
-                        .get(&day.ids[end])
+                        .get(id)
                         .map_or(1.5, |photo| photo.aspect_ratio)
                         .clamp(0.35, 3.0);
                     end += 1;
@@ -403,19 +403,19 @@ impl TimelineProjection {
                         // bounded 420px ceiling. Keeping the real justified
                         // height here avoids dumping all clamped leftover
                         // width into the final photograph in a row.
-                        .clamp(76.0, geometry.target_height.max(320.0).min(420.0))
+                        .clamp(76.0, geometry.target_height.clamp(320.0, 420.0))
                 } else {
                     geometry.target_height.clamp(76.0, 320.0)
                 };
                 let mut widths = Vec::with_capacity(end - start);
                 let mut used = 0.0;
-                for index in start..end {
+                for (index, id) in day.ids.iter().enumerate().take(end).skip(start) {
                     let last = index + 1 == end;
                     let width = if fills && last {
                         (geometry.width - used).max(44.0)
                     } else {
                         let width = (photos
-                            .get(&day.ids[index])
+                            .get(id)
                             .map_or(1.5, |photo| photo.aspect_ratio)
                             .clamp(0.35, 3.0)
                             * height)
@@ -426,7 +426,7 @@ impl TimelineProjection {
                     widths.push(width);
                 }
                 day.rows.push(TimelineRow {
-                    ids: day.ids[start..end].to_vec(),
+                    ids: day.ids.iter().take(end).skip(start).cloned().collect(),
                     widths,
                     height,
                     top: 0.0,
@@ -577,8 +577,8 @@ mod tests {
         let first_old = projection.day_offset("2026-06-17", 100.0).unwrap();
         projection.upsert(photo("a", "2026-06-18", 2.0));
         let second_old = projection.day_offset("2026-06-17", 100.0).unwrap();
-        assert_ne!(
-            first_old, second_old,
+        assert!(
+            (first_old - second_old).abs() > f64::EPSILON,
             "changed aspect updates following prefixes"
         );
         projection.upsert(photo("a", "2026-06-16", 2.0));

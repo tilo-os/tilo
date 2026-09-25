@@ -155,6 +155,15 @@ fn populated_large_text_library_passes_native_accessibility_certification() {
 /// duplicate Cancel's semantic identity.
 #[test]
 fn destination_album_chooser_keeps_native_actions_unique_and_canonical() {
+    fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
+        if let Some(target) = &node.action_target {
+            targets.push(target.clone());
+        }
+        for child in &node.children {
+            collect_targets(child, targets);
+        }
+    }
+
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = staged(dir.path(), 320, 240);
     let mut hz = Harness::new(960.0, 700.0);
@@ -178,15 +187,6 @@ fn destination_album_chooser_keeps_native_actions_unique_and_canonical() {
     hz.app
         .show_selection_destination_chooser_for_shot(&hz.state.doc);
     hz.frame();
-
-    fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
-        if let Some(target) = &node.action_target {
-            targets.push(target.clone());
-        }
-        for child in &node.children {
-            collect_targets(child, targets);
-        }
-    }
 
     let tree = hz
         .app

@@ -1127,11 +1127,10 @@ impl Pane {
         });
 
         let text_x = rect.x0 + 40.0;
-        let label_right = badge
-            .as_ref()
-            .map_or(rect.x1 - f64::from(sp.s2), |(_, _, _, b)| {
-                b.x0 - f64::from(sp.s2)
-            });
+        let label_right = badge.as_ref().map_or_else(
+            || rect.x1 - f64::from(sp.s2),
+            |(_, _, _, b)| b.x0 - f64::from(sp.s2),
+        );
         let weight = if selected {
             TextWeight::Semibold
         } else {
@@ -1734,14 +1733,14 @@ impl Pane {
             // Thread-size badge: a capsule centred on the subject line.
             let badge_txt = len.to_string();
             let (bw, bh) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
-            let subj_cy = subj_y + m.subj_h / 2.0;
+            let subject_mid = subj_y + m.subj_h / 2.0;
             let badge_h = (f64::from(bh) + 2.0).max(16.0);
             let bx = right - f64::from(bw) - 12.0;
             let badge = Rect::new(
                 bx - 6.0,
-                subj_cy - badge_h / 2.0,
+                subject_mid - badge_h / 2.0,
                 right,
-                subj_cy + badge_h / 2.0,
+                subject_mid + badge_h / 2.0,
             );
             pill(scene, t, badge, c.neutral[3], None, None);
             tr.draw_text_weighted(
@@ -1749,7 +1748,7 @@ impl Pane {
                 &badge_txt,
                 10.5,
                 c.neutral[8],
-                t * Affine::translate((bx, subj_cy - f64::from(bh) / 2.0)),
+                t * Affine::translate((bx, subject_mid - f64::from(bh) / 2.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -2617,6 +2616,10 @@ impl Pane {
     /// Draw the per-message card header (avatar · sender · date · recipients)
     /// and return the y where the body should start. Shared by the text card
     /// path and the HTML-body (`WebView`) path so both read identically.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the card header paints avatar, sender, date and recipients in one pass sharing the running y cursor both body paths start from"
+    )]
     fn draw_card_header(
         &self,
         scene: &mut Scene,

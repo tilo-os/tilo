@@ -240,7 +240,7 @@ impl RecordTransactionJournal {
         namespace_delta: Option<Vec<u8>>,
     ) -> Result<bool, RecordTransactionJournalError> {
         if self.legacy_restores.contains_key(&id) {
-            return self.advance_legacy(id, phase, namespace_delta);
+            return self.advance_legacy(id, phase, namespace_delta.as_deref());
         }
         let current = self
             .entries

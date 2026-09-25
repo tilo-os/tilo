@@ -13,7 +13,7 @@ use ui::theme::Theme;
 
 use crate::draw;
 use crate::graph::GraphLayout;
-use crate::model::{Commit, RefKind, RepoModel};
+use crate::model::{Commit, RefKind, RefLabel, RepoModel};
 
 // Ref-decorated commits use three text baselines (refs, summary, metadata).
 // 56px clipped the metadata into the following row, especially in the compact
@@ -270,6 +270,50 @@ impl HistoryView {
         }
     }
 
+    /// Ref pills from `origin`, painted while they fit left of `limit_x`.
+    /// The first pill always paints — elided to the room left — so a commit
+    /// with a long branch name still shows that it carries a ref instead of
+    /// an empty first line; later pills that do not fit are dropped. Returns
+    /// whether any pill was painted.
+    fn draw_ref_pills(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        refs: &[RefLabel],
+        origin: (f64, f64),
+        limit_x: f64,
+    ) -> bool {
+        let (mut px, pill_y) = origin;
+        let mut painted_any = false;
+        for r in refs {
+            let (fg, bg) = ref_colors(theme, r.kind);
+            let room = limit_x - px;
+            let name = if draw::pill_width(tr, &r.name, 12.0) <= room {
+                r.name.clone()
+            } else if painted_any {
+                break;
+            } else {
+                let label_room = (room - draw::pill_width(tr, "", 12.0)).max(0.0) as f32;
+                tr.elide_to_width_weighted(&r.name, 12.0, label_room, TextWeight::Medium)
+            };
+            px += draw::pill(
+                scene,
+                tr,
+                t,
+                px,
+                pill_y,
+                12.0,
+                &name,
+                fg,
+                bg,
+                draw::PillEdge::Bare,
+            );
+            painted_any = true;
+        }
+        painted_any
+    }
+
     /// Ref pills, summary, author/time/hash meta line, and the row
     /// separator (part of [`Self::draw_commit_row`]).
     #[allow(
@@ -295,38 +339,15 @@ impl HistoryView {
         let hw = f64::from(draw::mono_width(tr, &short, 12.0));
         let hash_x = area.x1 - hw - 14.0;
 
-        // Ref pills, painted while they fit left of the hash. The first pill
-        // always paints — elided to the room left — so a commit with a long
-        // branch name still shows that it carries a ref instead of an empty
-        // first line; later pills that do not fit are dropped.
-        let mut px = text_x;
-        let pill_y = y + m.pad_top;
-        let mut painted_any = false;
-        for r in &commit.refs {
-            let (fg, bg) = ref_colors(theme, r.kind);
-            let room = hash_x - gap - px;
-            let name = if draw::pill_width(tr, &r.name, 12.0) <= room {
-                r.name.clone()
-            } else if painted_any {
-                break;
-            } else {
-                let label_room = (room - draw::pill_width(tr, "", 12.0)).max(0.0) as f32;
-                tr.elide_to_width_weighted(&r.name, 12.0, label_room, TextWeight::Medium)
-            };
-            px += draw::pill(
-                scene,
-                tr,
-                t,
-                px,
-                pill_y,
-                12.0,
-                &name,
-                fg,
-                bg,
-                draw::PillEdge::Bare,
-            );
-            painted_any = true;
-        }
+        let painted_any = Self::draw_ref_pills(
+            scene,
+            tr,
+            t,
+            theme,
+            &commit.refs,
+            (text_x, y + m.pad_top),
+            hash_x - gap,
+        );
 
         // Summary. If ref pills were painted, draw it on the second line;
         // else the first.
@@ -813,6 +834,10 @@ mod tests {
     /// with its three text lines at 2×, so ref pills, summary and meta line
     /// never share pixels.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
+    )]
     fn row_metrics_match_the_constant_at_1x_and_follow_the_text_scale() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();

@@ -153,18 +153,18 @@ fn main() -> anyhow::Result<()> {
             identity_root,
             device,
             service,
-        } => cmd_home_peer(identity_root, &device, &service, None),
+        } => cmd_home_peer(&identity_root, &device, &service, None),
         Cmd::HomePeerRename {
             identity_root,
             device,
             service,
             label,
-        } => cmd_home_peer(identity_root, &device, &service, Some(label)),
+        } => cmd_home_peer(&identity_root, &device, &service, Some(label)),
         Cmd::HomePeerRemove {
             identity_root,
             device,
             service,
-        } => cmd_home_peer_remove(identity_root, &device, &service),
+        } => cmd_home_peer_remove(&identity_root, &device, &service),
         Cmd::BindWorkspace { workspace_id, pin } => {
             cmd_bind_workspace(&cli.config, workspace_id, pin)
         }
@@ -225,7 +225,7 @@ fn remote_home_peer(
 }
 
 fn cmd_home_peer(
-    identity_root: PathBuf,
+    identity_root: &std::path::Path,
     device: &str,
     service: &str,
     rename: Option<String>,
@@ -235,12 +235,12 @@ fn cmd_home_peer(
         tilo_relay::transport::HomePeerManagementRequest::Status,
         |label| tilo_relay::transport::HomePeerManagementRequest::Rename { label },
     );
-    let response = remote_home_peer(&identity_root, device, service, request)?;
+    let response = remote_home_peer(identity_root, device, service, request)?;
     if let Some(label) = requested_label {
-        update_home_peer_registry(&identity_root, device, Some(label))?;
+        update_home_peer_registry(identity_root, device, Some(label))?;
     }
     refresh_home_peer_endpoint(
-        &identity_root,
+        identity_root,
         device,
         device_key(service)?,
         &response.relay_endpoint,
@@ -294,10 +294,14 @@ fn refresh_home_peer_endpoint(
     Ok(())
 }
 
-fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> anyhow::Result<()> {
-    let paths = tilo_user_identity::IdentityPaths::under(&identity_root);
+fn cmd_home_peer_remove(
+    identity_root: &std::path::Path,
+    device: &str,
+    service: &str,
+) -> anyhow::Result<()> {
+    let paths = tilo_user_identity::IdentityPaths::under(identity_root);
     let target = device_key(device)?;
-    let mut pending = load_pending_decommissions(&identity_root)?;
+    let mut pending = load_pending_decommissions(identity_root)?;
     let intent = if let Some(existing) = pending
         .iter()
         .find(|intent| intent.device == device)
@@ -324,7 +328,7 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
             revocation,
         };
         pending.push(intent.clone());
-        save_pending_decommissions(&identity_root, &pending)?;
+        save_pending_decommissions(identity_root, &pending)?;
         intent
     };
 
@@ -332,17 +336,17 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
     // an empty local server revocation view so this exact pinned certificate
     // remains reachable only long enough to deliver its own decommission.
     persist_canonical_revocation(&paths, &intent.revocation)?;
-    let mut fleet_revocations = tilo_relay::store::load_revocations(&identity_root)?;
+    let mut fleet_revocations = tilo_relay::store::load_revocations(identity_root)?;
     fleet_revocations.retain(|entry| entry.revoked_device_public_key != target);
     fleet_revocations.push(intent.revocation.clone());
-    tilo_relay::store::save_revocations(&identity_root, &fleet_revocations)?;
+    tilo_relay::store::save_revocations(identity_root, &fleet_revocations)?;
     persist_fleet_revocation(&intent.revocation)?;
     if identity_root.join("home-peers.json").exists() {
-        update_home_peer_registry(&identity_root, device, None)?;
+        update_home_peer_registry(identity_root, device, None)?;
     }
 
     let remote = remote_home_peer(
-        &identity_root,
+        identity_root,
         &intent.device,
         &intent.service,
         tilo_relay::transport::HomePeerManagementRequest::Decommission {
@@ -354,7 +358,7 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
         .is_ok_and(|response| response.decommissioned)
     {
         pending.retain(|queued| queued.device != intent.device);
-        save_pending_decommissions(&identity_root, &pending)?;
+        save_pending_decommissions(identity_root, &pending)?;
     }
     let response = remote.unwrap_or(tilo_relay::transport::HomePeerManagementResponse {
         device_public_key: target,
@@ -363,7 +367,7 @@ fn cmd_home_peer_remove(identity_root: PathBuf, device: &str, service: &str) -> 
         )?),
         label: "Removed".into(),
         files_ready: false,
-        services: Default::default(),
+        services: tilo_relay::ServiceCapabilities::default(),
         decommissioned: false,
     });
     println!("{}", serde_json::to_string(&response)?);
@@ -493,7 +497,7 @@ fn persist_fleet_revocation(
         entry
             .get("revoked_device_public_key")
             .and_then(serde_json::Value::as_array)
-            .map(|bytes| {
+            .is_none_or(|bytes| {
                 bytes
                     .iter()
                     .filter_map(serde_json::Value::as_u64)
@@ -504,7 +508,6 @@ fn persist_fleet_revocation(
                         .map(|byte| u64::from(*byte))
                         .collect::<Vec<_>>()
             })
-            .unwrap_or(true)
     });
     revocations.push(serde_json::to_value(revocation)?);
     atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;

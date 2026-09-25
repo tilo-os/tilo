@@ -6675,6 +6675,10 @@ impl BooksApp {
         reason = "t/x/y/s/c/w are the standard transform/geometry/colour/stroke-width names \
                   shared by every draw helper in this chrome section"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "icon buttons take the paint context, position, size, icon, active state and the action to register"
+    )]
     fn icon_button(
         &mut self,
         scene: &mut Scene,
@@ -7157,6 +7161,10 @@ impl BooksApp {
         reason = "t/c/r are the standard transform/colours/rect draw-context names, and i/x/y \
                   are the grid loop's index and card position"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the grid combines the paint context with the library, its display order, colours and the shelf rect"
+    )]
     fn draw_library_grid(
         &mut self,
         scene: &mut Scene,
@@ -7354,8 +7362,6 @@ impl BooksApp {
         }
     }
 
-    /// Surface a picker failure directly beneath the empty-library action.
-
     /// The filtered + sorted display order of the shelf: original library
     /// indices, hiding finished books when requested and ordered by the chosen
     /// key (ties broken by title so the order is stable).
@@ -7430,6 +7436,10 @@ impl BooksApp {
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard transform/geometry/colours names shared by \
                   every draw helper in this section"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a book card combines the paint context with the book, its index, card geometry and focus/shared state"
     )]
     fn draw_book_card(
         &mut self,
@@ -7666,6 +7676,10 @@ impl BooksApp {
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard transform/geometry/colours names shared by \
                   every draw helper in this section"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "card metadata combines the paint context with the book, card geometry and whether the title sits on the cover"
     )]
     fn draw_book_card_meta(
         &self,
@@ -9722,6 +9736,10 @@ impl BooksApp {
         clippy::too_many_lines,
         reason = "contents combines its fixed header, clipped virtual rows, and position indicator so their hit ordering stays explicit"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the contents panel combines the paint context with the library, panel bounds and colours"
+    )]
     fn draw_toc(
         &mut self,
         scene: &mut Scene,
@@ -10572,6 +10590,10 @@ impl BooksApp {
         clippy::too_many_lines,
         reason = "the compact shortcut settings row keeps its visual, hit-target, and accessible capture state together"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the settings row combines the paint context and colours with its column geometry and running y"
+    )]
     fn draw_shortcuts_settings(
         &mut self,
         scene: &mut Scene,
@@ -10660,7 +10682,7 @@ impl BooksApp {
                 x + w - pill_w - rhythm::SECTION,
                 y + (row.height() - pill_h) / 2.0,
                 x + w - rhythm::SECTION,
-                y + (row.height() + pill_h) / 2.0,
+                y + f64::midpoint(row.height(), pill_h),
             );
             if capturing {
                 paint::fill_round(scene, t, pill, 7.0, theme.accent_primary);

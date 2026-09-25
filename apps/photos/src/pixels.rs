@@ -134,6 +134,11 @@ fn encoded_exif_orientation(bytes: &[u8]) -> Option<u16> {
 /// Apply the eight TIFF/EXIF orientation transforms and return canonical,
 /// upright pixels. Doing this at decode time makes thumbnails, OCR, vision,
 /// the editor and export share exactly one interpretation of the source.
+#[expect(
+    clippy::indexing_slicing,
+    clippy::expect_used,
+    reason = "`Rgba` guarantees `w * h * 4` bytes within the decode limits; orientation only swaps axes, so every offset is in bounds and the rebuilt buffer is valid"
+)]
 fn normalize_exif_orientation(src: Rgba, orientation: Option<u16>) -> Rgba {
     let orientation = orientation.unwrap_or(1);
     if orientation == 1 || !(1..=8).contains(&orientation) {
@@ -157,7 +162,8 @@ fn normalize_exif_orientation(src: Rgba, orientation: Option<u16>) -> Rgba {
                 6 => (y, src.h - 1 - x),
                 7 => (src.w - 1 - y, src.h - 1 - x),
                 8 => (src.w - 1 - y, x),
-                _ => unreachable!("orientation was validated above"),
+                // Orientation 1 and out-of-range values returned early.
+                _ => return src,
             };
             let source = (u64::from(source_y) * u64::from(src.w) + u64::from(source_x)) * 4;
             let destination = (u64::from(y) * u64::from(w) + u64::from(x)) * 4;

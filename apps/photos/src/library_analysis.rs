@@ -227,7 +227,7 @@ mod tests {
         assert!(state.take_next(|_| None).is_none());
         assert_eq!(state.current_name.as_deref(), Some("one.jpg"));
         assert!(state.record_success("one"));
-        assert_eq!(state.progress(), 0.5);
+        assert!((state.progress() - 0.5).abs() < f64::EPSILON);
         assert_eq!(state.unavailable, 3);
     }
 

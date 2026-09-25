@@ -1664,7 +1664,12 @@ impl ComposeWindow {
             // stands — its rows, toolbar and button bar need the room — and
             // never its placement: a window the user moved or detached stays
             // put (clamped into the content area).
-            if self.metrics.scale != measured.scale && self.placed {
+            #[expect(
+                clippy::float_cmp,
+                reason = "any change of the measured scale, however small, re-derives the window size; exact inequality is the change test"
+            )]
+            let rescaled = self.metrics.scale != measured.scale;
+            if rescaled && self.placed {
                 let k = measured.scale / self.metrics.scale.max(f64::EPSILON);
                 let r = self.rect;
                 self.rect = Rect::new(
@@ -2062,6 +2067,10 @@ impl ComposeWindow {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "chip buttons take the paint context, their hit id, label key and active state"
+    )]
     fn draw_chip_button(
         &self,
         scene: &mut Scene,
@@ -2371,6 +2380,10 @@ impl ComposeWindow {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "action buttons take the paint context, their hit id, label key and primary styling flag"
+    )]
     fn draw_action_button(
         &self,
         scene: &mut Scene,

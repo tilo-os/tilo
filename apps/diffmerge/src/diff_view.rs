@@ -961,6 +961,10 @@ fn draw_header(
     clippy::too_many_arguments,
     reason = "gutter rows combine paint context and position with an optional line number and measured row/gutter dimensions"
 )]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "c/m/y/r/h follow this file's graphics convention (colour tokens, metrics, position, rect, hunk)"
+)]
 fn draw_gutter_number(
     scene: &mut Scene,
     transform: Affine,

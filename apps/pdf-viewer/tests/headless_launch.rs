@@ -116,7 +116,9 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         .stdout(Stdio::from(std::fs::File::create(&stdout).unwrap()))
         .stderr(Stdio::from(std::fs::File::create(&stderr).unwrap()));
     let mut child = command.spawn().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(60))
+        .expect("a 60 s deadline is representable");
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
@@ -189,7 +191,7 @@ fn cli_note_survives_other_document_and_restart() {
         vec![
             json!({"perform": {"target": "pdf_app", "semantic_target": "pdf.tool:4", "action": "activate"}}),
             json!({"expect": {"target": "pdf_app", "semantic_target": "pdf.tool:4", "checked": true}}),
-            json!({"click_at": [(x0 + x1) / 2.0, (y0 + y1) / 2.0]}),
+            json!({"click_at": [f64::midpoint(x0, x1), f64::midpoint(y0, y1)]}),
             json!({"type": marker}),
             json!({"key": "Enter"}),
         ],
@@ -214,9 +216,10 @@ fn cli_note_survives_other_document_and_restart() {
         !package.join("state.automerge").exists(),
         "PDF CLI must use its native room index, not a package-global substitute"
     );
-    let room = package.join("rooms/00000000-0000-0000-0000-000000000000");
+    let room_dir = package.join("rooms/00000000-0000-0000-0000-000000000000");
     let index =
-        automerge::AutoCommit::load(&std::fs::read(room.join("state.automerge")).unwrap()).unwrap();
+        automerge::AutoCommit::load(&std::fs::read(room_dir.join("state.automerge")).unwrap())
+            .unwrap();
     assert!(ui::record::room::holds(
         &index,
         &ui::RecordId::parse(record).unwrap()

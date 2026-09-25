@@ -211,14 +211,21 @@ impl AsyncBrokerSigningIdentity {
 
     async fn exchange(&mut self, request: &wire::Request) -> Result<wire::Response, NotAvailable> {
         let mut stream = self.stream.take().ok_or_else(poisoned)?;
-        let deadline = tokio::time::Instant::now() + self.exchange_timeout;
-        let result = tokio::time::timeout_at(deadline, async {
+        // A timeout too large to represent as an instant is a deadline that
+        // never elapses, not a reason to panic.
+        let deadline = tokio::time::Instant::now().checked_add(self.exchange_timeout);
+        let exchange = async {
             write_frame(&mut stream, request).await?;
             read_frame(&mut stream).await
-        })
-        .await;
+        };
+        let result = match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, exchange).await,
+            None => Ok(exchange.await),
+        };
         match result {
-            Ok(Ok(response)) if tokio::time::Instant::now() < deadline => {
+            Ok(Ok(response))
+                if deadline.is_none_or(|deadline| tokio::time::Instant::now() < deadline) =>
+            {
                 self.stream = Some(stream);
                 Ok(response)
             }
@@ -371,6 +378,24 @@ mod tests {
             [7; 64]
         );
         assert_eq!(broker.await.unwrap(), REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unrepresentable_timeout_waits_without_deadline() {
+        let (mut identity, mut server) = connected(Duration::MAX).await;
+        let broker = tokio::spawn(async move {
+            assert!(matches!(
+                read_request(&mut server).await,
+                wire::Request::CollaborationJoin { .. }
+            ));
+            write_response(&mut server, wire::Response::Signature(vec![9; 64])).await;
+        });
+        assert_eq!(
+            identity.sign_collaboration_join("workspace").await.unwrap(),
+            [9; 64]
+        );
+        assert!(identity.is_usable());
+        broker.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

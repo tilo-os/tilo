@@ -348,6 +348,12 @@ pub fn parse_analysis(raw: &str) -> Result<Analysis, Error> {
 /// Validate a face-runtime response against the exact image ids in the batch.
 /// This prevents a model from creating a phantom photo association or leaking
 /// an arbitrary string into the local People manager.
+///
+/// # Errors
+/// Returns [`Error::InvalidResponse`] when the response (or the chat envelope
+/// around it) is not valid JSON, or when any cluster has an invalid id, fewer
+/// than two or more than the batch limit of photos, a duplicate photo, or a
+/// photo that was not in the batch.
 pub fn parse_face_clusters(
     raw: &str,
     allowed_photo_ids: &std::collections::BTreeSet<String>,
@@ -409,8 +415,8 @@ fn prepare_face_preview(
             });
         }
         preview = preview.resize(
-            (preview.width() * 3 / 4).max(1),
-            (preview.height() * 3 / 4).max(1),
+            (preview.width().saturating_mul(3) / 4).max(1),
+            (preview.height().saturating_mul(3) / 4).max(1),
             image::imageops::FilterType::Triangle,
         );
     }

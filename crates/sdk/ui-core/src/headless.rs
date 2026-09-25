@@ -4672,14 +4672,13 @@ fn build_legacy_driver(
     let mut driver = Box::new(Driver::new_with_theme(state, root, viewport, theme));
     *driver.action_registry_mut() = registry;
     match records {
-        LegacyRecordPolicy::None => {}
         LegacyRecordPolicy::Explicit { records, index } => driver.attach_records(records, index),
         LegacyRecordPolicy::AutomaticHeadless { records, index, .. }
             if activate_automatic_records =>
         {
             driver.attach_prepared_record_persistence(records, index);
         }
-        LegacyRecordPolicy::AutomaticHeadless { .. } => {}
+        LegacyRecordPolicy::None | LegacyRecordPolicy::AutomaticHeadless { .. } => {}
     }
     (driver, autosave)
 }
@@ -6057,7 +6056,7 @@ mod tests {
             .with_widget_owned_persistence();
             assert_eq!(
                 run_initialized(&Spec::default(), inputs),
-                if succeeds { 0 } else { 1 }
+                i32::from(!succeeds)
             );
             assert_eq!(observed.calls.get(), 1);
             assert_eq!(observed.polls.get(), 3);

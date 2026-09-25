@@ -781,7 +781,7 @@ mod tests {
         verify_pci_catalog_against(&signed, &key).unwrap();
 
         // Renaming the key in both documents cannot authorize unsigned changes.
-        let mut renamed = signed.clone();
+        let mut renamed = signed;
         renamed.key_id = "tilo-pci-catalog-v2".into();
         let renamed_key = PublicKeyDocument {
             key_id: renamed.key_id.clone(),

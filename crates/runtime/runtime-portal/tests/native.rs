@@ -5,6 +5,10 @@ use std::{
     process::Command,
 };
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "test helper: a test binary that cannot name itself cannot run these tests"
+)]
 fn child() -> Command {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
@@ -31,6 +35,10 @@ fn bootstrap_child() {
         Ok(()) => println!("RETURNED"),
         Err(error) => {
             eprintln!("BOOTSTRAP ERROR: {error}");
+            #[expect(
+                clippy::exit,
+                reason = "the re-executed child reports failure to the parent test through its exit status"
+            )]
             std::process::exit(21);
         }
     }

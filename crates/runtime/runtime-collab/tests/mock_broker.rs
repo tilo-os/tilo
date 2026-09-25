@@ -218,6 +218,10 @@ async fn round_trip_join_send_subscribe_read() {
     assert_round_trip(server_side, connection).await;
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC is single-threaded; the round trip runs on a LocalSet"
+)]
 async fn assert_round_trip<S>(server_side: S, connection: CapnpClient)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
