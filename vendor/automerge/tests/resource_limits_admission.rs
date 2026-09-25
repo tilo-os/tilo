@@ -58,6 +58,34 @@ thread_local! {
     static METER: Cell<Option<Allocations>> = const { Cell::new(None) };
     static CHECK_ALLOWANCE: RefCell<Option<(NativeAllowance, usize)>> = const { RefCell::new(None) };
     static WATCH_ALLOCATION_BYTES: Cell<Option<usize>> = const { Cell::new(None) };
+    static LABEL: Cell<&'static str> = const { Cell::new("") };
+    // Diagnostics (AM012_TRACE=1): backtrace of the first unreserved allocation.
+    static IN_TRACE: Cell<bool> = const { Cell::new(false) };
+    static FIRST_TRACE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+static TRACE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static TRACE_INIT: std::sync::Once = std::sync::Once::new();
+
+fn capture_first_unreserved() {
+    if !TRACE.load(std::sync::atomic::Ordering::Relaxed) || IN_TRACE.with(Cell::get) {
+        return;
+    }
+    IN_TRACE.with(|t| t.set(true));
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let _ = FIRST_TRACE.try_with(|f| {
+        if let Ok(mut f) = f.try_borrow_mut() {
+            f.get_or_insert(trace);
+        }
+    });
+    IN_TRACE.with(|t| t.set(false));
+}
+
+/// Like `assert_precharged`, naming the operation in the failure message.
+fn precharged_as<T>(label: &'static str, allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> T {
+    LABEL.with(|l| l.set(label));
+    let value = assert_precharged(allowance, operation);
+    LABEL.with(|l| l.set(""));
+    value
 }
 
 struct MeasuredSystem;
@@ -77,6 +105,7 @@ fn allocated(bytes: usize) {
                         let reserved = initial.saturating_sub(allowance.available_bytes());
                         if state.live > reserved && state.first_unreserved.is_none() {
                             state.first_unreserved = Some((bytes, state.live, reserved));
+                            capture_first_unreserved();
                         }
                         state.unreserved_peak = state.unreserved_peak.max(state.live.saturating_sub(reserved));
                     }
@@ -157,15 +186,17 @@ fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
     (value, allocations)
 }
 
-/// Measures `operation` and asserts every allocation it made was already
-/// reserved on `allowance` when it happened.
-fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+/// Measures `operation` while tracking, at each allocation, how far live
+/// bytes exceed what is reserved on `allowance`. Does not assert.
+fn measure_checked<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
             CHECK_ALLOWANCE.with(|check| *check.borrow_mut() = None);
         }
     }
+    TRACE_INIT.call_once(|| TRACE.store(std::env::var_os("AM012_TRACE").is_some(), std::sync::atomic::Ordering::Relaxed));
+    FIRST_TRACE.with(|f| *f.borrow_mut() = None);
     // The clone is made before metering starts so it is not itself measured.
     let entry = (allowance.clone(), allowance.available_bytes());
     CHECK_ALLOWANCE.with(|check| {
@@ -174,9 +205,22 @@ fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) 
     });
     let _reset = Reset;
     let result = measure(operation);
+    if result.1.unreserved_peak != 0 {
+        if let Some(trace) = FIRST_TRACE.with(|f| f.borrow_mut().take()) {
+            eprintln!("first unreserved allocation:\n{trace}");
+        }
+    }
+    result
+}
+
+/// Measures `operation` and asserts every allocation it made was already
+/// reserved on `allowance` when it happened.
+fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
+    let result = measure_checked(allowance, operation);
     assert_eq!(
         result.1.unreserved_peak, 0,
-        "every allocation must already be reserved (bytes, live, reserved): {:?}",
+        "{}: every allocation must already be reserved (bytes, live, reserved): {:?}",
+        LABEL.with(Cell::get),
         result.1.first_unreserved
     );
     result
@@ -194,6 +238,14 @@ const MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
 fn allowance() -> NativeAllowance {
     NativeAllowance::new(64 * 1024 * 1024).unwrap()
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
 }
 
 fn slow() -> bool {
@@ -398,7 +450,7 @@ fn incoming(
 ) -> Result<NativeIncomingOutcome, NativeMutationError> {
     let before = snapshot(doc);
     let result = catch_unwind(AssertUnwindSafe(|| doc.apply_incoming_checked(input, limits, credit, policy)))
-        .unwrap_or_else(|_| panic!("apply_incoming_checked panicked on {} input bytes", input.len()));
+        .unwrap_or_else(|p| panic!("apply_incoming_checked panicked on {} input bytes: {}", input.len(), panic_message(&*p)));
     match &result {
         Err(_) | Ok(NativeIncomingOutcome::MissingDependencies) => {
             assert!(snapshot(doc) == before, "refused input mutated the document: {result:?}");
@@ -421,7 +473,7 @@ fn reconstruct(input: &[u8], limits: &NativeLimits) -> Result<NativeOwned<AutoCo
         let turn = registry.work_turn(credit)?;
         turn.normalize_input(input, limits)?.reconstruct(&mut registry, &turn)
     }))
-    .expect("normalize_input/reconstruct panicked")
+    .unwrap_or_else(|p| panic!("normalize_input/reconstruct panicked: {}", panic_message(&*p)))
 }
 
 /// Every refusal path of the whole admission surface must agree on refusing
@@ -1636,38 +1688,60 @@ mod budget {
         v
     }
 
-    /// apply_incoming_checked: for every allowance size the result is either
-    /// success or WorkBytes with the document unchanged, every allocation is
-    /// pre-reserved, and success is monotone in the allowance.
+    /// apply_incoming_checked (0.8 semantics): everything up to and including
+    /// validation is precharged (normalize, preflight, parse output and
+    /// transients, validation scratch, super-linear graph terms); the linear
+    /// batch apply is deliberately not. So at every allowance the result is
+    /// either WorkBytes with zero unreserved allocation and the document
+    /// unchanged, or success; success is monotone in the allowance; and the
+    /// allowance's retained bytes return to baseline either way.
     #[test]
     fn incoming_allowance_sweep() {
         let mut src = medium_doc();
         let input = src.save();
         let mut first_ok = None;
+        let mut unexpected = Vec::new();
         for size in sizes() {
             let Ok(credit) = NativeAllowance::new(size) else { continue };
+            let baseline = credit.retained_bytes();
             let mut doc = seeded_doc();
             let before = snapshot(&mut doc);
-            let result = assert_precharged(&credit, || {
+            let (result, allocations) = measure_checked(&credit, || {
                 catch_unwind(AssertUnwindSafe(|| {
                     doc.apply_incoming_checked(&input, &NativeLimits::default(), &credit, NativeDependencyPolicy::RequireComplete)
                 }))
-            })
-            .unwrap_or_else(|_| panic!("panicked at allowance {size}"));
+            });
+            let result = result.unwrap_or_else(|_| panic!("panicked at allowance {size}"));
             match result {
                 Ok(NativeIncomingOutcome::Applied { changed: true }) => {
                     first_ok.get_or_insert(size);
-                    assert_eq!(doc.get_heads(), src.get_heads());
+                    let mut expected = src.get_heads();
+                    expected.extend(before.1.iter().copied());
+                    expected.sort();
+                    assert_eq!(doc.get_heads(), expected);
                 }
                 Err(NativeMutationError::Resource(NativeResourceError::WorkBytes)) => {
-                    assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
-                    assert!(snapshot(&mut doc) == before, "refusal at {size} mutated the document");
+                    if first_ok.is_some() {
+                        unexpected.push(format!("allowance {size}: refused after succeeding at {first_ok:?}"));
+                    }
+                    if allocations.unreserved_peak != 0 {
+                        unexpected.push(format!(
+                            "allowance {size}: refusal allocated unreserved (bytes, live, reserved) {:?}; rerun with AM012_TRACE=1",
+                            allocations.first_unreserved
+                        ));
+                    }
+                    if snapshot(&mut doc) != before {
+                        unexpected.push(format!("allowance {size}: refusal mutated the document"));
+                    }
                 }
-                other => panic!("allowance {size}: unexpected {other:?}"),
+                other => unexpected.push(format!("allowance {size}: {other:?}")),
             }
-            assert_eq!(credit.available_bytes() + credit.retained_bytes(), size, "leaked reservation at {size}");
+            if credit.retained_bytes() != baseline {
+                unexpected.push(format!("allowance {size}: retained {} after the call, baseline {baseline}", credit.retained_bytes()));
+            }
         }
         println!("incoming: first success at allowance {first_ok:?} for {} input bytes", input.len());
+        assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
         assert!(first_ok.is_some(), "never succeeded");
     }
 
@@ -1685,18 +1759,18 @@ mod budget {
             let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), NativeResourceError> {
                 let mut registry = NativeAllocationSet::new(credit.clone())?;
                 let turn = registry.work_turn(credit.clone())?;
-                let normalized = assert_precharged(&credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
-                let owned = assert_precharged(&credit, || normalized.reconstruct(&mut registry, &turn))?;
-                let heads = assert_precharged(&credit, || owned.base_heads_bounded(&turn))?;
+                let normalized = precharged_as(Box::leak(format!("normalize_input at allowance {size}").into_boxed_str()), &credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
+                let owned = precharged_as(Box::leak(format!("reconstruct at allowance {size}").into_boxed_str()), &credit, || normalized.reconstruct(&mut registry, &turn))?;
+                let heads = precharged_as(Box::leak(format!("base_heads_bounded at allowance {size}").into_boxed_str()), &credit, || owned.base_heads_bounded(&turn))?;
                 assert_eq!(heads.as_slice(), expected_heads.as_slice());
-                let _missing = assert_precharged(&credit, || owned.has_missing_dependencies());
-                let saved = assert_precharged(&credit, || owned.save_bounded(&turn, SaveOptions::default()))?;
+                let _missing = precharged_as(Box::leak(format!("has_missing_dependencies at allowance {size}").into_boxed_str()), &credit, || owned.has_missing_dependencies());
+                let saved = precharged_as(Box::leak(format!("save_bounded at allowance {size}").into_boxed_str()), &credit, || owned.save_bounded(&turn, SaveOptions::default()))?;
                 assert_eq!(AutoCommit::load(saved.bytes()).unwrap().get_heads(), expected_heads);
                 drop(saved);
-                let history = assert_precharged(&credit, || owned.changes_since_bounded(&[], &turn))?;
+                let history = precharged_as(Box::leak(format!("changes_since_bounded at allowance {size}").into_boxed_str()), &credit, || owned.changes_since_bounded(&[], &turn))?;
                 assert_eq!(history.len(), src.get_changes(&[]).len());
                 drop(history);
-                let clone = assert_precharged(&credit, || owned.clone_bounded(&mut registry, &turn))?;
+                let clone = precharged_as(Box::leak(format!("clone_bounded at allowance {size}").into_boxed_str()), &credit, || owned.clone_bounded(&mut registry, &turn))?;
                 drop(clone);
                 Ok(())
             }))
@@ -1724,6 +1798,7 @@ mod budget {
         let mut src = medium_doc();
         let input = src.save();
         let mut first_ok = None;
+        let mut unexpected = Vec::new();
         for size in sizes() {
             let big = allowance();
             let mut registry = NativeAllocationSet::new(big.clone()).unwrap();
@@ -1731,10 +1806,11 @@ mod budget {
             let owned = setup.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &setup).unwrap();
             let before = owned.save_bounded(&setup, SaveOptions::default()).unwrap().bytes().to_vec();
             let candidate = owned.clone_bounded(&mut registry, &setup).unwrap();
-            let normalized = setup.normalize_input(&input, &NativeLimits::default()).unwrap();
             let Ok(credit) = NativeAllowance::new(size) else { continue };
             let Ok(turn) = registry.work_turn(credit.clone()) else { continue };
             let result = catch_unwind(AssertUnwindSafe(|| {
+                // Parse, validation and the batch peak are all charged to this turn.
+                let normalized = assert_precharged(&credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
                 assert_precharged(&credit, || {
                     candidate.apply_checked_bounded(normalized, NativeDependencyPolicy::RequireComplete, &mut registry, &turn)
                 })
@@ -1754,23 +1830,28 @@ mod budget {
                 Err(NativeMutationError::Resource(NativeResourceError::WorkBytes)) => {
                     assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
                 }
-                other => panic!("allowance {size}: {other:?}"),
+                other => unexpected.push(format!("allowance {size}: {other:?}")),
             }
             let after = owned.save_bounded(&setup, SaveOptions::default()).unwrap().bytes().to_vec();
             assert!(before == after, "original changed at {size}");
         }
         println!("owned apply: first success at allowance {first_ok:?}");
+        assert!(unexpected.is_empty(), "expected success or WorkBytes:\n{}", unexpected.join("\n"));
         assert!(first_ok.is_some());
     }
 
     // ---- ported from native_footprint_vendor_tests.rs (0.12 semantics) ----
 
-    fn populated_document() -> (AutoCommit, ObjId) {
+    /// The Cloud fixture: text, marks, an open transaction, and (optionally)
+    /// the diff cursor/cached diff state the 0.8 patch measured exactly.
+    fn populated_document_with(caches: bool) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
         let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
         doc.splice_text(&text, 0, 0, &"retained native text ".repeat(256)).unwrap();
         doc.commit();
-        doc.update_diff_cursor();
+        if caches {
+            doc.update_diff_cursor();
+        }
         doc.mark(
             &text,
             Mark::new("long-shared-mark-name-for-allocation".into(), "long-shared-mark-value-for-allocation", 0, 200),
@@ -1779,11 +1860,34 @@ mod budget {
         .unwrap();
         doc.splice_text(&text, 8, 0, "marked insertion").unwrap();
         doc.commit();
-        let heads = doc.get_heads();
-        drop(doc.diff(&[], &heads));
+        if caches {
+            let heads = doc.get_heads();
+            drop(doc.diff(&[], &heads));
+        }
         doc.put(ROOT, "pending", ScalarValue::Bytes(vec![7; 32_768])).unwrap();
         assert!(doc.pending_ops() > 0);
         (doc, text)
+    }
+    fn populated_document() -> (AutoCommit, ObjId) {
+        populated_document_with(false)
+    }
+
+    /// 0.8 contract (qos-peer-state native_footprint_vendor_tests): a
+    /// document with a diff cursor, cached diff and an open transaction has
+    /// a covering footprint and can be cloned under custody. A fail-closed
+    /// `Unaccounted` here is a contract regression for Cloud callers.
+    #[test]
+    fn footprint_and_clone_accept_diff_and_patch_caches() {
+        drop(populated_document_with(true));
+        let ((doc, _), allocations) = measure(|| populated_document_with(true));
+        let footprint = doc.native_footprint(&allowance());
+        assert!(footprint.is_ok(), "native_footprint with diff caches: {footprint:?}");
+        assert!(footprint.unwrap().total_bytes() >= allocations.live);
+        let credit = allowance();
+        let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
+        let turn = registry.work_turn(credit.clone()).unwrap();
+        let cloned = assert_precharged(&credit, || doc.clone_bounded(&mut registry, &turn));
+        assert!(cloned.is_ok(), "clone_bounded with diff caches: {cloned:?}");
     }
 
     fn measure_destination<T>(credit: &NativeAllowance, bytes: usize, operation: impl FnOnce() -> T) -> (T, Allocations) {
@@ -2048,6 +2152,25 @@ mod budget {
         assert!(matches!(result, Err(NativeMutationError::Resource(NativeResourceError::Unaccounted))), "{result:?}");
     }
 
+    /// Input normalized under one turn's ledger cannot be applied under
+    /// another turn (its credit would be laundered across ledgers).
+    #[test]
+    fn apply_with_input_normalized_under_another_turn_is_refused() {
+        let resident = seeded_doc().save();
+        let credit = allowance();
+        let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
+        let first = registry.work_turn(credit.clone()).unwrap();
+        let owned = first.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &first).unwrap();
+        let input = simple_change(0x9a, "k").raw_bytes().to_vec();
+        let normalized = first.normalize_input(&input, &NativeLimits::default()).unwrap();
+        let second = registry.work_turn(allowance()).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            owned.apply_checked_bounded(normalized, NativeDependencyPolicy::RetainOrphans, &mut registry, &second)
+        }))
+        .expect("apply_checked_bounded panicked");
+        assert!(matches!(result, Err(NativeMutationError::Resource(_))), "{result:?}");
+    }
+
     /// Reads are step-charged and pre-reserved.
     #[test]
     fn reads_are_step_bounded_and_precharged() {
@@ -2060,7 +2183,7 @@ mod budget {
         let read = owned.read(&turn).unwrap();
         let root = read.root();
         let mut list = None;
-        assert_precharged(&credit, || {
+        precharged_as("visit_property", &credit, || {
             read.visit_property(root, "list", NativeSelection::Winner, |value, _| {
                 if let NativeValue::Object { object, .. } = value {
                     list = Some(object);
@@ -2072,7 +2195,7 @@ mod budget {
         let list = list.expect("list object");
         let steps = NativeReadSteps::new(10).unwrap();
         let mut seen = 0;
-        let result = assert_precharged(&credit, || {
+        let result = precharged_as("visit_list (10 steps)", &credit, || {
             read.visit_list(list, &steps, |_| {
                 seen += 1;
                 Ok::<_, ()>(std::ops::ControlFlow::Continue(()))
@@ -2081,16 +2204,17 @@ mod budget {
         assert!(result.is_err(), "200-element list visited within 10 steps");
         assert!(seen <= 10);
         let steps = NativeReadSteps::new(10_000).unwrap();
-        let visited = assert_precharged(&credit, || {
+        let visited = precharged_as("visit_list (10k steps)", &credit, || {
             read.visit_list(list, &steps, |_| Ok::<_, ()>(std::ops::ControlFlow::Continue(())))
         })
         .unwrap();
         assert_eq!(visited, 200);
-        let keys = assert_precharged(&credit, || read.visit_keys(root, |_| Ok::<_, ()>(()))).unwrap();
+        let keys = precharged_as("visit_keys", &credit, || read.visit_keys(root, |_| Ok::<_, ()>(()))).unwrap();
         assert_eq!(keys, 3);
-        let mut heads = Vec::new();
-        assert_precharged(&credit, || read.visit_heads(8, |h| heads.push(h))).ok();
-        let _ = src.get_heads();
+        let mut heads = Vec::with_capacity(8); // caller-owned output, allocated outside the measured call
+        let count = precharged_as("visit_heads", &credit, || read.visit_heads(8, |h| heads.push(h))).unwrap();
+        assert_eq!(count, heads.len());
+        assert_eq!(heads, src.get_heads());
     }
 }
 
@@ -2105,7 +2229,10 @@ mod shapes {
     /// level at a time with bounded steps.
     #[test]
     fn deep_nesting_is_admitted_without_recursion_blowup() {
-        let depth = if slow() { 10_000 } else { 2_000 };
+        let depth = std::env::var("AM012_DEPTH")
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(if slow() { 10_000 } else { 2_000 });
         let mut src = AutoCommit::new().with_actor(ActorId::from(vec![0xa1; 16]));
         let mut obj = ROOT;
         for _ in 0..depth {
@@ -2121,7 +2248,8 @@ mod shapes {
                 let mut doc = AutoCommit::new();
                 let result = doc.apply_incoming_checked(&change, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
                 assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: true });
-                let owned = reconstruct(&change, &NativeLimits::default()).unwrap();
+                let owned = reconstruct(&change, &NativeLimits::default())
+                    .unwrap_or_else(|e| panic!("reconstruct of {depth} nested maps ({} bytes) under 64 MiB: {e:?}", change.len()));
                 let credit = allowance();
                 let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
                 let _ = &mut registry;
@@ -2374,32 +2502,88 @@ mod columnar {
                         continue;
                     }
                     let input = chunk(*kind, &m);
-                    let outcome = catch_unwind(AssertUnwindSafe(|| {
-                        if inspect(&input, &NativeLimits::default()).is_err() {
-                            return false;
-                        }
+                    if inspect(&input, &NativeLimits::default()).is_err() {
+                        continue;
+                    }
+                    accepted += 1;
+                    // Each surface is exercised independently, so a panic in
+                    // one does not hide the other.
+                    let site = format!("kind {kind} byte {i}: {} -> {}", body[i], m[i]);
+                    let reconstructed = catch_unwind(AssertUnwindSafe(|| {
                         let _ = reconstruct(&input, &NativeLimits::default());
+                    }));
+                    let applied = catch_unwind(AssertUnwindSafe(|| {
                         let mut doc = seeded_doc();
                         let _ = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
-                        true
                     }));
-                    match outcome {
-                        Ok(true) => accepted += 1,
-                        Ok(false) => {}
-                        Err(p) => {
-                            let msg = p
-                                .downcast_ref::<String>()
-                                .cloned()
-                                .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-                                .unwrap_or_default();
-                            failures.push(format!("kind {kind} byte {i}: {} -> {}: {}", body[i], m[i], msg.chars().take(160).collect::<String>()));
-                        }
+                    for p in [reconstructed.err(), applied.err()].into_iter().flatten() {
+                        let msg: String = panic_message(&*p).chars().take(160).collect();
+                        // Strip the byte count so identical causes group together.
+                        let msg = msg.split(" input bytes: ").last().unwrap_or(&msg).to_string();
+                        failures.push((site.clone(), msg, hex::encode(&input)));
                     }
                 }
             }
         }
         std::panic::set_hook(hook);
         println!("mutation sweep: {accepted} mutants passed inspection");
-        assert!(failures.is_empty(), "{} panicking mutants:\n{}", failures.len(), failures.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+        // Group by panic message (first example of each) so distinct bugs stand out.
+        let mut groups: Vec<(String, usize, String, String)> = Vec::new();
+        for (site, msg, input) in &failures {
+            let key = msg.replace(|c: char| c.is_ascii_digit(), "#");
+            match groups.iter_mut().find(|g| g.0 == key) {
+                Some(g) => g.1 += 1,
+                None => groups.push((key, 1, site.clone(), input.clone())),
+            }
+        }
+        let report: Vec<String> =
+            groups.iter().map(|(k, n, site, input)| format!("{n:5} x {k}\n        e.g. {site}: {input}")).collect();
+        assert!(failures.is_empty(), "{} panicking mutants:\n{}", failures.len(), report.join("\n"));
+    }
+}
+
+// ===========================================================================
+// sweep_regressions: one minimised-by-construction example per distinct
+// panic the mutation sweep found in normalize_input -> reconstruct (single
+// byte mutations of a valid document / bundle, checksum recomputed; all pass
+// inspect_bounded). Each must be refused without panicking.
+// ===========================================================================
+mod sweep_regressions {
+    use super::*;
+
+    const CASES: &[(&str, &str)] = &[
+        ("kind 0 byte 123: 0 -> 1; 0.12 panicked with: index out of bounds: the len is # but the index is #", "856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801"),
+        ("kind 0 byte 137: 0 -> 1; 0.12 panicked with: assertion failed: self.data[index].is_none()", "856f4a83916008c800f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309000003070102090005050000017f01000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801"),
+        ("kind 3 byte 56: 0 -> 1; 0.12 panicked with: called Option::unwrap() on a None value", "856f4a83555f404403df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f01020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 58: 0 -> 1; 0.12 panicked with: mid > len", "856f4a8350e6121a03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020110010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 101: 127 -> 255; 0.12 panicked with: Obj ObjId(OpId(#, #)) Missing from Index", "856f4a83d07f19f603df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a000003ff0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 106: 8 -> 9; 0.12 panicked with: Obj ObjId(OpId(##, #)) Missing from Index", "856f4a83669f4a5503df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e09000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 138: 13 -> 12; 0.12 panicked with: called Result::unwrap() on an Err value: MissingOps", "856f4a833830aa0703df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0c0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 140: 3 -> 2; 0.12 panicked with: assertion failed: self.entry.is_empty()", "856f4a836183f15903df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0002030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 148: 4 -> 5; 0.12 panicked with: called Result::unwrap() on an Err value: InvalidOpType(NonNumericInc)", "856f4a834acfff3d03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102050702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 150: 2 -> 3; 0.12 panicked with: assertion failed: doc.ops.validate_op_order()", "856f4a8373d7ff5803df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040703017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+    ];
+
+    #[test]
+    fn mutated_storage_found_by_the_sweep_is_refused_without_panic() {
+        // AM012_LOUD=1 keeps the default hook, printing each panic's location.
+        let hook = std::panic::take_hook();
+        if std::env::var_os("AM012_LOUD").is_none() {
+            std::panic::set_hook(Box::new(|_| {}));
+        }
+        let mut failures = Vec::new();
+        for (what, hex_input) in CASES {
+            let input = hex::decode(hex_input).unwrap();
+            assert_eq!(inspect(&input, &NativeLimits::default()), Ok(()), "{what}: no longer passes inspection");
+            let plain = catch_unwind(|| AutoCommit::load(&input).map(drop)).is_err();
+            let checked = catch_unwind(AssertUnwindSafe(|| reconstruct(&input, &NativeLimits::default()).map(drop)));
+            match checked {
+                Ok(Err(_)) => {}
+                Ok(Ok(())) => failures.push(format!("{what}: accepted (plain load panics: {plain})")),
+                Err(p) => failures.push(format!("{what}: PANIC {} (plain AutoCommit::load panics too: {plain})", panic_message(&*p))),
+            }
+        }
+        std::panic::set_hook(hook);
+        assert!(failures.is_empty(), "{} of {}:\n{}", failures.len(), CASES.len(), failures.join("\n"));
     }
 }

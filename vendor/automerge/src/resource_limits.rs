@@ -312,12 +312,17 @@ pub struct NativeShape {
     value_bytes: usize,
     dense_operations: usize,
     maximum_operation_counter: u64,
+    /// Longest single actor id in any chunk prefix.
+    max_actor_bytes: usize,
+    /// Largest actor table of any single chunk (a change chunk's author
+    /// plus its other actors).
+    max_chunk_actors: usize,
 }
 impl NativeShape {
     fn empty() -> Self {
         Self { operations: 0, normalized_bytes: 0, changes: 0, edges: 0,
             actors: 0, heads: 0, value_bytes: 0, dense_operations: 0,
-            maximum_operation_counter: 0 }
+            maximum_operation_counter: 0, max_actor_bytes: 0, max_chunk_actors: 0 }
     }
     /// Total logical operations represented by the inspected chunks.
     pub fn operations(&self) -> usize {
