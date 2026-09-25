@@ -270,7 +270,7 @@ has "$snapshot" '/repo/tilo-direct-package-specs.txt' \
   'snapshot publishes its direct package manifest'
 has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
   'snapshot proves the frozen repo resolves the complete transaction offline'
-has "$image_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
+has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'production CI rejects a stale frozen package manifest before building'
 has "$image_workflow" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
   'production CI accepts only the real digest-pinned RPM registry path'
