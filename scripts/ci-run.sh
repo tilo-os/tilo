@@ -56,7 +56,9 @@ python3 "$memory_script" > "$log.memory-before" 2>/dev/null || true
     wait 2>/dev/null || true' EXIT
     trap 'exit 0' TERM INT
     while true; do
-        sleep 60 &
+        # The sleeper never writes; keep it off the output pipe so a sleeper
+        # that outlives a racing shutdown cannot hold the caller's pipe open.
+        sleep 60 </dev/null >/dev/null 2>&1 &
         heartbeat_child=$!
         wait "$heartbeat_child" || exit 0
         heartbeat_child=""
