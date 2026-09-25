@@ -1,0 +1,33 @@
+name: Development / ARM disk device probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: runner-disk-100g-arm64
+    timeout-minutes: 10
+    steps:
+      - name: Probe guest FUSE, loop, and Podman mounts
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n true
+          sudo -n modprobe fuse 2>/dev/null || true
+          sudo -n modprobe loop 2>/dev/null || true
+          sudo -n mount -t devtmpfs devtmpfs /dev
+          sudo -n mkdir -p /dev/pts /dev/shm
+          mountpoint -q /dev/pts || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
+          mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+          test -c /dev/fuse && test -c /dev/loop-control
+          sudo -n chmod 0666 /dev/fuse
+          python3 -c 'open("/dev/fuse", "rb").close()'
+          sudo -n losetup --find
+          export DEBIAN_FRONTEND=noninteractive
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y --no-install-recommends podman fuse-overlayfs
+          mkdir -p /tmp/tilo-device-probe
+          printf 'FROM scratch\nCOPY hello /hello\n' > /tmp/tilo-device-probe/Containerfile
+          printf hello > /tmp/tilo-device-probe/hello
+          podman build --file /tmp/tilo-device-probe/Containerfile --tag localhost/tilo-device-probe /tmp/tilo-device-probe
+          echo '::notice::ARM disk runner supports Podman FUSE and loop nodes via guest devtmpfs'
