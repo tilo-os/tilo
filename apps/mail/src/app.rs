@@ -1900,7 +1900,7 @@ impl MailApp {
         if let Some((_, message)) = config.validate().into_iter().next() {
             self.finish_setup_validation(
                 config,
-                crate::validate::ValidationState::Invalid(message),
+                &crate::validate::ValidationState::Invalid(message),
             );
             return;
         }
@@ -1955,7 +1955,7 @@ impl MailApp {
             self.dirty = true;
             return;
         }
-        self.finish_setup_validation(pending.config.clone(), outcome);
+        self.finish_setup_validation(pending.config.clone(), &outcome);
     }
 
     /// Save the account, but only after its credentials pass a live IMAP login
@@ -1972,13 +1972,13 @@ impl MailApp {
         self.maybe_autofill();
         let cfg = self.read_setup_config();
         let outcome = crate::validate::validate_account(&cfg, probe);
-        self.finish_setup_validation(cfg, outcome);
+        self.finish_setup_validation(cfg, &outcome);
     }
 
     fn finish_setup_validation(
         &mut self,
         cfg: AccountConfig,
-        outcome: crate::validate::ValidationState,
+        outcome: &crate::validate::ValidationState,
     ) {
         if !outcome.persisted() {
             let msg = outcome.message();
@@ -3396,6 +3396,10 @@ impl MailApp {
 
     /// The autoconfig/validation hint line and the Save / Cancel / Remove
     /// buttons at the bottom of the sheet. Part of [`Self::draw_setup`].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the footer forwards the paint context, label column, pointer and sheet rect to its hint and button painters"
+    )]
     fn draw_setup_footer(
         &self,
         scene: &mut Scene,
@@ -4217,7 +4221,7 @@ impl MailApp {
             .iter()
             .rev()
             .find(|(rc, h)| matches!(h, OverlayHit::CtxItem(_)) && rc.contains(pt))
-            .cloned();
+            .copied();
         if let Some((_, OverlayHit::CtxItem(i))) = item {
             self.activate_context_menu_item(i, state);
         } else {
@@ -5987,7 +5991,7 @@ impl MailApp {
             .iter()
             .rev()
             .find(|(rc, _)| rc.contains(pt))
-            .map(|(_, h)| h.clone());
+            .map(|(_, h)| *h);
         match hit {
             Some(OverlayHit::SetupField(i)) => {
                 let leaving_email = self.setup_focus == Some(1) && i != 1;

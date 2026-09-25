@@ -294,10 +294,6 @@ impl EventPopovers {
     ) {
         self.hits.clear();
         let kind = self.active;
-        if kind == PopoverKind::None {
-            return;
-        }
-        self.hits.push((panel, Hit::Dismiss));
         let anchor = match kind {
             PopoverKind::None => return,
             PopoverKind::StartDate => anchors.start_date,
@@ -306,6 +302,7 @@ impl EventPopovers {
             PopoverKind::EndTime => anchors.end_time,
             PopoverKind::Calendar => anchors.calendar,
         };
+        self.hits.push((panel, Hit::Dismiss));
         let colors = &theme.tokens.colors;
         let panel_radius = f64::from(theme.tokens.radii.lg);
 

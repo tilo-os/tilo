@@ -2552,6 +2552,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the band geometry is built by adding the same spacing tokens, so exact equality is the property under test"
+    )]
     fn high_text_title_tags_and_first_block_have_separate_bands() {
         let mut panel = MainPanel::new();
         panel.text_scale = 2.0;

@@ -201,9 +201,9 @@ mod tests {
 
     #[test]
     fn rhythm_is_monotone_token_steps() {
-        assert!(rhythm::TIGHT < rhythm::RELATED);
-        assert!(rhythm::RELATED < rhythm::SIBLING);
-        assert!(rhythm::SIBLING < rhythm::SECTION);
+        const { assert!(rhythm::TIGHT < rhythm::RELATED) };
+        const { assert!(rhythm::RELATED < rhythm::SIBLING) };
+        const { assert!(rhythm::SIBLING < rhythm::SECTION) };
         assert_eq!(rhythm::TIGHT, 4.0);
         assert_eq!(rhythm::SECTION, 16.0);
     }
