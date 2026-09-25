@@ -2673,9 +2673,16 @@ impl FrameHarness {
             .iter()
             .map(|binding| binding.control_id.clone())
             .collect::<HashSet<_>>();
-        let inspection = self.inspection();
-        let has_semantics = inspection_has_semantics(&inspection.root);
-        let semantic_effect_controls = effect_control_ids(&inspection.root);
+        // The contract is the application's: History mode's chrome, which the
+        // host draws around a registered document owner, is toolkit UI and is
+        // audited with the toolkit, not with every app that has a history.
+        let application = if self.history.is_some() {
+            collect_inspection(self.root.as_ref(), "", &mut HashMap::new())
+        } else {
+            self.inspection().root
+        };
+        let has_semantics = inspection_has_semantics(&application);
+        let semantic_effect_controls = effect_control_ids(&application);
         let mut issues = bindings
             .into_iter()
             .filter_map(|binding| match binding.kind {

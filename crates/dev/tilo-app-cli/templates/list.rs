@@ -1,41 +1,36 @@
 use std::collections::HashMap;
 use std::ops::Range;
-use ui::prelude::{
-    Button, Container, LatestRequest, ListModel, ListModelChange, ListRowState, Text, VirtualList,
-    Widget, tilo_actions,
-};
+use ui::prelude::*;
 
 const ITEM_COUNT: usize = 100_000_000;
+/// How many recently opened activities the feed keeps.
+const RECENT: usize = 5;
 
+/// One activity from the external feed. Only the visible window is loaded.
 pub struct Activity {
     id: u64,
     label: String,
 }
 
-fn activity_resource() -> tilo_actions::Resource {
-    let mut resource = ui::widget::resource_actions::typed_resource(
-        "generated.activity-list",
-        "Activity",
-        "open",
-        "Open activity",
-        vec![tilo_actions::ActionParam::required_owned(
-            "id",
-            tilo_actions::ParamType::Integer,
-            "Stable activity id",
-        )],
-    );
-    if let Some(action) = resource.actions.first_mut() {
-        action.contract.result = tilo_actions::ResultSpec::Resource {
-            resource_kind: "generated.activity".into(),
-        };
-    }
-    resource
+/// The app's own state: what the user opened. Stored, synced and undoable.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Feed {
+    /// Recently opened activity ids, newest first.
+    pub opened: Vec<u64>,
 }
 
-fn open_activity(id: u64) -> tilo_actions::ActionOutput {
-    tilo_actions::ActionOutput {
-        value: None,
-        resources: vec![format!("generated.activity:{id}")],
+#[resource(kind = "generated.activity-list", label = "Activity")]
+impl Feed {
+    /// Open an activity.
+    #[action]
+    pub fn open(&mut self, #[param("Stable activity id")] id: u64) -> Result<(), &'static str> {
+        if !usize::try_from(id).is_ok_and(|index| index < ITEM_COUNT) {
+            return Err("no such activity");
+        }
+        self.opened.retain(|opened| *opened != id);
+        self.opened.insert(0, id);
+        self.opened.truncate(RECENT);
+        Ok(())
     }
 }
 
@@ -154,68 +149,64 @@ impl ListModel for ActivityModel {
 /// Rows have stable keys and measured variable heights. Each delegate is an
 /// ordinary widget subtree, so its button remains independently focusable and
 /// accessible without turning a button press into a row-selection gesture.
-///
-/// # Panics
-///
-/// Panics if a generated row binding no longer matches the exported action.
-#[expect(
-    clippy::expect_used,
-    reason = "the binding uses the sole action constructed immediately above"
-)]
-pub fn app_root() -> Box<dyn Widget> {
-    crate::install_catalog();
-    let list = VirtualList::new_async(
-        ActivityModel::new(ITEM_COUNT),
-        48.0,
-        |model, index, key, state| {
-            let height = if index % 5 == 0 { 72.0 } else { 44.0 };
-            match state {
-                ListRowState::Ready => {
-                    let label = model.item(index).map_or("", |item| item.label.as_str());
-                    let open_key = *key;
-                    let resource = activity_resource();
-                    let binding = tilo_actions::ActionBinding::static_json_for(
-                        &resource,
-                        "open",
-                        serde_json::Map::from_iter([("id".into(), serde_json::json!(open_key))]),
-                    )
-                    .expect("generated activity id matches the exported action");
-                    Box::new(
+pub struct App;
+
+impl ResourceApp for App {
+    type Resource = Feed;
+    const ID: &'static str = crate::APP_ID;
+    const TITLE: &'static str = crate::APP_TITLE;
+
+    fn view(cx: &mut ViewCx<Feed>) -> Element {
+        crate::install_catalog();
+        let actions = cx.actions();
+        let list = VirtualList::new_async(
+            ActivityModel::new(ITEM_COUNT),
+            48.0,
+            move |model, index, key, state| {
+                let height = if index % 5 == 0 { 72.0 } else { 44.0 };
+                match state {
+                    ListRowState::Ready => {
+                        let label = model.item(index).map_or("", |item| item.label.as_str());
+                        let open = actions.bind_invocation(
+                            Button::new(&format!("open-{key}"), "list-open", None)
+                                .fit_content(36.0),
+                            Feed::OPEN.with(*key),
+                        );
+                        Box::new(Container::new().with_height(height).with_child(Box::new(
+                            ui::row![ui::column![Text::new(label)].with_no_padding(), open,],
+                        )))
+                    }
+                    ListRowState::Loading => Box::new(
                         Container::new()
                             .with_height(height)
-                            .with_child(Box::new(ui::row![
-                                ui::column![Text::new(label)].with_no_padding(),
-                                Button::new(&format!("open-{key}"), "list-open", None)
-                                    .on_action(binding)
-                                    .fit_content(36.0),
-                            ])),
-                    )
+                            .with_child(Box::new(Text::new("list-loading"))),
+                    ),
+                    ListRowState::Error(message) => Box::new(
+                        Container::new()
+                            .with_height(height)
+                            .with_child(Box::new(Text::new(message))),
+                    ),
                 }
-                ListRowState::Loading => Box::new(
-                    Container::new()
-                        .with_height(height)
-                        .with_child(Box::new(Text::new("list-loading"))),
-                ),
-                ListRowState::Error(message) => Box::new(
-                    Container::new()
-                        .with_height(height)
-                        .with_child(Box::new(Text::new(message))),
-                ),
-            }
-        },
-    )
-    .with_id("activity-list")
-    .with_accessible_name("list-accessible-name")
-    .with_semantic_key(u64::to_string)
-    .with_viewport_height(420.0)
-    .multi_select(true);
-    ui::widget::resource_actions::immediate(Box::new(list), activity_resource(), |payload| {
-        let args: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let id = args
-            .get("id")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or("missing id")?;
-        Ok(open_activity(id))
-    })
+            },
+        )
+        .with_id("activity-list")
+        .with_accessible_name("list-accessible-name")
+        .with_semantic_key(u64::to_string)
+        .with_viewport_height(420.0)
+        .multi_select(true);
+        let recent = cx
+            .text(|feed| {
+                feed.opened.first().map_or_else(
+                    || ui::i18n::I18nManager::lookup_plain("list-none-opened"),
+                    |id| {
+                        ui::i18n::I18nManager::format(
+                            "list-last-opened",
+                            &[("activity", format!("Activity {id}").as_str().into())],
+                        )
+                    },
+                )
+            })
+            .with_id("last-opened");
+        Box::new(ui::column![list, recent])
+    }
 }
