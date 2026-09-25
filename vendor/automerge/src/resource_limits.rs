@@ -322,6 +322,10 @@ pub struct NativeShape {
     leading_document_bytes: usize,
     leading_document_operations: usize,
     leading_document_changes: usize,
+    /// makeMap/makeList/makeText/makeTable operations across all chunks.
+    make_operations: usize,
+    /// Mark operations (begins and ends) across all chunks.
+    mark_operations: usize,
 }
 impl NativeShape {
     fn empty() -> Self {
@@ -329,7 +333,7 @@ impl NativeShape {
             actors: 0, heads: 0, value_bytes: 0, dense_operations: 0,
             maximum_operation_counter: 0, max_actor_bytes: 0, max_chunk_actors: 0,
             leading_document_bytes: 0, leading_document_operations: 0,
-            leading_document_changes: 0 }
+            leading_document_changes: 0, make_operations: 0, mark_operations: 0 }
     }
     /// Total logical operations represented by the inspected chunks.
     pub fn operations(&self) -> usize {

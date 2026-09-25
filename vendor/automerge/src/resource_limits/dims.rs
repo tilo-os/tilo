@@ -431,6 +431,13 @@ pub(crate) struct IncomingDims {
     pub(crate) leading_ops: usize,
     pub(crate) leading_changes: usize,
     pub(crate) leading_bytes: usize,
+    /// Exact make ops (makeMap/List/Text/Table) and mark ops (begins and
+    /// ends) in the inspected op columns; for parsed changes, every op.
+    pub(crate) make_ops: usize,
+    pub(crate) mark_ops: usize,
+    /// Largest actor table of any single chunk (`NativeShape`); for parsed
+    /// changes, every actor entry.
+    pub(crate) chunk_actors: usize,
 }
 impl IncomingDims {
     pub(crate) fn from_shape(shape: &NativeShape) -> Self {
@@ -453,6 +460,9 @@ impl IncomingDims {
             leading_ops: shape.leading_document_operations,
             leading_changes: shape.leading_document_changes,
             leading_bytes: shape.leading_document_bytes,
+            make_ops: shape.make_operations,
+            mark_ops: shape.mark_operations,
+            chunk_actors: shape.max_chunk_actors,
         };
         dims.parsed_bytes = shape_parsed_bound(&dims).unwrap_or(usize::MAX);
         dims
@@ -468,6 +478,8 @@ impl IncomingDims {
         d.actors = d.actors.max(shape.actors);
         d.value_bytes = d.value_bytes.max(shape.value_bytes);
         d.max_op_counter = d.max_op_counter.max(shape.maximum_operation_counter);
+        d.make_ops = shape.make_operations.min(d.ops);
+        d.mark_ops = shape.mark_operations.min(d.ops);
         Ok(d)
     }
     /// Exact figures of parsed changes (`edges` = dependencies + op
@@ -512,57 +524,151 @@ impl IncomingDims {
         d.value_bytes = d.raw_bytes;
         d.actors = actors.get()?;
         d.heads = d.edges;
+        d.make_ops = d.ops;
+        d.mark_ops = d.ops;
+        d.chunk_actors = d.actors;
         d.parsed_bytes = parsed.get()?;
         Ok(d)
     }
 }
 
-/// `Vec<Change>` heap bound from inspection only, covering both ways the
-/// changes come into existence:
-///
-/// 1. change chunks parsed verbatim: per change the `Change` value (×2 Vec
-///    slack) and the `change_heap_bound` terms summed over the input — raw
-///    bytes ≤ normalized (×3: bytes, compressed cache), dependency hashes ≤
-///    heads (×2), other actors ≤ actor entries (`ActorId` ×2) plus spilled
-///    ids, and messages ≤ normalized (×2 each);
-/// 2. changes *reconstructed* from document chunks and bundles
-///    (`ChangeCollector::collect`, which the load path's verification keeps
-///    alive until `finalize`): each rebuilt change repeats its author id
-///    and the full id of every other actor its ops reference (≤ 3 per op:
-///    id, object, key/pred) — so `(changes + 3·ops) × max_actor_bytes` —
-///    plus a ≤ 160-byte header, 34 bytes per dependency, ≤ 48 bytes of op
-///    columns per op, all values, and messages/extra bytes (≤ normalized);
-///    the parsed form holds those bytes ×2 plus the Vec/`other_actors`
-///    buffers.
-fn shape_parsed_bound(d: &IncomingDims) -> Result<usize> {
+/// Bytes of one op in a rebuilt change's op columns when every value is a
+/// literal (`write_change_ops`/`ProgressiveEncoder::save_to`): per column
+/// the LEB128 value width plus ≤ 2 bytes of run/literal headers — obj actor
+/// and ctr, key actor and ctr (delta), key string length/null, insert,
+/// action, value meta, pred count, expand, mark name — with widths from the
+/// inspected actor count, largest counter, value bytes and edges. String and
+/// value contents are the inspected expanded `value_bytes`.
+fn op_literal_bytes(d: &IncomingDims) -> usize {
+    let la = leb(d.actors.max(1) as u64);
+    let lc = leb(d.max_op_counter);
+    let ls = leb(d.max_op_counter.saturating_mul(2).saturating_add(1));
+    let lm = leb((d.value_bytes as u64).saturating_mul(16).saturating_add(15));
+    let lp = leb(d.edges as u64 + 1);
+    2 * la + lc + ls + lm + lp + 25
+}
+
+/// Per predecessor: actor and delta counter literals.
+fn pred_literal_bytes(d: &IncomingDims) -> usize {
+    leb(d.actors.max(1) as u64) + leb(d.max_op_counter.saturating_mul(2).saturating_add(1)) + 4
+}
+
+/// Raw chunk bytes of the changes `ChangeCollector::collect` rebuilds from
+/// document chunks: per change a header (chunk header 14, seq/start
+/// op/time/message length 30, column metadata ≤ 14 × 8, author id) and the
+/// full id of each other actor it references (≤ min(changes × (table - 1),
+/// 3 per op + 1 per pred)), 33 per dependency, `op_literal_bytes` per op,
+/// `pred_literal_bytes` per pred (deps and preds ≤ edges), all expanded
+/// strings and values, and extra bytes (≤ normalized).
+fn rebuilt_raw_bytes(d: &IncomingDims) -> Result<usize> {
     let actor = d.max_actor_len;
-    let refs = d.ops.saturating_mul(3).saturating_add(d.changes);
-    let mut rebuilt = Sum::new();
-    rebuilt
-        .mul(d.changes, 160)
-        .mul(refs, actor.saturating_add(2))
-        .mul(d.edges, 34)
-        .mul(d.ops, 48)
+    let others = d
+        .changes
+        .saturating_mul(d.chunk_actors.saturating_sub(1))
+        .min(d.ops.saturating_mul(3).saturating_add(d.edges));
+    let mut s = Sum::new();
+    s.mul(d.changes, 160 + actor)
+        .mul(others, actor + 2)
+        .mul(d.edges, 33 + pred_literal_bytes(d))
+        .mul(d.ops, op_literal_bytes(d))
         .add(d.value_bytes)
         .add(d.normalized_bytes);
-    let rebuilt = rebuilt.get()?;
+    s.get()
+}
+
+/// Retained `Vec<Change>` of rebuilt changes: the Vec (`collect` reserves it
+/// exactly: one `Change` per change), each chunk's bytes (built with exact
+/// capacity: `Vec::with_capacity(header + data)`), its dependency Vec
+/// (32 per edge), `other_actors` (an `ActorId` plus spilled id each), and
+/// its message (inside `value_bytes`, counted in the raw bytes).
+fn rebuilt_changes_bound(d: &IncomingDims) -> Result<usize> {
+    let actor = d.max_actor_len;
+    let others = d
+        .changes
+        .saturating_mul(d.chunk_actors.saturating_sub(1))
+        .min(d.ops.saturating_mul(3).saturating_add(d.edges));
+    let mut s = Sum::new();
+    s.mul(d.changes, size_of::<Change>())
+        .add_sum(rebuilt_raw_bytes(d))
+        .mul(d.edges, size_of::<ChangeHash>())
+        .mul(
+            others.saturating_add(d.changes),
+            size_of::<crate::ActorId>() + actor_heap_bytes(actor),
+        )
+        .add(d.value_bytes);
+    s.get()
+}
+
+/// Retained `Vec<Change>` of change chunks parsed verbatim: the Vec (×2
+/// push slack), each change's owned chunk copy (≤ its normalized bytes),
+/// dependency hashes (≤ heads, ×2), `other_actors` (≤ actor entries,
+/// `ActorId` ×2 plus spilled ids) and messages (≤ value bytes).
+fn verbatim_changes_bound(d: &IncomingDims) -> Result<usize> {
+    let actor = d.max_actor_len;
     let mut s = Sum::new();
     s.mul3(d.changes, size_of::<Change>(), 2)
         .mul(d.changes, 64)
-        .mul(d.raw_bytes, 3 + 2 + 2)
+        .add(d.raw_bytes)
         .mul(d.heads, 2 * size_of::<ChangeHash>())
         .mul(
             d.actors,
             2 * size_of::<crate::ActorId>() + actor_heap_bytes(actor),
         )
-        // reconstructed changes
-        .mul(rebuilt, 2)
-        .mul(
-            refs,
-            2 * size_of::<crate::ActorId>() + actor_heap_bytes(actor),
-        )
-        .mul(d.edges, 2 * size_of::<ChangeHash>());
+        .mul(d.value_bytes, 2);
     s.get()
+}
+
+/// `Vec<Change>` heap bound from inspection only: the leading document
+/// chunk's changes are rebuilt (`rebuilt_changes_bound`); every other chunk
+/// is either a change/bundle chunk parsed verbatim or a later document chunk
+/// rebuilt, so the rest is charged both ways.
+fn shape_parsed_bound(d: &IncomingDims) -> Result<usize> {
+    let (leading, rest) = split_leading(d);
+    let mut s = Sum::new();
+    if let Some(leading) = leading {
+        s.add_sum(rebuilt_changes_bound(&leading));
+    }
+    if rest.changes != 0 || rest.ops != 0 {
+        s.add_sum(verbatim_changes_bound(&rest))
+            .add_sum(rebuilt_changes_bound(&rest));
+    }
+    s.get()
+}
+
+/// The leading document chunk (if any) and the rest of the input.
+fn split_leading(d: &IncomingDims) -> (Option<IncomingDims>, IncomingDims) {
+    let l_ops = d.leading_ops.min(d.ops);
+    let l_changes = d.leading_changes.min(d.changes);
+    let l_bytes = d.leading_bytes.min(d.normalized_bytes);
+    let rest = IncomingDims {
+        changes: d.changes - l_changes,
+        ops: d.ops - l_ops,
+        normalized_bytes: d.normalized_bytes - l_bytes,
+        raw_bytes: d.raw_bytes.saturating_sub(l_bytes),
+        dense_operations: d.dense_operations,
+        fragments: 0,
+        leading_ops: 0,
+        leading_changes: 0,
+        leading_bytes: 0,
+        ..*d
+    };
+    if l_changes == 0 && l_ops == 0 && l_bytes == 0 {
+        return (None, rest);
+    }
+    let leading = IncomingDims {
+        changes: l_changes,
+        ops: l_ops,
+        normalized_bytes: l_bytes,
+        raw_bytes: l_bytes,
+        fragments: 0,
+        leading_ops: l_ops,
+        leading_changes: l_changes,
+        leading_bytes: l_bytes,
+        make_ops: d.make_ops.min(l_ops),
+        mark_ops: d.mark_ops.min(l_ops),
+        ..*d
+    };
+    (Some(leading), rest)
 }
 
 // ── bounds ──────────────────────────────────────────────────────────────────
@@ -976,51 +1082,126 @@ pub(crate) fn apply_peak_bound(doc: &DocDims, incoming: &IncomingDims) -> Result
     s.get()
 }
 
-/// Retained bound of the document `Document::reconstruct` builds from a
-/// leading document chunk of `bytes` normalized bytes holding `ops` ops and
-/// `changes` changes, `actors` actors wide (`storage/document.rs`):
-/// - `OpSet::load` copies each column's encoded bytes into slabs cut at
-///   `HEX_MAX_SEGS/2` segments: data ≤ 2 × (input + one re-encoded boundary
-///   segment ≤ 22 bytes per slab), with ≤ input/32 + 1 slabs per column of
-///   `HEX_SLAB_META` each: ≤ 10 × input bytes plus 256 per column (23
-///   op + graph columns);
-/// - the index columns built from the ops (text widths, top, visible, inc,
-///   mark): worst one segment per op per column (≤ 8 + 4 + 4 + 13 + 30
-///   bytes) ×2, plus their slabs: ≤ 150 bytes per op;
-/// - `ObjIndex` (≤ one object per op, 32-byte entries) and the mark cache
-///   (≤ one mark per op, 88-byte entries, owned names/values ≤ input ×2);
-/// - the change graph (`ChangeGraphCols::load` + `finalize`): per change
-///   hashes/actors/parents/seq/max_ops (48 bytes), 8 per edge,
-///   `nodes_by_hash`, `seq_index` (4 per change, ×2), the load-sized
-///   `actor_to_author` (16 per change, ×2), and the clock cache
-///   (`clock_cache_growth` of an empty graph); fragments are added by the
-///   loader once counted;
-/// - the actor table (`ActorId` + spilled id per actor).
-fn leading_document_bound(
-    bytes: usize,
-    ops: usize,
-    changes: usize,
-    edges: usize,
-    actors: usize,
-    max_actor_len: usize,
-) -> Result<usize> {
-    let empty = DocDims::default();
-    let mut s = Sum::new();
-    s.mul(bytes, 10)
+/// Entry bytes of an out-of-order op queued in a `ProgressiveEncoder`
+/// (`queue: BTreeMap<usize, OpBuilder>`): a leaf holds ≤ 11 `(usize,
+/// OpBuilder)` entries plus parent pointer and lengths, and every non-root
+/// node holds ≥ 5, so ≤ leaf/5 per entry, plus the internal-node share
+/// (one ≤ 12-edge internal node per ≥ 6 leaves).
+fn queued_op_bytes() -> usize {
+    use crate::op_set2::OpBuilder;
+    let leaf = 2 * PTR + 11 * (PTR + size_of::<OpBuilder<'static>>());
+    let internal = leaf + 12 * PTR;
+    leaf / 5 + internal / 30 + 1
+}
+
+/// Peak of `Document::reconstruct` for the leading document chunk
+/// (`storage/document.rs`), from the exact inspected figures. Held
+/// throughout:
+/// - `OpSet::load`: every column's encoded bytes copied into slabs cut at
+///   `HEX_MAX_SEGS/2` segments: ≤ 10 × the chunk's bytes, 256 per column;
+///   the actor table;
+/// - `ChangeGraphCols::load`: per change actor/parent/seq/max-op (16), 8
+///   per edge, graph columns (inside the 10 × bytes);
+/// - `IndexBuilder` (op_set2/op_set/index.rs): its per-op Vecs are reserved
+///   exactly (`with_capacity(op_set.len())`): succ u32, top bool, width
+///   u64, `Option<MarkIndexBuilder>`; `incs` per successor row (16); the
+///   `counters` map (≤ one entry per edge); `ObjIndex` (one entry per make
+///   op) and `MarkOrderValidator::begins` (one per mark op), both grown by
+///   insertion.
+///
+/// Then the largest of three phases:
+/// - processing ops: the collector's per-change slots (native: the dense
+///   `Vec<Option<OpBuilder>>` of the declared op count or one boxed
+///   `ProgressiveEncoder`, whichever is smaller, so ≤ min(dense × slot,
+///   changes × encoder); wasm: always dense), `ChangeBuilder` and metadata
+///   per change, per-encoder minimum buffers and the actor-wide
+///   `Vec<bool>`, the `preds` map, and per op either a queued entry
+///   (`queued_op_bytes`, an out-of-order op in change order) or its encoded
+///   literal bytes ×2 (buffers double), whichever is larger — an op is in
+///   exactly one of the two;
+/// - collecting: the same collector state, the encoded ops, the rebuilt
+///   `Vec<Change>` and one change's assembly transient (≤ 3 × the rebuilt
+///   raw bytes);
+/// - finishing: `IndexBuilder::finish` (text `Option<u32>`, visible and top
+///   copies per op, the index columns built from them: ≤ 20 bytes per op
+///   ×2), the mark cache (one `(OpId, MarkData)` per mark op, owned values
+///   ≤ value bytes), the rebuilt changes, and `ChangeGraphCols::finalize`
+///   (hashes, `nodes_by_hash`, `seq_index`, the change-count-sized
+///   `actor_to_author`, the clock cache).
+fn leading_document_peak(d: &IncomingDims) -> Result<usize> {
+    use crate::op_set2::change::collector::ProgressiveEncoder;
+    use crate::op_set2::change::BuildChangeMetadata;
+    use crate::op_set2::op_set::MarkIndexBuilder;
+    use crate::op_set2::OpBuilder;
+    let ops = d.ops;
+    let changes = d.changes;
+    let slot = size_of::<Option<OpBuilder<'static>>>();
+    let encoder = size_of::<ProgressiveEncoder<'static>>() + PTR;
+    let dense = d.dense_operations.saturating_mul(slot);
+    let slots = if cfg!(target_family = "wasm") {
+        dense
+    } else {
+        dense.min(changes.saturating_mul(encoder))
+    };
+    let mut held = Sum::new();
+    held.mul(d.normalized_bytes, 10)
         .mul(23, 256)
-        .mul(ops, 150)
-        .add_sum(hash_table_peak_for(ops, 32))
-        .add_sum(hash_table_peak_for(ops, 88))
-        .mul(bytes, 2)
-        .mul(changes, 48 + 2 * 4 + 2 * 16)
-        .mul(edges, 8)
-        .add_sum(hash_table_peak_for(changes, 36))
-        .add_sum(clock_cache_growth(&empty, changes, actors))
         .mul(
-            actors,
-            size_of::<crate::ActorId>() + actor_heap_bytes(max_actor_len) + 24,
-        );
-    s.get()
+            d.actors,
+            size_of::<crate::ActorId>() + actor_heap_bytes(d.max_actor_len),
+        )
+        .mul(changes, 16)
+        .mul(d.edges, 8)
+        .mul(ops, 4 + 1 + 8 + size_of::<Option<MarkIndexBuilder>>())
+        .mul(d.edges, 16)
+        .add_sum(hash_table_peak_for(d.edges, 32))
+        .mul(d.edges, 2 * 16)
+        .add_sum(hash_table_peak_for(d.make_ops, 32))
+        .add_sum(hash_table_peak_for(d.mark_ops, 16));
+    let held = held.get()?;
+
+    let mut collector = Sum::new();
+    collector
+        .add(slots)
+        .mul(changes, 64 + size_of::<BuildChangeMetadata<'static>>())
+        .mul(changes, 16 * 16 + d.actors)
+        .add_sum(hash_table_peak_for(d.edges, 32))
+        .mul(d.edges, 2 * 8);
+    let collector = collector.get()?;
+    let encoded = ops
+        .saturating_mul(2 * op_literal_bytes(d))
+        .saturating_add(d.edges.saturating_mul(2 * pred_literal_bytes(d)))
+        .saturating_add(d.value_bytes.saturating_mul(2));
+    let queue_or_encoded = ops
+        .saturating_mul(queued_op_bytes().max(2 * op_literal_bytes(d)))
+        .saturating_add(d.edges.saturating_mul(2 * (8 + pred_literal_bytes(d))))
+        .saturating_add(d.value_bytes.saturating_mul(2));
+    let rebuilt = rebuilt_changes_bound(d)?;
+    let rebuilt_raw = rebuilt_raw_bytes(d)?;
+
+    let mut processing = Sum::new();
+    processing.add(collector).add(queue_or_encoded);
+    let mut collecting = Sum::new();
+    collecting
+        .add(collector)
+        .add(encoded)
+        .add(rebuilt)
+        .mul(rebuilt_raw, 3);
+    let empty = DocDims::default();
+    let mut finishing = Sum::new();
+    finishing
+        .mul(ops, 8 + 1 + 1 + 2 * 20)
+        .add_sum(hash_table_peak_for(d.mark_ops, 88))
+        .mul(d.value_bytes, 2)
+        .add(rebuilt)
+        .mul(changes, 32 + 2 * 4 + 2 * 16)
+        .add_sum(hash_table_peak_for(changes, 36))
+        .add_sum(clock_cache_growth(&empty, changes, d.actors));
+    let phase = processing
+        .get()?
+        .max(collecting.get()?)
+        .max(finishing.get()?);
+    cadd(held, phase)
 }
 
 /// Peak of loading normalized storage of this shape (includes the result),
@@ -1030,98 +1211,70 @@ fn leading_document_bound(
 /// the graph caches fragments.
 ///
 /// `load_strict` takes two paths:
-/// 1. a leading document chunk is reconstructed directly: its retained
-///    bound (`leading_document_bound`) plus the reconstruct transients —
-///    the change collector's declared encoder slots
-///    (`ChangeCollector::try_from_change_meta` sizes one `ChangeBuilder` per
-///    declared change before visiting ops: a dense `Vec<Option<OpBuilder>>`
-///    of the declared op count, or one `ProgressiveEncoder` plus pointer),
-///    its `preds` map (≤ 64 bytes per edge), the index builder (≤ 160 bytes
-///    per op), and every change rebuilt for verification (held until
-///    `finalize`; `shape_parsed_bound` of that chunk);
+/// 1. a leading document chunk is reconstructed directly
+///    (`leading_document_peak`);
 /// 2. every other chunk (change and bundle chunks, later document chunks)
-///    is parsed or reconstructed into a `Vec<Change>` (`shape_parsed_bound`
-///    of the rest) and batch-applied to the loaded document: the apply
-///    model (`growth_bound`, `queue_scratch`, `batch_apply_scratch`) with
-///    the leading document as the base.
+///    is parsed or rebuilt into a `Vec<Change>` (`shape_parsed_bound` of
+///    the rest) and batch-applied to the loaded document: the apply model
+///    (`growth_bound`, `queue_scratch`, `batch_apply_scratch`) with the
+///    leading document's peak as its base.
 pub(crate) fn load_peak_bound(incoming: &IncomingDims) -> Result<usize> {
-    use crate::op_set2::change::collector::ProgressiveEncoder;
-    use crate::op_set2::OpBuilder;
-    let l_ops = incoming.leading_ops.min(incoming.ops);
-    let l_changes = incoming.leading_changes.min(incoming.changes);
-    let l_bytes = incoming.leading_bytes.min(incoming.normalized_bytes);
-    let rest = IncomingDims {
-        changes: incoming.changes - l_changes,
-        ops: incoming.ops - l_ops,
-        normalized_bytes: incoming.normalized_bytes - l_bytes,
-        raw_bytes: incoming.raw_bytes.saturating_sub(l_bytes),
-        fragments: 0,
-        leading_ops: 0,
-        leading_changes: 0,
-        leading_bytes: 0,
-        ..*incoming
-    };
+    let (leading, rest) = split_leading(incoming);
     let mut s = Sum::new();
     // The empty document every load starts from (`Automerge::new`: 21 op
     // and 4 graph columns with their initial B-tree nodes, the actor id):
     // 9 KiB observed, 16 KiB charged.
     s.add(16 * 1024);
-    // Declared collector slots (the inspector sums them over every
-    // reconstructed chunk; only one chunk is collected at a time, so the sum
-    // covers the largest).
-    s.mul(
-        incoming.dense_operations,
-        size_of::<Option<OpBuilder<'static>>>(),
-    )
-    .mul(
-        incoming.changes,
-        size_of::<ProgressiveEncoder<'static>>() + size_of::<usize>(),
-    );
     let mut base = DocDims::default();
-    if l_changes != 0 || l_ops != 0 || l_bytes != 0 {
-        let leading = IncomingDims {
-            changes: l_changes,
-            ops: l_ops,
-            normalized_bytes: l_bytes,
-            raw_bytes: l_bytes,
-            ..IncomingDims::default()
-        };
-        let retained = leading_document_bound(
-            l_bytes,
-            l_ops,
-            l_changes,
-            incoming.edges,
-            incoming.actors,
-            incoming.max_actor_len,
-        )?;
-        s.add(retained)
-            .mul(incoming.edges, 64)
-            .mul(l_ops, 160)
-            .add_sum(shape_parsed_bound(&IncomingDims {
-                edges: incoming.edges,
-                heads: incoming.heads,
-                actors: incoming.actors,
-                value_bytes: incoming.value_bytes,
-                max_actor_len: incoming.max_actor_len,
-                ..leading
-            }));
+    if let Some(leading) = leading {
+        let peak = leading_document_peak(&leading)?;
+        s.add(peak);
+        // What the reconstructed document retains (the base the rest is
+        // applied to): its columns (≤ 10 × bytes + index columns ≤ 40 per
+        // op) and its std containers (graph ≤ 200 per change + 16 per edge,
+        // ObjIndex and mark cache tables, owned mark values).
+        let mut cols = Sum::new();
+        cols.mul(leading.normalized_bytes, 10)
+            .mul(23, 256)
+            .mul(leading.ops, 40);
+        let mut exact = Sum::new();
+        exact
+            .mul(leading.changes, 200)
+            .mul(incoming.edges, 16)
+            .add_sum(hash_table_peak_for(leading.make_ops, 32))
+            .add_sum(hash_table_peak_for(leading.mark_ops, 88))
+            .mul(incoming.value_bytes, 2)
+            .add_sum(clock_cache_growth(
+                &DocDims::default(),
+                leading.changes,
+                incoming.actors,
+            ));
         base = DocDims {
-            ops: l_ops,
-            changes: l_changes,
+            ops: leading.ops,
+            changes: leading.changes,
             actors: incoming.actors,
             edges: incoming.edges,
-            op_col_bytes: retained,
-            exact_bytes: retained,
+            op_col_bytes: cols.get()?,
+            exact_bytes: exact.get()?,
             max_op: incoming.max_op_counter,
             max_actor_len: incoming.max_actor_len,
             ..DocDims::default()
         };
     }
     if rest.changes != 0 || rest.ops != 0 {
+        use crate::op_set2::change::collector::ProgressiveEncoder;
+        use crate::op_set2::OpBuilder;
         s.add_sum(shape_parsed_bound(&rest))
             .add_sum(growth_bound(&base, &rest))
             .add_sum(queue_scratch(&base, &rest))
-            .add_sum(batch_apply_scratch(&base, &rest));
+            .add_sum(batch_apply_scratch(&base, &rest))
+            // later document chunks are rebuilt through the collector
+            .mul(
+                rest.dense_operations,
+                size_of::<Option<OpBuilder<'static>>>(),
+            )
+            .mul(rest.changes, size_of::<ProgressiveEncoder<'static>>() + PTR)
+            .mul(rest.ops, queued_op_bytes() + 4 + 1 + 8 + 64);
     }
     s.get()
 }

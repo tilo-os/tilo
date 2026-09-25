@@ -72,6 +72,19 @@ Files outside `src/resource_limits*` changed by this patch (keep exact):
   replaces") on two concurrent puts to one text element followed by a
   delete of only the lower one (valid history).
 
+### Snapshot admission memory
+
+- `src/patches/patch_log.rs`: a crate-private discarding `PatchLog` (a
+  `discard` flag; the recording methods return early). 0.12 batch apply
+  writes an event per applied op into any log, active or not; checked apply
+  and checked load pass a discarding log unless the document has an armed
+  diff cursor (an inactive log's events are never read).
+- `src/autocommit.rs`: `native_apply_batch` (the above), `native_is_blank`
+  and `native_replace_blank`; `src/automerge.rs`: `native_adopt_identity`.
+  `apply_incoming_checked` admits a snapshot into a blank document by the
+  checked strict load instead of re-applying every change through batch
+  apply (upstream `load_incremental` takes the same shortcut).
+
 ### Allocation-free dimension hooks (lane L1, read-only)
 
 `src/automerge.rs`, `src/autocommit.rs` (a trailing `impl` block),

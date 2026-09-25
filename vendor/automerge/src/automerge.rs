@@ -2374,3 +2374,12 @@ impl Automerge {
         d.cap.authors = authors.len();
     }
 }
+
+/// qOS bounded admission: identity carry-over when a checked snapshot load
+/// replaces a blank document.
+impl Automerge {
+    pub(crate) fn native_adopt_identity(&mut self, from: &Automerge) {
+        self.set_author(from.author.clone());
+        self.set_actor(from.get_actor().clone());
+    }
+}

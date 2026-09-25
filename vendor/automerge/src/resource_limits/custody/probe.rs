@@ -45,4 +45,10 @@ impl NativeShape {
         let frag = dims::fragment_growth_bound(0, fragments, actors, inc.changes)?;
         base.checked_add(frag).ok_or(NativeResourceError::WorkBytes)
     }
+
+    /// `incoming_changes_bound` of this shape (the parsed `Vec<Change>`).
+    #[doc(hidden)]
+    pub fn native_parsed_probe(&self) -> Result<usize, NativeResourceError> {
+        dims::incoming_changes_bound(&IncomingDims::from_shape(self))
+    }
 }
