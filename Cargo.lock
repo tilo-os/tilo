@@ -9722,7 +9722,6 @@ dependencies = [
  "anyhow",
  "automerge",
  "image",
- "pdfium-render",
  "qdoc",
  "runtime-dylib",
  "serde",
@@ -9733,6 +9732,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-pdf",
  "tracing",
  "uuid",
  "vello",
@@ -9763,7 +9763,6 @@ dependencies = [
  "chrono",
  "console_error_panic_hook",
  "console_log",
- "image",
  "itertools 0.14.0",
  "js-sys",
  "libloading",
@@ -11690,7 +11689,6 @@ dependencies = [
  "media",
  "mime_guess",
  "os-actions",
- "pdfium-render",
  "registry-types",
  "roxmltree 0.20.0",
  "runtime",
@@ -11705,6 +11703,7 @@ dependencies = [
  "tilo-callstream",
  "tilo-desktop-entry",
  "tilo-model-gateway",
+ "tilo-pdf",
  "tilo-relay-protocol",
  "tilo-ui",
  "tilo-user-identity",
@@ -14080,9 +14079,9 @@ dependencies = [
  "image",
  "media",
  "moka",
- "pdfium-render",
  "serde",
  "tempfile",
+ "tilo-pdf",
  "zip",
 ]
 
@@ -14354,6 +14353,37 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "tilo-pdf"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "flate2",
+ "harfrust",
+ "hayro-syntax",
+ "image",
+ "libc",
+ "memmap2",
+ "pdf-writer",
+ "pdfium-render",
+ "postcard",
+ "qdoc",
+ "runtime-portal",
+ "sandbox-core",
+ "serde",
+ "skrifa 0.40.0",
+ "subsetter",
+ "tempfile",
+ "thiserror 2.0.18",
+ "typst",
+ "typst-assets",
+ "typst-layout",
+ "typst-pdf",
+ "unicode-bidi",
+ "unicode-normalization",
+ "wire-frame",
 ]
 
 [[package]]

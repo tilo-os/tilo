@@ -57,6 +57,7 @@ on:
       - "crates/doc/qdoc/**"
       - "crates/doc/bounded-zip/**"
       - "crates/doc/tilo-automerge/**"
+      - "crates/doc/pdf/**"
       - "crates/media/thumbnail/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-portal/**"

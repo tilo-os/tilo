@@ -369,7 +369,7 @@ impl ApplicationDefinition {
             if records.is_ready(&record.id) {
                 LaunchError::ComponentSetup {
                     source: Box::new(source),
-                    record,
+                    record: Box::new(record),
                     recovery: crate::launch::LaunchRecovery::records(records),
                 }
             } else {
@@ -514,7 +514,7 @@ impl AppComponent {
         self.close();
         LaunchError::ComponentSetup {
             source: Box::new(source),
-            record: binding.checkout,
+            record: Box::new(binding.checkout),
             recovery: crate::launch::LaunchRecovery::new(
                 Some(binding.records),
                 self.take_close_reports(),

@@ -839,7 +839,7 @@ impl App {
             app.close_components();
             return Err(crate::launch::LaunchError::ComponentSetup {
                 source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
-                record: binding.checkout,
+                record: Box::new(binding.checkout),
                 recovery: crate::launch::LaunchRecovery::new(
                     Some(binding.records),
                     app.take_component_close_reports(),

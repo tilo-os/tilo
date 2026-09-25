@@ -9,7 +9,7 @@
 //! ## Rendering backend
 //!
 //! A real PDF is loaded through [`source`], which rasterises pages and
-//! extracts their text layer with a dynamically-loaded `pdfium`. The durable
+//! extracts their text layer with Tilo's sandboxed PDF engine. The durable
 //! markup lives in the shared Automerge document, so undo/redo and live collaboration come for
 //! free. Launched with a file path the app opens it; launched bare it shows
 //! an empty state. The bundled demonstration document ([`model::sample_document`])
@@ -44,6 +44,7 @@
 )]
 
 pub mod actions;
+pub mod adopt;
 pub mod app;
 pub mod chrome;
 pub mod doc;
@@ -51,6 +52,7 @@ pub mod model;
 pub mod render;
 pub mod search_provider;
 pub mod text_layer;
+pub mod tiles;
 
 pub use app::PdfApp;
 pub use doc::PdfDoc;
