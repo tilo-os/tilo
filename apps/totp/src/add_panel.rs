@@ -1564,13 +1564,14 @@ impl AddAccountPanel {
 
         // Icon tile on the left: the large icon token plus its `s2` breathing
         // room, scaled with the text so it keeps pace with the card's lines.
-        let tile = (f64::from(theme.tokens.metrics.icon_lg) + f64::from(theme.tokens.spacing.s2))
+        let tile_side = (f64::from(theme.tokens.metrics.icon_lg)
+            + f64::from(theme.tokens.spacing.s2))
             * f64::from(theme.text_scale).max(1.0);
         let icon_tile = Rect::new(
             rect.x0 + 14.0,
-            rect.center().y - tile / 2.0,
-            rect.x0 + 14.0 + tile,
-            rect.center().y + tile / 2.0,
+            rect.center().y - tile_side / 2.0,
+            rect.x0 + 14.0 + tile_side,
+            rect.center().y + tile_side / 2.0,
         );
         let tile_bg = if on_primary {
             Color::WHITE.with_alpha_factor(0.18)
@@ -1600,7 +1601,7 @@ impl AddAccountPanel {
         let (_, th) =
             text_renderer.measure_weighted(&title, CARD_TITLE_SIZE, None, TextWeight::Semibold);
         let (_, sh) = text_renderer.measure(&subtitle, CARD_SUB_SIZE, None);
-        let title_y = rect.center().y - (f64::from(th) + f64::from(sh)) / 2.0;
+        let title_y = rect.center().y - f64::midpoint(f64::from(th), f64::from(sh));
         text_renderer.draw_text_weighted(
             scene,
             &title,
