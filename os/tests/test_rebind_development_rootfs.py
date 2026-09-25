@@ -33,7 +33,8 @@ class TransformTests(unittest.TestCase):
         self.assertNotIn('--volume', args)
         self.assertNotIn('/bin/sh', args)
         self.assertEqual(args[args.index('--omit') + 1].split(), sorted(transform.OMITTED_MODULES))
-        self.assertEqual(args[args.index('--omit-drivers') + 1], 'ext4 xfs')
+        self.assertEqual(args[args.index('--omit-drivers') + 1], 'xfs')
+        self.assertEqual(args[args.index('--add-drivers') + 1], 'ext4')
         self.assertEqual(args[args.index('--compress') + 1], 'zstd')
 
     def test_lenovo_83ed_omits_unrelated_gpu_drivers_only(self):
