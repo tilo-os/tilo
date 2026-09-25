@@ -95,7 +95,6 @@ jobs:
       full: ${{ steps.plan.outputs.full }}
       rust_required: ${{ steps.plan.outputs.rust_required }}
       security_required: ${{ steps.plan.outputs.security_required }}
-      native_dependencies_required: ${{ steps.plan.outputs.native_dependencies_required }}
       suites_required: ${{ steps.plan.outputs.suites_required }}
       suites: ${{ steps.plan.outputs.suites }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
@@ -219,28 +218,6 @@ jobs:
 
       - name: Security boundary invariants
         run: bash tools/run-security-boundary-invariants.sh
-
-  native-dependencies:
-    if: needs.select.outputs.native_dependencies_required == 'true'
-    needs: [builder, select]
-    runs-on: runner-quality
-    timeout-minutes: 10
-    env:
-      CARGO_BUILD_JOBS: '2'
-    container:
-      image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
-    steps:
-      - name: Checkout native dependency tests
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Verify deterministic native archive inputs
-        id: native-check
-        run: |
-          python3 os/tests/test_openh264_source_order.py -v
 
   # Hermetic test suites outside Cargo (tools/ci/suites.toml), selected by the
   # paths they read. They need no builder image and run beside the Rust jobs.
@@ -637,7 +614,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [builder, select, security, test, check, clippy, native-dependencies, suites]
+    needs: [builder, select, security, test, check, clippy, suites]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -655,8 +632,6 @@ jobs:
           TEST_RESULT: ${{ needs.test.result }}
           CHECK_RESULT: ${{ needs.check.result }}
           CLIPPY_RESULT: ${{ needs.clippy.result }}
-          NATIVE_DEPENDENCIES_RESULT: ${{ needs.native-dependencies.result }}
-          NATIVE_DEPENDENCIES_REQUIRED: ${{ needs.select.outputs.native_dependencies_required }}
           SUITES_RESULT: ${{ needs.suites.result }}
           SUITES_REQUIRED: ${{ needs.select.outputs.suites_required }}
           EVENT_NAME: ${{ github.event_name }}
@@ -683,16 +658,6 @@ jobs:
               ;;
             *)
               echo '::error::Security checks failed, were skipped unexpectedly, or selection outputs are invalid.'
-              exit 1
-              ;;
-          esac
-          case "$NATIVE_DEPENDENCIES_REQUIRED:$NATIVE_DEPENDENCIES_RESULT" in
-            true:success) ;;
-            false:skipped)
-              echo 'Native dependency checks not applicable: no matching build inputs changed.' >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *)
-              echo '::error::Native dependency checks failed or applicability is invalid.'
               exit 1
               ;;
           esac

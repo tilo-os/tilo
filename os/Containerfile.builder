@@ -35,10 +35,9 @@ RUN dnf install -y \
       libseat-devel libinput-devel systemd-devel libdrm-devel \
       mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
       pipewire-devel pulseaudio \
-      ffmpeg-free-devel libva-devel \
       gstreamer1 gstreamer1-devel gstreamer1-plugins-base-devel \
       gstreamer1-plugins-good gstreamer1-plugins-bad-free \
-      gstreamer1-plugin-openh264 \
+      gstreamer1-plugin-dav1d gstreamer1-plugin-openh264 \
       sqlite-devel zlib-ng-compat-devel \
       fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
       google-noto-sans-fonts google-noto-sans-mono-fonts \

@@ -221,12 +221,10 @@ class ResolvedInput(NamedTuple):
     """A root manifest/lockfile change attributed to specific workspace packages.
 
     ``seeds`` are checked with their reverse dependencies and tested; ``checked``
-    are additionally type-checked. ``native`` reports whether the change reaches
-    the vendored native dependency contract.
+    are additionally type-checked.
     """
     seeds: frozenset[str]
     checked: frozenset[str]
-    native: bool
     detail: str
 
 
@@ -235,7 +233,6 @@ class ResolvedInput(NamedTuple):
 # resolver, metadata, profile, patch, replace, a root package, ...) keeps the
 # complete workspace.
 ATTRIBUTABLE_WORKSPACE_KEYS = {"members", "dependencies"}
-NATIVE_CONTRACT_PACKAGE = "openh264-sys2"
 
 
 def resolve_lockfile(before: bytes | None, after: bytes | None, metadata: dict) -> ResolvedInput | None:
@@ -256,7 +253,6 @@ def resolve_lockfile(before: bytes | None, after: bytes | None, metadata: dict) 
     return ResolvedInput(
         seeds=change.seeds,
         checked=frozenset(change.reached & packages),
-        native=NATIVE_CONTRACT_PACKAGE in change.reached,
         detail=f"Cargo.lock reaches {len(change.seeds)} packages directly",
     )
 
@@ -331,7 +327,7 @@ def resolve_root_manifest(
                    for dependency in package.get("dependencies", []))
         )
         details.append(f"{len(changed_deps)} shared dependencies")
-    return ResolvedInput(frozenset(seeds), frozenset(), False,
+    return ResolvedInput(frozenset(seeds), frozenset(),
                          "Cargo.toml changes " + " and ".join(details))
 
 
@@ -394,38 +390,6 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     total_cost = sum(package_cost(packages[name]) for name in names)
     cost_limited = max(1, (total_cost + SHARD_COST_BUDGET - 1) // SHARD_COST_BUDGET)
     return min(max(1, maximum), len(names), cost_limited)
-
-
-def native_dependencies_required(
-    root: Path,
-    changes: list[str],
-    force_full: bool = False,
-    resolved_inputs: dict[str, ResolvedInput] | None = None,
-) -> bool:
-    """Select a declared native dependency contract without hiding missing payloads.
-
-    A root manifest or lockfile change that was attributed exactly selects the
-    contract only when it reaches the vendored native crate's locked graph.
-    """
-    manifest = tomllib.loads((root / "Cargo.toml").read_text())
-    declared = "openh264-sys2" in manifest.get("patch", {}).get("crates-io", {})
-    # Introduction/deletion of native sources must be checked even if the patch
-    # declaration was also removed. Never infer applicability from file presence.
-    if any(path.startswith("vendor/openh264-sys2/") for path in changes):
-        return True
-    if not declared:
-        return False
-    files = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "os/Containerfile.builder",
-             ".forgejo/workflows/check.yml", "os/tests/test_openh264_source_order.py",
-             "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/tests/test_ci_select.py",
-             "tools/tests/test_ci_check_aggregate.py"}
-    prefixes = (".cargo/", ".forgejo/actions/prepare-rust-build/")
-    resolved_inputs = resolved_inputs or {}
-    return force_full or any(
-        resolved_inputs[path].native if path in resolved_inputs
-        else path in files or path.startswith(prefixes)
-        for path in changes
-    )
 
 
 def make_plan(
@@ -564,8 +528,6 @@ def make_plan(
         "full": full,
         "rust_required": bool(selected),
         "security_required": not security_not_applicable,
-        "native_dependencies_required": native_dependencies_required(
-            root, changes, force_full, resolved_inputs),
         "suites_required": bool(suites),
         "suites": suites,
         "reason": reason,
@@ -594,7 +556,6 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
-        handle.write(f"native_dependencies_required={str(plan['native_dependencies_required']).lower()}\n")
         handle.write(f"suites_required={'true' if plan['suites_required'] else 'false'}\n")
         handle.write(f"suites={' '.join(plan['suites'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")

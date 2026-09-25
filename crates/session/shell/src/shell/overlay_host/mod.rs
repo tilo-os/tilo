@@ -4674,6 +4674,7 @@ impl ShellOverlayHost {
         local_peer: u64,
         app_id: &str,
         codec: &str,
+        display_size: Option<(u32, u32)>,
         hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
         input_sink: std::sync::Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
     ) -> bool {
@@ -4690,10 +4691,13 @@ impl ShellOverlayHost {
                     let ui::widget::TileContent::App(app) = host.content_mut() else {
                         continue;
                     };
-                    if app.as_any_mut().is_some_and(|any| {
-                        any.downcast_mut::<crate::shell::peer_view::PeerView>()
-                            .is_some()
-                    }) {
+                    // A repeated stream start for a mounted share: the sender
+                    // may have switched codec, so the view follows it.
+                    if let Some(view) = app
+                        .as_any_mut()
+                        .and_then(|any| any.downcast_mut::<crate::shell::peer_view::PeerView>())
+                    {
+                        view.restart_stream(codec, display_size);
                         return true;
                     }
                 }
@@ -4738,6 +4742,7 @@ impl ShellOverlayHost {
             &crate::shell::hdr_display::DisplayCapabilities::sdr_default(),
             hdr_static_metadata,
         );
+        peer_view.restart_stream(codec, display_size);
         peer_view.set_input_sink(input_sink);
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: identical to `foreign_surface_rect`: rows are boxed by
