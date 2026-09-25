@@ -66,11 +66,7 @@ impl RoomActivityPane {
             // the historical clock; the replay snapshot is discarded after
             // this frame is materialised.
             let mut doc = baseline.document_mut().fork();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the forked replay document is dropped after this frame, so its patch log cannot grow"
-            )]
-            doc.isolate(&heads);
+            tilo_automerge::ApplyIncoming::isolate_at(&mut doc, &heads);
             let mut snapshot = baseline.clone();
             *snapshot.document_mut() = doc;
             if snapshot.resync_activity_cache().is_err() {

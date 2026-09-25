@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 qdoc = { path = "../../doc/qdoc" }
 automerge.workspace = true
+tilo-automerge.workspace = true
 blake3.workspace = true
 taffy.workspace = true
 vello.workspace = true

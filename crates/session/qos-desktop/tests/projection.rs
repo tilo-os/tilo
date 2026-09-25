@@ -143,11 +143,7 @@ fn concurrent_first_projections_on_two_peers_both_survive() {
         let mut b = base.fork();
         RoomProjection::project_owned_contents(&mut a, &[strip(1, 10, "A")], 1, None);
         RoomProjection::project_owned_contents(&mut b, &[strip(2, 10, "B")], 2, None);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "a test fork merge; its patch log is dropped with the document"
-        )]
-        a.merge(&mut b).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut a, &mut b).unwrap();
         let mut names: Vec<_> = RoomProjection::contents_of(&a)
             .into_iter()
             .filter_map(|s| s.name)
