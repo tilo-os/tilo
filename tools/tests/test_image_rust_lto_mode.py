@@ -38,8 +38,8 @@ class RustLtoModeTests(unittest.TestCase):
         text = WORKFLOW.read_text()
         step = text[text.index("id: release-mode"):]
         step = step[:step.index("\n      - name:")]
-        publish, other = step.split("          else\n", 1)
-        publish = publish[publish.index('if [[ "$publish" == true ]]'):]
+        block = step[step.index('          if [[ "$publish" == true ]]'):]
+        publish, other = block.split("\n          else\n", 1)
         self.assertIn("echo 'TILO_RUST_LTO=thin' >> \"$GITHUB_ENV\"", publish)
         self.assertNotIn("TILO_RUST_LTO=off", publish)
         self.assertIn("echo 'TILO_RUST_LTO=off' >> \"$GITHUB_ENV\"", other.split("          fi\n", 1)[0])
