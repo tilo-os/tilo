@@ -302,6 +302,8 @@ def checked_medium_pair(board, generic, board_checked, generic_checked,
             and board["live_base_image"] == generic_index_image
             and generic["live_base_image"] == generic_index_image
             and board["build_revision"] == generic["build_revision"]
+            and board["run_id"] == generic["run_id"]
+            and board["run_attempt"] == generic["run_attempt"]
             and board["qcow2_sha256"] == board_checked.get("installer_medium_sha256")
             and generic["qcow2_sha256"] == generic_checked.get("installer_medium_sha256")
             and board_checked.get("first_boot_verified") is False
