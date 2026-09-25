@@ -9586,6 +9586,7 @@ mod tests {
                     contract: tilo_actions::ActionContract::view(),
                     input: tilo_actions::InputSpec::None,
                     params: Vec::new(),
+                    view: None,
                 }),
                 has_children: false,
                 visibility: None,
