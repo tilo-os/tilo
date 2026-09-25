@@ -592,7 +592,6 @@ impl QuickSettingsRoot {
         )
     }
     /// Top of the "AVAILABLE" section: one section gap under the last row.
-
     fn edit_help_baseline(&self) -> f64 {
         self.header_bottom(self.panel) + self.scaled(CONTROL_PAD)
     }
@@ -2017,6 +2016,10 @@ impl QuickSettingsRoot {
         };
         Button::paint(scene, transform, text, theme, &action_face);
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a declarative accessibility tree for every Quick Settings control"
+    )]
     pub fn accessibility_snapshot(&self, state: &QuickSettingsState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
         // Every node carries the rect its paint and hit-test use, so a
@@ -2113,7 +2116,8 @@ impl QuickSettingsRoot {
                 if index < active_count {
                     self.card(self.panel, index, true)
                 } else {
-                    self.available_edit_chip(state, index - active_count)
+                    // index >= active_count on this branch, so this never saturates.
+                    self.available_edit_chip(state, index.saturating_sub(active_count))
                 }
             } else {
                 self.control_card(self.panel, index, count)
@@ -2499,8 +2503,10 @@ mod tests {
 
     #[test]
     fn edit_header_keeps_help_section_and_first_control_visually_separate() {
-        let mut root = QuickSettingsRoot::default();
-        root.edit_mode = true;
+        let mut root = QuickSettingsRoot {
+            edit_mode: true,
+            ..Default::default()
+        };
         let state = QuickSettingsState::default();
         for scale in [1.0, 1.2] {
             root.set_layout_text_scale(scale);
@@ -2528,9 +2534,11 @@ mod tests {
 
     #[test]
     fn edit_remove_action_has_a_clear_wide_target() {
-        let mut root = QuickSettingsRoot::default();
-        root.edit_mode = true;
-        root.panel = PANEL;
+        let root = QuickSettingsRoot {
+            edit_mode: true,
+            panel: PANEL,
+            ..Default::default()
+        };
         let row = root.card(PANEL, 0, true);
         let action = root.edit_action_rect(row);
         assert_eq!(action.width(), QuickSettingsRoot::EDIT_ACTION_WIDTH);
@@ -2837,7 +2845,7 @@ mod tests {
             "the icon row sits on s2 of padding"
         );
         // Nothing overlaps.
-        let mut all = tiles.clone();
+        let mut all = tiles;
         all.push(sliders);
         all.extend(cards.iter().copied());
         all.push(power);
@@ -2861,10 +2869,10 @@ mod tests {
         let snapshot = root.accessibility_snapshot(&state);
         assert_eq!(snapshot.bounds.map(ui::AccessBounds::to_rect), Some(PANEL));
         for node in &snapshot.children {
-            let rect = node
-                .bounds
-                .map(ui::AccessBounds::to_rect)
-                .unwrap_or_else(|| panic!("{:?} has no bounds", node.name));
+            let rect = node.bounds.map_or_else(
+                || panic!("{:?} has no bounds", node.name),
+                ui::AccessBounds::to_rect,
+            );
             assert!(
                 rect.area() > 0.0 && PANEL.contains(rect.center()),
                 "{:?} lies inside the panel: {rect:?}",

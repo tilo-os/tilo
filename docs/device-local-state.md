@@ -87,5 +87,13 @@ the same two lines to their system configuration or to `~/.gitconfig`.
   while any range is missing); reading it never fetches.
 - **Files modified in place** (databases, VM images) take a write lease per
   writing session. While another device holds it, the file is read-only here:
-  reads work, and a process that has it open for writing gets `EBUSY`. The
-  lease moves on when the other device closes the file or goes offline.
+  reads work, even through a descriptor opened read-write before the lease
+  was taken; opening it for writing, and any write, gets `EBUSY`. A program
+  that retries a failed read-write open as read-only (SQLite does) reads
+  normally and reports a read-only database when it writes. The lease moves
+  on when the other device closes the file or goes offline; a version
+  written without the lease never replaces the holder's and is kept as a
+  `.sync-conflict-` copy.
+- **Permissions and links.** Mode bits and symbolic links replicate; owner
+  and group are always the local person's. Hard links arrive as separate
+  files with the same bytes.

@@ -79,6 +79,13 @@ pub(crate) fn force_save_failure_for_test(fail: bool) {
 /// Resolve `$XDG_DATA_HOME/tilo-authenticator`, then Windows `LocalAppData` or
 /// `$HOME/.local/share/...`. Returns `None` when no user directory is available.
 pub fn data_dir() -> Option<PathBuf> {
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::unnecessary_lazy_evaluations,
+            reason = "the closure only reduces to `None` off Windows; on Windows it reads LOCALAPPDATA"
+        )
+    )]
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())

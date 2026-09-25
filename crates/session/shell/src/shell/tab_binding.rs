@@ -599,11 +599,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
 /// Rewrite the `app_id` and tab `title` of a previously-adopted `TileContent::Foreign` tab on
 /// `xdg_toplevel::set_app_id`. Walks the tree to find the tab still carrying the synthetic
 /// `anon-<surface_id>` placeholder from [`adopt_toplevel`]. Returns `false` when no matching tab exists.
-pub fn rename_tab_for_app_id(
-    tree: &mut WorkspaceTree,
-    surface_id: u64,
-    new_app_id: String,
-) -> bool {
+pub fn rename_tab_for_app_id(tree: &mut WorkspaceTree, surface_id: u64, new_app_id: &str) -> bool {
     rename_tab_for_app_id_with_title(tree, surface_id, new_app_id, None)
 }
 
@@ -614,11 +610,11 @@ pub fn rename_tab_for_app_id(
 pub fn rename_tab_for_app_id_with_title(
     tree: &mut WorkspaceTree,
     surface_id: u64,
-    new_app_id: String,
+    new_app_id: &str,
     authoritative_title: Option<&str>,
 ) -> bool {
     let new_title =
-        authoritative_title.map_or_else(|| tab_label_for_foreign(&new_app_id), str::to_string);
+        authoritative_title.map_or_else(|| tab_label_for_foreign(new_app_id), str::to_string);
     for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
@@ -629,8 +625,8 @@ pub fn rename_tab_for_app_id_with_title(
                     } = &mut tab.tile
                         && *s == surface_id
                     {
-                        *app_id = new_app_id.clone();
-                        tab.title = new_title.clone();
+                        new_app_id.clone_into(app_id);
+                        tab.title.clone_from(&new_title);
                         true
                     } else {
                         false
@@ -655,18 +651,18 @@ pub fn rename_tab_for_app_id_with_title(
 pub fn rebind_toplevel_for_app_id(
     tree: &mut WorkspaceTree,
     surface_id: u64,
-    new_app_id: String,
+    new_app_id: &str,
     authoritative_title: Option<&str>,
 ) -> bool {
     let title =
-        authoritative_title.map_or_else(|| tab_label_for_foreign(&new_app_id), str::to_string);
+        authoritative_title.map_or_else(|| tab_label_for_foreign(new_app_id), str::to_string);
     let current_app_id = app_id_for_surface(tree, surface_id).map(str::to_string);
     let identity_changed = current_app_id
         .as_deref()
         .is_some_and(|app_id| app_id != new_app_id);
     if identity_changed
         && let Some(placement) =
-            crate::shell::launcher::placement_for_toplevel(&new_app_id, surface_id)
+            crate::shell::launcher::placement_for_toplevel(new_app_id, surface_id)
     {
         // `relocate_foreign_toplevel` deliberately preserves the identity
         // already stored on the tab. Replace the synthetic identity first so
@@ -714,8 +710,8 @@ pub fn relocate_foreign_toplevel(
                     )
             })
     {
-        return rename_tab_for_app_id(tree, surface_id, app_id)
-            && rename_tab_for_title(tree, surface_id, title.to_string());
+        return rename_tab_for_app_id(tree, surface_id, &app_id)
+            && rename_tab_for_title(tree, surface_id, title);
     }
     if !close_tab_for_destroyed_surface(tree, surface_id) {
         return false;
@@ -743,7 +739,7 @@ pub fn relocate_foreign_toplevel(
 /// Rewrite only a foreign tab's client-provided visible title.  App identity
 /// remains stable for launch matching and grouping; an empty title clears
 /// stale document metadata exactly as `xdg_toplevel.set_title("")` requests.
-pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: String) -> bool {
+pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: &str) -> bool {
     for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
@@ -753,7 +749,7 @@ pub fn rename_tab_for_title(tree: &mut WorkspaceTree, surface_id: u64, title: St
                         TileContent::Foreign { surface_id: id, .. } if *id == surface_id
                     )
                 }) {
-                    tab.title = title.clone();
+                    title.clone_into(&mut tab.title);
                     true
                 } else {
                     false
@@ -1747,14 +1743,14 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn failed_sole_launch_retires_unpainted_foreign_tab_restores_focus_and_allows_retry() {
+        const PACKAGE: &str = "so.tilo.failed-host";
+        const SURFACE: u64 = 0xface;
         crate::shell::launcher::clear_pending_placements();
         let state_dir = tempfile::tempdir().expect("temporary state directory");
         let state_path = state_dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_demo();
         tree.persist_path = Some(state_path.clone());
         let (strip_id, prior_group) = focus_lone_window(&mut tree);
-        const PACKAGE: &str = "so.tilo.failed-host";
-        const SURFACE: u64 = 0xface;
 
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
         let failed_tab = adopt_toplevel(&mut tree, SURFACE, Some(PACKAGE.into()));
@@ -1823,10 +1819,10 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn failure_cleanup_never_closes_a_foreign_surface_that_painted() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
         const PACKAGE: &str = "so.tilo.painted-child";
         const SURFACE: u64 = 0xfade;
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
         let tab = adopt_toplevel(&mut tree, SURFACE, Some(PACKAGE.into()));
         crate::shell::foreign::store().publish_rgba(SURFACE, &[1, 2, 3, 4], 1, 1);
@@ -1853,10 +1849,10 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn concurrent_same_package_failure_does_not_guess_which_foreign_tab_to_close() {
-        crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_demo();
         const PACKAGE: &str = "so.tilo.concurrent-host";
         const SURFACE: u64 = 0xc0de;
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         crate::shell::launcher::set_pending_placement(PACKAGE, Placement::NewGroup);
         let tab = adopt_toplevel(&mut tree, SURFACE, Some(PACKAGE.into()));
         // A second user action is still awaiting a toplevel when the first
@@ -2005,6 +2001,7 @@ mod tests {
                 1,
                 "adoption through the canonical handle must not create a second card"
             );
+            drop(rendered_tree);
         }
         {
             let mut state_tree = canonical.write();
@@ -2183,7 +2180,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         // First adopt without an app-id so the tab gets the `anon-<surface_id>` placeholder.
         let _ = adopt_toplevel(&mut tree, 99, None);
-        let renamed = rename_tab_for_app_id(&mut tree, 99, "org.example.late".into());
+        let renamed = rename_tab_for_app_id(&mut tree, 99, "org.example.late");
         assert!(renamed, "rename should report it updated a tab");
         let tab = tab_of(&tree, 99);
         match &tab.tile {
@@ -2205,7 +2202,7 @@ mod tests {
         assert!(rename_tab_for_app_id_with_title(
             &mut tree,
             99,
-            "com.openai.ChatGPT".into(),
+            "com.openai.ChatGPT",
             Some("ChatGPT"),
         ));
         let tab = tab_of(&tree, 99);
@@ -2238,7 +2235,7 @@ mod tests {
         assert!(rebind_toplevel_for_app_id(
             &mut tree,
             0x101,
-            "org.example.electron".into(),
+            "org.example.electron",
             None,
         ));
         assert_eq!(group_of(&tree, 0x101).id, opener);
@@ -2303,7 +2300,7 @@ mod tests {
         assert!(rebind_toplevel_for_app_id(
             &mut tree,
             surface,
-            "Chatgpt".into(),
+            "Chatgpt",
             Some("ChatGPT"),
         ));
         assert_ne!(group_of(&tree, surface).id, target);
@@ -2397,7 +2394,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn rename_tab_for_app_id_returns_false_for_unknown_surface() {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let renamed = rename_tab_for_app_id(&mut tree, 12345, "x".into());
+        let renamed = rename_tab_for_app_id(&mut tree, 12345, "x");
         assert!(
             !renamed,
             "rename must report `false` when the surface isn't adopted"
@@ -2486,7 +2483,7 @@ mod tests {
         assert!(rename_tab_for_app_id(
             &mut tree,
             31338,
-            "so.tilo.adoptfixture".into()
+            "so.tilo.adoptfixture"
         ));
         assert_eq!(tab_of(&tree, 31338).title, "Adopt Fixture");
     }
@@ -2833,7 +2830,7 @@ mod tests {
         assert!(rename_tab_for_title(
             &mut tree,
             99,
-            "draft.md — Tilo Writer".into()
+            "draft.md — Tilo Writer"
         ));
         let tab = tab_of(&tree, 99);
         assert_eq!(tab.title, "draft.md — Tilo Writer");
@@ -2842,8 +2839,8 @@ mod tests {
             other => panic!("expected Foreign tile, got {other:?}"),
         }
 
-        assert!(rename_tab_for_title(&mut tree, 99, String::new()));
+        assert!(rename_tab_for_title(&mut tree, 99, ""));
         assert!(tab_of(&tree, 99).title.is_empty());
-        assert!(!rename_tab_for_title(&mut tree, 12345, "gone".into()));
+        assert!(!rename_tab_for_title(&mut tree, 12345, "gone"));
     }
 }

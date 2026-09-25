@@ -327,6 +327,10 @@ fn prune_personal_media_objects(
     retained
 }
 
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "statvfs block counts are u64 on Linux but narrower on other Unix targets"
+)]
 fn available_bytes(path: &Path) -> Option<u64> {
     use std::os::unix::ffi::OsStrExt as _;
 
@@ -3503,7 +3507,9 @@ impl ShellNetwork {
         if routes.get(&(route.workspace_topic, route.endpoint_id)) != Some(route) {
             return Err("personal route is no longer current".into());
         }
-        self.send_personal_fabric_action(&route.device, action)
+        let sent = self.send_personal_fabric_action(&route.device, action);
+        drop(routes);
+        sent
     }
 
     pub(crate) fn current_personal_route(
@@ -3604,6 +3610,13 @@ impl ShellNetwork {
     }
 
     /// Install one exact mirror route after target-local consent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when this device has no personal fabric identity, the
+    /// binding is invalid or does not include this device, the peer is offline,
+    /// the session id is already bound to another route, too many sessions are
+    /// active, or the fabric or authorization store is unavailable.
     pub fn authorize_personal_display_session(
         &self,
         session_id: [u8; 16],
@@ -3634,12 +3647,16 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "personal display authorization store is unavailable".to_string())?;
         let now = Instant::now();
+        // An expiry the clock cannot represent fails closed: it lapses at once.
+        let expires = now
+            .checked_add(PERSONAL_DISPLAY_AUTHORIZATION_TTL)
+            .unwrap_or(now);
         authorizations.retain(|_, authorization| authorization.expires > now);
         if let Some(existing) = authorizations.get_mut(&session_id) {
             if existing.source != source || existing.target != target {
                 return Err("personal display session id is already bound".into());
             }
-            existing.expires = now + PERSONAL_DISPLAY_AUTHORIZATION_TTL;
+            existing.expires = expires;
             return Ok(());
         }
         if authorizations.len() >= MAX_AUTHORIZATIONS {
@@ -3650,9 +3667,10 @@ impl ShellNetwork {
             PersonalDisplayAuthorization {
                 source,
                 target,
-                expires: now + PERSONAL_DISPLAY_AUTHORIZATION_TTL,
+                expires,
             },
         );
+        drop(authorizations);
         Ok(())
     }
 
@@ -3933,7 +3951,7 @@ impl ShellNetwork {
     }
 
     /// Open one already route-validated tethering envelope for an immediate
-    /// NetworkManager call. The plaintext is never retained by ShellNetwork.
+    /// `NetworkManager` call. The plaintext is never retained by `ShellNetwork`.
     pub(crate) fn open_tethering_credential(
         &self,
         credential: &crate::shell::device_fabric::WifiCredential,
@@ -4141,6 +4159,10 @@ impl ShellNetwork {
     /// Route one drained [`NetEvent`] to its handler. Split out of
     /// [`Self::tick`], which owns only the drain loop and the
     /// `event_rx` lock.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive dispatcher routes each network event variant"
+    )]
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
             NetEvent::HostReady { ws, peer } => {
@@ -4214,7 +4236,7 @@ impl ShellNetwork {
                 user_public_key,
                 payload,
             } => {
-                self.dispatch_personal_fabric(ws, peer, membership_epoch, user_public_key, payload)
+                self.dispatch_personal_fabric(ws, peer, membership_epoch, user_public_key, payload);
             }
             NetEvent::PersonalMediaTransfer {
                 target,
@@ -4984,6 +5006,19 @@ impl ShellNetwork {
             | NeighbourMsg::PermissionGrant { .. }) => {
                 self.queue_legacy_message_from(ws, Some(peer), message);
             }
+            NeighbourMsg::MediaCapabilities {
+                peer: advertiser,
+                hardware_decode,
+                software_decode,
+                hardware_encode,
+                software_encode,
+            } => crate::network::media_caps::record(
+                advertiser,
+                &hardware_decode,
+                &software_decode,
+                &hardware_encode,
+                &software_encode,
+            ),
             other => self.dispatch_to_replica(peer, &other),
         }
     }
@@ -5179,6 +5214,7 @@ impl ShellNetwork {
             | NeighbourMsg::RemoteInput { peer, .. }
             | NeighbourMsg::PermissionRequest { peer, .. }
             | NeighbourMsg::Heartbeat { peer, .. }
+            | NeighbourMsg::MediaCapabilities { peer, .. }
             | NeighbourMsg::AppDocument { peer, .. }
             | NeighbourMsg::AppPresenceV2 { peer, .. } => Some(*peer),
             NeighbourMsg::SurfaceStreamStart { source_peer, .. }
@@ -6239,8 +6275,8 @@ mod tests {
             let mut state = net.personal_media_transfers.lock().expect("transfer state");
             state.completed.insert(source_key.clone(), object.clone());
             state.completed.insert(sibling_key.clone(), object.clone());
-            state.completed_order.push_back(source_key.clone());
-            state.completed_order.push_back(sibling_key.clone());
+            state.completed_order.push_back(source_key);
+            state.completed_order.push_back(sibling_key);
             state.leased_until.insert(
                 object.clone(),
                 std::time::Instant::now()
@@ -6533,7 +6569,7 @@ mod tests {
             .adopt_continuation_room(room, "remote-device");
         let remote = test_device(0xA6);
         let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-            remote.clone(),
+            remote,
             7,
             None,
             vec![crate::shell::personal_continuity::WorkspaceContinuation {
@@ -6559,6 +6595,7 @@ mod tests {
                 registry.record_instance_for_tab(room, tab, &launch),
                 Some(tab)
             );
+            drop(registry);
         }
         let dir = tempfile::tempdir().expect("continuity store");
         let path = dir.path().join("personal-continuity.postcard");
@@ -6696,7 +6733,7 @@ mod tests {
         net.personal_continuity_device = Some(local_device.clone());
         net.host_identity = Some(HostIdentity {
             device_cert: local_cert,
-            device_signing_key: local_key.clone(),
+            device_signing_key: local_key,
             workspace_device_certs: std::collections::HashMap::new(),
             workspace_revocations: std::collections::HashMap::new(),
             identity_paths: None,
@@ -6738,7 +6775,7 @@ mod tests {
         assert_eq!(
             crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
                 .expect("recipient projection"),
-            std::collections::BTreeSet::from([local_device.clone(), remote_device.clone()]),
+            std::collections::BTreeSet::from([local_device.clone(), remote_device]),
             "relay routing identity must never become a secret recipient"
         );
         assert_eq!(
@@ -7091,6 +7128,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn personal_fabric_action_queue_reserves_control_during_media_saturation() {
         use crate::shell::device_fabric::PersonalFabricAction;
         use crate::shell::personal_tethering::{TETHERING_PROTOCOL_VERSION, TetheringSignal};
@@ -7128,7 +7169,7 @@ mod tests {
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(sequence as u8, &source, &target, action),
+                    fabric_envelope(u8::try_from(sequence).unwrap(), &source, &target, action),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
@@ -7218,7 +7259,7 @@ mod tests {
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(210 + index as u8, &source, &target, action),
+                    fabric_envelope(210 + u8::try_from(index).unwrap(), &source, &target, action),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
@@ -7286,14 +7327,14 @@ mod tests {
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(30 + index as u8, owner, &target, audio),
+                    fabric_envelope(30 + u8::try_from(index).unwrap(), owner, &target, audio),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(40 + index as u8, owner, &target, capture),
+                    fabric_envelope(40 + u8::try_from(index).unwrap(), owner, &target, capture),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
@@ -7361,7 +7402,7 @@ mod tests {
                 queue_personal_fabric_action(
                     &mut queue,
                     fabric_envelope(
-                        index as u8,
+                        u8::try_from(index).unwrap(),
                         &source,
                         &target,
                         PersonalFabricAction::InputLeaseRevoked { nonce },

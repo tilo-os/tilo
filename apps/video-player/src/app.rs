@@ -2818,16 +2818,17 @@ impl PlayerApp {
         }
     }
 
-    fn paint_shared_library(
+    /// Paints the "Watch later" / "Bookmark time" buttons at the top of the
+    /// shared panel and returns their height.
+    fn paint_shared_actions(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         layout: (Rect, bool, f64),
-    ) {
+    ) -> f64 {
         let (panel, large_text, y) = layout;
-        let colors = &theme.tokens.colors;
         let gap = 8.0;
         let action_h = if large_text { 56.0 } else { 38.0 };
         let action_w = (panel.width() - 24.0 - gap) * 0.5;
@@ -2854,6 +2855,20 @@ impl PlayerApp {
                     .hovered(rect.contains(self.last_cursor)),
             );
         }
+        action_h
+    }
+
+    fn paint_shared_library(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: (Rect, bool, f64),
+    ) {
+        let (panel, large_text, y) = layout;
+        let colors = &theme.tokens.colors;
+        let action_h = self.paint_shared_actions(scene, transform, text_renderer, theme, layout);
         self.shared_row_hits.clear();
         let mut row_y = y + action_h + 16.0;
         let row_h = if large_text { 72.0 } else { 48.0 };
@@ -2971,15 +2986,7 @@ impl PlayerApp {
                 remove.x0 - 6.0,
                 *row_y + row_h - 4.0,
             ));
-            let text = if annotation.text.is_empty() {
-                format!("Bookmark · {:.1}s", annotation.time_ms as f64 / 1000.0)
-            } else {
-                format!(
-                    "{} · {:.1}s",
-                    annotation.text,
-                    annotation.time_ms as f64 / 1000.0
-                )
-            };
+            let text = shared_annotation_label(annotation);
             let row = Rect::new(panel.x0 + 12.0, *row_y, panel.x1 - 12.0, *row_y + row_h);
             fill_rect(scene, transform, row, theme.tokens.colors.surfaces.base);
             // Keep the grouping visible even on renderers whose hairline
@@ -3186,6 +3193,20 @@ impl PlayerApp {
     ) -> bool {
         self.handle_app_shortcut_input(logical_key, state, modifiers)
             || self.player.handle_key_input(logical_key, state)
+    }
+}
+
+/// The row label for a shared timestamp note: its text (or "Bookmark") and
+/// the position in seconds.
+fn shared_annotation_label(annotation: &crate::shared::TimestampAnnotation) -> String {
+    if annotation.text.is_empty() {
+        format!("Bookmark · {:.1}s", annotation.time_ms as f64 / 1000.0)
+    } else {
+        format!(
+            "{} · {:.1}s",
+            annotation.text,
+            annotation.time_ms as f64 / 1000.0
+        )
     }
 }
 
@@ -4925,6 +4946,10 @@ mod tests {
     /// with 1× row pitch under 2× glyphs. The geometry keeps the authored 1×
     /// chrome and grows each part from the measured line at larger text.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
     fn library_panel_geometry_stacks_measured_lines_at_2x() {
         let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
         let one = LibraryPanelGeometry::for_panel(panel, 1.0, None);
@@ -5008,6 +5033,10 @@ mod tests {
     /// deep — two centre lines, and the buttons overhung the scrim by 2 px. At
     /// 200% text the 32 px capsules no longer held their 28 px labels.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
     fn top_strip_is_one_centre_line_that_contains_its_buttons() {
         let one = TopStrip::at(0.0, 1.0);
         assert_eq!(
@@ -5059,6 +5088,10 @@ mod tests {
     /// The library panel used three left insets (title 16, tabs 12, row text
     /// 24) and two right ones (Play 14, Close 12). One description, one gutter.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the geometry pins authored whole-pixel constants, which are exact in binary floating point"
+    )]
     fn library_panel_chrome_shares_one_gutter() {
         let panel = Rect::new(840.0, 0.0, 1200.0, 800.0);
         let g = LibraryPanelGeometry::for_panel(panel, 1.0, None);

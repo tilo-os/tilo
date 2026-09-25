@@ -348,14 +348,19 @@ impl FanoutState {
     /// Mint the next typed connection id, reserving zero for the broker root
     /// and `u64::MAX` for the current-connection sentinel. The counter itself
     /// remains the number of accepted connections, including before the first.
+    #[expect(
+        clippy::expect_used,
+        reason = "minting 2^64 - 2 connection ids in one broker lifetime is unreachable"
+    )]
     pub(crate) fn next_peer_id(&self) -> u64 {
-        let previous = self
-            .peer_id_counter
+        let mut minted = 0;
+        self.peer_id_counter
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                count.checked_add(1).filter(|next| *next < u64::MAX)
+                minted = count.checked_add(1).filter(|next| *next < u64::MAX)?;
+                Some(minted)
             })
             .expect("application peer id space exhausted");
-        previous + 1
+        minted
     }
 
     /// How many typed connections this broker has ever accepted. Read as a

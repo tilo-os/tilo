@@ -146,8 +146,12 @@ struct ResponseSender {
 }
 
 impl ResponseSender {
-    fn send(&self, response: Response) -> Result<(), std::sync::mpsc::SendError<Response>> {
-        self.sender.send(response)?;
+    /// Delivers `response` and wakes the UI. The undelivered response is
+    /// dropped on failure: the receiver is gone, so nobody could consume it.
+    fn send(&self, response: Response) -> Result<(), std::sync::mpsc::SendError<()>> {
+        self.sender
+            .send(response)
+            .map_err(|_| std::sync::mpsc::SendError(()))?;
         self.wake.wake();
         Ok(())
     }
@@ -385,7 +389,7 @@ mod tests {
                     seq: 7,
                     results: Vec::new(),
                 })
-                .unwrap()
+                .unwrap();
         })
         .join()
         .unwrap();

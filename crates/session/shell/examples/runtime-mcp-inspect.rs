@@ -13,62 +13,67 @@ use serde_json::json;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = std::env::args().collect();
-    let result = match args.get(1).map(String::as_str) {
-        Some("fixture") if args.len() == 3 => {
+    let result = match args.as_slice() {
+        [_, cmd, out] if cmd == "fixture" => {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                clippy::cast_possible_truncation,
+                reason = "x < 48 and y < 32, so x * 5, y * 7 and x * 13 + y * 17 cannot overflow u32; the first two fit in u8 and the third is reduced mod 256"
+            )]
             let image = image::RgbaImage::from_fn(48, 32, |x, y| {
                 image::Rgba([(x * 5) as u8, (y * 7) as u8, ((x * 13 + y * 17) % 256) as u8, 255])
             });
-            image.save(&args[2])?;
-            json!({"width":48,"height":32,"hash":qdoc::blobstore::hash_bytes(&std::fs::read(&args[2])?)})
+            image.save(out)?;
+            json!({"width":48,"height":32,"hash":qdoc::blobstore::hash_bytes(&std::fs::read(out)?)})
         }
-        Some("image") if args.len() == 6 => {
-            let hash = tilo_actions::content_hash(&args[4]).ok_or("not canonical content resource")?;
+        [_, cmd, profile, source_path, resource, output] if cmd == "image" => {
+            let hash = tilo_actions::content_hash(resource).ok_or("not canonical content resource")?;
             if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("not a BLAKE3 address".into());
             }
-            let bytes = std::fs::read(Path::new(&args[2]).join("blobs").join(&hash[..2]).join(hash))?;
+            let shard = hash.get(..2).ok_or("not a BLAKE3 address")?;
+            let bytes = std::fs::read(Path::new(profile).join("blobs").join(shard).join(hash))?;
             if qdoc::blobstore::hash_bytes(&bytes) != hash { return Err("blob hash mismatch".into()); }
-            let source = image::open(&args[3])?.to_rgba8();
+            let source = image::open(source_path)?.to_rgba8();
             let edited = image::load_from_memory(&bytes)?.to_rgba8();
             if source.dimensions() != (48, 32) || edited.dimensions() != (32, 32) {
                 return Err("unexpected source/result dimensions".into());
             }
-            for y in 0..32 { for x in 0..32 {
-                if edited.get_pixel(x,y) != source.get_pixel(x+8,y) {
+            for y in 0..32 { for (x, source_x) in (0..32).zip(8..40) {
+                if edited.get_pixel(x,y) != source.get_pixel(source_x,y) {
                     return Err(format!("centered crop pixel mismatch at {x},{y}").into());
                 }
             }}
-            std::fs::write(&args[5], &bytes)?;
+            std::fs::write(output, &bytes)?;
             json!({"hash":hash,"width":32,"height":32,"pixels_compared":1024,"oracle":"source(x+8,y), all RGBA channels"})
         }
-        Some("observe") if args.len() == 3 => {
-            observe(Path::new(&args[2]))?;
+        [_, cmd, root] if cmd == "observe" => {
+            observe(Path::new(root))?;
             return Ok(());
         }
-        Some("wait-ready-exec") if args.len() == 4 => {
+        [_, cmd, observer_dir, writer] if cmd == "wait-ready-exec" => {
             use std::os::unix::process::CommandExt;
             let room = std::env::var("TILO_WORKSPACE_ID")?;
-            wait_ready(Path::new(&args[2]), &room, Duration::from_secs(20))?;
-            return Err(std::process::Command::new(&args[3]).exec().into());
+            wait_ready(Path::new(observer_dir), &room, Duration::from_secs(20))?;
+            return Err(std::process::Command::new(writer).exec().into());
         }
-        Some("document") if args.len() == 6 => {
-            let root = Path::new(&args[2]);
+        [_, cmd, root, blob, automerge_out, json_out] if cmd == "document" => {
+            let root = Path::new(root);
             let workspace: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("profile/workspace.json"))?)?;
-            let room = workspace["workspaces"][0]["room"].as_str().ok_or("missing workspace room")?;
+            let workspace_id = workspace.pointer("/workspaces/0/room").and_then(serde_json::Value::as_str).ok_or("missing workspace room")?;
             let events: Vec<collab_types::SignedOp> = std::fs::read_to_string(root.join("signed-document-events.jsonl"))?
                 .lines().map(serde_json::from_str).collect::<Result<_, _>>()?;
-            let mut doc = reconstruct(&events, room)?;
+            let mut doc = reconstruct(&events, workspace_id)?;
             let model = qdoc::model::open(&doc, &automerge::ROOT)?;
             let materialized = qdoc::model::materialize(&doc, &model);
             let images: Vec<_> = materialized.blocks.iter().filter(|b| b.kind == "image").collect();
-            if images.len() != 1 { return Err("expected exactly one reconstructed image block".into()); }
-            let block = images[0];
-            for (name, expected) in [("blob", qdoc::AttrVal::Str(args[3].clone())), ("width",qdoc::AttrVal::Int(32)), ("height",qdoc::AttrVal::Int(32))] {
+            let [block] = images.as_slice() else { return Err("expected exactly one reconstructed image block".into()); };
+            for (name, expected) in [("blob", qdoc::AttrVal::Str(blob.clone())), ("width",qdoc::AttrVal::Int(32)), ("height",qdoc::AttrVal::Int(32))] {
                 if block.attrs.get(name) != Some(&expected) { return Err(format!("reconstructed {name} mismatch").into()); }
             }
-            std::fs::write(&args[4], doc.save())?;
-            let evidence = json!({"app":WRITER,"record":"","room":room,"image_block":block.id,"blob":args[3],"width":32,"height":32,"signed_envelopes":events.len(),"verification":"independent signature and exact-route validation, Automerge reconstruction"});
-            std::fs::write(&args[5], serde_json::to_vec_pretty(&evidence)?)?;
+            std::fs::write(automerge_out, doc.save())?;
+            let evidence = json!({"app":WRITER,"record":"","room":workspace_id,"image_block":block.id,"blob":blob,"width":32,"height":32,"signed_envelopes":events.len(),"verification":"independent signature and exact-route validation, Automerge reconstruction"});
+            std::fs::write(json_out, serde_json::to_vec_pretty(&evidence)?)?;
             evidence
         }
         _ => return Err("usage: fixture PATH | image PROFILE SOURCE CONTENT_RESOURCE OUTPUT | observe ROOT | wait-ready-exec ROOT WRITER | document ROOT HASH AUTOMERGE JSON".into()),
@@ -77,12 +82,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn wait_ready(root: &Path, room: &str, timeout: Duration) -> Result<(), Box<dyn Error>> {
-    let deadline = Instant::now() + timeout;
+fn wait_ready(root: &Path, workspace_id: &str, timeout: Duration) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or("observer readiness timeout overflows")?;
     loop {
         if let Ok(bytes) = std::fs::read(root.join("observer-ready.json")) {
             let ready: serde_json::Value = serde_json::from_slice(&bytes)?;
-            if ready["room"] != room || ready["app"] != WRITER || ready["subscribed"] != true {
+            if ready.get("room").and_then(serde_json::Value::as_str) != Some(workspace_id)
+                || ready.get("app").and_then(serde_json::Value::as_str) != Some(WRITER)
+                || ready.get("subscribed") != Some(&serde_json::Value::Bool(true))
+            {
                 return Err("observer readiness route mismatch".into());
             }
             return Ok(());
@@ -122,10 +132,10 @@ fn reconstruct(
 }
 
 fn observe(root: &Path) -> Result<(), Box<dyn Error>> {
-    let room = std::env::var("TILO_WORKSPACE_ID")?;
+    let workspace_id = std::env::var("TILO_WORKSPACE_ID")?;
     let mut manager = ui::collaboration::CollaborationManager::for_route(
         WRITER,
-        uuid::Uuid::parse_str(&room)?,
+        uuid::Uuid::parse_str(&workspace_id)?,
         None,
         Some("MCP proof observer".into()),
     )?;
@@ -135,8 +145,7 @@ fn observe(root: &Path) -> Result<(), Box<dyn Error>> {
         .open(root.join("signed-document-events.jsonl"))?;
     // for_route returns only after authenticated primary-route setup and normal
     // SDK subscriptions. The fresh marker gates the real Writer exec, not edits.
-    let ready =
-        json!({"app":WRITER,"room":room,"record":"","pid":std::process::id(),"subscribed":true});
+    let ready = json!({"app":WRITER,"room":workspace_id,"record":"","pid":std::process::id(),"subscribed":true});
     std::fs::write(
         root.join("observer-ready.tmp"),
         serde_json::to_vec_pretty(&ready)?,
@@ -160,7 +169,12 @@ fn observe(root: &Path) -> Result<(), Box<dyn Error>> {
                     return Err("unexpected encrypted document route".into());
                 }
                 collab_types::verify_op(&envelope)?;
-                collab_types::validate_document_payload_route(WRITER, &room, "", &envelope)?;
+                collab_types::validate_document_payload_route(
+                    WRITER,
+                    &workspace_id,
+                    "",
+                    &envelope,
+                )?;
                 serde_json::to_writer(&mut events, &envelope)?;
                 writeln!(events)?;
                 events.flush()?;

@@ -330,7 +330,6 @@ impl SearchPage {
 impl SearchResult {
     /// Build a row whose invocation takes no arguments — most rows: opening
     /// a note, launching an app, toggling an overlay.
-
     pub fn nullary(
         kind: ResourceKind,
         provider_id: impl Into<String>,
@@ -363,7 +362,6 @@ impl SearchResult {
     /// [`SearchResult::nullary`] for a row that can refuse — a launch can
     /// still fail (missing package, declined sandbox, no display), and the
     /// return value is how a control-socket caller learns that.
-
     pub fn nullary_fallible(
         kind: ResourceKind,
         provider_id: impl Into<String>,
@@ -626,6 +624,11 @@ impl SearchPreferences {
 
     /// Persist atomically through the shared settings service while preserving
     /// unrelated keys in both the search section and the rest of the document.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from the settings service reading or writing the
+    /// settings document.
     pub fn save(&self) -> std::io::Result<()> {
         let mut ids: Vec<_> = self.disabled_providers.iter().cloned().collect();
         ids.sort();
@@ -745,6 +748,10 @@ impl SearchRegistry {
     }
 
     /// Used by the shell's scope-narrow helper to look up which provider owns a tab.
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the closure shortens the provider trait object's lifetime, which the method path cannot"
+    )]
     pub fn providers_iter(&self) -> impl Iterator<Item = &(dyn SearchProvider + '_)> + '_ {
         self.enabled_providers().map(|provider| provider.as_ref())
     }
@@ -1138,6 +1145,10 @@ impl SearchRegistry {
                     + application_intent
                     + proximity;
                 let key = (r.provider_id.clone(), r.id.clone());
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "canonical_rows only stores merged.len() right before the matching push, so every stored index is in bounds"
+                )]
                 if let Some(&index) = canonical_rows.get(&key) {
                     if strength > merged[index].1 {
                         merged[index] = (r, strength);

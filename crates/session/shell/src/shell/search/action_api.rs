@@ -974,14 +974,14 @@ mod tests {
                     panic!("legacy invoke must not run when async admission exists")
                 })),
                 on_begin_invoke: Some(std::rc::Rc::new(move |_, _, _, _| {
-                    begins.set(begins.get() + 1);
+                    begins.set(begins.get().saturating_add(1));
                     if refuse {
                         return Err(ActionError::Refused("authority rejected admission".into()));
                     }
                     let polls = std::rc::Rc::clone(&polls);
                     Ok(InvocationDisposition::Pending(std::rc::Rc::new(
                         move || {
-                            let attempt = polls.get() + 1;
+                            let attempt = polls.get().saturating_add(1);
                             polls.set(attempt);
                             if attempt < 3 {
                                 return Ok(None);
@@ -1075,8 +1075,7 @@ mod tests {
             .select(&ResourceRef::new("async-json", "wait-for-admission"))
             .expect("async action is addressable")
             .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
-            .err()
-            .expect("rejected admission must be returned");
+            .expect_err("rejected admission must be returned");
         assert_eq!(begins.get(), 1);
         assert!(matches!(error, ActionError::Refused(message) if message.contains("authority")));
     }

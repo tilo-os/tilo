@@ -284,16 +284,16 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         return true;
     }
     match key {
-        // Alt+Space has no desktop action; reserving it here silently ate
-        // application input before native widgets and Wayland/X11 clients.
-        ChordKey::Space => false,
         // The shell visibly advertises F1 as the hardware-neutral route to
         // its desktop guide. Reserving it here is essential: otherwise a
         // focused client consumes the event before the guide dispatcher can
         // see it. Other function keys remain application-owned.
         ChordKey::PrintScreen | ChordKey::Function(1) => true,
         ChordKey::Escape => overlay_open,
-        ChordKey::Tab
+        // Alt+Space has no desktop action; reserving it here silently ate
+        // application input before native widgets and Wayland/X11 clients.
+        ChordKey::Space
+        | ChordKey::Tab
         | ChordKey::PageUp
         | ChordKey::PageDown
         | ChordKey::ArrowLeft

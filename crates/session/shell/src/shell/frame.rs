@@ -66,6 +66,10 @@ fn consume_record_requests(
     let mut index = index.borrow_mut();
     let mut completed = Vec::new();
     for request in requested {
+        #[expect(
+            clippy::suspicious_operation_groupings,
+            reason = "a tracked request names its workspace by `workspace_id`, not `id`"
+        )]
         let authorized = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -2630,6 +2634,10 @@ mod tests {
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn record_bring_keeps_its_authorized_room_across_workspace_switch() {
         use crate::shell::search::action_api::{ActionArgs, ArgValue};
         use crate::shell::search::providers::ActionsProvider;
@@ -2673,6 +2681,7 @@ mod tests {
                 .find(|workspace| workspace.id == destination_id)
                 .expect("destination workspace")
                 .set_owner("somebody-else");
+            drop(tree);
             (source_room, destination_room)
         };
         let mut document = AutoCommit::new();

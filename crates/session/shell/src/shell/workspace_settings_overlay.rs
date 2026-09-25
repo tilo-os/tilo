@@ -335,8 +335,8 @@ impl WorkspaceSettingsOverlay {
         // identity card's trailing edge and centred on its centre line — it
         // was pinned 24 px from the panel top, 14 px above that line.
         let identity = Self::identity_rect_for(rect);
-        let target = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-        let inset = ui::tokens::Spacing::BASE.s3 as f64;
+        let target = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
+        let inset = f64::from(ui::tokens::Spacing::BASE.s3);
         let cy = identity.center().y;
         Rect::new(
             identity.x1 - inset - target,
@@ -1748,7 +1748,10 @@ impl WorkspaceSettingsOverlay {
         clippy::too_many_arguments,
         reason = "Workspace identity painting combines render context and card bounds with chrome state, active name, and the existing body-position parameter."
     )]
-
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_ws_settings_name_input(
         &self,
         scene: &mut Scene,
@@ -2187,8 +2190,8 @@ pub(crate) fn tab_strip_plan(
             .map(|label| f64::from(text_renderer.measure(label, size, None).0))
             .fold(0.0, f64::max)
     };
-    let full: Vec<&str> = WsTab::all().iter().map(|tab| tab.label()).collect();
-    let compact: Vec<&str> = WsTab::all().iter().map(|tab| tab.compact_label()).collect();
+    let full: Vec<&str> = WsTab::all().iter().map(WsTab::label).collect();
+    let compact: Vec<&str> = WsTab::all().iter().map(WsTab::compact_label).collect();
     let icon_w = TAB_ICON_PX + TAB_ICON_GAP;
     let fits = |label_w: f64, with_icon: bool| {
         label_w + TAB_LABEL_INSET + if with_icon { icon_w } else { 0.0 } <= pill_w
@@ -2236,6 +2239,10 @@ pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
     needs.iter().map(|need| need / total * nav_width).collect()
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "navigation item counts are tiny, far below f64's 2^53 exact-integer range"
+)]
 fn usize_to_f64_lossy(value: usize) -> f64 {
     value as f64
 }

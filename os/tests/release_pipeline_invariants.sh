@@ -177,7 +177,7 @@ fi
 if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
+   && grep -Fq "format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0}', matrix.arch)" "$kernel_workflow" \
    && grep -Fq "variable=\"KERNEL_RPMS_\$(printf '%s' '\${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF\"" "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;' "$kernel_workflow" \
    && ! grep -Fq 'variable=KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
@@ -282,7 +282,7 @@ grep -Fq 'with_browser=0' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
-  && grep -Fq 'installed OS, desktop, and app integration passed; publication was not requested' "$os" \
+  && grep -Fq 'installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.publish == 'true'" "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'

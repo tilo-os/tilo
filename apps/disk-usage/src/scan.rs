@@ -77,28 +77,25 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
     let mut unreadable = 0_u64;
     let mut error = None;
     let mut candidates = Vec::new();
-    match fs::read_dir(&path) {
-        Ok(read) => {
-            for child in read.take_while(|_| !cancellation.is_cancelled()) {
-                match child {
-                    Ok(child) => {
-                        let child_path = child.path();
-                        let is_dir = fs::symlink_metadata(&child_path)
-                            .is_ok_and(|metadata| metadata.is_dir());
-                        candidates.push((
-                            child_path,
-                            child.file_name().to_string_lossy().into_owned(),
-                            is_dir,
-                        ));
-                    }
-                    Err(_) => unreadable = unreadable.saturating_add(1),
+    if let Ok(read) = fs::read_dir(&path) {
+        for child in read.take_while(|_| !cancellation.is_cancelled()) {
+            match child {
+                Ok(child) => {
+                    let child_path = child.path();
+                    let is_dir =
+                        fs::symlink_metadata(&child_path).is_ok_and(|metadata| metadata.is_dir());
+                    candidates.push((
+                        child_path,
+                        child.file_name().to_string_lossy().into_owned(),
+                        is_dir,
+                    ));
                 }
+                Err(_) => unreadable = unreadable.saturating_add(1),
             }
         }
-        Err(_) => {
-            unreadable = 1;
-            error = Some("The folder is unavailable or access was not granted".into());
-        }
+    } else {
+        unreadable = 1;
+        error = Some("The folder is unavailable or access was not granted".into());
     }
 
     let next = AtomicUsize::new(0);

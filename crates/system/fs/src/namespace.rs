@@ -36,8 +36,12 @@ const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-reco
 
 pub const MAX_LIVE_RECORD_BLOB_SCAN: usize = 100_000;
 
+mod changesets;
 mod leases;
-pub use leases::WriteLease;
+mod posix;
+pub use changesets::ChangesetMark;
+pub use leases::{LeaseRequest, VersionFence, WriteLease};
+pub use posix::{DEFAULT_DIR_MODE, DEFAULT_FILE_MODE, PosixAttrs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveRecordBlobRoots {
@@ -1919,6 +1923,21 @@ impl Namespace {
         Some(format!("/{}", parts.join("/")))
     }
 
+    /// Every live node's path with its content manifest and thumbnail, in
+    /// one pass: what a reader of that path may fetch.
+    pub fn live_blob_roots_by_path(&self) -> Vec<(String, Option<Hash>, Option<Hash>)> {
+        self.live_node_ids()
+            .into_iter()
+            .filter_map(|id| {
+                Some((
+                    self.path_for_id(&id)?,
+                    self.node_hash(&id),
+                    self.thumbnail_for_id(&id),
+                ))
+            })
+            .collect()
+    }
+
     /// Every live path whose file content or generated thumbnail has `hash`.
     ///
     /// A content hash is not an authority token: peers can learn hashes from
@@ -2285,7 +2304,7 @@ impl Namespace {
         }
     }
 
-    pub fn export_document(&self, ino: u64, registry: &qdoc::Registry) -> Option<Vec<u8>> {
+    pub fn export_document(&self, ino: u64, registry: &qdoc_codecs::Registry) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
         let codec = read_str(&self.doc, &self.node(&id)?, "codec")?;
         let provider = registry.provider_for_ext(&codec)?;
@@ -2304,7 +2323,7 @@ impl Namespace {
     pub fn import_document(
         &mut self,
         ino: u64,
-        registry: &qdoc::Registry,
+        registry: &qdoc_codecs::Registry,
         bytes: &[u8],
         mtime: u64,
     ) -> bool {
@@ -3729,7 +3748,7 @@ mod tests {
 
     #[test]
     fn document_import_export_roundtrips() {
-        let reg = qdoc::builtin_registry();
+        let reg = qdoc_codecs::builtin_registry();
         let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
         assert_eq!(ns.document_codec(ino).as_deref(), Some("md"));
@@ -3746,7 +3765,7 @@ mod tests {
 
     #[test]
     fn failed_import_preserves_existing_document() {
-        let reg = qdoc::builtin_registry();
+        let reg = qdoc_codecs::builtin_registry();
         let mut ns = Namespace::new("a").unwrap();
         let ino = ns.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
         assert!(ns.import_document(ino, &reg, b"# Keep\n\nimportant\n", 2));

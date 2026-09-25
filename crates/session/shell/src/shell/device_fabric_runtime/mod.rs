@@ -154,7 +154,7 @@ impl GamepadAuthorizationState {
     ) -> bool {
         if inbound_exists
             || self.pending.contains_key(&forwarding_id)
-            || inbound_count + self.pending.len() >= MAX_GAMEPAD_FORWARDINGS
+            || inbound_count.saturating_add(self.pending.len()) >= MAX_GAMEPAD_FORWARDINGS
         {
             return false;
         }
@@ -595,20 +595,22 @@ struct NearbyStagingAdmission {
 impl NearbyStagingAdmission {
     fn acquire(&mut self, owner: &str) -> bool {
         let total = self.owners.values().sum::<usize>();
-        let owned = self.owners.get(owner).copied().unwrap_or_default();
-        if total >= MAX_NEARBY_STAGING_JOBS || owned >= MAX_NEARBY_STAGING_JOBS_PER_OWNER {
+        let held = self.owners.get(owner).copied().unwrap_or_default();
+        if total >= MAX_NEARBY_STAGING_JOBS || held >= MAX_NEARBY_STAGING_JOBS_PER_OWNER {
             return false;
         }
-        self.owners.insert(owner.to_string(), owned + 1);
+        // `held` is below the per-owner cap here, so this never saturates.
+        self.owners
+            .insert(owner.to_string(), held.saturating_add(1));
         true
     }
 
     fn release(&mut self, owner: &str) {
-        let Some(owned) = self.owners.get_mut(owner) else {
+        let Some(held) = self.owners.get_mut(owner) else {
             return;
         };
-        *owned = owned.saturating_sub(1);
-        if *owned == 0 {
+        *held = held.saturating_sub(1);
+        if *held == 0 {
             self.owners.remove(owner);
         }
     }
@@ -641,10 +643,13 @@ impl NearbyStagingPermit {
             .lock()
             .map_err(|_| "Nearby Send staging admission is unavailable".to_string())?;
         let admitted = admission.acquire(owner);
+        // Read the generation in the same critical section as the admission.
+        let generation = admission.generation;
+        drop(admission);
         admitted
             .then(|| Self {
                 owner: owner.to_string(),
-                generation: admission.generation,
+                generation,
             })
             .ok_or_else(|| {
                 "Nearby Send staging is busy; retry when another transfer finishes".into()
@@ -709,6 +714,10 @@ pub(crate) fn record_nearby_transfer_progress(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "chunk and finish frames share one validated receive path"
+)]
 pub(crate) fn handle_nearby_transfer_frame(
     network: &ShellNetwork,
     source: &crate::shell::personal_continuity::DeviceId,
@@ -1387,8 +1396,9 @@ impl DeviceFabricRuntime {
             notification_bridge,
             realtime_adapter: None,
             realtime_online_peers: BTreeSet::new(),
-            remote_capture: Default::default(),
-            tethering: Default::default(),
+            remote_capture: remote_capture::RemoteCaptureIntegration::default(),
+            tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime::default(
+            ),
             gamepad_broker: os_actions::ForwardedPeripheralBroker::new(
                 os_actions::LinuxVirtualGamepadFactory::new(
                     os_actions::UinputGamepadDeviceProvider,
@@ -1426,6 +1436,10 @@ impl DeviceFabricRuntime {
     }
 
     /// Sample local state and project authenticated remote state into the OS.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the per-frame pump keeps its policy-ordered subsystem steps in one sequence"
+    )]
     pub fn pump(
         &mut self,
         network: &ShellNetwork,
@@ -1756,13 +1770,13 @@ impl DeviceFabricRuntime {
                             self.waiting_incoming_media
                                 .insert(request.request_id, request);
                         }
-                        IncomingMediaLaunch::Waiting => self.reject_incoming_media(
+                        IncomingMediaLaunch::Waiting => Self::reject_incoming_media(
                             network,
                             &request,
                             MediaHandoffFailure::DestinationUnavailable,
                         ),
                         IncomingMediaLaunch::Rejected(failure) => {
-                            self.reject_incoming_media(network, &request, failure);
+                            Self::reject_incoming_media(network, &request, failure);
                         }
                         IncomingMediaLaunch::Launched => {}
                     }
@@ -1830,7 +1844,7 @@ impl DeviceFabricRuntime {
                             && pending.session_id == session_id
                             && pending.route == route
                     });
-                    self.terminate_incoming_media(network, cancelled, None);
+                    Self::terminate_incoming_media(network, cancelled, None);
                 }
                 action @ (PersonalFabricAction::NearbyDrop { .. }
                 | PersonalFabricAction::NearbyDropResult { .. }
@@ -1864,7 +1878,7 @@ impl DeviceFabricRuntime {
                 action @ (PersonalFabricAction::DisplayMirrorRequest { .. }
                 | PersonalFabricAction::DisplayMirrorDecision { .. }
                 | PersonalFabricAction::DisplayMirrorStop { .. }) => {
-                    handle_display_mirror_action(network, &envelope.source, action);
+                    handle_display_mirror_action(network, &envelope.source, &action);
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
@@ -1983,7 +1997,7 @@ impl DeviceFabricRuntime {
         reason = "every authenticated wire binding stays explicit at the privileged broker boundary"
     )]
     fn queue_gamepad_request(
-        &mut self,
+        &self,
         network: &ShellNetwork,
         source: &crate::shell::personal_continuity::DeviceId,
         target: &crate::shell::personal_continuity::DeviceId,
@@ -2064,7 +2078,7 @@ impl DeviceFabricRuntime {
             if !source_online {
                 continue;
             }
-            self.grant_gamepad_request(network, forwarding_id, pending);
+            self.grant_gamepad_request(network, forwarding_id, &pending);
         }
     }
 
@@ -2072,7 +2086,7 @@ impl DeviceFabricRuntime {
         &mut self,
         network: &ShellNetwork,
         forwarding_id: [u8; 16],
-        pending: PendingGamepadAuthorization,
+        pending: &PendingGamepadAuthorization,
     ) {
         let reject = || PersonalFabricAction::GamepadForwardGrant {
             forwarding_id,
@@ -2553,18 +2567,18 @@ impl DeviceFabricRuntime {
         if launch.is_ok() {
             self.pending_incoming_media
                 .insert(request.request_id, request.clone());
-            if let Some(source) = resume_source {
-                if !crate::shell::mpris::resume_after_launch(crate::shell::mpris::ResumeRequest {
+            if let Some(source) = resume_source
+                && !crate::shell::mpris::resume_after_launch(crate::shell::mpris::ResumeRequest {
                     request_id: request.request_id,
                     package_id: request.app_id.clone(),
                     source,
                     position_ms: request.position_ms,
                     playing: request.resume_playing,
-                }) {
-                    self.pending_incoming_media.remove(&request.request_id);
-                    let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
-                    return IncomingMediaLaunch::Rejected(MediaHandoffFailure::OpenFailed);
-                }
+                })
+            {
+                self.pending_incoming_media.remove(&request.request_id);
+                let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
+                return IncomingMediaLaunch::Rejected(MediaHandoffFailure::OpenFailed);
             }
             IncomingMediaLaunch::Launched
         } else {
@@ -2573,7 +2587,6 @@ impl DeviceFabricRuntime {
     }
 
     fn reject_incoming_media(
-        &self,
         network: &ShellNetwork,
         request: &PendingIncomingMedia,
         failure: MediaHandoffFailure,
@@ -2603,7 +2616,7 @@ impl DeviceFabricRuntime {
                     self.waiting_incoming_media.insert(request_id, request);
                 }
                 IncomingMediaLaunch::Rejected(failure) => {
-                    self.reject_incoming_media(network, &request, failure);
+                    Self::reject_incoming_media(network, &request, failure);
                 }
                 IncomingMediaLaunch::Launched => {}
             }
@@ -2681,7 +2694,6 @@ impl DeviceFabricRuntime {
     }
 
     fn terminate_incoming_media(
-        &self,
         network: &ShellNetwork,
         requests: Vec<PendingIncomingMedia>,
         failure: Option<MediaHandoffFailure>,
@@ -2690,20 +2702,20 @@ impl DeviceFabricRuntime {
             let _ = crate::shell::mpris::cancel_resume_after_launch(request.request_id);
             Self::discard_incoming_media_transfer(network, &request);
             if let Some(failure) = failure {
-                self.reject_incoming_media(network, &request, failure);
+                Self::reject_incoming_media(network, &request, failure);
             }
         }
     }
 
     fn tear_down_incoming_media(&mut self, network: &ShellNetwork, failure: MediaHandoffFailure) {
         let incoming = self.take_incoming_media(|_| true);
-        self.terminate_incoming_media(network, incoming, Some(failure));
+        Self::terminate_incoming_media(network, incoming, Some(failure));
     }
 
     fn prune_media_routes(&mut self, network: &ShellNetwork) {
         let departed =
             self.take_incoming_media(|pending| !network.personal_route_is_current(&pending.route));
-        self.terminate_incoming_media(network, departed, None);
+        Self::terminate_incoming_media(network, departed, None);
         if let Ok(mut statuses) = media_handoff_statuses().lock() {
             let now = Instant::now();
             for status in statuses.values_mut().filter(|status| {
@@ -2723,7 +2735,7 @@ impl DeviceFabricRuntime {
     fn expire_incoming_media(&mut self, network: &ShellNetwork) {
         let expired =
             self.take_incoming_media(|pending| pending.received.elapsed() >= INCOMING_MEDIA_WAIT);
-        self.terminate_incoming_media(network, expired, Some(MediaHandoffFailure::TimedOut));
+        Self::terminate_incoming_media(network, expired, Some(MediaHandoffFailure::TimedOut));
     }
 }
 
@@ -2731,14 +2743,11 @@ fn expire_nearby_consents(network: &ShellNetwork) {
     let expired = nearby_drop_state().lock().map_or_else(
         |_| Vec::new(),
         |mut state| {
-            let ids = state
+            state
                 .incoming
-                .iter()
-                .filter(|(_, pending)| pending.received.elapsed() >= NEARBY_CONSENT_TIMEOUT)
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            ids.into_iter()
-                .filter_map(|id| state.incoming.remove(&id).map(|pending| (id, pending)))
+                .extract_if(.., |_, pending| {
+                    pending.received.elapsed() >= NEARBY_CONSENT_TIMEOUT
+                })
                 .collect::<Vec<_>>()
         },
     );
@@ -4273,17 +4282,17 @@ pub fn request_media_handoff(
         .ok_or_else(|| "target has no current authenticated personal route".to_string())?;
     let request_id = network.send_personal_fabric_action_on_route(&route, action)?;
     let personal_transfer_id = local_transfer.as_ref().map(|transfer| transfer.transfer_id);
-    if let Some(transfer) = local_transfer {
-        if let Err(error) = network.start_personal_media_transfer(transfer) {
-            let _ = network.send_personal_fabric_action_on_route(
-                &route,
-                PersonalFabricAction::MediaCancelled {
-                    request_id,
-                    session_id: report.session.id.clone(),
-                },
-            );
-            return Err(error);
-        }
+    if let Some(transfer) = local_transfer
+        && let Err(error) = network.start_personal_media_transfer(transfer)
+    {
+        let _ = network.send_personal_fabric_action_on_route(
+            &route,
+            PersonalFabricAction::MediaCancelled {
+                request_id,
+                session_id: report.session.id,
+            },
+        );
+        return Err(error);
     }
     record_media_handoff_status(MediaHandoffStatus {
         request_id,
@@ -4454,7 +4463,7 @@ pub(crate) fn retry_media_handoff(
 }
 
 /// Start a shell-owned live audio route using one opaque source-picker token.
-/// PipeWire node ids are resolved only inside [`crate::shell::remote_audio`].
+/// `PipeWire` node ids are resolved only inside [`crate::shell::remote_audio`].
 ///
 /// # Errors
 ///
@@ -4508,6 +4517,10 @@ pub fn remote_audio_view(
 /// # Errors
 ///
 /// Returns an error for an unsafe/oversized source or unavailable fabric route.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validation, staging and the offer stay in one ordered send path"
+)]
 pub fn request_nearby_drop(
     network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
@@ -4618,6 +4631,13 @@ pub fn request_nearby_drop(
 
 /// Send from an already-open Files grant capability. The descriptor, rather
 /// than an app-provided path, crosses the deferred staging boundary.
+///
+/// # Errors
+///
+/// Returns a message when file transfer is not enabled, the source cannot be
+/// inspected or read, is empty, or changes while read, the owner has no free
+/// staging slot, the staging worker cannot start, or the offer cannot be sent
+/// to `target`.
 pub fn request_nearby_drop_secure(
     network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
@@ -4747,6 +4767,10 @@ pub fn cancel_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> 
 ///
 /// Returns an error for an unknown/expired offer or when durable receive state
 /// cannot be created.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the consent decision validates, stages and replies in one ordered path"
+)]
 pub fn decide_nearby_transfer_at(
     network: &ShellNetwork,
     transfer_id: [u8; 16],
@@ -4945,6 +4969,10 @@ pub struct NearbyTransferRuntimeStatus {
     pub total_bytes: u64,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one projection maps every transfer phase to its status row"
+)]
 pub fn nearby_transfer_statuses(network: &ShellNetwork) -> Vec<NearbyTransferRuntimeStatus> {
     if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::FileTransfer) {
         return Vec::new();
@@ -5312,6 +5340,10 @@ fn active_spatial_control_devices(
 /// Build the bounded presentation model for Quick Settings. Every remote row
 /// comes from a snapshot authored by that certified device; local `PipeWire`
 /// outputs are deliberately kept separate from personal-fabric identities.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one projection builds every Quick Settings fabric row from the same snapshot"
+)]
 pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host::DeviceFabricView {
     use crate::shell::overlay_host::{
         DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaOutputView,
@@ -5493,7 +5525,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         media_handoffs: media_handoff_status_views(network),
         local_outputs,
         transfers,
-        remote_audio: Default::default(),
+        remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
         device_health,
         calibration_proposals,
         revertible_calibrations,
@@ -5548,6 +5580,12 @@ fn calibration_devices(
 /// Admit locally measured geometry only after its hardware adapter has mapped
 /// the observation to an already certified exact peer. Proximity never enrolls
 /// or authenticates a device.
+///
+/// # Errors
+///
+/// Returns a message when display continuity is not enabled, the evidence
+/// does not name an online certified display, calibration state is
+/// unavailable, or the evidence is outside the calibration bounds.
 pub fn record_spatial_sensor_evidence(
     network: &ShellNetwork,
     evidence: crate::shell::spatial_calibration::SpatialEvidence,
@@ -5586,6 +5624,11 @@ fn spatial_calibration_proposals(
 
 /// Apply one still-current proposal. The target authors its own placement and
 /// the previous exact rectangle is retained locally for one explicit revert.
+///
+/// # Errors
+///
+/// Returns a message when no current proposal exists for `target`, the
+/// placement cannot be sent, or calibration state is unavailable.
 pub fn apply_spatial_calibration(
     network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
@@ -5607,6 +5650,11 @@ pub fn apply_spatial_calibration(
     Ok(())
 }
 
+/// Drop the current calibration proposal for `target`.
+///
+/// # Errors
+///
+/// Returns a message when calibration state is unavailable.
 pub fn dismiss_spatial_calibration(
     target: &crate::shell::personal_continuity::DeviceId,
 ) -> Result<(), String> {
@@ -5617,6 +5665,12 @@ pub fn dismiss_spatial_calibration(
     Ok(())
 }
 
+/// Restore the placement `target` had before its last applied calibration.
+///
+/// # Errors
+///
+/// Returns a message when display continuity is not enabled, calibration
+/// state is unavailable, nothing was applied, or the placement cannot be sent.
 pub fn revert_spatial_calibration(
     network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
@@ -6016,12 +6070,16 @@ fn display_mirror_receiver_available(
         })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one handler keeps each display-mirror signal's validation beside its state transition"
+)]
 fn handle_display_mirror_action(
     network: &ShellNetwork,
     source: &crate::shell::personal_continuity::DeviceId,
-    action: PersonalFabricAction,
+    action: &PersonalFabricAction,
 ) {
-    match action {
+    match *action {
         PersonalFabricAction::DisplayMirrorRequest { session_id } => {
             if !display_mirror_receiver_available(network, source)
                 || personal_display_state()
@@ -6144,6 +6202,14 @@ fn handle_display_mirror_action(
     }
 }
 
+/// Ask `target` to mirror this display and return the new session id.
+///
+/// # Errors
+///
+/// Returns a message when display continuity is not enabled, this device has
+/// no certified identity, `target` is this device, already streams, or cannot
+/// receive video, the session limit is reached, a coordinator is unavailable,
+/// or the request cannot be sent.
 pub fn request_display_mirror(
     network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
@@ -6207,6 +6273,14 @@ pub fn request_display_mirror(
     Ok(session_id)
 }
 
+/// Answer a pending inbound mirror request and notify its peer.
+///
+/// # Errors
+///
+/// Returns a message when display continuity is not enabled, the consent is
+/// no longer pending, a coordinator is unavailable, this display already
+/// receives a stream, the session cannot be authorized, or the decision
+/// cannot be sent.
 pub fn resolve_display_mirror_consent(
     network: &ShellNetwork,
     session_id: [u8; 16],
@@ -6285,6 +6359,13 @@ pub fn resolve_display_mirror_consent(
     result.map(|_| ())
 }
 
+/// End an active mirror session and notify its peer.
+///
+/// # Errors
+///
+/// Returns a message when display continuity is not enabled, the session is
+/// no longer active, the coordinator is unavailable, or the stop cannot be
+/// sent. The local session ends either way once it was found.
 pub fn stop_display_mirror(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
     require_continuity(ContinuityCapability::DisplayInput)?;
     let session = display_mirror_state()
@@ -6531,6 +6612,10 @@ fn pump_display_mirrors(network: &ShellNetwork, policy: ContinuityPolicySnapshot
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the display pump keeps offer, answer, streaming and teardown in one ordered tick"
+)]
 fn pump_personal_displays(network: &ShellNetwork, policy: ContinuityPolicySnapshot) {
     if !policy.permits(ContinuityCapability::DisplayInput) {
         // Drain transport ingress while disabled so stale offers cannot become
@@ -7358,10 +7443,11 @@ pub fn authorize_typed_gamepad_forwarding(
     approved: bool,
 ) -> Result<(), String> {
     require_continuity(ContinuityCapability::TypedGamepad)?;
-    let mut state = gamepad_authorization_state()
+    let decided = gamepad_authorization_state()
         .lock()
-        .map_err(|_| "typed-gamepad authorization state is unavailable".to_string())?;
-    if !state.decide(forwarding_id, approved) {
+        .map_err(|_| "typed-gamepad authorization state is unavailable".to_string())?
+        .decide(forwarding_id, approved);
+    if !decided {
         return Err("typed-gamepad authorization is unknown or already decided".into());
     }
     Ok(())
@@ -7419,7 +7505,9 @@ pub fn send_typed_gamepad_event(
             .sequence
             .checked_add(1)
             .ok_or_else(|| "typed-gamepad event sequence is exhausted".to_string())?;
-        (session.target.clone(), lease_nonce, sequence)
+        let target = session.target.clone();
+        drop(state);
+        (target, lease_nonce, sequence)
     };
     network.send_personal_fabric_action(
         &target,
@@ -7822,7 +7910,7 @@ mod tests {
             target: target.clone(),
             phase: MediaHandoffPhase::Pending,
             updated: Instant::now(),
-            route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target.clone()),
+            route: crate::shell::network::AuthenticatedPersonalRoute::for_test(target),
             personal_transfer_id: Some(transfer_id),
         };
         cancel_status_personal_transfer(&network, &status);
@@ -7846,7 +7934,7 @@ mod tests {
     fn incoming_media_cancel_is_exact_and_timeout_clears_late_authority() {
         let (network, _commands) = crate::shell::network::shell_network_for_test(
             crate::shell::state::WorkspaceTree::default().shared(),
-            0x4d45_4449_41,
+            0x004d_4544_4941,
         );
         let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
         let source = DeviceId::new("media-source").unwrap();
@@ -7874,7 +7962,7 @@ mod tests {
                 && pending.source == exact.source
                 && pending.session_id == exact.session_id
         });
-        runtime.terminate_incoming_media(&network, cancelled, None);
+        DeviceFabricRuntime::terminate_incoming_media(&network, cancelled, None);
         assert!(
             !runtime
                 .waiting_incoming_media
@@ -7916,7 +8004,7 @@ mod tests {
     fn media_route_loss_is_exact_across_workspace_and_reconnect_epochs() {
         let (network, _commands) = crate::shell::network::shell_network_for_test(
             crate::shell::state::WorkspaceTree::default().shared(),
-            0x4550_4f43_48,
+            0x0045_504f_4348,
         );
         let endpoint = iroh::SecretKey::from_bytes(&[0x91; 32]).public();
         let sibling_endpoint = iroh::SecretKey::from_bytes(&[0x92; 32]).public();
@@ -7931,9 +8019,9 @@ mod tests {
         );
         let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
         let mut departed = pending_media([0x94; 16], route.device().clone(), Instant::now());
-        departed.route = route.clone();
+        departed.route = route;
         let mut sibling = pending_media([0x95; 16], sibling_route.device().clone(), Instant::now());
-        sibling.route = sibling_route.clone();
+        sibling.route = sibling_route;
         runtime
             .pending_incoming_media
             .insert(departed.request_id, departed.clone());
@@ -8025,6 +8113,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "an end-to-end test scenario that reads top to bottom"
+    )]
     fn clipboard_policy_transition_clears_imports_and_never_reauthors_them() {
         use crate::compositor::selection::{
             SelectionStore, Target, clipboard_history, pin_history_item, set_mirror_text,
@@ -8062,7 +8154,7 @@ mod tests {
             42,
             FabricStamp {
                 counter: 7,
-                device: remote.clone(),
+                device: remote,
             },
         )
         .unwrap();
@@ -8651,9 +8743,7 @@ mod tests {
         spatial
             .issued
             .insert([1; 16], lease(departed.clone(), [1; 16]));
-        spatial
-            .issued
-            .insert([2; 16], lease(sibling.clone(), [2; 16]));
+        spatial.issued.insert([2; 16], lease(sibling, [2; 16]));
         let departures = vec![crate::shell::network::PeerDeparture {
             generation: 8,
             endpoint_id: departed_endpoint,
@@ -8675,9 +8765,7 @@ mod tests {
         );
 
         spatial.release_controllers.clear();
-        spatial
-            .issued
-            .insert([3; 16], lease(departed.clone(), [3; 16]));
+        spatial.issued.insert([3; 16], lease(departed, [3; 16]));
         prune_spatial_state(&mut spatial, now, &departures, |_| true);
         assert!(spatial.issued.contains_key(&[3; 16]));
         assert!(spatial.issued.contains_key(&[2; 16]));
@@ -8741,7 +8829,10 @@ mod tests {
             peer: source.clone(),
             outbound: false,
             phase: DisplayMirrorPhase::AwaitingConsent,
-            updated: Instant::now() - DISPLAY_MIRROR_CONSENT_TIMEOUT - Duration::from_secs(1),
+            updated: Instant::now()
+                .checked_sub(DISPLAY_MIRROR_CONSENT_TIMEOUT)
+                .and_then(|stale| stale.checked_sub(Duration::from_secs(1)))
+                .unwrap(),
         };
         assert!(session.matches(&source, false, DisplayMirrorPhase::AwaitingConsent));
         assert!(!session.matches(&other, false, DisplayMirrorPhase::AwaitingConsent));
@@ -8755,7 +8846,10 @@ mod tests {
                 peer: source,
                 outbound: true,
                 phase: DisplayMirrorPhase::Stopped,
-                updated: Instant::now() - DISPLAY_MIRROR_HISTORY_TTL - Duration::from_secs(1),
+                updated: Instant::now()
+                    .checked_sub(DISPLAY_MIRROR_HISTORY_TTL)
+                    .and_then(|stale| stale.checked_sub(Duration::from_secs(1)))
+                    .unwrap(),
             },
         );
         state.prune();
@@ -8823,6 +8917,21 @@ mod tests {
     }
 
     #[test]
+    fn gamepad_queue_rejects_when_forwardings_are_full_even_at_usize_max() {
+        let mut state = GamepadAuthorizationState::default();
+        assert!(!state.queue(
+            [3; 16],
+            pending_gamepad("source"),
+            false,
+            MAX_GAMEPAD_FORWARDINGS
+        ));
+        assert!(!state.queue([3; 16], pending_gamepad("source"), false, usize::MAX));
+        assert!(state.pending.is_empty());
+        assert!(state.queue([3; 16], pending_gamepad("source"), false, 0));
+        assert!(!state.queue([4; 16], pending_gamepad("source"), false, usize::MAX));
+    }
+
+    #[test]
     fn active_gamepad_lease_blocks_same_forwarding_id_before_consent() {
         let mut state = GamepadAuthorizationState::default();
         assert!(!state.queue([2; 16], pending_gamepad("source"), true, 1));
@@ -8850,7 +8959,7 @@ mod tests {
             },
             crate::shell::physical_gamepad::PhysicalGamepadBinding {
                 session_id: "other-session".into(),
-                ..exact.clone()
+                ..exact
             },
         ] {
             assert!(!pending.matches_local_focus(Some(&mismatch)));
@@ -8898,7 +9007,7 @@ mod tests {
 
         sessions.insert([8; 16], "still-live");
         finish_gamepad_grant_delivery(&mut sessions, [8; 16], &Ok::<_, &str>(()), |session| {
-            torn_down.push(session)
+            torn_down.push(session);
         });
         assert_eq!(sessions.get(&[8; 16]), Some(&"still-live"));
         assert_eq!(torn_down, ["virtual-gamepad"]);
