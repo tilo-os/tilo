@@ -126,19 +126,6 @@ for _tilo_input_trust in "${TILO_KERNEL_TRUST:=signed}" "${TILO_RPMS_TRUST:=sign
   fi
 done
 case "$TILO_RPMS_TRUST" in signed|unsigned) ;; *) die "TILO_RPMS_TRUST must be signed or unsigned" ;; esac
-# A signed kernel must name this build's RPM snapshot (exact, the default).
-# TILO_KERNEL_RPMS_BINDING=signed-snapshot also accepts a kernel built against
-# an earlier signed snapshot, as CI integration images do; never for the
-# published production image.
-case "${TILO_KERNEL_RPMS_BINDING:=exact}" in
-  exact) ;;
-  signed-snapshot)
-    case "${TILO_TARGET_IMGREF:-}" in
-      code.sandbox.example/qos/tilo:*|code.sandbox.example/qos/tilo@*)
-        die "a kernel bound to another RPM snapshot cannot target the production image $TILO_TARGET_IMGREF" ;;
-    esac ;;
-  *) die "TILO_KERNEL_RPMS_BINDING must be exact or signed-snapshot" ;;
-esac
 case "${TILO_KERNEL_TRUST:=signed}" in
   signed) ;;
   unsigned) ;;
@@ -306,8 +293,10 @@ else
     || die "KERNEL_RPMS_REF must pin code.sandbox.example/qos/tilo-kernel by sha256 digest"
   command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
   command -v skopeo >/dev/null || die "building an OS image requires skopeo to inspect the signed Tilo kernel"
-  "$TILO_OS_DIR/dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" "$BASE_REF" "$RPMS_REF" \
-    "$TILO_KERNEL_RPMS_BINDING" || die "the Tilo kernel $KERNEL_RPMS_REF is not authenticated for this build"
+  # The kernel binds its own signed build environment; the OS RPM snapshot
+  # and base are not kernel inputs.
+  "$TILO_OS_DIR/dev/verify-kernel-provenance.sh" "$KERNEL_RPMS_REF" \
+    || die "the Tilo kernel $KERNEL_RPMS_REF is not authenticated for this build"
 fi
 fi # Production provenance; development inputs have independent pinned receipts.
 bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \

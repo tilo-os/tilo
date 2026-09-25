@@ -109,7 +109,13 @@ def main() -> int:
     if "--target build-toolchain" not in dev:
         fail(errors, "os/kernel/dev-build.sh no longer builds os/kernel/Containerfile's "
                      "`build-toolchain` stage as its builder image")
-    stage = re.search(r"^FROM \$\{BASE_REF\} AS build-toolchain$(.*?)^FROM ", containerfile, re.M | re.S)
+    # Both builds start from the same pinned, signed kernel buildroot.
+    if ("os/kernel-buildroot-snapshot.env" not in dev
+            or '--build-arg "KERNEL_BUILDROOT_REF=$KERNEL_BUILDROOT_REF"' not in dev):
+        fail(errors, "os/kernel/dev-build.sh no longer builds on the pinned kernel buildroot "
+                     "(os/kernel-buildroot-snapshot.env) the release build uses")
+    stage = re.search(r"^FROM \$\{KERNEL_BUILDROOT_REF\} AS build-toolchain$(.*?)^FROM ",
+                      containerfile, re.M | re.S)
     if not stage:
         fail(errors, "os/kernel/Containerfile has no `build-toolchain` stage followed by another stage")
     else:
