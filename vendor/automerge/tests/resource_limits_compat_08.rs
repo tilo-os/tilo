@@ -10,13 +10,10 @@
 //! compressed and uncompressed saves, change chunks (plain and compressed),
 //! orphan change chunks, and a document saved with a queued orphan.
 use automerge::resource_limits::{
-    NativeAllocationSet, NativeAllowance, NativeDependencyPolicy, NativeIncomingOutcome,
-    NativeLimits,
+    NativeAllocationSet, NativeAllowance, NativeDependencyPolicy, NativeIncomingOutcome, NativeLimits,
 };
-use automerge::{
-    AutoCommit, Change, ObjId, ObjType, ROOT, ReadDoc, SaveOptions, ScalarValue, Value, hydrate,
-};
-use serde_json::{Map as JMap, Value as J, json};
+use automerge::{hydrate, AutoCommit, Change, ObjId, ObjType, ReadDoc, SaveOptions, ScalarValue, Value, ROOT};
+use serde_json::{json, Map as JMap, Value as J};
 use std::path::PathBuf;
 
 // ---- canonical dump (verbatim from the 0.8 generator) ----------------------
@@ -51,10 +48,7 @@ fn walk(doc: &AutoCommit, obj: &ObjId, kind: ObjType) -> J {
             let mut props = JMap::new();
             for key in doc.keys(obj) {
                 let all = doc.get_all(obj, key.as_str()).unwrap();
-                let entries: Vec<J> = all
-                    .into_iter()
-                    .map(|(v, id)| entry_json(doc, v, id))
-                    .collect();
+                let entries: Vec<J> = all.into_iter().map(|(v, id)| entry_json(doc, v, id)).collect();
                 props.insert(key, J::Array(entries));
             }
             let t = if kind == ObjType::Map { "map" } else { "table" };
@@ -65,11 +59,7 @@ fn walk(doc: &AutoCommit, obj: &ObjId, kind: ObjType) -> J {
             let items: Vec<J> = (0..len)
                 .map(|i| {
                     let all = doc.get_all(obj, i).unwrap();
-                    J::Array(
-                        all.into_iter()
-                            .map(|(v, id)| entry_json(doc, v, id))
-                            .collect(),
-                    )
+                    J::Array(all.into_iter().map(|(v, id)| entry_json(doc, v, id)).collect())
                 })
                 .collect();
             json!({ "type": "list", "items": items })
@@ -94,10 +84,7 @@ fn hydrate_json(value: &hydrate::Value) -> J {
             entries.sort_by(|a, b| a.0.cmp(b.0));
             let mut out = JMap::new();
             for (k, v) in entries {
-                out.insert(
-                    k.clone(),
-                    json!({ "v": hydrate_json(&v.value), "conflict": v.conflict }),
-                );
+                out.insert(k.clone(), json!({ "v": hydrate_json(&v.value), "conflict": v.conflict }));
             }
             json!({ "map": out })
         }
@@ -166,10 +153,7 @@ fn manifest() -> Vec<J> {
     parsed["fixtures"].as_array().unwrap().clone()
 }
 fn fixtures(kind: &str) -> Vec<J> {
-    manifest()
-        .into_iter()
-        .filter(|f| f["kind"] == kind)
-        .collect()
+    manifest().into_iter().filter(|f| f["kind"] == kind).collect()
 }
 fn s(v: &J) -> &str {
     v.as_str().unwrap()
@@ -177,23 +161,11 @@ fn s(v: &J) -> &str {
 
 /// Compare the full observable state of `doc` against a manifest entry.
 fn check_state(ctx: &str, doc: &mut AutoCommit, expected: &J, changes_key: &str) {
-    assert_eq!(
-        json!(hashes(doc.get_heads())),
-        expected["heads"],
-        "{ctx}: heads"
-    );
-    assert_eq!(
-        json!(hashes(doc.get_missing_deps(&[]))),
-        expected["missing_deps"],
-        "{ctx}: missing deps"
-    );
+    assert_eq!(json!(hashes(doc.get_heads())), expected["heads"], "{ctx}: heads");
+    assert_eq!(json!(hashes(doc.get_missing_deps(&[]))), expected["missing_deps"], "{ctx}: missing deps");
     assert_eq!(dump(doc), expected["dump"], "{ctx}: canonical dump");
     assert_eq!(dump_hydrated(doc), expected["hydrate"], "{ctx}: hydrate");
-    assert_eq!(
-        json!(change_meta(&doc.get_changes(&[]))),
-        expected[changes_key],
-        "{ctx}: changes"
-    );
+    assert_eq!(json!(change_meta(&doc.get_changes(&[]))), expected[changes_key], "{ctx}: changes");
 }
 
 /// Runs `check` for every fixture, isolating panics so one incompatible
@@ -212,20 +184,11 @@ fn each(fixtures: Vec<J>, mut check: impl FnMut(&J)) {
             failures.push(format!("{}: {short}", f["name"]));
         }
     }
-    assert!(
-        failures.is_empty(),
-        "{} of {} fixtures failed:\n{}",
-        failures.len(),
-        fixtures.len(),
-        failures.join("\n")
-    );
+    assert!(failures.is_empty(), "{} of {} fixtures failed:\n{}", failures.len(), fixtures.len(), failures.join("\n"));
 }
 
 fn documents() -> Vec<J> {
-    fixtures("document")
-        .into_iter()
-        .chain(fixtures("concat"))
-        .collect()
+    fixtures("document").into_iter().chain(fixtures("concat")).collect()
 }
 
 fn allowance() -> NativeAllowance {
@@ -243,13 +206,7 @@ fn corpus_is_present_and_small() {
     assert!(total < 200 * 1024, "qos_08 corpus grew to {total} bytes");
     // Every intended feature is represented.
     let text = std::fs::read_to_string(dir().join("expected.json")).unwrap();
-    for needle in [
-        "\"table\"",
-        "\"counter\"",
-        "\"marks\"",
-        "\"text\"",
-        "\"list\"",
-    ] {
+    for needle in ["\"table\"", "\"counter\"", "\"marks\"", "\"text\"", "\"list\""] {
         assert!(text.contains(needle), "corpus lacks {needle}");
     }
 }
@@ -287,19 +244,10 @@ fn plain_apply_of_08_change_chunks_matches() {
         let mut doc = AutoCommit::new();
         for file in f["files"].as_array().unwrap() {
             let change = Change::from_bytes(read(s(&file["file"]))).unwrap();
-            assert_eq!(
-                change.hash().to_string(),
-                s(&file["hash"]),
-                "{name}: change hash"
-            );
+            assert_eq!(change.hash().to_string(), s(&file["hash"]), "{name}: change hash");
             doc.apply_changes([change]).unwrap();
         }
-        check_state(
-            &format!("{name} (per chunk)"),
-            &mut doc,
-            f,
-            "applied_changes",
-        );
+        check_state(&format!("{name} (per chunk)"), &mut doc, f, "applied_changes");
     });
 }
 
@@ -319,29 +267,16 @@ fn resave_on_012_round_trips() {
         for (file, deflate) in [(compressed_file, true), (plain_file, false)] {
             let original = read(file);
             let mut doc = AutoCommit::load(&original).unwrap();
-            let saved = doc.save_with_options(SaveOptions {
-                deflate,
-                retain_orphans: orphans,
-            });
+            let saved = doc.save_with_options(SaveOptions { deflate, retain_orphans: orphans });
             let equal = saved == original;
-            println!(
-                "{file}: bytes_equal={equal} ({} -> {})",
-                original.len(),
-                saved.len()
-            );
+            println!("{file}: bytes_equal={equal} ({} -> {})", original.len(), saved.len());
             let mut back = AutoCommit::load(&saved).unwrap();
             check_state(&format!("{file} resaved"), &mut back, f, "changes");
             if !deflate || !f["compressed_differs"].as_bool().unwrap() {
                 assert!(equal, "{file}: 0.12 re-save is not byte-identical to 0.8");
             }
-            let normalized = doc.save_with_options(SaveOptions {
-                deflate: false,
-                retain_orphans: orphans,
-            });
-            assert!(
-                normalized == plain_08,
-                "{file}: 0.12 uncompressed re-save differs from 0.8's"
-            );
+            let normalized = doc.save_with_options(SaveOptions { deflate: false, retain_orphans: orphans });
+            assert!(normalized == plain_08, "{file}: 0.12 uncompressed re-save differs from 0.8's");
         }
     });
 }
@@ -357,18 +292,10 @@ fn checked_reconstruct_of_08_documents_matches() {
             let credit = allowance();
             let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
             let turn = registry.work_turn(credit.clone()).unwrap();
-            let normalized = turn
-                .normalize_input(&input, &NativeLimits::default())
-                .unwrap();
-            let owned = normalized
-                .reconstruct(&mut registry, &turn)
-                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            let normalized = turn.normalize_input(&input, &NativeLimits::default()).unwrap();
+            let owned = normalized.reconstruct(&mut registry, &turn).unwrap_or_else(|e| panic!("{file}: {e}"));
             let heads = owned.base_heads_bounded(&turn).unwrap();
-            assert_eq!(
-                json!(hashes(heads.as_slice().to_vec())),
-                f["heads"],
-                "{file}: bounded heads"
-            );
+            assert_eq!(json!(hashes(heads.as_slice().to_vec())), f["heads"], "{file}: bounded heads");
             assert_eq!(
                 owned.has_missing_dependencies(),
                 !f["missing_deps"].as_array().unwrap().is_empty(),
@@ -376,27 +303,15 @@ fn checked_reconstruct_of_08_documents_matches() {
             );
             let orphans = f["retain_orphans"].as_bool().unwrap_or(false);
             let saved = owned
-                .save_bounded(
-                    &turn,
-                    SaveOptions {
-                        deflate: true,
-                        retain_orphans: orphans,
-                    },
-                )
+                .save_bounded(&turn, SaveOptions { deflate: true, retain_orphans: orphans })
                 .unwrap();
             let mut back = AutoCommit::load(saved.bytes()).unwrap();
             check_state(&format!("{file} checked"), &mut back, f, "changes");
             let history = owned.changes_since_bounded(&[], &turn).unwrap();
-            let mut got: Vec<String> = (0..history.len())
-                .map(|i| history.hash(i).unwrap().to_string())
-                .collect();
+            let mut got: Vec<String> = (0..history.len()).map(|i| history.hash(i).unwrap().to_string()).collect();
             got.sort();
-            let want: Vec<String> = f["changes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|c| s(&c["hash"]).to_string())
-                .collect();
+            let want: Vec<String> =
+                f["changes"].as_array().unwrap().iter().map(|c| s(&c["hash"]).to_string()).collect();
             assert_eq!(got, want, "{file}: bounded history");
         }
     });
@@ -414,58 +329,22 @@ fn checked_incoming_of_08_change_chunks_matches() {
         let mut doc = AutoCommit::new();
         let before = doc.save();
         let outcome = doc
-            .apply_incoming_checked(
-                &all,
-                &limits,
-                &allowance(),
-                NativeDependencyPolicy::RequireComplete,
-            )
+            .apply_incoming_checked(&all, &limits, &allowance(), NativeDependencyPolicy::RequireComplete)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         if orphan {
-            assert_eq!(
-                outcome,
-                NativeIncomingOutcome::MissingDependencies,
-                "{name}"
-            );
-            assert_eq!(
-                doc.save(),
-                before,
-                "{name}: RequireComplete must not mutate"
-            );
+            assert_eq!(outcome, NativeIncomingOutcome::MissingDependencies, "{name}");
+            assert_eq!(doc.save(), before, "{name}: RequireComplete must not mutate");
         } else {
-            assert_eq!(
-                outcome,
-                NativeIncomingOutcome::Applied { changed: true },
-                "{name}"
-            );
-            check_state(
-                &format!("{name} RequireComplete"),
-                &mut doc,
-                f,
-                "applied_changes",
-            );
+            assert_eq!(outcome, NativeIncomingOutcome::Applied { changed: true }, "{name}");
+            check_state(&format!("{name} RequireComplete"), &mut doc, f, "applied_changes");
         }
 
         let mut doc = AutoCommit::new();
         let outcome = doc
-            .apply_incoming_checked(
-                &all,
-                &limits,
-                &allowance(),
-                NativeDependencyPolicy::RetainOrphans,
-            )
+            .apply_incoming_checked(&all, &limits, &allowance(), NativeDependencyPolicy::RetainOrphans)
             .unwrap_or_else(|e| panic!("{name}: {e}"));
-        assert_eq!(
-            outcome,
-            NativeIncomingOutcome::Applied { changed: !orphan },
-            "{name} RetainOrphans"
-        );
-        check_state(
-            &format!("{name} RetainOrphans"),
-            &mut doc,
-            f,
-            "applied_changes",
-        );
+        assert_eq!(outcome, NativeIncomingOutcome::Applied { changed: !orphan }, "{name} RetainOrphans");
+        check_state(&format!("{name} RetainOrphans"), &mut doc, f, "applied_changes");
 
         // Chunk by chunk, in stored order.
         let mut doc = AutoCommit::new();
@@ -496,10 +375,7 @@ fn checked_incoming_of_08_documents_matches() {
                 NativeDependencyPolicy::RetainOrphans,
             )
             .unwrap_or_else(|e| panic!("{file}: {e}"));
-        assert!(
-            matches!(outcome, NativeIncomingOutcome::Applied { .. }),
-            "{file}"
-        );
+        assert!(matches!(outcome, NativeIncomingOutcome::Applied { .. }), "{file}");
         check_state(&format!("{file} incoming"), &mut doc, f, "changes");
     });
 }

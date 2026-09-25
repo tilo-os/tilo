@@ -6,7 +6,7 @@
 //! byte-for-byte unchanged".
 //!
 //! Runs inside the workspace through crates/doc/tilo-automerge/tests/am012_apply.rs.
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use automerge::resource_limits::{
     NativeAllocationSet, NativeAllowance, NativeApplyResult, NativeDependencyPolicy,
@@ -14,10 +14,10 @@ use automerge::resource_limits::{
 };
 use automerge::transaction::Transactable;
 use automerge::{
-    ActorId, AutoCommit, Change, ChangeHash, ExpandedChange, ObjType, ROOT, ReadDoc, SaveOptions,
-    ScalarValue,
+    ActorId, AutoCommit, Change, ChangeHash, ExpandedChange, ObjType, ReadDoc, SaveOptions,
+    ScalarValue, ROOT,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 const MIB: usize = 1024 * 1024;
 
@@ -63,11 +63,7 @@ fn incoming(
 }
 
 /// Refusal must not mutate: byte-identical save, same heads and missing deps.
-fn refused(
-    doc: &mut AutoCommit,
-    bytes: &[u8],
-    policy: NativeDependencyPolicy,
-) -> NativeMutationError {
+fn refused(doc: &mut AutoCommit, bytes: &[u8], policy: NativeDependencyPolicy) -> NativeMutationError {
     let before = snapshot(doc);
     let result = incoming(doc, bytes, policy);
     let error = match result {
@@ -79,10 +75,7 @@ fn refused(
 }
 
 fn changes_bytes(changes: &[Change]) -> Vec<u8> {
-    changes
-        .iter()
-        .flat_map(|c| c.raw_bytes().to_vec())
-        .collect()
+    changes.iter().flat_map(|c| c.raw_bytes().to_vec()).collect()
 }
 
 fn expanded(change: &Change) -> Value {
@@ -180,24 +173,12 @@ fn duplicate_sequence_against_resident() {
     doc.apply_changes([a.clone()]).unwrap();
     // Same content: dedup.
     assert_eq!(
-        incoming(
-            &mut doc,
-            a.raw_bytes(),
-            NativeDependencyPolicy::RequireComplete
-        )
-        .unwrap(),
+        incoming(&mut doc, a.raw_bytes(), NativeDependencyPolicy::RequireComplete).unwrap(),
         NativeIncomingOutcome::Applied { changed: false }
     );
     // Different content: refused before 0.12 would prune the queue.
-    let error = refused(
-        &mut doc,
-        b.raw_bytes(),
-        NativeDependencyPolicy::RetainOrphans,
-    );
-    assert!(
-        matches!(error, NativeMutationError::DuplicateSequence),
-        "{error:?}"
-    );
+    let error = refused(&mut doc, b.raw_bytes(), NativeDependencyPolicy::RetainOrphans);
+    assert!(matches!(error, NativeMutationError::DuplicateSequence), "{error:?}");
 }
 
 #[test]
@@ -211,34 +192,17 @@ fn duplicate_sequence_against_queue() {
     other["deps"] = json!(["ff".repeat(32)]);
     let other = encode(other);
     assert_eq!(
-        incoming(
-            &mut doc,
-            orphan.raw_bytes(),
-            NativeDependencyPolicy::RetainOrphans
-        )
-        .unwrap(),
+        incoming(&mut doc, orphan.raw_bytes(), NativeDependencyPolicy::RetainOrphans).unwrap(),
         NativeIncomingOutcome::Applied { changed: false }
     );
     assert!(!doc.get_missing_deps(&[]).is_empty());
     // Same queued content: dedup, nothing new.
     assert_eq!(
-        incoming(
-            &mut doc,
-            orphan.raw_bytes(),
-            NativeDependencyPolicy::RetainOrphans
-        )
-        .unwrap(),
+        incoming(&mut doc, orphan.raw_bytes(), NativeDependencyPolicy::RetainOrphans).unwrap(),
         NativeIncomingOutcome::Applied { changed: false }
     );
-    let error = refused(
-        &mut doc,
-        other.raw_bytes(),
-        NativeDependencyPolicy::RetainOrphans,
-    );
-    assert!(
-        matches!(error, NativeMutationError::DuplicateSequence),
-        "{error:?}"
-    );
+    let error = refused(&mut doc, other.raw_bytes(), NativeDependencyPolicy::RetainOrphans);
+    assert!(matches!(error, NativeMutationError::DuplicateSequence), "{error:?}");
 }
 
 #[test]
@@ -255,39 +219,20 @@ fn missing_dependencies_under_both_policies() {
     let second = peer.get_changes(&mid);
     let before = snapshot(&mut doc);
     assert_eq!(
-        incoming(
-            &mut doc,
-            &changes_bytes(&second),
-            NativeDependencyPolicy::RequireComplete
-        )
-        .unwrap(),
+        incoming(&mut doc, &changes_bytes(&second), NativeDependencyPolicy::RequireComplete).unwrap(),
         NativeIncomingOutcome::MissingDependencies
     );
-    assert_eq!(
-        snapshot(&mut doc),
-        before,
-        "RequireComplete leaves heads and queue"
-    );
+    assert_eq!(snapshot(&mut doc), before, "RequireComplete leaves heads and queue");
     assert!(doc.get_missing_deps(&[]).is_empty());
     assert_eq!(
-        incoming(
-            &mut doc,
-            &changes_bytes(&second),
-            NativeDependencyPolicy::RetainOrphans
-        )
-        .unwrap(),
+        incoming(&mut doc, &changes_bytes(&second), NativeDependencyPolicy::RetainOrphans).unwrap(),
         NativeIncomingOutcome::Applied { changed: false }
     );
     assert_eq!(doc.get_heads(), heads);
     assert!(!doc.get_missing_deps(&[]).is_empty());
     // The missing change releases the queued one.
     assert_eq!(
-        incoming(
-            &mut doc,
-            &changes_bytes(&first),
-            NativeDependencyPolicy::RequireComplete
-        )
-        .unwrap(),
+        incoming(&mut doc, &changes_bytes(&first), NativeDependencyPolicy::RequireComplete).unwrap(),
         NativeIncomingOutcome::Applied { changed: true }
     );
     assert_eq!(doc.get_heads(), peer.get_heads());
@@ -314,11 +259,7 @@ fn as_elem(v: &mut Value, obj: String, elem: String, insert: bool) {
 }
 
 fn semantic_refusal(doc: &mut AutoCommit, change: &Change, case: &str) {
-    let error = refused(
-        doc,
-        change.raw_bytes(),
-        NativeDependencyPolicy::RequireComplete,
-    );
+    let error = refused(doc, change.raw_bytes(), NativeDependencyPolicy::RequireComplete);
     assert!(
         matches!(
             error,
@@ -336,18 +277,9 @@ fn refuses_invalid_objects_preds_keys_and_elements() {
     let list = format!("3@{a}");
     let text = format!("6@{a}");
     let cases: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
-        (
-            "missing object",
-            Box::new(|v| v["ops"][0]["obj"] = json!(format!("999@{}", a1()))),
-        ),
-        (
-            "object is a scalar",
-            Box::new(|v| v["ops"][0]["obj"] = json!(format!("2@{}", a1()))),
-        ),
-        (
-            "missing predecessor",
-            Box::new(|v| v["ops"][0]["pred"] = json!([format!("998@{}", a1())])),
-        ),
+        ("missing object", Box::new(|v| v["ops"][0]["obj"] = json!(format!("999@{}", a1())))),
+        ("object is a scalar", Box::new(|v| v["ops"][0]["obj"] = json!(format!("2@{}", a1())))),
+        ("missing predecessor", Box::new(|v| v["ops"][0]["pred"] = json!([format!("998@{}", a1())]))),
         ("predecessor in another object", {
             let map = map.clone();
             Box::new(move |v| {
@@ -394,15 +326,9 @@ fn refuses_invalid_objects_preds_keys_and_elements() {
                 op.insert("action".into(), json!("markEnd"));
             })
         }),
-        (
-            "unknown actor",
-            Box::new(|v| v["ops"][0]["pred"] = json!([format!("2@{}", "05".repeat(16))])),
-        ),
+        ("unknown actor", Box::new(|v| v["ops"][0]["pred"] = json!([format!("2@{}", "05".repeat(16))]))),
         ("sequence gap", Box::new(|v| v["seq"] = json!(2))),
-        (
-            "start op not after ancestors",
-            Box::new(|v| v["startOp"] = json!(1)),
-        ),
+        ("start op not after ancestors", Box::new(|v| v["startOp"] = json!(1))),
         ("increment of a non-counter", {
             let map = map.clone();
             Box::new(move |v| {
@@ -413,14 +339,11 @@ fn refuses_invalid_objects_preds_keys_and_elements() {
                 v["ops"][0]["pred"] = json!([format!("2@{}", a1())]);
             })
         }),
-        (
-            "delete of a delete target that is an increment",
-            Box::new(|v| {
-                v["ops"][0]["key"] = json!("count");
-                v["ops"][0]["action"] = json!("del");
-                v["ops"][0]["pred"] = json!([format!("2@{}", a1()), format!("1@{}", a1())]);
-            }),
-        ),
+        ("delete of a delete target that is an increment", Box::new(|v| {
+            v["ops"][0]["key"] = json!("count");
+            v["ops"][0]["action"] = json!("del");
+            v["ops"][0]["pred"] = json!([format!("2@{}", a1()), format!("1@{}", a1())]);
+        })),
     ];
     let mut doc = base();
     for (name, case) in &cases {
@@ -446,14 +369,7 @@ fn refuses_counter_and_opid_overflow() {
         v["ops"][1]["key"] = json!("z2");
     });
     let before = snapshot(&mut doc);
-    assert!(
-        incoming(
-            &mut doc,
-            change.raw_bytes(),
-            NativeDependencyPolicy::RequireComplete
-        )
-        .is_err()
-    );
+    assert!(incoming(&mut doc, change.raw_bytes(), NativeDependencyPolicy::RequireComplete).is_err());
     assert_eq!(snapshot(&mut doc), before);
 }
 
@@ -475,9 +391,7 @@ fn populated_table_map_writes() {
     );
     assert_eq!(doc.get(&table, "row").unwrap().unwrap().0, 2.into());
     // A list element key on a Table is refused.
-    let list_key = crafted(&mut doc, |v| {
-        as_elem(v, format!("1@{}", a1()), "_head".into(), true)
-    });
+    let list_key = crafted(&mut doc, |v| as_elem(v, format!("1@{}", a1()), "_head".into(), true));
     semantic_refusal(&mut doc, &list_key, "element on a table");
 }
 
@@ -505,11 +419,7 @@ fn qos_08_corpus_applies_without_panic() {
             incoming(&mut doc, &bytes, NativeDependencyPolicy::RequireComplete)
         }))
         .unwrap_or_else(|_| panic!("{name} panicked"));
-        assert_eq!(
-            outcome.unwrap(),
-            NativeIncomingOutcome::Applied { changed: true },
-            "{name}"
-        );
+        assert_eq!(outcome.unwrap(), NativeIncomingOutcome::Applied { changed: true }, "{name}");
         let mut reference = AutoCommit::load(&bytes).unwrap();
         assert_eq!(doc.get_heads(), reference.get_heads(), "{name}");
     }
@@ -528,16 +438,12 @@ fn counter_hidden_at_representable_bound_applies() {
     source.put(ROOT, "base", true).unwrap();
     source.commit();
     let mut other = source.fork();
-    source
-        .put(ROOT, "count", ScalarValue::counter(i64::MAX))
-        .unwrap();
+    source.put(ROOT, "count", ScalarValue::counter(i64::MAX)).unwrap();
     source.commit();
     source.increment(ROOT, "count", -1).unwrap();
     source.commit();
     for index in 0..8 {
-        other
-            .put(ROOT, format!("filler_{index}"), index as i64)
-            .unwrap();
+        other.put(ROOT, format!("filler_{index}"), index as i64).unwrap();
     }
     other.put(ROOT, "count", "later scalar").unwrap();
     other.commit();
@@ -550,12 +456,7 @@ fn counter_hidden_at_representable_bound_applies() {
     // Ordinary path.
     let mut ordinary = source.clone();
     assert_eq!(
-        incoming(
-            &mut ordinary,
-            &bytes,
-            NativeDependencyPolicy::RequireComplete
-        )
-        .unwrap(),
+        incoming(&mut ordinary, &bytes, NativeDependencyPolicy::RequireComplete).unwrap(),
         NativeIncomingOutcome::Applied { changed: true }
     );
     assert_eq!(ordinary.get_heads(), expected);
@@ -575,39 +476,24 @@ fn counter_hidden_at_representable_bound_applies() {
 fn counter_unrepresentable_sum_refused() {
     // Port of qos-peer-state incoming_target_validation_rejects_unrepresentable_counter_sum.
     let mut source = AutoCommit::new();
-    source
-        .put(ROOT, "count", ScalarValue::counter(i64::MAX))
-        .unwrap();
+    source.put(ROOT, "count", ScalarValue::counter(i64::MAX)).unwrap();
     source.commit();
     let mut peer = source.fork();
     peer.increment(ROOT, "count", -1).unwrap();
     let mut value = expanded(&peer.get_last_local_change().unwrap());
     value["ops"][0]["value"] = json!(1);
     let change = encode(value);
-    let error = refused(
-        &mut source,
-        change.raw_bytes(),
-        NativeDependencyPolicy::RequireComplete,
-    );
-    assert!(
-        matches!(error, NativeMutationError::InvalidOperation),
-        "{error:?}"
-    );
+    let error = refused(&mut source, change.raw_bytes(), NativeDependencyPolicy::RequireComplete);
+    assert!(matches!(error, NativeMutationError::InvalidOperation), "{error:?}");
     match bounded_apply(&mut source, change.raw_bytes()) {
         Err(NativeMutationError::InvalidOperation) => {}
-        other => panic!(
-            "semantic refusal must stay distinct: {:?}",
-            other.map(|_| ())
-        ),
+        other => panic!("semantic refusal must stay distinct: {:?}", other.map(|_| ())),
     }
 }
 
 /// `reconstruct` + `clone_bounded` + `apply_checked_bounded`, returning the
 /// saved result reloaded. All custody is released afterwards.
-fn bounded_apply(
-    source: &mut AutoCommit,
-    incoming: &[u8],
-) -> Result<AutoCommit, NativeMutationError> {
+fn bounded_apply(source: &mut AutoCommit, incoming: &[u8]) -> Result<AutoCommit, NativeMutationError> {
     let bytes = source.save();
     let allowance = allowance();
     let before = allowance.available_bytes();
@@ -626,10 +512,7 @@ fn bounded_apply(
             &mut registry,
             &turn,
         );
-        assert_eq!(
-            original.base_heads_bounded(&turn)?.as_slice(),
-            original_heads
-        );
+        assert_eq!(original.base_heads_bounded(&turn)?.as_slice(), original_heads);
         match result? {
             NativeApplyResult::Applied { document, .. } => {
                 let saved = document.save_bounded(&turn, SaveOptions::default())?;
@@ -638,11 +521,7 @@ fn bounded_apply(
             NativeApplyResult::MissingDependencies => panic!("complete input"),
         }
     })();
-    assert_eq!(
-        allowance.available_bytes(),
-        before,
-        "all custody is released"
-    );
+    assert_eq!(allowance.available_bytes(), before, "all custody is released");
     result
 }
 
@@ -671,9 +550,7 @@ fn bounded_candidate_policies() {
             .unwrap();
         let mut run = |input: &[u8], policy| {
             let candidate = original.clone_bounded(&mut registry, &turn).unwrap();
-            let input = turn
-                .normalize_input(input, &NativeLimits::default())
-                .unwrap();
+            let input = turn.normalize_input(input, &NativeLimits::default()).unwrap();
             candidate
                 .apply_checked_bounded(input, policy, &mut registry, &turn)
                 .unwrap()
@@ -684,27 +561,15 @@ fn bounded_candidate_policies() {
         ));
         assert!(matches!(
             run(&second, NativeDependencyPolicy::RetainOrphans),
-            NativeApplyResult::Applied {
-                changed: false,
-                missing_dependencies: true,
-                ..
-            }
+            NativeApplyResult::Applied { changed: false, missing_dependencies: true, .. }
         ));
         assert!(matches!(
             run(&all, NativeDependencyPolicy::RequireComplete),
-            NativeApplyResult::Applied {
-                changed: true,
-                missing_dependencies: false,
-                ..
-            }
+            NativeApplyResult::Applied { changed: true, missing_dependencies: false, .. }
         ));
         assert!(matches!(
             run(&bytes, NativeDependencyPolicy::RequireComplete),
-            NativeApplyResult::Applied {
-                changed: false,
-                missing_dependencies: false,
-                ..
-            }
+            NativeApplyResult::Applied { changed: false, missing_dependencies: false, .. }
         ));
     }
     assert_eq!(allowance.available_bytes(), before);
@@ -813,12 +678,7 @@ fn fragment_growth_is_reserved_before_mutation() {
         NativeDependencyPolicy::RequireComplete,
     );
     assert!(
-        matches!(
-            result,
-            Err(NativeMutationError::Resource(
-                NativeResourceError::WorkBytes
-            ))
-        ),
+        matches!(result, Err(NativeMutationError::Resource(NativeResourceError::WorkBytes))),
         "{result:?}"
     );
     assert_eq!(snapshot(&mut doc), before);
@@ -854,12 +714,10 @@ fn random_doc(rng: &mut Rng) -> AutoCommit {
         let mut peer = doc.fork().with_actor(actor(20 + round as u8));
         match rng.below(6) {
             0 => {
-                peer.put(&table, format!("k{}", rng.below(3)), round as i64)
-                    .unwrap();
+                peer.put(&table, format!("k{}", rng.below(3)), round as i64).unwrap();
             }
             1 => {
-                peer.increment(&ROOT, "count", rng.below(10) as i64 - 5)
-                    .unwrap();
+                peer.increment(&ROOT, "count", rng.below(10) as i64 - 5).unwrap();
             }
             2 => {
                 let len = peer.length(&text);
@@ -913,15 +771,7 @@ fn mutate(rng: &mut Rng, value: &mut Value, ids: &[String]) {
             op.insert("key".into(), json!("k0"));
         }
         4 if ops > 0 => {
-            let actions = [
-                "makeMap",
-                "set",
-                "makeList",
-                "del",
-                "makeText",
-                "inc",
-                "makeTable",
-            ];
+            let actions = ["makeMap", "set", "makeList", "del", "makeText", "inc", "makeTable"];
             value["ops"][i]["action"] = json!(actions[rng.below(actions.len())]);
         }
         5 if ops > 0 => {
@@ -942,10 +792,7 @@ fn mutate(rng: &mut Rng, value: &mut Value, ids: &[String]) {
             value["ops"][i]["datatype"] = json!("int");
         }
         10 if ops > 0 => {
-            let mut pred = value["ops"][i]["pred"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let mut pred = value["ops"][i]["pred"].as_array().cloned().unwrap_or_default();
             pred.push(json!(pick(rng)));
             value["ops"][i]["pred"] = json!(pred);
         }
@@ -1020,11 +867,7 @@ fn fuzz_mutated_changes_accept_cleanly_or_refuse_unchanged() {
                 }
                 Err(_) => {
                     refusals += 1;
-                    assert_eq!(
-                        snapshot(&mut target),
-                        before,
-                        "refused input left the document unchanged"
-                    );
+                    assert_eq!(snapshot(&mut target), before, "refused input left the document unchanged");
                 }
             }
         }
@@ -1088,3 +931,4 @@ fn fuzz_mutated_change_bytes_never_panic() {
     }
     eprintln!("byte fuzz: {accepted} accepted");
 }
+

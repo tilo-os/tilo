@@ -15,8 +15,8 @@ use automerge::resource_limits::{
 };
 use automerge::transaction::Transactable;
 use automerge::{
-    ActorId, AutoCommit, ObjId, ObjType, PatchAction, ROOT, ReadDoc, ScalarValue, ScalarValueRef,
-    Value, ValueRef,
+    ActorId, AutoCommit, ObjId, ObjType, PatchAction, ReadDoc, ScalarValue, ScalarValueRef, Value,
+    ValueRef, ROOT,
 };
 use std::ops::ControlFlow;
 
@@ -1224,11 +1224,9 @@ fn legacy_scalar_debug_is_byte_exact_and_allocation_free() {
             Err(std::fmt::Error)
         }
     }
-    assert!(
-        NativeScalar::Int(1)
-            .write_legacy_debug(&mut Refuse)
-            .is_err()
-    );
+    assert!(NativeScalar::Int(1)
+        .write_legacy_debug(&mut Refuse)
+        .is_err());
 
     // Against the legacy owned ScalarValue for every kind, read natively.
     let values = vec![
@@ -1394,11 +1392,9 @@ fn counter_overflow_wraps_in_legacy_reads_and_is_refused_by_bounded_reads() {
     );
     // Patches, diffs and hydration wrap too.
     let patches = doc.diff_incremental();
-    assert!(
-        patches
-            .iter()
-            .any(|p| matches!(p.action, PatchAction::Increment { .. }))
-    );
+    assert!(patches
+        .iter()
+        .any(|p| matches!(p.action, PatchAction::Increment { .. })));
     let after = doc.get_heads();
     let _ = doc.diff(&before, &after);
     let _ = doc.hydrate(&ROOT, None).unwrap();

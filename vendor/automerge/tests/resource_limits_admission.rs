@@ -27,17 +27,15 @@
 
 use automerge::marks::{ExpandMark, Mark};
 use automerge::resource_limits::{
-    NativeAllocationSet, NativeAllowance, NativeApplyResult, NativeDependencyPolicy,
-    NativeIncomingOutcome, NativeLimits, NativeMutationError, NativeOwned, NativeReadSteps,
-    NativeResourceError, NativeSelection, NativeValue,
+    NativeAllocationSet, NativeAllowance, NativeApplyResult, NativeDependencyPolicy, NativeIncomingOutcome,
+    NativeLimits, NativeMutationError, NativeOwned, NativeReadSteps, NativeResourceError, NativeSelection,
+    NativeValue,
 };
 use automerge::transaction::{CommitOptions, Transactable};
-use automerge::{
-    ActorId, AutoCommit, Change, ObjId, ObjType, ROOT, ReadDoc, SaveOptions, ScalarValue,
-};
+use automerge::{ActorId, AutoCommit, Change, ObjId, ObjType, ReadDoc, SaveOptions, ScalarValue, ROOT};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::{Cell, RefCell};
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 // ===========================================================================
 // Per-thread allocation meter (ported from qos-peer-state
@@ -64,11 +62,7 @@ thread_local! {
 }
 
 /// Like `assert_precharged`, naming the operation in the failure message.
-fn precharged_as<T>(
-    label: &'static str,
-    allowance: &NativeAllowance,
-    operation: impl FnOnce() -> T,
-) -> T {
+fn precharged_as<T>(label: &'static str, allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> T {
     LABEL.with(|l| l.set(label));
     let value = assert_precharged(allowance, operation);
     LABEL.with(|l| l.set(""));
@@ -80,10 +74,7 @@ struct MeasuredSystem;
 fn allocated(bytes: usize) {
     let _ = METER.try_with(|meter| {
         if let Some(mut state) = meter.get() {
-            if WATCH_ALLOCATION_BYTES
-                .try_with(|watch| watch.get() == Some(bytes))
-                .unwrap_or(false)
-            {
+            if WATCH_ALLOCATION_BYTES.try_with(|watch| watch.get() == Some(bytes)).unwrap_or(false) {
                 state.watched_requests += 1;
             }
             state.largest_request = state.largest_request.max(bytes);
@@ -96,9 +87,7 @@ fn allocated(bytes: usize) {
                         if state.live > reserved && state.first_unreserved.is_none() {
                             state.first_unreserved = Some((bytes, state.live, reserved));
                         }
-                        state.unreserved_peak = state
-                            .unreserved_peak
-                            .max(state.live.saturating_sub(reserved));
+                        state.unreserved_peak = state.unreserved_peak.max(state.live.saturating_sub(reserved));
                     }
                 }
             });
@@ -179,10 +168,7 @@ fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
 
 /// Measures `operation` and asserts every allocation it made was already
 /// reserved on `allowance` when it happened.
-fn measure_under<T>(
-    allowance: &NativeAllowance,
-    operation: impl FnOnce() -> T,
-) -> (T, Allocations) {
+fn measure_under<T>(allowance: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Allocations) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -198,8 +184,7 @@ fn measure_under<T>(
     let _reset = Reset;
     let result = measure(operation);
     assert_eq!(
-        result.1.unreserved_peak,
-        0,
+        result.1.unreserved_peak, 0,
         "{}: every allocation must already be reserved (bytes, live, reserved): {:?}",
         LABEL.with(Cell::get),
         result.1.first_unreserved
@@ -378,16 +363,7 @@ impl ChangeParts {
         let message = read_blob(&mut b);
         let nothers = read_uint(&mut b) as usize;
         let others = (0..nothers).map(|_| read_blob(&mut b)).collect();
-        Self {
-            deps,
-            actor,
-            seq,
-            start_op,
-            time,
-            message,
-            others,
-            rest: b.to_vec(),
-        }
+        Self { deps, actor, seq, start_op, time, message, others, rest: b.to_vec() }
     }
     fn body(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -421,18 +397,9 @@ fn hash_bytes(change: &Change) -> [u8; 32] {
 
 /// Full-state snapshot for "unchanged on refusal": saved bytes including
 /// queued orphans, plus heads and missing dependencies.
-fn snapshot(
-    doc: &mut AutoCommit,
-) -> (
-    Vec<u8>,
-    Vec<automerge::ChangeHash>,
-    Vec<automerge::ChangeHash>,
-) {
+fn snapshot(doc: &mut AutoCommit) -> (Vec<u8>, Vec<automerge::ChangeHash>, Vec<automerge::ChangeHash>) {
     (
-        doc.save_with_options(SaveOptions {
-            deflate: false,
-            retain_orphans: true,
-        }),
+        doc.save_with_options(SaveOptions { deflate: false, retain_orphans: true }),
         doc.get_heads(),
         doc.get_missing_deps(&[]),
     )
@@ -448,22 +415,11 @@ fn incoming(
     policy: NativeDependencyPolicy,
 ) -> Result<NativeIncomingOutcome, NativeMutationError> {
     let before = snapshot(doc);
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        doc.apply_incoming_checked(input, limits, credit, policy)
-    }))
-    .unwrap_or_else(|p| {
-        panic!(
-            "apply_incoming_checked panicked on {} input bytes: {}",
-            input.len(),
-            panic_message(&*p)
-        )
-    });
+    let result = catch_unwind(AssertUnwindSafe(|| doc.apply_incoming_checked(input, limits, credit, policy)))
+        .unwrap_or_else(|p| panic!("apply_incoming_checked panicked on {} input bytes: {}", input.len(), panic_message(&*p)));
     match &result {
         Err(_) | Ok(NativeIncomingOutcome::MissingDependencies) => {
-            assert!(
-                snapshot(doc) == before,
-                "refused input mutated the document: {result:?}"
-            );
+            assert!(snapshot(doc) == before, "refused input mutated the document: {result:?}");
         }
         Ok(_) => {}
     }
@@ -471,56 +427,34 @@ fn incoming(
 }
 
 fn inspect(input: &[u8], limits: &NativeLimits) -> Result<(), NativeResourceError> {
-    catch_unwind(AssertUnwindSafe(|| {
-        AutoCommit::inspect_bounded(input, limits, &mut allowance()).map(drop)
-    }))
-    .expect("inspect_bounded panicked")
+    catch_unwind(AssertUnwindSafe(|| AutoCommit::inspect_bounded(input, limits, &mut allowance()).map(drop)))
+        .expect("inspect_bounded panicked")
 }
 
 /// Whole checked pipeline on a fresh owner: normalize -> reconstruct.
-fn reconstruct(
-    input: &[u8],
-    limits: &NativeLimits,
-) -> Result<NativeOwned<AutoCommit>, NativeResourceError> {
+fn reconstruct(input: &[u8], limits: &NativeLimits) -> Result<NativeOwned<AutoCommit>, NativeResourceError> {
     catch_unwind(AssertUnwindSafe(|| {
         let credit = allowance();
         let mut registry = NativeAllocationSet::new(credit.clone())?;
         let turn = registry.work_turn(credit)?;
-        turn.normalize_input(input, limits)?
-            .reconstruct(&mut registry, &turn)
+        turn.normalize_input(input, limits)?.reconstruct(&mut registry, &turn)
     }))
-    .unwrap_or_else(|p| {
-        panic!(
-            "normalize_input/reconstruct panicked: {}",
-            panic_message(&*p)
-        )
-    })
+    .unwrap_or_else(|p| panic!("normalize_input/reconstruct panicked: {}", panic_message(&*p)))
 }
 
 /// Every refusal path of the whole admission surface must agree on refusing
 /// an input that inspection refuses, without panicking or mutating.
 fn assert_refused_everywhere(input: &[u8], limits: &NativeLimits, expected: NativeResourceError) {
     let inspected = inspect(input, limits);
-    assert!(
-        inspected.as_ref().err() == Some(&expected),
-        "inspect_bounded: {inspected:?}, expected {expected:?}"
-    );
+    assert!(inspected.as_ref().err() == Some(&expected), "inspect_bounded: {inspected:?}, expected {expected:?}");
     let credit = allowance();
     let registry = NativeAllocationSet::new(credit.clone()).unwrap();
     let turn = registry.work_turn(credit).unwrap();
-    let normalized = catch_unwind(AssertUnwindSafe(|| {
-        turn.normalize_input(input, limits).map(drop)
-    }))
-    .expect("normalize_input panicked");
-    assert!(
-        normalized.as_ref().err() == Some(&expected),
-        "normalize_input: {normalized:?}, expected {expected:?}"
-    );
+    let normalized = catch_unwind(AssertUnwindSafe(|| turn.normalize_input(input, limits).map(drop)))
+        .expect("normalize_input panicked");
+    assert!(normalized.as_ref().err() == Some(&expected), "normalize_input: {normalized:?}, expected {expected:?}");
     let mut doc = seeded_doc();
-    for policy in [
-        NativeDependencyPolicy::RequireComplete,
-        NativeDependencyPolicy::RetainOrphans,
-    ] {
+    for policy in [NativeDependencyPolicy::RequireComplete, NativeDependencyPolicy::RetainOrphans] {
         let result = incoming(&mut doc, input, limits, &allowance(), policy);
         assert!(
             matches!(&result, Err(NativeMutationError::Resource(e)) if *e == expected),
@@ -556,15 +490,11 @@ mod vendor08 {
     #[test]
     fn compressed_document_expansion_is_refused() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![7; 65_536]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![7; 65_536])).unwrap();
         let encoded = doc.save();
         assert!(encoded.len() < 1_024);
         assert!(AutoCommit::load(&encoded).is_ok());
-        let limits = NativeLimits {
-            max_normalized_bytes: 1_024,
-            ..NativeLimits::default()
-        };
+        let limits = NativeLimits { max_normalized_bytes: 1_024, ..NativeLimits::default() };
         assert!(matches!(
             AutoCommit::inspect_bounded(&encoded, &limits, &mut allowance()),
             Err(NativeResourceError::NormalizedBytes)
@@ -575,17 +505,13 @@ mod vendor08 {
     #[test]
     fn compressed_change_expansion_is_refused() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536])).unwrap();
         doc.commit();
         let encoded = doc.get_last_local_change().unwrap().bytes().into_owned();
         assert_eq!(encoded[8], 2, "fixture must be a compressed change chunk");
         assert!(encoded.len() < 1_024);
         assert!(AutoCommit::load(&encoded).is_ok());
-        let limits = NativeLimits {
-            max_normalized_bytes: 1_024,
-            ..NativeLimits::default()
-        };
+        let limits = NativeLimits { max_normalized_bytes: 1_024, ..NativeLimits::default() };
         assert!(matches!(
             AutoCommit::inspect_bounded(&encoded, &limits, &mut allowance()),
             Err(NativeResourceError::NormalizedBytes)
@@ -601,10 +527,7 @@ mod vendor08 {
         }
         let encoded = doc.save();
         assert!(AutoCommit::load(&encoded).is_ok());
-        let limits = NativeLimits {
-            max_operations: 64,
-            ..NativeLimits::default()
-        };
+        let limits = NativeLimits { max_operations: 64, ..NativeLimits::default() };
         assert!(matches!(
             AutoCommit::inspect_bounded(&encoded, &limits, &mut allowance()),
             Err(NativeResourceError::Operations)
@@ -615,13 +538,10 @@ mod vendor08 {
     #[test]
     fn bounded_compressed_document_inspection_keeps_original_identity() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![5; 4_096]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![5; 4_096])).unwrap();
         let encoded = doc.save();
         assert!(encoded.len() < 1_024);
-        let checked =
-            AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance())
-                .unwrap();
+        let checked = AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance()).unwrap();
         assert_eq!(checked.original_bytes(), encoded);
         assert_eq!(checked.shape().operations(), 1);
     }
@@ -630,23 +550,14 @@ mod vendor08 {
     #[test]
     fn normalized_size_includes_rewritten_framing() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![5; 65_536]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![5; 65_536])).unwrap();
         let encoded = doc.save();
         let normalized = doc.save_nocompress();
-        let checked =
-            AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance())
-                .unwrap();
+        let checked = AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance()).unwrap();
         assert_eq!(checked.shape().normalized_bytes(), normalized.len());
-        let exact = NativeLimits {
-            max_normalized_bytes: normalized.len(),
-            ..NativeLimits::default()
-        };
+        let exact = NativeLimits { max_normalized_bytes: normalized.len(), ..NativeLimits::default() };
         assert!(AutoCommit::inspect_bounded(&encoded, &exact, &mut allowance()).is_ok());
-        let short = NativeLimits {
-            max_normalized_bytes: normalized.len() - 1,
-            ..exact
-        };
+        let short = NativeLimits { max_normalized_bytes: normalized.len() - 1, ..exact };
         assert!(matches!(
             AutoCommit::inspect_bounded(&encoded, &short, &mut allowance()),
             Err(NativeResourceError::NormalizedBytes)
@@ -664,10 +575,7 @@ mod vendor08 {
         doc.commit();
         encoded.extend(doc.get_last_local_change().unwrap().bytes().as_ref());
         assert!(AutoCommit::load(&encoded).is_ok());
-        let limits = NativeLimits {
-            max_operations: 1,
-            ..NativeLimits::default()
-        };
+        let limits = NativeLimits { max_operations: 1, ..NativeLimits::default() };
         assert!(matches!(
             AutoCommit::inspect_bounded(&encoded, &limits, &mut allowance()),
             Err(NativeResourceError::Operations)
@@ -694,15 +602,9 @@ mod vendor08 {
         let child = allowance.clone();
         let retained = allowance.reserve(3_000).unwrap();
         assert_eq!(retained.bytes(), 3_000);
-        assert!(matches!(
-            child.reserve(2_000),
-            Err(NativeResourceError::WorkBytes)
-        ));
+        assert!(matches!(child.reserve(2_000), Err(NativeResourceError::WorkBytes)));
         drop(allowance);
-        assert!(matches!(
-            child.reserve(2_000),
-            Err(NativeResourceError::WorkBytes)
-        ));
+        assert!(matches!(child.reserve(2_000), Err(NativeResourceError::WorkBytes)));
         drop(retained);
         assert!(child.reserve(2_000).is_ok());
     }
@@ -724,11 +626,7 @@ mod vendor08 {
             );
         }
         let encoded = hex::decode("856f4a831bfcd801000d00000001420780808080802001").unwrap();
-        assert_refused_everywhere(
-            &encoded,
-            &NativeLimits::default(),
-            NativeResourceError::Operations,
-        );
+        assert_refused_everywhere(&encoded, &NativeLimits::default(), NativeResourceError::Operations);
     }
 
     fn compressed_change_with_body(original: &[u8], body: &[u8]) -> Vec<u8> {
@@ -749,15 +647,11 @@ mod vendor08 {
     #[test]
     fn malformed_deflate_must_not_reach_native_reconstruction() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536])).unwrap();
         doc.commit();
         let encoded = doc.get_last_local_change().unwrap().bytes().into_owned();
         assert_eq!(encoded[8], 2);
-        assert!(
-            AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance())
-                .is_ok()
-        );
+        assert!(AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance()).is_ok());
         let mut body_start = 9;
         while encoded[body_start] >= 128 {
             body_start += 1;
@@ -769,11 +663,7 @@ mod vendor08 {
         trailing.extend(compressed);
         let trailing = compressed_change_with_body(&encoded, &trailing);
         for bytes in [&truncated, &trailing] {
-            assert_refused_everywhere(
-                bytes,
-                &NativeLimits::default(),
-                NativeResourceError::Invalid,
-            );
+            assert_refused_everywhere(bytes, &NativeLimits::default(), NativeResourceError::Invalid);
         }
     }
 
@@ -782,14 +672,11 @@ mod vendor08 {
     #[test]
     fn normalization_matches_native_storage_and_retains_its_credit() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536])).unwrap();
         let encoded = doc.save();
         let expected = doc.save_nocompress();
         let mut allowance = allowance();
-        let checked =
-            AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance)
-                .unwrap();
+        let checked = AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance).unwrap();
         let before = allowance.available_bytes();
         let normalized = assert_precharged(&allowance, || checked.normalize(&allowance).unwrap());
         assert_eq!(normalized.original_bytes(), encoded);
@@ -806,12 +693,9 @@ mod vendor08 {
     #[test]
     fn normalization_requires_full_output_credit_before_generation() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536])).unwrap();
         let encoded = doc.save();
-        let checked =
-            AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance())
-                .unwrap();
+        let checked = AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance()).unwrap();
         let small = NativeAllowance::new(1_024).unwrap();
         let before = small.available_bytes();
         let result = assert_precharged(&small, || checked.normalize(&small).map(drop));
@@ -823,16 +707,13 @@ mod vendor08 {
     #[test]
     fn normalization_preserves_compressed_change_identity() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 65_536])).unwrap();
         doc.commit();
         let mut change = doc.get_last_local_change().unwrap();
         let expected = change.raw_bytes().to_vec();
         let encoded = change.bytes().into_owned();
         assert_eq!(encoded[8], 2);
-        let checked =
-            AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance())
-                .unwrap();
+        let checked = AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance()).unwrap();
         let normalized = checked.normalize(&allowance()).unwrap();
         assert_eq!(normalized.bytes(), expected);
         let mut restored = AutoCommit::load(normalized.bytes()).unwrap();
@@ -847,17 +728,11 @@ mod vendor08 {
         doc.commit();
         doc.put(ROOT, "b", 2_u64).unwrap();
         doc.commit();
-        let hashes = doc
-            .get_changes(&[])
-            .iter()
-            .map(|change| change.hash())
-            .collect::<Vec<_>>();
+        let hashes = doc.get_changes(&[]).iter().map(|change| change.hash()).collect::<Vec<_>>();
         let bundle = doc.bundle(hashes).unwrap();
         assert_eq!(bundle.bytes()[8], 3);
         assert!(AutoCommit::load(bundle.bytes()).is_ok());
-        let checked =
-            AutoCommit::inspect_bounded(bundle.bytes(), &NativeLimits::default(), &mut allowance())
-                .unwrap();
+        let checked = AutoCommit::inspect_bounded(bundle.bytes(), &NativeLimits::default(), &mut allowance()).unwrap();
         assert_eq!(checked.shape().operations(), 2);
         let normalized = checked.normalize(&allowance()).unwrap();
         assert_eq!(normalized.bytes(), bundle.bytes());
@@ -868,16 +743,12 @@ mod vendor08 {
     #[test]
     fn document_and_incremental_change_normalize_as_one_complete_input() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 4_096]))
-            .unwrap();
+        doc.put(ROOT, "bytes", ScalarValue::Bytes(vec![9; 4_096])).unwrap();
         let mut encoded = doc.save();
-        doc.put(ROOT, "more", ScalarValue::Bytes(vec![8; 4_096]))
-            .unwrap();
+        doc.put(ROOT, "more", ScalarValue::Bytes(vec![8; 4_096])).unwrap();
         doc.commit();
         encoded.extend(doc.get_last_local_change().unwrap().bytes().as_ref());
-        let checked =
-            AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance())
-                .unwrap();
+        let checked = AutoCommit::inspect_bounded(&encoded, &NativeLimits::default(), &mut allowance()).unwrap();
         let normalized = checked.normalize(&allowance()).unwrap();
         let mut restored = AutoCommit::load(normalized.bytes()).unwrap();
         assert_eq!(restored.get_heads(), doc.get_heads());
@@ -886,40 +757,23 @@ mod vendor08 {
     // A single change row can describe a billion dense collector slots.
     #[test]
     fn sparse_document_counter_is_refused_before_collector_allocation() {
-        let bytes =
-            hex::decode("856f4a83b40552a9001a0101000004010203021306400200010001010180808080040100")
-                .unwrap();
-        assert_refused_everywhere(
-            &bytes,
-            &NativeLimits::default(),
-            NativeResourceError::Operations,
-        );
+        let bytes = hex::decode("856f4a83b40552a9001a0101000004010203021306400200010001010180808080040100").unwrap();
+        assert_refused_everywhere(&bytes, &NativeLimits::default(), NativeResourceError::Operations);
     }
 
     // Each of four changes claims 64 operations with no dependencies.
     #[test]
     fn dense_collector_slots_share_the_operation_ceiling() {
-        let bytes =
-            hex::decode("856f4a8399cdc86e001a0101000004010203021306400200040004017cc0000000000400")
-                .unwrap();
-        let limits = NativeLimits {
-            max_operations: 128,
-            ..NativeLimits::default()
-        };
+        let bytes = hex::decode("856f4a8399cdc86e001a0101000004010203021306400200040004017cc0000000000400").unwrap();
+        let limits = NativeLimits { max_operations: 128, ..NativeLimits::default() };
         assert_refused_everywhere(&bytes, &limits, NativeResourceError::Operations);
     }
 
     // Dependency indexes must refer to preceding change rows.
     #[test]
     fn out_of_range_document_dependency_is_invalid_before_reconstruction() {
-        let bytes =
-            hex::decode("856f4a83e9e773df001a0101000005010203021302400243020001000101010101010102")
-                .unwrap();
-        assert_refused_everywhere(
-            &bytes,
-            &NativeLimits::default(),
-            NativeResourceError::Invalid,
-        );
+        let bytes = hex::decode("856f4a83e9e773df001a0101000005010203021302400243020001000101010101010102").unwrap();
+        assert_refused_everywhere(&bytes, &NativeLimits::default(), NativeResourceError::Invalid);
     }
 
     // From native_footprint_vendor_tests: malformed graph rows must not panic
@@ -949,15 +803,9 @@ mod vendor08 {
         let change = doc.get_last_local_change().unwrap();
         assert_eq!(change.deps().len(), 1);
         let encoded = change.raw_bytes();
-        let exact = NativeLimits {
-            max_edges: 1,
-            ..NativeLimits::default()
-        };
+        let exact = NativeLimits { max_edges: 1, ..NativeLimits::default() };
         assert!(AutoCommit::inspect_bounded(encoded, &exact, &mut allowance()).is_ok());
-        let short = NativeLimits {
-            max_edges: 0,
-            ..exact
-        };
+        let short = NativeLimits { max_edges: 0, ..exact };
         assert_refused_everywhere(encoded, &short, NativeResourceError::Collection);
     }
 
@@ -968,15 +816,9 @@ mod vendor08 {
         let mut encoded = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
         doc.empty_change(CommitOptions::default().with_message("two"));
         encoded.extend_from_slice(doc.get_last_local_change().unwrap().raw_bytes());
-        let exact = NativeLimits {
-            max_value_bytes: 6,
-            ..NativeLimits::default()
-        };
+        let exact = NativeLimits { max_value_bytes: 6, ..NativeLimits::default() };
         assert!(AutoCommit::inspect_bounded(&encoded, &exact, &mut allowance()).is_ok());
-        let short = NativeLimits {
-            max_value_bytes: 5,
-            ..exact
-        };
+        let short = NativeLimits { max_value_bytes: 5, ..exact };
         assert_refused_everywhere(&encoded, &short, NativeResourceError::ValueBytes);
     }
 
@@ -989,15 +831,9 @@ mod vendor08 {
         let second = doc.commit().unwrap();
         let bundle = doc.bundle(vec![second]).unwrap();
         assert_eq!(bundle.deps().len(), 1);
-        let exact = NativeLimits {
-            max_edges: 1,
-            ..NativeLimits::default()
-        };
+        let exact = NativeLimits { max_edges: 1, ..NativeLimits::default() };
         assert!(AutoCommit::inspect_bounded(bundle.bytes(), &exact, &mut allowance()).is_ok());
-        let short = NativeLimits {
-            max_edges: 0,
-            ..exact
-        };
+        let short = NativeLimits { max_edges: 0, ..exact };
         assert_refused_everywhere(bundle.bytes(), &short, NativeResourceError::Collection);
     }
 
@@ -1007,17 +843,11 @@ mod vendor08 {
         let metadata = allowance.retained_bytes();
         let retained = allowance.reserve(1_024).unwrap();
         allowance.finish_turn();
-        assert!(matches!(
-            allowance.reserve(1),
-            Err(NativeResourceError::WorkBytes)
-        ));
+        assert!(matches!(allowance.reserve(1), Err(NativeResourceError::WorkBytes)));
         assert_eq!(allowance.retained_bytes(), metadata + 1_024);
         drop(retained);
         assert_eq!(allowance.retained_bytes(), metadata);
-        assert!(matches!(
-            allowance.reserve(1),
-            Err(NativeResourceError::WorkBytes)
-        ));
+        assert!(matches!(allowance.reserve(1), Err(NativeResourceError::WorkBytes)));
     }
 }
 
@@ -1058,28 +888,15 @@ mod wire {
     fn empty_and_garbage_inputs() {
         // Empty input is an empty (valid) storage sequence for inspection.
         let _ = inspect(&[], &NativeLimits::default());
-        for input in [
-            &b"\x00"[..],
-            &MAGIC[..],
-            &b"not automerge at all"[..],
-            &[0xff; 64][..],
-        ] {
-            assert_refused_everywhere(
-                input,
-                &NativeLimits::default(),
-                NativeResourceError::Invalid,
-            );
+        for input in [&b"\x00"[..], &MAGIC[..], &b"not automerge at all"[..], &[0xff; 64][..]] {
+            assert_refused_everywhere(input, &NativeLimits::default(), NativeResourceError::Invalid);
         }
     }
 
     #[test]
     fn unknown_chunk_kind_is_invalid() {
         for kind in [4u8, 5, 0x7f, 0xff] {
-            assert_refused_everywhere(
-                &chunk(kind, &[0]),
-                &NativeLimits::default(),
-                NativeResourceError::Invalid,
-            );
+            assert_refused_everywhere(&chunk(kind, &[0]), &NativeLimits::default(), NativeResourceError::Invalid);
         }
     }
 
@@ -1159,17 +976,8 @@ mod wire {
         body.splice(seq_at..seq_at + 1, [0x81, 0x00]);
         let input = chunk(1, &body);
         let mut doc = seeded_doc();
-        for policy in [
-            NativeDependencyPolicy::RequireComplete,
-            NativeDependencyPolicy::RetainOrphans,
-        ] {
-            let _ = incoming(
-                &mut doc,
-                &input,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
+        for policy in [NativeDependencyPolicy::RequireComplete, NativeDependencyPolicy::RetainOrphans] {
+            let _ = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), policy);
         }
         let _ = reconstruct(&input, &NativeLimits::default());
     }
@@ -1179,58 +987,30 @@ mod wire {
         let body = change_body(0, &[], &[(1 << 4 | 2, vec![1, 0])]);
         let mut shortened = body.clone();
         shortened.pop(); // declared 2 bytes, 1 present
-        assert_refused_everywhere(
-            &chunk(1, &shortened),
-            &NativeLimits::default(),
-            NativeResourceError::Invalid,
-        );
+        assert_refused_everywhere(&chunk(1, &shortened), &NativeLimits::default(), NativeResourceError::Invalid);
     }
 
     #[test]
     fn more_than_128_columns_is_refused() {
-        let columns: Vec<(u32, Vec<u8>)> = (0..129u32)
-            .map(|i| ((i + 1) << 4 | 2, Vec::new()))
-            .collect();
+        let columns: Vec<(u32, Vec<u8>)> = (0..129u32).map(|i| ((i + 1) << 4 | 2, Vec::new())).collect();
         let body = change_body(0, &[], &columns);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Collection,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Collection);
         // Tighter caller limit.
-        let columns: Vec<(u32, Vec<u8>)> =
-            (0..9u32).map(|i| ((i + 1) << 4 | 2, Vec::new())).collect();
+        let columns: Vec<(u32, Vec<u8>)> = (0..9u32).map(|i| ((i + 1) << 4 | 2, Vec::new())).collect();
         let body = change_body(0, &[], &columns);
-        let limits = NativeLimits {
-            max_columns: 8,
-            ..NativeLimits::default()
-        };
+        let limits = NativeLimits { max_columns: 8, ..NativeLimits::default() };
         assert_refused_everywhere(&chunk(1, &body), &limits, NativeResourceError::Collection);
         // A policy above the format maximum is itself refused.
-        let limits = NativeLimits {
-            max_columns: 129,
-            ..NativeLimits::default()
-        };
-        assert_eq!(
-            inspect(&simple_change(1, "k").raw_bytes().to_vec(), &limits),
-            Err(NativeResourceError::Collection)
-        );
+        let limits = NativeLimits { max_columns: 129, ..NativeLimits::default() };
+        assert_eq!(inspect(&simple_change(1, "k").raw_bytes().to_vec(), &limits), Err(NativeResourceError::Collection));
     }
 
     #[test]
     fn unsorted_or_duplicate_column_specs_are_invalid() {
         let body = change_body(0, &[], &[(2 << 4 | 2, vec![]), (1 << 4 | 2, vec![])]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Invalid,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Invalid);
         let body = change_body(0, &[], &[(1 << 4 | 2, vec![]), (1 << 4 | 2, vec![])]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Invalid,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Invalid);
     }
 
     #[test]
@@ -1238,35 +1018,19 @@ mod wire {
         // Change chunks may not carry per-column DEFLATE (spec bit 3).
         let data = deflate(&[1, 0]);
         let body = change_body(0, &[], &[(1 << 4 | 8 | 2, data)]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Invalid,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Invalid);
     }
 
     #[test]
     fn more_chunks_than_max_chunks_is_refused() {
         let one = simple_change(0x31, "k").raw_bytes().to_vec();
         let limits = NativeLimits::default();
-        let many: Vec<u8> = std::iter::repeat_n(one.as_slice(), limits.max_chunks + 1)
-            .flatten()
-            .copied()
-            .collect();
+        let many: Vec<u8> = std::iter::repeat_n(one.as_slice(), limits.max_chunks + 1).flatten().copied().collect();
         assert_refused_everywhere(&many, &limits, NativeResourceError::Collection);
-        let tight = NativeLimits {
-            max_chunks: 2,
-            ..NativeLimits::default()
-        };
-        let three: Vec<u8> = std::iter::repeat_n(one.as_slice(), 3)
-            .flatten()
-            .copied()
-            .collect();
+        let tight = NativeLimits { max_chunks: 2, ..NativeLimits::default() };
+        let three: Vec<u8> = std::iter::repeat_n(one.as_slice(), 3).flatten().copied().collect();
         assert_refused_everywhere(&three, &tight, NativeResourceError::Collection);
-        let two: Vec<u8> = std::iter::repeat_n(one.as_slice(), 2)
-            .flatten()
-            .copied()
-            .collect();
+        let two: Vec<u8> = std::iter::repeat_n(one.as_slice(), 2).flatten().copied().collect();
         assert_eq!(inspect(&two, &tight), Ok(()));
     }
 
@@ -1276,21 +1040,11 @@ mod wire {
         let actors: Vec<Vec<u8>> = (0..1025u32).map(|i| vec![(i % 251) as u8]).collect();
         let refs: Vec<&[u8]> = actors.iter().map(Vec::as_slice).collect();
         let body = change_body(0, &refs, &[]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Collection,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Collection);
         // Actors are counted across chunks, including repeats.
         let one = simple_change(0x41, "k").raw_bytes().to_vec();
-        let limits = NativeLimits {
-            max_actors: 3,
-            ..NativeLimits::default()
-        };
-        let four: Vec<u8> = std::iter::repeat_n(one.as_slice(), 4)
-            .flatten()
-            .copied()
-            .collect();
+        let limits = NativeLimits { max_actors: 3, ..NativeLimits::default() };
+        let four: Vec<u8> = std::iter::repeat_n(one.as_slice(), 4).flatten().copied().collect();
         assert_refused_everywhere(&four, &limits, NativeResourceError::Collection);
         // Heads in a document chunk.
         let mut doc = AutoCommit::new();
@@ -1304,21 +1058,9 @@ mod wire {
         doc.merge(&mut other).unwrap();
         assert_eq!(doc.get_heads().len(), 2);
         let saved = doc.save();
-        let limits = NativeLimits {
-            max_heads: 1,
-            ..NativeLimits::default()
-        };
+        let limits = NativeLimits { max_heads: 1, ..NativeLimits::default() };
         assert_refused_everywhere(&saved, &limits, NativeResourceError::Collection);
-        assert_eq!(
-            inspect(
-                &saved,
-                &NativeLimits {
-                    max_heads: 2,
-                    ..NativeLimits::default()
-                }
-            ),
-            Ok(())
-        );
+        assert_eq!(inspect(&saved, &NativeLimits { max_heads: 2, ..NativeLimits::default() }), Ok(()));
     }
 
     #[test]
@@ -1328,41 +1070,25 @@ mod wire {
         sleb(1 << 20, &mut run);
         leb(0, &mut run);
         let body = change_body(0, &[], &[(1 << 4 | 2, run)]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Operations,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Operations);
         // Null run (run 0, count 2^40).
         let mut run = Vec::new();
         sleb(0, &mut run);
         leb(1 << 40, &mut run);
         let body = change_body(0, &[], &[(1 << 4 | 2, run)]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Operations,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Operations);
         // Boolean column (kind 4) run near usize::MAX.
         let mut run = Vec::new();
         leb(u64::MAX >> 1, &mut run);
         let body = change_body(0, &[], &[(1 << 4 | 4, run)]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::Operations,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::Operations);
         // A value run whose repeated string would exceed max_value_bytes.
         let mut run = Vec::new();
         sleb(60_000, &mut run);
         leb(200, &mut run);
         run.extend([b'x'; 200]);
         let body = change_body(0, &[], &[(1 << 4 | 5, run)]);
-        assert_refused_everywhere(
-            &chunk(1, &body),
-            &NativeLimits::default(),
-            NativeResourceError::ValueBytes,
-        );
+        assert_refused_everywhere(&chunk(1, &body), &NativeLimits::default(), NativeResourceError::ValueBytes);
         // Real ops: 65_537 puts in one change (valid encoding, too many ops).
         if slow() {
             let mut doc = AutoCommit::new();
@@ -1372,29 +1098,21 @@ mod wire {
             }
             doc.commit();
             let change = doc.get_last_local_change().unwrap();
-            assert_refused_everywhere(
-                change.raw_bytes(),
-                &NativeLimits::default(),
-                NativeResourceError::Operations,
-            );
+            assert_refused_everywhere(change.raw_bytes(), &NativeLimits::default(), NativeResourceError::Operations);
         }
     }
 
     #[test]
     fn truncated_chunks_are_refused_at_every_length() {
         let mut doc = seeded_doc();
-        doc.put(ROOT, "more", ScalarValue::Bytes(vec![3; 300]))
-            .unwrap();
+        doc.put(ROOT, "more", ScalarValue::Bytes(vec![3; 300])).unwrap();
         doc.commit();
         let change = doc.get_last_local_change().unwrap().raw_bytes().to_vec();
         let saved = doc.save();
         for full in [&change, &saved] {
             for cut in 1..full.len() {
                 let prefix = &full[..cut];
-                assert!(
-                    inspect(prefix, &NativeLimits::default()).is_err(),
-                    "prefix {cut} accepted"
-                );
+                assert!(inspect(prefix, &NativeLimits::default()).is_err(), "prefix {cut} accepted");
                 let mut resident = seeded_doc();
                 let result = incoming(
                     &mut resident,
@@ -1418,11 +1136,7 @@ mod wire {
             for at in [4usize, 7] {
                 let mut bad = good.clone();
                 bad[at] ^= 0x01;
-                assert_refused_everywhere(
-                    &bad,
-                    &NativeLimits::default(),
-                    NativeResourceError::Invalid,
-                );
+                assert_refused_everywhere(&bad, &NativeLimits::default(), NativeResourceError::Invalid);
             }
             // A body byte flipped under an unchanged checksum.
             let mut bad = good.clone();
@@ -1436,11 +1150,7 @@ mod wire {
     fn bad_magic_is_refused() {
         let mut change = simple_change(0x62, "m").raw_bytes().to_vec();
         change[0] = 0x84;
-        assert_refused_everywhere(
-            &change,
-            &NativeLimits::default(),
-            NativeResourceError::Invalid,
-        );
+        assert_refused_everywhere(&change, &NativeLimits::default(), NativeResourceError::Invalid);
     }
 
     /// Document chunk whose deflated op column inflates to 16 MiB from a few
@@ -1454,8 +1164,7 @@ mod wire {
         assert!(bomb.len() < 64 * 1024, "bomb is {} bytes", bomb.len());
         // Take a real document and replace its first op column with the bomb.
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "k", ScalarValue::Bytes(vec![1; 4096]))
-            .unwrap();
+        doc.put(ROOT, "k", ScalarValue::Bytes(vec![1; 4096])).unwrap();
         let input = replace_first_doc_column_with(&doc.save_nocompress(), &bomb);
         bomb_oracle(&input, INFLATED);
     }
@@ -1487,41 +1196,19 @@ mod wire {
         // The same through the owner turn and incoming application.
         let registry = NativeAllocationSet::new(credit.clone()).unwrap();
         let turn = registry.work_turn(credit.clone()).unwrap();
-        let (result, allocations) =
-            measure_under(&credit, || turn.normalize_input(input, &limits).map(drop));
+        let (result, allocations) = measure_under(&credit, || turn.normalize_input(input, &limits).map(drop));
         assert_eq!(result, Err(NativeResourceError::NormalizedBytes));
-        assert!(
-            allocations.peak <= ceiling,
-            "normalize_input peak {}",
-            allocations.peak
-        );
+        assert!(allocations.peak <= ceiling, "normalize_input peak {}", allocations.peak);
         let mut doc = seeded_doc();
         let before = snapshot(&mut doc);
         let (result, allocations) = measure_under(&credit, || {
             catch_unwind(AssertUnwindSafe(|| {
-                doc.apply_incoming_checked(
-                    input,
-                    &limits,
-                    &credit,
-                    NativeDependencyPolicy::RetainOrphans,
-                )
+                doc.apply_incoming_checked(input, &limits, &credit, NativeDependencyPolicy::RetainOrphans)
             }))
         });
         let result = result.expect("apply_incoming_checked panicked on a bomb");
-        assert!(
-            matches!(
-                result,
-                Err(NativeMutationError::Resource(
-                    NativeResourceError::NormalizedBytes
-                ))
-            ),
-            "{result:?}"
-        );
-        assert!(
-            allocations.peak <= ceiling,
-            "apply_incoming_checked peak {}",
-            allocations.peak
-        );
+        assert!(matches!(result, Err(NativeMutationError::Resource(NativeResourceError::NormalizedBytes))), "{result:?}");
+        assert!(allocations.peak <= ceiling, "apply_incoming_checked peak {}", allocations.peak);
         assert!(snapshot(&mut doc) == before);
     }
 
@@ -1542,9 +1229,7 @@ mod wire {
         let prefix_len = body.len() - r.len();
         let read_meta = |r: &mut &[u8]| -> Vec<(u64, usize)> {
             let n = read_uint(r);
-            (0..n)
-                .map(|_| (read_uint(r), read_uint(r) as usize))
-                .collect()
+            (0..n).map(|_| (read_uint(r), read_uint(r) as usize)).collect()
         };
         let change_meta = read_meta(&mut r);
         let op_meta = read_meta(&mut r);
@@ -1577,23 +1262,16 @@ mod wire {
     #[test]
     fn benign_compressed_column_normalizes_under_reservation() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "k", ScalarValue::Bytes(vec![1; 40_000]))
-            .unwrap();
+        doc.put(ROOT, "k", ScalarValue::Bytes(vec![1; 40_000])).unwrap();
         let saved = doc.save();
         let plain = doc.save_nocompress();
         let credit = allowance();
         let registry = NativeAllocationSet::new(credit.clone()).unwrap();
         let turn = registry.work_turn(credit.clone()).unwrap();
-        let (normalized, allocations) = measure_under(&credit, || {
-            turn.normalize_input(&saved, &NativeLimits::default())
-                .unwrap()
-        });
+        let (normalized, allocations) =
+            measure_under(&credit, || turn.normalize_input(&saved, &NativeLimits::default()).unwrap());
         assert_eq!(normalized.bytes(), plain);
-        assert!(
-            allocations.peak <= plain.len() + saved.len() + 256 * 1024,
-            "peak {}",
-            allocations.peak
-        );
+        assert!(allocations.peak <= plain.len() + saved.len() + 256 * 1024, "peak {}", allocations.peak);
     }
 }
 
@@ -1604,10 +1282,7 @@ mod semantic {
     use super::*;
 
     fn policies() -> [NativeDependencyPolicy; 2] {
-        [
-            NativeDependencyPolicy::RequireComplete,
-            NativeDependencyPolicy::RetainOrphans,
-        ]
+        [NativeDependencyPolicy::RequireComplete, NativeDependencyPolicy::RetainOrphans]
     }
 
     fn refused_semantically(result: &Result<NativeIncomingOutcome, NativeMutationError>) -> bool {
@@ -1630,26 +1305,12 @@ mod semantic {
             let credit = allowance();
             let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
             let turn = registry.work_turn(credit.clone()).unwrap();
-            let owned = turn
-                .normalize_input(resident, &NativeLimits::default())
-                .unwrap()
-                .reconstruct(&mut registry, &turn)
-                .unwrap();
-            let before = owned
-                .save_bounded(&turn, SaveOptions::default())
-                .unwrap()
-                .bytes()
-                .to_vec();
+            let owned = turn.normalize_input(resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &turn).unwrap();
+            let before = owned.save_bounded(&turn, SaveOptions::default()).unwrap().bytes().to_vec();
             let candidate = owned.clone_bounded(&mut registry, &turn).unwrap();
             let normalized = turn.normalize_input(input, &NativeLimits::default())?;
-            let result = assert_precharged(&credit, || {
-                candidate.apply_checked_bounded(normalized, policy, &mut registry, &turn)
-            });
-            let after = owned
-                .save_bounded(&turn, SaveOptions::default())
-                .unwrap()
-                .bytes()
-                .to_vec();
+            let result = assert_precharged(&credit, || candidate.apply_checked_bounded(normalized, policy, &mut registry, &turn));
+            let after = owned.save_bounded(&turn, SaveOptions::default()).unwrap().bytes().to_vec();
             assert!(before == after, "the original owned document changed");
             result
         }))
@@ -1671,13 +1332,7 @@ mod semantic {
         let mut doc = seeded_doc();
         let resident = doc.save();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                &forged,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
+            let result = incoming(&mut doc, &forged, &NativeLimits::default(), &allowance(), policy);
             assert!(refused_semantically(&result), "{policy:?}: {result:?}");
             let owned = owned_apply(&resident, &forged, policy);
             assert!(owned.is_err(), "{policy:?}: owned {owned:?}");
@@ -1698,13 +1353,7 @@ mod semantic {
         let mut doc = seeded_doc();
         let resident = doc.save();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                &forged,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
+            let result = incoming(&mut doc, &forged, &NativeLimits::default(), &allowance(), policy);
             assert!(refused_semantically(&result), "{policy:?}: {result:?}");
             assert!(owned_apply(&resident, &forged, policy).is_err());
         }
@@ -1731,23 +1380,14 @@ mod semantic {
         doc.apply_changes([list_change]).unwrap();
         let resident = doc.save();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                &forged,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
+            let result = incoming(&mut doc, &forged, &NativeLimits::default(), &allowance(), policy);
             assert!(refused_semantically(&result), "{policy:?}: {result:?}");
             assert!(owned_apply(&resident, &forged, policy).is_err());
         }
         // Plain 0.12 apply on the same input must at least not panic (report only).
         let mut plain = AutoCommit::load(&resident).unwrap();
         let plain_result = catch_unwind(AssertUnwindSafe(|| plain.load_incremental(&forged)));
-        println!(
-            "plain 0.12 load_incremental of map key on list: panicked={}",
-            plain_result.is_err()
-        );
+        println!("plain 0.12 load_incremental of map key on list: panicked={}", plain_result.is_err());
     }
 
     /// Elemid-keyed insert into a Map object.
@@ -1769,13 +1409,7 @@ mod semantic {
         let mut doc = AutoCommit::new();
         doc.apply_changes([map_change]).unwrap();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                &forged,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
+            let result = incoming(&mut doc, &forged, &NativeLimits::default(), &allowance(), policy);
             assert!(refused_semantically(&result), "{policy:?}: {result:?}");
         }
     }
@@ -1798,13 +1432,7 @@ mod semantic {
         let mut doc = AutoCommit::new();
         doc.apply_changes([base_change]).unwrap();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                &forged,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
+            let result = incoming(&mut doc, &forged, &NativeLimits::default(), &allowance(), policy);
             assert!(result.is_err(), "{policy:?}: {result:?}");
         }
     }
@@ -1815,22 +1443,10 @@ mod semantic {
         let mut parts = ChangeParts::parse(simple_change(0x77, "k").raw_bytes());
         parts.start_op = u64::MAX - 1;
         let mut doc = seeded_doc();
-        let result = incoming(
-            &mut doc,
-            &parts.encode(),
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
+        let result = incoming(&mut doc, &parts.encode(), &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
         assert!(result.is_err(), "{result:?}");
         parts.start_op = 0;
-        let result = incoming(
-            &mut doc,
-            &parts.encode(),
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
+        let result = incoming(&mut doc, &parts.encode(), &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
         assert!(result.is_err(), "start_op 0: {result:?}");
     }
 
@@ -1840,22 +1456,10 @@ mod semantic {
         let mut doc = seeded_doc();
         let mut parts = ChangeParts::parse(simple_change(0x78, "k").raw_bytes());
         parts.seq = 0;
-        let _ = incoming(
-            &mut doc,
-            &parts.encode(),
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
+        let _ = incoming(&mut doc, &parts.encode(), &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
         let mut parts = ChangeParts::parse(simple_change(0x79, "k").raw_bytes());
         parts.seq = 5; // no deps, seq gap
-        let _ = incoming(
-            &mut doc,
-            &parts.encode(),
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
+        let _ = incoming(&mut doc, &parts.encode(), &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
         // Whatever was admitted, the document still saves and reloads.
         let saved = doc.save();
         AutoCommit::load(&saved).unwrap();
@@ -1867,41 +1471,16 @@ mod semantic {
         let change = simple_change(0x81, "dup");
         let bytes = change.raw_bytes().to_vec();
         for policy in policies() {
-            let first = incoming(
-                &mut doc,
-                &bytes,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            )
-            .unwrap();
+            let first = incoming(&mut doc, &bytes, &NativeLimits::default(), &allowance(), policy).unwrap();
             let before = snapshot(&mut doc);
-            let again = incoming(
-                &mut doc,
-                &bytes,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            )
-            .unwrap();
-            assert_eq!(
-                again,
-                NativeIncomingOutcome::Applied { changed: false },
-                "{policy:?} after {first:?}"
-            );
+            let again = incoming(&mut doc, &bytes, &NativeLimits::default(), &allowance(), policy).unwrap();
+            assert_eq!(again, NativeIncomingOutcome::Applied { changed: false }, "{policy:?} after {first:?}");
             assert!(snapshot(&mut doc) == before);
         }
         // The same change twice in one input.
         let mut fresh = seeded_doc();
         let twice = [bytes.clone(), bytes].concat();
-        let outcome = incoming(
-            &mut fresh,
-            &twice,
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RequireComplete,
-        )
-        .unwrap();
+        let outcome = incoming(&mut fresh, &twice, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete).unwrap();
         assert_eq!(outcome, NativeIncomingOutcome::Applied { changed: true });
     }
 
@@ -1913,10 +1492,7 @@ mod semantic {
         let mut two = AutoCommit::new().with_actor(a);
         two.put(ROOT, "k", "second").unwrap();
         two.commit_with(CommitOptions::default().with_time(1));
-        let (c1, c2) = (
-            one.get_last_local_change().unwrap(),
-            two.get_last_local_change().unwrap(),
-        );
+        let (c1, c2) = (one.get_last_local_change().unwrap(), two.get_last_local_change().unwrap());
         assert_eq!((c1.seq(), c2.seq()), (1, 1));
         assert_ne!(c1.hash(), c2.hash());
         (c1, c2)
@@ -1929,22 +1505,10 @@ mod semantic {
         doc.apply_changes([c1]).unwrap();
         let resident = doc.save();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                c2.raw_bytes(),
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
-            assert!(
-                matches!(result, Err(NativeMutationError::DuplicateSequence)),
-                "{policy:?}: {result:?}"
-            );
+            let result = incoming(&mut doc, c2.raw_bytes(), &NativeLimits::default(), &allowance(), policy);
+            assert!(matches!(result, Err(NativeMutationError::DuplicateSequence)), "{policy:?}: {result:?}");
             let owned = owned_apply(&resident, c2.raw_bytes(), policy);
-            assert!(
-                matches!(owned, Err(NativeMutationError::DuplicateSequence)),
-                "{policy:?}: owned {owned:?}"
-            );
+            assert!(matches!(owned, Err(NativeMutationError::DuplicateSequence)), "{policy:?}: owned {owned:?}");
         }
     }
 
@@ -1954,17 +1518,8 @@ mod semantic {
         let input = [c1.raw_bytes(), c2.raw_bytes()].concat();
         let mut doc = seeded_doc();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                &input,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
-            assert!(
-                matches!(result, Err(NativeMutationError::DuplicateSequence)),
-                "{policy:?}: {result:?}"
-            );
+            let result = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), policy);
+            assert!(matches!(result, Err(NativeMutationError::DuplicateSequence)), "{policy:?}: {result:?}");
         }
     }
 
@@ -1984,38 +1539,17 @@ mod semantic {
         let mut right = src.fork().with_actor(a);
         right.put(ROOT, "k", "right").unwrap();
         right.commit_with(CommitOptions::default().with_time(3));
-        let (l2, r2) = (
-            left.get_last_local_change().unwrap(),
-            right.get_last_local_change().unwrap(),
-        );
+        let (l2, r2) = (left.get_last_local_change().unwrap(), right.get_last_local_change().unwrap());
         assert_eq!((l2.seq(), r2.seq()), (2, 2));
         let mut doc = seeded_doc();
         doc.apply_changes([l2.clone()]).unwrap(); // queued: base missing
         assert_eq!(doc.get_missing_deps(&[]), vec![base.hash()]);
-        let result = incoming(
-            &mut doc,
-            r2.raw_bytes(),
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
-        assert!(
-            matches!(result, Err(NativeMutationError::DuplicateSequence)),
-            "{result:?}"
-        );
+        let result = incoming(&mut doc, r2.raw_bytes(), &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
+        assert!(matches!(result, Err(NativeMutationError::DuplicateSequence)), "{result:?}");
         // And the base plus the conflicting seq 2 together.
         let input = [base.raw_bytes(), r2.raw_bytes()].concat();
-        let result = incoming(
-            &mut doc,
-            &input,
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
-        assert!(
-            matches!(result, Err(NativeMutationError::DuplicateSequence)),
-            "{result:?}"
-        );
+        let result = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
+        assert!(matches!(result, Err(NativeMutationError::DuplicateSequence)), "{result:?}");
     }
 
     #[test]
@@ -2029,44 +1563,16 @@ mod semantic {
         let orphan = changes[1].raw_bytes().to_vec();
         let mut doc = seeded_doc();
         let before = snapshot(&mut doc);
-        let result = incoming(
-            &mut doc,
-            &orphan,
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RequireComplete,
-        );
+        let result = incoming(&mut doc, &orphan, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
         assert_eq!(result.unwrap(), NativeIncomingOutcome::MissingDependencies);
         assert!(snapshot(&mut doc) == before);
-        let result = incoming(
-            &mut doc,
-            &orphan,
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
-        assert_eq!(
-            result.unwrap(),
-            NativeIncomingOutcome::Applied { changed: false }
-        );
+        let result = incoming(&mut doc, &orphan, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
+        assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: false });
         assert_eq!(doc.get_missing_deps(&[]), vec![changes[0].hash()]);
-        assert_eq!(
-            doc.get_heads(),
-            before.1,
-            "queued change must not move heads"
-        );
+        assert_eq!(doc.get_heads(), before.1, "queued change must not move heads");
         // Supplying the dependency integrates both.
-        let result = incoming(
-            &mut doc,
-            changes[0].raw_bytes(),
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RequireComplete,
-        );
-        assert_eq!(
-            result.unwrap(),
-            NativeIncomingOutcome::Applied { changed: true }
-        );
+        let result = incoming(&mut doc, changes[0].raw_bytes(), &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
+        assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: true });
         assert!(doc.get_missing_deps(&[]).is_empty());
         assert_eq!(doc.get(ROOT, "two").map(|v| v.is_some()).ok(), Some(true));
 
@@ -2075,49 +1581,20 @@ mod semantic {
         let before = snapshot(&mut doc);
         let ready = simple_change(0x86, "ready").raw_bytes().to_vec();
         let mixed = [ready.clone(), orphan.clone()].concat();
-        let result = incoming(
-            &mut doc,
-            &mixed,
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RequireComplete,
-        );
+        let result = incoming(&mut doc, &mixed, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
         assert_eq!(result.unwrap(), NativeIncomingOutcome::MissingDependencies);
-        assert!(
-            snapshot(&mut doc) == before,
-            "RequireComplete applied the ready part"
-        );
-        let result = incoming(
-            &mut doc,
-            &mixed,
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RetainOrphans,
-        );
-        assert_eq!(
-            result.unwrap(),
-            NativeIncomingOutcome::Applied { changed: true }
-        );
+        assert!(snapshot(&mut doc) == before, "RequireComplete applied the ready part");
+        let result = incoming(&mut doc, &mixed, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
+        assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: true });
         assert_eq!(doc.get_missing_deps(&[]).len(), 1);
 
         // Owned path.
         let resident = seeded_doc().save();
-        let owned =
-            owned_apply(&resident, &orphan, NativeDependencyPolicy::RequireComplete).unwrap();
-        assert!(
-            matches!(owned, NativeApplyResult::MissingDependencies),
-            "{owned:?}"
-        );
+        let owned = owned_apply(&resident, &orphan, NativeDependencyPolicy::RequireComplete).unwrap();
+        assert!(matches!(owned, NativeApplyResult::MissingDependencies), "{owned:?}");
         let owned = owned_apply(&resident, &orphan, NativeDependencyPolicy::RetainOrphans).unwrap();
         assert!(
-            matches!(
-                owned,
-                NativeApplyResult::Applied {
-                    changed: false,
-                    missing_dependencies: true,
-                    ..
-                }
-            ),
+            matches!(owned, NativeApplyResult::Applied { changed: false, missing_dependencies: true, .. }),
             "{owned:?}"
         );
     }
@@ -2130,22 +1607,12 @@ mod semantic {
         let dir = {
             let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
             let own = root.join("tests/fixtures/qos_08");
-            if own.is_dir() {
-                own
-            } else {
-                root.join("../../../vendor/automerge/tests/fixtures/qos_08")
-            }
+            if own.is_dir() { own } else { root.join("../../../vendor/automerge/tests/fixtures/qos_08") }
         };
         let input = std::fs::read(dir.join("table_changes.all.changes")).unwrap();
         let mut doc = AutoCommit::new();
         for policy in policies() {
-            let result = incoming(
-                &mut doc,
-                &input,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
+            let result = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), policy);
             println!("table changes via apply_incoming_checked ({policy:?}): {result:?}");
         }
         let result = reconstruct(&input, &NativeLimits::default()).map(drop);
@@ -2162,14 +1629,8 @@ mod budget {
     fn medium_doc() -> AutoCommit {
         let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x91; 16]));
         let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, &"bounded admission text ".repeat(64))
-            .unwrap();
-        doc.mark(
-            &text,
-            Mark::new("bold".into(), true, 0, 100),
-            ExpandMark::Both,
-        )
-        .unwrap();
+        doc.splice_text(&text, 0, 0, &"bounded admission text ".repeat(64)).unwrap();
+        doc.mark(&text, Mark::new("bold".into(), true, 0, 100), ExpandMark::Both).unwrap();
         let list = doc.put_object(ROOT, "list", ObjType::List).unwrap();
         for i in 0..200 {
             doc.insert(&list, i, i as i64).unwrap();
@@ -2202,19 +1663,12 @@ mod budget {
         let input = src.save();
         let mut first_ok = None;
         for size in sizes() {
-            let Ok(credit) = NativeAllowance::new(size) else {
-                continue;
-            };
+            let Ok(credit) = NativeAllowance::new(size) else { continue };
             let mut doc = seeded_doc();
             let before = snapshot(&mut doc);
             let result = assert_precharged(&credit, || {
                 catch_unwind(AssertUnwindSafe(|| {
-                    doc.apply_incoming_checked(
-                        &input,
-                        &NativeLimits::default(),
-                        &credit,
-                        NativeDependencyPolicy::RequireComplete,
-                    )
+                    doc.apply_incoming_checked(&input, &NativeLimits::default(), &credit, NativeDependencyPolicy::RequireComplete)
                 }))
             })
             .unwrap_or_else(|_| panic!("panicked at allowance {size}"));
@@ -2224,27 +1678,14 @@ mod budget {
                     assert_eq!(doc.get_heads(), src.get_heads());
                 }
                 Err(NativeMutationError::Resource(NativeResourceError::WorkBytes)) => {
-                    assert!(
-                        first_ok.is_none(),
-                        "refused at {size} after succeeding at {first_ok:?}"
-                    );
-                    assert!(
-                        snapshot(&mut doc) == before,
-                        "refusal at {size} mutated the document"
-                    );
+                    assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
+                    assert!(snapshot(&mut doc) == before, "refusal at {size} mutated the document");
                 }
                 other => panic!("allowance {size}: unexpected {other:?}"),
             }
-            assert_eq!(
-                credit.available_bytes() + credit.retained_bytes(),
-                size,
-                "leaked reservation at {size}"
-            );
+            assert_eq!(credit.available_bytes() + credit.retained_bytes(), size, "leaked reservation at {size}");
         }
-        println!(
-            "incoming: first success at allowance {first_ok:?} for {} input bytes",
-            input.len()
-        );
+        println!("incoming: first success at allowance {first_ok:?} for {} input bytes", input.len());
         assert!(first_ok.is_some(), "never succeeded");
     }
 
@@ -2258,34 +1699,22 @@ mod budget {
         let expected_heads = src.get_heads();
         let mut first_ok = None;
         for size in sizes() {
-            let Ok(credit) = NativeAllowance::new(size) else {
-                continue;
-            };
+            let Ok(credit) = NativeAllowance::new(size) else { continue };
             let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), NativeResourceError> {
                 let mut registry = NativeAllocationSet::new(credit.clone())?;
                 let turn = registry.work_turn(credit.clone())?;
-                let normalized = assert_precharged(&credit, || {
-                    turn.normalize_input(&input, &NativeLimits::default())
-                })?;
-                let owned =
-                    assert_precharged(&credit, || normalized.reconstruct(&mut registry, &turn))?;
+                let normalized = assert_precharged(&credit, || turn.normalize_input(&input, &NativeLimits::default()))?;
+                let owned = assert_precharged(&credit, || normalized.reconstruct(&mut registry, &turn))?;
                 let heads = assert_precharged(&credit, || owned.base_heads_bounded(&turn))?;
                 assert_eq!(heads.as_slice(), expected_heads.as_slice());
                 let _missing = assert_precharged(&credit, || owned.has_missing_dependencies());
-                let saved = assert_precharged(&credit, || {
-                    owned.save_bounded(&turn, SaveOptions::default())
-                })?;
-                assert_eq!(
-                    AutoCommit::load(saved.bytes()).unwrap().get_heads(),
-                    expected_heads
-                );
+                let saved = assert_precharged(&credit, || owned.save_bounded(&turn, SaveOptions::default()))?;
+                assert_eq!(AutoCommit::load(saved.bytes()).unwrap().get_heads(), expected_heads);
                 drop(saved);
-                let history =
-                    assert_precharged(&credit, || owned.changes_since_bounded(&[], &turn))?;
+                let history = assert_precharged(&credit, || owned.changes_since_bounded(&[], &turn))?;
                 assert_eq!(history.len(), src.get_changes(&[]).len());
                 drop(history);
-                let clone =
-                    assert_precharged(&credit, || owned.clone_bounded(&mut registry, &turn))?;
+                let clone = assert_precharged(&credit, || owned.clone_bounded(&mut registry, &turn))?;
                 drop(clone);
                 Ok(())
             }))
@@ -2295,18 +1724,11 @@ mod budget {
                     first_ok.get_or_insert(size);
                 }
                 Err(NativeResourceError::WorkBytes) => {
-                    assert!(
-                        first_ok.is_none(),
-                        "refused at {size} after succeeding at {first_ok:?}"
-                    );
+                    assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
                 }
                 Err(other) => panic!("allowance {size}: {other:?}"),
             }
-            assert_eq!(
-                credit.available_bytes() + credit.retained_bytes(),
-                size,
-                "leaked reservation at {size}"
-            );
+            assert_eq!(credit.available_bytes() + credit.retained_bytes(), size, "leaked reservation at {size}");
         }
         println!("owned pipeline: first success at allowance {first_ok:?}");
         assert!(first_ok.is_some());
@@ -2325,43 +1747,20 @@ mod budget {
             let big = allowance();
             let mut registry = NativeAllocationSet::new(big.clone()).unwrap();
             let setup = registry.work_turn(big.clone()).unwrap();
-            let owned = setup
-                .normalize_input(&resident, &NativeLimits::default())
-                .unwrap()
-                .reconstruct(&mut registry, &setup)
-                .unwrap();
-            let before = owned
-                .save_bounded(&setup, SaveOptions::default())
-                .unwrap()
-                .bytes()
-                .to_vec();
+            let owned = setup.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &setup).unwrap();
+            let before = owned.save_bounded(&setup, SaveOptions::default()).unwrap().bytes().to_vec();
             let candidate = owned.clone_bounded(&mut registry, &setup).unwrap();
-            let normalized = setup
-                .normalize_input(&input, &NativeLimits::default())
-                .unwrap();
-            let Ok(credit) = NativeAllowance::new(size) else {
-                continue;
-            };
-            let Ok(turn) = registry.work_turn(credit.clone()) else {
-                continue;
-            };
+            let normalized = setup.normalize_input(&input, &NativeLimits::default()).unwrap();
+            let Ok(credit) = NativeAllowance::new(size) else { continue };
+            let Ok(turn) = registry.work_turn(credit.clone()) else { continue };
             let result = catch_unwind(AssertUnwindSafe(|| {
                 assert_precharged(&credit, || {
-                    candidate.apply_checked_bounded(
-                        normalized,
-                        NativeDependencyPolicy::RequireComplete,
-                        &mut registry,
-                        &turn,
-                    )
+                    candidate.apply_checked_bounded(normalized, NativeDependencyPolicy::RequireComplete, &mut registry, &turn)
                 })
             }))
             .unwrap_or_else(|_| panic!("panicked at allowance {size}"));
             match result {
-                Ok(NativeApplyResult::Applied {
-                    document,
-                    changed: true,
-                    missing_dependencies: false,
-                }) => {
+                Ok(NativeApplyResult::Applied { document, changed: true, missing_dependencies: false }) => {
                     first_ok.get_or_insert(size);
                     let heads = document.base_heads_bounded(&setup).unwrap();
                     let mut expected = src.get_heads();
@@ -2372,26 +1771,15 @@ mod budget {
                     assert_eq!(got, expected);
                 }
                 Err(NativeMutationError::Resource(NativeResourceError::WorkBytes)) => {
-                    assert!(
-                        first_ok.is_none(),
-                        "refused at {size} after succeeding at {first_ok:?}"
-                    );
+                    assert!(first_ok.is_none(), "refused at {size} after succeeding at {first_ok:?}");
                 }
                 other => unexpected.push(format!("allowance {size}: {other:?}")),
             }
-            let after = owned
-                .save_bounded(&setup, SaveOptions::default())
-                .unwrap()
-                .bytes()
-                .to_vec();
+            let after = owned.save_bounded(&setup, SaveOptions::default()).unwrap().bytes().to_vec();
             assert!(before == after, "original changed at {size}");
         }
         println!("owned apply: first success at allowance {first_ok:?}");
-        assert!(
-            unexpected.is_empty(),
-            "expected success or WorkBytes:\n{}",
-            unexpected.join("\n")
-        );
+        assert!(unexpected.is_empty(), "expected success or WorkBytes:\n{}", unexpected.join("\n"));
         assert!(first_ok.is_some());
     }
 
@@ -2402,20 +1790,14 @@ mod budget {
     fn populated_document_with(caches: bool) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
         let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
-        doc.splice_text(&text, 0, 0, &"retained native text ".repeat(256))
-            .unwrap();
+        doc.splice_text(&text, 0, 0, &"retained native text ".repeat(256)).unwrap();
         doc.commit();
         if caches {
             doc.update_diff_cursor();
         }
         doc.mark(
             &text,
-            Mark::new(
-                "long-shared-mark-name-for-allocation".into(),
-                "long-shared-mark-value-for-allocation",
-                0,
-                200,
-            ),
+            Mark::new("long-shared-mark-name-for-allocation".into(), "long-shared-mark-value-for-allocation", 0, 200),
             ExpandMark::Both,
         )
         .unwrap();
@@ -2425,8 +1807,7 @@ mod budget {
             let heads = doc.get_heads();
             drop(doc.diff(&[], &heads));
         }
-        doc.put(ROOT, "pending", ScalarValue::Bytes(vec![7; 32_768]))
-            .unwrap();
+        doc.put(ROOT, "pending", ScalarValue::Bytes(vec![7; 32_768])).unwrap();
         assert!(doc.pending_ops() > 0);
         (doc, text)
     }
@@ -2443,10 +1824,7 @@ mod budget {
         drop(populated_document_with(true));
         let ((doc, _), allocations) = measure(|| populated_document_with(true));
         let footprint = doc.native_footprint(&allowance());
-        assert!(
-            footprint.is_ok(),
-            "native_footprint with diff caches: {footprint:?}"
-        );
+        assert!(footprint.is_ok(), "native_footprint with diff caches: {footprint:?}");
         assert!(footprint.unwrap().total_bytes() >= allocations.live);
         let credit = allowance();
         let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
@@ -2455,11 +1833,7 @@ mod budget {
         assert!(cloned.is_ok(), "clone_bounded with diff caches: {cloned:?}");
     }
 
-    fn measure_destination<T>(
-        credit: &NativeAllowance,
-        bytes: usize,
-        operation: impl FnOnce() -> T,
-    ) -> (T, Allocations) {
+    fn measure_destination<T>(credit: &NativeAllowance, bytes: usize, operation: impl FnOnce() -> T) -> (T, Allocations) {
         struct Reset;
         impl Drop for Reset {
             fn drop(&mut self) {
@@ -2492,32 +1866,22 @@ mod budget {
         let turn = registry.work_turn(credit.clone()).unwrap();
         let candidate = source.clone_bounded(&mut registry, &turn).unwrap();
         for deflate in [false, true] {
-            let options = || SaveOptions {
-                deflate,
-                retain_orphans: true,
-            };
+            let options = || SaveOptions { deflate, retain_orphans: true };
             let expected = candidate.save_bounded(&turn, options()).unwrap();
             assert!(expected.bytes().ends_with(&queued_raw));
             let length = expected.bytes().len();
-            let (exact, _) = measure_destination(&credit, length, || {
-                candidate.save_bounded_with_limit(&turn, options(), length)
-            });
+            let (exact, _) = measure_destination(&credit, length, || candidate.save_bounded_with_limit(&turn, options(), length));
             let exact = exact.unwrap();
             assert_eq!(exact.bytes(), expected.bytes());
             let mut restored = AutoCommit::load(exact.bytes()).unwrap();
             assert_eq!(restored.get_heads(), heads);
-            let (short, short_allocations) = measure_destination(&credit, length, || {
-                candidate.save_bounded_with_limit(&turn, options(), length - 1)
-            });
+            let (short, short_allocations) =
+                measure_destination(&credit, length, || candidate.save_bounded_with_limit(&turn, options(), length - 1));
             assert!(matches!(short, Err(NativeResourceError::WorkBytes)));
             // 0.12 port: save_with_options builds its output internally, so
             // the destination-size allocation may occur; it must be reserved
             // (measure_under) and nothing may be retained after refusal.
-            assert_eq!(
-                short_allocations.live, 0,
-                "refused save retained {} bytes",
-                short_allocations.live
-            );
+            assert_eq!(short_allocations.live, 0, "refused save retained {} bytes", short_allocations.live);
         }
     }
 
@@ -2526,38 +1890,19 @@ mod budget {
         let (mut source, _) = populated_document();
         source.commit();
         let heads = source.get_heads();
-        let changes: Vec<_> = source
-            .get_changes(&[])
-            .iter()
-            .map(|c| c.raw_bytes().to_vec())
-            .collect();
+        let changes: Vec<_> = source.get_changes(&[]).iter().map(|c| c.raw_bytes().to_vec()).collect();
         let credit = allowance();
         let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
         let turn = registry.work_turn(credit.clone()).unwrap();
         let candidate = source.clone_bounded(&mut registry, &turn).unwrap();
         for deflate in [false, true] {
-            let (saved, allocations) = measure_under(&credit, || {
-                candidate.save_bounded(
-                    &turn,
-                    SaveOptions {
-                        deflate,
-                        retain_orphans: true,
-                    },
-                )
-            });
+            let (saved, allocations) =
+                measure_under(&credit, || candidate.save_bounded(&turn, SaveOptions { deflate, retain_orphans: true }));
             let saved = saved.unwrap();
-            println!(
-                "save: deflate={deflate} output={} peak={}",
-                saved.bytes().len(),
-                allocations.peak
-            );
+            println!("save: deflate={deflate} output={} peak={}", saved.bytes().len(), allocations.peak);
             let mut restored = AutoCommit::load(saved.bytes()).unwrap();
             assert_eq!(restored.get_heads(), heads);
-            let restored_changes: Vec<_> = restored
-                .get_changes(&[])
-                .iter()
-                .map(|c| c.raw_bytes().to_vec())
-                .collect();
+            let restored_changes: Vec<_> = restored.get_changes(&[]).iter().map(|c| c.raw_bytes().to_vec()).collect();
             assert_eq!(restored_changes, changes);
         }
     }
@@ -2569,27 +1914,20 @@ mod budget {
         let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
         let turn = registry.work_turn(credit.clone()).unwrap();
         let pending = source.clone_bounded(&mut registry, &turn).unwrap();
-        assert!(matches!(
-            pending.save_bounded(&turn, SaveOptions::default()),
-            Err(NativeResourceError::Unaccounted)
-        ));
+        assert!(matches!(pending.save_bounded(&turn, SaveOptions::default()), Err(NativeResourceError::Unaccounted)));
         assert!(pending.pending_ops() > 0);
         source.commit();
         let closed = source.clone_bounded(&mut registry, &turn).unwrap();
         let tiny = NativeAllowance::new(1024).unwrap();
         let tiny_turn = registry.work_turn(tiny.clone()).unwrap();
-        let result = assert_precharged(&tiny, || {
-            closed.save_bounded(&tiny_turn, SaveOptions::default())
-        });
+        let result = assert_precharged(&tiny, || closed.save_bounded(&tiny_turn, SaveOptions::default()));
         assert!(matches!(result, Err(NativeResourceError::WorkBytes)));
     }
 
     #[test]
     fn bounded_save_covers_empty_branches_counters_and_queued_changes() {
         let mut branches = AutoCommit::new();
-        branches
-            .put(ROOT, "count", ScalarValue::counter(0))
-            .unwrap();
+        branches.put(ROOT, "count", ScalarValue::counter(0)).unwrap();
         branches.put(ROOT, "boolean", true).unwrap();
         branches.put(ROOT, "null", ScalarValue::Null).unwrap();
         branches.commit();
@@ -2599,9 +1937,7 @@ mod budget {
         }
         branches.put(ROOT, "boolean", false).unwrap();
         branches.commit();
-        other
-            .put(ROOT, "concurrent", "a different actor's retained value")
-            .unwrap();
+        other.put(ROOT, "concurrent", "a different actor's retained value").unwrap();
         other.commit();
         branches.merge(&mut other).unwrap();
 
@@ -2615,18 +1951,10 @@ mod budget {
         let mut queued = AutoCommit::new();
         queued.apply_changes([changes[1].clone()]).unwrap();
 
-        for (mut source, orphan) in [
-            (AutoCommit::new(), None),
-            (branches, None),
-            (queued, Some(orphan_raw)),
-        ] {
+        for (mut source, orphan) in [(AutoCommit::new(), None), (branches, None), (queued, Some(orphan_raw))] {
             let heads = source.get_heads();
             let missing = source.get_missing_deps(&[]);
-            let mut original: Vec<_> = source
-                .get_changes(&[])
-                .iter()
-                .map(|c| (c.hash(), c.raw_bytes().to_vec()))
-                .collect();
+            let mut original: Vec<_> = source.get_changes(&[]).iter().map(|c| (c.hash(), c.raw_bytes().to_vec())).collect();
             original.sort_by_key(|entry| entry.0);
             let credit = allowance();
             let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
@@ -2634,13 +1962,7 @@ mod budget {
             let candidate = source.clone_bounded(&mut registry, &turn).unwrap();
             for deflate in [false, true] {
                 let saved = assert_precharged(&credit, || {
-                    candidate.save_bounded(
-                        &turn,
-                        SaveOptions {
-                            deflate,
-                            retain_orphans: true,
-                        },
-                    )
+                    candidate.save_bounded(&turn, SaveOptions { deflate, retain_orphans: true })
                 })
                 .unwrap();
                 if let Some(orphan) = &orphan {
@@ -2649,23 +1971,14 @@ mod budget {
                 let mut restored = AutoCommit::load(saved.bytes()).unwrap();
                 assert_eq!(restored.get_heads(), heads);
                 assert_eq!(restored.get_missing_deps(&[]), missing);
-                let mut restored_changes: Vec<_> = restored
-                    .get_changes(&[])
-                    .iter()
-                    .map(|c| (c.hash(), c.raw_bytes().to_vec()))
-                    .collect();
+                let mut restored_changes: Vec<_> =
+                    restored.get_changes(&[]).iter().map(|c| (c.hash(), c.raw_bytes().to_vec())).collect();
                 restored_changes.sort_by_key(|entry| entry.0);
                 assert_eq!(restored_changes, original);
             }
             if orphan.is_some() {
                 let saved = assert_precharged(&credit, || {
-                    candidate.save_bounded(
-                        &turn,
-                        SaveOptions {
-                            deflate: true,
-                            retain_orphans: false,
-                        },
-                    )
+                    candidate.save_bounded(&turn, SaveOptions { deflate: true, retain_orphans: false })
                 })
                 .unwrap();
                 let mut restored = AutoCommit::load(saved.bytes()).unwrap();
@@ -2680,30 +1993,14 @@ mod budget {
         drop(populated_document());
         let ((doc, _text), allocations) = measure(populated_document);
         let footprint = doc.native_footprint(&allowance()).unwrap();
-        println!(
-            "retained fixture: actual={} bound={}",
-            allocations.live,
-            footprint.owned_bytes()
-        );
+        println!("retained fixture: actual={} bound={}", allocations.live, footprint.owned_bytes());
         assert!(allocations.live > 32_768);
         // 0.12: slabs are uniquely owned.
         assert_eq!(footprint.shared_bytes(), 0);
         assert_eq!(footprint.total_bytes(), footprint.owned_bytes());
-        assert!(
-            footprint.total_bytes() >= allocations.live,
-            "declared {} below actual {}",
-            footprint.total_bytes(),
-            allocations.live
-        );
-        assert!(
-            footprint.total_bytes() <= 8 * allocations.live.max(64 * 1024),
-            "bound {} is not useful",
-            footprint.total_bytes()
-        );
-        assert!(
-            doc.pending_ops() > 0,
-            "inspection must not close a transaction"
-        );
+        assert!(footprint.total_bytes() >= allocations.live, "declared {} below actual {}", footprint.total_bytes(), allocations.live);
+        assert!(footprint.total_bytes() <= 8 * allocations.live.max(64 * 1024), "bound {} is not useful", footprint.total_bytes());
+        assert!(doc.pending_ops() > 0, "inspection must not close a transaction");
     }
 
     #[test]
@@ -2713,15 +2010,10 @@ mod budget {
         let mut allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
         let turn = allocations.work_turn(allowance.clone()).unwrap();
         let before = allowance.available_bytes();
-        let (cloned, measured) = measure_under(&allowance, || {
-            doc.clone_bounded(&mut allocations, &turn).unwrap()
-        });
+        let (cloned, measured) = measure_under(&allowance, || doc.clone_bounded(&mut allocations, &turn).unwrap());
         assert_eq!(cloned.pending_ops(), doc.pending_ops());
         assert!(measured.live > 32_768);
-        assert!(
-            before - allowance.available_bytes() >= measured.live,
-            "clone retains more than it holds credit for"
-        );
+        assert!(before - allowance.available_bytes() >= measured.live, "clone retains more than it holds credit for");
         assert!(measured.peak <= before);
     }
 
@@ -2732,13 +2024,9 @@ mod budget {
         let mut allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
         let turn = allocations.work_turn(allowance.clone()).unwrap();
         let before = allowance.available_bytes();
-        let (result, measured) =
-            measure_under(&allowance, || doc.clone_bounded(&mut allocations, &turn));
+        let (result, measured) = measure_under(&allowance, || doc.clone_bounded(&mut allocations, &turn));
         assert!(matches!(result, Err(NativeResourceError::WorkBytes)));
-        assert!(
-            measured.peak <= before,
-            "refusal must precede the native clone allocation"
-        );
+        assert!(measured.peak <= before, "refusal must precede the native clone allocation");
         assert_eq!(allowance.available_bytes(), before);
         assert!(doc.pending_ops() > 0);
     }
@@ -2758,28 +2046,15 @@ mod budget {
         let after_first = allowance.available_bytes();
         let second = first.clone_bounded(&mut allocations, &turn).unwrap();
         let second_charge = after_first - allowance.available_bytes();
-        assert!(
-            second_charge * 2 >= first_charge,
-            "second clone ({second_charge}) cannot share backing with the first ({first_charge})"
-        );
+        assert!(second_charge * 2 >= first_charge, "second clone ({second_charge}) cannot share backing with the first ({first_charge})");
         drop(first);
-        assert_eq!(
-            allowance.available_bytes(),
-            initial - second_charge,
-            "dropping a clone releases its credit"
-        );
+        assert_eq!(allowance.available_bytes(), initial - second_charge, "dropping a clone releases its credit");
         allocations.reconcile();
         drop(allocations);
-        assert!(
-            allowance.available_bytes() < initial,
-            "the live clone still holds credit"
-        );
+        assert!(allowance.available_bytes() < initial, "the live clone still holds credit");
         assert!(second.pending_ops() > 0);
         drop(second);
-        assert!(
-            allowance.available_bytes() >= initial - 64,
-            "all but turn metadata released"
-        );
+        assert!(allowance.available_bytes() >= initial - 64, "all but turn metadata released");
     }
 
     #[test]
@@ -2793,30 +2068,14 @@ mod budget {
         let current = allowance();
         let turn = allocations.work_turn(current.clone()).unwrap();
         let before = current.available_bytes();
-        let second = measure_under(&current, || {
-            first.clone_bounded(&mut allocations, &turn).unwrap()
-        })
-        .0;
-        assert_eq!(
-            initial.available_bytes(),
-            old_available,
-            "new work cannot debit an old resident ledger"
-        );
+        let second = measure_under(&current, || first.clone_bounded(&mut allocations, &turn).unwrap()).0;
+        assert_eq!(initial.available_bytes(), old_available, "new work cannot debit an old resident ledger");
         assert!(current.available_bytes() < before);
         let wrong_set = NativeAllocationSet::new(allowance()).unwrap();
         let wrong_turn = wrong_set.work_turn(allowance()).unwrap();
-        assert!(matches!(
-            second.clone_bounded(&mut allocations, &wrong_turn),
-            Err(NativeResourceError::Unaccounted)
-        ));
-        assert!(matches!(
-            second.read_unqualified(&wrong_turn),
-            Err(NativeResourceError::Unaccounted)
-        ));
-        assert!(matches!(
-            second.save_bounded(&wrong_turn, SaveOptions::default()),
-            Err(NativeResourceError::Unaccounted)
-        ));
+        assert!(matches!(second.clone_bounded(&mut allocations, &wrong_turn), Err(NativeResourceError::Unaccounted)));
+        assert!(matches!(second.read_unqualified(&wrong_turn), Err(NativeResourceError::Unaccounted)));
+        assert!(matches!(second.save_bounded(&wrong_turn, SaveOptions::default()), Err(NativeResourceError::Unaccounted)));
     }
 
     /// Reconstructing under one registry and applying with another owner's
@@ -2827,32 +2086,13 @@ mod budget {
         let credit = allowance();
         let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
         let turn = registry.work_turn(credit.clone()).unwrap();
-        let owned = turn
-            .normalize_input(&resident, &NativeLimits::default())
-            .unwrap()
-            .reconstruct(&mut registry, &turn)
-            .unwrap();
+        let owned = turn.normalize_input(&resident, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &turn).unwrap();
         let mut foreign = NativeAllocationSet::new(allowance()).unwrap();
         let foreign_turn = foreign.work_turn(allowance()).unwrap();
         let input = simple_change(0x99, "k").raw_bytes().to_vec();
-        let normalized = foreign_turn
-            .normalize_input(&input, &NativeLimits::default())
-            .unwrap();
-        let result = owned.apply_checked_bounded(
-            normalized,
-            NativeDependencyPolicy::RetainOrphans,
-            &mut foreign,
-            &foreign_turn,
-        );
-        assert!(
-            matches!(
-                result,
-                Err(NativeMutationError::Resource(
-                    NativeResourceError::Unaccounted
-                ))
-            ),
-            "{result:?}"
-        );
+        let normalized = foreign_turn.normalize_input(&input, &NativeLimits::default()).unwrap();
+        let result = owned.apply_checked_bounded(normalized, NativeDependencyPolicy::RetainOrphans, &mut foreign, &foreign_turn);
+        assert!(matches!(result, Err(NativeMutationError::Resource(NativeResourceError::Unaccounted))), "{result:?}");
     }
 
     /// Reads are step-charged and pre-reserved.
@@ -2863,11 +2103,7 @@ mod budget {
         let credit = allowance();
         let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
         let turn = registry.work_turn(credit.clone()).unwrap();
-        let owned = turn
-            .normalize_input(&input, &NativeLimits::default())
-            .unwrap()
-            .reconstruct(&mut registry, &turn)
-            .unwrap();
+        let owned = turn.normalize_input(&input, &NativeLimits::default()).unwrap().reconstruct(&mut registry, &turn).unwrap();
         let read = owned.read(&turn).unwrap();
         let root = read.root();
         let mut list = None;
@@ -2893,22 +2129,14 @@ mod budget {
         assert!(seen <= 10);
         let steps = NativeReadSteps::new(10_000).unwrap();
         let visited = precharged_as("visit_list (10k steps)", &credit, || {
-            read.visit_list(list, &steps, |_| {
-                Ok::<_, ()>(std::ops::ControlFlow::Continue(()))
-            })
+            read.visit_list(list, &steps, |_| Ok::<_, ()>(std::ops::ControlFlow::Continue(())))
         })
         .unwrap();
         assert_eq!(visited, 200);
-        let keys = precharged_as("visit_keys", &credit, || {
-            read.visit_keys(root, |_| Ok::<_, ()>(()))
-        })
-        .unwrap();
+        let keys = precharged_as("visit_keys", &credit, || read.visit_keys(root, |_| Ok::<_, ()>(()))).unwrap();
         assert_eq!(keys, 3);
         let mut heads = Vec::with_capacity(8); // caller-owned output, allocated outside the measured call
-        let count = precharged_as("visit_heads", &credit, || {
-            read.visit_heads(8, |h| heads.push(h))
-        })
-        .unwrap();
+        let count = precharged_as("visit_heads", &credit, || read.visit_heads(8, |h| heads.push(h))).unwrap();
         assert_eq!(count, heads.len());
         assert_eq!(heads, src.get_heads());
     }
@@ -2939,16 +2167,8 @@ mod shapes {
             .stack_size(256 * 1024)
             .spawn(move || {
                 let mut doc = AutoCommit::new();
-                let result = doc.apply_incoming_checked(
-                    &change,
-                    &NativeLimits::default(),
-                    &allowance(),
-                    NativeDependencyPolicy::RequireComplete,
-                );
-                assert_eq!(
-                    result.unwrap(),
-                    NativeIncomingOutcome::Applied { changed: true }
-                );
+                let result = doc.apply_incoming_checked(&change, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
+                assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: true });
                 let owned = reconstruct(&change, &NativeLimits::default()).unwrap();
                 let credit = allowance();
                 let mut registry = NativeAllocationSet::new(credit.clone()).unwrap();
@@ -2963,41 +2183,13 @@ mod shapes {
     #[test]
     fn many_actor_changes_within_and_over_limits() {
         let n = 64;
-        let input: Vec<u8> = (0..n)
-            .flat_map(|i| simple_change(i as u8, "k").raw_bytes().to_vec())
-            .collect();
+        let input: Vec<u8> = (0..n).flat_map(|i| simple_change(i as u8, "k").raw_bytes().to_vec()).collect();
         let mut doc = seeded_doc();
-        let tight = NativeLimits {
-            max_actors: n - 1,
-            ..NativeLimits::default()
-        };
-        let result = incoming(
-            &mut doc,
-            &input,
-            &tight,
-            &allowance(),
-            NativeDependencyPolicy::RequireComplete,
-        );
-        assert!(
-            matches!(
-                result,
-                Err(NativeMutationError::Resource(
-                    NativeResourceError::Collection
-                ))
-            ),
-            "{result:?}"
-        );
-        let result = incoming(
-            &mut doc,
-            &input,
-            &NativeLimits::default(),
-            &allowance(),
-            NativeDependencyPolicy::RequireComplete,
-        );
-        assert_eq!(
-            result.unwrap(),
-            NativeIncomingOutcome::Applied { changed: true }
-        );
+        let tight = NativeLimits { max_actors: n - 1, ..NativeLimits::default() };
+        let result = incoming(&mut doc, &input, &tight, &allowance(), NativeDependencyPolicy::RequireComplete);
+        assert!(matches!(result, Err(NativeMutationError::Resource(NativeResourceError::Collection))), "{result:?}");
+        let result = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RequireComplete);
+        assert_eq!(result.unwrap(), NativeIncomingOutcome::Applied { changed: true });
         assert_eq!(doc.get_all(ROOT, "k").unwrap().len(), n);
     }
 }
@@ -3021,9 +2213,7 @@ mod columnar {
 
     fn read_meta(r: &mut &[u8]) -> Vec<(u64, usize)> {
         let n = read_uint(r);
-        (0..n)
-            .map(|_| (read_uint(r), read_uint(r) as usize))
-            .collect()
+        (0..n).map(|_| (read_uint(r), read_uint(r) as usize)).collect()
     }
     fn take_cols(r: &mut &[u8], meta: &[(u64, usize)]) -> Vec<(u64, Vec<u8>)> {
         meta.iter()
@@ -3062,13 +2252,7 @@ mod columnar {
                     let op_meta = read_meta(&mut r);
                     let changes = take_cols(&mut r, &change_meta);
                     let ops = take_cols(&mut r, &op_meta);
-                    Self {
-                        kind,
-                        prefix,
-                        changes,
-                        ops,
-                        suffix: r.to_vec(),
-                    }
+                    Self { kind, prefix, changes, ops, suffix: r.to_vec() }
                 }
                 3 => {
                     let n = read_uint(&mut r) as usize;
@@ -3083,13 +2267,7 @@ mod columnar {
                     let op_meta = read_meta(&mut r);
                     let ops = take_cols(&mut r, &op_meta);
                     assert!(r.is_empty());
-                    Self {
-                        kind,
-                        prefix,
-                        changes,
-                        ops,
-                        suffix: Vec::new(),
-                    }
+                    Self { kind, prefix, changes, ops, suffix: Vec::new() }
                 }
                 k => panic!("not a columnar chunk: {k}"),
             }
@@ -3119,10 +2297,7 @@ mod columnar {
             chunk(self.kind, &out)
         }
         fn set(cols: &mut [(u64, Vec<u8>)], spec: u64, data: Vec<u8>) {
-            let col = cols
-                .iter_mut()
-                .find(|(s, _)| *s == spec)
-                .unwrap_or_else(|| panic!("no column {spec:#x}"));
+            let col = cols.iter_mut().find(|(s, _)| *s == spec).unwrap_or_else(|| panic!("no column {spec:#x}"));
             col.1 = data;
         }
     }
@@ -3142,26 +2317,11 @@ mod columnar {
     /// Runs the checked surface on `input`; asserts refusal without panic.
     fn assert_refused_without_panic(what: &str, input: &[u8]) {
         let owned = reconstruct(input, &NativeLimits::default()).map(drop);
-        assert!(
-            owned.is_err(),
-            "{what}: reconstruct accepted forged storage"
-        );
+        assert!(owned.is_err(), "{what}: reconstruct accepted forged storage");
         let mut doc = seeded_doc();
-        for policy in [
-            NativeDependencyPolicy::RequireComplete,
-            NativeDependencyPolicy::RetainOrphans,
-        ] {
-            let result = incoming(
-                &mut doc,
-                input,
-                &NativeLimits::default(),
-                &allowance(),
-                policy,
-            );
-            assert!(
-                result.is_err(),
-                "{what}: apply_incoming_checked accepted forged storage: {result:?}"
-            );
+        for policy in [NativeDependencyPolicy::RequireComplete, NativeDependencyPolicy::RetainOrphans] {
+            let result = incoming(&mut doc, input, &NativeLimits::default(), &allowance(), policy);
+            assert!(result.is_err(), "{what}: apply_incoming_checked accepted forged storage: {result:?}");
         }
     }
 
@@ -3177,10 +2337,7 @@ mod columnar {
         Columnar::set(&mut parts.ops, 0x23, delta_literal(&[1, 1]));
         let forged = parts.encode();
         let plain = catch_unwind(|| AutoCommit::load(&forged).map(drop));
-        println!(
-            "plain 0.12 load of duplicate op ids: panicked={}",
-            plain.is_err()
-        );
+        println!("plain 0.12 load of duplicate op ids: panicked={}", plain.is_err());
         assert_refused_without_panic("duplicate op ids", &forged);
     }
 
@@ -3214,10 +2371,7 @@ mod columnar {
         Columnar::set(&mut parts.changes, 0x23, delta_literal(&[1, 3]));
         let forged = parts.encode();
         let plain = catch_unwind(|| AutoCommit::load(&forged).map(drop));
-        println!(
-            "plain 0.12 load of bundle with missing ops: panicked={}",
-            plain.is_err()
-        );
+        println!("plain 0.12 load of bundle with missing ops: panicked={}", plain.is_err());
         assert_refused_without_panic("bundle missing ops", &forged);
     }
 
@@ -3230,8 +2384,7 @@ mod columnar {
         let mut src = AutoCommit::new().with_actor(ActorId::from(vec![0xd1; 16]));
         let text = src.put_object(ROOT, "t", ObjType::Text).unwrap();
         src.splice_text(&text, 0, 0, "hello").unwrap();
-        src.mark(&text, Mark::new("b".into(), true, 0, 3), ExpandMark::After)
-            .unwrap();
+        src.mark(&text, Mark::new("b".into(), true, 0, 3), ExpandMark::After).unwrap();
         let list = src.put_object(ROOT, "l", ObjType::List).unwrap();
         src.insert(&list, 0, ScalarValue::counter(1)).unwrap();
         src.commit();
@@ -3247,15 +2400,7 @@ mod columnar {
             (3, src.bundle(hashes).unwrap().bytes().to_vec()),
         ];
         let values: &[fn(u8) -> u8] = if slow() {
-            &[
-                |b| b ^ 1,
-                |b| b ^ 0x80,
-                |_| 0,
-                |_| 0xff,
-                |b| b.wrapping_add(1),
-                |b| b.wrapping_sub(1),
-                |b| b ^ 0x40,
-            ]
+            &[|b| b ^ 1, |b| b ^ 0x80, |_| 0, |_| 0xff, |b| b.wrapping_add(1), |b| b.wrapping_sub(1), |b| b ^ 0x40]
         } else {
             &[|b| b ^ 1, |b| b ^ 0x80]
         };
@@ -3289,22 +2434,12 @@ mod columnar {
                     }));
                     let applied = catch_unwind(AssertUnwindSafe(|| {
                         let mut doc = seeded_doc();
-                        let _ = incoming(
-                            &mut doc,
-                            &input,
-                            &NativeLimits::default(),
-                            &allowance(),
-                            NativeDependencyPolicy::RetainOrphans,
-                        );
+                        let _ = incoming(&mut doc, &input, &NativeLimits::default(), &allowance(), NativeDependencyPolicy::RetainOrphans);
                     }));
                     for p in [reconstructed.err(), applied.err()].into_iter().flatten() {
                         let msg: String = panic_message(&*p).chars().take(160).collect();
                         // Strip the byte count so identical causes group together.
-                        let msg = msg
-                            .split(" input bytes: ")
-                            .last()
-                            .unwrap_or(&msg)
-                            .to_string();
+                        let msg = msg.split(" input bytes: ").last().unwrap_or(&msg).to_string();
                         failures.push((site.clone(), msg, hex::encode(&input)));
                     }
                 }
@@ -3321,16 +2456,9 @@ mod columnar {
                 None => groups.push((key, 1, site.clone(), input.clone())),
             }
         }
-        let report: Vec<String> = groups
-            .iter()
-            .map(|(k, n, site, input)| format!("{n:5} x {k}\n        e.g. {site}: {input}"))
-            .collect();
-        assert!(
-            failures.is_empty(),
-            "{} panicking mutants:\n{}",
-            failures.len(),
-            report.join("\n")
-        );
+        let report: Vec<String> =
+            groups.iter().map(|(k, n, site, input)| format!("{n:5} x {k}\n        e.g. {site}: {input}")).collect();
+        assert!(failures.is_empty(), "{} panicking mutants:\n{}", failures.len(), report.join("\n"));
     }
 }
 
@@ -3344,46 +2472,16 @@ mod sweep_regressions {
     use super::*;
 
     const CASES: &[(&str, &str)] = &[
-        (
-            "kind 0 byte 123: 0 -> 1; 0.12 panicked with: index out of bounds: the len is # but the index is #",
-            "856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
-        ),
-        (
-            "kind 0 byte 137: 0 -> 1; 0.12 panicked with: assertion failed: self.data[index].is_none()",
-            "856f4a83916008c800f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309000003070102090005050000017f01000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801",
-        ),
-        (
-            "kind 3 byte 56: 0 -> 1; 0.12 panicked with: called Option::unwrap() on a None value",
-            "856f4a83555f404403df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f01020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
-        (
-            "kind 3 byte 58: 0 -> 1; 0.12 panicked with: mid > len",
-            "856f4a8350e6121a03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020110010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
-        (
-            "kind 3 byte 101: 127 -> 255; 0.12 panicked with: Obj ObjId(OpId(#, #)) Missing from Index",
-            "856f4a83d07f19f603df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a000003ff0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
-        (
-            "kind 3 byte 106: 8 -> 9; 0.12 panicked with: Obj ObjId(OpId(##, #)) Missing from Index",
-            "856f4a83669f4a5503df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e09000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
-        (
-            "kind 3 byte 138: 13 -> 12; 0.12 panicked with: called Result::unwrap() on an Err value: MissingOps",
-            "856f4a833830aa0703df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0c0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
-        (
-            "kind 3 byte 140: 3 -> 2; 0.12 panicked with: assertion failed: self.entry.is_empty()",
-            "856f4a836183f15903df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0002030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
-        (
-            "kind 3 byte 148: 4 -> 5; 0.12 panicked with: called Result::unwrap() on an Err value: InvalidOpType(NonNumericInc)",
-            "856f4a834acfff3d03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102050702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
-        (
-            "kind 3 byte 150: 2 -> 3; 0.12 panicked with: assertion failed: doc.ops.validate_op_order()",
-            "856f4a8373d7ff5803df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040703017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a",
-        ),
+        ("kind 0 byte 123: 0 -> 1; 0.12 panicked with: index out of bounds: the len is # but the index is #", "856f4a833d51cb7a00f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309010003070102090005050000017f00000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801"),
+        ("kind 0 byte 137: 0 -> 1; 0.12 panicked with: assertion failed: self.data[index].is_none()", "856f4a83916008c800f0010110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1011f0242f07c77fbf3d3aac425927bb392f9d579080452645fdb50bf7e4097564b07010203021303230240034302560210010402061108130d15092102230e3403420d560f5708800109810102830103940103a50107020002017e0a0302007e00017f000207000309000003070102090005050000017f01000302007f0202017c00017b0a7d016b016c017400090c007b0b7e78067b02017b047d0104020308017c0102040703017f0703017f057f1602007f0203167f0002167e18147668656c6c6f010205007f0104007e010002007e0d7f07010400037f0162000801"),
+        ("kind 3 byte 56: 0 -> 1; 0.12 panicked with: called Option::unwrap() on a None value", "856f4a83555f404403df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f01020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 58: 0 -> 1; 0.12 panicked with: mid > len", "856f4a8350e6121a03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020110010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 101: 127 -> 255; 0.12 panicked with: Obj ObjId(OpId(#, #)) Missing from Index", "856f4a83d07f19f603df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a000003ff0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 106: 8 -> 9; 0.12 panicked with: Obj ObjId(OpId(##, #)) Missing from Index", "856f4a83669f4a5503df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e09000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 138: 13 -> 12; 0.12 panicked with: called Result::unwrap() on an Err value: MissingOps", "856f4a833830aa0703df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0c0003030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 140: 3 -> 2; 0.12 panicked with: assertion failed: self.entry.is_empty()", "856f4a836183f15903df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0002030105017c0102040702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 148: 4 -> 5; 0.12 panicked with: called Result::unwrap() on an Err value: InvalidOpType(NonNumericInc)", "856f4a834acfff3d03df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102050702017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
+        ("kind 3 byte 150: 2 -> 3; 0.12 panicked with: assertion failed: doc.ops.validate_op_order()", "856f4a8373d7ff5803df01000110d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d109010203021303230333024502500353026002020002017e010a7e0a03020000027e00017f00020010010403091108130d150921023405420f56115708700871027303940103a50107b3010f00030a0000037f0107007e08000005060000017f0000030200780201000100017b0a7d016b016c0174000a0d0003030105017c0102040703017d03010703017f057f1602007f0202167d00160002167e18147668656c6c6f010206007f0105007f0102007e030708010400037f0162000902027f01020278017905790a750c7a"),
     ];
 
     #[test]
@@ -3396,33 +2494,16 @@ mod sweep_regressions {
         let mut failures = Vec::new();
         for (what, hex_input) in CASES {
             let input = hex::decode(hex_input).unwrap();
-            assert_eq!(
-                inspect(&input, &NativeLimits::default()),
-                Ok(()),
-                "{what}: no longer passes inspection"
-            );
+            assert_eq!(inspect(&input, &NativeLimits::default()), Ok(()), "{what}: no longer passes inspection");
             let plain = catch_unwind(|| AutoCommit::load(&input).map(drop)).is_err();
-            let checked = catch_unwind(AssertUnwindSafe(|| {
-                reconstruct(&input, &NativeLimits::default()).map(drop)
-            }));
+            let checked = catch_unwind(AssertUnwindSafe(|| reconstruct(&input, &NativeLimits::default()).map(drop)));
             match checked {
                 Ok(Err(_)) => {}
-                Ok(Ok(())) => {
-                    failures.push(format!("{what}: accepted (plain load panics: {plain})"))
-                }
-                Err(p) => failures.push(format!(
-                    "{what}: PANIC {} (plain AutoCommit::load panics too: {plain})",
-                    panic_message(&*p)
-                )),
+                Ok(Ok(())) => failures.push(format!("{what}: accepted (plain load panics: {plain})")),
+                Err(p) => failures.push(format!("{what}: PANIC {} (plain AutoCommit::load panics too: {plain})", panic_message(&*p))),
             }
         }
         std::panic::set_hook(hook);
-        assert!(
-            failures.is_empty(),
-            "{} of {}:\n{}",
-            failures.len(),
-            CASES.len(),
-            failures.join("\n")
-        );
+        assert!(failures.is_empty(), "{} of {}:\n{}", failures.len(), CASES.len(), failures.join("\n"));
     }
 }
