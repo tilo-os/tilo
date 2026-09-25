@@ -332,6 +332,12 @@ impl ContinuationRegistry {
         self.remove_remote_tab(tab);
     }
 
+    /// Drop a local tab association after the tab's launch identity changes.
+    /// Keep exact remote offers: they may now be the tab's intended source.
+    pub(crate) fn forget_local_binding(&mut self, tab: AppInstanceId) {
+        self.tab_instances.remove(&tab);
+    }
+
     /// Remove every process-local association owned by a closed tab.
     pub fn forget_local_tab(&mut self, tab: AppInstanceId) {
         if let Some(instance) = self.tab_instances.remove(&tab) {
@@ -485,10 +491,27 @@ fn resume_has_required_facets(resume: &ResumeMetadata, required: &[ContinuityFac
         })
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_REGISTRY: std::cell::RefCell<Option<Arc<Mutex<ContinuationRegistry>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Tests may model a new process without erasing another test's live reports.
+#[cfg(test)]
+pub(crate) fn replace_test_registry(
+    registry: Option<Arc<Mutex<ContinuationRegistry>>>,
+) -> Option<Arc<Mutex<ContinuationRegistry>>> {
+    TEST_REGISTRY.with(|slot| slot.replace(registry))
+}
+
 /// The shell broker and network share this process-local registry. It is not
 /// persisted: authoritative app CRDT state repopulates it after launch.
 pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
     static REGISTRY: OnceLock<Arc<Mutex<ContinuationRegistry>>> = OnceLock::new();
+    #[cfg(test)]
+    if let Some(registry) = TEST_REGISTRY.with(|slot| slot.borrow().clone()) {
+        return registry;
+    }
     Arc::clone(REGISTRY.get_or_init(|| Arc::new(Mutex::new(ContinuationRegistry::default()))))
 }
 
