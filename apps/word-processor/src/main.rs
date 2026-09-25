@@ -433,7 +433,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..5 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Margins improved slightly.");
-        qdoc::history::commit_stamped_at(&mut state.doc, base + i * 30);
+        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + i * 30);
     }
 
     // Session two, an hour later, by a collaborator.
@@ -454,7 +454,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
             ids: &mut ids,
         };
         dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
-        let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
+        let hash = ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
         if i == 0 {
             peer_first = hash;
         }
@@ -465,7 +465,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
-        qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
+        ui::tilo_resource::history::commit_stamped_at(&mut peer, base + 3600 + 150);
     }
     state.doc.merge_incoming(&mut peer)?;
 
@@ -475,7 +475,8 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     for i in 0..6 {
         wp.model_mut()
             .insert_str(&mut state.doc, " Headcount is unchanged.");
-        let hash = qdoc::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
+        let hash =
+            ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
         if i == 0 {
             session_three_start = hash;
         }
@@ -486,7 +487,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         let start = ui::history_source::entry_id_from_hash(&first.to_string());
         let end = ui::history_source::entry_id_from_hash(&last.to_string());
         ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
-        qdoc::history::commit_stamped_at(&mut state.doc, now - 120);
+        ui::tilo_resource::history::commit_stamped_at(&mut state.doc, now - 120);
     }
 
     wp.toggle_history(&mut state.doc);
