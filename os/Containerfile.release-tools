@@ -2,7 +2,7 @@
 
 # The release job uploads already-built artifacts and assembles metadata. Keep
 # compilers and build headers out of its credential-bearing environment.
-FROM registry.fedoraproject.org/fedora-minimal:42@sha256:09a2061e2cfb85ac8e7fa7f2234d0ace6ad4f2b7dfdf0f257c90405e4f07577d
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:da629a43487862f80089be020f3e7ac24d168b6cf74630324e70f2f5f90697d9
 
 RUN microdnf install -y --setopt=install_weak_deps=0 \
       bash ca-certificates coreutils curl diffutils findutils gawk git-core \
